@@ -3,7 +3,7 @@
 report its temporal structure instead of a pile of frames.
 
     scripts/diags/field_trace.py -t 30           # 30s at the device's rate
-    scripts/diags/field_trace.py -t 30 --index 1
+    scripts/diags/field_trace.py -t 30 --device "Cam Link"
     scripts/diags/field_trace.py -t 20 --tol 1.5 # looser state clustering
 
 hdmi_capture --burst answers "what changed between consecutive fields" but is
@@ -36,7 +36,7 @@ import _diaglib as d
 import numpy as np
 
 
-def trace(index: int, seconds: float, *, size: tuple[int, int], fps: int, tol: float):
+def trace(device: str | None, seconds: float, *, size: tuple[int, int], fps: int, tol: float):
     """Sample the capture device for `seconds`, returning (states, assign, stamps).
 
     `states` holds one full frame per distinct display state; `assign[i]` is the
@@ -46,9 +46,7 @@ def trace(index: int, seconds: float, *, size: tuple[int, int], fps: int, tol: f
     """
     import cv2
 
-    cap = cv2.VideoCapture(index)
-    if not cap.isOpened():
-        raise SystemExit(f"could not open cv2 capture device {index}")
+    cap = d.open_capture(device)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, size[0])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, size[1])
     cap.set(cv2.CAP_PROP_FPS, fps)
@@ -84,7 +82,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--index", type=int, default=d.CAMLINK_CV2_INDEX)
+    d.add_capture_device_arg(ap, "--index")
     ap.add_argument("-t", "--seconds", type=float, default=20.0)
     ap.add_argument("--size", default="1920x1080")
     ap.add_argument("--fps", type=int, default=60)
@@ -94,7 +92,7 @@ def main() -> int:
 
     w, h = (int(v) for v in args.size.lower().split("x"))
     states, assign, stamps = trace(
-        args.index, args.seconds, size=(w, h), fps=args.fps, tol=args.tol
+        args.device, args.seconds, size=(w, h), fps=args.fps, tol=args.tol
     )
     if not assign:
         raise SystemExit("no frames captured")

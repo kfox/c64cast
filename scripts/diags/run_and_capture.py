@@ -120,14 +120,7 @@ def main() -> int:
         action="store_true",
         help="leave the machine running for inspection (default: reset)",
     )
-    ap.add_argument(
-        "-d",
-        "--device",
-        default=d.CAMLINK_DEVICE,
-        help="capture device: a cv2 index, a camera name substring, or a USB "
-        f"VID:PID (default {d.CAMLINK_DEVICE!r}; see `c64cast --list-devices`)",
-    )
-    ap.add_argument("--cv2-index", dest="device", help="alias for --device")
+    d.add_capture_device_arg(ap, "-d", "--cv2-index")
     ap.add_argument("--avf-audio", default=d.CAMLINK_AVF_AUDIO)
     ap.add_argument(
         "--border-flash",
@@ -262,15 +255,19 @@ def main() -> int:
             if wait > 0:
                 time.sleep(wait)
             cap = d.open_capture(args.device)
-            for _ in range(4):
-                cap.read()
-            ok, frame = cap.read()
-            cap.release()
-            if ok and frame is not None:
-                p = out / f"{args.label}_frame{grabbed:02d}.png"
-                d.save_image(frame, p)  # downscaled to ~960px (cheap to read back)
-                print(f"[frame] {p}")
-                grabbed += 1
+            try:
+                for _ in range(4):
+                    cap.read()
+                frame = d.read_frame(cap, args.device)
+            except d.NoFrameError as e:
+                print(f"[frame] skipped: {e}")
+                continue
+            finally:
+                cap.release()
+            p = out / f"{args.label}_frame{grabbed:02d}.png"
+            d.save_image(frame, p)  # downscaled to ~960px (cheap to read back)
+            print(f"[frame] {p}")
+            grabbed += 1
         remaining = args.seconds + boot_margin - (time.time() - t0)
         if remaining > 0:
             time.sleep(remaining)

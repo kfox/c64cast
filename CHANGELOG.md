@@ -275,6 +275,29 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   scene in an ensemble (which holds no audio). `big_text` on
   `mcm` hooks no interrupt and is unaffected.
 
+- **The diag and capture tools open the Cam Link by its USB ID, and stop if it
+  is absent.** With no device flag they opened cv2 index 0. When a U64
+  PAL/NTSC switch dropped the Cam Link off the USB bus, the laptop's own
+  camera moved to index 0 and the tools filmed the room instead of the C64.
+  The default is now the Cam Link's `0fd9:0066`, and a missing Cam Link ends
+  the run with a message rather than opening another camera. Every tool in
+  `scripts/diags/` that captures video, and `scripts/capture_guide_figure.py`,
+  now takes the same `--device` (an index, a name substring, or a VID:PID);
+  the older `--index`, `--cv2-index` and `--cam` still work. An index-only
+  `C64_DIAG_CV2` is still read, with a warning; `C64_DIAG_CAMERA` takes any
+  form. `scripts/diags/vision_tune.py` picks its camera by the name "FaceTime"
+  rather than index 1.
+
+- **The HDMI capture diag tools wait out a capture that returns no frame for a
+  moment.** `scripts/diags/hdmi_capture.py` gave up on the first read that
+  came back empty, so a capture landing while the HDMI link was settling
+  failed and read as a dead capture stick. It now retries for 5 seconds, and
+  the error names the likely causes (the HDMI link renegotiating, no signal,
+  the device held by another program) and points at
+  `c64cast --list-devices`. `menu_inject.py`, `run_and_capture.py` and
+  `scripts/capture_guide_figure.py` retry their stills the same way; the
+  last two used to drop a failed still silently and now print why.
+
 - **Mic and webcam audio through the REU pump now plays under `mhires`
   and `hires` REU-staged video (#551).** With `[audio].use_reu_pump` on a
   mic or webcam scene whose display used REU staging, the C64 could crash

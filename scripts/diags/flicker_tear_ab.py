@@ -347,7 +347,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=d.U64_URL)
     ap.add_argument("--seconds", type=float, default=10.0, help="capture window per phase")
-    ap.add_argument("--device", default=d.CAMLINK_DEVICE)
+    d.add_capture_device_arg(ap)
     ap.add_argument("--no-reset", action="store_true")
     args = ap.parse_args()
 

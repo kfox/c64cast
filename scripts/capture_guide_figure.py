@@ -107,69 +107,74 @@ def cmd_shoot(args) -> int:
     if args.config:
         argv += ["--config", args.config]
     argv += args.media
+    d.resolve_capture(args.device)
 
     log = OUT_DIR / f"{args.label}.log"
     print(f"[run] {' '.join(argv[2:])}  (log -> {log})")
     written: list[Path] = []
     cap = None
-    with open(log, "w") as fh:
-        app = subprocess.Popen(argv, cwd=REPO_ROOT, stdout=fh, stderr=subprocess.STDOUT)
-        t0 = time.monotonic()
-        try:
-            cap = cv2.VideoCapture(args.index)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-            for _ in range(10):  # let the stick's exposure/handshake settle
-                cap.read()
-
-            def wait_until(target: float) -> None:
-                # Keep draining: a queued stale frame is worse than a late one.
-                while (remaining := target - (time.monotonic() - t0)) > 0:
+    try:
+        with open(log, "w") as fh:
+            app = subprocess.Popen(argv, cwd=REPO_ROOT, stdout=fh, stderr=subprocess.STDOUT)
+            t0 = time.monotonic()
+            try:
+                cap = d.open_capture(args.device)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                for _ in range(10):  # let the stick's exposure/handshake settle
                     cap.read()
-                    if remaining > 0.05:
-                        time.sleep(min(remaining, 0.02))
 
-            def keep(frame, i: int) -> None:
-                shot = frame if args.raw else crop_c64(frame)
-                p = OUT_DIR / f"{args.label}_{i:02d}.png"
-                cv2.imwrite(str(p), shot)
-                written.append(p)
+                def wait_until(target: float) -> None:
+                    # Keep draining: a queued stale frame is worse than a late one.
+                    while (remaining := target - (time.monotonic() - t0)) > 0:
+                        cap.read()
+                        if remaining > 0.05:
+                            time.sleep(min(remaining, 0.02))
 
-            if args.burst:
-                wait_until(args.at)
-                frames = []
-                for _ in range(args.burst):
-                    ok, frame = cap.read()
-                    if ok and frame is not None:
-                        frames.append(frame)
-                print(f"[burst] {len(frames)} frames at ~60 fps; writing")
-                for i, frame in enumerate(frames):
-                    keep(frame, i)
-            else:
-                for i in range(args.shots):
-                    wait_until(args.at + i * args.spacing)
-                    if app.poll() is not None:
-                        print(f"[run] app exited early rc={app.returncode}")
-                        break
-                    ok, frame = cap.read()
-                    if ok and frame is not None:
+                def keep(frame, i: int) -> None:
+                    shot = frame if args.raw else crop_c64(frame)
+                    p = OUT_DIR / f"{args.label}_{i:02d}.png"
+                    cv2.imwrite(str(p), shot)
+                    written.append(p)
+
+                if args.burst:
+                    wait_until(args.at)
+                    frames = []
+                    for _ in range(args.burst):
+                        ok, frame = cap.read()
+                        if ok and frame is not None:
+                            frames.append(frame)
+                    print(f"[burst] {len(frames)} frames at ~60 fps; writing")
+                    for i, frame in enumerate(frames):
+                        keep(frame, i)
+                else:
+                    for i in range(args.shots):
+                        wait_until(args.at + i * args.spacing)
+                        if app.poll() is not None:
+                            print(f"[run] app exited early rc={app.returncode}")
+                            break
+                        try:
+                            frame = d.read_frame(cap, args.device)
+                        except d.NoFrameError as e:
+                            print(f"[frame] shot {i} skipped: {e}")
+                            continue
                         keep(frame, i)
                         print(f"[frame] {written[-1]}")
-        finally:
-            if cap is not None:
-                cap.release()
-            # SIGTERM, never SIGKILL: killing mid-DMA wedges the U64 hard
-            # enough to need a power cycle.
-            print("[run] stopping c64cast")
-            app.terminate()
-            try:
-                app.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                app.wait(timeout=20)
-
-    if not args.no_reset:
-        time.sleep(1.0)
-        print(f"[reset] HTTP {d.rest_reset(args.url)}")
+            finally:
+                if cap is not None:
+                    cap.release()
+                # SIGTERM, never SIGKILL: killing mid-DMA wedges the U64 hard
+                # enough to need a power cycle.
+                print("[run] stopping c64cast")
+                app.terminate()
+                try:
+                    app.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    app.wait(timeout=20)
+    finally:
+        if not args.no_reset:
+            time.sleep(1.0)
+            print(f"[reset] HTTP {d.rest_reset(args.url)}")
     print(f"[out] {len(written)} frame(s) in {OUT_DIR}")
     return 0
 
@@ -326,7 +331,7 @@ def main() -> int:
     p.add_argument("-n", "--shots", type=int, default=8)
     p.add_argument("--spacing", type=float, default=2.0, help="seconds between shots")
     p.add_argument("--burst", type=int, default=0, help="instead: N back-to-back frames at --at")
-    p.add_argument("--index", type=int, default=d.CAMLINK_CV2_INDEX, help="cv2 capture index")
+    d.add_capture_device_arg(p, "--index")
     p.add_argument("--raw", action="store_true", help="keep the full pillarboxed 1920x1080 frame")
     p.add_argument("--no-reset", action="store_true", help="leave the machine running")
     p.add_argument("media", nargs="*", help="quick-playback media args, after --")
