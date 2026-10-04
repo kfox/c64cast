@@ -840,8 +840,12 @@ class BlankScene(Scene):
         super().setup()
         self.start_time = time.time()
         if isinstance(self.audio, AudioStreamer):
+            skip_hook = self.audio.use_reu_pump and reu_pump_skips_irq_hook(self.display_mode)
             self.audio.start_mic(
-                self.audio_cfg.device, self.audio_cfg.mic_sensitivity, self.audio_cfg.noise_gate
+                self.audio_cfg.device,
+                self.audio_cfg.mic_sensitivity,
+                self.audio_cfg.noise_gate,
+                skip_irq_vector_hook=skip_hook,
             )
 
     def process_frame(self, current_time: float) -> bool:

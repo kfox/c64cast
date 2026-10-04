@@ -1293,6 +1293,9 @@ def reu_pump_skips_irq_hook(display_mode: object) -> bool:
     $0314 alone and run tracked: True when the mode installs a merged
     bank-swap dispatcher that calls the $C100 pump itself.
 
+    Every pump start asks it: VideoScene.setup (start_for_reu_staged), and
+    WebcamScene.setup, BlankScene.setup and MicAudioSource.setup (start_mic).
+
     Raises ValueError for a mode that drives the REC from the host
     (`drives_rec_from_host`), which no pump variant can share it with (see
     REU_VIDEO_SCREEN_BASE). scene_factory.resolve_use_reu_staged keeps such a
