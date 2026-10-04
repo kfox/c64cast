@@ -1596,6 +1596,31 @@ class LifecycleTest(unittest.TestCase):
         s._content_lead = lead_then_land  # type: ignore[method-assign]
         self.assertLessEqual(s.position_seconds(), 1000 / s.effective_rate)
 
+    def test_position_seconds_is_not_torn_by_a_worker_discard(self):
+        # The worker drops a pre-splice chunk with the paired subtract while
+        # the video thread reads the clock; a read pairing the old pushed
+        # count with the new queued count would lead by that chunk.
+        class TearOnRead(AudioStreamer):
+            @property
+            def _pushed_count(self) -> int:
+                pushed: int = self.__dict__["_pushed_raw"]
+                if self._count_lock.acquire(blocking=False):
+                    self._queued_samples -= 32
+                    self.__dict__["_pushed_raw"] = pushed - 32
+                    self._count_lock.release()
+                return pushed
+
+            @_pushed_count.setter
+            def _pushed_count(self, value: int) -> None:
+                self.__dict__["_pushed_raw"] = value
+
+        s = _make()
+        s.__class__ = TearOnRead
+        s._pushed_count = 1032
+        s._queued_samples = 32
+        s.servo.ring_lead = 0.0
+        self.assertLessEqual(s.position_seconds(), 1000 / s.effective_rate)
+
     def test_position_seconds_host_dma(self):
         # The divisor is effective_rate — the rate the CIA latch actually
         # yields — not the requested sample_rate. At 8 kHz NTSC that is

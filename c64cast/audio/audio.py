@@ -2147,8 +2147,11 @@ class AudioStreamer:
         # sample-count counter instead.
         # Consumed before the lead: the worker clears the tail pad before it
         # lands the content behind it, so a read torn across a landing lags by
-        # that chunk rather than leading by a ring of pad.
-        consumed = self._pushed_count - self._queued_samples
+        # that chunk rather than leading by a ring of pad. Locked: the worker's
+        # discard of a pre-splice chunk drops both counts, and an unlocked read
+        # pairing the old pushed with the new queued leads by that chunk.
+        with self._count_lock:
+            consumed = self._pushed_count - self._queued_samples
         lead = self._content_lead()
         if lead is None:
             return 0.0
