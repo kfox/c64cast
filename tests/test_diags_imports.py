@@ -24,6 +24,13 @@ import c64cast.video
 _DIAGS = Path(__file__).resolve().parents[1] / "scripts" / "diags"
 _LOCAL_PACKAGE = "scripts.diags"
 _LOCAL_PREFIX = f"{_LOCAL_PACKAGE}."
+# Third-party packages the diag tools import. A top-level import that is none
+# of these, not stdlib, and not a tool is reported, since the tools import one
+# another by bare name and a deleted sibling would otherwise read as a missing
+# optional dependency. A diag tool taking on a new dependency adds it here.
+_THIRD_PARTY = frozenset(
+    {"av", "cv2", "matplotlib", "mido", "numpy", "requests", "serial", "sounddevice"}
+)
 
 
 def _lazy_attribute_names(getattr_def: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
@@ -141,6 +148,13 @@ def _is_checked(module: str) -> bool:
     return module.split(".")[0] == "c64cast" or _is_local(module)
 
 
+def _is_foreign(module: str) -> bool:
+    """Whether ``module`` is stdlib or a known third-party package, which this
+    sweep leaves unchecked."""
+    root = module.split(".")[0]
+    return root in sys.stdlib_module_names or root in _THIRD_PARTY
+
+
 def _unresolved(path: Path) -> list[str]:
     """Each import in ``path`` naming something its source no longer defines,
     plus each dotted read through a checked module alias (``d.X``,
@@ -152,6 +166,8 @@ def _unresolved(path: Path) -> list[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if not _is_checked(alias.name):
+                    if not _is_foreign(alias.name):
+                        missing.append(f"line {node.lineno}: import {alias.name}")
                     continue
                 if not _is_local(alias.name):
                     importlib.import_module(alias.name)
@@ -164,6 +180,11 @@ def _unresolved(path: Path) -> list[str]:
                     aliases[root] = root
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             if not _is_checked(node.module):
+                if not _is_foreign(node.module):
+                    missing.extend(
+                        f"line {node.lineno}: from {node.module} import {alias.name}"
+                        for alias in node.names
+                    )
                 continue
             for alias in node.names:
                 if alias.name == "*":
@@ -265,6 +286,18 @@ class UnresolvedImportDetectionTests(unittest.TestCase):
             with self.assertRaises(ModuleNotFoundError) as caught:
                 self._check("from c64cast.video import flicker\n")
         self.assertEqual(caught.exception.name, "cv2")
+
+    def test_a_missing_sibling_tool_imported_by_bare_name_is_reported(self):
+        missing = self._check(
+            "import numpy\n"
+            "import os.path\n"
+            "from cv2 import imread\n"
+            "import no_such_tool\n"
+            "from no_such_tool import x\n"
+        )
+        self.assertEqual(
+            missing, ["line 4: import no_such_tool", "line 5: from no_such_tool import x"]
+        )
 
     def test_a_missing_tool_imported_through_the_package_path_is_reported(self):
         missing = self._check(
