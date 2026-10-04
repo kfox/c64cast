@@ -296,7 +296,8 @@ class RateServo:
         self.gap_max = max(self.gap_max, gap)
         self.health_gap_min = gap if self.health_gap_min < 0 else min(self.health_gap_min, gap)
         self.health_gap_max = max(self.health_gap_max, gap)
-        self.ring_lead += RING_LEAD_EMA_ALPHA * (gap - self.ring_lead)
+        if self.ring_lead >= 0:
+            self.ring_lead += RING_LEAD_EMA_ALPHA * (gap - self.ring_lead)
         # Slow outer loop, on R's *rate*: the gap servo below nulls the gap,
         # so the gap carries no rate signal. Measured either way; only the
         # latch steering is opt-in.

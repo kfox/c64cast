@@ -1186,6 +1186,17 @@ class HostDmaServoTest(unittest.TestCase):
             s.servo.next_pace_increment(w, self.CHUNK_PERIOD)
         self.assertAlmostEqual(s.servo.ring_lead, 8000, delta=1)
 
+    def test_ring_lead_stays_unseeded_before_the_consumer_starts(self):
+        # A worker that outlived stop()'s join can still read R once; that
+        # reading must not turn the "no consumer" sentinel into a lead.
+        s = _new_streamer(use_reu_pump=False)
+        s.host_dma_servo = True
+        s.servo.reset_after_stop()
+        s.api.read_memory = lambda a, n, timeout=1.0: bytes([0x00, 0x40])  # type: ignore[method-assign]
+        s.servo.next_pace_increment(RING_BUFFER_ADDR + 8000, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.ring_lead, -1.0)
+        self.assertEqual(s.position_seconds(), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
