@@ -169,8 +169,10 @@ class VideoTransportControls:
             # branch. The silencing flush is the fast one (sampler: $DF21 volume
             # 0; DAC: worker ring stomp) and drops queued audio, so resume
             # starts clean.
+            # Frozen at the splice target if one is still being waited out, or
+            # a pause inside the hold would resume a ring lead short of it.
             assert sc.audio is not None and sc.source is not None
-            self.audio_anchor_clock_s = self.clock_s()
+            self.audio_anchor_clock_s = self._target_clock_s()
             self.paused = True
             sc.source.set_muted(True)
             sc.audio.flush(silence_output=True)
@@ -352,10 +354,15 @@ class VideoTransportControls:
         target is heard; this reports the target through that hold, because a
         held FF/RW and a relative jog seek to ``position() + delta`` and would
         otherwise lose the hold's length on every step."""
+        return self.clock_to_content(self._target_clock_s())
+
+    def _target_clock_s(self) -> float:
+        """clock_s(), except through a resync splice's hold, where it is the
+        splice target the clock is waiting to reach."""
         clk = self.clock_s()
         if self.touched and self.resync:
             clk = max(clk, self.audio_anchor_clock_s)
-        return self.clock_to_content(clk)
+        return clk
 
     def duration(self) -> float | None:
         source = self._scene.source

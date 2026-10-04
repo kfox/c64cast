@@ -866,6 +866,17 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio._position = 3.34 + 1.0
         self.assertAlmostEqual(scene.transport_position(), 43.02)
 
+    def test_pause_inside_the_ring_lead_freezes_at_the_seek_target(self):
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        audio._position = 3.1
+        scene.transport_pause()
+        self.assertAlmostEqual(scene.transport_position(), 42.0)
+        scene.transport_resume()
+        self.assertEqual(source.seeks[-1], 42.0)
+
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
         scene.transport.touch()  # anchor_clock=0, anchor_pos=0
