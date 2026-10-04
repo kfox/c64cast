@@ -636,7 +636,7 @@ Any uncertainty — no REU, a failed query, `--skip-probe`, a non-REU backend �
 
 #### The two REU pipelines
 
-**Char modes (PETSCII/Blank) — single-buffer.** `push()` calls `modes_irq.push_screen_via_reu(api, screen_bytes, $0400)`: REUWRITE the 1000-byte screen to `REU_VIDEO_SCREEN_BASE = $E00000` (bus-clean), configure REC `$DF02`/`$DF04`/`$DF07` for a one-shot REU→main DMA, then trigger via `$DF01 = $91`. Color RAM at `$D800` is not VIC-banked, so it stays on the delta-cached DMAWRITE path.
+**Char modes (PETSCII/Blank) — single-buffer.** `push()` calls `modes_irq.push_screen_via_reu(api, screen_bytes, $0400)`: REUWRITE the 1000-byte screen to `REU_VIDEO_SCREEN_BASE = $E00000` (bus-clean), configure REC `$DF02`/`$DF04`/`$DF07` for a one-shot REU→main DMA, then trigger via `$DF01 = $91`. Color RAM at `$D800` is not VIC-banked, so it stays on the delta-cached DMAWRITE path. Those are four separate DMA writes the C64 can interrupt, so this pipeline cannot share the REC with the REU audio pump: with `[audio].use_reu_pump` on, `scene_factory.resolve_use_reu_staged` keeps petscii and blank on host DMA, even for an explicit `true` (see [the pump note in audio.md](audio.md#audio_handlerspy--the-6502-machine-code-layer)).
 
 **Bitmap modes (Hires/MultiHires) — double-buffer.** Bitmap and screen are REUWRITE-staged, then DMA'd into the *off-screen* VIC bank. A C64-side raster IRQ at `$0314` flips `$DD00` at vblank for a tear-free swap — this is what eliminates the scene-cut whole-screen flashes.
 

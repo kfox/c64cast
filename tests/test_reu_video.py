@@ -19,7 +19,7 @@ import unittest
 from typing import cast
 
 import numpy as np
-from _fakes import FakeAPI
+from _fakes import FakeAPI, quiet_logging
 
 from c64cast.app.config import Config, VideoCfg
 from c64cast.app.scene_factory import _build_display_mode
@@ -121,6 +121,170 @@ class ResolveUseReuStagedTest(unittest.TestCase):
     def test_explicit_false_never_stages(self):
         self.assertFalse(self._resolve(False, "mhires", True))
         self.assertFalse(self._resolve(False, "petscii", True))
+
+
+class ReuStagedCharModeWithPumpTest(unittest.TestCase):
+    """#554: a char mode's REU staging drives the REC from the host, which the
+    REU audio pump drives from the C64, so the pump turns it off — loudly when
+    it was asked for explicitly."""
+
+    def setUp(self):
+        # The warning is logged once per display per process.
+        from c64cast.app.scene_factory import _warn_host_rec_staging_dropped
+
+        _warn_host_rec_staging_dropped.cache_clear()
+        self.addCleanup(_warn_host_rec_staging_dropped.cache_clear)
+
+    def _resolve(self, setting, display, *, pump):
+        from c64cast.app.scene_factory import resolve_use_reu_staged
+
+        return resolve_use_reu_staged(
+            setting, display, reu_available=True, audio_reu_pump_active=pump
+        )
+
+    def test_explicit_true_char_mode_with_pump_is_refused_with_warning(self):
+        for d in ("petscii", "blank"):
+            with self.subTest(display=d):
+                with self.assertLogs("c64cast.app.scene_factory", "WARNING") as cm:
+                    self.assertFalse(self._resolve(True, d, pump=True))
+                self.assertIn("use_reu_pump", cm.output[0])
+                self.assertIn(d, cm.output[0])
+
+    def test_auto_char_mode_with_pump_stays_off_quietly(self):
+        with self.assertNoLogs("c64cast.app.scene_factory", "WARNING"):
+            self.assertFalse(self._resolve("auto", "petscii", pump=True))
+
+    def test_bitmap_modes_keep_staging_with_pump(self):
+        # Their staging runs C64-side, through the merged dispatcher.
+        with self.assertNoLogs("c64cast.app.scene_factory", "WARNING"):
+            for d in ("hires", "hires_edges", "mhires"):
+                self.assertTrue(self._resolve(True, d, pump=True), d)
+
+    def test_char_mode_without_pump_keeps_explicit_staging(self):
+        self.assertTrue(self._resolve(True, "petscii", pump=False))
+
+
+class WiredModeRecOwnershipTest(unittest.TestCase):
+    """Kept apart from the assertLogs tests above: it runs under quiet_logging."""
+
+    def test_no_wired_mode_drives_rec_while_the_pump_is_on(self):
+        # The display-name gate in resolve_use_reu_staged against the modes'
+        # own drives_rec_from_host, for every concrete display.
+        from c64cast.app.config import _DISPLAY_CHOICES
+        from c64cast.app.scene_factory import (
+            _HOST_REC_STAGED_MODES,
+            DisplayWiring,
+            build_wired_display_mode,
+        )
+
+        for d in (c for c in _DISPLAY_CHOICES if c != "random"):
+            for pump in (False, True):
+                with self.subTest(display=d, pump=pump):
+                    wiring = DisplayWiring(
+                        use_reu_staged=True, reu_available=True, audio_reu_pump_active=pump
+                    )
+                    with quiet_logging():
+                        mode = build_wired_display_mode(d, wiring)
+                    # Pump on: no mode drives REC. Pump off: exactly the named
+                    # set does, so the set and the property cannot drift apart.
+                    expected = (not pump) and d in _HOST_REC_STAGED_MODES
+                    self.assertEqual(mode.drives_rec_from_host, expected)
+
+
+class ReuPumpSkipsIrqHookTest(unittest.TestCase):
+    """modes_irq.reu_pump_skips_irq_hook: the audio side's pump choice."""
+
+    def test_bank_swap_mode_with_pump_skips_the_hook(self):
+        self.assertTrue(
+            modes_irq.reu_pump_skips_irq_hook(
+                MultiHiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
+            )
+        )
+
+    def test_unstaged_bitmap_mode_with_pump_keeps_the_hook(self):
+        # No merged dispatcher without REU staging (an overlay under "auto",
+        # --skip-probe, or an explicit false), so the pump must hook $0314.
+        for mode in (
+            HiresDisplayMode(audio_reu_pump_active=True),
+            HiresDisplayMode(style="edges", audio_reu_pump_active=True),
+            MultiHiresDisplayMode(audio_reu_pump_active=True),
+        ):
+            with self.subTest(mode=type(mode).__name__, style=getattr(mode, "style", None)):
+                self.assertFalse(modes_irq.reu_pump_skips_irq_hook(mode))
+
+    def test_char_mode_without_staging_keeps_the_hook(self):
+        self.assertFalse(modes_irq.reu_pump_skips_irq_hook(PETSCIIDisplayMode()))
+        self.assertFalse(modes_irq.reu_pump_skips_irq_hook(None))
+
+    def test_host_rec_staged_mode_is_refused(self):
+        for mode in (
+            PETSCIIDisplayMode(use_reu_staged=True),
+            BlankDisplayMode(use_reu_staged=True),
+        ):
+            with self.subTest(mode=type(mode).__name__):
+                with self.assertRaises(ValueError):
+                    modes_irq.reu_pump_skips_irq_hook(mode)
+
+
+class ScenePumpStartRecOwnershipTest(unittest.TestCase):
+    """The scene-side pump starts that ask reu_pump_skips_irq_hook (#554)."""
+
+    def _audio(self, *, use_reu_pump: bool):
+        from unittest.mock import MagicMock
+
+        from c64cast.audio.audio import AudioStreamer
+
+        audio = MagicMock(spec=AudioStreamer)
+        audio.use_reu_pump = use_reu_pump
+        audio.effective_rate = 12000
+        return audio
+
+    def _webcam(self, audio):
+        from unittest.mock import MagicMock
+
+        from c64cast.scenes.scenes import WebcamScene
+
+        return WebcamScene(
+            cast(Ultimate64API, FakeAPI()),
+            audio,
+            PETSCIIDisplayMode(use_reu_staged=True),
+            MagicMock(),
+            MagicMock(),
+            "cam",
+        )
+
+    def test_webcam_without_the_pump_accepts_a_host_rec_mode(self):
+        audio = self._audio(use_reu_pump=False)
+        self._webcam(audio).setup()
+        self.assertIs(audio.start_mic.call_args.kwargs["skip_irq_vector_hook"], False)
+
+    def test_webcam_with_the_pump_refuses_a_host_rec_mode(self):
+        audio = self._audio(use_reu_pump=True)
+        with self.assertRaises(ValueError):
+            self._webcam(audio).setup()
+        audio.start_mic.assert_not_called()
+
+    def test_video_reu_pump_start_refuses_a_host_rec_mode(self):
+        from unittest import mock
+
+        from c64cast.scenes.scenes import VideoScene
+
+        audio = self._audio(use_reu_pump=True)
+        scene = VideoScene(
+            cast(Ultimate64API, FakeAPI()),
+            audio,
+            PETSCIIDisplayMode(use_reu_staged=True),
+            "https://stub.invalid/clip.mp4",
+            setup_progress=False,
+        )
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource"),
+            mock.patch.object(scene, "_preencode_audio_for_reu", return_value=b"\x07"),
+            self.assertRaises(ValueError),
+        ):
+            scene.setup()
+        audio.start_for_reu_staged.assert_not_called()
 
 
 class ValidateUseReuStagedTest(unittest.TestCase):
@@ -262,6 +426,13 @@ class ReuCoexistenceTest(unittest.TestCase):
     branch JMPs to the audio pump at $C100, so both REU users share one
     $0314 hook and serialize REC access naturally."""
 
+    def setUp(self):
+        # The warning is logged once per display per process.
+        from c64cast.app.scene_factory import _warn_host_rec_staging_dropped
+
+        _warn_host_rec_staging_dropped.cache_clear()
+        self.addCleanup(_warn_host_rec_staging_dropped.cache_clear)
+
     def test_video_alone_is_ok(self):
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
@@ -283,7 +454,8 @@ class ReuCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_both_on_video_petscii_is_ok(self):
-        # Char-mode REU video is host-triggered single-buffer, so no $0314 hook.
+        # Accepted, but the char push drops to host DMA (#554): it would drive
+        # the REC from the host while the pump drives it from the C64.
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
@@ -291,7 +463,8 @@ class ReuCoexistenceTest(unittest.TestCase):
         cfg.video.use_reu_staged = True
         cfg.audio.use_reu_pump = True
         sc = SceneCfg(type="video", display="petscii", file="x.mp4")
-        validate_scene_cfg(sc, cfg, audio_enabled=True)
+        with self.assertLogs("c64cast.app.scene_factory", "WARNING"):
+            validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_both_on_video_mhires_is_ok(self):
         from c64cast.app.config import SceneCfg
@@ -311,7 +484,8 @@ class ReuCoexistenceTest(unittest.TestCase):
         cfg.video.use_reu_staged = True
         cfg.audio.use_reu_pump = True
         sc = SceneCfg(type="webcam", display="petscii")
-        validate_scene_cfg(sc, cfg, audio_enabled=True)
+        with self.assertLogs("c64cast.app.scene_factory", "WARNING"):
+            validate_scene_cfg(sc, cfg, audio_enabled=True)
 
 
 class ReuBuildDisplayModeTest(unittest.TestCase):
@@ -706,6 +880,13 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
     variant whose non-raster branch JMPs to the mic pump at $C100, and
     the mic install is told to skip its own $0314 hook (scenes.py)."""
 
+    def setUp(self):
+        # The warning is logged once per display per process.
+        from c64cast.app.scene_factory import _warn_host_rec_staging_dropped
+
+        _warn_host_rec_staging_dropped.cache_clear()
+        self.addCleanup(_warn_host_rec_staging_dropped.cache_clear)
+
     def test_webcam_hires_both_on_is_ok(self):
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
@@ -727,7 +908,7 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_webcam_petscii_both_on_ok(self):
-        # Char modes don't install a raster IRQ — single-buffer REU only.
+        # Accepted, with the char push on host DMA while the mic pump runs (#554).
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
@@ -735,11 +916,12 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         cfg.video.use_reu_staged = True
         cfg.audio.use_reu_pump = True
         sc = SceneCfg(type="webcam", display="petscii")
-        validate_scene_cfg(sc, cfg, audio_enabled=True)
+        with self.assertLogs("c64cast.app.scene_factory", "WARNING"):
+            validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_blank_hires_edges_both_on_ok(self):
         # Blank scenes accept display = "hires_edges" but always build
-        # BlankDisplayMode (single-buffer REU, no IRQ install), so no $0314 clash.
+        # BlankDisplayMode, whose REU push drops to host DMA under the pump (#554).
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
@@ -747,7 +929,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         cfg.video.use_reu_staged = True
         cfg.audio.use_reu_pump = True
         sc = SceneCfg(type="blank", display="hires_edges")
-        validate_scene_cfg(sc, cfg, audio_enabled=True)
+        with self.assertLogs("c64cast.app.scene_factory", "WARNING"):
+            validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_webcam_hires_audio_off_ok(self):
         from c64cast.app.config import SceneCfg

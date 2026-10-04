@@ -37,6 +37,7 @@ from c64cast.hw import machine_input
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
+from c64cast.video.modes_irq import reu_pump_skips_irq_hook
 from c64cast.video.palette import (
     ColorFitAccumulator,
     ColorMapAccumulator,
@@ -555,7 +556,7 @@ class WebcamScene(Scene):
         if isinstance(self.audio, AudioStreamer):
             # A mode that installs the bank-swap merged dispatcher at $0314
             # owns that vector, so the mic REU pump must skip its own hook.
-            skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active", False))
+            skip_hook = self.audio.use_reu_pump and reu_pump_skips_irq_hook(self.display_mode)
             self.audio.start_mic(
                 self.audio_cfg.device,
                 self.audio_cfg.mic_sensitivity,
@@ -839,8 +840,12 @@ class BlankScene(Scene):
         super().setup()
         self.start_time = time.time()
         if isinstance(self.audio, AudioStreamer):
+            skip_hook = self.audio.use_reu_pump and reu_pump_skips_irq_hook(self.display_mode)
             self.audio.start_mic(
-                self.audio_cfg.device, self.audio_cfg.mic_sensitivity, self.audio_cfg.noise_gate
+                self.audio_cfg.device,
+                self.audio_cfg.mic_sensitivity,
+                self.audio_cfg.noise_gate,
+                skip_irq_vector_hook=skip_hook,
             )
 
     def process_frame(self, current_time: float) -> bool:
@@ -1450,7 +1455,7 @@ class VideoScene(MediaFileMixin, Scene):
             # merged variant JMPs to $C100 on non-raster IRQs) owns that vector,
             # and its installer has already pre-uploaded a JMP $EA31 stub at
             # $C100 covering the gap until real audio bytes land there.
-            skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active", False))
+            skip_hook = reu_pump_skips_irq_hook(self.display_mode)
             self.audio.start_for_reu_staged(
                 audio_4bit,
                 chunk_size=chunk,

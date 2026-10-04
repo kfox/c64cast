@@ -583,8 +583,10 @@ class VideoCfg:
     #     confirmed, so video never silently freezes.
     #   * true forces staging on for every mode that supports it; false forces it off.
     # Resolved per-scene at build time (scene_factory.resolve_use_reu_staged). Pairs
-    # with [audio].use_reu_pump (the bank-swap installer picks a merged $0314
-    # dispatcher). MCM does not support staging.
+    # with [audio].use_reu_pump on bitmap modes (the bank-swap installer picks a
+    # merged $0314 dispatcher); petscii/blank drive the REU controller from the host,
+    # which the pump cannot share, so the pump turns their staging off. MCM does not
+    # support staging.
     use_reu_staged: bool | str = field(
         default="auto",
         metadata={
@@ -592,7 +594,10 @@ class VideoCfg:
             "stages bitmap modes (hires/mhires) when the startup probe finds "
             "the U64's REU enabled, leaving char modes on the cheaper "
             "host-DMA path; true forces it on for every mode, false off. "
-            "auto silently falls back to host-DMA when REU isn't confirmed."
+            "auto silently falls back to host-DMA when REU isn't confirmed. "
+            "With [audio].use_reu_pump on, petscii and blank scenes stay on "
+            "host-DMA even when true (logged): their REU push and the audio "
+            "pump would both drive the REU controller."
         },
     )
     # Host-DMA double-buffer (page flip) for tear-free bitmap video on backends without
