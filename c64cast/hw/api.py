@@ -33,12 +33,16 @@ import logging
 import os
 import time
 from abc import abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 from urllib.parse import quote, urlparse
 
 import requests
 
+from c64cast._wire_log import LogThrottle
+
+from . import machine_input
 from .backend import (
     EMUSID_MIXER_CATEGORY,
     SID_CONFIG_CATEGORIES,
@@ -1734,6 +1738,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         self._last_flush_failed = False
         # Per connection: a firmware update needs a reconnect anyway.
         self._route_answers: dict[str, RouteAnswer] = {}
+        # A performer's pad can fire many events a second into a dead link.
+        self._input_errors = LogThrottle(log)
 
         # The firmware has one network password, and it guards the REST API
         # routes as well as the DMA socket.
@@ -1752,6 +1758,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
 
     _EMIT_WRITE_LABEL = "U64 dma write"
     _EMIT_DEVICE_LABEL = "U64"
+
+    def _possible_loss_count(self) -> int:
+        return self.socket_dma.check_for_loss()
 
     def _emit(self, addr: int, payload: bytes) -> None:
         """Route a write through Socket DMA. On OSError or SocketDMAError
@@ -1965,10 +1974,72 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             log.warning("menu screen unreadable, check skipped: %s", e)
             return None
 
+    def send_input(
+        self, events: Sequence[dict[str, Any]], *, timeout: float = machine_input.POST_TIMEOUT_S
+    ) -> dict[str, Any] | None:
+        """Inject keyboard and joystick events with ``POST /v1/machine:input``
+        and return the state the machine reports afterwards: what the API and
+        the Ultimate menu hold, not the physical keyboard or joysticks.
+
+        The events are validated and split into bodies the firmware accepts
+        by `machine_input.encode_batches`, which raises ValueError for an
+        invalid event before anything is sent. Each body is applied whole or
+        not at all, but a later body failing leaves the earlier ones applied.
+        Never raises otherwise: a refusal or a transport failure logs a
+        throttled WARNING and returns None, and a 404 or 501 also revokes
+        ``supports_rest_input`` for the rest of the connection. A 200 whose
+        body is not a JSON object returns ``{}``: the input was applied, only
+        the state is unreadable. Callers gate on
+        ``profile.supports_rest_input``."""
+        url = f"{self.base_url}{U64_API.INPUT}"
+        state: dict[str, Any] | None = None
+        for body in machine_input.encode_batches(events):
+            try:
+                r = self.session.post(
+                    url, data=body, headers={"Content-Type": "application/json"}, timeout=timeout
+                )
+            except requests.RequestException as e:
+                self._input_errors.warn("input injection failed: %s", e)
+                return None
+            if r.status_code in (404, 501):
+                self._input_errors.warn(
+                    "the machine refused input injection (HTTP %d) — disabled for this run",
+                    r.status_code,
+                )
+                self.profile = replace(self.profile, supports_rest_input=False)
+                return None
+            if r.status_code != 200:
+                self._input_errors.warn(
+                    "input batch refused (HTTP %d): %s", r.status_code, r.text[:200]
+                )
+                return None
+            try:
+                answer = r.json()
+            except ValueError:
+                answer = None
+            state = answer if isinstance(answer, dict) else {}
+        return state
+
+    def input_state(self, *, timeout: float = 2.0) -> dict[str, Any] | None:
+        """``GET /v1/machine:input``: what the API and the Ultimate menu hold
+        right now, or None when it cannot be read. It sees only injected
+        input, so it confirms what `send_input` did and nothing else."""
+        try:
+            r = self.session.get(f"{self.base_url}{U64_API.INPUT}", timeout=timeout)
+            r.raise_for_status()
+            answer = r.json()
+        except (requests.RequestException, ValueError) as e:
+            log.debug("input state read failed: %s", e)
+            return None
+        return answer if isinstance(answer, dict) else None
+
     def _refine_route_capabilities(self) -> None:
         has_menu_screen = self.probe_route(U64_API.MENU_SCREEN, "menu-open check")
         if has_menu_screen != self.profile.supports_menu_screen:
             self.profile = replace(self.profile, supports_menu_screen=has_menu_screen)
+        has_input = self.probe_route(U64_API.INPUT, "keyboard and joystick injection")
+        if has_input != self.profile.supports_rest_input:
+            self.profile = replace(self.profile, supports_rest_input=has_input)
 
     def refine_capabilities(self) -> None:
         """Probe the REST routes firmware 3.15 added (`probe_route`), then one

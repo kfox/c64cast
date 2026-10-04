@@ -99,7 +99,6 @@ class MCMDisplayMode(CharDisplayMode):
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
         self._dither_method = dither_method
         self._dither_strength = dither_strength
-        self._last_bg: np.ndarray | None = None
         # A fixed bg slot assignment, so the per-cell screen nibbles do not
         # shuffle frame to frame.
         self._fixed_bg: np.ndarray | None = (
@@ -110,9 +109,9 @@ class MCMDisplayMode(CharDisplayMode):
     def set_palette_mode(self, api, palette_mode: str, *, force_palette: bool | None = None) -> str:
         """Apply `palette_mode` (and optionally the forced-palette flag) to the
         running instance — shared by the SHIFT cycle and the on-C64 menu. Resets
-        the EMA + last-bg state and invalidates the delta cache so the next frame
-        re-picks slots and fully repaints. Returns the same label the SHIFT
-        cycle logs."""
+        the EMA state and invalidates the delta cache so the next frame
+        re-picks slots and fully repaints, color registers included. Returns
+        the same label the SHIFT cycle logs."""
         validate_palette_mode(palette_mode)
         self.palette_mode = palette_mode
         if force_palette is not None:
@@ -122,7 +121,6 @@ class MCMDisplayMode(CharDisplayMode):
             np.array(GRAYSCALE_MCM_BGS, dtype=np.int64) if palette_mode == "grayscale" else None
         )
         self._smoothed_counts = None
-        self._last_bg = None
         api.invalidate_cache()
         return f"palette_mode={palette_mode}" + ("+forced" if self._force_palette else "")
 
@@ -171,7 +169,6 @@ class MCMDisplayMode(CharDisplayMode):
         api.write_memory("d016", "18")
         api.write_regs("d020", 0, 0, 0, 0)
         api.write_memory("d011", "1b")
-        self._last_bg = None  # force re-push of bg on first frame after setup
 
     def compose(self, frame) -> MCMComposeBuffers:
         assert self.frame_target_size is not None
@@ -264,10 +261,9 @@ class MCMDisplayMode(CharDisplayMode):
 
     def push(self, api: C64Backend, buffers: MCMComposeBuffers) -> None:
         bg = buffers["bg"]
-        if self._last_bg is None or not np.array_equal(bg, self._last_bg):
-            # D020-D023 are contiguous: border, bg0, bg1, bg2.
-            api.write_regs("d020", int(bg[0]), int(bg[0]), int(bg[1]), int(bg[2]))
-            self._last_bg = bg.copy()
+        # D020-D023 are contiguous: border, bg0, bg1, bg2.
+        regs = bytes([int(bg[0]) & 0xFF, int(bg[0]) & 0xFF, int(bg[1]) & 0xFF, int(bg[2]) & 0xFF])
+        api.write_region(0xD020, regs, region_id=RegionID.VIC_D020)
         api.write_region(0x0400, buffers["screen"].tobytes(), region_id=RegionID.SCREEN)
         api.write_region(0xD800, buffers["color"].tobytes(), region_id=RegionID.COLOR)
 

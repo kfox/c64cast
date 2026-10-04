@@ -21,6 +21,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **Play a launched game from a MIDI pad.** A new `[midi_control]` action,
+  `joystick`, holds a joystick direction or the fire button (`input`, on
+  `port` 1 or 2) for as long as its note is down. It drives the program a
+  `launcher` scene is running. It uses the keyboard and joystick input that
+  Ultimate 64 firmware **3.15** added. Older firmware, the C64 Ultimate on
+  1.1.0, the Ultimate II+ and the TeensyROM drop the input, with a log line
+  saying why. `scripts/diags/rest_input_probe.py` checks typing and joystick
+  input on a real machine.
+
 - **c64cast tells you when the Ultimate menu is open.** An open menu takes the
   keyboard and hides some or all of what c64cast draws, with nothing on the
   host side to say why. `--doctor` now reports it as a warning (`-v` logs the
@@ -202,6 +211,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   up to 128 bytes, and a refused write raises with the firmware's error text.
   `reu_servo_probe.py` sets its latch through the same helper, and a failed
   border flash or latch restore is printed.
+
+- **A still picture now repaints after a dropped Ultimate DMA connection.**
+  When the connection to an Ultimate was reset with writes still unconfirmed
+  (the DMA service switched off, for instance), or a write failed outright on
+  any device, the parts of the picture those writes
+  carried stayed wrong until they next changed, because c64cast remembered
+  them as sent. It now forgets everything it sent after such a loss, and the
+  next frame redraws the whole picture. While the machine stays unreachable,
+  c64cast now waits between reconnect attempts, from half a second up to
+  8 seconds, instead of trying again on every write; against a switched-off
+  Ultimate each attempt could stall the picture and the audio for up to
+  5 seconds.
 
 - **A run on an Ultimate whose `Vol Master` is OFF is no longer silent.**
   Firmware 3.15 adds a master level to the audio mixer (F2 → Audio Mixer on an

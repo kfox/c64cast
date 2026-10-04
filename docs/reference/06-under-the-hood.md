@@ -102,6 +102,7 @@ all of the ones below, and C64 Ultimate firmware 1.1.0 answers none of them.
 | `Vol Master`, the mixer's master level: read when deciding whether audio is audible, and raised from `OFF` for a run that wants audio | ✓ | ✓ from 3.15 | — | Nothing to read or raise; every source plays at its own level |
 | Closes a DMA connection idle for one second | ✓ | — | — | Nothing to recover from: the connection stays open, and the check before each write finds it alive |
 | Telling that the Ultimate menu is open, in `--doctor` and at startup | ✓ | ✓ from 3.15 | — | No warning: an open menu takes the keyboard and hides the picture with nothing on the host side to say why |
+| The `[midi_control]` `joystick` action, driving a launched program's joystick ports | ✓ | ✓ from 3.15 | — | The mapping does nothing, with one warning per launcher scene |
 
 The palette read goes over the Command Interface, and is asked of an Ultimate
 64 only: an Ultimate II+ drives a real VIC-II, so `auto` assumes that rendering
@@ -263,6 +264,13 @@ each other's.
 A display mode invalidates the cache when it sets up, so a mode switch starts
 from a clean baseline instead of diffing new bytes against the previous mode's
 reading of the same addresses.
+
+The cache also empties itself whenever a write may not have arrived: a write
+that failed, or, on an Ultimate, a dropped DMA connection that still had writes
+the machine had not confirmed. The next frame then resends every region in
+full, so a still picture that lost part of a frame repaints instead of staying
+wrong until that part changes. The Ultimate is checked for a dropped connection
+on every upload, even one that sends nothing.
 
 ### Why Cuts Do Not Tear
 

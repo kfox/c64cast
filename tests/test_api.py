@@ -1455,6 +1455,133 @@ class MenuScreenTest(_RestAnswerTestCase):
         self.assertIn("menu-open check skipped", cm.output[0])
 
 
+class SendInputTest(unittest.TestCase):
+    """send_input: validated and split before anything is sent, posted as
+    JSON, and a refusal or transport failure is a None and a WARNING rather
+    than a raise."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.api.profile = replace(self.api.profile, supports_rest_input=True)
+        self.post = patch.object(self.api.session, "post").start()
+        self.post.return_value.status_code = 200
+        self.post.return_value.json.return_value = {"keyboard": {"inputs": []}}
+        self.addCleanup(patch.stopall)
+
+    def test_posts_json_and_returns_the_state(self):
+        import json
+
+        from c64cast.hw import machine_input as mi
+
+        state = self.api.send_input([mi.joystick_event(2, "press", ["fire"])])
+        self.assertEqual(state, {"keyboard": {"inputs": []}})
+        call = self.post.call_args
+        self.assertTrue(call.args[0].endswith("/v1/machine:input"))
+        self.assertEqual(call.kwargs["headers"]["Content-Type"], "application/json")
+        self.assertEqual(json.loads(call.kwargs["data"])["events"][0]["transition"], "press")
+
+    def test_65_events_go_out_as_two_requests(self):
+        from c64cast.hw import machine_input as mi
+
+        self.api.send_input(mi.text_to_events("A" * 65))
+        self.assertEqual(self.post.call_count, 2)
+
+    def test_invalid_event_raises_before_anything_is_sent(self):
+        from c64cast.hw import machine_input as mi
+
+        with self.assertRaises(ValueError):
+            self.api.send_input([mi.keyboard_event("press", ["restore"])])
+        self.post.assert_not_called()
+
+    def test_501_revokes_the_capability(self):
+        from c64cast.hw import machine_input as mi
+
+        self.post.return_value.status_code = 501
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.send_input([mi.RELEASE_ALL]))
+        self.assertFalse(self.api.profile.supports_rest_input)
+
+    def test_400_warns_and_keeps_the_capability(self):
+        from c64cast.hw import machine_input as mi
+
+        self.post.return_value.status_code = 400
+        self.post.return_value.text = '{"errors": ["events[0]: nope"]}'
+        with self.assertLogs("c64cast.hw.api", level="WARNING") as cm:
+            self.assertIsNone(self.api.send_input([mi.RELEASE_ALL]))
+        self.assertIn("events[0]: nope", cm.output[0])
+        self.assertTrue(self.api.profile.supports_rest_input)
+
+    def test_transport_failure_is_none(self):
+        import requests
+
+        from c64cast.hw import machine_input as mi
+
+        self.post.side_effect = requests.ConnectionError("down")
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.send_input([mi.RELEASE_ALL]))
+
+    def test_refine_grants_the_flag_from_the_probe(self):
+        get = patch.object(self.api.session, "get").start()
+        self.api.profile = replace(self.api.profile, supports_rest_input=False)
+        get.return_value.status_code = 200
+        self.api._refine_route_capabilities()
+        self.assertTrue(self.api.profile.supports_rest_input)
+
+    def test_refine_revokes_the_flag_when_the_route_is_absent_or_unsupported(self):
+        for status in (404, 501):
+            with self.subTest(status=status):
+                api = Ultimate64API("http://example.invalid")
+                api.profile = replace(api.profile, supports_rest_input=True)
+                with patch.object(api.session, "get") as get:
+                    get.return_value.status_code = status
+                    get.return_value.content = b""
+                    with self.assertLogs("c64cast.hw.api", level="INFO"):
+                        api._refine_route_capabilities()
+                self.assertFalse(api.profile.supports_rest_input)
+
+    def test_200_with_an_unreadable_body_is_an_empty_state(self):
+        from c64cast.hw import machine_input as mi
+
+        self.post.return_value.json.side_effect = ValueError("not json")
+        self.assertEqual(self.api.send_input([mi.RELEASE_ALL]), {})
+
+    def test_later_body_failing_leaves_the_earlier_one_sent(self):
+        from c64cast.hw import machine_input as mi
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {}
+        bad = MagicMock(status_code=400, text="nope")
+        self.post.side_effect = [ok, bad]
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.send_input(mi.text_to_events("A" * 65)))
+        self.assertEqual(self.post.call_count, 2)
+
+    def test_input_state_returns_the_reported_state(self):
+        get = patch.object(self.api.session, "get").start()
+        get.return_value.status_code = 200
+        get.return_value.json.return_value = {"keyboard": {"inputs": ["a"]}}
+        self.assertEqual(self.api.input_state(), {"keyboard": {"inputs": ["a"]}})
+        self.assertTrue(get.call_args.args[0].endswith("/v1/machine:input"))
+
+    def test_input_state_is_none_when_unreadable(self):
+        import requests
+
+        get = patch.object(self.api.session, "get").start()
+        get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(self.api.input_state())
+        get.side_effect = None
+        get.return_value.raise_for_status.side_effect = requests.HTTPError("501")
+        self.assertIsNone(self.api.input_state())
+        get.return_value.raise_for_status.side_effect = None
+        get.return_value.json.return_value = ["not", "a", "dict"]
+        self.assertIsNone(self.api.input_state())
+        get.return_value.json.side_effect = ValueError("not json")
+        self.assertIsNone(self.api.input_state())
+
+
 class DumpCharRomTest(unittest.TestCase):
     """The shared dump orchestration on the Ultimate: upload the stub, SYS it
     via run_prg, wait for the completion flag, read the landing zone back.

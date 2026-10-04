@@ -2468,6 +2468,10 @@ _MIDI_ACTION_CHOICES = (
     # it. Both need an int `slot` >= 1. Mirrored in midi_control._ACTIONS.
     "look_save",
     "look_recall",
+    # Joystick into a launched program (firmware 3.15 input API): needs an
+    # `input` direction/button and an optional `port` (1|2, default 2).
+    # Mirrored in midi_control._ACTIONS.
+    "joystick",
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
@@ -2602,7 +2606,12 @@ class MidiControlCfg:
             "record/stop can't reliably hold for the chord, since MMC has no "
             "release event). 'look_save'/'look_recall' (Phase 6) each need an "
             "int 'slot' >= 1 — a look captures the active clip + effect-chain "
-            "state on save and re-fires it on recall."
+            "state on save and re-fires it on recall. 'joystick' holds one joystick "
+            "'input' (up/down/left/right/fire/fire2/fire3) on 'port' 1 or 2 "
+            "(default 2) of a program a launcher scene is running, for as long "
+            "as the note or pad is held (type 'note' or 'cc' only; a cc counts "
+            "as held at a value of 64 or more); it needs an Ultimate 64 on firmware "
+            "3.15 or newer and does nothing in any other scene."
         },
     )
     controller_profile: str = field(

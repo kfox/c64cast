@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -113,6 +114,9 @@ class HardwareProfile:
     supports_menu_screen: bool = False  # GET /v1/machine:menu_screen (firmware
     #   3.15+): reads the Ultimate menu's own screen while it is open. Granted
     #   by refine_capabilities' route probe, so False on an unprobed run.
+    supports_rest_input: bool = False  # POST /v1/machine:input (firmware 3.15+,
+    #   Ultimate 64 only): keyboard and joystick injection. Granted by the same
+    #   probe, so False on an unprobed run.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
@@ -327,6 +331,15 @@ class C64Backend(ABC):
         samples have been recorded yet."""
         ...
 
+    @property
+    def delivery_epoch(self) -> int:
+        """A number that changes whenever a write this backend accepted may
+        not have reached the machine. A caller that skips sending what it
+        believes is already there (a paused frame, a row painted only when
+        its text changes) compares it and sends again when it moves.
+        Default 0: a backend that cannot tell never asks for a resend."""
+        return 0
+
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise BackendCapabilityError("read_memory")
 
@@ -496,6 +509,12 @@ class C64Backend(ABC):
         Default raises; callers gate on ``profile.supports_menu_screen``."""
         raise BackendCapabilityError("read_menu_screen")
 
+    def send_input(self, events: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+        """Inject keyboard and joystick events (see `machine_input`) and return
+        what the machine reports held afterwards, or None when that failed.
+        Default raises; callers gate on ``profile.supports_rest_input``."""
+        raise BackendCapabilityError("send_input")
+
     def refine_capabilities(self) -> None:
         """Downgrade optimistic profile capability flags against the connected
         device — the same probe-and-downgrade `TeensyROMBackend` applies to
@@ -540,6 +559,8 @@ class BufferedWriteBackend(C64Backend):
         # bytes so write_region's diff doesn't re-wrap a fresh np.frombuffer on
         # every call; bytes are immutable, so it stays valid.
         self._cache: dict[int, tuple[bytes, np.ndarray]] = {}
+        # The delivery epoch `_cache` was filled under; see delivery_epoch.
+        self._cache_epoch = 0
         self._stats: dict[str, int] = {
             "writes": 0,
             "skipped": 0,
@@ -548,6 +569,7 @@ class BufferedWriteBackend(C64Backend):
         }
         self._listeners: list[WriteListener] = []
         self._consecutive_errors = 0
+        self._failure_lock = threading.Lock()
         self._consecutive_listener_errors = 0
 
     # Labels for the shared _emit failure-log ladder. Subclasses override so
@@ -565,6 +587,22 @@ class BufferedWriteBackend(C64Backend):
         backend shares one escalating failure ladder."""
         ...
 
+    def _possible_loss_count(self) -> int:
+        """How many times the transport has given up on a connection that
+        held writes `_emit` had already returned from, so they may never
+        have run. Monotonic. Default 0: a transport that acks every write
+        fails the write itself, which `_note_emit_failure` counts."""
+        return 0
+
+    @property
+    def delivery_epoch(self) -> int:
+        """A number that changes whenever a write this backend accepted may
+        not have reached the machine: a failed `_emit` or a transport loss
+        (`_possible_loss_count`). Anything that remembers what it sent in
+        order to skip resending it compares this, and stops trusting that
+        memory when it moves; `write_region`'s cache does."""
+        return self._stats["errors"] + self._possible_loss_count()
+
     def _note_emit_success(self) -> None:
         """Clear the consecutive-failure counter after a successful write."""
         self._consecutive_errors = 0
@@ -576,22 +614,27 @@ class BufferedWriteBackend(C64Backend):
         the user eventually sees a sustained outage even without -v. Never
         raises — a transient blip shouldn't crash the playlist; the next
         write retries the reconnect."""
-        self._stats["errors"] += 1
-        self._consecutive_errors += 1
-        if self._consecutive_errors == 1:
+        # The audio and render threads both emit. An unlocked += can write a
+        # stale count back, and delivery_epoch returning to a value the cache
+        # recorded would hide a failed write.
+        with self._failure_lock:
+            self._stats["errors"] += 1
+            self._consecutive_errors += 1
+            streak = self._consecutive_errors
+        if streak == 1:
             log.debug("%s $%04X failed: %s", self._EMIT_WRITE_LABEL, addr, e)
-        elif self._consecutive_errors in (10, 50):
+        elif streak in (10, 50):
             log.warning(
                 "%s failures: %d consecutive (last: %s)",
                 self._EMIT_WRITE_LABEL,
-                self._consecutive_errors,
+                streak,
                 e,
             )
-        elif self._consecutive_errors == 200:
+        elif streak == 200:
             log.error(
                 "%s unreachable? %d consecutive write failures",
                 self._EMIT_DEVICE_LABEL,
-                self._consecutive_errors,
+                streak,
             )
 
     def add_write_listener(self, callback: WriteListener) -> None:
@@ -657,6 +700,9 @@ class BufferedWriteBackend(C64Backend):
         reconnect handling and `_emit`'s failure ladder.
 
         Strategy:
+          * A `delivery_epoch` that moved since the cache was filled drops
+            every region first: the bytes it remembers may never have landed.
+            That includes a move during a previous call's own writes.
           * No prior cache OR length mismatch → full upload.
           * Otherwise the choice is between one write covering the whole dirty
             span and several writes covering only the dirty DELTA_CHUNK_BYTES
@@ -673,6 +719,10 @@ class BufferedWriteBackend(C64Backend):
         docs/architecture/hardware-io.md#the-chunking-decision-is-per-link-because-the-two-links-are-opposites.
         """
         key = region_id if region_id is not None else address
+        epoch = self.delivery_epoch
+        if epoch != self._cache_epoch:
+            self._cache.clear()
+            self._cache_epoch = epoch
         # bytes(b"...") returns the same object in CPython but bytes(bytearray)
         # copies, so the isinstance guard skips a copy that would be wasted.
         new = data if isinstance(data, bytes) else bytes(data)

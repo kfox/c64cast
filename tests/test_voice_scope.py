@@ -377,6 +377,7 @@ class PaintInfoRowsTest(unittest.TestCase):
             # Synthetic charset: the glyph for screen code c is bytes([c])*8,
             # which makes the expected bitmap bytes trivially computable.
             self._glyphs = bytes(c for c in range(256) for _ in range(CELL))
+            self._held_regions = {}
 
         def _build_title_line(self):
             return "T" * SCREEN_W_CHARS
