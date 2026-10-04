@@ -212,9 +212,9 @@ class MicLeadReanchorTest(unittest.TestCase):
         rig.servo.take_reanchor(0.0)
         rig.t += 1.0
         rig.pump += RATE
-        with self.assertLogs("c64cast.audio.mic_lead", "INFO") as cm:
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG") as cm:
             rig.servo.tick()
-        self.assertEqual([r.levelname for r in cm.records], ["INFO"])
+        self.assertEqual([r.levelname for r in cm.records], ["DEBUG"])
         self.assertEqual(rig.servo.reanchors, 2)
 
 
@@ -259,6 +259,32 @@ class MicLeadOpenLoopTest(unittest.TestCase):
         self.assertTrue(any("recovered" in line for line in cm.output))
         self.assertGreater(rig.servo.drop_frac, 0.0)
 
+    def test_later_open_loop_spells_log_below_warning(self):
+        rig = self._closed()
+        rig.fail_reads = 3
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            for _ in range(3):
+                rig.servo.tick()
+            rig.step()
+        rig.fail_reads = 3
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG") as cm:
+            for _ in range(3):
+                rig.servo.tick()
+            rig.step()
+        self.assertEqual(rig.servo.open_loop_spells, 2)
+        self.assertNotIn("WARNING", [r.levelname for r in cm.records])
+        self.assertTrue(any("open-loop" in r.getMessage() for r in cm.records))
+        recovered = [r.levelname for r in cm.records if "recovered" in r.getMessage()]
+        self.assertEqual(recovered, ["DEBUG"])
+
+    def test_a_failed_first_read_skips_the_second(self):
+        rig = self._closed()
+        rig.fail_reads = 1
+        reads = rig.reads
+        rig.servo.tick()
+        self.assertEqual(rig.reads - reads, 1)
+        self.assertEqual(rig.servo._fails, 1)
+
     def test_a_torn_read_pair_is_not_used(self):
         rig = self._closed()
         rig.torn = True
@@ -297,6 +323,43 @@ class MicLeadThreadTest(unittest.TestCase):
         assert thread is not None
         servo.stop()
         self.assertFalse(thread.is_alive())
+
+    def test_stop_during_the_first_read_skips_the_second(self):
+        rig = _Rig(drift=0.0)
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            rig.servo._stop.set()
+            return rig.read(address, length, timeout)
+
+        rig.servo._read = read
+        rig.servo.tick()
+        self.assertEqual(rig.reads, 1)
+        self.assertEqual(rig.servo._fails, 0)  # a stop is not a failed read
+
+    def test_an_open_loop_backs_off_to_a_ceiling(self):
+        servo = ml.MicLeadServo(
+            read_memory=lambda a, n, timeout=1.0: None,
+            write_pos=lambda: 0,
+            sample_rate=RATE,
+        )
+        waits: list[float] = []
+
+        class _Stop:
+            def wait(self, timeout: float) -> bool:
+                waits.append(timeout)
+                return len(waits) > 10
+
+            def is_set(self) -> bool:
+                return False
+
+        servo._stop = _Stop()  # type: ignore[assignment]
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            servo._run()
+        interval = ml.MIC_LEAD_SERVO_INTERVAL_S
+        self.assertEqual(waits[:3], [interval] * 3)  # closed through 3 failures
+        self.assertEqual(waits[3:6], [2 * interval, 4 * interval, 8 * interval])
+        self.assertEqual(max(waits), ml.MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
+        self.assertEqual(waits[-1], ml.MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
 
     def test_a_failing_step_opens_the_loop_and_says_so(self):
         def boom() -> int:

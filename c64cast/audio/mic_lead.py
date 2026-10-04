@@ -86,10 +86,14 @@ MIC_LEAD_REANCHOR_GUARD = 2 * REU_PUMP_CHUNK_SIZE
 MIC_LEAD_TORN_TOLERANCE = 1024
 # Consecutive failed measurements before the loop opens (drop fraction 0).
 MIC_LEAD_OPEN_LOOP_AFTER = 3
-# Per tracker read; a measurement is two reads, so stop()'s join waits for
-# both plus slack.
+# Per tracker read. requests applies it to each phase (connect, then each
+# socket read), so one read can take about twice it. _measure skips its
+# second read once stop() is set, so the join waits for at most one read.
 MIC_LEAD_READ_TIMEOUT_S = 0.5
 MIC_LEAD_JOIN_TIMEOUT_S = 2 * MIC_LEAD_READ_TIMEOUT_S + 0.5
+# While the loop is open the interval doubles per failed measurement up to
+# this, so a device that stopped answering is not dialed twice a second.
+MIC_LEAD_OPEN_LOOP_MAX_WAIT_S = 8.0
 # Splice geometry, in milliseconds of input. A splice removes about
 # SPLICE_MS of content; the exact cut is searched within ±SEARCH_MS for the
 # best waveform match, then joined with a FADE_MS linear crossfade.
@@ -299,7 +303,7 @@ class MicLeadServo:
         return round(pump + rate * max(0.0, now - measured_at)) % REU_MIC_SIZE
 
     def _run(self) -> None:
-        while not self._stop.wait(self._interval):
+        while not self._stop.wait(self._next_wait()):
             try:
                 self.tick()
             except Exception:
@@ -309,6 +313,13 @@ class MicLeadServo:
                 log.exception("audio[reu mic]: lead servo step failed; running open-loop")
                 return
 
+    def _next_wait(self) -> float:
+        if not self._open_loop:
+            return self._interval
+        doublings = min(self._fails - MIC_LEAD_OPEN_LOOP_AFTER + 1, 16)
+        ceiling = max(self._interval, MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
+        return min(self._interval * 2.0**doublings, ceiling)
+
     def tick(self) -> None:
         """One measurement and decision. Public for the tests, which drive it
         without the thread."""
@@ -317,7 +328,8 @@ class MicLeadServo:
                 return  # the callback has not applied the last one yet
         m = self._measure()
         if m is None:
-            self._note_failure()
+            if not self._stop.is_set():
+                self._note_failure()
             return
         lead, pump, at = m
         self._note_success()
@@ -343,7 +355,7 @@ class MicLeadServo:
             self.reanchors += 1
             with self._lock:
                 self._reanchor = (pump, at, self._pump_rate)
-            (log.warning if self.reanchors == 1 else log.info)(
+            (log.warning if self.reanchors == 1 else log.debug)(
                 "audio[reu mic]: write head %s the pump (lead %+d B); re-anchoring "
                 "%d B ahead with a NEUTRAL fill",
                 "overtaken by" if lead < 0 else "too far ahead of",
@@ -377,6 +389,8 @@ class MicLeadServo:
         h0 = self._write_pos()
         p1 = self._read_pump()
         h1 = self._write_pos()
+        if p1 is None or self._stop.is_set():
+            return None
         t1 = self._clock()
         p2 = self._read_pump()
         t2 = self._clock()
@@ -384,7 +398,7 @@ class MicLeadServo:
         # p2 was sampled somewhere inside its read; the midpoint halves the
         # worst-case error of stamping it at either end.
         at = (t1 + t2) / 2
-        if p1 is None or p2 is None:
+        if p2 is None:
             return None
         lead1 = signed_ring_delta(self._host_between(h0, h1), p1)
         lead2 = signed_ring_delta(self._host_between(h1, h2), p2)
@@ -402,7 +416,7 @@ class MicLeadServo:
             self._open_loop = True
             self.open_loop_spells += 1
             self.drop_frac = 0.0
-            log.warning(
+            (log.warning if self.open_loop_spells == 1 else log.info)(
                 "audio[reu mic]: %d pump-tracker reads in a row failed; the lead servo "
                 "is open-loop, so mic latency drifts until the reads recover",
                 self._fails,
@@ -410,6 +424,8 @@ class MicLeadServo:
 
     def _note_success(self) -> None:
         if self._open_loop:
-            log.info("audio[reu mic]: pump-tracker reads recovered; lead servo closed again")
+            (log.info if self.open_loop_spells == 1 else log.debug)(
+                "audio[reu mic]: pump-tracker reads recovered; lead servo closed again"
+            )
         self._fails = 0
         self._open_loop = False
