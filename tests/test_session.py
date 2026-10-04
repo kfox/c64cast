@@ -622,9 +622,9 @@ class ReloadAllTest(unittest.TestCase):
 
 class ReloadPinsReuPumpTest(unittest.TestCase):
     """A reload resolves scenes against the REU pump the running streamer has,
-    not the per-system file alone. The ensemble master's [audio] cascade is not
-    re-applied on reload, so a pump set only in the master would otherwise
-    read as off and let a petscii scene stage through the REU the pump drives."""
+    not against what the files now say: a pump the streamer runs would
+    otherwise read as off whenever the files no longer turn it on, and let a
+    petscii scene stage through the REU the pump drives."""
 
     def setUp(self):
         from c64cast.app.scene_factory import _warn_host_rec_staging_dropped
@@ -702,6 +702,98 @@ class ReloadPinsReuPumpTest(unittest.TestCase):
         with mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc:
             session.reload_all(self.sess)
         self.assertFalse(sfc.call_args.args[0].audio.use_reu_pump)
+
+
+class ReloadComposesLikeStartupTest(unittest.TestCase):
+    """A reload composes each system's Config the way startup did (#557): the
+    master's cascaded defaults and the backend coercion are re-applied, not
+    just the system file plus the CLI."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+
+    def _write(self, name: str, text: str) -> str:
+        path = os.path.join(self.dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def _session_for(self, config_path: str) -> session.Session:
+        loaded = cfgmod.load_master(config_path)
+        return session.Session(
+            args=_args(),
+            loaded=loaded,
+            cfgs=loaded.cfgs,
+            stacks=[fake_system_stack(n) for n in loaded.names],
+            ensemble=None,
+            stop_event=threading.Event(),
+            profiler=mock.MagicMock(name="profiler"),
+        )
+
+    def _ensemble(self, master_sections: str) -> session.Session:
+        master = self._write(
+            "master.toml",
+            '[ensemble]\nsystems = [{ name = "a", config = "a.toml" }]\n' + master_sections,
+        )
+        self._write("a.toml", '[ultimate64]\nurl = "u64://192.0.2.1"\n[[scenes]]\ntype = "blank"\n')
+        return self._session_for(master)
+
+    def _reloaded_cfg(self, sess: session.Session) -> cfgmod.Config:
+        with (
+            mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc,
+            mock.patch.object(session, "interstitial_factory"),
+        ):
+            session.reload_all(sess)
+        return sfc.call_args.args[0]
+
+    def test_a_master_playlist_loop_survives_a_reload(self):
+        # `loop` defaults to true, so only a master that turns it off can tell
+        # an inherited value from a reverted one.
+        sess = self._ensemble("[playlist]\nloop = false\n")
+        self.assertFalse(sess.cfgs[0].playlist.loop)
+        self.assertFalse(self._reloaded_cfg(sess).playlist.loop)
+
+    def test_a_master_color_setting_survives_a_reload(self):
+        sess = self._ensemble("[color]\nauto_fit = false\n")
+        self.assertFalse(sess.cfgs[0].color.auto_fit)
+        self.assertFalse(self._reloaded_cfg(sess).color.auto_fit)
+
+    def test_the_control_plane_reload_keeps_the_master_interstitial(self):
+        sess = self._ensemble("[interstitial]\nduration_s = 2.5\n")
+        _, factories = session.reload_registries(sess)
+        with mock.patch.object(session, "interstitial_factory") as factory:
+            factories["a"]()
+        self.assertEqual(factory.call_args.args[1].duration_s, 2.5)
+
+    def _teensyrom_staged(self) -> session.Session:
+        path = self._write(
+            "tr.toml",
+            '[hardware]\nbackend = "teensyrom"\n'
+            "[video]\nuse_reu_staged = true\n"
+            '[[scenes]]\ntype = "blank"\n',
+        )
+        sess = self._session_for(path)
+        sess.stacks[0].api.profile.supports_reu = False
+        return sess
+
+    def test_a_teensyrom_reload_keeps_reu_staging_off(self):
+        sess = self._teensyrom_staged()
+        with self.assertLogs("c64cast", level="WARNING") as logs:
+            cfg = self._reloaded_cfg(sess)
+        self.assertIs(cfg.video.use_reu_staged, False)
+        self.assertIn("use_reu_staged", "\n".join(logs.output))
+
+    def test_a_teensyrom_control_plane_reload_keeps_reu_staging_off(self):
+        sess = self._teensyrom_staged()
+        loaders, _ = session.reload_registries(sess)
+        with (
+            mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc,
+            self.assertLogs("c64cast", level="WARNING"),
+        ):
+            loaders["system"]()
+        self.assertIs(sfc.call_args.args[0].video.use_reu_staged, False)
 
 
 if __name__ == "__main__":

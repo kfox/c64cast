@@ -47,7 +47,7 @@ import os
 import re
 import urllib.parse
 
-from .config import Config, SceneCfg, apply_machine_settings, merge_cli
+from .config import Config, SceneCfg, apply_cli_layers, apply_machine_settings
 from .scene_factory import AUDIO_EXTS, PICTURE_EXTS, PROGRAM_EXTS, SID_EXTS, VIDEO_EXTS
 
 log = logging.getLogger(__name__)
@@ -431,15 +431,10 @@ def build_config(args: argparse.Namespace) -> Config:
     cfg.playlist.loop = False
     cfg.playlist.interleave_videos = False
 
-    # Every remaining CLI flag, through the same merge the config-driven path
-    # uses — hand-picking a subset here silently drops the rest.
-    merge_cli(cfg, args)
-
-    target = args.url or os.environ.get("C64CAST_URL")
-    if target:
-        from .connect import apply_to_config, parse_connection_uri
-
-        apply_to_config(cfg, parse_connection_uri(target))
+    # Every remaining CLI flag and the connection target, through the same
+    # layers the config-driven path uses — hand-picking a subset here silently
+    # drops the rest.
+    apply_cli_layers(cfg, args, is_ensemble=False)
 
     scenes: list[SceneCfg] = []
     for arg in args.inputs:
