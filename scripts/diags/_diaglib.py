@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -118,6 +119,47 @@ def open_capture(device: int | str):
             f"Run `c64cast --list-devices` for names + VID:PID, or set C64_DIAG_CAMERA."
         )
     return cap
+
+
+#: Seconds :func:`read_frame` keeps asking an open capture for a frame before it
+#: gives up. A capture stick whose HDMI input is renegotiating answers each read
+#: with nothing (on the Cam Link, after about a second) until the link settles,
+#: and a single failed read is not evidence that the device is gone.
+NO_FRAME_RETRY_S = 5.0
+#: Pause between failed reads, so a device that fails instantly is not spun on.
+NO_FRAME_POLL_S = 0.05
+
+
+class NoFrameError(RuntimeError):
+    """An open capture device returned no frame within the retry window."""
+
+
+def no_frame_message(device: int | str, what: str) -> str:
+    """The error text for a capture that returned no frame: ``what`` says how
+    long or where, and the rest names the causes worth checking first."""
+    return (
+        f"capture device {device!r} returned no frame {what}. Likely causes: the "
+        "HDMI link is renegotiating (after a video-mode change on the machine "
+        "this has lasted from seconds to over a minute; rerun once it settles), "
+        "the source sends no signal, or "
+        "another program holds the device. `c64cast --list-devices` shows "
+        "whether the device is still listed."
+    )
+
+
+def read_frame(cap, device: int | str, *, timeout_s: float = NO_FRAME_RETRY_S):
+    """Read one frame from the open capture ``cap``, retrying failed reads for
+    up to ``timeout_s`` seconds. ``device`` is only used in the error message.
+
+    Raises :class:`NoFrameError` when no read succeeds in that window."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return frame
+        if time.monotonic() >= deadline:
+            raise NoFrameError(no_frame_message(device, f"for {timeout_s:g}s"))
+        time.sleep(NO_FRAME_POLL_S)
 
 
 #: Cam Link 4K avfoundation *audio* device. Override: C64_DIAG_AVF_AUDIO.
