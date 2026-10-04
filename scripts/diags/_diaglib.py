@@ -160,7 +160,13 @@ def resolve_capture(device: int | str | None) -> tuple[int, int | None]:
     try:
         return camera.resolve_camera_index(spec)
     except RuntimeError as e:
-        if spec == CAMLINK_ID and camera.camera_enumeration_available():
+        if not camera.camera_enumeration_available():
+            raise SystemExit(
+                f"finding capture device {spec!r} by name or VID:PID needs the 'camera' "
+                "extra: run `uv sync --all-extras`. No camera is opened by index in "
+                "its place."
+            ) from e
+        if str(spec).strip().lower() == CAMLINK_ID:
             raise SystemExit(
                 f"the Cam Link 4K (USB {CAMLINK_ID}) is not connected, and no other "
                 f"camera will be opened in its place. {e} Replug it, or name a "

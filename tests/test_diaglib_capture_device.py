@@ -120,9 +120,11 @@ class CamLinkAbsentTest(CaptureDeviceTestCase):
         video_capture.assert_not_called()
 
     def test_explicit_vidpid_also_refuses(self) -> None:
-        with self.assertRaises(SystemExit) as cm:
-            _diaglib.resolve_capture("0fd9:0066")
-        self.assertIn("not connected", str(cm.exception))
+        for spelling in ("0fd9:0066", "0FD9:0066", " 0fd9:0066 "):
+            with self.subTest(spelling=spelling):
+                with self.assertRaises(SystemExit) as cm:
+                    _diaglib.resolve_capture(spelling)
+                self.assertIn("not connected", str(cm.exception))
 
     def test_an_explicit_index_is_still_honored(self) -> None:
         self.assertEqual(_diaglib.resolve_capture("0"), (0, None))
@@ -133,6 +135,7 @@ class CamLinkAbsentTest(CaptureDeviceTestCase):
                 _diaglib.resolve_capture(None)
         self.assertIn("camera' extra", str(cm.exception))
         self.assertNotIn("not connected", str(cm.exception))
+        self.assertNotIn("integer index", str(cm.exception))
 
 
 class DefaultDeviceMessageTest(unittest.TestCase):
