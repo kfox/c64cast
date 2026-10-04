@@ -55,7 +55,6 @@ See docs/architecture/control.md#web_apipy--the-web-consoles-api--the-host---ser
 """
 
 import asyncio
-import json
 import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Generator, Mapping, Sequence
@@ -65,6 +64,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from c64cast._json import decode_json
 from c64cast.app import introspect, paths
 from c64cast.app.config import Config, ConfigError
 from c64cast.app.config_store import (
@@ -412,7 +412,7 @@ def register_web_routes(
         if not raw:
             return {}
         try:
-            parsed = json.loads(raw)
+            parsed = decode_json(raw)
         except ValueError as e:
             raise HTTPException(400, "request body is not JSON") from e
         if not isinstance(parsed, Mapping):

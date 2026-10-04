@@ -252,6 +252,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   in `scripts/diags/` do too, and also no longer raise on a body that is JSON
   but not an object.
 
+- **The web console answers a too-deeply-nested request like any other bad
+  one.** The same body sent to the web console's API or the `/perf` command
+  route got a 500 and an error traceback in the log instead of a 400, and as a
+  frame on either console socket it closed that socket — the console's only
+  feed for session state and log lines. Both now treat it as JSON that does not
+  decode.
+
 - **The diag tools' REST memory writes work on Ultimate firmware 3.15.**
   `scripts/diags/_diaglib.py`'s `rest_writemem` sent the bytes in the URL of
   a POST, which firmware 3.15a refuses with HTTP 412 "Expected Body, but got
