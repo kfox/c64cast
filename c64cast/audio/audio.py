@@ -1250,7 +1250,7 @@ class AudioStreamer:
         fill = b""
         start: int | None = None
         if lead is not None and shaper is not None:
-            anchor = lead.take_reanchor(time.monotonic())
+            anchor = lead.take_reanchor()
             if anchor is not None:
                 # Restart the write head REU_MIC_BOOTSTRAP_BYTES past the pump,
                 # NEUTRAL over the span the pump reaches first: the overtaken
@@ -1258,7 +1258,7 @@ class AudioStreamer:
                 start, fill_len = reanchor_fill(anchor)
                 fill = bytes([self._neutral_byte]) * fill_len
             mono = shaper.process(mono, lead.drop_frac)
-        vol = self._encode_dac(mono) if len(mono) else np.zeros(0, dtype=np.uint8)
+        vol = self._encode_dac(mono)
         self._push_mic_to_reu(fill + vol.tobytes(), start)
 
     def _push_mic_to_reu(self, encoded: bytes, start: int | None = None) -> None:

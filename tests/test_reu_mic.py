@@ -637,7 +637,7 @@ class _PendingAnchor:
         self.anchor = anchor
         self.drop_frac = drop_frac
 
-    def take_reanchor(self, now: float) -> int | None:
+    def take_reanchor(self) -> int | None:
         anchor, self.anchor = self.anchor, None
         return anchor
 

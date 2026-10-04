@@ -62,7 +62,7 @@ class _Rig:
 
     def step(self) -> None:
         self.servo.tick()
-        anchor = self.servo.take_reanchor(self.t)
+        anchor = self.servo.take_reanchor()
         if anchor is not None:
             self.host = self.pump + REU_MIC_BOOTSTRAP_BYTES
         self.t += 1.0
@@ -71,6 +71,14 @@ class _Rig:
 
 
 class MicLeadCorrectionTest(unittest.TestCase):
+    def test_the_seed_is_the_integrator_that_reproduces_the_rate_mismatch(self):
+        # A pump at 90 % of the mic rate wants a 10 % drop; seeded there, the
+        # loop on target outputs that drop and the integrator stays put.
+        integ = ml.mic_lead_seed(0.9 * RATE, RATE)
+        drop, new_integ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES, integ, sample_rate=RATE)
+        self.assertAlmostEqual(drop, 0.1)
+        self.assertAlmostEqual(new_integ, integ)
+
     def test_on_target_with_no_history_asks_for_nothing(self):
         drop, integ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES, 0.0, sample_rate=RATE)
         self.assertEqual((drop, integ), (0.0, 0.0))
@@ -167,8 +175,9 @@ class MicLeadReanchorTest(unittest.TestCase):
         self.assertEqual(rig.servo.reanchors, 1)
         # Measured at t=0 with the pump at 0; claimed 0.5 s later the estimate
         # has moved on at the pump's rate.
-        self.assertEqual(rig.servo.take_reanchor(0.5), RATE // 2)
-        self.assertIsNone(rig.servo.take_reanchor(0.5))
+        rig.t = 0.5
+        self.assertEqual(rig.servo.take_reanchor(), RATE // 2)
+        self.assertIsNone(rig.servo.take_reanchor())
 
     def test_the_anchor_is_stamped_at_the_middle_of_its_read(self):
         # Each read takes 0.1 s; the second runs from t=0.1 to t=0.2, so the
@@ -188,14 +197,15 @@ class MicLeadReanchorTest(unittest.TestCase):
         )
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             servo.tick()
-        self.assertEqual(servo.take_reanchor(0.25), RATE // 10)
+        rig.t = 0.25
+        self.assertEqual(servo.take_reanchor(), RATE // 10)
 
     def test_a_lead_far_past_target_is_reanchored(self):
         rig = _Rig(drift=0.0, lead=ml.MIC_LEAD_REANCHOR_ABOVE + 1000)
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING") as cm:
             rig.servo.tick()
         self.assertIn("too far ahead", cm.output[0])
-        self.assertIsNotNone(rig.servo.take_reanchor(0.0))
+        self.assertIsNotNone(rig.servo.take_reanchor())
 
     def test_no_new_measurement_while_a_reanchor_is_unclaimed(self):
         rig = _Rig(drift=0.0, lead=-500)
@@ -209,7 +219,7 @@ class MicLeadReanchorTest(unittest.TestCase):
         rig = _Rig(drift=0.0, lead=-500)
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             rig.servo.tick()
-        rig.servo.take_reanchor(0.0)
+        rig.servo.take_reanchor()
         rig.t += 1.0
         rig.pump += RATE
         with self.assertLogs("c64cast.audio.mic_lead", "DEBUG") as cm:
