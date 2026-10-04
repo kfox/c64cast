@@ -172,7 +172,7 @@ class VideoTransportControls:
             # Frozen at the splice target if one is still being waited out, or
             # a pause inside the hold would resume a ring lead short of it.
             assert sc.audio is not None and sc.source is not None
-            self.audio_anchor_clock_s = self._target_clock_s()
+            self.audio_anchor_clock_s = self.target_clock_s()
             self.paused = True
             sc.source.set_muted(True)
             sc.audio.flush(silence_output=True)
@@ -354,11 +354,14 @@ class VideoTransportControls:
         target is heard; this reports the target through that hold, because a
         held FF/RW and a relative jog seek to ``position() + delta`` and would
         otherwise lose the hold's length on every step."""
-        return self.clock_to_content(self._target_clock_s())
+        return self.clock_to_content(self.target_clock_s())
 
-    def _target_clock_s(self) -> float:
+    def target_clock_s(self) -> float:
         """clock_s(), except through a resync splice's hold, where it is the
-        splice target the clock is waiting to reach."""
+        splice target the clock is waiting to reach. The displayed frame is
+        chosen by it, so a seek shows its target frame as a still through the
+        hold rather than nothing: a held FF/RW re-seeks faster than a hold
+        ends and would otherwise show no picture until release."""
         clk = self.clock_s()
         if self.touched and self.resync:
             clk = max(clk, self.audio_anchor_clock_s)

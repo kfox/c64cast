@@ -1622,7 +1622,7 @@ class VideoScene(MediaFileMixin, Scene):
                 if not (tr.resync and self.source.seek_pending):
                     tr.seek(tr.loop_a)
                 return True
-        img = self.source.current_frame(clock_s)
+        img = self.source.current_frame(tr.target_clock_s())
         if img is None:
             return True  # still pre-rolling
         # AVFileSource.current_frame returns the SAME ndarray object between

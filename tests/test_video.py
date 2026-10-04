@@ -911,6 +911,22 @@ class VideoSceneSpliceTest(unittest.TestCase):
         )
         self.assertEqual(events[-1], ("muted", False))
 
+    def test_a_seek_shows_its_target_frame_through_the_ring_lead(self):
+        # A held FF re-seeks before each hold ends; frames chosen by the held
+        # clock would leave the screen blank until release.
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        asked: list[float] = []
+        # None skips the render, which the stub scene cannot do.
+        source.current_frame = lambda clock_s: asked.append(clock_s)  # type: ignore[method-assign]
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        scene.process_frame(0.0)
+        self.assertAlmostEqual(asked[-1], 42.0)
+        audio._position = 3.34 + 1.0
+        scene.process_frame(0.0)
+        self.assertAlmostEqual(asked[-1], 43.0)
+
     def test_loop_wrap_splices_once_while_seek_pending(self):
         scene, source, _ = self._resync_scene(position=0.0)
         scene.transport.touch()
