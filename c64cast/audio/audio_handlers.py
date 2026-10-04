@@ -987,7 +987,7 @@ REU_MIC_BOOTSTRAP_BYTES = 1600  # ~133 ms @ 12 kHz; tunes steady-state latency
 #
 # Lives in the $C200 slot just past the 102-byte handler at $C100 (handler
 # ends at $C166; slot is in the free $C167-$C1FF region of the audio module's
-# $C000-$C2FF allocation). The tracker is REU_AUDIO_SRC_TRACKER_ADDR
+# $C020-$C2FF allocation). The tracker is REU_AUDIO_SRC_TRACKER_ADDR
 # (defined up by REU_IRQ_HANDLER_TRACKED) — both pumps share the same RAM
 # slot since a single scene only runs one.
 
