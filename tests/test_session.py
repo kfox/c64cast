@@ -141,6 +141,33 @@ class ValidateConfigsTest(unittest.TestCase):
         self.assertEqual(cm.exception.exit_code, 5)
         self.assertIn("allow_unauthenticated", logged.output[0])
 
+    def _pumped_blank_big_text(self, *, is_ensemble: bool) -> cfgmod.LoadResult:
+        loaded = _loaded(["a"], is_ensemble=is_ensemble)
+        cfg = loaded.cfgs[0]
+        cfg.audio.enabled = True
+        cfg.audio.use_reu_pump = True
+        cfg.scenes = [
+            cfgmod.SceneCfg(
+                type="blank", overlays=[{"type": "big_text", "messages": [{"text": "HI"}]}]
+            )
+        ]
+        return loaded
+
+    def test_an_ensemble_blank_big_text_scene_passes_with_the_pump_on(self):
+        # Ensemble live scenes run silent, so they never start the pump (#559).
+        loaded = self._pumped_blank_big_text(is_ensemble=True)
+        with mock.patch.object(session, "AUDIO_AVAILABLE", True):
+            session.validate_configs(loaded, loaded.cfgs)  # no raise
+
+    def test_a_single_system_blank_big_text_scene_is_exit_3_with_the_pump_on(self):
+        loaded = self._pumped_blank_big_text(is_ensemble=False)
+        with mock.patch.object(session, "AUDIO_AVAILABLE", True):
+            with self.assertLogs("c64cast", level="ERROR") as logged:
+                with self.assertRaises(session.SessionConfigError) as cm:
+                    session.validate_configs(loaded, loaded.cfgs)
+        self.assertEqual(cm.exception.exit_code, 3)
+        self.assertIn("use_reu_pump", logged.output[0])
+
     def test_clean_configs_pass(self):
         loaded = _loaded(["a", "b"])
         session.validate_configs(loaded, loaded.cfgs)  # no raise

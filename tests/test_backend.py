@@ -23,6 +23,7 @@ import numpy as np
 from c64cast.app import config as cfgmod
 from c64cast.hw.backend import (
     BACKENDS,
+    BASE_PROFILES,
     DELTA_CHUNK_BYTES,
     SID_CONFIG_CATEGORIES,
     TEENSYROM_PROFILE,
@@ -90,6 +91,11 @@ class ProfileAndRegistryTest(unittest.TestCase):
         # config._BACKEND_CHOICES is duplicated to keep config.py import-light;
         # it must mirror backend.BACKENDS exactly.
         self.assertEqual(tuple(cfgmod._BACKEND_CHOICES), tuple(BACKENDS))
+
+    def test_every_backend_has_a_base_profile(self):
+        # make_backend and the config-time capability checks both look a
+        # backend's profile up here, so a token without one fails at connect.
+        self.assertEqual(sorted(BASE_PROFILES), sorted(BACKENDS))
 
     def test_ultimate_profile_is_fully_capable(self):
         p = ULTIMATE_PROFILE

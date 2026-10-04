@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import os
 import tempfile
@@ -115,6 +116,30 @@ class RunDoctorMergedLoadResultTest(unittest.TestCase):
 class ValidateScenesTest(unittest.TestCase):
     """Per-scene validation — every misconfig surfaces as its own
     Diagnostic instead of aborting at the first error."""
+
+    def _pumped_blank_big_text_levels(self, *, is_ensemble: bool) -> list[str]:
+        loaded = _load("""
+            [audio]
+            enabled = true
+            use_reu_pump = true
+
+            [[scenes]]
+            type = "blank"
+            name = "title"
+            [[scenes.overlays]]
+            type = "big_text"
+            messages = [{ text = "HI" }]
+        """)
+        loaded = dataclasses.replace(loaded, is_ensemble=is_ensemble)
+        diags = doctor.validate_load_result(loaded, probe_u64=False)
+        return [d.level for d in diags if d.subject == "system/title"]
+
+    def test_an_ensemble_blank_big_text_scene_is_ok_with_the_pump_on(self):
+        # Ensemble live scenes run silent, so they never start the pump (#559).
+        self.assertEqual(self._pumped_blank_big_text_levels(is_ensemble=True), ["ok"])
+
+    def test_a_single_system_blank_big_text_scene_is_an_error_with_the_pump_on(self):
+        self.assertIn("error", self._pumped_blank_big_text_levels(is_ensemble=False))
 
     def test_valid_scene_produces_ok_diagnostic(self):
         loaded = _load("""

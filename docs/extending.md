@@ -114,6 +114,12 @@ These are validated by `overlays.validate_for_scene` (invoked from
 `config._attach_overlays` in [config.py](../c64cast/app/config.py)) at
 config-load time, not at the first frame.
 
+An overlay whose `setup()` points `$0314` at its own handler and masks CIA #1
+also sets `HOOKS_IRQ_ON_MODES` to the display-mode names it does that on
+(`big_text` sets `("blank",)`). CIA #1 is the REU audio pump's interrupt, so
+`scene_factory.reject_irq_hook_conflict` refuses those modes on a scene whose
+audio could run the pump.
+
 ### Painting into screen / color RAM (`compose`)
 
 The `blink` example above pokes a VIC register directly from

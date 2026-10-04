@@ -27,7 +27,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | `aspect_mode` | [`slideshow` (2)](03-vocabulary.md#slideshow), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `--audio` | [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `[audio]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Console (6)](07-inputs-and-outputs.md#the-console), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `audio` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Audio (2)](03-vocabulary.md#audio), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain) |
+| `audio` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Audio (2)](03-vocabulary.md#audio), [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself) |
 | `--audio-device` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `[audio_features]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `audio_source` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [What Ends a Scene (2)](03-vocabulary.md#what-ends-a-scene), [`generative` (2)](03-vocabulary.md#generative) |
@@ -393,7 +393,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| page flip | [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear), [`video` (A)](20-appendix-a-configuration.md#video) |
+| page flip | [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear), [`video` (A)](20-appendix-a-configuration.md#video) |
 | `palette_mode` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing) |
 | `palette_mode` (mode) | [Notation](01-introduction.md#notation), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `password` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
@@ -444,7 +444,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| raster interrupt | [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
+| raster interrupt | [The SID Player and Friends (5)](06-under-the-hood.md#the-sid-player-and-friends), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
 | `rate` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 | `rate_hz` | [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `reactive` | [`generative` (2)](03-vocabulary.md#generative), [Generators (3)](04-display-pipeline.md#generators), [Listening Back (4)](05-sound-and-music.md#listening-back) |
@@ -558,7 +558,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | `--upgrade` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 | `--url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Flags in Ensemble Mode (1)](02-config-rules.md#flags-in-ensemble-mode) |
 | `url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings) |
-| `use_reu_pump` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`audio` (A)](20-appendix-a-configuration.md#audio) |
+| `use_reu_pump` | [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself), [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `use_reu_staged` | [The Preview Window (6)](07-inputs-and-outputs.md#the-preview-window), [`video` (A)](20-appendix-a-configuration.md#video) |
 
 ## V
