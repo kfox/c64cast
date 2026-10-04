@@ -22,7 +22,8 @@ from unittest.mock import patch
 import c64cast.video
 
 _DIAGS = Path(__file__).resolve().parents[1] / "scripts" / "diags"
-_LOCAL_PREFIX = "scripts.diags."
+_LOCAL_PACKAGE = "scripts.diags"
+_LOCAL_PREFIX = f"{_LOCAL_PACKAGE}."
 
 
 def _lazy_attribute_names(getattr_def: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
@@ -83,8 +84,27 @@ def _local_stem(module: str) -> str | None:
     return stem if stem in _LOCAL_NAMES else None
 
 
+def _is_local(module: str) -> bool:
+    """Whether ``module`` names the diag tree or a tool in it, existing or not."""
+    return (
+        module in ("scripts", _LOCAL_PACKAGE)
+        or module.startswith(_LOCAL_PREFIX)
+        or _local_stem(module) is not None
+    )
+
+
+def _local_exists(module: str) -> bool:
+    return module in ("scripts", _LOCAL_PACKAGE) or _local_stem(module) is not None
+
+
 def _resolves(module: str, name: str) -> bool:
     """Whether ``from module import name`` would find ``name``."""
+    if module == "scripts":
+        return name == "diags"
+    if module == _LOCAL_PACKAGE:
+        return name in _LOCAL_NAMES
+    if _is_local(module) and not _local_exists(module):
+        return False
     stem = _local_stem(module)
     if stem is not None:
         return name in _LOCAL_NAMES[stem]
@@ -105,7 +125,11 @@ def _resolves(module: str, name: str) -> bool:
 def _submodule(module: str, name: str) -> str | None:
     """The module ``from module import name`` binds, when it is one this sweep
     checks, so reads through that name can be checked too."""
-    if _local_stem(module) is not None:
+    if module == "scripts":
+        return _LOCAL_PACKAGE if name == "diags" else None
+    if module == _LOCAL_PACKAGE:
+        return f"{_LOCAL_PREFIX}{name}" if name in _LOCAL_NAMES else None
+    if _is_local(module):
         return None
     bound = getattr(importlib.import_module(module), name, None)
     if isinstance(bound, ModuleType) and _is_checked(bound.__name__):
@@ -114,7 +138,7 @@ def _submodule(module: str, name: str) -> str | None:
 
 
 def _is_checked(module: str) -> bool:
-    return module.split(".")[0] == "c64cast" or _local_stem(module) is not None
+    return module.split(".")[0] == "c64cast" or _is_local(module)
 
 
 def _unresolved(path: Path) -> list[str]:
@@ -129,8 +153,11 @@ def _unresolved(path: Path) -> list[str]:
             for alias in node.names:
                 if not _is_checked(alias.name):
                     continue
-                if _local_stem(alias.name) is None:
+                if not _is_local(alias.name):
                     importlib.import_module(alias.name)
+                elif not _local_exists(alias.name):
+                    missing.append(f"line {node.lineno}: import {alias.name}")
+                    continue
                 if alias.asname:
                     aliases[alias.asname] = alias.name
                 elif _is_checked(root := alias.name.split(".")[0]):
@@ -239,6 +266,27 @@ class UnresolvedImportDetectionTests(unittest.TestCase):
                 self._check("from c64cast.video import flicker\n")
         self.assertEqual(caught.exception.name, "cv2")
 
+    def test_a_missing_tool_imported_through_the_package_path_is_reported(self):
+        missing = self._check(
+            "from scripts.diags.no_such_tool import x\n"
+            "from scripts.diags import no_such_tool\n"
+            "import scripts.diags.no_such_tool\n"
+            "from scripts.diags import render_offline\n"
+            "import scripts.diags.ring_race_probe\n"
+            "render_offline.no_such_name\n"
+            "scripts.diags.ring_race_probe.no_such_name\n"
+        )
+        self.assertEqual(
+            missing,
+            [
+                "line 1: from scripts.diags.no_such_tool import x",
+                "line 2: from scripts.diags import no_such_tool",
+                "line 3: import scripts.diags.no_such_tool",
+                "line 6: render_offline.no_such_name",
+                "line 7: scripts.diags.ring_race_probe.no_such_name",
+            ],
+        )
+
     def test_names_that_exist_pass(self):
         missing = self._check(
             "import _diaglib as d\n"
@@ -247,6 +295,9 @@ class UnresolvedImportDetectionTests(unittest.TestCase):
             "import c64cast.hw.api\n"
             "print(d.U64_URL, CIA1.TIMER_A_LO, audio_handlers.REU_PUMP_CIA1_LATCH_8KHZ)\n"
             "print(c64cast.hw.api.Ultimate64API)\n"
+            "from scripts.diags.render_offline import RenderBackend\n"
+            "from scripts.diags import render_offline\n"
+            "print(render_offline.RenderBackend)\n"
         )
         self.assertEqual(missing, [])
 
