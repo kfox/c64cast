@@ -555,7 +555,9 @@ Unaffected: the U64's default video path uses the off-bus Ultimate Audio sampler
 
 ### `position_seconds()`
 
-The audio-master clock: `(pushed - queued) / effective_rate`. The C64-side ring buffer adds ≈1 s of constant latency beyond this, which is harmless for relative sync.
+The audio-master clock: `(pushed - queued - ring_lead) / effective_rate`, where `pushed - queued` counts samples that have landed in the C64 ring and `ring_lead` is the part of that the NMI has not played yet. Without the subtraction the clock ran a ring gap ahead of the sound, ≈0.34 s at the servo's 4096-byte target. Video is slaved to this clock, so on the DAC path the picture led the audio by that much, and a constant offset is not harmless when the other stream is the picture.
+
+`ring_lead` is `RateServo.ring_lead`, an EMA of the gap the servo already reads once per chunk (`RING_LEAD_EMA_ALPHA`, about a second). It is smoothed rather than taken from the latest reading because one torn `R` read can put the gap anywhere in the 8 KiB ring, which would jump the video by up to 0.68 s. It is seeded with the prebuffer when the consumer starts, so the clock reads 0 at the first audible sample rather than 0.5 s, and with the servo off it stays at that seed, where the open-loop gap holds. Before the consumer starts the clock reads 0. Underrun pads in the ring count toward the gap without being content, so the clock reads slightly behind during an underrun.
 
 Under an armed REU pump it is instead wall-clock since the pump armed, clamped to the track length — but only when there *is* a track length. A REU-*mic* session is live and never sets one, and clamping a wall clock to a zero total pinned the reported position at 0.0 for the whole session; on a streamer reused after a staged video scene it pinned it to the previous track's length instead, which is why `stop()` now clears `_reu_pump_total_samples` with the other per-run state. No shipped consumer reads the clock on a mic path today (`MicAudioSource.position_seconds` returns `None`), so this was latent.
 
@@ -571,7 +573,7 @@ The sequence: bump `_flush_epoch`; `get_nowait`-drain the queue via `_drain_queu
 
 Both the paired subtract and the queued-only subtract now live in one place each — `_discard_unpushed` and `_consume_queued` — rather than hand-written at each of the four worker sites plus `flush()`. The difference between them is whether the bytes were *played*, and getting it the wrong way round shifts A/V sync at every splice.
 
-**No DAC ring stomp at seeks or loop wraps.** The servo-held ≈4096-byte ring gap (≈0.5 s) is accepted constant output latency, so flush-only makes each splice a constant-latency crosscut: the not-yet-heard approach to the splice point finishes while fresh audio lands behind it. No silence hole, no mid-phrase chop.
+**No DAC ring stomp at seeks or loop wraps.** The servo-held ≈4096-byte ring gap (≈0.34 s) is constant output latency, so flush-only makes each splice a constant-latency crosscut: the not-yet-heard approach to the splice point finishes while fresh audio lands behind it. No silence hole, no mid-phrase chop. The video waits that latency out: `VideoTransport._splice` anchors on `position_seconds() + ring_lead_seconds()`, the heard position of the target's first sample, so the clock sits one ring lead below the target until that sample plays.
 
 **`silence_output=True` (pause only)** sets `_stomp_requested`. The *worker thread* — which owns `write_addr`, so no ring DMA races the servo — then NEUTRAL-fills the unplayed region `audio_handlers.stomp_spans(R+STOMP_GUARD_BYTES, W)` on its next iteration. The guard deliberately leaves ≈16 ms of stale tail un-stomped so the fill can never race the read head.
 

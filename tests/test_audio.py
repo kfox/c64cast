@@ -325,6 +325,7 @@ class EffectiveRateTest(unittest.TestCase):
         s._pushed_count = 12032
         s._queued_samples = 0
         s._reu_pump_armed = False
+        s.servo.ring_lead = 0.0
         # One second of real time is 12032 consumed samples, not 12000.
         self.assertAlmostEqual(s.position_seconds(), 1.0, places=4)
 

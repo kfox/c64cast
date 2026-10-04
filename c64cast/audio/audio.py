@@ -1018,7 +1018,7 @@ class AudioStreamer:
                     # R only becomes meaningful now that the NMI consumes: start
                     # the servo integrator and rate loop clean (the warm-up gate
                     # arms inside reset_for_consumer_start).
-                    self.servo.reset_for_consumer_start()
+                    self.servo.reset_for_consumer_start(bytes_prebuffered)
                     # Health windows measure the consuming phase only — the
                     # prebuffer fill writes unsplit and has no slots to be late.
                     self._health_last_log = 0.0
@@ -2110,9 +2110,13 @@ class AudioStreamer:
         there IS a total. A live REU-mic session has no finite length and never
         sets one, and clamping a wall clock to a zero total pinned it at 0.0 for
         the whole session (or, on a streamer reused after a staged video scene,
-        to the previous track's length). The C64 ring buffer adds another ~0.5s
-        of latency past either path, but that bias is constant in steady state
-        and therefore harmless for relative sync.
+        to the previous track's length).
+
+        Host-DMA mode counts a sample once it lands in the C64 ring, which the
+        NMI plays a ring gap later: about a third of a second at the servo's
+        target. Video slaved to the landed count ran that far ahead of the
+        sound, so the clock subtracts the servo's smoothed gap, and reads 0
+        until the consumer starts.
 
         The divisor is `effective_rate` because this is a real-time clock —
         video is slaved to it, and the `clock/wall` gauge that calibrates
@@ -2129,8 +2133,20 @@ class AudioStreamer:
             return min(elapsed, self._reu_pump_total_samples / rate)
         # q.qsize() now counts bytes-blobs, not samples — read the explicit
         # sample-count counter instead.
+        lead = self.servo.ring_lead
+        if lead < 0:
+            return 0.0
         consumed = self._pushed_count - self._queued_samples
-        return max(0.0, consumed / rate)
+        return max(0.0, (consumed - lead) / rate)
+
+    def ring_lead_seconds(self) -> float:
+        """Audio landed in the C64 ring but not yet played. A splice anchors
+        on ``position_seconds() + ring_lead_seconds()``, where its first
+        sample lands, so the video waits until that sample is heard."""
+        rate = self.effective_rate
+        if not rate or self._reu_pump_armed or self.servo.ring_lead < 0:
+            return 0.0
+        return self.servo.ring_lead / rate
 
     def reset_position(self) -> None:
         self._pushed_count = 0

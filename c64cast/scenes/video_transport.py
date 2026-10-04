@@ -155,7 +155,9 @@ class VideoTransportControls:
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
         self.audio_anchor_clock_s = self.content_to_clock(target_s)
-        self.audio_anchor_pos = sc.audio.position_seconds()
+        # The flush keeps what already sits in the C64 ring, so the target's
+        # first sample is heard one ring lead from now, not at once.
+        self.audio_anchor_pos = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
         sc.source.request_seek(target_s)
         sc.audio.flush()
 

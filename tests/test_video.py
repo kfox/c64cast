@@ -724,12 +724,16 @@ class _FakeSceneAudio:
     def __init__(self, position: float = 0.0, events: list[tuple[str, object]] | None = None):
         self.sample_rate = 8000
         self._position = position
+        self.ring_lead = 0.0
         self.use_reu_pump = False
         self.flush_calls: list[bool] = []
         self._events = events
 
     def position_seconds(self) -> float:
         return self._position
+
+    def ring_lead_seconds(self) -> float:
+        return self.ring_lead
 
     def flush(self, *, silence_output: bool = False) -> None:
         self.flush_calls.append(silence_output)
@@ -837,6 +841,17 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertEqual(source.seeks, [42.0])  # request_seek fired
         self.assertEqual(audio.flush_calls, [False])  # plain flush (not silence)
         self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, 42.0)  # tempo 1.0
+
+    def test_seek_waits_out_the_ring_lead(self):
+        # The flush keeps the ring's unplayed lead, so the target is heard that
+        # much later: the clock sits that far below the target until it is.
+        scene, _, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0 - 0.34)
+        audio._position = 3.34
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0)
 
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)

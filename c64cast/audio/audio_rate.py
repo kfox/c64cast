@@ -49,6 +49,7 @@ from .audio_handlers import (
     NMI_ROUTINE_ADDR,
     NMI_STALL_WARN_CHUNKS,
     RING_BUFFER_SIZE,
+    RING_LEAD_EMA_ALPHA,
     nmi_rate_step,
     servo_period,
 )
@@ -248,6 +249,9 @@ class RateServo:
         self.gap_min = -1
         self.gap_max = -1
         self.gap_last = -1
+        # The unplayed bytes ahead of R, smoothed: what position_seconds()
+        # subtracts to report what is heard. -1 = no consumer this run.
+        self.ring_lead = -1.0
         self.last_r_reading = -1
         self.r_stall_chunks = 0
         self.stall_warned = False
@@ -292,6 +296,7 @@ class RateServo:
         self.gap_max = max(self.gap_max, gap)
         self.health_gap_min = gap if self.health_gap_min < 0 else min(self.health_gap_min, gap)
         self.health_gap_max = max(self.health_gap_max, gap)
+        self.ring_lead += RING_LEAD_EMA_ALPHA * (gap - self.ring_lead)
         # Slow outer loop, on R's *rate*: the gap servo below nulls the gap,
         # so the gap carries no rate signal. Measured either way; only the
         # latch steering is opt-in.
@@ -413,12 +418,16 @@ class RateServo:
         monotonic write."""
         self.warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
 
-    def reset_for_consumer_start(self) -> None:
+    def reset_for_consumer_start(self, ring_lead: int) -> None:
         """R only becomes meaningful once the NMI consumes; start the servo
         integrator + adaptive-rate loop clean and hold the rate loop at the
         seed until the start/seek transient settles (post-seek decode catch-up
         + the playlist's frame-drop snap), so it acquires from a steady R
-        instead of chasing the spin-up reading. See NMI_RATE_LOOP_WARMUP_S."""
+        instead of chasing the spin-up reading. See NMI_RATE_LOOP_WARMUP_S.
+
+        ``ring_lead`` is the prebuffer the consumer starts behind. With the
+        servo off it stays the lead estimate, the gap holding near it."""
+        self.ring_lead = float(ring_lead)
         self.integ = 0.0
         self.r_rate_ema = -1.0
         self.last_r_addr = -1
@@ -455,6 +464,7 @@ class RateServo:
         self.last_r_reading = -1
         self.r_stall_chunks = 0
         self.stall_warned = False
+        self.ring_lead = -1.0
         self.r_rate_ema = -1.0
         self.last_r_addr = -1
         self.last_r_time = 0.0

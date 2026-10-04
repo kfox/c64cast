@@ -1469,6 +1469,33 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 0)
         self.assertTrue(s.q.empty())
 
+    def test_position_seconds_reads_what_is_heard(self):
+        # A landed sample is heard one ring lead later, and nothing is heard
+        # before the consumer starts.
+        s = _make()
+        s._pushed_count = 8000
+        s._queued_samples = 0
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertEqual(s.ring_lead_seconds(), 0.0)
+        s.servo.ring_lead = 2000.0
+        self.assertAlmostEqual(s.position_seconds(), 6000 / s.effective_rate, places=6)
+        self.assertAlmostEqual(s.ring_lead_seconds(), 2000 / s.effective_rate, places=6)
+        s.servo.reset_after_stop()
+        self.assertEqual(s.position_seconds(), 0.0)
+
+    def test_position_seconds_starts_at_zero_after_the_prebuffer(self):
+        # The prebuffer lands before the consumer starts, so it is all lead.
+        s = _make_worker_streamer(chunk_size=32)
+        started = threading.Event()
+        s.nmi.start = lambda **kw: started.set()  # type: ignore[method-assign]
+        s.host_dma_servo = False
+        s.start_for_external_source()
+        self.addCleanup(s.stop)
+        s.push_samples(np.zeros(32 * 6, dtype=np.int16))
+        self.assertTrue(started.wait(5.0))
+        self.assertEqual(s.servo.ring_lead, 32 * 6)
+        self.assertEqual(s.position_seconds(), 0.0)
+
     def test_position_seconds_host_dma(self):
         # The divisor is effective_rate — the rate the CIA latch actually
         # yields — not the requested sample_rate. At 8 kHz NTSC that is
@@ -1477,6 +1504,7 @@ class LifecycleTest(unittest.TestCase):
         s = _make()
         s._pushed_count = 8000
         s._queued_samples = 0
+        s.servo.ring_lead = 0.0
         self.assertAlmostEqual(s.position_seconds(), 8000 / s.effective_rate, places=6)
         self.assertAlmostEqual(s.position_seconds(), 1.00124, places=5)
         # Still-queued samples are not yet "consumed".

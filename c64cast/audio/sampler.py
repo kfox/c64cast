@@ -634,6 +634,11 @@ class UltimateAudioSampler:
             return max(0.0, min(elapsed, total_s))
         return max(0.0, elapsed)
 
+    def ring_lead_seconds(self) -> float:
+        """The ``AudioStreamer`` splice hook. The sampler's clock is its read
+        head, and nothing here models what a flush leaves ahead of it."""
+        return 0.0
+
     def start_for_external_source(self) -> None:
         """Alias for ``start()`` so a caller feeding via ``push_samples`` (e.g.
         AudioFileSource) can bring up either backend with the same call. The DAC
