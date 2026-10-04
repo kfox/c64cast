@@ -141,11 +141,12 @@ def arm() -> None:
 
 def _bound(popen: subprocess.Popen[Any], requested: float | None) -> float | None:
     """The bound to wait under in place of `requested`, or None to keep the caller's."""
-    if requested is not None and requested <= _child_process.BOUND_S:
-        return None
+    bound = _child_process.BOUND_S
     if popen in _killed:
-        return max(_child_process.BOUND_S, _REAP_S)
-    return _child_process.BOUND_S
+        bound = max(bound, _REAP_S)
+    if requested is not None and requested <= bound:
+        return None
+    return bound
 
 
 def _hung(

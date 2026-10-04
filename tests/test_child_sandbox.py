@@ -152,6 +152,15 @@ class ClampTest(unittest.TestCase):
             subprocess.run(_hangs(), timeout=_TEST_BOUND_S / 5, capture_output=True)
         self.assertIn("the caller allowed no bound at all", str(caught.exception))
 
+    def test_a_bounded_wait_after_a_kill_is_not_lengthened_past_the_caller(self):
+        # The reap allowance raises the clamp's floor; it must not stretch a
+        # caller's own bound that sits between `BOUND_S` and `_REAP_S`.
+        killed: Any = mock.Mock()
+        _child_sandbox._killed.add(killed)
+        self.addCleanup(_child_sandbox._killed.discard, killed)
+        self.assertIsNone(_child_sandbox._bound(killed, _TEST_BOUND_S * 2))
+        self.assertEqual(_child_sandbox._bound(killed, None), _child_sandbox._REAP_S)
+
     def test_an_except_exception_around_the_call_cannot_swallow_it(self):
         # Neither production site catches `Exception`, but both swallow the
         # `TimeoutExpired` this replaces, and `doctor` and `upgrade` degrade
