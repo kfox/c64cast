@@ -519,6 +519,35 @@ def _tracker_seed(src: int, dst: int) -> dict[int, int]:
     }
 
 
+def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int]):
+    """Run REU_PUMP_BODY_SUBROUTINE_GOVERNOR through a JSR / JMP $EA31 caller,
+    the way both of its callers reach it, and check it returned balanced."""
+    from c64cast.audio.audio_handlers import (
+        REU_PUMP_BODY_SUBROUTINE_ADDR,
+        REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+    )
+
+    caller = bytes(
+        [
+            0x20,
+            REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF,
+            REU_PUMP_BODY_SUBROUTINE_ADDR >> 8,  # JSR $C180
+            0x4C,
+            0x31,
+            0xEA,  # JMP $EA31
+        ]
+    )
+    run = run_irq_handler(
+        caller,
+        addr=0xC000,
+        seed=seed,
+        images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR},
+    )
+    test.assertEqual(run.exit_pc, 0xEA31, "the subroutine must RTS to its caller")
+    test.assertEqual(run.mpu.sp, 0xFF)
+    return run
+
+
 class ReuTrackedHandlerTest(unittest.TestCase):
     """REU_IRQ_HANDLER_TRACKED, EXECUTED on the repo's own 6502 (see
     _fakes.run_irq_handler) instead of pinning instruction offsets: the
@@ -636,34 +665,11 @@ class ReuTrackedGovernorTest(unittest.TestCase):
     SRC = 0x032211
 
     def _call(self, *, dst: int, r: int, df03: int | None = None):
-        from c64cast.audio.audio_handlers import (
-            REU_PUMP_BODY_SUBROUTINE_ADDR,
-            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
-        )
-
         seed = _tracker_seed(self.SRC, dst)
         seed[READ_PTR_HI_ADDR] = r >> 8
         if df03 is not None:
             seed[0xDF03] = df03
-        caller = bytes(
-            [
-                0x20,
-                REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF,
-                REU_PUMP_BODY_SUBROUTINE_ADDR >> 8,  # JSR $C180
-                0x4C,
-                0x31,
-                0xEA,  # JMP $EA31
-            ]
-        )
-        run = run_irq_handler(
-            caller,
-            addr=0xC000,
-            seed=seed,
-            images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR},
-        )
-        self.assertEqual(run.exit_pc, 0xEA31, "the subroutine must RTS to its caller")
-        self.assertEqual(run.mpu.sp, 0xFF)
-        return run
+        return _jsr_tracked_governor(self, seed)
 
     def _pumped(self, run) -> bool:
         from c64cast.audio.audio_handlers import REU_CMD_FETCH_EXEC
@@ -858,6 +864,7 @@ class PumpChunkTilesRingTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, chunk_size=chunk)
                 self.assertEqual(cast(FakeAPI, s.api).writes, [])
+                self.assertEqual(cast(FakeAPI, s.api).socket_dma.reuwrites, [])
 
 
 class ReuPositionSecondsTest(unittest.TestCase):
@@ -975,23 +982,11 @@ class GovernorSkipWindowTest(unittest.TestCase):
         return run.memory.ram[0xDF01] == REU_CMD_FETCH_EXEC
 
     def _tracked_pumped(self, gap_hi: int) -> bool:
-        from c64cast.audio.audio_handlers import (
-            REU_CMD_FETCH_EXEC,
-            REU_PUMP_BODY_SUBROUTINE_ADDR,
-            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
-        )
+        from c64cast.audio.audio_handlers import REU_CMD_FETCH_EXEC
 
         seed = _tracker_seed(0x032211, self._w(gap_hi))
         seed[READ_PTR_HI_ADDR] = self.R >> 8
-        caller = bytes([0x20, 0x80, 0xC1, 0x4C, 0x31, 0xEA])  # JSR $C180 / JMP $EA31
-        run = run_irq_handler(
-            caller,
-            addr=0xC000,
-            seed=seed,
-            images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR},
-        )
-        self.assertEqual(run.exit_pc, 0xEA31, "the subroutine must RTS to its caller")
-        self.assertEqual(run.mpu.sp, 0xFF)
+        run = _jsr_tracked_governor(self, seed)
         return run.memory.ram[0xDF01] == REU_CMD_FETCH_EXEC
 
     def test_window_is_two_pages_above_half_a_ring(self):
@@ -1024,6 +1019,7 @@ class GovernorSkipWindowTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, chunk_size=chunk)
         self.assertEqual(cast(FakeAPI, s.api).writes, [])
+        self.assertEqual(cast(FakeAPI, s.api).socket_dma.reuwrites, [])
 
 
 class GovernorSelectionTest(unittest.TestCase):
