@@ -29,7 +29,7 @@ These are **dev tools, not part of the shipped package** — they live under
   |-----|---------|---------|
   | `C64_DIAG_URL` | `http://192.168.2.64` | U64 base URL |
   | `C64_DIAG_U2P_URL` | `http://192.168.2.65` | U2+ base URL |
-  | `C64_DIAG_CAMERA` | `0fd9:0066` | capture device: a cv2 index, a camera name substring, or a USB VID:PID. The default is the Cam Link 4K's USB ID, and a tool exits if no camera matches rather than open another one |
+  | `C64_DIAG_CAMERA` | unset | capture device: a cv2 index, a camera name substring, or a USB VID:PID. Unset, a tool opens the one connected camera that looks like an HDMI capture device (`_diaglib.looks_like_hdmi_capture`: a USB device whose name matches no webcam, phone or virtual-camera pattern); with none or several, it exits listing every camera rather than open one |
   | `C64_DIAG_CV2` | unset | older index-only form of `C64_DIAG_CAMERA`, read only when that is unset; prints a warning, since an index names whichever camera is enumerated there |
   | `C64_DIAG_AVF_AUDIO` | `:3` | Cam Link avfoundation audio device |
   | `C64_DIAG_VERIFY_WIDTH` | `960` | longest-edge px for captures saved via `save_image` (downscale default) |

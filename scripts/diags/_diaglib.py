@@ -11,8 +11,8 @@ this module exists to kill:
   ignored), not a coin-flip between ``/tmp`` and ``/private/tmp``.
 * **Hardware indices drift.** The cv2 camera indices, the avfoundation audio
   index and the U64 URL all shift with hotplug + DHCP, so every default here
-  is overridable by env var (and the tools expose matching CLI flags), and the
-  capture device defaults to the Cam Link's USB identity, never to an index.
+  is overridable by env var (and the tools expose matching CLI flags), and a
+  capture device nobody named is picked by what it is, never by an index.
 
 The values below are *defaults*, not ground truth: they are one rig's
 working values, confirmed as of 2026-06-10. Point the env vars at yours.
@@ -26,6 +26,10 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from c64cast.control.camera import CameraInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "scripts" / "diags" / "out"
@@ -82,20 +86,53 @@ U64_URL = os.environ.get("C64_DIAG_URL", "http://192.168.2.64")
 #: Ultimate II+ on the same LAN. Override: C64_DIAG_U2P_URL.
 U2P_URL = os.environ.get("C64_DIAG_U2P_URL", "http://192.168.2.65")
 
-#: The Cam Link 4K's USB ``VID:PID``: the device every capture tool opens when
-#: its user names none. An identity rather than a cv2 index, because the indices
-#: renumber on hotplug — a U64 PAL/NTSC switch has dropped the Cam Link off the
-#: bus and moved the laptop's own camera to index 0.
-CAMLINK_ID = "0fd9:0066"
+#: Name substrings (lowercase) of video devices that are not HDMI capture
+#: devices: built-in and USB webcams, phones, and virtual cameras. Webcams,
+#: built-in cameras, phones and virtual devices mostly call themselves a
+#: "camera"; an HDMI capture device names itself after the stick.
+NOT_CAPTURE_NAME_PATTERNS: tuple[str, ...] = (
+    "camera",
+    # webcams
+    "webcam",
+    "facecam",
+    "lifecam",
+    "brio",
+    "kiyo",
+    "insta360",
+    "obs",
+    # phones
+    "iphone",
+    "ipad",
+    "epoccam",
+    "droidcam",
+    "camo",
+    # virtual cameras
+    "virtual",
+    "xsplit",
+    "mmhmm",
+    "broadcast",
+    "screen",
+)
 
 
-def default_capture_device() -> str:
-    """The capture device a tool opens when its user passed no device flag.
+def looks_like_hdmi_capture(name: str, usb_id: str | None) -> bool:
+    """Whether a device called ``name``, with USB ``VID:PID`` ``usb_id``
+    (``None`` when it reports none), may be auto-picked as the HDMI capture
+    device: it must be a USB device with a non-empty name that matches none of
+    :data:`NOT_CAPTURE_NAME_PATTERNS`. A device with no USB identity, or no
+    name to judge, is not picked: built-in and virtual cameras report none."""
+    lowered = name.strip().lower()
+    if not lowered or not usb_id:
+        return False
+    return not any(pattern in lowered for pattern in NOT_CAPTURE_NAME_PATTERNS)
+
+
+def capture_device_from_env() -> str | None:
+    """The capture device the environment names, or ``None`` to auto-pick.
 
     ``$C64_DIAG_CAMERA`` (an index, a name substring or a ``VID:PID``) wins.
     The older index-only ``$C64_DIAG_CV2`` is still honored, with a warning on
-    stderr, since an index names whichever camera is enumerated there today.
-    Otherwise :data:`CAMLINK_ID`."""
+    stderr, since an index names whichever camera is enumerated there today."""
     camera = os.environ.get("C64_DIAG_CAMERA", "").strip()
     if camera:
         return camera
@@ -110,12 +147,12 @@ def default_capture_device() -> str:
             ) from None
         print(
             f"[capture] warning: C64_DIAG_CV2={legacy} opens whatever camera is at "
-            f"cv2 index {legacy} now; set C64_DIAG_CAMERA={CAMLINK_ID} to open the "
-            "Cam Link by identity",
+            f"cv2 index {legacy} now; set C64_DIAG_CAMERA to a name or VID:PID to "
+            "open a camera by identity",
             file=sys.stderr,
         )
         return legacy
-    return CAMLINK_ID
+    return None
 
 
 def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> None:
@@ -124,8 +161,8 @@ def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> No
     ``aliases`` are extra option strings for the same value, such as ``-d`` or
     a tool's older ``--cv2-index``, so existing invocations keep working. The
     value is an index, a camera name substring or a USB ``VID:PID``; leaving it
-    out stores ``None``, which :func:`open_capture` reads as "the default
-    device", never as an index."""
+    out stores ``None``, which :func:`open_capture` reads as "the environment's
+    device, else the auto-picked one", never as an index."""
     short = [a for a in aliases if not a.startswith("--")]
     long = [a for a in aliases if a.startswith("--")]
     parser.add_argument(
@@ -136,27 +173,73 @@ def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> No
         default=None,
         metavar="DEVICE",
         help="capture device: a cv2 index, a camera name substring, or a USB VID:PID "
-        f"(default: $C64_DIAG_CAMERA, else the Cam Link {CAMLINK_ID}; "
-        "see `c64cast --list-devices`)",
+        "(default: $C64_DIAG_CAMERA, else the one connected camera that looks like "
+        "an HDMI capture device; see `c64cast --list-devices`)",
+    )
+
+
+def _camera_listing(cams: list[CameraInfo]) -> str:
+    """Every enumerated camera, one per line, with its index, name and VID:PID."""
+    if not cams:
+        return "  (no cameras found)"
+    return "\n".join(f"  [{c.index}] {c.name} ({c.vidpid_str() or 'no USB VID:PID'})" for c in cams)
+
+
+def autopick_capture() -> tuple[int, int]:
+    """``(cv2_index, backend)`` of the one connected camera
+    :func:`looks_like_hdmi_capture` accepts, from the app's own enumeration.
+
+    Raises ``SystemExit``, listing every camera found, when it accepts none or
+    more than one, or when the ``camera`` extra is missing: no camera is opened
+    that nobody named and the classifier did not single out, since it may be
+    pointed at a person."""
+    from c64cast.control import camera
+
+    if not camera.camera_enumeration_available():
+        raise SystemExit(
+            "picking the capture device needs the 'camera' extra: run `uv sync "
+            "--all-extras`, or name one with --device. No camera is opened by index "
+            "in its place."
+        )
+    cams = camera.enumerate_cameras()
+    picked = [c for c in cams if looks_like_hdmi_capture(c.name, c.vidpid_str())]
+    if len(picked) == 1:
+        chosen = picked[0]
+        print(
+            f"[capture] auto-picked [{chosen.index}] {chosen.name} ({chosen.vidpid_str()})",
+            file=sys.stderr,
+        )
+        return chosen.index, chosen.backend
+    reason = (
+        "no connected camera looks like an HDMI capture device"
+        if not picked
+        else f"{len(picked)} connected cameras look like HDMI capture devices"
+    )
+    raise SystemExit(
+        f"{reason}, so none is opened. Cameras found:\n{_camera_listing(cams)}\n"
+        "Choose one with --device NAME|VID:PID, or set C64_DIAG_CAMERA."
     )
 
 
 def resolve_capture(device: int | str | None) -> tuple[int, int | None]:
     """Resolve a capture-device value to ``(cv2_index, backend_or_None)``.
 
-    ``None`` means :func:`default_capture_device`. Resolution goes through the
-    app's own :func:`c64cast.control.camera.resolve_camera_index` rather than a
-    second copy of the matcher, so a diag tool and a ``[video].device`` in a
-    config pick the same stick from the same string — including the
-    **backend** the matched index is only valid against (an AVFoundation index
-    opened with ``CAP_ANY`` is some other camera).
+    ``None`` means :func:`capture_device_from_env`, and when that names nothing
+    either, :func:`autopick_capture`. A named device resolves through the app's
+    own :func:`c64cast.control.camera.resolve_camera_index` rather than a second
+    copy of the matcher, so a diag tool and a ``[video].device`` in a config
+    pick the same stick from the same string — including the **backend** the
+    matched index is only valid against (an AVFoundation index opened with
+    ``CAP_ANY`` is some other camera).
 
-    Raises ``SystemExit`` when nothing matches. The default identity that
-    matches nothing fails here too: there is no fallback to an index or to any
-    other camera, since that camera may be pointed at a person."""
+    Raises ``SystemExit`` when nothing matches: there is no fallback to an
+    index or to any other camera, since that camera may be pointed at a
+    person."""
     from c64cast.control import camera
 
-    spec = default_capture_device() if device is None else device
+    spec = capture_device_from_env() if device is None else device
+    if spec is None:
+        return autopick_capture()
     try:
         return camera.resolve_camera_index(spec)
     except RuntimeError as e:
@@ -165,12 +248,6 @@ def resolve_capture(device: int | str | None) -> tuple[int, int | None]:
                 f"finding capture device {spec!r} by name or VID:PID needs the 'camera' "
                 "extra: run `uv sync --all-extras`. No camera is opened by index in "
                 "its place."
-            ) from e
-        if str(spec).strip().lower() == CAMLINK_ID:
-            raise SystemExit(
-                f"the Cam Link 4K (USB {CAMLINK_ID}) is not connected, and no other "
-                f"camera will be opened in its place. {e} Replug it, or name a "
-                "device with --device."
             ) from e
         raise SystemExit(str(e)) from e
 
