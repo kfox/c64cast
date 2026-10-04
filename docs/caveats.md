@@ -117,7 +117,8 @@ time, in sync, pitch intact. `clock/wall` telemetry still reads ≈`s` **by desi
 (it gauges the drain rate; the compensation makes *content* real-time, not the
 drain clock). Set the field to `1.0` to disable. Other platforms (U64+PAL, U2P,
 PAL generally) have different `s` — measure per platform with
-`scripts/diags/mhires_tempo_clock_ab.py`. This is orthogonal to the
+`scripts/diags/mhires_tempo_clock_ab.py` (with `--tr-slicing auto` to measure a
+TeensyROM+ writing sliced). This is orthogonal to the
 `[audio].pitch_mult_*` NMI-rate knobs (which correct *pitch*, not tempo). See the
 `video.py` tempo-compensation note in [architecture.md](architecture.md).
 
