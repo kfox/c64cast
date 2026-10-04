@@ -14,6 +14,8 @@ complaints file-wide rather than spraying ignores on every assertion."""
 from __future__ import annotations
 
 import argparse
+import os
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -22,7 +24,8 @@ from _fakes import fake_system_stack, tmp_cwd
 
 from c64cast.app import config as cfgmod
 from c64cast.app import profiler as profiler_mod
-from c64cast.app import session
+from c64cast.app import scene_factory, session
+from c64cast.audio.audio import AudioStreamer
 
 
 def _loaded(names: list[str], *, is_ensemble: bool = False) -> cfgmod.LoadResult:
@@ -615,6 +618,77 @@ class ReloadAllTest(unittest.TestCase):
         ):
             session.reload_all(sess)
         sess.stacks[0].playlist.request_reload.assert_not_called()
+
+
+class ReloadPinsReuPumpTest(unittest.TestCase):
+    """A reload resolves scenes against the REU pump the running streamer has,
+    not the per-system file alone. The ensemble master's [audio] cascade is not
+    re-applied on reload, so a pump set only in the master would otherwise
+    read as off and let a petscii scene stage through the REU the pump drives."""
+
+    def setUp(self):
+        from c64cast.app.scene_factory import _warn_host_rec_staging_dropped
+
+        _warn_host_rec_staging_dropped.cache_clear()
+        self.addCleanup(_warn_host_rec_staging_dropped.cache_clear)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        master = os.path.join(tmp.name, "master.toml")
+        with open(master, "w", encoding="utf-8") as f:
+            f.write(
+                '[ensemble]\nsystems = [{ name = "a", config = "a.toml" }]\n'
+                "[audio]\nuse_reu_pump = true\n"
+            )
+        with open(os.path.join(tmp.name, "a.toml"), "w", encoding="utf-8") as f:
+            f.write(
+                '[ultimate64]\nurl = "u64://192.0.2.1"\n'
+                "[video]\nuse_reu_staged = true\n"
+                '[[scenes]]\ntype = "blank"\n'
+            )
+        self.loaded = cfgmod.load_master(master)
+        self.assertTrue(self.loaded.cfgs[0].audio.use_reu_pump)
+        stack = fake_system_stack("a")
+        stack.audio = mock.MagicMock(spec=AudioStreamer)
+        stack.audio.use_reu_pump = True
+        stack.reu_available = True
+        self.sess = session.Session(
+            args=_args(),
+            loaded=self.loaded,
+            cfgs=self.loaded.cfgs,
+            stacks=[stack],
+            ensemble=None,
+            stop_event=threading.Event(),
+            profiler=mock.MagicMock(name="profiler"),
+        )
+
+    def _petscii_staged(self, cfg: cfgmod.Config) -> bool:
+        wiring = scene_factory.display_wiring_for_scene(
+            cfg.scenes[0], cfg, reu_available=True, backend_supports_reu=True
+        )
+        with self.assertLogs("c64cast.app.scene_factory", level="WARNING"):
+            mode = scene_factory.build_wired_display_mode("petscii", wiring)
+        return bool(mode.use_reu_staged)
+
+    def test_reload_all_rebuilds_petscii_without_reu_staging(self):
+        with mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc:
+            session.reload_all(self.sess)
+        cfg = sfc.call_args.args[0]
+        self.assertTrue(cfg.audio.use_reu_pump)
+        self.assertFalse(self._petscii_staged(cfg))
+
+    def test_control_plane_reload_rebuilds_petscii_without_reu_staging(self):
+        loaders, _ = session.reload_registries(self.sess)
+        with mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc:
+            loaders["a"]()
+        cfg = sfc.call_args.args[0]
+        self.assertTrue(cfg.audio.use_reu_pump)
+        self.assertFalse(self._petscii_staged(cfg))
+
+    def test_no_streamer_pins_the_pump_off(self):
+        self.sess.stacks[0].audio = None
+        with mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc:
+            session.reload_all(self.sess)
+        self.assertFalse(sfc.call_args.args[0].audio.use_reu_pump)
 
 
 if __name__ == "__main__":

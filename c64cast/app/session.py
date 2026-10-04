@@ -1228,6 +1228,20 @@ def build_session(
     )
 
 
+def _reload_cfg(st: SystemStack, path: str, args: argparse.Namespace) -> cfgmod.Config:
+    """The Config a reload rebuilds `st`'s scenes from: the system's file plus
+    the CLI, as at startup, with [audio].use_reu_pump pinned to the streamer
+    `st` is already running.
+
+    The file alone can disagree with that streamer: an ensemble master's
+    [audio] cascade and the startup coercions are not re-applied here. A scene
+    resolved against a pump the streamer doesn't run picks REU staging the
+    running pump cannot share (scene_factory.resolve_use_reu_staged)."""
+    cfg = cfgmod.merge_cli(cfgmod.load(path), args)
+    cfg.audio.use_reu_pump = isinstance(st.audio, AudioStreamer) and st.audio.use_reu_pump
+    return cfg
+
+
 def reload_registries(sess: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     """The per-system reload closures the control plane's ``POST /reload``
     calls: ``(config_loaders, interstitial_factories)``, keyed by system name.
@@ -1243,7 +1257,7 @@ def reload_registries(sess: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     config_loaders = {
         st.name: (
             lambda st=st, p=p: scene_factory.scenes_from_config(
-                cfgmod.merge_cli(cfgmod.load(p), args),
+                _reload_cfg(st, p, args),
                 st.api,
                 st.audio,
                 st.source,
@@ -1367,8 +1381,7 @@ def reload_all(sess: Session) -> None:
         if sub_path is None:
             continue  # no file to reload (defaults-only single-system)
         try:
-            new_cfg = cfgmod.load(sub_path)
-            new_cfg = cfgmod.merge_cli(new_cfg, sess.args)
+            new_cfg = _reload_cfg(st, sub_path, sess.args)
             new_scenes = scene_factory.scenes_from_config(
                 new_cfg,
                 st.api,
