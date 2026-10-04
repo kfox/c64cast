@@ -740,11 +740,15 @@ class MicLeadServoWiringTest(unittest.TestCase):
             read_memory=lambda *a, **k: None, write_pos=lambda: 0, sample_rate=12000
         )
         servo.lead_min, servo.lead_max, servo.reanchors = 1400, 1800, 2
+        servo.reanchors_dropped = 1
         s._mic_lead = servo
         s._mic_shaper = MicLeadShaper(12000)
         with self.assertLogs("c64cast.audio.audio", "INFO") as cm:
             s.stop()
-        self.assertTrue(any("lead 1400..1800 B, 2 re-anchor(s)" in m for m in cm.output), cm.output)
+        self.assertTrue(
+            any("lead 1400..1800 B, 2 re-anchor(s) (1 dropped unclaimed)" in m for m in cm.output),
+            cm.output,
+        )
 
     def test_stop_ends_the_servo_loop_before_the_teardown(self):
         # A teardown stalled past the claim window would otherwise have the

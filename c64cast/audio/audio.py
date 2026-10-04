@@ -1711,11 +1711,13 @@ class AudioStreamer:
         if lead.lead_min is None:
             return
         log.info(
-            "audio[reu mic]: lead %d..%d B, %d re-anchor(s), %d open-loop spell(s), "
+            "audio[reu mic]: lead %d..%d B, %d re-anchor(s) (%d dropped unclaimed), "
+            "%d open-loop spell(s), "
             "%d splice(s) skipping %d samples",
             lead.lead_min,
             lead.lead_max,
             lead.reanchors,
+            lead.reanchors_dropped,
             lead.open_loop_spells,
             shaper.splices if shaper is not None else 0,
             shaper.skipped_samples if shaper is not None else 0,
