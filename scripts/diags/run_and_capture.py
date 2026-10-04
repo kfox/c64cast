@@ -148,6 +148,9 @@ def main() -> int:
     cfg = Path(args.config)
     if not cfg.exists():
         ap.error(f"config not found: {cfg}")
+    # Every device is found before c64cast touches the machine.
+    if args.frames > 0 or args.burst > 0 or args.field_burst > 0:
+        d.resolve_capture(args.device)
 
     boot_margin = 6.0  # c64cast boot + reach first PLAY
     audio_len = args.seconds + boot_margin + 2.0

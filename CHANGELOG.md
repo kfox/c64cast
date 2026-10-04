@@ -285,6 +285,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `scripts/capture_guide_figure.py` retry their stills the same way; the
   last two used to drop a failed still silently and now print why.
 
+- **The diag tools that run c64cast find their capture device before they
+  start it.** `run_and_capture.py`, `doublebuffer_tear_ab.py`,
+  `flicker_tear_ab.py`, `menu_inject.py --frames` and `flicker_score_grid.py`
+  looked for the camera only once c64cast had booted the C64, so a missing or
+  ambiguous capture device failed after the machine had been reset and
+  driven, and the tools then reset it again. They now look first and exit in
+  seconds without touching the machine.
+
 - **Mic and webcam audio through the REU pump now plays under `mhires`
   and `hires` REU-staged video (#551).** With `[audio].use_reu_pump` on a
   mic or webcam scene whose display used REU staging, the C64 could crash

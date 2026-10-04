@@ -85,6 +85,8 @@ def main() -> int:
     ap.add_argument("--boot-s", type=float, default=9.0, help="seconds to wait before injecting")
     ap.add_argument("--step-s", type=float, default=0.4, help="gap between injected keys")
     args = ap.parse_args()
+    if args.frames:
+        d.resolve_capture(args.device)  # fail before c64cast touches the machine
 
     from c64cast.app import config as cfgmod
     from c64cast.app.cli import build_stack, configure_logging, teardown_stack
