@@ -27,6 +27,12 @@ shapes of the job:
 
 Improve these rather than writing throwaway variants.
 
+Run every command that touches the machine or the capture device under
+[scripts/diags/hw_lock.py](../../../scripts/diags/hw_lock.py)
+(`python3 scripts/diags/hw_lock.py uv run scripts/diags/hdmi_capture.py …`): another
+session may be driving the same rig, and the DMA service and the capture device
+each take one user at a time. Keep each locked command short.
+
 **Ask the user before assuming a capture is available** — they vary by machine. If
 one is present, use it for verification of any visual change (overlays, display
 modes, scene transitions) instead of guessing from RAM dumps alone.
