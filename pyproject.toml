@@ -133,10 +133,10 @@ all = [
 ]
 [dependency-groups]
 dev = [
-    "ruff==0.16.9",
+    "ruff==0.16.10",
     "pre-commit==4.6.2",
-    "coverage==7.16.1",
-    "mypy==2.3.1",
+    "coverage==7.16.2",
+    "mypy==2.4.0",
     "types-requests==2.33.0.20260906",
     "pyright==1.1.414",
     "jsonschema==4.26.0",
