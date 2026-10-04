@@ -589,7 +589,7 @@ The 64 KB ring was never the margin. The 1600-byte lead was. A C64-side governor
 
 **`MicLeadServo`** is a thread started after the mic stream opens and stopped in `stop()`.
 - **Measurement.** About once a second it reads `$C200-$C202` twice over the backend's `read_memory` (REST on the U64), each read bracketed by the host write position. Both reads stay off the PortAudio callback. If the two resulting leads disagree by more than `MIC_LEAD_TORN_TOLERANCE`, one three-byte read was torn mid-carry and the measurement is discarded. A tracker outside the mic ring counts as a failed read. A failed first read skips the second, and so does a `stop()` that lands during it, because requests applies `MIC_LEAD_READ_TIMEOUT_S` per phase (connect, then each socket read): one read can take about twice it, and the 1.5 s join covers one read in flight, not two.
-- **Control.** The signed lead goes through `mic_lead_correction`, a PI step on the shared `audio_handlers.pi_step`. `servo_period` runs on the same step, so the clamp and anti-windup logic exist once. The result is a drop fraction in `[−MIC_LEAD_RESAMPLE_MAX, MIC_LEAD_MAX_DROP]`. The integrator's bounds match that asymmetric clamp (`pi_step` takes separate `integ_min`/`integ_max`), so it cannot wind up while the output is pinned at the repeat limit. The integrator is seeded from the first measured pump rate, so it does not wind up through an overshoot: in simulation the startup overshoot under mhires drift is ~1.8 KB rather than ~3.4 KB.
+- **Control.** The signed lead goes through `mic_lead_correction`, a PI step on the shared `audio_handlers.pi_step`. `servo_period` runs on the same step, so the clamp and anti-windup logic exist once. The result is a drop fraction in `[−MIC_LEAD_RESAMPLE_MAX, MIC_LEAD_MAX_DROP]`. The integrator's bounds match that asymmetric clamp (`pi_step` takes separate `integ_min`/`integ_max`), so it cannot wind up while the output is pinned at the repeat limit. The integrator starts at zero and winds up through a startup overshoot of a few KB (3.4 KB in the measured mhires run below), which is latency, not loss. Seeding it from the first measured pump rate was tried and dropped: under mhires the pump runs slower for its first seconds than in steady state, so the seed over-drops and the lead undershot to 115 B on hardware, one jitter away from an overtake.
 - **Re-anchor.** A negative lead (overtaken) or one past `MIC_LEAD_REANCHOR_ABOVE` (8 KB, a lap or an outage) is not steered. The servo posts a re-anchor, and the callback claims it: it extrapolates the pump's position at the measured rate and restarts the write head `MIC_LEAD_REANCHOR_GUARD` past it, behind a NEUTRAL fill up to the bootstrap lead. The new position is written only when that write succeeds, so a failed fill leaves the head in place and the next measurement asks again. The anchor is stamped at the midpoint of the second tracker read; `MIC_LEAD_REANCHOR_GUARD` (256 B) covers about a 40 ms read round trip at 12 kHz, and a slower read makes the re-anchored lead come out short by the excess. That is one step into silence where the ring held lap-old audio. A steered correction never jumps.
 - **Pump idle or reads failing.** An idle tracker means teardown or a dead pump, and the servo stops steering. After `MIC_LEAD_OPEN_LOOP_AFTER` consecutive failed measurements, including a backend that raises, the loop opens (drop fraction 0) with a WARNING. A recovery is logged at INFO. Later spells log at INFO, their recoveries and every re-anchor after the first at DEBUG, so a flaky link does not fill a show log. While the loop is open the interval doubles per failed measurement up to `MIC_LEAD_OPEN_LOOP_MAX_WAIT_S` (8 s), so a device that stopped answering is not dialed twice a second. A backend whose profile has no `supports_read` gets a WARNING at bring-up and no thread. `stop()` logs the run's lead range, re-anchors, open-loop spells and splices.
 
@@ -608,16 +608,16 @@ The 64 KB ring was never the margin. The 1600-byte lead was. A C64-side governor
 
 The four geometries sit within a few dB of each other except for the short fade on the chord. 30/8 halves the splice rate of 15/4 for about the same distortion, and it keeps each skip short enough that speech loses fragments of a syllable rather than whole ones.
 
-**Measured on hardware** (U64-II 3.15a, NTSC, 12 kHz, silent synthetic 440 Hz mic, the `$C200` tracker probed every 2 s over 75 s, Cam Link audio):
+**Measured on hardware.** U64-II 3.15a, NTSC, 12 kHz, with a silent synthetic 440 Hz mic. The `$C200` tracker was probed every 2 s for 75 s, alongside Cam Link audio. Runs alternated between origin/main and this branch, two mhires pairs and one petscii pair, all in the same session:
 
-| | lead (probe) | Cam Link tone, 1 s windows | 50 ms windows ≥50 % in the 440 Hz band |
-|---|---|---|---|
-| mhires, before | +1.8 KB/s, laps every ~34 s | 440 Hz, 57/65 | 39.5 % |
-| mhires, after | 726..2810 B, 0 re-anchors, ~6 splices/s | 440 Hz, 56/66 | 40.8 % |
-| petscii, before | −31 B/s, overtaken at ~51 s | 424..441 Hz | 78.3 % |
-| petscii, after | 1472..1771 B, 0 splices | 424..444 Hz | 77.3 % |
+| | lead after 20 s (probe) | tone (median of 1 s windows) | 1 s windows off-tone | 50 ms windows ≥50 % in the 440 Hz band |
+|---|---|---|---|---|
+| mhires, before | −32.6..+31.4 KB (laps, +1.8 KB/s) | 441 / 438 Hz | 16/64, 18/59 | 37.8 / 35.9 % |
+| mhires, after | 514..3004 B, 0 re-anchors, ~6 splices/s | 438 / 438 Hz | 22/57, 19/59 | 33.5 / 33.0 % |
+| petscii, before | −960..+832 B (overtaken) | 429 Hz | 0/58 | 74.1 % |
+| petscii, after | 1488..1751 B, 0 splices | 428 Hz | 0/58 | 72.8 % |
 
-The mhires continuity figure is low in both rows because the halt gaps chop the tone. The splices add nothing measurable on top of them. The baseline's 262 to 285 Hz windows come from those same halts, and they appear in both runs.
+The servo leaves the pitch where it was in both modes. Under mhires, the lead overshoots to ~6 KB in the first 10 s and settles within about 20 s. The off-tone windows (260 to 286 Hz) and the low continuity figure under mhires come from the halt gaps chopping the tone, and they are present on origin/main too. The splices cost about 3 points of continuity on top of that, which is the skipped content. Captures through avfoundation run short (68 to 75 s of an 86 s request) whichever tree is running.
 
 ## `audio_handlers.py` — the 6502 machine-code layer
 

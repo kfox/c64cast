@@ -71,14 +71,6 @@ class _Rig:
 
 
 class MicLeadCorrectionTest(unittest.TestCase):
-    def test_the_seed_is_the_integrator_that_reproduces_the_rate_mismatch(self):
-        # A pump at 90 % of the mic rate wants a 10 % drop; seeded there, the
-        # loop on target outputs that drop and the integrator stays put.
-        integ = ml.mic_lead_seed(0.9 * RATE, RATE)
-        drop, new_integ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES, integ, sample_rate=RATE)
-        self.assertAlmostEqual(drop, 0.1)
-        self.assertAlmostEqual(new_integ, integ)
-
     def test_on_target_with_no_history_asks_for_nothing(self):
         drop, integ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES, 0.0, sample_rate=RATE)
         self.assertEqual((drop, integ), (0.0, 0.0))
@@ -144,16 +136,19 @@ class MicLeadClosedLoopTest(unittest.TestCase):
         self.assertLess(rig.servo.drop_frac, 0.0)
         self.assertGreater(rig.servo.drop_frac, -ml.MIC_LEAD_RESAMPLE_MAX)
 
-    def test_the_integrator_starts_at_the_measured_mismatch(self):
-        # Seeded from the first measured pump rate, the lead overshoots by
-        # about the one second of drift before any correction (unseeded the
-        # integrator winds up through ~3.4 KB of overshoot instead).
-        rig = _Rig(drift=1800.0)
-        peak = 0.0
-        for _ in range(30):
+    def test_a_slow_start_does_not_drive_the_lead_into_an_overtake(self):
+        # On hardware the pump runs slower for its first seconds under mhires
+        # than in steady state. A loop that trusted that first rate (an
+        # integrator seeded from it) undershot to 115 B; here it overtakes.
+        rig = _Rig(drift=2600.0)
+        low = float("inf")
+        for i in range(60):
+            if i == 3:
+                rig.drift = 1700.0
             rig.step()
-            peak = max(peak, rig.lead - REU_MIC_BOOTSTRAP_BYTES)
-        self.assertLess(peak, 2000)
+            low = min(low, rig.lead)
+        self.assertEqual(rig.servo.reanchors, 0)
+        self.assertGreater(low, 1000)
 
     def test_without_the_servo_the_same_drift_overtakes(self):
         # The rig itself reproduces the defect when the loop's output is

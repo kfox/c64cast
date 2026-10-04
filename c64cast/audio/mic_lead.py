@@ -132,15 +132,6 @@ def mic_lead_correction(
     )
 
 
-def mic_lead_seed(measured_rate: float, sample_rate: int) -> float:
-    """The integrator value whose contribution equals the measured rate
-    mismatch (the drop fraction ``1 - measured_rate / sample_rate``), in the
-    units ``mic_lead_correction`` accumulates, so the loop starts at the
-    steady-state output instead of winding up through a lead overshoot."""
-    rate = float(sample_rate)
-    return (1.0 - measured_rate / rate) * rate / MIC_LEAD_KI
-
-
 def reanchor_fill(anchor: int) -> tuple[int, int]:
     """Where a re-anchor restarts the write head, and how many NEUTRAL bytes
     it writes there first: ``(pos, fill_len)``. ``anchor`` is the pump's
@@ -282,7 +273,6 @@ class MicLeadServo:
         self._open_loop = False
         self._last_pump: tuple[int, float] | None = None
         self._pump_rate = float(sample_rate)
-        self._seeded = False
         self.lead_min: int | None = None
         self.lead_max: int | None = None
         self.reanchors = 0
@@ -353,11 +343,6 @@ class MicLeadServo:
             if at > last[1]:
                 measured = advanced / (at - last[1])
                 self._pump_rate += 0.5 * (measured - self._pump_rate)
-                if not self._seeded:
-                    # Start the integrator at the measured rate mismatch, so it
-                    # does not have to wind up through a lead overshoot.
-                    self._seeded = True
-                    self._integ = mic_lead_seed(measured, self._rate)
         self.lead_min = lead if self.lead_min is None else min(self.lead_min, lead)
         self.lead_max = lead if self.lead_max is None else max(self.lead_max, lead)
         if lead < 0 or lead > MIC_LEAD_REANCHOR_ABOVE:
