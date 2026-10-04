@@ -1307,4 +1307,7 @@ def reu_pump_skips_irq_hook(display_mode: object) -> bool:
             "from the host, which the REU audio pump cannot share; build it "
             "with use_reu_staged=False while [audio].use_reu_pump is on"
         )
-    return bool(getattr(display_mode, "audio_reu_pump_active", False))
+    return bool(
+        getattr(display_mode, "audio_reu_pump_active", False)
+        and getattr(display_mode, "use_reu_staged", False)
+    )

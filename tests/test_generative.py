@@ -888,7 +888,7 @@ class AudioSourceTest(unittest.TestCase):
     def test_mic_source_starts_and_stops_with_skip_hook(self):
         streamer = _FakeStreamer()
         cfg = SimpleNamespace(device=-1, mic_sensitivity=1.0, noise_gate=0.02)
-        mode = SimpleNamespace(audio_reu_pump_active=True)
+        mode = SimpleNamespace(audio_reu_pump_active=True, use_reu_staged=True)
         mic = MicAudioSource(
             cast(AudioStreamer, streamer),
             cast(AudioCfg, cfg),

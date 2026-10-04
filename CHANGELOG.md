@@ -270,6 +270,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   push over host DMA while the pump is on, and log a warning when staging was
   asked for explicitly. Bitmap scenes keep REU staging alongside the pump.
 
+- **REU-pump audio now plays on a `hires`/`mhires` scene that is not
+  REU-staged.** With `[audio].use_reu_pump` on and `use_reu_staged` resolved
+  off (`false`, a text overlay under `"auto"`, or `--skip-probe`), the pump
+  left `$0314` alone for a dispatcher that only the REU-staged path installs,
+  so nothing ever ran it. It now hooks `$0314` itself there.
+
 - **REU-pump audio no longer echoes under bitmap REU-staged video
   (#544).** With `[audio].use_reu_pump` on an `mhires`/`hires` scene that
   uses `use_reu_staged`, the pump's write head used to overrun the audio
