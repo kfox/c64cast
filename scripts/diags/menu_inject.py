@@ -80,7 +80,7 @@ def main() -> int:
     ap.add_argument("--source", default="plasma", help="generative source")
     ap.add_argument("--display", default="mhires", help="display mode (petscii/blank/hires/mhires)")
     ap.add_argument("--frames", action="store_true", help="grab Cam Link stills at each step")
-    ap.add_argument("--cv2-index", type=int, default=d.CAMLINK_CV2_INDEX)
+    d.add_capture_device_arg(ap, "--cv2-index")
     ap.add_argument("--no-reset", action="store_true", help="leave the machine up for inspection")
     ap.add_argument("--boot-s", type=float, default=9.0, help="seconds to wait before injecting")
     ap.add_argument("--step-s", type=float, default=0.4, help="gap between injected keys")
@@ -119,7 +119,7 @@ def main() -> int:
             return
         import cv2
 
-        cap = cv2.VideoCapture(args.cv2_index)
+        cap = d.open_capture(args.device)
         for _ in range(15):  # flush the Cam Link's buffered (stale) frames
             cap.read()
         ok, frame = cap.read()

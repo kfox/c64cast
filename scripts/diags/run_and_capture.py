@@ -120,14 +120,7 @@ def main() -> int:
         action="store_true",
         help="leave the machine running for inspection (default: reset)",
     )
-    ap.add_argument(
-        "-d",
-        "--device",
-        default=d.CAMLINK_DEVICE,
-        help="capture device: a cv2 index, a camera name substring, or a USB "
-        f"VID:PID (default {d.CAMLINK_DEVICE!r}; see `c64cast --list-devices`)",
-    )
-    ap.add_argument("--cv2-index", dest="device", help="alias for --device")
+    d.add_capture_device_arg(ap, "-d", "--cv2-index")
     ap.add_argument("--avf-audio", default=d.CAMLINK_AVF_AUDIO)
     ap.add_argument(
         "--border-flash",

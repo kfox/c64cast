@@ -105,10 +105,10 @@ file = "{video_path}"
     )
 
 
-def burst_capture(label: str, seconds: float, cv2_index: int) -> list[np.ndarray]:
+def burst_capture(label: str, seconds: float, device: str | None) -> list[np.ndarray]:
     """Grab consecutive Cam Link frames for `seconds`, as fast as the device
     yields them. Returns BGR frames."""
-    cap = cv2.VideoCapture(cv2_index)
+    cap = d.open_capture(device)
     for _ in range(8):  # warmup / flush stale buffer
         cap.read()
     frames: list[np.ndarray] = []
@@ -196,7 +196,7 @@ def _logged(log_text: str, marker: str) -> bool:
 
 
 def run_phase(
-    label: str, cfg: Path, url: str, seconds: float, cv2_index: int, *, ready: str
+    label: str, cfg: Path, url: str, seconds: float, device: str | None, *, ready: str
 ) -> list[np.ndarray]:
     log = d.out_dir() / "dbtear" / f"{label}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -232,7 +232,7 @@ def run_phase(
                 time.sleep(0.5)
             if _logged(log.read_text(), ready):
                 time.sleep(3.0)  # first rendered frames
-                frames = burst_capture(label, seconds, cv2_index)
+                frames = burst_capture(label, seconds, device)
             else:
                 # Capturing anyway would score whatever is on screen instead.
                 print(
@@ -259,7 +259,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=d.U64_URL)
     ap.add_argument("--seconds", type=float, default=8.0, help="capture window per phase")
-    ap.add_argument("--cv2-index", type=int, default=d.CAMLINK_CV2_INDEX)
+    d.add_capture_device_arg(ap, "--cv2-index")
     ap.add_argument("--no-reset", action="store_true")
     args = ap.parse_args()
 
@@ -276,11 +276,9 @@ def main() -> int:
 
     try:
         single = run_phase(
-            "single", cfg_single, args.url, args.seconds, args.cv2_index, ready=_SCENE_ACTIVE
+            "single", cfg_single, args.url, args.seconds, args.device, ready=_SCENE_ACTIVE
         )
-        double = run_phase(
-            "double", cfg_double, args.url, args.seconds, args.cv2_index, ready=_ARMED
-        )
+        double = run_phase("double", cfg_double, args.url, args.seconds, args.device, ready=_ARMED)
     finally:
         if not args.no_reset:
             ok = d.machine_reset(args.url)

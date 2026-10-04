@@ -116,7 +116,7 @@ def cmd_shoot(args) -> int:
         app = subprocess.Popen(argv, cwd=REPO_ROOT, stdout=fh, stderr=subprocess.STDOUT)
         t0 = time.monotonic()
         try:
-            cap = cv2.VideoCapture(args.index)
+            cap = d.open_capture(args.device)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
             for _ in range(10):  # let the stick's exposure/handshake settle
@@ -326,7 +326,7 @@ def main() -> int:
     p.add_argument("-n", "--shots", type=int, default=8)
     p.add_argument("--spacing", type=float, default=2.0, help="seconds between shots")
     p.add_argument("--burst", type=int, default=0, help="instead: N back-to-back frames at --at")
-    p.add_argument("--index", type=int, default=d.CAMLINK_CV2_INDEX, help="cv2 capture index")
+    d.add_capture_device_arg(p, "--index")
     p.add_argument("--raw", action="store_true", help="keep the full pillarboxed 1920x1080 frame")
     p.add_argument("--no-reset", action="store_true", help="leave the machine running")
     p.add_argument("media", nargs="*", help="quick-playback media args, after --")
