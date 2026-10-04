@@ -640,7 +640,7 @@ Any uncertainty — no REU, a failed query, `--skip-probe`, a non-REU backend �
 
 **Bitmap modes (Hires/MultiHires) — double-buffer.** Bitmap and screen are REUWRITE-staged, then DMA'd into the *off-screen* VIC bank. A C64-side raster IRQ at `$0314` flips `$DD00` at vblank for a tear-free swap — this is what eliminates the scene-cut whole-screen flashes.
 
-**Coexistence with the REU audio pump** is fine on any scene: the bank-swap installer picks a **merged** `$0314` dispatcher whose non-raster branch JMPs to the audio pump at `$C100`, servicing both IRQ sources through one hook. That merged dispatcher is why `use_reu_staged` and `use_reu_pump` need no mutual exclusion in `validate_scene_cfg`.
+**Coexistence with the REU audio pump** is fine on any scene: the bank-swap installer picks a **merged** `$0314` dispatcher whose non-raster branch JMPs to the audio pump at `$C100`, servicing both IRQ sources through one hook. That merged dispatcher is why `use_reu_staged` and `use_reu_pump` need no mutual exclusion in `validate_scene_cfg`. Before it hooks `$0314`, `install_bank_swap_irq` puts a `JMP $EA31` stub at `$C100` and a lone `RTS` at `$C180`, because the chunked `mhires` dispatcher JSRs `$C180` itself. Until the audio streamer uploads its pump, a CIA #1 tick then reaches the kernal and pumps nothing, rather than running power-on RAM or a previous scene's pump body (#551). The video and mic pumps both upload a `$C180` body behind the same tracked `$C100` entry, so both work under either dispatcher.
 
 MCM does not support staging yet.
 
