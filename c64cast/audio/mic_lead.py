@@ -75,11 +75,12 @@ MIC_LEAD_MAX_DROP = 0.35
 # A lead past this (or below zero) is a lap or an overtake rather than drift,
 # and is re-anchored instead of steered: 8 KB is ~0.7 s at 12 kHz.
 MIC_LEAD_REANCHOR_ABOVE = REU_MIC_SIZE // 8
-# A re-anchor NEUTRAL-fills from this far past the pump's estimated position.
-# The estimate is extrapolated from the midpoint of the second tracker read,
-# so its error is about half that read's round trip at the pump's rate: 256 B
-# covers a round trip of ~40 ms at 12 kHz. Past that the fill starts behind
-# the pump and the re-anchored lead comes out short by the difference.
+# A re-anchor NEUTRAL-fills from this far short of the pump's estimated
+# position. The estimate is extrapolated from the midpoint of the second
+# tracker read, so its error is about half that read's round trip at the
+# pump's rate: 256 B covers a round trip of ~40 ms at 12 kHz. Past that, an
+# estimate ahead of the pump leaves the pump that many bytes of the overtaken
+# or lapped ring to play before the fill.
 MIC_LEAD_REANCHOR_GUARD = 2 * REU_PUMP_CHUNK_SIZE
 # The two leads of one read pair must agree this closely, else one of the
 # three-byte tracker reads was torn mid-update by the pump.
@@ -135,10 +136,11 @@ def mic_lead_correction(
 def reanchor_fill(anchor: int) -> tuple[int, int]:
     """Where a re-anchor restarts the write head, and how many NEUTRAL bytes
     it writes there first: ``(pos, fill_len)``. ``anchor`` is the pump's
-    estimated src offset (``MicLeadServo.take_reanchor``); the fill ends
-    ``REU_MIC_BOOTSTRAP_BYTES`` past it, the same lead the session starts with."""
-    pos = (anchor + MIC_LEAD_REANCHOR_GUARD) % REU_MIC_SIZE
-    return pos, REU_MIC_BOOTSTRAP_BYTES - MIC_LEAD_REANCHOR_GUARD
+    estimated src offset (``MicLeadServo.take_reanchor``); the fill starts
+    ``MIC_LEAD_REANCHOR_GUARD`` short of it and ends ``REU_MIC_BOOTSTRAP_BYTES``
+    past it, the same lead the session starts with."""
+    pos = (anchor - MIC_LEAD_REANCHOR_GUARD) % REU_MIC_SIZE
+    return pos, REU_MIC_BOOTSTRAP_BYTES + MIC_LEAD_REANCHOR_GUARD
 
 
 def signed_ring_delta(a: int, b: int, ring: int = REU_MIC_SIZE) -> int:

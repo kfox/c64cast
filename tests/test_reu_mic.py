@@ -655,15 +655,20 @@ class MicLeadServoWiringTest(unittest.TestCase):
         return s
 
     def test_a_reanchor_restarts_the_head_past_the_pump_behind_a_neutral_fill(self):
-        s = self._streamer(anchor=REU_MIC_SIZE - 100)
+        anchor = REU_MIC_SIZE - 100
+        s = self._streamer(anchor=anchor)
         fake = cast(FakeAPI, s.api)
         s._mic_callback_reu(np.full((256, 1), 0.5, dtype=np.float32), 256, None, None)
-        fill = REU_MIC_BOOTSTRAP_BYTES - MIC_LEAD_REANCHOR_GUARD
-        start = (REU_MIC_SIZE - 100 + MIC_LEAD_REANCHOR_GUARD) % REU_MIC_SIZE
-        off, data = fake.socket_dma.reuwrites[0]
-        self.assertEqual(off, REU_MIC_BASE + start)
+        # The fill covers the pump's estimated position itself, so the first
+        # bytes it reads after the re-anchor are NEUTRAL, not the lap-old ring.
+        fill = REU_MIC_BOOTSTRAP_BYTES + MIC_LEAD_REANCHOR_GUARD
+        start = (anchor - MIC_LEAD_REANCHOR_GUARD) % REU_MIC_SIZE
+        self.assertEqual(fake.socket_dma.reuwrites[0][0], REU_MIC_BASE + start)
+        data = b"".join(chunk for _, chunk in fake.socket_dma.reuwrites)
         self.assertEqual(data[:fill], bytes([NEUTRAL_SAMPLE]) * fill)
-        self.assertEqual(s._mic_reu_write_pos, (start + fill + 256) % REU_MIC_SIZE)
+        self.assertEqual(
+            s._mic_reu_write_pos, (anchor + REU_MIC_BOOTSTRAP_BYTES + 256) % REU_MIC_SIZE
+        )
 
     def test_a_failed_reanchor_fill_leaves_the_head_where_it_was(self):
         # Moving the head before a write that then fails would drop the fill
