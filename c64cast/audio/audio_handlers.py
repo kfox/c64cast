@@ -291,8 +291,21 @@ REU_PUMP_SETTLE_S = 0.05
 # write head laps the reader every ~15-23 s (echo; scripts/diags/
 # reu_margin_probe.py). It regulates entirely on the C64, with zero host bus
 # writes during playback: the pump's own IRQ reads R and skips its chunk when
-# the write head is too far ahead. The nominal rate is always >= the (only ever
-# throttled) consumer, so skip-when-ahead caps the gap and never underruns.
+# the write head is too far ahead.
+#
+# Skipping can only take production away, so a governed pump has to out-produce
+# the reader on its own, and a merely matched one does not: the same bus halts
+# that slow the NMI reader also cost the pump CIA #1 ticks. Under mhires REU
+# bank-swap video (U64-II, firmware 3.15a, 12 kHz, chunk 80, 2026-10-03) the
+# reader ran at ~10.0 kB/s while the matched pump, once its $C180 body pumped
+# the scene's chunk, delivered ~8.4 kB/s — the reader lapped the writer every
+# few seconds, and past the lap the gap reads as "far ahead", so the governor
+# skipped and made it worse. A governed pump therefore runs its CIA #1 timer
+# REU_GOVERNOR_PUMP_OVERDRIVE times faster than matched and lets the governor
+# trim the surplus. Raising the rate rather than the chunk leaves each pump
+# DMA's bus halt as long as it was: a longer halt spans more NMI underflows,
+# and every underflow past the first in one halt is lost.
+REU_GOVERNOR_PUMP_OVERDRIVE = 1.5
 #
 # Gap is in 256-byte (HI-byte) units. The ring spans 32 HI values ($40-$5F), so
 # gap_hi = (dst_hi - R_hi) & $1F. Masking to 5 bits also discards the garbage
@@ -301,7 +314,7 @@ REU_PUMP_SETTLE_S = 0.05
 # symmetrically with ~4 KB before either a lap or an underrun.
 REU_GOVERNOR_GAP_THRESHOLD_HI = REU_PUMP_INITIAL_MARGIN >> 8  # 16 (= half ring)
 # NMI read pointer HI byte (R_hi): NMI_ROUTINE self-modifying operand at
-# $C026. The plain governor reads this directly on-chip; the host never writes.
+# $C026. Both governed pumps read this directly on-chip; the host never writes.
 READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 
 # Host-DMA pacing servo (closed-loop W→R rate match). The worker paces ring
@@ -487,6 +500,44 @@ REU_IRQ_HANDLER_CHUNK_OFFSETS = (2, 7)
 _assert_chunk_offsets(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, "REU_IRQ_HANDLER")
 
 
+def _governor_gap_check(w_hi_addr: int) -> bytes:
+    """The governor's skip-when-ahead test, shared by every governed pump.
+
+    Loads the write head's HI byte from ``w_hi_addr``, subtracts the NMI read
+    pointer's (R_hi, ``READ_PTR_HI_ADDR``), masks the difference to the ring's
+    32 HI values and compares it with ``REU_GOVERNOR_GAP_THRESHOLD_HI``. Carry
+    comes out SET when the write head is at least half a ring ahead — the
+    chunk to skip — and CLEAR when it should pump. The caller supplies the
+    branch, since each pump leaves by a different exit.
+
+        LDA w_hi_addr   ; 4 cyc
+        SEC             ; 2
+        SBC $C026       ; 4  (R_hi)
+        AND #$1F        ; 2  (gap_hi mod 32; masks REU read-back garbage too)
+        CMP #threshold  ; 2
+
+    11 bytes, 14 cycles; A is clobbered.
+    """
+    return bytes(
+        [
+            0xAD,
+            w_hi_addr & 0xFF,
+            (w_hi_addr >> 8) & 0xFF,  # LDA w_hi
+            0x38,  # SEC
+            0xED,
+            READ_PTR_HI_ADDR & 0xFF,
+            (READ_PTR_HI_ADDR >> 8) & 0xFF,  # SBC $C026   (R_hi)
+            0x29,
+            0x1F,  # AND #$1F    (gap_hi)
+            0xC9,
+            REU_GOVERNOR_GAP_THRESHOLD_HI,  # CMP #threshold_hi
+        ]
+    )
+
+
+_GOVERNOR_GAP_CHECK_LEN = len(_governor_gap_check(0))
+
+
 # REU_IRQ_HANDLER + an 18-byte governor prefix. Before pumping, read the
 # write head (dst HI, $DF03) and the NMI read pointer (R HI, $C026), compute
 # the ring gap in 256-byte units, and if the write head is already >= half a
@@ -510,20 +561,10 @@ _assert_chunk_offsets(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, "REU_IRQ_H
 # BCC (+10 to its PLA) is relative and unchanged by the prefix shift.
 REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN = 18
 REU_IRQ_HANDLER_GOVERNOR = (
-    bytes(
+    bytes([0x48])  # PHA
+    + _governor_gap_check(0xDF03)  # dst_hi (write head) vs R_hi
+    + bytes(
         [
-            0x48,  # PHA
-            0xAD,
-            0x03,
-            0xDF,  # LDA $DF03   (dst_hi)
-            0x38,  # SEC
-            0xED,
-            READ_PTR_HI_ADDR & 0xFF,
-            (READ_PTR_HI_ADDR >> 8) & 0xFF,  # SBC $C026   (R_hi)
-            0x29,
-            0x1F,  # AND #$1F    (gap_hi)
-            0xC9,
-            REU_GOVERNOR_GAP_THRESHOLD_HI,  # CMP #threshold_hi
             0x90,
             0x04,  # BCC +4 → pump body (offset 18)
             0x68,  # PLA  (skip path)
@@ -591,47 +632,41 @@ REU_PUMP_TICK_DIVIDER = 3
 #   $C200-$C202  src LO/MI/HI (24-bit REU offset)
 #   $C203-$C204  dst LO/HI    (16-bit main RAM addr inside the audio ring)
 #
-# Used INSTEAD OF REU_IRQ_HANDLER when AudioStreamer.start_for_reu_staged is
-# called with skip_irq_vector_hook=True — the display mode's merged bank-swap
-# dispatcher owns $0314 and reaches the audio handler via its JMP $C100
-# fall-through. The solo audio path keeps the plain handler.
+# This tracked pump body is the one copy of that work. It runs as a
+# subroutine at $C180 (REU_PUMP_BODY_SUBROUTINE_ADDR), reached two ways:
+# the $C100 entry REU_IRQ_HANDLER_TRACKED JSRs it on every CIA #1 IRQ the
+# merged bank-swap dispatcher hands over (its JMP $C100 fall-through), and
+# the chunked mhires dispatcher JSRs it directly between per-frame REC
+# families to catch CIA #1 ticks that latched during the bank-swap halt.
+# Used INSTEAD OF the plain handler when AudioStreamer.start_for_reu_staged
+# is called with skip_irq_vector_hook=True; the solo audio path keeps the
+# plain one.
 #
-# Byte layout (offsets relative to $C100):
-#   0    PHA
-#   1    LDA #<chunk_size / STA $DF07              ┐ re-set length
-#   6    LDA #>chunk_size / STA $DF08              ┘
-#  11    LDA src_lo / STA $DF04                    ┐
-#  17    LDA src_mi / STA $DF05                    │ load src from tracker
-#  23    LDA src_hi / STA $DF06                    ┘
-#  29    LDA dst_lo / STA $DF02                    ┐ load dst from tracker
-#  35    LDA dst_hi / STA $DF03                    ┘
-#  41    LDA #$91 / STA $DF01                      ; trigger DMA
-#  46    CLC                                       ┐ advance src by chunk
-#  47    LDA src_lo / ADC #<chunk / STA src_lo     │
-#  55    LDA src_mi / ADC #>chunk / STA src_mi     │
-#  63    LDA src_hi / ADC #$00 / STA src_hi        ┘
-#  71    CLC                                       ┐ advance dst by chunk
-#  72    LDA dst_lo / ADC #<chunk / STA dst_lo     │
-#  80    LDA dst_hi / ADC #>chunk / STA dst_hi     ┘
-#  88    LDA dst_hi / CMP #ring_end_hi             ; dst wrap check
-#  93    BCC +10 → offset 105 (PLA)
-#  95    LDA #ring_start_hi / STA dst_hi           ┐ wrap dst to ring start
-# 100    LDA #$00 / STA dst_lo                     ┘
-# 105    PLA                                       ; restore A (local PHA)
-# 106    DEC counter ($C205)                       ┐ tick divider:
-# 109    BNE +8 → offset 119 (lean exit)           │   chain every Nth
-# 111    LDA #N / STA counter                      │   tick, lean-exit
-# 116    JMP $EA31  (full kernal tail)             ┘   the other N-1.
-# 119    LDA $DC0D                                 ┐ lean exit:
-# 122    JMP $EA81                                 ┘   ack + RTI
+# Byte layout of the body (offsets relative to the body's first byte):
+#   0    LDA #<chunk_size / STA $DF07              ┐ re-set length
+#   5    LDA #>chunk_size / STA $DF08              ┘
+#  10    LDA src_lo / STA $DF04                    ┐
+#  16    LDA src_mi / STA $DF05                    │ load src from tracker
+#  22    LDA src_hi / STA $DF06                    ┘
+#  28    LDA dst_lo / STA $DF02                    ┐ load dst from tracker
+#  34    LDA dst_hi / STA $DF03                    ┘
+#  40    LDA #$91 / STA $DF01                      ; trigger DMA
+#  45    CLC                                       ┐ advance src by chunk
+#  46    LDA src_lo / ADC #<chunk / STA src_lo     │
+#  54    LDA src_mi / ADC #>chunk / STA src_mi     │
+#  62    LDA src_hi / ADC #$00 / STA src_hi        ┘
+#  70    CLC                                       ┐ advance dst by chunk
+#  71    LDA dst_lo / ADC #<chunk / STA dst_lo     │
+#  79    LDA dst_hi / ADC #>chunk / STA dst_hi     ┘
+#  87    LDA dst_hi / CMP #ring_end_hi             ; dst wrap check
+#  92    BCC +10 → offset 104 (one past the body)
+#  94    LDA #ring_start_hi / STA dst_hi           ┐ wrap dst to ring start
+#  99    LDA #$00 / STA dst_lo                     ┘
 #
-# Total = 125 bytes. BCC at offset 93 with +10 lands on PLA at offset 105.
-# Inner BNE at offset 109 with +8 lands on LDA $DC0D at offset 119.
-# Chunk-size patch offsets: 2, 7, 51, 59, 76, 84.
-# Divider N patch offset: 112 (the immediate byte after LDA #).
-REU_IRQ_HANDLER_TRACKED = bytes(
+# 104 bytes; the BCC's no-wrap path lands on whatever follows the body (the
+# subroutine's RTS). A clobbered, X and Y untouched.
+_TRACKED_PUMP_BODY = bytes(
     [
-        0x48,  # PHA
         # re-set length (auto-decrements during DMA, must reload):
         0xA9,
         REU_PUMP_CHUNK_SIZE & 0xFF,  # LDA #<chunk_size
@@ -733,7 +768,7 @@ REU_IRQ_HANDLER_TRACKED = bytes(
         0xC9,
         RING_BUFFER_END_HI,  # CMP #ring_end_hi
         0x90,
-        0x0A,  # BCC +10 → offset 105 (PLA)
+        0x0A,  # BCC +10 → offset 104 (one past the body)
         0xA9,
         RING_BUFFER_HI,  # LDA #ring_start_hi
         0x8D,
@@ -744,24 +779,107 @@ REU_IRQ_HANDLER_TRACKED = bytes(
         0x8D,
         (_TRK_LO + 3) & 0xFF,
         _TRK_HI_BYTE,  # STA dst_lo
-        # end:
-        0x68,  # PLA (offset 105)
-        # tick divider (offsets 106-124): chain to $EA31 every Nth tick, lean
-        # exit the other N-1. Same shape as api.py's SID_PLAYER_MC_TEMPLATE divider.
+    ]
+)
+assert len(_TRACKED_PUMP_BODY) == 104, (
+    "_TRACKED_PUMP_BODY length changed — the BCC +10 at offset 92 must still "
+    "land one past the body, and the chunk-size offsets must be recomputed."
+)
+# Six chunk operands: the length reload plus the src and dst advances the
+# tracked body does by hand (see the layout comment above).
+_TRACKED_PUMP_BODY_CHUNK_OFFSETS = (1, 6, 50, 58, 75, 83)
+_assert_chunk_offsets(_TRACKED_PUMP_BODY, _TRACKED_PUMP_BODY_CHUNK_OFFSETS, "_TRACKED_PUMP_BODY")
+
+_RTS = 0x60
+_BCS = 0xB0
+
+# The tracked pump as an RTS-ending subroutine at $C180. Two variants, one
+# body; AudioStreamer.start_for_reu_staged uploads the one
+# AudioStreamer.reu_pump_governor selects, with the scene's chunk size patched
+# into it, BEFORE the $C100 entry that calls it.
+#
+# The open-loop variant is the body plus RTS. The governed one puts the
+# governor's skip-when-ahead test in front, reading the write head from the
+# dst_hi tracker ($C204) rather than from $DF03, which the bank-swap DMAs
+# leave pointing into video memory:
+#
+#   0    <_governor_gap_check($C204)>  11 bytes, 14 cyc
+#  11    BCS +104 → offset 117 (RTS)   ; W >= half a ring ahead: skip the chunk
+#  13    <_TRACKED_PUMP_BODY>          104 bytes
+# 117    RTS
+#
+# A skipped chunk triggers no DMA and advances neither tracker, so the same
+# audio is pumped on a later tick once the reader has caught up — the plain
+# governor's behavior (REU_IRQ_HANDLER_GOVERNOR). A pumping call costs 16
+# cycles more than the open-loop one (the test plus an untaken BCS); a skip
+# runs the test, a taken BCS and the RTS, and no DMA.
+#
+# $C180 is the address the chunked dispatcher in modes_irq.py JSRs, so the
+# subroutine cannot move, and it must end below the $C200 tracker.
+REU_PUMP_BODY_SUBROUTINE_ADDR = 0xC180
+REU_PUMP_BODY_SUBROUTINE = _TRACKED_PUMP_BODY + bytes([_RTS])
+REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS = _TRACKED_PUMP_BODY_CHUNK_OFFSETS
+
+_TRACKED_GOVERNOR_PREFIX = _governor_gap_check(REU_AUDIO_SRC_TRACKER_ADDR + 4) + bytes(
+    [_BCS, len(_TRACKED_PUMP_BODY)]  # BCS → the RTS past the body
+)
+REU_PUMP_BODY_SUBROUTINE_GOVERNOR = _TRACKED_GOVERNOR_PREFIX + _TRACKED_PUMP_BODY + bytes([_RTS])
+REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS = tuple(
+    off + len(_TRACKED_GOVERNOR_PREFIX) for off in _TRACKED_PUMP_BODY_CHUNK_OFFSETS
+)
+_assert_chunk_offsets(
+    REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+    REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
+    "REU_PUMP_BODY_SUBROUTINE_GOVERNOR",
+)
+# A 6502 branch reaches at most +127; past that the displacement byte wraps
+# into a backward branch.
+assert len(_TRACKED_PUMP_BODY) <= 127, "governor BCS cannot reach the RTS"
+for _sub in (REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_GOVERNOR):
+    assert _sub[-1] == _RTS, "subroutine must end with RTS"
+    assert REU_PUMP_BODY_SUBROUTINE_ADDR + len(_sub) <= REU_AUDIO_SRC_TRACKER_ADDR, (
+        "pump-body subroutine overruns the $C200 tracker"
+    )
+del _sub
+
+# 6502 IRQ entry at $C100 for the tracked pump: JSR the $C180 body, then
+# the tick divider. It holds no pump code of its own, so the governor (or
+# its absence) is decided entirely by which subroutine sits at $C180. The
+# tick divider is the one described at REU_PUMP_TICK_COUNTER_ADDR.
+#
+# Byte layout (offsets relative to $C100):
+#   0    PHA                                       ; save A (the body clobbers it)
+#   1    JSR $C180                                 ; pump body (or governed skip)
+#   4    PLA
+#   5    DEC counter ($C205)                       ┐ tick divider:
+#   8    BNE +8 → offset 18 (lean exit)            │   chain every Nth
+#  10    LDA #N / STA counter                      │   tick, lean-exit
+#  15    JMP $EA31  (full kernal tail)             ┘   the other N-1.
+#  18    LDA $DC0D                                 ┐ lean exit:
+#  21    JMP $EA81                                 ┘   ack + RTI
+#
+# 24 bytes, ending well below the $C180 subroutine.
+REU_IRQ_HANDLER_TRACKED = bytes(
+    [
+        0x48,  # PHA
+        0x20,
+        REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF,
+        (REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF,  # JSR $C180
+        0x68,  # PLA
         0xCE,
         _TCTR_LO,
         _TCTR_HI_BYTE,  # DEC counter
         0xD0,
-        0x08,  # BNE +8 → lean exit (offset 119)
+        0x08,  # BNE +8 → lean exit (offset 18)
         0xA9,
-        REU_PUMP_TICK_DIVIDER,  # LDA #N (offset 112)
+        REU_PUMP_TICK_DIVIDER,  # LDA #N
         0x8D,
         _TCTR_LO,
         _TCTR_HI_BYTE,  # STA counter
         0x4C,
         0x31,
         0xEA,  # JMP $EA31 (full chain)
-        # lean exit (offset 119): ack CIA #1 + JMP to kernal register-restore.
+        # lean exit (offset 18): ack CIA #1 + JMP to kernal register-restore.
         0xAD,
         0x0D,
         0xDC,  # LDA $DC0D (ack)
@@ -770,53 +888,11 @@ REU_IRQ_HANDLER_TRACKED = bytes(
         0xEA,  # JMP $EA81 (RTI)
     ]
 )
-assert len(REU_IRQ_HANDLER_TRACKED) == 125, (
-    "REU_IRQ_HANDLER_TRACKED length changed — BCC offset (currently +10), "
-    "chunk-size patch offsets (2, 7, 51, 59, 76, 84), and divider patch "
-    "offset (112) must be recomputed."
+assert len(REU_IRQ_HANDLER_TRACKED) == 24, (
+    "REU_IRQ_HANDLER_TRACKED length changed — the BNE +8 must still land on "
+    "the lean exit's LDA $DC0D."
 )
-# Six chunk operands here, not two: the length reload plus the src and dst
-# advances the tracked variant does by hand (see the layout comment above).
-REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS = (2, 7, 51, 59, 76, 84)
-_assert_chunk_offsets(
-    REU_IRQ_HANDLER_TRACKED,
-    REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS,
-    "REU_IRQ_HANDLER_TRACKED",
-)
-
-
-# Same REC pump work as the TRACKED handler but exposed as an RTS-ending
-# subroutine. Called from the chunked mhires bank-swap dispatcher between
-# every per-frame REC chunk so CIA #1 IRQ events that would otherwise
-# collapse against the I-flag (we're already in the raster IRQ handler
-# for the full ~18 ms bank-swap) get serviced inline. Without this, the
-# pump under-produces by ~43 % and the audio ring drains in ~2.4 sec
-# (empirically measured 2026-05-27 via $C200 src-tracker probe).
-#
-# Construction: bytes 1..104 of REU_IRQ_HANDLER_TRACKED (everything
-# between the leading PHA and the PLA at offset 105) plus a trailing
-# RTS. The leading PHA is dropped because the caller (chunked bank-swap)
-# does not need A preserved across the JSR. The BCC inside the handler
-# (originally at offset 93 → target offset 105 / PLA) shifts uniformly
-# by −1 to BCC at offset 92 → target offset 104 / RTS. Displacement
-# byte (+10) is unchanged because the shift is uniform.
-#
-# Lives at $C180, uploaded alongside the $C100 handler in
-# AudioStreamer.start_for_reu_staged / ._start_mic_for_reu_pump whether or not
-# the chunked dispatcher is active.
-REU_PUMP_BODY_SUBROUTINE_ADDR = 0xC180
-REU_PUMP_BODY_SUBROUTINE = (
-    REU_IRQ_HANDLER_TRACKED[1:105] + bytes([0x60])  # RTS
-)
-assert len(REU_PUMP_BODY_SUBROUTINE) == 105, (
-    "REU_PUMP_BODY_SUBROUTINE length changed — the chunked bank-swap "
-    "dispatcher in modes_irq.py JSRs to a fixed address ($C180) and the "
-    "subroutine must end with RTS at offset 104 so the BCC at offset "
-    "92 (displacement +10) lands on it correctly."
-)
-# The trailing byte must be RTS so the BCC's "no-wrap" early-exit
-# returns to the caller correctly.
-assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
+assert REU_PUMP_HANDLER_ADDR + len(REU_IRQ_HANDLER_TRACKED) <= REU_PUMP_BODY_SUBROUTINE_ADDR
 
 
 # Same architecture as the video REU pump above, but the REU source

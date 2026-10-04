@@ -64,18 +64,21 @@ from .audio_handlers import (
     REU_AUDIO_BASE,
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
+    REU_GOVERNOR_PUMP_OVERDRIVE,
     REU_IRQ_HANDLER,
     REU_IRQ_HANDLER_CHUNK_OFFSETS,
     REU_IRQ_HANDLER_GOVERNOR,
     REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS,
     REU_IRQ_HANDLER_TRACKED,
-    REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS,
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_IRQ_HANDLER,
     REU_MIC_SIZE,
     REU_PUMP_BODY_SUBROUTINE,
     REU_PUMP_BODY_SUBROUTINE_ADDR,
+    REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS,
+    REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+    REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_HANDLER_ADDR,
     REU_PUMP_INITIAL_MARGIN,
@@ -271,10 +274,11 @@ class AudioStreamer:
         # it into REU and lets a C64-side IRQ pump refill the ring, replacing
         # the host-DMA worker. False = start_for_external_source / start_mic.
         self.use_reu_pump = use_reu_pump
-        # Uploads the skip-when-ahead governor handler so the pump self-throttles
-        # with zero host bus writes; False uploads the open-loop handler, which
-        # drifts into an echo. Plain (non-bank-swap) path only — the tracked
-        # video path ignores this flag.
+        # Uploads the skip-when-ahead governor pump so it self-throttles with
+        # zero host bus writes; False uploads the open-loop one, which drifts
+        # into an echo. Applies to both the plain handler and the tracked
+        # $C180 body the bank-swap video path runs; the REU mic pump has no
+        # governed variant.
         self.reu_pump_governor = reu_pump_governor
         # Closed-loop pacing for the host-DMA worker: read R once per chunk and
         # run servo_period's PI controller on the sleep so the ring gap locks
@@ -1351,10 +1355,15 @@ class AudioStreamer:
             "audio: listen-only capture device=%d %dHz sensitivity=%.2f", device, rate, sensitivity
         )
 
-    def _program_reu_pump_rate(self, chunk: int) -> int:
+    def _program_reu_pump_rate(self, chunk: int, *, overdrive: float = 1.0) -> int:
         """Derive the matched CIA #1 Timer A latch for ``chunk`` bytes per pump
         IRQ, record it as this run's nominal, write it to $DC04/$DC05, and
         return it for the caller's log line.
+
+        ``overdrive`` > 1 shortens the period by that factor, so the pump
+        out-produces the consumer. Only a governed pump may ask for it — the
+        governor's skip-when-ahead trims the surplus, and without one it laps
+        the ring (see REU_GOVERNOR_PUMP_OVERDRIVE).
 
         The pump period has to be chunk × the NMI period so the C64-side pump
         delivers exactly what the NMI consumer drains; the kernal-default CIA #1
@@ -1375,7 +1384,7 @@ class AudioStreamer:
         latch changes. BASIC's TI$ jiffy clock drifts as a side effect —
         nothing we depend on.
         """
-        ideal = chunk * (self.nmi.nominal_latch() + 1) - 1
+        ideal = round(chunk * (self.nmi.nominal_latch() + 1) / overdrive) - 1
         latch = min(ideal, CIA_TIMER_LATCH_MAX)
         if latch != ideal:
             log.warning(
@@ -1798,16 +1807,27 @@ class AudioStreamer:
         # audio IRQs — the plain handler, which relies on those registers
         # auto-incrementing, would then read video staging and write into color
         # RAM. The TRACKED variant reloads all five from the main-RAM tracker at
-        # $C200-$C204 (src LO/MI/HI, dst LO/HI) every IRQ.
+        # $C200-$C204 (src LO/MI/HI, dst LO/HI) every IRQ. Its pump code is the
+        # $C180 subroutine, which the $C100 entry and the chunked mhires
+        # dispatcher both call, so the chunk size and the governor choice land
+        # there, once, for both callers.
         #
         # Chunk-operand offsets come from audio_handlers' *_CHUNK_OFFSETS,
         # stated beside the assembly that defines them: a wrong offset writes a
         # length into another instruction's operand and DMAs to a garbage
         # address.
         if skip_irq_vector_hook:
-            handler = patch_chunk_size(
-                REU_IRQ_HANDLER_TRACKED, REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS, chunk
-            )
+            handler = REU_IRQ_HANDLER_TRACKED
+            if self.reu_pump_governor:
+                body = patch_chunk_size(
+                    REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+                    REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
+                    chunk,
+                )
+            else:
+                body = patch_chunk_size(
+                    REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS, chunk
+                )
             # Seed src + dst trackers BEFORE uploading the tracked handler: in
             # between, a CIA #1 IRQ through the bank-swap dispatcher would run
             # the handler on stale trackers and DMA to garbage addresses (static
@@ -1831,9 +1851,7 @@ class AudioStreamer:
             # chunked mhires dispatcher JSRs to $C180 between per-frame REC
             # chunks, so an entry installed first lets a mid-install CIA #1 IRQ
             # call into uninitialized RAM.
-            self.api.write_memory_file(
-                f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", REU_PUMP_BODY_SUBROUTINE
-            )
+            self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
             self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
         elif self.reu_pump_governor:
             # Governor handler: skip-when-ahead prefix + the pump body.
@@ -1859,7 +1877,9 @@ class AudioStreamer:
 
         # Reprogram CIA #1 Timer A latch for the matched pump rate (see
         # _program_reu_pump_rate, which the mic bring-up shares).
-        cia1_latch = self._program_reu_pump_rate(chunk)
+        cia1_latch = self._program_reu_pump_rate(
+            chunk, overdrive=REU_GOVERNOR_PUMP_OVERDRIVE if self.reu_pump_governor else 1.0
+        )
 
         self.api.flush()
         log.info(

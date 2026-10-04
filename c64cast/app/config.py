@@ -801,14 +801,17 @@ class AudioCfg:
     # rate) and the NMI reader free-run open-loop; video DMA bus-halts throttle the NMI
     # reader below nominal, so the pump out-produces it and laps the ring every ~15-23s
     # = audible echo. The governor lives in the pump's own IRQ handler: it reads the NMI
-    # read pointer and skips a chunk when the write head is too far ahead. Only
-    # relevant when use_reu_pump is set.
+    # read pointer and skips a chunk when the write head is too far ahead, and the pump
+    # runs faster than matched so there is always a surplus to skip. Covers both the
+    # char-mode and the bitmap bank-swap video pumps; the REU mic pump has none.
     reu_pump_governor: bool = field(
         default=True,
         metadata={
-            "help": "C64-side rate governor for the REU audio pump: the pump IRQ "
-            "skips a chunk when its write head outruns the reader, stopping "
-            "drift/echo with no host writes. Only active with use_reu_pump."
+            "help": "C64-side rate governor for the REU audio pump: the pump runs "
+            "faster than the reader and its IRQ skips a chunk when its write "
+            "head is half a ring ahead, stopping drift/echo with no host "
+            "writes. Video scenes with use_reu_pump only; the REU mic pump "
+            "has no governor."
         },
     )
     # The host-DMA worker paces ring writes to wall-clock, so the write head W

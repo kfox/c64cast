@@ -358,8 +358,8 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 #
 # The bank-swap handler at $C500 chains to $EA31 on non-raster IRQs (CIA #1
 # jiffy). When the scene ALSO opted into REU audio, the audio pump handler at
-# $C100 (37 B video / 102 B mic) wants every CIA #1 IRQ to run its REU→ring
-# drain, and the two cannot both own $0314.
+# $C100 (REU_IRQ_HANDLER_TRACKED for video, REU_MIC_IRQ_HANDLER for mic) wants
+# every CIA #1 IRQ to run its REU→ring drain, and the two cannot both own $0314.
 #
 # The merge resolves that by appending `JMP $C100` to the bank-swap handler and
 # retargeting its first BEQ ("not raster → chain") to fall through to that JMP

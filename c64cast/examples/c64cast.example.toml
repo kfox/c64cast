@@ -535,20 +535,22 @@ use_reu_pump = false                # **EXPERIMENTAL** — REU-staged audio path
 reu_pump_governor = true            # C64-side rate governor for the REU audio
                                     # pump (only matters with use_reu_pump).
                                     # The pump (CIA #1 rate) and the NMI DAC
-                                    # reader free-run open-loop; video DMA
-                                    # bus-halts throttle the reader below
-                                    # nominal, so the pump out-produces it and
-                                    # laps the 8 KB ring every ~15-23s — an
-                                    # audible echo/overlap. The governor lives
-                                    # in the pump's own IRQ handler: it reads
-                                    # the NMI read pointer and SKIPS a chunk
-                                    # whenever its write head gets too far
-                                    # ahead, self-throttling to the consumer
-                                    # with zero host bus writes (a host-side
-                                    # servo was tried first but its CIA-latch
-                                    # writes audibly glitched the pump). On by
-                                    # default; set false to A/B the open-loop
-                                    # (drift/echo) behavior.
+                                    # reader free-run open-loop, and video DMA
+                                    # bus-halts throttle both by different
+                                    # amounts, so one laps the other around the
+                                    # 8 KB ring — an audible echo/overlap. With
+                                    # the governor the pump runs 1.5x faster
+                                    # than matched, and its own IRQ handler
+                                    # reads the NMI read pointer and SKIPS a
+                                    # chunk whenever its write head is half a
+                                    # ring ahead, self-throttling to the
+                                    # consumer with zero host bus writes (a
+                                    # host-side servo was tried first but its
+                                    # CIA-latch writes audibly glitched the
+                                    # pump). Covers char-mode and bitmap
+                                    # (REU bank-swap) video; the mic pump has
+                                    # no governor. On by default; set false to
+                                    # A/B the open-loop (drift/echo) behavior.
 host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
                                     # audio worker (mic + videos, i.e.
                                     # use_reu_pump = false). That worker paces

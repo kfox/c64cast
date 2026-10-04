@@ -1567,9 +1567,9 @@ class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
 
 
 class ReuPumpBodySubroutineTest(unittest.TestCase):
-    """The pump body at $C180 mirrors the inline pump work in
-    REU_IRQ_HANDLER_TRACKED but ends with RTS so the chunked mhires
-    bank-swap dispatcher can JSR to it. Caller is responsible for
+    """The open-loop pump body at $C180 is the tracked pump's one copy:
+    REU_IRQ_HANDLER_TRACKED and the chunked mhires bank-swap dispatcher
+    both JSR to it, so it ends with RTS. Caller is responsible for
     saving A; subroutine doesn't preserve registers (X / Y aren't
     touched anyway, A is dead at every call site)."""
 
@@ -1590,18 +1590,15 @@ class ReuPumpBodySubroutineTest(unittest.TestCase):
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE_ADDR, 0xC180)
 
     def test_no_pha_at_start(self):
-        # The TRACKED handler starts with PHA ($48); the subroutine
-        # drops it (caller saves A if needed). First byte is the LDA
-        # #<chunk_size that begins the length-reload sequence.
+        # No PHA ($48): the caller saves A if it needs it. First byte is
+        # the LDA #<chunk_size that begins the length-reload sequence.
         from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE
 
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE[0], 0xA9)
 
     def test_bcc_displacement_lands_on_rts(self):
-        # Original TRACKED handler had BCC at offset 93 → target offset
-        # 105 (PLA). Subroutine shifts everything by −1 (no leading PHA)
-        # → BCC at offset 92 → target offset 104 (RTS). Displacement
-        # byte stays +10 because the shift is uniform.
+        # The dst-wrap BCC at offset 92 skips the 10-byte wrap block and
+        # must land on the RTS at offset 104.
         from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE
 
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE[92], 0x90)  # BCC
