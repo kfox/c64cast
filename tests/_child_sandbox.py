@@ -48,10 +48,10 @@ both of which their tests grade — and converting it would grade something
 else.
 
 A wait on a child the caller has already `kill()`ed is a reap, not the
-command, and is given at least :data:`_REAP_S`. `subprocess.run` answers its
-own expiry with `kill()` and then an unbounded `wait()`, which reaches the
-clamp; held to `BOUND_S`, it turned the caller's `TimeoutExpired` into a
-`ChildProcessHung` whenever the kernel took longer than `BOUND_S` to reap —
+command, and the clamp never cuts it below :data:`_REAP_S`. `subprocess.run`
+answers its own expiry with `kill()` and then an unbounded `wait()`, which
+reaches the clamp; held to `BOUND_S`, it turned the caller's `TimeoutExpired`
+into a `ChildProcessHung` whenever the kernel took longer than `BOUND_S` to reap —
 under the 0.3 s a test patches in, on a loaded macOS runner (#539). The kill is
 recorded by wrapping `Popen.kill`, not inferred from timing. `terminate()` is
 not recorded: a child may ignore SIGTERM, so the wait after one is still the

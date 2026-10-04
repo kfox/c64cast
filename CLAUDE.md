@@ -215,7 +215,7 @@ what it had written. It derives from `BaseException` because every one of those
 sites catches the `TimeoutExpired` it replaces and carries on. The production
 numbers do not move, and a caller that asked for *no more than* the bound keeps
 its own `TimeoutExpired`; a wait that only reaps a child the caller already
-`kill()`ed gets at least the module's reap allowance, so that caller's expiry
+`kill()`ed is never cut below the module's reap allowance, so that caller's expiry
 survives a slow reap too. That module's docstring is where the capped sites are
 listed, with what each one does when its child's expiry is swallowed.
 

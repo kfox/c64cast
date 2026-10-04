@@ -248,8 +248,8 @@ they are — `--doctor` run by hand still gives `uv` its 60 seconds — and a
 caller that asked for *no more than* `BOUND_S` keeps its own `TimeoutExpired`
 (`upgrade._stop`'s interrupt grace is `BOUND_S` exactly), because that bound is
 the caller's own behavior and its own tests grade it. A wait on a child the
-caller has already `kill()`ed is a reap rather than the command, and gets at
-least the module's `_REAP_S` however short a test patches `BOUND_S` (#539).
+caller has already `kill()`ed is a reap rather than the command, and the clamp
+never cuts it below the module's `_REAP_S`, however short a test patches `BOUND_S` (#539).
 
 **A test may not leave the process-wide RNG seeded.** `random` and numpy's
 legacy global generator both carry state across tests in a worker, and this
