@@ -20,7 +20,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, FakeTime, SleepDrivenClock
+from _fakes import FakeAPI, FakeTime, SleepDrivenClock, quiet_logging
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio import audio_rate as audio_rate_mod
@@ -1469,6 +1469,228 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 0)
         self.assertTrue(s.q.empty())
 
+    def test_position_seconds_reads_what_is_heard(self):
+        # A landed sample is heard one ring lead later, and nothing is heard
+        # before the consumer starts.
+        s = _make()
+        s._pushed_count = 8000
+        s._queued_samples = 0
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertAlmostEqual(s.ring_lead_seconds(), 8000 / s.effective_rate, places=6)
+        s.servo.ring_lead = 2000.0
+        self.assertAlmostEqual(s.position_seconds(), 6000 / s.effective_rate, places=6)
+        self.assertAlmostEqual(s.ring_lead_seconds(), 2000 / s.effective_rate, places=6)
+        s.servo.reset_after_stop()
+        self.assertEqual(s.position_seconds(), 0.0)
+
+    def test_a_splice_during_the_prebuffer_waits_out_what_already_landed(self):
+        # The pre-splice prebuffer plays first once the consumer starts, so the
+        # splice's anchor, position + lead, has to sit past it on both sides of
+        # the start.
+        s = _make()
+        s._pushed_count = 3072
+        s._queued_samples = 1024
+        landed = 2048 / s.effective_rate
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertAlmostEqual(s.ring_lead_seconds(), landed, places=6)
+        s.servo.reset_for_consumer_start(2048)
+        self.assertAlmostEqual(s.position_seconds() + s.ring_lead_seconds(), landed, places=6)
+
+    def test_a_splice_just_after_the_start_leaves_out_the_prebuffer_pad(self):
+        # The consumer starts behind a prebuffer whose last chunk was padded,
+        # so the seeded lead exceeds the landed content and position_seconds()
+        # reads 0; the anchor still has to be the landed content, not the pad
+        # past it.
+        s = _make()
+        s._pushed_count = 2036
+        s._queued_samples = 0
+        s.servo.reset_for_consumer_start(2048)
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertAlmostEqual(
+            s.position_seconds() + s.ring_lead_seconds(), 2036 / s.effective_rate, places=6
+        )
+
+    def test_the_prebuffer_lead_leaves_out_a_padded_chunks_pad(self):
+        # position_seconds() counts content only, so the clock already lags by
+        # a prebuffer pad; a lead that also counted the pad would hold the
+        # picture that far past the splice's first sample.
+        s = _make_worker_streamer(chunk_size=32)
+        before: list[float] = []
+        seeds: list[int] = []
+        seed = s.servo.reset_for_consumer_start
+
+        def capture_then_seed(ring_lead: int) -> None:
+            before.append(s.ring_lead_seconds())
+            seeds.append(ring_lead)
+            seed(ring_lead)
+
+        s.servo.reset_for_consumer_start = capture_then_seed  # type: ignore[method-assign]
+        s.host_dma_servo = False
+        s.start_for_external_source()
+
+        def stop_quietly() -> None:
+            # The run summary stop() logs is asserted by the underrun tests.
+            with quiet_logging():
+                s.stop()
+
+        self.addCleanup(stop_quietly)
+        s.push_samples(np.zeros(20, dtype=np.int16))
+        deadline = time.monotonic() + 5.0
+        while s._pushed_count - s._queued_samples < 20 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(s._pushed_count - s._queued_samples, 20)
+        s.push_samples(np.zeros(32 * 6, dtype=np.int16))
+        while not seeds and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(len(seeds), 1)
+        pad = 32 - 20
+        self.assertAlmostEqual(before[0], (seeds[0] - pad) / s.effective_rate, places=9)
+
+    def test_position_seconds_starts_at_zero_after_the_prebuffer(self):
+        # The prebuffer lands before the consumer starts, so it is all lead.
+        # The clock is read inside the start, on the worker: once the producer
+        # runs dry the worker pads the ring and the clock rightly moves on.
+        s = _make_worker_streamer(chunk_size=32)
+        started = threading.Event()
+        seed = s.servo.reset_for_consumer_start
+        at_start: list[float] = []
+
+        def seed_then_signal(ring_lead: int) -> None:
+            seed(ring_lead)
+            at_start.append(s.position_seconds())
+            started.set()
+
+        s.servo.reset_for_consumer_start = seed_then_signal  # type: ignore[method-assign]
+        s.host_dma_servo = False
+        s.start_for_external_source()
+        self.addCleanup(s.stop)
+        s.push_samples(np.zeros(32 * 6, dtype=np.int16))
+        self.assertTrue(started.wait(5.0))
+        self.assertEqual(s.servo.ring_lead, 32 * 6)
+        self.assertEqual(at_start, [0.0])
+
+    def test_position_seconds_reaches_the_end_once_the_producer_runs_dry(self):
+        # Past the last sample the worker pads the ring, so the gap holds while
+        # nothing in it is content. The clock has to reach the end anyway: a
+        # video ends only when it reaches its last frame's PTS.
+        s = _make_worker_streamer(chunk_size=32)
+        s.host_dma_servo = False
+        total = 32 * 6 + 20
+        # The underrun summary stop() logs is asserted by the underrun tests.
+        with quiet_logging():
+            s.start_for_external_source()
+            try:
+                s.push_samples(np.zeros(total, dtype=np.int16))
+                deadline = time.monotonic() + 5.0
+                while s._full_underruns < 12 and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                underruns = s._full_underruns
+                position = s.position_seconds()
+            finally:
+                s.stop()
+        self.assertGreaterEqual(underruns, 12)
+        self.assertAlmostEqual(position, total / s.effective_rate, places=6)
+
+    def test_a_producer_late_by_less_than_a_chunk_does_not_step_the_clock(self):
+        # A short chunk's pad sits behind content the producer has merely not
+        # sent yet; only a whole pad chunk after it says the producer ran dry.
+        s = _make()
+        s.servo.ring_lead = 200.0
+        s._note_ring_landed(32, 0)
+        s._note_ring_landed(32, 12)
+        self.assertEqual(s._content_lead(), 200.0)
+        s._note_ring_landed(32, 0)
+        self.assertEqual(s._content_lead(), 200.0)
+        s._note_ring_landed(32, 12)
+        s._note_ring_landed(32, 32)
+        self.assertEqual(s._content_lead(), 200.0 - 12 - 32)
+        s._note_ring_landed(32, 32)
+        self.assertEqual(s._content_lead(), 200.0 - 12 - 64)
+        s._note_ring_landed(32, 0)
+        self.assertEqual(s._content_lead(), 200.0)
+
+    def test_the_worker_clears_the_tail_pad_before_it_counts_the_landing(self):
+        # Content landing behind a dry tail: a reader between the two steps
+        # must not pair the new landed count with the old tail pad, which would
+        # put the clock a ring of pad past anything heard.
+        s = _make_worker_streamer(chunk_size=32)
+        s.host_dma_servo = False
+        total = 32 * 6 + 20
+        seen: list[float] = []
+        consume = s._consume_queued
+
+        def consume_then_read(n: int) -> None:
+            consume(n)
+            if n:
+                seen.append(s.position_seconds())
+
+        s._consume_queued = consume_then_read  # type: ignore[method-assign]
+        with quiet_logging():
+            s.start_for_external_source()
+            try:
+                s.push_samples(np.zeros(total, dtype=np.int16))
+                deadline = time.monotonic() + 5.0
+                while s._full_underruns < 12 and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                underruns = s._full_underruns
+                seen.clear()
+                s.push_samples(np.zeros(32, dtype=np.int16))
+                while not seen and time.monotonic() < deadline:
+                    time.sleep(0.001)
+            finally:
+                s.stop()
+        self.assertGreaterEqual(underruns, 12)
+        self.assertTrue(seen)
+        self.assertLessEqual(seen[0], total / s.effective_rate)
+
+    def test_position_seconds_reads_the_landed_count_before_the_tail_pad(self):
+        # The worker lands content after clearing the tail pad, so a reader
+        # that took the pad first and the count after could pair them.
+        s = _make()
+        s.servo.ring_lead = 192.0
+        s._pushed_count = 1032
+        s._queued_samples = 32
+        for _ in range(10):
+            s._note_ring_landed(32, 32)
+        content_lead = s._content_lead
+
+        def lead_then_land() -> float | None:
+            lead = content_lead()
+            s._note_ring_landed(32, 0)
+            # Not _consume_queued: it takes _count_lock, and a position_seconds()
+            # that read the lead inside that lock would deadlock here, where the
+            # per-test cap cannot interrupt a blocked acquire.
+            s._queued_samples -= 32
+            return lead
+
+        s._content_lead = lead_then_land  # type: ignore[method-assign]
+        self.assertLessEqual(s.position_seconds(), 1000 / s.effective_rate)
+
+    def test_position_seconds_is_not_torn_by_a_worker_discard(self):
+        # The worker drops a pre-splice chunk with the paired subtract while
+        # the video thread reads the clock; a read pairing the old pushed
+        # count with the new queued count would lead by that chunk.
+        class TearOnRead(AudioStreamer):
+            @property
+            def _pushed_count(self) -> int:
+                pushed: int = self.__dict__["_pushed_raw"]
+                if self._count_lock.acquire(blocking=False):
+                    self._queued_samples -= 32
+                    self.__dict__["_pushed_raw"] = pushed - 32
+                    self._count_lock.release()
+                return pushed
+
+            @_pushed_count.setter
+            def _pushed_count(self, value: int) -> None:
+                self.__dict__["_pushed_raw"] = value
+
+        s = _make()
+        s.__class__ = TearOnRead
+        s._pushed_count = 1032
+        s._queued_samples = 32
+        s.servo.ring_lead = 0.0
+        self.assertLessEqual(s.position_seconds(), 1000 / s.effective_rate)
+
     def test_position_seconds_host_dma(self):
         # The divisor is effective_rate — the rate the CIA latch actually
         # yields — not the requested sample_rate. At 8 kHz NTSC that is
@@ -1477,6 +1699,7 @@ class LifecycleTest(unittest.TestCase):
         s = _make()
         s._pushed_count = 8000
         s._queued_samples = 0
+        s.servo.ring_lead = 0.0
         self.assertAlmostEqual(s.position_seconds(), 8000 / s.effective_rate, places=6)
         self.assertAlmostEqual(s.position_seconds(), 1.00124, places=5)
         # Still-queued samples are not yet "consumed".

@@ -419,6 +419,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Ultimate each attempt could stall the picture and the audio for up to
   5 seconds.
 
+- **Video no longer runs ahead of `$D418` DAC audio.** The DAC clock counted a
+  sample as played once it reached the C64's ring buffer, but the C64 plays it
+  about a third of a second later, so the picture led the sound by that much
+  for the whole run. The clock now subtracts what is still waiting in the ring.
+  A seek or loop wrap holds the picture for the same third of a second, so the
+  picture and the sound change together.
+
 - **A run on an Ultimate whose `Vol Master` is OFF is no longer silent.**
   Firmware 3.15 adds a master level to the audio mixer (F2 → Audio Mixer on an
   Ultimate 64, Audio Output Settings on an Ultimate II+) and multiplies it into

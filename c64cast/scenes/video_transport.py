@@ -155,7 +155,9 @@ class VideoTransportControls:
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
         self.audio_anchor_clock_s = self.content_to_clock(target_s)
-        self.audio_anchor_pos = sc.audio.position_seconds()
+        # The flush keeps what already sits in the C64 ring, so the target's
+        # first sample is heard one ring lead from now, not at once.
+        self.audio_anchor_pos = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
         sc.source.request_seek(target_s)
         sc.audio.flush()
 
@@ -167,8 +169,10 @@ class VideoTransportControls:
             # branch. The silencing flush is the fast one (sampler: $DF21 volume
             # 0; DAC: worker ring stomp) and drops queued audio, so resume
             # starts clean.
+            # Frozen at the splice target if one is still being waited out, or
+            # a pause inside the hold would resume a ring lead short of it.
             assert sc.audio is not None and sc.source is not None
-            self.audio_anchor_clock_s = self.clock_s()
+            self.audio_anchor_clock_s = self.target_clock_s()
             self.paused = True
             sc.source.set_muted(True)
             sc.audio.flush(silence_output=True)
@@ -344,8 +348,27 @@ class VideoTransportControls:
     def position(self) -> float:
         """The playback position in content seconds, which is what the whole
         transport surface speaks; the internal clock is in the scaled/PTS
-        domain on the resync tempo path, and identical elsewhere."""
-        return self.clock_to_content(self.clock_s())
+        domain on the resync tempo path, and identical elsewhere.
+
+        On the resync path a splice holds the clock below its target until the
+        target is heard; this reports the target through that hold, because a
+        held FF/RW and a relative jog seek to ``position() + delta`` and would
+        otherwise lose the hold's length on every step."""
+        return self.clock_to_content(self.target_clock_s())
+
+    def target_clock_s(self, clock_s: float | None = None) -> float:
+        """clock_s(), except through a resync splice's hold, where it is the
+        splice target the clock is waiting to reach. The displayed frame is
+        chosen by it, so a seek shows its target frame as a still through the
+        hold rather than nothing: a held FF/RW re-seeks faster than a hold
+        ends and would otherwise show no picture until release.
+
+        A caller that already read ``clock_s`` passes it, and outside a hold
+        gets that same value back; a second read of a running clock differs."""
+        clk = self.clock_s() if clock_s is None else clock_s
+        if self.touched and self.resync:
+            clk = max(clk, self.audio_anchor_clock_s)
+        return clk
 
     def duration(self) -> float | None:
         source = self._scene.source
