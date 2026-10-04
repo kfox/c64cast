@@ -656,7 +656,7 @@ clock on the next one.
 On a `blank` scene it also takes over the machine's interrupt, so that the
 scroll and the page flip land between frames. The REU audio pump
 (`[audio].use_reu_pump`) needs the same interrupt, so the two are refused
-together at configuration time. Turn the pump off, mute that scene with
+together at configuration time, unless the scene has no audio to pump. Turn the pump off, mute that scene with
 `audio = false`, or use `mcm`, where `big_text` needs no interrupt.
 
 ## Choosing a Display Mode for an Overlay

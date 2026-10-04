@@ -61,7 +61,7 @@ NMI_ROUTINE = bytes.fromhex(
 NMI_ROUTINE_PATCH_OFFSET_READ_HI = 6
 NMI_ROUTINE_PATCH_OFFSET_WRAP_HI = 22
 NMI_ROUTINE_PATCH_OFFSET_RESET_HI = 26
-# Where the NMI routine lives in C64 RAM (these handlers "own" $C000-$C04F).
+# Where the NMI routine lives in C64 RAM ($C000-$C01F is big_text's).
 NMI_ROUTINE_ADDR = 0xC020
 
 # 8 KB at $4000-$5FFF (VIC bank 1, which c64cast never selects — see

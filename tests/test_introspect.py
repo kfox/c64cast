@@ -72,6 +72,21 @@ class ModeTableSyncTest(unittest.TestCase):
             )
 
 
+class IrqHookIntrospectionTest(unittest.TestCase):
+    """An overlay that takes the $0314 IRQ vector says so in --describe and in
+    the introspection JSON (#559)."""
+
+    def test_json_carries_the_hooked_modes(self):
+        docs = {o["name"]: o for o in introspect.as_dict()["overlays"]}
+        self.assertEqual(docs["big_text"]["irq_hook_modes"], ["blank"])
+        self.assertEqual(docs["clock"]["irq_hook_modes"], [])
+
+    def test_describe_states_the_pump_restriction(self):
+        out = introspect.render_describe("overlay:big_text")
+        self.assertIn("refused on display modes blank while [audio].use_reu_pump is on", out)
+        self.assertNotIn("refused on display modes", introspect.render_describe("overlay:clock"))
+
+
 class CompatMatrixTest(unittest.TestCase):
     """The --compat matrix (overlay_mode_ok) must mirror the real
     overlays.validate_for_scene gate, including bitmap text support."""
