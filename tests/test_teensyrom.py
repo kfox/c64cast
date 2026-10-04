@@ -499,6 +499,11 @@ class SlicingBackendTest(unittest.TestCase):
 
 
 class SlicingConfigTest(unittest.TestCase):
+    def test_slicing_is_off_by_default(self):
+        # Sliced bitmap video drops frames that are on screen only briefly,
+        # so a TR+ has to opt in.
+        self.assertEqual(cfgmod.Config().teensyrom.dma_slicing, "off")
+
     def test_slice_fields_are_bounded_to_a_header_byte(self):
         for name in ("dma_slice_bytes", "dma_slice_gap_us"):
             for bad in (-1, 256, True, 3.0):

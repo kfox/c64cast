@@ -21,12 +21,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Upgrade notes
 
-- **On a TeensyROM+ with firmware v0.9 or later, delete `dac_bitmap_tempo_hires`
-  and `dac_bitmap_tempo_mhires` from your `[audio]` section if they came from
-  the example config.** The example used to set them to 0.89 and 0.88, and a
-  value in your file still wins over the 0.97 such a TeensyROM+ now resolves
-  to — so bitmap video with DAC audio would play about 10% fast. Keep them only
-  if you measured them yourself.
+- **If you turn on `[teensyrom].dma_slicing` on a TeensyROM+ with firmware
+  v0.9 or later, delete `dac_bitmap_tempo_hires` and `dac_bitmap_tempo_mhires`
+  from your `[audio]` section if they came from the example config.** The
+  example used to set them to 0.89 and 0.88, and a value in your file still
+  wins over the 0.97 a slicing TeensyROM+ resolves to — so bitmap video with
+  DAC audio would play about 10% fast. Keep them only if you measured them
+  yourself.
 
 ### Added
 
@@ -68,15 +69,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   firmware **3.15** or newer. On older firmware, including C64 Ultimate
   1.1.0, the check is skipped with one log line saying so.
 
-- **A TeensyROM+ on firmware v0.9 or later now slices large DMA writes while
+- **A TeensyROM+ on firmware v0.9 or later can slice large DMA writes while
   DAC audio plays**, letting the 6510 run between 32-byte slices instead of
   halting for the whole write. The `$D418` sample player loses about 3.9×
   fewer interrupts per byte written, so bitmap video with DAC audio drains
-  much closer to real time and its audio wobbles 2–4× less. Writes stay
-  unsliced when no sample player is running, because slicing costs bulk
-  throughput, and on a regular TeensyROM or older firmware nothing changes.
-  `[teensyrom].dma_slicing` (`auto`, the default; `on`; `off`) controls it,
-  with `dma_slice_bytes` and `dma_slice_gap_us` for the slice shape.
+  much closer to real time and its measured pitch wobble falls 2–4×. It is
+  off by default: slicing costs bulk throughput, and on bitmap video that
+  shortens or drops frames that are on screen only briefly, while on a music
+  video the audio still sounded better unsliced. Set
+  `[teensyrom].dma_slicing` to `auto` (use it when the firmware has it) or
+  `on` (also warn when it does not); `dma_slice_bytes` and `dma_slice_gap_us`
+  set the slice shape. Writes stay unsliced when no sample player is running,
+  and a regular TeensyROM or older firmware never slices.
 
 - **`host_palette = "auto"` now asks an Ultimate 64 which 16 colors it is actually
   driving**, instead of assuming the built-in table. Every color decision in
