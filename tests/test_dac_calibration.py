@@ -950,8 +950,13 @@ class SlotRingExtractionTest(unittest.TestCase):
             dsr.extract_slot_levels(np.zeros(4 * dsr.CAP_SR), 40, RING)
 
 
-def _dev(name, max_in, default_sr=48000.0):
-    return {"name": name, "max_input_channels": max_in, "default_samplerate": default_sr}
+def _dev(name, max_in, default_sr=48000.0, hostapi=0):
+    return {
+        "name": name,
+        "max_input_channels": max_in,
+        "default_samplerate": default_sr,
+        "hostapi": hostapi,
+    }
 
 
 class _FakeSD:
@@ -1399,7 +1404,7 @@ class FindCaptureDeviceTest(unittest.TestCase):
     cameras = [_FACETIME, _CAMLINK]
 
     def _run(self, inputs, preferred=None, *, cameras=None, camera_extra=True):
-        fake = _FakeSD([_dev(name, ch) for name, ch in inputs])
+        fake = _FakeSD([_dev(name, ch, hostapi=sum(api)) for name, ch, *api in inputs])
         cams = self.cameras if cameras is None else cameras
         with (
             patch.dict("sys.modules", {"sounddevice": fake}),
@@ -1415,7 +1420,7 @@ class FindCaptureDeviceTest(unittest.TestCase):
             self._run(inputs, preferred, **kwargs)
         message = str(cm.exception)
         self.assertIn("--audio-device", message)
-        for name, ch in inputs:
+        for name, ch, *_ in inputs:
             if ch > 0:
                 self.assertIn(name, message)
         return message
@@ -1473,6 +1478,28 @@ class FindCaptureDeviceTest(unittest.TestCase):
         inputs = [(_MIC, 1), ("Speakers", 0), ("Cam Link 4K", 2)]
         self.assertIn("is not an audio input", self._refused(inputs, 1))
         self.assertIn("is not an audio input", self._refused(inputs, "7"))
+
+    # Windows lists each input once per host API; MME (0) truncates names to 31
+    # characters, the others (1, 2) carry the full name.
+    windows = [
+        ("Microphone (Realtek Audio)", 2, 0),
+        ("Digital Audio Interface (Cam Li", 2, 0),
+        ("Microphone (Realtek Audio)", 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 2),
+    ]
+
+    def test_one_input_listed_by_several_host_apis_is_one_input(self):
+        self.assertEqual(self._run(self.windows), 3)
+        self.assertEqual(self._run(self.windows, "cam link"), 3)
+        self.assertEqual(self._run(self.windows, "realtek"), 0)
+
+    def test_two_inputs_in_one_host_api_stay_ambiguous(self):
+        inputs = self.windows + [("Digital Audio Interface (Cam Link 4K #2)", 2, 2)]
+        self.assertIn("3 audio inputs named like", self._refused(inputs))
+        line_in = self.windows + [("Line In (Realtek Audio)", 2, 1)]
+        self.assertIn("matches more than one", self._refused(line_in, "realtek"))
+        self.assertIn("matches more than one", self._refused(inputs, "link 4k"))
 
     def test_an_output_only_device_is_not_a_candidate(self):
         message = self._refused([("Cam Link 4K", 0)])

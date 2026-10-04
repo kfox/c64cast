@@ -48,13 +48,35 @@ def named_positions(names: Sequence[str], spec: str) -> list[int]:
     return exact or [i for i, n in enumerate(names) if text and text in n.lower()]
 
 
-def _input_devices() -> list[tuple[int, str]]:
-    """``(index, name)`` of every input-capable sounddevice device."""
+class _Input(NamedTuple):
+    """An input-capable sounddevice device and the host API listing it."""
+
+    index: int
+    name: str
+    hostapi: int
+
+
+def _input_devices() -> list[_Input]:
+    """Every input-capable sounddevice device."""
     import sounddevice as sd
 
     return [
-        (i, str(d["name"])) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0
+        _Input(i, str(d["name"]), int(d.get("hostapi", 0)))
+        for i, d in enumerate(sd.query_devices())
+        if d["max_input_channels"] > 0
     ]
+
+
+def _one_device(found: list[_Input]) -> _Input | None:
+    """The single device ``found`` holds, or ``None`` when it holds none or
+    several. Windows lists each input once per host API (MME, DirectSound,
+    WASAPI, WDM-KS), so matches that each sit in a different host API are one
+    device, taken from the lowest-numbered host API; two matches in one host
+    API are two devices."""
+    hostapis = [f.hostapi for f in found]
+    if not found or len(set(hostapis)) != len(hostapis):
+        return None
+    return min(found, key=lambda f: f.hostapi)
 
 
 def find_capture_device(preferred: int | str | None) -> int:
@@ -75,7 +97,7 @@ def find_capture_device(preferred: int | str | None) -> int:
     return _input_named_like_capture_camera(inputs)
 
 
-def _named_input(inputs: list[tuple[int, str]], preferred: int | str) -> int:
+def _named_input(inputs: list[_Input], preferred: int | str) -> int:
     """The input ``preferred`` names, as :func:`find_capture_device` describes."""
     text = str(preferred).strip()
     try:
@@ -88,22 +110,23 @@ def _named_input(inputs: list[tuple[int, str]], preferred: int | str) -> int:
                 f"--audio-device {text} asks for the system default input, which "
                 "calibration never records from. " + pick_device_hint("Name the input with")
             )
-        if index not in {i for i, _ in inputs}:
+        if index not in {f.index for f in inputs}:
             raise CaptureUnavailableError(
                 f"--audio-device {text} is not an audio input. "
                 + pick_device_hint("Name the input with")
             )
         return index
-    found = named_positions([name for _, name in inputs], text)
-    if len(found) == 1:
-        return inputs[found[0]][0]
+    found = [inputs[i] for i in named_positions([f.name for f in inputs], text)]
+    one = _one_device(found)
+    if one is not None:
+        return one.index
     reason = "matches no audio input" if not found else "matches more than one audio input"
     raise CaptureUnavailableError(
         f"--audio-device {text!r} {reason}. " + pick_device_hint("Name the input with")
     )
 
 
-def _input_named_like_capture_camera(inputs: list[tuple[int, str]]) -> int:
+def _input_named_like_capture_camera(inputs: list[_Input]) -> int:
     """The one input named like the auto-picked HDMI capture device."""
     from c64cast.control import camera
 
@@ -121,10 +144,11 @@ def _input_named_like_capture_camera(inputs: list[tuple[int, str]]) -> int:
             f"be found and nothing is recorded. Cameras found:\n"
             f"{camera.camera_listing(e.cameras)}\n" + pick_device_hint("Name the input with")
         ) from None
-    found = [i for i, name in inputs if names_match(name, cam.name)]
-    if len(found) == 1:
-        log.info("calib: capture input %d is named like the capture device %r", found[0], cam.name)
-        return found[0]
+    found = [f for f in inputs if names_match(f.name, cam.name)]
+    one = _one_device(found)
+    if one is not None:
+        log.info("calib: capture input %d is named like the capture device %r", one.index, cam.name)
+        return one.index
     reason = "no audio input" if not found else f"{len(found)} audio inputs"
     raise CaptureUnavailableError(
         f"{reason} named like the capture device {cam.name!r}, so nothing is recorded. "
