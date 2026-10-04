@@ -92,7 +92,12 @@ _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("midi", "mido", "midi scenes; [midi_control] live control"),
     ("logging", "rich", "colored log output"),
     ("vision", "mediapipe", "[vision] enabled gesture control"),
-    ("camera", "cv2_enumerate_cameras", "[video].device by name/VID:PID; --list-devices detail"),
+    (
+        "camera",
+        "cv2_enumerate_cameras",
+        "[video].device by name/VID:PID; --list-devices detail; "
+        "--calibrate-dac capture input without --audio-device",
+    ),
     ("tr", "serial", "TeensyROM serial backend"),
     ("wizard", "questionary", "--init config wizard"),
     ("yt", "yt_dlp", "cast URL playback (YouTube et al.)"),

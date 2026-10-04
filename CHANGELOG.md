@@ -29,6 +29,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   DAC audio would play about 10% fast. Keep them only if you measured them
   yourself.
 
+- **If `--calibrate-dac` used to find your capture input on its own, it may
+  now ask for `--audio-device`.** It finds the input through the HDMI capture
+  device, which needs the `camera` extra (`c64cast[all]` includes it). If your
+  C64's audio arrives on a line-in rather than a capture stick, pass that input
+  with `--audio-device`.
+
 ### Added
 
 - **`scripts/diags/hw_lock.py` runs a command while holding a per-user lock on
@@ -131,6 +137,17 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   rides every state frame for them to read.
 
 ### Changed
+
+- **`--calibrate-dac` no longer records from the system default input.**
+  Without `--audio-device`, it used to take the first input whose name looked
+  like a capture device, else the system default input — on a laptop the
+  microphone, so the run measured room noise for about a minute and then
+  failed. It now records from the one audio input named like the connected
+  HDMI capture device, which it finds with the `camera` extra. When it cannot
+  single one out, it stops before touching the machine, lists the inputs, and
+  asks for `--audio-device`. An `--audio-device` name that matches no input, or
+  more than one, now stops the run too, instead of falling back to the default
+  input (#568).
 
 - **`--doctor` and `-v` name the firmware build.** On an Ultimate, doctor's
   CONNECTIVITY section gains a `<system> (device)` row naming the machine and
@@ -265,6 +282,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   pump's. `reu_margin_probe.py` measures the pump's lead over the reader.
 
 ### Fixed
+
+- **On Linux, a camera named in `[video].device` or `-d` opens through V4L2.**
+  A camera is listed once per Linux capture backend, so a name or VID:PID
+  matched it twice, warned that it matched 2 cameras, and opened its GStreamer
+  index (`1800 + N` in `--list-devices`), which OpenCV's pip wheels cannot
+  open. It now counts as one camera and opens at its V4L2 index (`200 + N`).
+  A name that matches several cameras still warns and takes the first.
 
 - **A `big_text` overlay no longer overwrites the REU audio pump's code, and
   `big_text` on a `blank` display is refused while `[audio].use_reu_pump` is

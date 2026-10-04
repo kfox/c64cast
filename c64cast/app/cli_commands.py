@@ -27,8 +27,8 @@ from c64cast import _transport_log
 from c64cast._native_io import silence_native_stderr
 from c64cast._redact import redact_secrets
 from c64cast.audio import dac_calibration
-from c64cast.audio.audio import AUDIO_AVAILABLE, resolve_audio_input_device
-from c64cast.audio.dac_capture_device import CaptureUnavailableError
+from c64cast.audio.audio import AUDIO_AVAILABLE
+from c64cast.audio.dac_capture_device import CaptureUnavailableError, find_capture_device
 from c64cast.audio.dac_slot_ring import MeasurementError
 from c64cast.control.transport import atomic_write_text
 from c64cast.hw import char_rom, hw_provision
@@ -596,11 +596,13 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
             "'mic' extra: uv tool install --force 'c64cast[all]'"
         )
         return 3
-    # `find_capture_device` wants int | None, with None meaning the system default.
-    dev: int | None = None
-    if args.audio_device is not None:
-        idx = resolve_audio_input_device(args.audio_device)
-        dev = idx if idx >= 0 else None
+    # Found here as well as after the DAC is up, so a rig whose capture input
+    # cannot be found stops before anything is written to the machine.
+    try:
+        find_capture_device(args.audio_device)
+    except CaptureUnavailableError as e:
+        log.error("%s", e)
+        return 3
     be = _connect_backend(cfg, "--calibrate-dac")
     if be is None:
         return 4
@@ -611,7 +613,7 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
         # single-connection DMA socket for the next run to trip over.
         hw_provision.resolve_system(cfg, be)
         run = dac_calibration.run_calibration(
-            be, cfg, device=dev, log_fn=lambda m: log.info("%s", m)
+            be, cfg, device=args.audio_device, log_fn=lambda m: log.info("%s", m)
         )
     # A rig that cannot be measured is a user-fixable setup problem, and both
     # exceptions carry actionable text — so print it rather than traceback.

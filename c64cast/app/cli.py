@@ -516,8 +516,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--calibrate-dac",
         action="store_true",
         help="Measure the connected SID's Mahoney 8-bit $D418 DAC transfer curve "
-        "(requires a capture device — Cam Link — on the SID audio output) and save "
-        "a per-device calibrated table, then exit. On a U64/U2+, every populated "
+        "and save a per-device calibrated table, then exit. It records from the "
+        "audio input --audio-device names, else from the one input named like the "
+        "connected HDMI capture device (found with the 'camera' extra), and never "
+        "from the system default input. On a U64/U2+, every populated "
         "physical SID socket is measured independently. Playback with "
         "[audio].dac_curve = 'auto' (the default) then uses the applicable table "
         "automatically. Most valuable for physical 6581/8580 chips and SID "

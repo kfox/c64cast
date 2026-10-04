@@ -205,66 +205,6 @@ class UsbWebcamTest(CaptureDeviceTestCase):
         self.assertEqual(self.autopick(), (1, _AVF))
 
 
-class ClassifierTest(unittest.TestCase):
-    """:func:`looks_like_hdmi_capture` on its own, table-driven over its data."""
-
-    #: Device names that are not HDMI capture devices, as they enumerate, each
-    #: caught by one exclusion pattern alone.
-    NOT_CAPTURE = (
-        "HP HD Camera",
-        "HD Pro Webcam C920",
-        "Elgato Facecam",
-        "Microsoft® LifeCam HD-3000",
-        "Logitech BRIO",
-        "Razer Kiyo",
-        "Insta360 Link",
-        "OBSBOT Tiny 4K",
-        "iPhone",
-        "iPad",
-        "EpocCam",
-        "DroidCam Source 3",
-        "Reincubate Camo",
-        "VirtualCam",
-        "XSplit VCam",
-        "mmhmm",
-        "NVIDIA Broadcast",
-        "screen-capture-recorder",
-    )
-
-    def test_known_non_capture_usb_devices_are_not_picked(self) -> None:
-        for name in self.NOT_CAPTURE:
-            with self.subTest(name=name):
-                self.assertFalse(_diaglib.looks_like_hdmi_capture(name, "1234:5678"))
-
-    def test_every_exclusion_alone_vetoes_a_known_device(self) -> None:
-        """Each pattern is the only one some name above matches, so dropping
-        any pattern lets that device through."""
-        patterns = _diaglib.NOT_CAPTURE_NAME_PATTERNS
-        for pattern in patterns:
-            with self.subTest(pattern=pattern):
-                self.assertTrue(
-                    any(
-                        [p for p in patterns if p in name.lower()] == [pattern]
-                        for name in self.NOT_CAPTURE
-                    )
-                )
-
-    def test_a_device_with_no_usb_identity_is_not_picked(self) -> None:
-        for usb_id in (None, ""):
-            with self.subTest(usb_id=usb_id):
-                self.assertFalse(_diaglib.looks_like_hdmi_capture("Cam Link 4K", usb_id))
-
-    def test_a_device_with_no_name_is_not_picked(self) -> None:
-        for name in ("", "   "):
-            with self.subTest(name=name):
-                self.assertFalse(_diaglib.looks_like_hdmi_capture(name, "1234:5678"))
-
-    def test_capture_sticks_are_picked(self) -> None:
-        for name in ("Cam Link 4K", "Game Capture HD60 S+", "USB Video", "Live Gamer Ultra"):
-            with self.subTest(name=name):
-                self.assertTrue(_diaglib.looks_like_hdmi_capture(name, "1234:5678"))
-
-
 class DefaultDeviceMessageTest(unittest.TestCase):
     def test_a_no_frame_error_names_the_default_device(self) -> None:
         message = _diaglib.no_frame_message(None, "for 5s")

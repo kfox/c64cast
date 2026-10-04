@@ -169,7 +169,14 @@ c64cast -u u64://192.168.2.64 --calibrate-dac
 ```
 
 That plays a ladder of levels through the chip, records the result through a
-capture device, and writes a table. It takes about fifty seconds per SID
+capture device, and writes a table. The capture device is the audio input
+`--audio-device` names, by index or name. Without that flag, it is the one
+audio input named like the connected HDMI capture device; finding that device
+needs the `camera` extra. If no input can be found that way (no extra, no
+capture device or several, or no input or several with its name), the run
+stops before it touches the machine, lists the inputs, and asks for
+`--audio-device`. It never records from the system default input, which on
+most computers is the microphone. It takes about fifty seconds per SID
 socket, and a machine with two socketed chips measures each one separately.
 The file is keyed to the machine's own identity — the Ultimate's serial
 number, a TeensyROM's USB serial — so a changed address does not orphan it.

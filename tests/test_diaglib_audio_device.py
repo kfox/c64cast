@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr
 from pathlib import Path
 from types import ModuleType
@@ -46,8 +47,10 @@ class _FakeSoundDevice:
     """The part of sounddevice the resolver may touch. Reading ``default``
     fails the test: the system default input is never a candidate."""
 
-    def __init__(self, devices: list[tuple[str, int]]) -> None:
-        self._devices = [{"name": n, "max_input_channels": ch} for n, ch in devices]
+    def __init__(self, devices: Sequence[tuple[str, int] | tuple[str, int, int]]) -> None:
+        self._devices = [
+            {"name": n, "max_input_channels": ch, "hostapi": sum(api)} for n, ch, *api in devices
+        ]
 
     def query_devices(self):
         return list(self._devices)
@@ -70,7 +73,11 @@ class AudioDeviceTestCase(unittest.TestCase):
     diag device variables set."""
 
     cameras: list[CameraInfo] = [_FACETIME, _CAMLINK]
-    sd_inputs: list[tuple[str, int]] = [(_MIC, 1), ("Cam Link 4K", 2), ("Speakers", 0)]
+    sd_inputs: list[tuple[str, int] | tuple[str, int, int]] = [
+        (_MIC, 1),
+        ("Cam Link 4K", 2),
+        ("Speakers", 0),
+    ]
     avf_inputs: list[str] = [_MIC, "ZoomAudioDevice", "Cam Link 4K"]
 
     def setUp(self) -> None:
@@ -181,10 +188,37 @@ class TwoStickInputsTest(AudioDeviceTestCase):
 
     def test_two_inputs_named_like_the_camera_is_ambiguous(self) -> None:
         message = self.assert_refuses("avf", "Cam Link 4K #2")
-        self.assertIn("2 audio inputs named like capture camera", message)
+        self.assertIn("more than one audio input named like capture camera", message)
 
     def test_an_exact_name_wins_over_a_longer_one(self) -> None:
         self.assertEqual(self.resolve("avf", "cam link 4k")[0].device, ":1")
+
+
+class WindowsHostApisTest(AudioDeviceTestCase):
+    """Windows lists each input once per host API; MME (0) truncates names
+    to 31 characters, the others (1, 2) carry the full name."""
+
+    sd_inputs = [
+        (_MIC, 2, 0),
+        ("Digital Audio Interface (Cam Li", 2, 0),
+        (_MIC, 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 2),
+    ]
+
+    def test_one_input_listed_by_several_host_apis_is_one_input(self) -> None:
+        self.assertEqual(self.resolve("sd")[0].device, 3)
+        self.assertEqual(self.resolve("sd", "cam link")[0].device, 3)
+        self.assertEqual(self.resolve("sd", "macbook")[0].device, 0)
+
+
+class WindowsTwoSticksTest(AudioDeviceTestCase):
+    sd_inputs = [*WindowsHostApisTest.sd_inputs, ("Digital Audio Interface (Cam Link 4K #2)", 2, 2)]
+
+    def test_two_inputs_in_one_host_api_stay_ambiguous(self) -> None:
+        message = self.assert_refuses("sd", "Cam Link 4K #2")
+        self.assertIn("more than one audio input named like capture camera", message)
+        self.assertIn("more than one", self.assert_refuses("sd", spec="link 4k"))
 
 
 class NamedTest(AudioDeviceTestCase):
@@ -216,7 +250,7 @@ class RefindAfterReenumerationTest(AudioDeviceTestCase):
     """The sounddevice tools find their input again once a reset has made
     PortAudio re-enumerate, by its exact name and never a longer one."""
 
-    def refind(self, inputs: list[tuple[str, int]], audio):
+    def refind(self, inputs: Sequence[tuple[str, int] | tuple[str, int, int]], audio):
         with patch.dict(sys.modules, {"sounddevice": _FakeSoundDevice(inputs)}):
             return _diaglib.refind_sd_audio_input(audio)
 
@@ -238,6 +272,13 @@ class RefindAfterReenumerationTest(AudioDeviceTestCase):
         with self.assertRaises(SystemExit) as cm:
             self.refind(inputs, _diaglib.AudioInput(3, "USB Audio"))
         self.assertIn("now names more than one input", str(cm.exception))
+
+    def test_a_windows_input_is_found_in_its_own_host_api_at_a_new_index(self) -> None:
+        """Every host API lists the stick under the same name, so the index it
+        was picked at may now hold another device."""
+        audio = _diaglib.AudioInput(3, "Digital Audio Interface (Cam Link 4K)", 1)
+        inputs = [("Line In", 2, 0), *WindowsHostApisTest.sd_inputs]
+        self.assertEqual(self.refind(inputs, audio), 4)
 
 
 class WebcamAutopickTest(unittest.TestCase):
@@ -266,6 +307,16 @@ class WebcamAutopickTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             self.pick([webcam, _HD60])
         self.assertIn("also matches another camera", str(cm.exception))
+
+    def test_a_linux_webcam_listed_once_per_backend_is_one_camera(self) -> None:
+        """Under CAP_ANY, Linux lists every camera once per backend (GStreamer
+        1800, V4L2 200) at backend + N."""
+        cams = [
+            CameraInfo(index=backend + n, name=name, vid=vid, pid=0x66, backend=0)
+            for n, name, vid in ((0, "Integrated Webcam", None), (2, "Cam Link 4K", 0x0FD9))
+            for backend in (1800, 200)
+        ]
+        self.assertEqual(self.pick(cams), "Integrated Webcam")
 
 
 if __name__ == "__main__":
