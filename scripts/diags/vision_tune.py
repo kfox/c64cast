@@ -13,14 +13,15 @@ Use it to set each [vision] threshold from real numbers: capture a window while
 performing one gesture, read the printed min/median/max, pick a threshold that
 cleanly separates that gesture from rest. No U64 needed — camera only.
 
-    scripts/diags/vision_tune.py                 # run until Ctrl-C, device 1
+    scripts/diags/vision_tune.py                 # run until Ctrl-C, FaceTime camera
     scripts/diags/vision_tune.py -t 6            # one 6-second capture window
-    scripts/diags/vision_tune.py --device 0      # pick a different camera index
+    scripts/diags/vision_tune.py --device "USB Camera"  # pick another camera
     scripts/diags/vision_tune.py --pinch 0.06 --swipe 1.0   # preview thresholds
 
-Camera index trap (see local_capture_hardware memory): on this Mac cv2 idx 1 is
-the FaceTime camera, idx 0 is the Cam Link. Default here is 1; override with
---device. Grab a frame and look if unsure.
+``--device`` takes what ``[video].device`` takes: a camera name substring, a
+USB ``VID:PID``, or a cv2 index. The default is the name "FaceTime", not an
+index, because the indices renumber whenever a USB camera such as the Cam Link
+comes or goes. ``c64cast --list-devices`` prints the names and IDs.
 """
 
 from __future__ import annotations
@@ -55,7 +56,9 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument(
-        "--device", type=int, default=1, help="cv2 camera index (default 1 = FaceTime on this Mac)"
+        "--device",
+        default="FaceTime",
+        help="camera: a name substring, a USB VID:PID, or a cv2 index (default: FaceTime)",
     )
     ap.add_argument(
         "--model",
@@ -96,7 +99,7 @@ def main() -> None:
     args = ap.parse_args()
 
     print(
-        f"opening camera index {args.device} + loading model "
+        f"opening camera {args.device!r} + loading model "
         f"(thresholds preview: pinch<{args.pinch} swipe>={args.swipe}) ..."
     )
     src = WebcamSource(args.device)

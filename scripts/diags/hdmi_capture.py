@@ -25,7 +25,9 @@ substring, or a USB ``VID:PID`` — and resolves it through the app's own
 :func:`c64cast.control.camera.resolve_camera_index`. Prefer a name or a VID:PID:
 indices renumber whenever something else on the bus is plugged or unplugged, and
 an index that has drifted onto the webcam grabs a perfectly good frame of the
-wrong thing. ``c64cast --list-devices`` prints the names and IDs.
+wrong thing. ``c64cast --list-devices`` prints the names and IDs. With no
+``-d``, the tool opens the Cam Link by its USB ``VID:PID`` (or
+``$C64_DIAG_CAMERA``) and exits if it is absent rather than open another camera.
 
 Frames are downscaled to ``--width`` (default 960px longest edge) before writing
 so a capture read back into an agent's context costs a fraction of the tokens a
@@ -61,7 +63,7 @@ from pathlib import Path
 import _diaglib as d
 
 
-def grab(device: int | str, warmup: int = 5):
+def grab(device: int | str | None, warmup: int = 5):
     cap = d.open_capture(device)
     try:
         for _ in range(max(0, warmup)):  # let exposure/handshake settle
@@ -74,7 +76,9 @@ def grab(device: int | str, warmup: int = 5):
         cap.release()
 
 
-def burst(device: int | str, count: int, *, size: tuple[int, int], fps: int, warmup: int = 12):
+def burst(
+    device: int | str | None, count: int, *, size: tuple[int, int], fps: int, warmup: int = 12
+):
     """Grab `count` consecutive frames from one open device.
 
     Returns (frames, measured_fps). The device is asked for `size`/`fps` before
@@ -119,17 +123,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument(
-        "-d",
-        "--device",
-        default=d.CAMLINK_DEVICE,
-        help="capture device: a cv2 index, a camera name substring, or a USB "
-        f"VID:PID (default {d.CAMLINK_DEVICE!r}; see `c64cast --list-devices`)",
-    )
-    # Same destination, so the older invocations in the notes and the
-    # hw-visual-verify skill keep working — it only ever took an index, which
-    # --device still accepts.
-    ap.add_argument("--index", dest="device", help="alias for --device")
+    d.add_capture_device_arg(ap, "-d", "--index")
     ap.add_argument("-n", "--count", type=int, default=1, help="frames to grab")
     ap.add_argument("--delay", type=float, default=0.5, help="seconds between frames when -n > 1")
     ap.add_argument("-o", "--out", default=None, help="explicit output path (only valid with -n 1)")

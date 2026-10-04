@@ -417,7 +417,7 @@ SCALE = (
 )
 
 
-def check_source_alternation(device: int | str, seconds: float = 4.0) -> str:
+def check_source_alternation(device: int | str | None, seconds: float = 4.0) -> str:
     """Confirm the C64 is alternating at the field rate, with the page up.
 
     Worth the seconds it costs, because the failure it rules out is invisible
@@ -538,11 +538,7 @@ def main() -> None:
         help="the solid the patches sit on (default black)",
     )
     ap.add_argument("--no-reset", action="store_true")
-    ap.add_argument(
-        "--device",
-        default=d.CAMLINK_DEVICE,
-        help="capture device for the source self-check on the calibration page",
-    )
+    d.add_capture_device_arg(ap)
     ap.add_argument(
         "--no-source-check",
         action="store_true",

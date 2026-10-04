@@ -9,9 +9,10 @@ this module exists to kill:
   Importing this module inserts the repo root onto ``sys.path``.
 * **Stable output paths.** Captures land under ``scripts/diags/out/`` (git
   ignored), not a coin-flip between ``/tmp`` and ``/private/tmp``.
-* **Hardware indices drift.** The Cam Link cv2 index / avfoundation audio
+* **Hardware indices drift.** The cv2 camera indices, the avfoundation audio
   index and the U64 URL all shift with hotplug + DHCP, so every default here
-  is overridable by env var (and the tools expose matching CLI flags).
+  is overridable by env var (and the tools expose matching CLI flags), and the
+  capture device defaults to the Cam Link's USB identity, never to an index.
 
 The values below are *defaults*, not ground truth: they are one rig's
 working values, confirmed as of 2026-06-10. Point the env vars at yours.
@@ -81,41 +82,113 @@ U64_URL = os.environ.get("C64_DIAG_URL", "http://192.168.2.64")
 #: Ultimate II+ on the same LAN. Override: C64_DIAG_U2P_URL.
 U2P_URL = os.environ.get("C64_DIAG_U2P_URL", "http://192.168.2.65")
 
-#: Cam Link 4K as an OpenCV capture index. Override: C64_DIAG_CV2.
-CAMLINK_CV2_INDEX = int(os.environ.get("C64_DIAG_CV2", "0"))
-#: The capture device the tools open, in the form ``[video].device`` takes: an
-#: OpenCV index, or a camera *name substring* / USB ``VID:PID`` resolved through
-#: :func:`open_capture`. A name is what you want on a rig that hotplugs — the
-#: indices renumber, the Elgato's ``0fd9:0066`` does not. Override:
-#: C64_DIAG_CAMERA (either form), falling back to C64_DIAG_CV2 (index only).
-CAMLINK_DEVICE: int | str = os.environ.get("C64_DIAG_CAMERA") or CAMLINK_CV2_INDEX
+#: The Cam Link 4K's USB ``VID:PID``: the device every capture tool opens when
+#: its user names none. An identity rather than a cv2 index, because the indices
+#: renumber on hotplug — a U64 PAL/NTSC switch has dropped the Cam Link off the
+#: bus and moved the laptop's own camera to index 0.
+CAMLINK_ID = "0fd9:0066"
 
 
-def open_capture(device: int | str):
-    """Open ``device`` as a cv2 capture, resolving a name / ``VID:PID`` first.
+def default_capture_device() -> str:
+    """The capture device a tool opens when its user passed no device flag.
 
-    Returns the opened ``cv2.VideoCapture``; the caller releases it. Resolution
-    goes through the app's own :func:`c64cast.control.camera.resolve_camera_index`
-    rather than a second copy of the matcher, so a diag tool and a
-    ``[video].device`` in a config pick the same stick from the same string —
-    including the **backend** the matched index is only valid against (an
-    AVFoundation index opened with ``CAP_ANY`` is some other camera).
+    ``$C64_DIAG_CAMERA`` (an index, a name substring or a ``VID:PID``) wins.
+    The older index-only ``$C64_DIAG_CV2`` is still honored, with a warning on
+    stderr, since an index names whichever camera is enumerated there today.
+    Otherwise :data:`CAMLINK_ID`."""
+    camera = os.environ.get("C64_DIAG_CAMERA", "").strip()
+    if camera:
+        return camera
+    legacy = os.environ.get("C64_DIAG_CV2", "").strip()
+    if legacy:
+        try:
+            int(legacy)
+        except ValueError:
+            raise SystemExit(
+                f"C64_DIAG_CV2={legacy!r} is not a cv2 index; "
+                "set C64_DIAG_CAMERA to a name or VID:PID instead"
+            ) from None
+        print(
+            f"[capture] warning: C64_DIAG_CV2={legacy} opens whatever camera is at "
+            f"cv2 index {legacy} now; set C64_DIAG_CAMERA={CAMLINK_ID} to open the "
+            "Cam Link by identity",
+            file=sys.stderr,
+        )
+        return legacy
+    return CAMLINK_ID
 
-    Raises ``SystemExit`` with the resolver's own message on a device that
-    matches nothing, since every caller here is a command-line tool."""
+
+def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> None:
+    """Add the capture-device option every capture tool shares, as ``--device``.
+
+    ``aliases`` are extra option strings for the same value, such as ``-d`` or
+    a tool's older ``--cv2-index``, so existing invocations keep working. The
+    value is an index, a camera name substring or a USB ``VID:PID``; leaving it
+    out stores ``None``, which :func:`open_capture` reads as "the default
+    device", never as an index."""
+    short = [a for a in aliases if not a.startswith("--")]
+    long = [a for a in aliases if a.startswith("--")]
+    parser.add_argument(
+        *short,
+        "--device",
+        *long,
+        dest="device",
+        default=None,
+        metavar="DEVICE",
+        help="capture device: a cv2 index, a camera name substring, or a USB VID:PID "
+        f"(default: $C64_DIAG_CAMERA, else the Cam Link {CAMLINK_ID}; "
+        "see `c64cast --list-devices`)",
+    )
+
+
+def resolve_capture(device: int | str | None) -> tuple[int, int | None]:
+    """Resolve a capture-device value to ``(cv2_index, backend_or_None)``.
+
+    ``None`` means :func:`default_capture_device`. Resolution goes through the
+    app's own :func:`c64cast.control.camera.resolve_camera_index` rather than a
+    second copy of the matcher, so a diag tool and a ``[video].device`` in a
+    config pick the same stick from the same string — including the
+    **backend** the matched index is only valid against (an AVFoundation index
+    opened with ``CAP_ANY`` is some other camera).
+
+    Raises ``SystemExit`` when nothing matches. The default identity that
+    matches nothing fails here too: there is no fallback to an index or to any
+    other camera, since that camera may be pointed at a person."""
+    from c64cast.control import camera
+
+    spec = default_capture_device() if device is None else device
+    try:
+        return camera.resolve_camera_index(spec)
+    except RuntimeError as e:
+        if not camera.camera_enumeration_available():
+            raise SystemExit(
+                f"finding capture device {spec!r} by name or VID:PID needs the 'camera' "
+                "extra: run `uv sync --all-extras`. No camera is opened by index in "
+                "its place."
+            ) from e
+        if str(spec).strip().lower() == CAMLINK_ID:
+            raise SystemExit(
+                f"the Cam Link 4K (USB {CAMLINK_ID}) is not connected, and no other "
+                f"camera will be opened in its place. {e} Replug it, or name a "
+                "device with --device."
+            ) from e
+        raise SystemExit(str(e)) from e
+
+
+def open_capture(device: int | str | None):
+    """Open ``device`` as a cv2 capture, resolved by :func:`resolve_capture`.
+
+    Returns the opened ``cv2.VideoCapture``; the caller releases it. Raises
+    ``SystemExit`` on a device that resolves to nothing or will not open, since
+    every caller here is a command-line tool."""
     import cv2  # local import: opencv is a hard dep but keep tool import cheap
 
-    from c64cast.control.camera import resolve_camera_index
-
-    try:
-        index, backend = resolve_camera_index(device)
-    except RuntimeError as e:
-        raise SystemExit(str(e)) from e
+    index, backend = resolve_capture(device)
     cap = cv2.VideoCapture(index) if backend is None else cv2.VideoCapture(index, backend)
     if not cap.isOpened():
         cap.release()
         raise SystemExit(
-            f"could not open capture device {device!r} (cv2 index {index}). "
+            f"could not open {describe_capture_device(device)} (cv2 index {index}). "
             f"Run `c64cast --list-devices` for names + VID:PID, or set C64_DIAG_CAMERA."
         )
     return cap
@@ -134,11 +207,18 @@ class NoFrameError(RuntimeError):
     """An open capture device returned no frame within the retry window."""
 
 
-def no_frame_message(device: int | str, what: str) -> str:
+def describe_capture_device(device: int | str | None) -> str:
+    """How an error message names ``device``; ``None`` is the default device."""
+    if device is None:
+        return "the default capture device"
+    return f"capture device {device!r}"
+
+
+def no_frame_message(device: int | str | None, what: str) -> str:
     """The error text for a capture that returned no frame: ``what`` says how
     long or where, and the rest names the causes worth checking first."""
     return (
-        f"capture device {device!r} returned no frame {what}. Likely causes: the "
+        f"{describe_capture_device(device)} returned no frame {what}. Likely causes: the "
         "HDMI link is renegotiating (after a video-mode change on the machine "
         "this has lasted from seconds to over a minute; rerun once it settles), "
         "the source sends no signal, or "
@@ -147,7 +227,7 @@ def no_frame_message(device: int | str, what: str) -> str:
     )
 
 
-def read_frame(cap, device: int | str, *, timeout_s: float = NO_FRAME_RETRY_S):
+def read_frame(cap, device: int | str | None, *, timeout_s: float = NO_FRAME_RETRY_S):
     """Read one frame from the open capture ``cap``, retrying failed reads for
     up to ``timeout_s`` seconds. ``device`` is only used in the error message.
 

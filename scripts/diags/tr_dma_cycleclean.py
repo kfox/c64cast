@@ -141,15 +141,8 @@ class CamSample:
 
 
 class CamCapture:
-    def __init__(self, index: int):
-        import cv2
-
-        self.cap = cv2.VideoCapture(index)
-        if not self.cap.isOpened():
-            raise SystemExit(
-                f"could not open Cam Link cv2 index {index} "
-                f"(default {d.CAMLINK_CV2_INDEX}; override --cam / C64_DIAG_CV2)"
-            )
+    def __init__(self, device: str | None):
+        self.cap = d.open_capture(device)
         for _ in range(8):  # warm up handshake/exposure
             self.cap.read()
         self.samples: list[CamSample] = []
@@ -434,12 +427,7 @@ def main() -> int:
         default="sd",
         help="TR storage for the heartbeat PRG (default sd)",
     )
-    ap.add_argument(
-        "--cam",
-        type=int,
-        default=d.CAMLINK_CV2_INDEX,
-        help=f"Cam Link cv2 index (default {d.CAMLINK_CV2_INDEX})",
-    )
+    d.add_capture_device_arg(ap, "--cam")
     ap.add_argument(
         "--reset-settle",
         type=float,
@@ -454,7 +442,7 @@ def main() -> int:
     args.sizes = [int(s) for s in args.sizes.split(",")]
 
     print("Opening Cam Link ...")
-    cam = CamCapture(args.cam)
+    cam = CamCapture(args.device)
     cam.start()
     time.sleep(0.5)
 
