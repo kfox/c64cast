@@ -290,6 +290,12 @@ class MicLeadServo:
         self._thread = threading.Thread(target=self._run, name="mic-lead-servo", daemon=True)
         self._thread.start()
 
+    def request_stop(self) -> None:
+        """End the loop at its next wait without joining. The streamer calls
+        this before its teardown, which can outlast the re-anchor claim window
+        on a stalled link; stop() still joins afterwards."""
+        self._stop.set()
+
     def stop(self, timeout: float = MIC_LEAD_JOIN_TIMEOUT_S) -> None:
         self._stop.set()
         thread, self._thread = self._thread, None

@@ -746,6 +746,19 @@ class MicLeadServoWiringTest(unittest.TestCase):
             s.stop()
         self.assertTrue(any("lead 1400..1800 B, 2 re-anchor(s)" in m for m in cm.output), cm.output)
 
+    def test_stop_ends_the_servo_loop_before_the_teardown(self):
+        # A teardown stalled past the claim window would otherwise have the
+        # servo drop an unclaimed re-anchor at WARNING during a normal stop.
+        s = _new_streamer()
+        servo = MicLeadServo(
+            read_memory=lambda *a, **k: None, write_pos=lambda: 0, sample_rate=12000
+        )
+        s._mic_lead = servo
+        seen: list[bool] = []
+        cast(Any, s)._disarm_reu_pump = lambda: seen.append(servo._stop.is_set())
+        s.stop()
+        self.assertEqual(seen, [True])
+
 
 if __name__ == "__main__":
     unittest.main()
