@@ -1622,7 +1622,9 @@ class VideoScene(MediaFileMixin, Scene):
                 if not (tr.resync and self.source.seek_pending):
                     tr.seek(tr.loop_a)
                 return True
-        img = self.source.current_frame(tr.target_clock_s())
+        # Through a resync splice's hold this is the target, ahead of clock_s.
+        frame_clock_s = tr.target_clock_s()
+        img = self.source.current_frame(frame_clock_s)
         if img is None:
             return True  # still pre-rolling
         # AVFileSource.current_frame returns the SAME ndarray object between
@@ -1643,7 +1645,11 @@ class VideoScene(MediaFileMixin, Scene):
         # frames, so an OSD-only re-render must not advance them.
         if new_source:
             self._last_rendered_img = img
-            self._record_av_lag(clock_s, current_time)
+            # A frame chosen through a splice's hold is measured against a
+            # clock still reading the pre-splice audio, so it would log the
+            # hold's length as lag on every seek and every loop lap.
+            if frame_clock_s == clock_s:
+                self._record_av_lag(clock_s, current_time)
         img = _crop_to_aspect(img)
         # Before annotation, so the debug digits stay out of the
         # contrast/saturation stats.
@@ -1661,7 +1667,9 @@ class VideoScene(MediaFileMixin, Scene):
             # clock_s is rebased to 0 at start_s, so add it back for the true
             # offset into the file — unless transport has been touched, past
             # which clock_s is already an absolute file position.
-            file_s = tr.clock_to_content(clock_s) if tr.touched else clock_s + self.start_s
+            file_s = (
+                tr.clock_to_content(frame_clock_s) if tr.touched else frame_clock_s + self.start_s
+            )
             label = f"{timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
         if osd_now:

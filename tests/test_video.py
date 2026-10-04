@@ -927,6 +927,47 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.process_frame(0.0)
         self.assertAlmostEqual(asked[-1], 43.0)
 
+    def test_a_frame_shown_through_the_hold_is_not_counted_as_lag(self):
+        # The held clock still reads the pre-splice audio, so measuring the
+        # target frame against it logs the hold's length as lag on every seek.
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene._av_lag_count = 0
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        source.last_frame_pts = 42.0
+        source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+        with (
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            scene.process_frame(0.0)
+            self.assertEqual(scene._av_lag_count, 0)
+            audio._position = 3.34 + 1.0
+            source.last_frame_pts = 43.0
+            source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+            scene.process_frame(0.0)
+        self.assertEqual(scene._av_lag_count, 1)
+        self.assertAlmostEqual(scene._av_lag_min, 0.0)
+
+    def test_a_frame_shown_through_the_hold_is_labeled_with_its_own_time(self):
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.show_frame_numbers = True
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        labels: list[str] = []
+        with (
+            mock.patch.object(
+                scenes, "_annotate_frame_number", lambda img, lbl: labels.append(lbl) or img
+            ),
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            scene.process_frame(0.0)
+        self.assertTrue(labels, "frame-number label was not rendered")
+        self.assertTrue(labels[0].startswith(timecode(42.0)), labels[0])
+
     def test_loop_wrap_splices_once_while_seek_pending(self):
         scene, source, _ = self._resync_scene(position=0.0)
         scene.transport.touch()
