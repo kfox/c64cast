@@ -1377,7 +1377,7 @@ def validate_dac_bitmap_tempo_cfg(cfg: Config) -> None:
         ("dac_bitmap_tempo_hires", cfg.audio.dac_bitmap_tempo_hires),
         ("dac_bitmap_tempo_mhires", cfg.audio.dac_bitmap_tempo_mhires),
     ):
-        if not 0.5 <= value <= 1.0:
+        if value is not None and not 0.5 <= value <= 1.0:
             raise ConfigError(
                 f"[audio].{name} must be 0.5..1.0 (observed playback-speed "
                 f"fraction; 1.0 = off), got {value}"
@@ -2182,7 +2182,9 @@ def _resolve_sampler_audio(ctx: _SceneBuildContext) -> UltimateAudioSampler | No
     )
 
 
-def _video_tempo_scale(cfg: Config, mode: DisplayMode, *, dac_audio: bool) -> float:
+def _video_tempo_scale(
+    cfg: Config, mode: DisplayMode, api: C64Backend, *, dac_audio: bool
+) -> float:
     """Bitmap + ``$D418``-DAC tempo compensation factor (1.0 = none).
 
     On the host-DMA 4-bit DAC path over a bitmap mode, heavy REU bank-swap
@@ -2193,9 +2195,11 @@ def _video_tempo_scale(cfg: Config, mode: DisplayMode, *, dac_audio: bool) -> fl
     stretch (``dac_audio`` False covers sampler and muted)."""
     if not dac_audio or cfg.audio.use_reu_pump or not isinstance(mode, BitmapDisplayMode):
         return 1.0
-    if isinstance(mode, MultiHiresDisplayMode):
-        return cfg.audio.dac_bitmap_tempo_mhires
-    return cfg.audio.dac_bitmap_tempo_hires
+    multicolor = isinstance(mode, MultiHiresDisplayMode)
+    configured = (
+        cfg.audio.dac_bitmap_tempo_mhires if multicolor else cfg.audio.dac_bitmap_tempo_hires
+    )
+    return api.dac_bitmap_tempo(multicolor) if configured is None else configured
 
 
 def _clean_scene_name(title: str) -> str:
@@ -2315,7 +2319,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
         color=ctx.color,
         start_s=start_s or 0.0,
-        tempo_scale=_video_tempo_scale(cfg, mode, dac_audio=has_dac_audio),
+        tempo_scale=_video_tempo_scale(cfg, mode, ctx.api, dac_audio=has_dac_audio),
         loop_audio=cfg.midi_control.loop_audio,
         setup_progress=cfg.video.setup_progress_bar,
     )

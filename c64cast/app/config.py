@@ -99,6 +99,7 @@ _HOST_SID_ADDR_LO = 0xD000
 _HOST_SID_ADDR_HI = 0xDFF0
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
 _TR_STORAGE_CHOICES = ("sd", "usb")
+_TR_DMA_SLICING_CHOICES = ("auto", "on", "off")
 _DISPLAY_CHOICES = ("hires_edges", "hires", "petscii", "mcm", "mhires", "blank", "random")
 _PALETTE_MODE_CHOICES = ("percell", "cheap", "vivid", "grayscale")
 _STYLE_CHOICES = (
@@ -370,6 +371,37 @@ class TeensyromCfg:
         metadata={
             "help": "Where helper PRGs are uploaded + launched from.",
             "choices": _TR_STORAGE_CHOICES,
+        },
+    )
+    dma_slicing: str = field(
+        default="auto",
+        metadata={
+            "help": "Write C64 memory with WriteC64Spans, which DMAs in slices and "
+            "lets the 6510 run between them, so a large write no longer halts the "
+            "CPU across many NMI/IRQ periods. Only while $D418-DAC audio plays, "
+            "and only for writes longer than one slice: slicing costs bulk "
+            "throughput, so otherwise every write stays on WriteC64Mem. 'auto' "
+            "uses it when the firmware has it (TR+ v0.9+); 'on' warns if it does "
+            "not; 'off' always uses the single-halt WriteC64Mem.",
+            "choices": _TR_DMA_SLICING_CHOICES,
+        },
+    )
+    dma_slice_bytes: int = field(
+        default=32,
+        metadata={
+            "help": "Largest single DMA halt, in bytes, when dma_slicing is in "
+            "use (1-255; 0 = no slicing, writes split into 1 KiB halts while DAC "
+            "audio plays). Each slice "
+            "also costs ~75 cycles of handshake, so smaller is gentler on "
+            "audio and raster IRQs but slower."
+        },
+    )
+    dma_slice_gap_us: int = field(
+        default=40,
+        metadata={
+            "help": "Microseconds the 6510 runs between slices (0-255) — the "
+            "time an NMI or IRQ that fired during a slice has to finish. Below "
+            "~20 us the next slice starts before the handler does."
         },
     )
 
@@ -914,30 +946,34 @@ class AudioCfg:
     # dac_bitmap_tempo_hires. No effect on the off-bus sampler, the REU pump, or char
     # modes.
     #
-    # Each default is a measured U64-II NTSC speed fraction (clock/wall); other
-    # platforms differ — measure with scripts/diags/mhires_tempo_clock_ab.py.
-    # 1.0 = compensation off.
-    dac_bitmap_tempo_hires: float = field(
-        default=0.89,
+    # Unset resolves per connected backend (C64Backend.dac_bitmap_tempo): the
+    # fraction depends on how the link's writes halt the NMI, so one number
+    # cannot serve the U64 and a slicing TR+ alike. Measure a platform with
+    # scripts/diags/mhires_tempo_clock_ab.py. 1.0 = compensation off.
+    dac_bitmap_tempo_hires: float | None = field(
+        default=None,
         metadata={
             "help": "Observed $D418-DAC playback-speed fraction on Hires / "
             "Hires-edges bitmap modes (measure via clock/wall). Content is "
             "time-compressed by 1/value (pitch-preserving) so bitmap+DAC video "
             "plays at real time. 1.0 = off. Host-DMA DAC path only — no effect "
-            "on the Ultimate Audio sampler or the REU pump. Default 0.89 = "
-            "U64-II NTSC (Hires drains slightly faster than MHires); re-measure "
-            "per platform (PAL / TR+)."
+            "on the Ultimate Audio sampler or the REU pump. Unset = measured "
+            "for the connected hardware: 0.89 (Ultimate 64-II NTSC, and a "
+            "TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA "
+            "writes); re-measure for PAL."
         },
     )
-    dac_bitmap_tempo_mhires: float = field(
-        default=0.88,
+    dac_bitmap_tempo_mhires: float | None = field(
+        default=None,
         metadata={
             "help": "Observed $D418-DAC playback-speed fraction on MultiHires "
             "bitmap mode (measure via clock/wall). Content is time-compressed by "
             "1/value (pitch-preserving) so bitmap+DAC video plays at real time. "
             "1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio "
-            "sampler or the REU pump. Default 0.88 = U64-II NTSC; re-measure per "
-            "platform (PAL / TR+)."
+            "sampler or the REU pump. Unset = measured for the connected "
+            "hardware: 0.88 (Ultimate 64-II NTSC, and a TeensyROM writing "
+            "unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure "
+            "for PAL."
         },
     )
 
@@ -3555,6 +3591,15 @@ _CHOICES_OPEN: dict[str, str] = {
 _CHOICES_CASE_INSENSITIVE: frozenset[str] = frozenset({"ultimate64.system"})
 
 
+def _validate_tr_dma_slicing(tr: TeensyromCfg) -> None:
+    """Both knobs ride WriteC64Spans' header as one byte each; out of range they
+    would be truncated on the wire into a different slice or gap than asked."""
+    for name in ("dma_slice_bytes", "dma_slice_gap_us"):
+        value = getattr(tr, name)
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 255:
+            raise ValueError(f"[teensyrom].{name} = {value!r} — want an integer 0-255")
+
+
 def _validate_choice_fields(cfg: Config) -> None:
     """Reject a scalar-section string value that is outside its declared
     `choices`.
@@ -3705,6 +3750,7 @@ def validate_sections(cfg: Config) -> None:
     _validate_sid_volume(cfg.ultimate64)
     _validate_host_sid_chips(cfg.hardware)
     _validate_host_sid_tune_match(cfg.hardware)
+    _validate_tr_dma_slicing(cfg.teensyrom)
     _validate_choice_fields(cfg)
     _validate_force_palette(cfg.color)
 

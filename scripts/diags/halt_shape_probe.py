@@ -189,6 +189,9 @@ def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) ->
     consumer here, and reading it would add this link's own DMA to the very
     thing under test.
     """
+    # The consumer is the other link's, but it is real, and a TeensyROM backend
+    # slices only while one is noted — without this, --tr-slicing is ignored.
+    be.note_nmi_consumer(True)
     data = bytes([0x5A]) * payload
     tag = f"{addr:04X}"
     period = 1.0 / write_rate
@@ -259,6 +262,7 @@ def main() -> int:
         "many seconds and measure nothing, leaving the machine untouched otherwise, so "
         "the other backend can be running a real playback at the same time",
     )
+    d.add_tr_slicing_args(ap)
     args = ap.parse_args()
 
     eff = effective_rate(args.nmi_rate, args.system)
@@ -272,7 +276,9 @@ def main() -> int:
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
+    d.apply_tr_slicing(cfg, args)
     be = make_backend(cfg)
+    print(f"[setup] writes: {d.describe_tr_writes(be)}")
 
     if args.load_only > 0:
         return load_only(

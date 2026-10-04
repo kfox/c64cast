@@ -137,7 +137,7 @@ class HardwareProfile:
     # scripts/diags/link_cost_model.py; the defaults are the Ultimate's, so an
     # unmeasured backend inherits the conservative (count-bound) shape.
     write_cost_floor_s: float = 5.2e-3  # per-write overhead payload can't touch
-    write_cost_intercept_s: float = 0.8e-3
+    write_cost_intercept_s: float = 1.3e-3
     write_cost_per_byte_s: float = 1.85e-6
 
     def write_cost_s(self, nbytes: int) -> float:
@@ -148,7 +148,7 @@ class HardwareProfile:
         where that runs out, a marginal per-byte transfer cost.
 
         On the Ultimate the fixed term is ~5.2 ms and payload is *free* up to
-        ~2.4 KB, so what a frame spends is writes; on the TeensyROM the fixed
+        ~2.1 KB, so what a frame spends is writes; on the TeensyROM the fixed
         term is ~0.29 ms and cost is essentially all payload, so what a frame
         spends is bytes. That 18x difference in the fixed term is what makes
         the same delta strategy right on one backend and wrong on the other.
@@ -225,10 +225,12 @@ ULTIMATE_PROFILE = HardwareProfile(
     write_transport="socket_dma",
     max_fps=None,  # no extra cap beyond the system rate
     max_write_rate_hz=200.0,  # ~200 writes/sec DMA ceiling (see caveats)
-    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py: flat at 5.22 ms
-    # from 8 B to ~2.4 KB, then 1.85 us/byte — write-count-bound.
+    # HW-measured with scripts/diags/link_cost_model.py: flat at 5.22 ms from
+    # 8 B to ~2.1 KB, then 1.85 us/byte — write-count-bound. Floor and slope
+    # from 2026-08-12, re-confirmed on firmware 3.15a / FPGA 125; the intercept
+    # is the 3.15a median of five runs (2026-10-03). See hardware-io.md.
     write_cost_floor_s=5.222e-3,
-    write_cost_intercept_s=0.784e-3,
+    write_cost_intercept_s=1.328e-3,
     write_cost_per_byte_s=1.8454e-6,
     audio_ring_addr=0x4000,
 )
@@ -339,6 +341,20 @@ class C64Backend(ABC):
         its text changes) compares it and sends again when it moves.
         Default 0: a backend that cannot tell never asks for a resend."""
         return 0
+
+    def dac_bitmap_tempo(self, multicolor: bool) -> float:
+        """The clock/wall speed a $D418-DAC video drains at over a bitmap mode
+        on this link, for an unset [audio].dac_bitmap_tempo_*. Measured on an
+        Ultimate 64-II NTSC; a TeensyROM writing with WriteC64Mem lands within
+        1% of the same figures."""
+        return 0.88 if multicolor else 0.89
+
+    def note_nmi_consumer(self, active: bool) -> None:
+        """A sample player driven by the CIA2 NMI has started (or stopped)
+        consuming on the C64. Every DMA halt longer than one NMI period costs
+        it ticks, so a backend that can shape its writes to spare it does so
+        only while it runs; the rest ignore this."""
+        return None
 
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise BackendCapabilityError("read_memory")
@@ -959,7 +975,14 @@ def make_backend(cfg: Config) -> C64Backend:
             host_sid_chips=host_chips,
             host_sid_tune_match=cfg.hardware.host_sid_tune_match,
         )
-        return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
+        return TeensyROMBackend(
+            transport,
+            profile=profile,
+            storage=tr.storage,
+            dma_slicing=tr.dma_slicing,
+            dma_slice_bytes=tr.dma_slice_bytes,
+            dma_slice_gap_us=tr.dma_slice_gap_us,
+        )
 
     raise BackendSetupError(
         f"unknown [hardware].backend {backend!r} — known backends: {', '.join(BACKENDS)}"

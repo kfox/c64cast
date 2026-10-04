@@ -103,6 +103,26 @@
             "usb"
           ],
           "default": "sd"
+        },
+        "dma_slicing": {
+          "type": "string",
+          "description": "Write C64 memory with WriteC64Spans, which DMAs in slices and lets the 6510 run between them, so a large write no longer halts the CPU across many NMI/IRQ periods. Only while $D418-DAC audio plays, and only for writes longer than one slice: slicing costs bulk throughput, so otherwise every write stays on WriteC64Mem. 'auto' uses it when the firmware has it (TR+ v0.9+); 'on' warns if it does not; 'off' always uses the single-halt WriteC64Mem.",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "default": "auto"
+        },
+        "dma_slice_bytes": {
+          "type": "integer",
+          "description": "Largest single DMA halt, in bytes, when dma_slicing is in use (1-255; 0 = no slicing, writes split into 1 KiB halts while DAC audio plays). Each slice also costs ~75 cycles of handshake, so smaller is gentler on audio and raster IRQs but slower.",
+          "default": 32
+        },
+        "dma_slice_gap_us": {
+          "type": "integer",
+          "description": "Microseconds the 6510 runs between slices (0-255) \u2014 the time an NMI or IRQ that fired during a slice has to finish. Below ~20 us the next slice starts before the handler does.",
+          "default": 40
         }
       }
     },
@@ -384,14 +404,18 @@
           "default": 1.0
         },
         "dac_bitmap_tempo_hires": {
-          "type": "number",
-          "description": "Observed $D418-DAC playback-speed fraction on Hires / Hires-edges bitmap modes (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Default 0.89 = U64-II NTSC (Hires drains slightly faster than MHires); re-measure per platform (PAL / TR+).",
-          "default": 0.89
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Observed $D418-DAC playback-speed fraction on Hires / Hires-edges bitmap modes (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Unset = measured for the connected hardware: 0.89 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure for PAL."
         },
         "dac_bitmap_tempo_mhires": {
-          "type": "number",
-          "description": "Observed $D418-DAC playback-speed fraction on MultiHires bitmap mode (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Default 0.88 = U64-II NTSC; re-measure per platform (PAL / TR+).",
-          "default": 0.88
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Observed $D418-DAC playback-speed fraction on MultiHires bitmap mode (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Unset = measured for the connected hardware: 0.88 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure for PAL."
         }
       }
     },

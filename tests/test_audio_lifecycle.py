@@ -1515,6 +1515,18 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 0)
         self.assertTrue(any("clean run" in m for m in cm.output))
 
+    def test_the_backend_hears_the_nmi_player_start_and_stop(self):
+        # A TR+ slices its writes only while this is on, so a stop that skipped
+        # the note would leave every later write at a third the throughput.
+        s = _make()
+        s.start_for_external_source()
+        api = cast(Any, s.api)
+        self.assertEqual(api.nmi_consumer_notes, [True])
+        s._total_slots = 1
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
+            s.stop()
+        self.assertEqual(api.nmi_consumer_notes, [True, False])
+
     def test_stop_reports_underruns(self):
         s = _make()
         s._total_slots = 1

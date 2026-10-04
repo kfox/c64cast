@@ -50,9 +50,12 @@ from .c64 import SCREEN, VECTORS
 from .teensyrom_dma import (
     DRIVE_SD,
     DRIVE_USB,
+    SPANS_SEGMENT_BYTES,
     TRClient,
     TRError,
+    TRSpansRefused,
     TRTransport,
+    span_touches_cart_io,
 )
 
 log = logging.getLogger(__name__)
@@ -124,7 +127,16 @@ _RUN_SETTLE_S = 0.5
 
 
 class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
-    def __init__(self, transport: TRTransport, *, profile: HardwareProfile, storage: str = "sd"):
+    def __init__(
+        self,
+        transport: TRTransport,
+        *,
+        profile: HardwareProfile,
+        storage: str = "sd",
+        dma_slicing: str = "off",
+        dma_slice_bytes: int = 0,
+        dma_slice_gap_us: int = 0,
+    ):
         super().__init__()
         self.profile = profile
         self._drive = DRIVE_SD if storage.lower() == "sd" else DRIVE_USB
@@ -140,6 +152,15 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 "TR firmware lacks ReadC64Mem — physical-keyboard control "
                 "disabled (use the control plane); upgrade to fw >= v0.7.2.5"
             )
+        # (slice_bytes, gap_us) while WriteC64Spans carries writes; None keeps
+        # every write on WriteC64Mem, which is all a regular TR or pre-v0.9 TR+
+        # firmware has.
+        self._spans: tuple[int, int] | None = None
+        self._nmi_consumer = False
+        if dma_slicing != "off":
+            self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
+            if self._spans is not None:
+                log.info("TR writes: %s", self.describe_writes())
 
     def _probe_read(self) -> bool:
         """Confirm the connected firmware answers ReadC64Mem. Reads 2 bytes of
@@ -157,19 +178,88 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 self.tr._drain_stale(0.2)
             return False
 
+    def _resolve_spans(self, mode: str, slice_bytes: int, gap_us: int) -> tuple[int, int] | None:
+        try:
+            supported = self.tr.probe_spans()
+        except (OSError, TRError) as e:
+            log.debug("TR WriteC64Spans probe failed (%s); assuming absent", e)
+            with contextlib.suppress(OSError, TRError):
+                self.tr._drain_stale(0.2)
+            supported = False
+        if supported:
+            return slice_bytes, gap_us
+        if mode == "on":
+            log.warning(
+                "[teensyrom].dma_slicing = 'on' but this firmware lacks WriteC64Spans "
+                "(TR+ v0.9+) — writing with WriteC64Mem"
+            )
+        return None
+
+    def describe_writes(self) -> str:
+        """The write path `_resolve_spans` settled on, for the connect log and
+        the diag tools' banners. At slice 0 no WriteC64Spans is ever sent."""
+        if self._spans is None:
+            return "WriteC64Mem"
+        slice_bytes, gap_us = self._spans
+        if slice_bytes == 0:
+            return (
+                f"WriteC64Mem in {SPANS_SEGMENT_BYTES}-byte halts while an NMI consumer "
+                "runs (dma_slice_bytes = 0)"
+            )
+        return (
+            f"WriteC64Spans, {slice_bytes}-byte slices, {gap_us} us gap, while an NMI "
+            "consumer runs, for writes longer than one slice"
+        )
+
+    def dac_bitmap_tempo(self, multicolor: bool) -> float:
+        # Sliced writes lose ~3.5x fewer NMI ticks, so the ring drains nearer
+        # real time (measured NTSC: 0.972 MultiHires, 0.974 Hires).
+        # At slice 0 each command is one 1 KiB halt, which costs the NMI player
+        # ticks like WriteC64Mem's halts do.
+        if self._spans is not None and self._spans[0] != 0:
+            return 0.97
+        return super().dac_bitmap_tempo(multicolor)
+
+    def note_nmi_consumer(self, active: bool) -> None:
+        # Slicing spares only an NMI consumer and costs ~2.4x in bulk
+        # throughput, so with none running every write stays on WriteC64Mem.
+        self._nmi_consumer = active
+
     _EMIT_WRITE_LABEL = "TR write"
     _EMIT_DEVICE_LABEL = "TR"
 
     def _emit(self, addr: int, payload: bytes) -> None:
-        """Split `payload` into WriteC64Mem segments and push each, waiting on
-        its ack. Like the Ultimate's _emit, transient transport failures are
-        absorbed (logged on the shared escalating ladder) rather than raised —
-        a blip shouldn't crash the playlist."""
+        """Split `payload` into segments and push each, waiting on its ack —
+        as sliced WriteC64Spans commands when the firmware has them, an NMI
+        consumer is noted, the segment is longer than one halt (one slice, or
+        one command at slice 0) and the write stays clear of cart IO; else as WriteC64Mem. Like the Ultimate's
+        _emit, transient transport failures are absorbed (logged on the shared
+        escalating ladder) rather than raised — a blip shouldn't crash the
+        playlist."""
+        spans = self._spans
+        # A write no longer than one halt (one slice, or one command at slice
+        # 0) halts as long on WriteC64Mem, which spares two round trips.
+        one_halt = (spans[0] or SPANS_SEGMENT_BYTES) if spans is not None else 0
+        if spans is not None and (
+            not self._nmi_consumer or span_touches_cart_io(addr, len(payload))
+        ):
+            spans = None
         try:
             off, n = 0, len(payload)
             while off < n:
-                chunk = payload[off : off + self.tr.MAX_SEGMENT_BYTES]
-                self.tr.write_segment(addr + off, chunk)
+                step = self.tr.MAX_SEGMENT_BYTES if spans is None else SPANS_SEGMENT_BYTES
+                chunk = payload[off : off + step]
+                if spans is None or len(chunk) <= one_halt:
+                    self.tr.write_segment(addr + off, chunk)
+                else:
+                    try:
+                        self.tr.write_spans([(addr + off, chunk)], *spans)
+                    except TRSpansRefused as e:
+                        # Re-asking per segment would pay the refusal's drain
+                        # each time the bus is still held.
+                        log.debug("%s; carrying the rest with WriteC64Mem", e)
+                        spans = None
+                        self.tr.write_segment(addr + off, chunk)
                 self._stats["writes"] += 1
                 off += len(chunk)
             self._note_emit_success()

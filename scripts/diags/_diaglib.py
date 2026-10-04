@@ -19,6 +19,7 @@ working values, confirmed as of 2026-06-10. Point the env vars at yours.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from datetime import datetime
@@ -283,6 +284,9 @@ def machine_reset(url: str) -> bool:
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(url))
+    # Two writes need no write path, and the WriteC64Spans probe would put one
+    # more half-sent command between a just-killed run and the safety reset.
+    cfg.teensyrom.dma_slicing = "off"
     api = None
     try:
         api = make_backend(cfg)
@@ -298,33 +302,51 @@ def machine_reset(url: str) -> bool:
             close()
 
 
-def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float = 2.0) -> bool:
-    """POST /v1/machine:writemem?address=HHHH&data=<hex> — write raw bytes to C64
-    memory over REST. Address WITHOUT a `$` prefix (the recurring gotcha).
-    Returns True on HTTP 2xx. Coexists with c64cast's DMA socket (separate
-    transport), like rest_readmem — fine to poke concurrently with a running app."""
+#: Most bytes the query-string form of ``writemem`` carries, on every firmware.
+REST_WRITEMEM_MAX = 128
+
+
+def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float = 2.0) -> None:
+    """PUT /v1/machine:writemem?address=HHHH&data=<hex> — write 1 to 128 raw
+    bytes to C64 memory over REST. Coexists with c64cast's DMA socket (separate
+    transport), like rest_readmem — fine to poke concurrently with a running app.
+
+    PUT is the form Ultimate 3.14e, 3.15a and C64 Ultimate 1.1.0 all accept
+    with the bytes in the URL. POST takes the bytes only as a request body, and
+    3.15a answers a bodiless POST with HTTP 412 "Expected Body, but got none.".
+
+    Raises ``ValueError`` for a write the firmware would refuse by its length
+    or end address, and ``requests.HTTPError`` carrying the firmware's error
+    text for any non-2xx answer; transport failures propagate as
+    ``requests.RequestException``. A caller that wants to carry on catches."""
     import requests
 
-    try:
-        r = rest_request(
-            "POST",
-            url + "/v1/machine:writemem",
-            params={"address": f"{address:04X}", "data": data.hex()},
-            timeout=timeout,
+    if not 1 <= len(data) <= REST_WRITEMEM_MAX:
+        raise ValueError(f"writemem takes 1 to {REST_WRITEMEM_MAX} bytes, got {len(data)}")
+    if address < 0 or address + len(data) > 0x10000:
+        raise ValueError(f"writemem of {len(data)} bytes at ${address:04X} passes $FFFF")
+    r = rest_request(
+        "PUT",
+        url + "/v1/machine:writemem",
+        params={"address": f"{address:04X}", "data": data.hex()},
+        timeout=timeout,
+    )
+    if not r.ok:
+        raise requests.HTTPError(
+            f"PUT writemem ${address:04X} ({len(data)} bytes): "
+            f"HTTP {r.status_code} {r.text.strip()[:200]}",
+            response=r,
         )
-        return r.ok
-    except requests.RequestException:
-        return False
 
 
-def flash_border(url: str = U64_URL, color: int = 1, timeout: float = 2.0) -> bool:
+def flash_border(url: str = U64_URL, color: int = 1, timeout: float = 2.0) -> None:
     """Set the VIC border color register $D020 to `color` (0-15) over REST — the
     primitive behind the border-flash A/V sync marker (see the border-flash
     auto-memory): poke a bright color at known wall-clock times during a capture,
     then align the visible flashes to the source to measure playback tempo / A/V
     drift. $D020 is bus-clean to poke (one byte) and visible regardless of display
-    mode. Returns True on success."""
-    return rest_writemem(0xD020, bytes([color & 0x0F]), url, timeout)
+    mode. Raises as :func:`rest_writemem` does."""
+    rest_writemem(0xD020, bytes([color & 0x0F]), url, timeout)
 
 
 def rest_reboot(url: str = U64_URL, timeout: float = 5.0) -> int | None:
@@ -394,6 +416,52 @@ def rest_set_config(
     except ValueError:
         return False
     return errs == []
+
+
+def add_tr_slicing_args(ap) -> None:
+    """``--tr-slicing`` / ``--slice-bytes`` / ``--slice-gap``: the
+    ``[teensyrom].dma_slicing`` knobs, so one tool can measure the same
+    condition with WriteC64Mem and with sliced WriteC64Spans. Unset, each takes
+    the config default. No effect on an Ultimate URL."""
+    from c64cast.hw.teensyrom_dma import SPANS_FIELD_MAX
+
+    def header_byte(text: str) -> int:
+        # Both ride WriteC64Spans' header as one byte; past it, write_spans
+        # raises ValueError, which the backend's _emit does not absorb.
+        value = int(text)
+        if not 0 <= value <= SPANS_FIELD_MAX:
+            raise argparse.ArgumentTypeError(f"{value} is not 0-{SPANS_FIELD_MAX}")
+        return value
+
+    ap.add_argument("--tr-slicing", choices=["auto", "on", "off"], default=None)
+    ap.add_argument(
+        "--slice-bytes", type=header_byte, default=None, help="[teensyrom].dma_slice_bytes"
+    )
+    ap.add_argument(
+        "--slice-gap", type=header_byte, default=None, help="[teensyrom].dma_slice_gap_us"
+    )
+
+
+def apply_tr_slicing(cfg, args) -> None:
+    """Write the ``add_tr_slicing_args`` flags that were given into ``cfg``."""
+    tr = cfg.teensyrom
+    if args.tr_slicing is not None:
+        tr.dma_slicing = args.tr_slicing
+    if args.slice_bytes is not None:
+        tr.dma_slice_bytes = args.slice_bytes
+    if args.slice_gap is not None:
+        tr.dma_slice_gap_us = args.slice_gap
+
+
+def describe_tr_writes(be) -> str:
+    """How a TeensyROM backend is writing, for a tool's setup banner — the
+    resolved mode, not the requested one, since 'auto' and 'on' both fall
+    back to WriteC64Mem on firmware without WriteC64Spans."""
+    from c64cast.hw.teensyrom_api import TeensyROMBackend
+
+    if not isinstance(be, TeensyROMBackend):
+        return "not a TeensyROM (slicing flags ignored)"
+    return be.describe_writes()
 
 
 def __getattr__(name: str) -> object:

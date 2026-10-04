@@ -139,6 +139,14 @@ baud = 2000000                      # 2 Mbaud 8N1 (TR uses full USB bandwidth)
 host = "192.168.2.66"               # TR IP (required for tcp; via CCGMS "ATC")
 tcp_port = 2112                     # TR TCP listener port (firmware default)
 storage = "sd"                      # "sd" | "usb" — where helper PRGs upload to
+dma_slicing = "auto"                # "auto" | "on" | "off" — WriteC64Spans
+                                    #   (TR+ fw v0.9+): DMA large writes in
+                                    #   slices so the DAC's NMI sample player
+                                    #   keeps its timing. Sliced only while
+                                    #   DAC audio plays; "auto" uses it when
+                                    #   the firmware has it, "off" never
+dma_slice_bytes = 32                # largest single DMA halt (0-255; 0 = 1 KiB)
+dma_slice_gap_us = 40               # 6510 run time between slices (0-255 us)
 
 [ultimate64]
 url = "http://192.168.2.64"         # a bare host, or the u64://HOST form
@@ -627,11 +635,13 @@ pitch_mult_blank = 1.0       # Blank (no video input).
 # time, in sync, pitch intact. NO effect on the off-bus Ultimate Audio sampler
 # (the U64 video default), the REU pump, or char modes.
 #
-# Default 0.88 = the measured U64-II NTSC speed fraction (clock/wall). Other
-# platforms differ (U64+PAL, U2P, TR+ PAL/NTSC) — measure per platform with
+# Unset (the default) = the fraction measured for the connected hardware
+# (clock/wall, NTSC): 0.89 hires / 0.88 mhires on the U64-II and on a TeensyROM
+# writing unsliced; 0.97 on a TeensyROM+ with sliced DMA writes
+# ([teensyrom].dma_slicing). Other platforms differ (PAL, U2P) — measure with
 # scripts/diags/mhires_tempo_clock_ab.py and set here. 1.0 = compensation off.
-dac_bitmap_tempo_hires = 0.89   # Hires / Hires-edges DAC speed fraction.
-dac_bitmap_tempo_mhires = 0.88  # MultiHires DAC speed fraction (heavier load).
+# dac_bitmap_tempo_hires = 0.89   # Hires / Hires-edges DAC speed fraction.
+# dac_bitmap_tempo_mhires = 0.88  # MultiHires DAC speed fraction (heavier load).
 
 [vision]
 # Camera-as-input: webcam hand-gesture control via MediaPipe HandLandmarker.

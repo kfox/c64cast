@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 
 import _diaglib as d
+import requests
 
 
 def _flash_loop(
@@ -53,10 +54,18 @@ def _flash_loop(
             stop.wait(min(nxt - now, period))
             continue
         nxt += period
-        if d.flash_border(url, color):  # bright pulse
+        try:
+            d.flash_border(url, color)  # bright pulse
             marks.append(round(time.time() - t0, 4))
-        stop.wait(0.06)  # ~60 ms visible pulse
-        d.flash_border(url, 0)  # back to black (the run owns the border as a marker)
+            stop.wait(0.06)  # ~60 ms visible pulse
+            d.flash_border(url, 0)  # back to black (the run owns the border as a marker)
+        except requests.RequestException as e:
+            print(f"[flash] border write failed, no further markers: {e}")
+            try:
+                d.flash_border(url, 0)
+            except requests.RequestException as e2:
+                print(f"[flash] border may be left at color {color}: {e2}")
+            return
 
 
 def main() -> int:

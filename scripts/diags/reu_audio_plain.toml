@@ -19,6 +19,7 @@ url = "http://192.168.2.64"
 [audio]
 enabled = true
 use_reu_pump = true       # REU-staged audio ring pump (the path under test)
+backend = "dac"           # auto picks the U64 sampler, which has no pump
 
 [playlist]
 loop = true

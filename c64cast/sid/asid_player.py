@@ -135,7 +135,7 @@ _QUEUE_MAX_SLOTS = 4096
 # The arm lock is only ever held across a bounded run of DMA writes, so
 # overshooting this means the link is wedged; teardown restores anyway.
 _TEARDOWN_LOCK_TIMEOUT_S = 2.0
-# Caps one reu_write burst; _prefill_holds mirrors it. Well above the ~2.4 KB
+# Caps one reu_write burst; _prefill_holds mirrors it. Well above the ~2.1 KB
 # below which payload is free on the U64 DMA link (see CLAUDE.md).
 _MAX_DMA_BURST_BYTES = 32 * 1024
 

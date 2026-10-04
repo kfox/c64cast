@@ -258,6 +258,7 @@ def local_choices() -> dict[str, str]:
         "_MIDI_FILTER_MODE_CHOICES": "midi_scene maps the value to filter bits inline",
         "_MOD_SOURCE_CHOICES": "effects.FrameEffect.mod_source takes the value",
         "_TEMPO_SOURCE_CHOICES": "control.tempo reads the value off [performance]",
+        "_TR_DMA_SLICING_CHOICES": "teensyrom_api.TeensyROMBackend branches on the value",
         "_TR_STORAGE_CHOICES": "connect.py sets and hw.backend branches on the value",
         "_TR_TRANSPORT_CHOICES": "connect.py sets and hw.backend branches on the value",
     }

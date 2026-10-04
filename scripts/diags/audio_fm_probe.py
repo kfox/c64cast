@@ -452,7 +452,8 @@ def find_camlink(fallback: int) -> int:
     """Resolve the Cam Link audio index by NAME — PortAudio re-enumerates after
     the HDMI hotplug a reset causes, so a remembered index goes stale."""
     for i, dev in enumerate(sd.query_devices()):
-        if "cam link" in dev["name"].lower() and dev["max_input_channels"] > 0:
+        name = dev["name"].lower()
+        if ("cam link" in name or "shadowcast" in name) and dev["max_input_channels"] > 0:
             return i
     return fallback
 
@@ -486,7 +487,11 @@ def run_condition(
         writer.start()
         time.sleep(0.5)  # let the write cadence settle before recording
 
-    rec = sd.rec(int(secs * CAP_SR), samplerate=CAP_SR, channels=2, device=device, dtype="float32")
+    # A ShadowCast exposes one input channel; the Cam Link two.
+    channels = min(2, sd.query_devices(device)["max_input_channels"])
+    rec = sd.rec(
+        int(secs * CAP_SR), samplerate=CAP_SR, channels=channels, device=device, dtype="float32"
+    )
     sd.wait()
     stats = writer.stop() if writer else WriterStats()
 
@@ -527,6 +532,7 @@ def main() -> int:
     ap.add_argument("--secs", type=float, default=8.0, help="capture seconds per condition")
     ap.add_argument("--ring-cycles", type=int, default=RING_CYCLES)
     ap.add_argument("--device", type=int, default=CAP_DEVICE, help="Cam Link audio sd index")
+    d.add_tr_slicing_args(ap)
     args = ap.parse_args()
 
     sizes = [int(s) for s in args.write_bytes.split(",")]
@@ -546,7 +552,9 @@ def main() -> int:
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
+    d.apply_tr_slicing(cfg, args)
     be = make_backend(cfg)
+    print(f"[setup] writes: {d.describe_tr_writes(be)}")
 
     rows: list[dict] = []
     try:

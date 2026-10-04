@@ -15,9 +15,10 @@ the profile.
 dirty span and several covering only the dirty slabs inside it. Which is right
 is entirely a property of the link, and the two backends here sit at opposite
 extremes: the Ultimate charges ~5.2 ms per write and nothing for payload up to
-~2.4 KB, so chunking multiplies cost; the TeensyROM charges ~0.29 ms per write
+~2.1 KB, so chunking multiplies cost; the TeensyROM charges ~0.29 ms per write
 and is otherwise all payload, so chunking pays. **Both were measured with this
-tool** (2026-08-12, r2 = 1.0000 per cell). The rule this replaced compared byte
+tool** (2026-08-12, r2 = 1.0000 per cell; the Ultimate again on firmware 3.15a,
+2026-10-03, five runs). The rule this replaced compared byte
 counts, which is the wrong currency on a link with a floor that high.
 
 Two regimes rather than a single line because that is what the links measure
@@ -129,14 +130,14 @@ def widen_io_timeout(be, secs: float) -> None:
     The default is 2 s, sized for the app, which never queues more than a
     frame. This tool deliberately queues whole bursts: 320 writes at ~5 ms is
     1.7 s of drain that the trailing IDENTIFY must wait out, so the barrier
-    times out on its way to a perfectly good answer. Closing after the
-    assignment forces the next send to reconnect and apply it.
+    times out on its way to a perfectly good answer. The client reads
+    ``io_timeout`` on every command, so the open socket picks it up without
+    a redial.
     """
     client = getattr(be, "socket_dma", None)
     if client is None:
         return
     client.io_timeout = secs
-    client.close()
 
 
 def fit_piecewise(xs: list[float], ys: list[float]) -> tuple[float, float, float, float, float]:

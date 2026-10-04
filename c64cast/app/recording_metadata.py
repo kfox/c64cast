@@ -250,6 +250,9 @@ def build_scene_recording_metadata(scene: Scene, cfg: Config, system_name: str) 
             ),
             "target_fps": getattr(scene, "target_fps", None) or "auto",
             "audio_enabled": getattr(scene, "audio", None) is not None,
+            # The audio block's dac_bitmap_tempo_* are unset unless authored;
+            # this is what the backend resolved them to for this scene.
+            "tempo_scale": getattr(scene, "tempo_scale", None),
             "effects": [type(eff).__name__ for eff in getattr(scene, "effects", []) or []],
             "overlays": overlay_names,
             **_scene_cfg_fields(scene_cfg),

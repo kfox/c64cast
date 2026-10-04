@@ -409,7 +409,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # so full rate is ~170 writes/s, right at the ~200/s DMA ceiling. HW-verified 2026-06-09: at
         # ~170/s into a bank-2-relocated display ($A000-$BFFF) the U64
         # power-cycles itself mid-tune (Times_of_Lore); at half rate (~90/s) the
-        # same tune plays its full length. See docs/caveats.md. The host-emu poll
+        # same tune plays its full length. Still reproduces on firmware 3.15a
+        # (FPGA 125, 2026-10-03). See docs/caveats.md. The host-emu poll
         # rate is independent and stays at the full video rate.
         if target_fps is None:
             target_fps = 25.0 if system.upper() == "PAL" else 30.0

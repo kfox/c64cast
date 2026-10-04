@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 459 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 462 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -143,6 +143,9 @@ Every name c64cast answers to — 459 of them — and the pages that discuss eac
 | dithering | [What Is In Here](01-introduction.md#what-is-in-here), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither) |
 | `dma_password` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dma_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
+| `dma_slice_bytes` | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
+| `dma_slice_gap_us` | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
+| `dma_slicing` | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `dna` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--doctor` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [`--doctor` (1)](02-config-rules.md#--doctor) |
 | `done_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |

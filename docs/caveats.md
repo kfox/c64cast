@@ -106,15 +106,17 @@ wobbly — all confirmed by ear).
 
 Fix: because the stretch is pitch-preserving, **pre-compress the content in the
 time domain by the inverse factor** so it nets to real time. `[audio].
-dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` (defaults **0.89 hires /
-0.88 mhires**, the measured U64-II NTSC speed fractions `s`) drive it: for the gated bitmap+DAC path,
+dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` drive it. Unset (the
+default), each resolves to the speed fraction `s` measured for the connected
+hardware: **0.89 hires / 0.88 mhires** on a U64-II NTSC and on a TeensyROM
+writing unsliced, **0.97** on a TeensyROM+ with sliced DMA writes: for the gated bitmap+DAC path,
 `AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
 `atempo` filter graph and multiplies each video PTS by `s`. The existing
 drain-clock A/V sync (which reads ≈`s`) then lands both content streams at real
 time, in sync, pitch intact. `clock/wall` telemetry still reads ≈`s` **by design**
 (it gauges the drain rate; the compensation makes *content* real-time, not the
 drain clock). Set the field to `1.0` to disable. Other platforms (U64+PAL, U2P,
-TR+ PAL/NTSC) have different `s` — measure per platform with
+PAL generally) have different `s` — measure per platform with
 `scripts/diags/mhires_tempo_clock_ab.py`. This is orthogonal to the
 `[audio].pitch_mult_*` NMI-rate knobs (which correct *pitch*, not tempo). See the
 `video.py` tempo-compensation note in [architecture.md](architecture.md).
@@ -799,7 +801,7 @@ measurement above shows.
   N small writes per frame should be a yellow flag.
 
   The reason count is the lever, measured: **payload is free below
-  ~2.4 KB**. A write of 8 bytes and a write of 2 KB both cost ~5.2 ms,
+  ~2.1 KB**. A write of 8 bytes and a write of 2 KB both cost ~5.2 ms,
   and only past that knee does cost start rising (~1.85 µs/byte). So
   splitting one write into two doubles its price no matter how few bytes
   each carries, while widening a write to cover a clean gap is free.
@@ -932,6 +934,18 @@ trigger is the **combination** of high write rate and writes landing in the
 bank-2 region, and the host can only avoid it by lowering the write rate. A
 C64 powering itself off from legal memory writes is a U64 firmware/FPGA
 fault, not something the host causes through valid DMA.
+
+**Firmware 3.15a does not fix it.** Its release notes list DMA and badline
+timing fixes, so the repro was run again on 2026-10-03 on a U64-II with
+firmware 3.15a (FPGA `125`, core `1.50`). Times_of_Lore song 1 ran at 60 fps
+with its display on bank 2, at ≈170-176 writes/s. The machine powered off
+≈67 s in, stopped answering ping and REST, and stayed off until it was
+power-cycled by hand.
+
+Since then the waveform scene picks one display bank for all of a tune's
+subtunes, so Times_of_Lore now lands on bank 1 (`$6000`). On that bank the
+same tune at 60 fps, ≈155 writes/s, played its full 7:40 on 3.15a. Other
+tunes still land on bank 2: Galway's `Rastan` is one.
 
 Mitigation (shipped): `WaveformScene.target_fps` defaults to **half** the
 system video rate (**30 NTSC / 25 PAL**) instead of the full rate. An

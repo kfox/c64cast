@@ -224,7 +224,9 @@ So the real figure is measured once and shipped as the default,
 `[audio].sampler_clock_hz = 6160000`. It is a property of the firmware's clock
 derivation rather than of an individual unit, so every U64 on the same firmware
 wants the same value, and at that setting a five-second interval drifts by
-1.3 ms. Hardware that clocks the sampler correctly can set 6250000.
+1.3 ms. Ultimate 64 firmware 3.15a (FPGA 125, core 1.50) re-measured at the
+same value, with a drift of 1.2 to 1.5 ms per five seconds. Hardware that
+clocks the sampler correctly can set 6250000.
 
 ### The Bitmap-and-DAC Time Stretch
 
@@ -236,11 +238,12 @@ Video, slaved to the audio clock, follows it down.
 
 The fix is to pre-compress the content by the inverse factor so the system's own
 stretch nets back to real time. `[audio].dac_bitmap_tempo_mhires` and
-`dac_bitmap_tempo_hires` hold the observed speed fractions, defaulting to the
-values measured on an NTSC U64-II (0.88 and 0.89). They apply only to the DAC
-backend under a bitmap mode; the sampler, the character modes and a muted scene
-all pass through untouched. Other platforms differ — measure yours and set the
-field.
+`dac_bitmap_tempo_hires` hold the observed speed fractions. Left unset, they
+take the values measured for the connected hardware: 0.88 and 0.89 on an NTSC
+Ultimate 64-II and on a TeensyROM writing unsliced, 0.97 on a TeensyROM+ whose
+firmware slices its DMA writes. They apply only to the DAC backend under a
+bitmap mode; the sampler, the character modes and a muted scene all pass through
+untouched. Other platforms differ — measure yours and set the field.
 
 ### The Pitch Knobs That Default Off
 

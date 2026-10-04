@@ -82,6 +82,10 @@ _COVERAGE_EXEMPT = {
     # config); a live example key would invite the "leave this on" mistake.
     # See SECURITY.md.
     ("web", "setup_wizard"),
+    # Unset resolves to the connected backend's measured fraction; a live key
+    # would pin every copy of the example to the U64's numbers.
+    ("audio", "dac_bitmap_tempo_hires"),
+    ("audio", "dac_bitmap_tempo_mhires"),
 }
 
 
