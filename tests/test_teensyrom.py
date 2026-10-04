@@ -362,6 +362,7 @@ class SlicingBackendTest(unittest.TestCase):
             dma_slice_bytes=slice_bytes,
             dma_slice_gap_us=40,
         )
+        self.connect_sent = bytes(t.sent)
         t.sent.clear()
         return b, t
 
@@ -458,6 +459,7 @@ class SlicingBackendTest(unittest.TestCase):
 
     def test_off_never_probes(self):
         b, t = self._backend("off")
+        self.assertNotIn(_SPANS_TOK, self.connect_sent)
         b.note_nmi_consumer(True)
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
