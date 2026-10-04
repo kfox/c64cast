@@ -278,6 +278,14 @@ TEENSYROM_PROFILE = HardwareProfile(
 # matching `make_backend` branch fails a test rather than surfacing at runtime.
 BACKENDS: tuple[str, ...] = ("ultimate", "teensyrom")
 
+# Each backend token's capability profile before make_backend folds in the
+# per-run fields, so a config check can ask what a backend supports without
+# connecting to it.
+BASE_PROFILES: dict[str, HardwareProfile] = {
+    "ultimate": ULTIMATE_PROFILE,
+    "teensyrom": TEENSYROM_PROFILE,
+}
+
 
 class C64Backend(ABC):
     """Abstract base every hardware backend implements.
@@ -905,7 +913,7 @@ def make_backend(cfg: Config) -> C64Backend:
         from .api import Ultimate64API
 
         profile = replace(
-            ULTIMATE_PROFILE,
+            BASE_PROFILES[backend],
             system=system,
             default_fps=fps,
             host_sid_model=host_model,
@@ -966,7 +974,7 @@ def make_backend(cfg: Config) -> C64Backend:
                 f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)"
             )
         profile = replace(
-            TEENSYROM_PROFILE,
+            BASE_PROFILES[backend],
             system=system,
             default_fps=fps,
             write_transport=transport_kind,

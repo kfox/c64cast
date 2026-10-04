@@ -554,6 +554,14 @@ def appendix_overlays() -> list[str]:
             notes.append("needs audio enabled")
         if od.compatible_modes:
             notes.append("only on " + ", ".join(code(m) for m in od.compatible_modes))
+        if od.irq_hook_modes:
+            notes.append(
+                "not on "
+                + ", ".join(code(m) for m in od.irq_hook_modes)
+                + " while "
+                + code("[audio].use_reu_pump")
+                + " is on"
+            )
         if notes:
             out += [prose("Restrictions: " + "; ".join(notes) + "."), ""]
         # Indented two spaces, as the packaged examples write it: an overlay

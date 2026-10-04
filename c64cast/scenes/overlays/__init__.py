@@ -81,6 +81,11 @@ class Overlay:
     # Whitelist of display-mode names; empty = no restriction. For an overlay
     # too custom to gate on the flags above.
     COMPATIBLE_MODES: tuple[str, ...] = ()
+    # Display-mode names on which setup() points the $0314 IRQ vector at the
+    # overlay's own handler and masks CIA #1. CIA #1 is the REU audio pump's
+    # interrupt, so config validation refuses these modes while
+    # [audio].use_reu_pump is on (scene_factory.reject_irq_hook_conflict).
+    HOOKS_IRQ_ON_MODES: tuple[str, ...] = ()
     # When True, the overlay paints into the scene's buffers via compose() before
     # the scene pushes them, and the Playlist's process_frame() loop skips it,
     # because the scene already invoked compose() during its render path. That
