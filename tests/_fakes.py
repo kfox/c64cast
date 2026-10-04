@@ -470,12 +470,19 @@ def new_streamer(**overrides):
     return AudioStreamer(cast(Ultimate64API, FakeAPI()), **kwargs)
 
 
-def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] | None = None):
+def run_irq_handler(
+    handler: bytes,
+    *,
+    addr: int = 0xC100,
+    seed: dict[int, int] | None = None,
+    images: dict[int, bytes] | None = None,
+):
     """Execute hand-assembled IRQ-handler bytes on a bare py65 6502 until
     they chain into the kernal (JMP $EA31 full tail / JMP $EA81 lean tail).
 
     `seed` is an {address: byte} map applied before the run (trackers,
-    counters, fake REU registers). Returns an object with `memory` (the
+    counters, fake REU registers); `images` is an {address: bytes} map of
+    other code the handler calls into (a JSR target). Returns an object with `memory` (the
     sid_host_emu.TrappedRam, so `.ram` and the `.access` read/write bitmap
     are inspectable), `exit_pc` (which kernal tail was taken) and `mpu`.
     The step budget turns a mis-assembled branch displacement — which JAMs
@@ -489,6 +496,8 @@ def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] 
 
     memory = TrappedRam(track_access=True)
     memory.ram[addr : addr + len(handler)] = handler
+    for image_addr, image in (images or {}).items():
+        memory.ram[image_addr : image_addr + len(image)] = image
     for seed_addr, value in (seed or {}).items():
         memory.ram[seed_addr] = value
     mpu = MPU(memory=memory)

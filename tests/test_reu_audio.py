@@ -33,6 +33,8 @@ from c64cast.audio.audio_handlers import (
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_GOVERNOR_GAP_THRESHOLD_HI,
+    REU_GOVERNOR_OVERTAKE_GAP_HI,
+    REU_GOVERNOR_PUMP_OVERDRIVE,
     REU_IRQ_HANDLER,
     REU_IRQ_HANDLER_CHUNK_OFFSETS,
     REU_IRQ_HANDLER_GOVERNOR,
@@ -43,9 +45,11 @@ from c64cast.audio.audio_handlers import (
     REU_PUMP_INITIAL_MARGIN,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
+    RING_BUFFER_END,
     RING_BUFFER_END_HI,
     RING_BUFFER_HI,
     RING_BUFFER_SIZE,
+    patch_chunk_size,
     servo_period,
 )
 from c64cast.scenes.scenes import VideoScene
@@ -312,15 +316,15 @@ class ReuPumpChunkSizeOverrideTest(unittest.TestCase):
     def test_custom_chunk_patches_handler_and_latch(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, chunk_size=80)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, chunk_size=64)
         key = f"{REU_PUMP_HANDLER_ADDR:04X}"
         handler = next(b for k, b in fake.writes if k == key)
-        self.assertEqual(handler[2], 80)
+        self.assertEqual(handler[2], 64)
         self.assertEqual(handler[7], 0)
-        # Latch = chunk x NMI period = 80 x 85 - 1 = 6799.
-        self.assertEqual(fake.memories["DC04"], _packed_latch(80 * 85 - 1))
+        # Latch = chunk x NMI period = 64 x 85 - 1 = 5439.
+        self.assertEqual(fake.memories["DC04"], _packed_latch(64 * 85 - 1))
         # And $DF07 = chunk LO/HI for initial REC length.
-        self.assertEqual(fake.memories["DF07"], "5000")
+        self.assertEqual(fake.memories["DF07"], "4000")
 
 
 class ReuPumpInitialMarginTest(unittest.TestCase):
@@ -503,6 +507,47 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         self.assertLess(body_idx, entry_idx)
 
 
+def _tracker_seed(src: int, dst: int) -> dict[int, int]:
+    """The $C200 tracker bytes for a 24-bit REU ``src`` and a ring ``dst``."""
+    t = REU_AUDIO_SRC_TRACKER_ADDR
+    return {
+        t + 0: src & 0xFF,
+        t + 1: (src >> 8) & 0xFF,
+        t + 2: (src >> 16) & 0xFF,
+        t + 3: dst & 0xFF,
+        t + 4: (dst >> 8) & 0xFF,
+    }
+
+
+def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int]):
+    """Run REU_PUMP_BODY_SUBROUTINE_GOVERNOR through a JSR / JMP $EA31 caller,
+    the way both of its callers reach it, and check it returned balanced."""
+    from c64cast.audio.audio_handlers import (
+        REU_PUMP_BODY_SUBROUTINE_ADDR,
+        REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+    )
+
+    caller = bytes(
+        [
+            0x20,
+            REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF,
+            REU_PUMP_BODY_SUBROUTINE_ADDR >> 8,  # JSR $C180
+            0x4C,
+            0x31,
+            0xEA,  # JMP $EA31
+        ]
+    )
+    run = run_irq_handler(
+        caller,
+        addr=0xC000,
+        seed=seed,
+        images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR},
+    )
+    test.assertEqual(run.exit_pc, 0xEA31, "the subroutine must RTS to its caller")
+    test.assertEqual(run.mpu.sp, 0xFF)
+    return run
+
+
 class ReuTrackedHandlerTest(unittest.TestCase):
     """REU_IRQ_HANDLER_TRACKED, EXECUTED on the repo's own 6502 (see
     _fakes.run_irq_handler) instead of pinning instruction offsets: the
@@ -513,26 +558,28 @@ class ReuTrackedHandlerTest(unittest.TestCase):
 
     Covers the tick-divider / lean-exit pattern (borrowed from the SID
     player: chain to $EA31 every Nth CIA #1 tick, ack + JMP $EA81 for a
-    lean RTI the other N-1), the tracker-driven REC pump, and the dst
-    ring wrap."""
+    lean RTI the other N-1), the tracker-driven REC pump the entry JSRs at
+    $C180, and the dst ring wrap. Runs the open-loop body; the governed
+    one has its own class below."""
 
     def _run(self, *, counter: int, dst: int | None = None):
         from c64cast.audio.audio_handlers import (
             REU_IRQ_HANDLER_TRACKED,
+            REU_PUMP_BODY_SUBROUTINE,
+            REU_PUMP_BODY_SUBROUTINE_ADDR,
             REU_PUMP_TICK_COUNTER_ADDR,
         )
 
         src = 0x032211  # arbitrary 24-bit REU offset, mid-ring
         dst = RING_BUFFER_ADDR if dst is None else dst
-        seed = {
-            REU_AUDIO_SRC_TRACKER_ADDR + 0: src & 0xFF,
-            REU_AUDIO_SRC_TRACKER_ADDR + 1: (src >> 8) & 0xFF,
-            REU_AUDIO_SRC_TRACKER_ADDR + 2: (src >> 16) & 0xFF,
-            REU_AUDIO_SRC_TRACKER_ADDR + 3: dst & 0xFF,
-            REU_AUDIO_SRC_TRACKER_ADDR + 4: (dst >> 8) & 0xFF,
-            REU_PUMP_TICK_COUNTER_ADDR: counter,
-        }
-        run = run_irq_handler(REU_IRQ_HANDLER_TRACKED, addr=REU_PUMP_HANDLER_ADDR, seed=seed)
+        seed = _tracker_seed(src, dst)
+        seed[REU_PUMP_TICK_COUNTER_ADDR] = counter
+        run = run_irq_handler(
+            REU_IRQ_HANDLER_TRACKED,
+            addr=REU_PUMP_HANDLER_ADDR,
+            seed=seed,
+            images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE},
+        )
         run.src, run.dst = src, dst
         return run
 
@@ -606,6 +653,220 @@ class ReuTrackedHandlerTest(unittest.TestCase):
         self.assertEqual(fake.memories[f"{REU_PUMP_TICK_COUNTER_ADDR:04X}"], "01")
 
 
+class ReuTrackedGovernorTest(unittest.TestCase):
+    """REU_PUMP_BODY_SUBROUTINE_GOVERNOR, executed through a JSR the way both
+    of its callers reach it (the $C100 entry and the chunked mhires
+    dispatcher). Under the bank-swap video DMAs the open-loop tracked pump
+    lapped the NMI reader every 10.5-12 s (#544); the governed one must skip
+    a chunk while its write head is half a ring ahead of R, pump otherwise
+    (GovernorSkipWindowTest sweeps every gap), and return to its caller on
+    both paths."""
+
+    SRC = 0x032211
+
+    def _call(self, *, dst: int, r: int, df03: int | None = None):
+        seed = _tracker_seed(self.SRC, dst)
+        seed[READ_PTR_HI_ADDR] = r >> 8
+        if df03 is not None:
+            seed[0xDF03] = df03
+        return _jsr_tracked_governor(self, seed)
+
+    def _pumped(self, run) -> bool:
+        from c64cast.audio.audio_handlers import REU_CMD_FETCH_EXEC
+
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        ram = run.memory.ram
+        src_after = ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
+        triggered = ram[0xDF01] == REU_CMD_FETCH_EXEC
+        self.assertEqual(
+            triggered,
+            src_after == self.SRC + REU_PUMP_CHUNK_SIZE,
+            "a trigger and a tracker advance must go together",
+        )
+        return triggered
+
+    def test_skips_when_write_head_is_half_a_ring_ahead(self):
+        r = RING_BUFFER_ADDR
+        run = self._call(dst=r + REU_PUMP_INITIAL_MARGIN, r=r)
+        self.assertFalse(self._pumped(run))
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        dst_after = run.memory.ram[t + 3] | (run.memory.ram[t + 4] << 8)
+        self.assertEqual(dst_after, r + REU_PUMP_INITIAL_MARGIN, "a skip must not advance dst")
+
+    def test_pumps_once_the_reader_has_overtaken_the_write_head(self):
+        # W one page behind R reads as 31 pages ahead mod the ring, but no
+        # pump can carry W past 16 pages ahead: only R overtaking W reaches
+        # it. Skipping there would stall W for half a ring of lap-old audio
+        # and leave the source behind the picture (#544).
+        r = RING_BUFFER_ADDR + 0x1000
+        self.assertTrue(self._pumped(self._call(dst=r - 0x100, r=r)))
+
+    def test_pumps_when_write_head_is_less_than_half_a_ring_ahead(self):
+        r = RING_BUFFER_ADDR
+        run = self._call(dst=r + REU_PUMP_INITIAL_MARGIN - 0x100, r=r)
+        self.assertTrue(self._pumped(run))
+
+    def test_pumps_across_the_ring_wrap(self):
+        # W near the ring's start, R near its end: W is a few pages ahead
+        # once the wrap is accounted for, so it must pump.
+        r = RING_BUFFER_END - 0x100
+        self.assertTrue(self._pumped(self._call(dst=RING_BUFFER_ADDR + 0x200, r=r)))
+
+    def test_reads_the_write_head_from_the_tracker_not_the_reu_register(self):
+        # The bank-swap DMAs leave $DF03 pointing into video memory, so a
+        # governor that read it would decide on garbage. Seed $DF03 with a
+        # value that says "far ahead" while the tracker says "close behind".
+        r = RING_BUFFER_ADDR
+        run = self._call(dst=r + 0x100, r=r, df03=(r + REU_PUMP_INITIAL_MARGIN) >> 8)
+        self.assertTrue(self._pumped(run))
+
+    def test_governed_body_is_the_open_loop_body_behind_the_test(self):
+        from c64cast.audio.audio_handlers import (
+            REU_PUMP_BODY_SUBROUTINE,
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+        )
+
+        self.assertTrue(REU_PUMP_BODY_SUBROUTINE_GOVERNOR.endswith(REU_PUMP_BODY_SUBROUTINE))
+
+
+class TrackedPumpSelectionTest(unittest.TestCase):
+    """start_for_reu_staged on the bank-swap path uploads the governed or the
+    open-loop pump body at $C180 per reu_pump_governor, with the scene's chunk
+    size patched in: the chunked mhires dispatcher calls that body directly,
+    so an unpatched one pumps the default chunk on every call it makes."""
+
+    def _body(self, *, governor: bool, chunk: int | None = None) -> bytes:
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
+
+        s = _new_streamer()
+        s.reu_pump_governor = governor
+        s.start_for_reu_staged(
+            b"\x07" * RING_BUFFER_SIZE, chunk_size=chunk, skip_irq_vector_hook=True
+        )
+        return cast(FakeAPI, s.api).mem_files[f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}"]
+
+    def test_governor_on_uploads_the_governed_body(self):
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_GOVERNOR
+
+        self.assertEqual(self._body(governor=True), REU_PUMP_BODY_SUBROUTINE_GOVERNOR)
+
+    def test_governor_off_uploads_the_open_loop_body(self):
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE
+
+        self.assertEqual(self._body(governor=False), REU_PUMP_BODY_SUBROUTINE)
+
+    def test_scene_chunk_is_patched_into_the_body(self):
+        from c64cast.audio.audio_handlers import (
+            REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS,
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
+            REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
+        )
+
+        chunk = REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+        for governor, offsets in (
+            (True, REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS),
+            (False, REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS),
+        ):
+            with self.subTest(governor=governor):
+                body = self._body(governor=governor, chunk=chunk)
+                self.assertEqual(
+                    [body[off] for off in offsets],
+                    [(chunk >> (0 if i % 2 == 0 else 8)) & 0xFF for i in range(len(offsets))],
+                )
+
+
+class PumpChunkTilesRingTest(unittest.TestCase):
+    """A pump chunk that does not divide the 8 KB ring DMAs past
+    RING_BUFFER_END once per lap; the wrap then resets dst to the ring start
+    and the overshoot is never played (80 dropped 48-79 samples a lap). Both
+    shipped chunks have to tile the ring, and a caller's chunk_size that does
+    not is refused."""
+
+    LAPS = 3
+
+    def _pump_laps(self, chunk: int, *, tracked: bool) -> list[tuple[int, int]]:
+        """(dst, src) of every DMA over LAPS ring laps of the open-loop pump,
+        run on py65 from start_for_reu_staged's seeded pointers.
+
+        The tracked pump reloads both from the $C200 tracker, so the DMA is
+        what it wrote to the REU registers. The plain handler relies on the
+        REU's own auto-increment, which py65 does not model: this loop keeps
+        the DMA's pointers and seeds $DF02/$DF03 with their post-transfer
+        value, which is what the handler's wrap check reads."""
+        from c64cast.audio.audio_handlers import (
+            REU_IRQ_HANDLER_TRACKED,
+            REU_PUMP_BODY_SUBROUTINE,
+            REU_PUMP_BODY_SUBROUTINE_ADDR,
+            REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS,
+            REU_PUMP_TICK_COUNTER_ADDR,
+        )
+
+        src = REU_AUDIO_BASE + REU_PUMP_INITIAL_MARGIN
+        dst = RING_BUFFER_ADDR + REU_PUMP_INITIAL_MARGIN
+        if tracked:
+            handler = REU_IRQ_HANDLER_TRACKED
+            images = {
+                REU_PUMP_BODY_SUBROUTINE_ADDR: patch_chunk_size(
+                    REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS, chunk
+                )
+            }
+        else:
+            handler = patch_chunk_size(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, chunk)
+            images = {}
+        tracker = _tracker_seed(src, dst)
+        dmas = []
+        for _ in range(self.LAPS * RING_BUFFER_SIZE // chunk + 1):
+            seed = {**tracker, REU_PUMP_TICK_COUNTER_ADDR: 2}
+            if not tracked:
+                after = dst + chunk
+                seed.update({0xDF02: after & 0xFF, 0xDF03: after >> 8})
+            run = run_irq_handler(handler, addr=REU_PUMP_HANDLER_ADDR, seed=seed, images=images)
+            ram = run.memory.ram
+            if tracked:
+                dmas.append(
+                    (
+                        ram[0xDF02] | (ram[0xDF03] << 8),
+                        ram[0xDF04] | (ram[0xDF05] << 8) | (ram[0xDF06] << 16),
+                    )
+                )
+                tracker = {a: ram[a] for a in tracker}
+            else:
+                dmas.append((dst, src))
+                src += chunk
+                dst = ram[0xDF02] | (ram[0xDF03] << 8)
+        return dmas
+
+    def test_shipped_chunks_never_dma_past_the_ring_and_keep_the_mapping(self):
+        from c64cast.audio.audio_handlers import REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+
+        for chunk in (REU_PUMP_CHUNK_SIZE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS):
+            for tracked in (True, False):
+                with self.subTest(chunk=chunk, tracked=tracked):
+                    dmas = self._pump_laps(chunk, tracked=tracked)
+                    self.assertGreaterEqual(len(dmas), self.LAPS * RING_BUFFER_SIZE // chunk)
+                    self.assertEqual(
+                        [d for d, _ in dmas if d + chunk > RING_BUFFER_END],
+                        [],
+                        "a pump DMA ran past RING_BUFFER_END",
+                    )
+                    self.assertEqual(
+                        {(s - (d - RING_BUFFER_ADDR)) % RING_BUFFER_SIZE for d, s in dmas},
+                        {(REU_AUDIO_BASE) % RING_BUFFER_SIZE},
+                        "REU sample N must land at ring position N mod RING_BUFFER_SIZE",
+                    )
+
+    def test_start_refuses_a_chunk_that_does_not_tile_the_ring(self):
+        # 80 does not divide the ring; RING_BUFFER_SIZE divides the ring but
+        # not the half-ring margin the write head is seeded at.
+        for chunk in (80, 0, RING_BUFFER_SIZE, RING_BUFFER_SIZE * 2):
+            with self.subTest(chunk=chunk):
+                s = _new_streamer()
+                with self.assertRaises(ValueError):
+                    s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, chunk_size=chunk)
+                self.assertEqual(cast(FakeAPI, s.api).writes, [])
+                self.assertEqual(cast(FakeAPI, s.api).socket_dma.reuwrites, [])
+
+
 class ReuPositionSecondsTest(unittest.TestCase):
     """In REU mode, position_seconds is wall-clock based (no host queue
     to count). Verify the formula handles edge cases."""
@@ -643,13 +904,13 @@ class ReuPositionSecondsTest(unittest.TestCase):
 
 
 class GovernorHandlerTest(unittest.TestCase):
-    """The C64-side governor handler is the plain pump handler with an 18-byte
+    """The C64-side governor handler is the plain pump handler with a 22-byte
     skip-when-ahead prefix. A typo in the prefix bytes or branch displacement
     JAMs the 6502, so verify the structure (these run with no hardware)."""
 
     def test_length_is_prefix_plus_body(self):
-        # 18-byte governor prefix + the 37-byte plain handler sans its PHA (36).
-        self.assertEqual(len(REU_IRQ_HANDLER_GOVERNOR), 18 + 36)
+        # 22-byte governor prefix + the 37-byte plain handler sans its PHA (36).
+        self.assertEqual(len(REU_IRQ_HANDLER_GOVERNOR), 22 + 36)
 
     def test_starts_with_pha(self):
         self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[0], 0x48, "leading PHA")
@@ -666,28 +927,99 @@ class GovernorHandlerTest(unittest.TestCase):
             "SBC $C026 (R_hi)",
         )
 
-    def test_masks_gap_and_compares_threshold(self):
+    def test_masks_gap_and_compares_the_skip_window(self):
         # AND #$1F masks gap to 5 bits (32 ring HI values + discards REU
-        # read-back garbage); CMP #threshold tests the half-ring skip point.
+        # read-back garbage); the two CMPs bound the skip window.
         self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[8:10], bytes([0x29, 0x1F]), "AND #$1F")
         self.assertEqual(
             REU_IRQ_HANDLER_GOVERNOR[10:12],
             bytes([0xC9, REU_GOVERNOR_GAP_THRESHOLD_HI]),
             "CMP #threshold_hi",
         )
+        self.assertEqual(
+            REU_IRQ_HANDLER_GOVERNOR[14:16],
+            bytes([0xC9, REU_GOVERNOR_OVERTAKE_GAP_HI]),
+            "CMP #overtake_hi",
+        )
         self.assertEqual(REU_GOVERNOR_GAP_THRESHOLD_HI, REU_PUMP_INITIAL_MARGIN >> 8)
 
-    def test_bcc_skips_over_skip_block_to_pump_body(self):
-        # BCC +4 (offset 12) jumps over the 4-byte skip block (PLA + JMP $EA31)
-        # to the pump body at offset 18. A wrong displacement lands mid-JMP and
-        # JAMs the CPU.
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[12:14], bytes([0x90, 0x04]), "BCC +4")
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[14], 0x68, "skip-path PLA")
+    def test_branches_skip_over_skip_block_to_pump_body(self):
+        # BCC +8 (offset 12) and BCS +4 (offset 16) both land on the pump body
+        # at offset 22, past the 4-byte skip block (PLA + JMP $EA31). A wrong
+        # displacement lands mid-JMP and JAMs the CPU.
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[12:14], bytes([0x90, 0x08]), "BCC +8")
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[16:18], bytes([0xB0, 0x04]), "BCS +4")
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[18], 0x68, "skip-path PLA")
         self.assertEqual(
-            REU_IRQ_HANDLER_GOVERNOR[15:18], bytes([0x4C, 0x31, 0xEA]), "skip-path JMP $EA31"
+            REU_IRQ_HANDLER_GOVERNOR[19:22], bytes([0x4C, 0x31, 0xEA]), "skip-path JMP $EA31"
         )
-        # Pump body (offset 18) is REU_IRQ_HANDLER without its leading PHA.
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[18:], REU_IRQ_HANDLER[1:])
+        # Pump body (offset 22) is REU_IRQ_HANDLER without its leading PHA.
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[22:], REU_IRQ_HANDLER[1:])
+
+
+class GovernorSkipWindowTest(unittest.TestCase):
+    """Both governed pumps, EXECUTED on py65 at every ring gap: skip only for
+    gap_hi in [REU_GOVERNOR_GAP_THRESHOLD_HI, REU_GOVERNOR_OVERTAKE_GAP_HI)
+    (16-17), pump below it (0-15) and at or past it (18-31), where only the
+    reader overtaking the write head can put the gap (#544)."""
+
+    R = RING_BUFFER_ADDR + 0x0A40  # arbitrary, off a page boundary
+
+    def _w(self, gap_hi: int) -> int:
+        return RING_BUFFER_ADDR + ((self.R - RING_BUFFER_ADDR + (gap_hi << 8)) % RING_BUFFER_SIZE)
+
+    def _plain_pumped(self, gap_hi: int) -> bool:
+        from c64cast.audio.audio_handlers import REU_CMD_FETCH_EXEC
+
+        w = self._w(gap_hi)
+        run = run_irq_handler(
+            REU_IRQ_HANDLER_GOVERNOR,
+            addr=REU_PUMP_HANDLER_ADDR,
+            seed={0xDF02: w & 0xFF, 0xDF03: w >> 8, READ_PTR_HI_ADDR: self.R >> 8},
+        )
+        self.assertEqual(run.exit_pc, 0xEA31)
+        self.assertEqual(run.mpu.sp, 0xFF, "both paths must balance the PHA")
+        return run.memory.ram[0xDF01] == REU_CMD_FETCH_EXEC
+
+    def _tracked_pumped(self, gap_hi: int) -> bool:
+        from c64cast.audio.audio_handlers import REU_CMD_FETCH_EXEC
+
+        seed = _tracker_seed(0x032211, self._w(gap_hi))
+        seed[READ_PTR_HI_ADDR] = self.R >> 8
+        run = _jsr_tracked_governor(self, seed)
+        return run.memory.ram[0xDF01] == REU_CMD_FETCH_EXEC
+
+    def test_window_is_two_pages_above_half_a_ring(self):
+        self.assertEqual((REU_GOVERNOR_GAP_THRESHOLD_HI, REU_GOVERNOR_OVERTAKE_GAP_HI), (16, 18))
+
+    def test_both_governors_skip_only_inside_the_window(self):
+        expected = {gap: not (16 <= gap < 18) for gap in range(32)}
+        for name, pumped in (("plain", self._plain_pumped), ("tracked", self._tracked_pumped)):
+            with self.subTest(governor=name):
+                self.assertEqual({gap: pumped(gap) for gap in range(32)}, expected)
+
+    def test_a_pump_cannot_carry_the_write_head_out_of_the_window(self):
+        # The last gap that pumps below the window, plus one chunk of the
+        # largest size the governor accepts, must still land below the
+        # overtake bound — else the next tick reads an overtake and pumps on.
+        from c64cast.audio.audio_handlers import REU_GOVERNOR_MAX_CHUNK
+
+        last_pumping_gap_bytes = REU_GOVERNOR_GAP_THRESHOLD_HI << 8  # exclusive
+        self.assertLess(
+            (last_pumping_gap_bytes - 1 + REU_GOVERNOR_MAX_CHUNK) >> 8,
+            REU_GOVERNOR_OVERTAKE_GAP_HI,
+        )
+
+    def test_start_refuses_a_governed_chunk_past_the_maximum(self):
+        from c64cast.audio.audio_handlers import REU_GOVERNOR_MAX_CHUNK
+
+        chunk = REU_GOVERNOR_MAX_CHUNK * 2  # tiles the ring, overshoots the window
+        s = _new_streamer()
+        s.reu_pump_governor = True
+        with self.assertRaises(ValueError):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, chunk_size=chunk)
+        self.assertEqual(cast(FakeAPI, s.api).writes, [])
+        self.assertEqual(cast(FakeAPI, s.api).socket_dma.reuwrites, [])
 
 
 class GovernorSelectionTest(unittest.TestCase):
@@ -710,7 +1042,7 @@ class GovernorSelectionTest(unittest.TestCase):
         self.assertEqual(handler[1:4], bytes([0xAD, 0x03, 0xDF]))  # governor prefix
         # chunk patched at the prefix-shifted offsets the module derives.
         lo, hi = REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS
-        self.assertEqual((lo, hi), (19, 24))
+        self.assertEqual((lo, hi), (23, 28))
         self.assertEqual(handler[lo], REU_PUMP_CHUNK_SIZE & 0xFF)
         self.assertEqual(handler[hi], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
 
@@ -875,6 +1207,43 @@ class ReuPumpLatchDerivationTest(unittest.TestCase):
             latch = s._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
         self.assertEqual(latch, CIA_TIMER_LATCH_MAX)
         self.assertTrue(any("16-bit maximum" in m for m in cm.output), cm.output)
+
+
+class GovernedPumpOverdriveTest(unittest.TestCase):
+    """A governor can only skip, so a governed pump has to out-produce the
+    reader by itself; a matched one does not once bus halts cost it CIA #1
+    ticks (#544: the tracked pump fell ~1.6 kB/s short under mhires bank-swap
+    video). start_for_reu_staged therefore overdrives the pump rate exactly
+    when a governor will trim it."""
+
+    def _latch(self, *, governor: bool, skip_hook: bool) -> int:
+        s = _new_streamer()
+        s.reu_pump_governor = governor
+        s.start_for_reu_staged(
+            b"\x07" * RING_BUFFER_SIZE,
+            chunk_size=64,
+            skip_irq_vector_hook=skip_hook,
+        )
+        return s._reu_cia1_latch_nominal
+
+    def test_governed_pumps_run_faster_than_matched(self):
+        matched = 64 * 85 - 1
+        for skip_hook in (False, True):
+            with self.subTest(tracked=skip_hook):
+                latch = self._latch(governor=True, skip_hook=skip_hook)
+                self.assertEqual(latch, round(64 * 85 / REU_GOVERNOR_PUMP_OVERDRIVE) - 1)
+                self.assertLess(latch, matched)
+
+    def test_open_loop_pumps_stay_matched(self):
+        # Without a governor nothing trims a surplus, so it would lap the ring.
+        for skip_hook in (False, True):
+            with self.subTest(tracked=skip_hook):
+                self.assertEqual(self._latch(governor=False, skip_hook=skip_hook), 64 * 85 - 1)
+
+    def test_overdrive_outruns_the_measured_tick_loss(self):
+        # 10.0 kB/s read against 8.4 kB/s matched delivery (#544): the factor
+        # must at least cover that ratio, or the reader still laps the writer.
+        self.assertGreater(REU_GOVERNOR_PUMP_OVERDRIVE, 10.0 / 8.4)
 
 
 class ReuAudioRegionBoundTest(unittest.TestCase):

@@ -1437,10 +1437,10 @@ class VideoScene(MediaFileMixin, Scene):
             assert isinstance(self.audio, AudioStreamer)
             audio_4bit = self._preencode_audio_for_reu()
             progress.complete("encode")
-            # Bitmap modes push ~300 KB/sec of host DMAWRITE, halting the bus in
-            # long bursts that cost the NMI ~50 % of its ticks; the default
-            # chunk (128) then over-produces ~2× and overflows the audio ring in
-            # ~2 sec. Char modes carry no bitmap traffic and keep the default.
+            # Bitmap modes already halt the bus in long bursts that cost the NMI
+            # ticks, so their pump DMAs stay short (REU_PUMP_CHUNK_SIZE_HEAVY_BUS);
+            # the CIA #1 latch scales with the chunk, so the byte rate does not
+            # change. Char modes carry no bitmap traffic and keep the default.
             chunk = (
                 REU_PUMP_CHUNK_SIZE_HEAVY_BUS
                 if isinstance(self.display_mode, BitmapDisplayMode)
