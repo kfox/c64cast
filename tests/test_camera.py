@@ -94,6 +94,14 @@ class ResolveCameraIndexTest(unittest.TestCase):
             with self.assertLogs("c64cast.control.camera", level="WARNING"):
                 self.assertEqual(camera.resolve_camera_index("Cam Link"), (1, 1200))
 
+    def test_a_linux_camera_listed_once_per_backend_opens_its_v4l2_listing(self):
+        cams = [
+            _cam(backend + 2, "Cam Link 4K", 0x0FD9, 0x66, backend=0) for backend in (1800, 200)
+        ]
+        enum_p, avail_p = self._patch(cams)
+        with enum_p, avail_p, self.assertNoLogs("c64cast.control.camera", level="WARNING"):
+            self.assertEqual(camera.resolve_camera_index("Cam Link"), (202, 0))
+
 
 class CameraInfoTest(unittest.TestCase):
     def test_vidpid_str_padded_lowercase(self):

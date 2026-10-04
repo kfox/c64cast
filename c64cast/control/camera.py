@@ -305,17 +305,19 @@ def resolve_camera_index(device: int | str) -> tuple[int, int | None]:
             f"no camera matched device {token!r}. Available: {_describe(cams)}. "
             "Run `c64cast --list-devices` to see names + VID:PID."
         )
-    if len(matches) > 1:
+    first = device_identity(matches[0])
+    chosen = _listing_to_open([c for c in matches if device_identity(c) == first])
+    devices = {device_identity(c) for c in matches}
+    if len(devices) > 1:
         log.warning(
             "camera device %r matched %d cameras (%s) — using [%d] %s; "
             "narrow it with a VID:PID or a more specific name",
             token,
-            len(matches),
+            len(devices),
             _describe(matches),
-            matches[0].index,
-            matches[0].name,
+            chosen.index,
+            chosen.name,
         )
-    chosen = matches[0]
     log.info(
         "resolved camera device %r -> index %d (%s%s)",
         token,
