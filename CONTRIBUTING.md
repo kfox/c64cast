@@ -324,6 +324,12 @@ committed diagnostic tooling that drives one — a U64 REST/DMA probe, HDMI stil
 capture, audio capture with level analysis, and a launch-capture-reset harness.
 Improve those rather than writing fresh throwaway scripts.
 
+The U64's DMA service takes one connection at a time and a capture device has
+one reader. When more than one shell or agent can reach the same rig, prefix
+every command that touches it with
+[`scripts/diags/hw_lock.py`](scripts/diags/hw_lock.py), which makes them take
+turns: `python3 scripts/diags/hw_lock.py uv run python -m c64cast -u u64://HOST`.
+
 If you touch the hardware paths, leave every machine you tested against silent
 and reset when you are done.
 
