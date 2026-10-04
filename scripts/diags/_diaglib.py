@@ -462,14 +462,20 @@ def resolve_audio_input(
 
 def refind_sd_audio_input(audio: AudioInput) -> int:
     """The sounddevice index of ``audio`` once PortAudio has re-enumerated,
-    found by its exact name: another input whose name merely contains it is
-    a different device. Among several inputs with that exact name, the one
-    still at ``audio``'s index is taken.
+    found by its exact name in its own host API: another input whose name
+    merely contains it is a different device, and the same name in another
+    host API is the same device listed again. Among several inputs with that
+    exact name in that host API, the one still at ``audio``'s index is taken.
 
-    Raises ``SystemExit`` listing the inputs when the name is gone, or is
-    shared by several inputs none of which is at that index."""
+    Raises ``SystemExit`` listing the inputs when the name is gone from that
+    host API, or is shared there by several inputs none of which is at that
+    index."""
     inputs = sd_audio_inputs()
-    named = [a for a in inputs if a.name.strip().lower() == audio.name.strip().lower()]
+    named = [
+        a
+        for a in inputs
+        if a.hostapi == audio.hostapi and a.name.strip().lower() == audio.name.strip().lower()
+    ]
     reason = "is gone" if not named else "now names more than one input"
     if len(named) > 1:
         named = [a for a in named if a.device == audio.device]

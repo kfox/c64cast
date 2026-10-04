@@ -250,7 +250,7 @@ class RefindAfterReenumerationTest(AudioDeviceTestCase):
     """The sounddevice tools find their input again once a reset has made
     PortAudio re-enumerate, by its exact name and never a longer one."""
 
-    def refind(self, inputs: list[tuple[str, int]], audio):
+    def refind(self, inputs: Sequence[tuple[str, int] | tuple[str, int, int]], audio):
         with patch.dict(sys.modules, {"sounddevice": _FakeSoundDevice(inputs)}):
             return _diaglib.refind_sd_audio_input(audio)
 
@@ -272,6 +272,13 @@ class RefindAfterReenumerationTest(AudioDeviceTestCase):
         with self.assertRaises(SystemExit) as cm:
             self.refind(inputs, _diaglib.AudioInput(3, "USB Audio"))
         self.assertIn("now names more than one input", str(cm.exception))
+
+    def test_a_windows_input_is_found_in_its_own_host_api_at_a_new_index(self) -> None:
+        """Every host API lists the stick under the same name, so the index it
+        was picked at may now hold another device."""
+        audio = _diaglib.AudioInput(3, "Digital Audio Interface (Cam Link 4K)", 1)
+        inputs = [("Line In", 2, 0), *WindowsHostApisTest.sd_inputs]
+        self.assertEqual(self.refind(inputs, audio), 4)
 
 
 class WebcamAutopickTest(unittest.TestCase):
