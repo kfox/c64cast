@@ -1548,12 +1548,16 @@ class LifecycleTest(unittest.TestCase):
 
     def test_position_seconds_starts_at_zero_after_the_prebuffer(self):
         # The prebuffer lands before the consumer starts, so it is all lead.
+        # The clock is read inside the start, on the worker: once the producer
+        # runs dry the worker pads the ring and the clock rightly moves on.
         s = _make_worker_streamer(chunk_size=32)
         started = threading.Event()
         seed = s.servo.reset_for_consumer_start
+        at_start: list[float] = []
 
         def seed_then_signal(ring_lead: int) -> None:
             seed(ring_lead)
+            at_start.append(s.position_seconds())
             started.set()
 
         s.servo.reset_for_consumer_start = seed_then_signal  # type: ignore[method-assign]
@@ -1563,7 +1567,7 @@ class LifecycleTest(unittest.TestCase):
         s.push_samples(np.zeros(32 * 6, dtype=np.int16))
         self.assertTrue(started.wait(5.0))
         self.assertEqual(s.servo.ring_lead, 32 * 6)
-        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertEqual(at_start, [0.0])
 
     def test_position_seconds_reaches_the_end_once_the_producer_runs_dry(self):
         # Past the last sample the worker pads the ring, so the gap holds while
