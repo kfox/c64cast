@@ -379,6 +379,12 @@ class AudioStreamer:
 
         # Audio-master clock bookkeeping (used by PyAV-driven scenes).
         self._pushed_count = 0
+        # Pad bytes landed in the ring behind the last content byte. They hold
+        # the servo's gap open once the producer runs dry, so position_seconds()
+        # takes them out of the lead it subtracts; otherwise the clock would
+        # stop a whole ring short of the last sample.
+        self._ring_tail_pad = 0
+        self._ring_short_pad = 0
 
         # Sample tap for FFT overlays. Lockless write from input threads,
         # locked read from the render thread — readers tolerate a torn frame
@@ -885,6 +891,7 @@ class AudioStreamer:
             pending: bytes | None = None
             pending_addr = RING_BUFFER_ADDR
             pending_from_queue = 0
+            pending_pad = 0
             pending_epoch = 0
 
             while self.running and generation == self._worker_generation:
@@ -909,6 +916,7 @@ class AudioStreamer:
                         # promises silence. Filling it also keeps w_head honest,
                         # so the servo isn't handed a W a chunk behind the head.
                         self._neutral_fill_ring(pending_addr, len(pending))
+                        self._note_ring_landed(len(pending), len(pending))
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -925,6 +933,7 @@ class AudioStreamer:
                             pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
                         )
                         self._consume_queued(pending_from_queue)
+                        self._note_ring_landed(len(pending), pending_pad)
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -945,13 +954,14 @@ class AudioStreamer:
                 if not self.running:
                     break
 
+                pad = 0
                 if n == 0:
                     if not prebuffered:
                         # Idle: no producer data, no NMI to feed.
                         continue
                     # Real underrun: refresh ring with silence.
                     chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
-                    n = self.chunk_size
+                    n = pad = self.chunk_size
                     self._full_underruns += 1
                 elif n < self.chunk_size:
                     # Pad every short chunk, including during the prebuffer fill:
@@ -994,6 +1004,7 @@ class AudioStreamer:
                     pending = bytes(chunk_buf[:n])
                     pending_addr = write_addr
                     pending_from_queue = from_queue
+                    pending_pad = pad
                     pending_epoch = epoch
                     write_addr += n
                     if write_addr >= RING_BUFFER_END:
@@ -1006,6 +1017,7 @@ class AudioStreamer:
                 # halt to hide from and one unsplit write primes the ring fastest.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
                 self._consume_queued(from_queue)
+                self._note_ring_landed(n, pad)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -2133,8 +2145,8 @@ class AudioStreamer:
             return min(elapsed, self._reu_pump_total_samples / rate)
         # q.qsize() now counts bytes-blobs, not samples — read the explicit
         # sample-count counter instead.
-        lead = self.servo.ring_lead
-        if lead < 0:
+        lead = self._content_lead()
+        if lead is None:
             return 0.0
         consumed = self._pushed_count - self._queued_samples
         return max(0.0, (consumed - lead) / rate)
@@ -2144,9 +2156,29 @@ class AudioStreamer:
         on ``position_seconds() + ring_lead_seconds()``, where its first
         sample lands, so the video waits until that sample is heard."""
         rate = self.effective_rate
-        if not rate or self._reu_pump_armed or self.servo.ring_lead < 0:
+        lead = self._content_lead()
+        if not rate or self._reu_pump_armed or lead is None:
             return 0.0
-        return self.servo.ring_lead / rate
+        return lead / rate
+
+    def _content_lead(self) -> float | None:
+        """The servo's smoothed ring gap less the pad landed behind the last
+        content byte, or None before the consumer starts."""
+        lead = self.servo.ring_lead
+        if lead < 0:
+            return None
+        return max(0.0, lead - self._ring_tail_pad)
+
+    def _note_ring_landed(self, nbytes: int, pad: int) -> None:
+        """Worker-side: ``nbytes`` reached the ring, the last ``pad`` of them
+        padding. A short chunk's pad counts only once a whole chunk of pad
+        follows it: a producer merely late for one chunk resumes behind it, and
+        counting it would step the clock forward and back by that pad."""
+        if pad >= nbytes:
+            self._ring_tail_pad += self._ring_short_pad + nbytes
+        else:
+            self._ring_tail_pad = 0
+        self._ring_short_pad = pad if pad < nbytes else 0
 
     def reset_position(self) -> None:
         self._pushed_count = 0
@@ -2283,6 +2315,8 @@ class AudioStreamer:
         self._drain_queue_samples()
         self._pushed_count = 0
         self._queued_samples = 0
+        self._ring_tail_pad = 0
+        self._ring_short_pad = 0
         self._stomp_requested = False
         # The streamer is reused across scenes: a total outliving its own scene
         # would clamp the next scene's position_seconds clock.

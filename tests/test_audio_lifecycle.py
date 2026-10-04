@@ -20,7 +20,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, FakeTime, SleepDrivenClock
+from _fakes import FakeAPI, FakeTime, SleepDrivenClock, quiet_logging
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio import audio_rate as audio_rate_mod
@@ -1501,6 +1501,28 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(started.wait(5.0))
         self.assertEqual(s.servo.ring_lead, 32 * 6)
         self.assertEqual(s.position_seconds(), 0.0)
+
+    def test_position_seconds_reaches_the_end_once_the_producer_runs_dry(self):
+        # Past the last sample the worker pads the ring, so the gap holds while
+        # nothing in it is content. The clock has to reach the end anyway: a
+        # video ends only when it reaches its last frame's PTS.
+        s = _make_worker_streamer(chunk_size=32)
+        s.host_dma_servo = False
+        total = 32 * 6 + 20
+        # The underrun summary stop() logs is asserted by the underrun tests.
+        with quiet_logging():
+            s.start_for_external_source()
+            try:
+                s.push_samples(np.zeros(total, dtype=np.int16))
+                deadline = time.monotonic() + 5.0
+                while s._full_underruns < 12 and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                underruns = s._full_underruns
+                position = s.position_seconds()
+            finally:
+                s.stop()
+        self.assertGreaterEqual(underruns, 12)
+        self.assertAlmostEqual(position, total / s.effective_rate, places=6)
 
     def test_position_seconds_host_dma(self):
         # The divisor is effective_rate — the rate the CIA latch actually
