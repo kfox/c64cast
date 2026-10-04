@@ -329,6 +329,9 @@ REU_GOVERNOR_PUMP_OVERDRIVE = 1.5
 # is half a ring, matching the bring-up seed, so bang-bang control parks the gap
 # symmetrically with ~4 KB before either a lap or an underrun.
 REU_GOVERNOR_GAP_THRESHOLD_HI = REU_PUMP_INITIAL_MARGIN >> 8  # 16 (= half ring)
+# The AND #$1F in _governor_test is the ring's HI-byte span minus one; a resized
+# or relocated ring has to change that mask with it.
+assert RING_BUFFER_END_HI - RING_BUFFER_HI == 0x20, "governor's AND #$1F assumes a 32-HI ring"
 # The skip window's upper bound. The governor pumps only below the threshold,
 # so one pump of at most REU_GOVERNOR_MAX_CHUNK bytes leaves gap_hi below this;
 # the reader only ever lowers it. A gap at or above it therefore means R has
@@ -645,6 +648,9 @@ _assert_chunk_offsets(
 REU_AUDIO_SRC_TRACKER_ADDR = 0xC200
 _TRK_LO = REU_AUDIO_SRC_TRACKER_ADDR & 0xFF
 _TRK_HI_BYTE = (REU_AUDIO_SRC_TRACKER_ADDR >> 8) & 0xFF
+# dst HI byte of the tracker (src LO/MI/HI at +0..+2, dst LO/HI at +3..+4): the
+# tracked governor's write head, since $DF03 holds a video address between pumps.
+_TRK_DST_HI_ADDR = REU_AUDIO_SRC_TRACKER_ADDR + 4
 
 # Same pattern as api.py SID_PLAYER_MC_TEMPLATE: the handler DECs a counter and
 # chains to the full kernal IRQ tail ($EA31: SCNKEY + UDTIM + cursor blink) only
@@ -864,7 +870,7 @@ REU_PUMP_BODY_SUBROUTINE = _TRACKED_PUMP_BODY + bytes([_RTS])
 REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS = _TRACKED_PUMP_BODY_CHUNK_OFFSETS
 
 _TRACKED_GOVERNOR_PREFIX = _governor_test(
-    REU_AUDIO_SRC_TRACKER_ADDR + 4,  # dst_hi tracker (write head) vs R_hi
+    _TRK_DST_HI_ADDR,  # write head vs R_hi
     bytes([_RTS]),  # skip: return to the caller
 )
 REU_PUMP_BODY_SUBROUTINE_GOVERNOR = _TRACKED_GOVERNOR_PREFIX + _TRACKED_PUMP_BODY + bytes([_RTS])
