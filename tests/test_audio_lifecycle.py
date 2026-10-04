@@ -1590,7 +1590,10 @@ class LifecycleTest(unittest.TestCase):
         def lead_then_land() -> float | None:
             lead = content_lead()
             s._note_ring_landed(32, 0)
-            s._consume_queued(32)
+            # Not _consume_queued: it takes _count_lock, and a position_seconds()
+            # that read the lead inside that lock would deadlock here, where the
+            # per-test cap cannot interrupt a blocked acquire.
+            s._queued_samples -= 32
             return lead
 
         s._content_lead = lead_then_land  # type: ignore[method-assign]
