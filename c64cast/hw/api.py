@@ -28,7 +28,6 @@ See docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketd
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -40,6 +39,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 
+from c64cast._json import decode_json
 from c64cast._wire_log import LogThrottle
 
 from . import machine_input
@@ -1656,16 +1656,14 @@ def read_config_category_body(
 
     A 404 without that JSON error body is the route itself missing (firmware
     without ``/v1/configs``) and raises like any other HTTP failure. Raises
-    ``requests.RequestException`` on transport/HTTP failure and ``ValueError``
-    when a 200 body is not JSON."""
+    ``requests.RequestException`` on transport/HTTP failure, and
+    ``requests.exceptions.JSONDecodeError`` (a ``RequestException`` that is
+    also a ``ValueError``) when a 200 body does not decode."""
     r = session.get(f"{base_url}/v1/configs/{quote(category)}", timeout=timeout)
     if r.status_code == 404 and _names_an_error(r):
         return None
     r.raise_for_status()
-    try:
-        body: object = r.json()
-    except RecursionError as e:
-        raise ValueError(f"/v1/configs/{category} answered JSON nested too deeply to read") from e
+    body = decode_json(r)
     if isinstance(body, dict) and category not in body and set(body) <= {"errors"}:
         return None
     return body
@@ -1694,26 +1692,14 @@ def classify_route_answer(status: int, body: bytes) -> RouteAnswer:
         return "unknown"
     if not body.strip():
         return "absent"
-    return "present" if _body_names_an_error(body) else "unknown"
+    return "present" if _names_an_error(body) else "unknown"
 
 
-def _names_an_error(response: requests.Response) -> bool:
+def _names_an_error(body: bytes | requests.Response) -> bool:
     try:
-        parsed = response.json()
-    except (ValueError, RecursionError):
+        parsed = decode_json(body)
+    except ValueError:
         return False
-    return _lists_errors(parsed)
-
-
-def _body_names_an_error(body: bytes) -> bool:
-    try:
-        parsed = json.loads(body)
-    except (ValueError, RecursionError):
-        return False
-    return _lists_errors(parsed)
-
-
-def _lists_errors(parsed: object) -> bool:
     errors = parsed.get("errors") if isinstance(parsed, dict) else None
     return isinstance(errors, list) and bool(errors)
 
@@ -1873,11 +1859,13 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         DAC table. Raises ``requests.RequestException`` on transport/HTTP
         failure (older firmware without ``/v1/info``, unreachable device);
         callers treat the read as best-effort and fall back to a host-keyed
-        name."""
+        name. A body that does not decode raises
+        ``requests.exceptions.JSONDecodeError``, which is a
+        ``RequestException`` too."""
         url = f"{self.base_url}/v1/info"
         r = self.session.get(url, timeout=timeout)
         r.raise_for_status()
-        body = r.json()
+        body = decode_json(r)
         return {k: str(v) for k, v in body.items()} if isinstance(body, dict) else {}
 
     def describe_device(self, *, detailed: bool = False) -> str:
@@ -1928,14 +1916,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         """The config category *names* this device's firmware exposes
         (``GET /v1/configs`` → ``{"categories": [...]}``) — the capability
         contract `refine_capabilities` checks the multi-SID surface against.
-        Raises ``requests.RequestException`` on transport/HTTP failure; an
-        unrecognized response shape returns ``[]``.
+        Raises ``requests.RequestException`` on transport/HTTP failure or a
+        body that does not decode; an unrecognized response shape returns
+        ``[]``.
 
         Not to be confused with `get_config_category` (singular) — that
         reads one category's ``{item: value}`` map."""
         r = self.session.get(f"{self.base_url}/v1/configs", timeout=timeout)
         r.raise_for_status()
-        body = r.json()
+        body = decode_json(r)
         categories = body.get("categories") if isinstance(body, dict) else None
         if not isinstance(categories, list):
             return []
@@ -2043,7 +2032,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 )
                 return None
             try:
-                answer = r.json()
+                answer = decode_json(r)
             except ValueError:
                 answer = None
             state = answer if isinstance(answer, dict) else {}
@@ -2056,8 +2045,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         try:
             r = self.session.get(f"{self.base_url}{U64_API.INPUT}", timeout=timeout)
             r.raise_for_status()
-            answer = r.json()
-        except (requests.RequestException, ValueError) as e:
+            answer = decode_json(r)
+        except requests.RequestException as e:
             log.debug("input state read failed: %s", e)
             return None
         return answer if isinstance(answer, dict) else None
