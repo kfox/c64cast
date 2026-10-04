@@ -247,6 +247,21 @@ class MicLeadOpenLoopTest(unittest.TestCase):
             rig.servo.tick()
         self.assertEqual(rig.servo.drop_frac, 0.0)
 
+    def test_a_failed_measurement_forgets_the_last_pump_position(self):
+        rig = self._closed()
+        last = rig.servo._last_pump
+        assert last is not None
+        rig.fail_reads = 1  # one measurement: a failed first read skips the second
+        rig.servo.tick()
+        # An outage long enough for the pump to go once round the ring: the
+        # tracker reads the same offset, and measured against the pre-outage
+        # one it would look like an idle pump.
+        rig.t += 5.0
+        rig.pump = last[0] + REU_MIC_SIZE
+        rig.host = rig.pump + REU_MIC_BOOTSTRAP_BYTES
+        rig.servo.tick()
+        self.assertGreater(rig.servo.drop_frac, 0.0)
+
     def test_recovered_reads_close_the_loop_again(self):
         rig = self._closed()
         rig.fail_reads = 6

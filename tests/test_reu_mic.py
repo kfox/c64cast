@@ -692,6 +692,19 @@ class MicLeadServoWiringTest(unittest.TestCase):
         written = (s._mic_reu_write_pos - 5000) % REU_MIC_SIZE
         self.assertAlmostEqual(written / (40 * 256), 0.98, delta=0.002)
 
+    def test_a_block_the_shaper_holds_back_writes_nothing(self):
+        s = self._streamer(anchor=None, drop_frac=0.35)
+        fake = cast(FakeAPI, s.api)
+        shaper = s._mic_shaper
+        assert shaper is not None
+        held = False
+        for _ in range(8):
+            before = len(fake.socket_dma.reuwrites)
+            s._mic_callback_reu(np.full((256, 1), 0.5, dtype=np.float32), 256, None, None)
+            if len(shaper._held) and len(fake.socket_dma.reuwrites) == before:
+                held = True
+        self.assertTrue(held)
+
     def test_bring_up_starts_the_servo_and_stop_ends_it(self):
         s = _new_streamer()
         s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
