@@ -442,8 +442,11 @@ reset, so the escalation is there for a teardown that is genuinely stuck, not
 an impatient one.
 
 In an ensemble each system re-reads its own file independently, from the path it
-was originally loaded from. The master is not re-read, so adding or removing a
-system needs a restart.
+was originally loaded from, and inherits the master's defaults exactly as it did
+at startup: a setting a system takes only from the master, such as an
+`[interstitial]` value, survives a reload. The master itself is not
+re-read, so an edit to the master, or adding or removing a system, needs a
+restart.
 
 ### The Performance Console
 

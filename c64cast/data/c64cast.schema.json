@@ -244,7 +244,7 @@
             "boolean",
             "string"
           ],
-          "description": "REU bank-swap double-buffer for video push. \"auto\" (default) stages bitmap modes (hires/mhires) when the startup probe finds the U64's REU enabled, leaving char modes on the cheaper host-DMA path; true forces it on for every mode, false off. auto silently falls back to host-DMA when REU isn't confirmed.",
+          "description": "REU bank-swap double-buffer for video push. \"auto\" (default) stages bitmap modes (hires/mhires) when the startup probe finds the U64's REU enabled, leaving char modes on the cheaper host-DMA path; true forces it on for every mode, false off. auto silently falls back to host-DMA when REU isn't confirmed. With [audio].use_reu_pump on, petscii and blank scenes stay on host-DMA even when true (logged): their REU push and the audio pump would both drive the REU controller.",
           "default": "auto"
         },
         "double_buffer": {

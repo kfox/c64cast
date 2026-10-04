@@ -276,6 +276,29 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   error and plays without audio. Before, the pump started anyway, and on
   addresses it had never been given it could overwrite C64 memory.
 
+- **An ensemble reload keeps the settings a system inherits from the master.**
+  A reload (SIGHUP, `POST /reload`, or the console's reload button) rebuilt each
+  system from its own file and the command line only, so anything it took from
+  the master alone — `[playlist]`, `[interstitial]`, `[color]` and the rest of
+  the cascade — went back to its default. A reload now composes each system
+  exactly as startup does. On a TeensyROM, an explicit
+  `[video].use_reu_staged = true` also stays off after a reload, as it is at
+  startup, rather than reaching an REU the backend does not have.
+
+- **`[video].use_reu_staged = true` on a petscii or blank scene no longer
+  corrupts the picture and the REU audio pump when `[audio].use_reu_pump` is
+  on.** The screen push and the pump both drive the REU controller, and the
+  pump's IRQ landed between the push's register writes on most frames and
+  DMAd audio into screen RAM and on from there. Those scenes now
+  push over host DMA while the pump is on, and log a warning when staging was
+  asked for explicitly. Bitmap scenes keep REU staging alongside the pump.
+
+- **REU-pump audio now plays on a `hires`/`mhires` scene that is not
+  REU-staged.** With `[audio].use_reu_pump` on and `use_reu_staged` resolved
+  off (`false`, a text overlay under `"auto"`, or `--skip-probe`), the pump
+  left `$0314` alone for a dispatcher that only the REU-staged path installs,
+  so nothing ever ran it. It now hooks `$0314` itself there.
+
 - **REU-pump audio no longer echoes under bitmap REU-staged video
   (#544).** With `[audio].use_reu_pump` on an `mhires`/`hires` scene that
   uses `use_reu_staged`, the pump's write head used to overrun the audio

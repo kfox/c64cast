@@ -138,6 +138,48 @@ class BlankSceneTest(unittest.TestCase):
         scene.teardown()
 
 
+class BlankScenePumpStartTest(unittest.TestCase):
+    """BlankScene.setup asks modes_irq.reu_pump_skips_irq_hook before it starts
+    the mic pump, like every other pump start."""
+
+    def _setup(self, mode: BlankDisplayMode, *, use_reu_pump: bool) -> MagicMock:
+        from c64cast.audio.audio import AudioStreamer
+        from c64cast.scenes.scenes import BlankScene
+
+        audio = MagicMock(spec=AudioStreamer)
+        audio.use_reu_pump = use_reu_pump
+        scene = BlankScene(
+            FakeAPI(), audio=audio, display_mode=mode, audio_cfg=MagicMock(), name="Blank"
+        )
+        scene.setup()
+        return audio
+
+    def test_host_rec_staged_blank_refuses_the_pump(self):
+        from c64cast.audio.audio import AudioStreamer
+        from c64cast.scenes.scenes import BlankScene
+
+        audio = MagicMock(spec=AudioStreamer)
+        audio.use_reu_pump = True
+        scene = BlankScene(
+            FakeAPI(),
+            audio=audio,
+            display_mode=BlankDisplayMode(use_reu_staged=True),
+            audio_cfg=MagicMock(),
+            name="Blank",
+        )
+        with self.assertRaises(ValueError):
+            scene.setup()
+        audio.start_mic.assert_not_called()
+
+    def test_unstaged_blank_keeps_the_hook(self):
+        audio = self._setup(BlankDisplayMode(), use_reu_pump=True)
+        self.assertIs(audio.start_mic.call_args.kwargs["skip_irq_vector_hook"], False)
+
+    def test_staged_blank_without_the_pump_starts_the_dac(self):
+        audio = self._setup(BlankDisplayMode(use_reu_staged=True), use_reu_pump=False)
+        self.assertIs(audio.start_mic.call_args.kwargs["skip_irq_vector_hook"], False)
+
+
 class PetsciiCompatibleValidationTest(unittest.TestCase):
     """`validate_for_scene` accepts PETSCII overlays on either petscii or
     blank modes via the is_petscii_compatible flag, and rejects them on

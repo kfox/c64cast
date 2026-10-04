@@ -302,8 +302,12 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     #     when REU isn't confirmed (--skip-probe,
                                     #     REU disabled, or a no-REU backend) so
                                     #     video never silently freezes.
-                                    #   true forces staging on for every mode;
-                                    #     false forces it off everywhere.
+                                    #   true forces staging on for every mode
+                                    #     but petscii/blank while
+                                    #     [audio].use_reu_pump is on (they stay
+                                    #     on host-DMA and log a warning — see
+                                    #     Caveats); false forces it off
+                                    #     everywhere.
                                     # Two pipelines, picked by the scene's
                                     # display mode:
                                     #
@@ -333,9 +337,14 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     #
                                     # Caveats:
                                     #   * REU controller is shared with the
-                                    #     REU audio pump but serialized at
-                                    #     IRQ granularity — coexistence is
-                                    #     fine. The $0314 IRQ vector is
+                                    #     REU audio pump. On hires/mhires it
+                                    #     is serialized at IRQ granularity —
+                                    #     coexistence is fine. On petscii/
+                                    #     blank the push programs it from the
+                                    #     host in several DMA writes the pump
+                                    #     IRQ can land between, so with
+                                    #     use_reu_pump on they don't stage.
+                                    #     The $0314 IRQ vector is
                                     #     shared too: on hires/mhires + REU
                                     #     audio the bank-swap install picks a
                                     #     MERGED dispatcher whose non-raster

@@ -48,11 +48,14 @@ log = logging.getLogger(__name__)
 # Single-buffer: the REU→main write lands in the currently-displayed $0400, so
 # the screen is stomped during the transfer — one frame's artifact at most.
 #
-# This path drives the REU controller's REC registers from the host, while the
-# REU audio pump (audio.start_for_reu_staged) drives them from a kernal-IRQ
-# handler on the C64. There is no merged dispatcher for this pair the way there
-# is for the bank-swap handlers below, so both active at once interleaves REU
-# writes unpredictably and audio glitches or stops.
+# This path drives the REU controller's REC registers from the host in four
+# separate DMA writes, while the REU audio pump drives them from a CIA #1 IRQ
+# on the C64, and that IRQ can run between any two of the writes. Neither pump
+# variant survives it: the plain one DMAs audio into screen RAM and onward
+# from wherever the push left $DF02, and the tracked one reloads every register
+# mid-sequence, so the push's trigger fires on a mix of its values and the
+# pump's — a dropped frame, or the screen DMAd into the audio ring. So the two
+# never run together — see reu_pump_skips_irq_hook.
 REU_VIDEO_SCREEN_BASE = 0xE00000  # 14 MB in — way past any REU audio region
 REU_VIDEO_SCREEN_LEN = SCREEN.N_CELLS  # 1000 bytes of PETSCII screen codes
 
@@ -1288,3 +1291,28 @@ def push_screen_via_reu(api: C64Backend, screen_bytes: bytes, dest_addr: int) ->
     # copies the staged frame into screen RAM. The only bus-halt event in the
     # REU-staged char push.
     api.write_memory(f"{REU.COMMAND:04X}", f"{REU.CMD_FETCH_EXEC:02X}")
+
+
+def reu_pump_skips_irq_hook(display_mode: object) -> bool:
+    """Whether the REU audio pump starting under `display_mode` must leave
+    $0314 alone and run tracked: True when the mode installs a merged
+    bank-swap dispatcher that calls the $C100 pump itself.
+
+    Every pump start asks it: VideoScene.setup (start_for_reu_staged), and
+    WebcamScene.setup, BlankScene.setup and MicAudioSource.setup (start_mic).
+
+    Raises ValueError for a mode that drives the REC from the host
+    (`drives_rec_from_host`), which no pump variant can share it with (see
+    REU_VIDEO_SCREEN_BASE). scene_factory.resolve_use_reu_staged keeps such a
+    mode from being built while [audio].use_reu_pump is on, so this is only
+    reached by a mode built some other way."""
+    if getattr(display_mode, "drives_rec_from_host", False):
+        raise ValueError(
+            f"{type(display_mode).__name__} pushes its screen through the REU "
+            "from the host, which the REU audio pump cannot share; build it "
+            "with use_reu_staged=False while [audio].use_reu_pump is on"
+        )
+    return bool(
+        getattr(display_mode, "audio_reu_pump_active", False)
+        and getattr(display_mode, "use_reu_staged", False)
+    )

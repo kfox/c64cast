@@ -20,6 +20,7 @@ in config.py), so the single source of truth is unmoved.
 
 from __future__ import annotations
 
+import functools
 import glob
 import ipaddress
 import logging
@@ -125,6 +126,9 @@ log = logging.getLogger(__name__)
 # bank and swapping $DD00 at vblank removes the single-buffer tearing. Char modes
 # are delta-cached small writes where staging is a net regression; mcm cannot stage.
 _REU_BITMAP_MODES = frozenset({"hires", "hires_edges", "mhires"})
+# Display modes whose REU staging is a host-driven REC transfer
+# (modes_irq.push_screen_via_reu) rather than a C64-side IRQ.
+_HOST_REC_STAGED_MODES = frozenset({"petscii", "blank"})
 
 # Read ceiling for the load-time SID header check, which runs inside the
 # network-reachable validate path (see _check_first_sid_clears_display). A C64
@@ -144,12 +148,26 @@ MAX_SCENE_NAME_CHARS = 120
 QUANTIZING_DISPLAYS = ("mhires", "hires", "hires_edges", "mcm", "petscii")
 
 
+@functools.cache
+def _warn_host_rec_staging_dropped(display: str) -> None:
+    """Once per display per process: the validate and build passes and every
+    `display = "random"` re-pick resolve the same scene again."""
+    log.warning(
+        "[video].use_reu_staged = true is ignored for %s scenes while "
+        "[audio].use_reu_pump is on: their screen push and the audio pump "
+        "would both drive the REU controller. Using host DMA for the screen "
+        "instead.",
+        display,
+    )
+
+
 def resolve_use_reu_staged(
     setting: bool | str,
     display: str,
     *,
     reu_available: bool,
     has_buffer_overlays: bool = False,
+    audio_reu_pump_active: bool = False,
 ) -> bool:
     """Resolve the [video].use_reu_staged tri-state to a concrete bool for one
     scene's display mode.
@@ -166,7 +184,17 @@ def resolve_use_reu_staged(
     Explicit true/false pass straight through (true forces REU even with text
     overlays — the caller has opted into the shimmer for tear-free cuts). The
     loader guarantees the only legal string is "auto"; any other string is
-    treated as auto (False here) rather than silently truthy-True."""
+    treated as auto (False here) rather than silently truthy-True.
+
+    The one exception to explicit true: a char display (_HOST_REC_STAGED_MODES)
+    resolves to False, with a warning, while the REU audio pump is on
+    (audio_reu_pump_active). Its staging drives the REU controller from the
+    host, which the pump drives from the C64, and the two corrupt each other's
+    transfers (see modes_irq.REU_VIDEO_SCREEN_BASE)."""
+    if audio_reu_pump_active and display in _HOST_REC_STAGED_MODES:
+        if setting is True:
+            _warn_host_rec_staging_dropped(display)
+        return False
     if isinstance(setting, str):
         if has_buffer_overlays:
             return False
@@ -690,9 +718,9 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
 
     REU-staged video push (opt-in via [video].use_reu_staged): PETSCII and
     Blank honor the flag with single-buffer host-triggered REU→main DMAs (no
-    IRQ install, but they drive REC from the host while the REU audio pump
-    drives it from $0314, and nothing enforces exclusion — see the
-    REU_VIDEO_SCREEN_BASE block in modes_irq.py). Hires and
+    IRQ install), except while the REU audio pump is on, which drives the
+    same REC registers from the C64 — resolve_use_reu_staged turns it off for
+    them then. Hires and
     MultiHires honor it with double-buffer + a C64-side raster IRQ at $0314
     that swaps $DD00 at vblank; when the scene also opts into REU audio, the
     bank-swap install picks a MERGED dispatcher whose non-raster branch JMPs
@@ -714,6 +742,7 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
             display,
             reu_available=wiring.reu_available,
             has_buffer_overlays=wiring.has_buffer_overlays,
+            audio_reu_pump_active=wiring.audio_reu_pump_active,
         )
     )
     # Also disabled by force_host_dma: like the REU path it installs a $0314 raster
@@ -837,7 +866,10 @@ def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
         border=s.border,
         background=s.background,
         use_reu_staged=resolve_use_reu_staged(
-            cfg.video.use_reu_staged, "blank", reu_available=False
+            cfg.video.use_reu_staged,
+            "blank",
+            reu_available=False,
+            audio_reu_pump_active=cfg.audio.use_reu_pump,
         ),
     )
 
@@ -2289,7 +2321,10 @@ def _build_blank(ctx: _SceneBuildContext) -> Scene:
         border=s.border,
         background=s.background,
         use_reu_staged=resolve_use_reu_staged(
-            cfg.video.use_reu_staged, "blank", reu_available=ctx.reu_available
+            cfg.video.use_reu_staged,
+            "blank",
+            reu_available=ctx.reu_available,
+            audio_reu_pump_active=cfg.audio.use_reu_pump,
         ),
     )
     name = s.name or "Blank"

@@ -1346,7 +1346,9 @@ class TrackedVideoPumpInstallFailureTest(unittest.TestCase):
 
     def test_video_scene_plays_the_run_without_audio(self):
         s = self._lossy_streamer()
-        mode = MagicMock(audio_reu_pump_active=True)
+        mode = MagicMock(
+            audio_reu_pump_active=True, use_reu_staged=True, drives_rec_from_host=False
+        )
         scene = VideoScene(MagicMock(), s, mode, self.clip, setup_progress=False)
         source = MagicMock(a_stream=object())
         with (

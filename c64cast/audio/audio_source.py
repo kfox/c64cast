@@ -131,8 +131,14 @@ class MicAudioSource:
         self._features: AudioFeatureStream | None = None
 
     def setup(self) -> None:
-        skip_hook = bool(getattr(self._display_mode, "audio_reu_pump_active", False))
         from c64cast.app.config import AudioFeaturesCfg
+        from c64cast.video.modes_irq import reu_pump_skips_irq_hook
+
+        skip_hook = (
+            not self._listen_only
+            and self._audio.use_reu_pump
+            and reu_pump_skips_irq_hook(self._display_mode)
+        )
 
         fcfg = self._features_cfg or AudioFeaturesCfg()
         analyzer_rate = (
