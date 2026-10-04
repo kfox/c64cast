@@ -19,6 +19,7 @@ working values, confirmed as of 2026-06-10. Point the env vars at yours.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from datetime import datetime
@@ -283,6 +284,9 @@ def machine_reset(url: str) -> bool:
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(url))
+    # Two writes need no write path, and the WriteC64Spans probe would put one
+    # more half-sent command between a just-killed run and the safety reset.
+    cfg.teensyrom.dma_slicing = "off"
     api = None
     try:
         api = make_backend(cfg)
@@ -394,6 +398,52 @@ def rest_set_config(
     except ValueError:
         return False
     return errs == []
+
+
+def add_tr_slicing_args(ap) -> None:
+    """``--tr-slicing`` / ``--slice-bytes`` / ``--slice-gap``: the
+    ``[teensyrom].dma_slicing`` knobs, so one tool can measure the same
+    condition with WriteC64Mem and with sliced WriteC64Spans. Unset, each takes
+    the config default. No effect on an Ultimate URL."""
+    from c64cast.hw.teensyrom_dma import SPANS_FIELD_MAX
+
+    def header_byte(text: str) -> int:
+        # Both ride WriteC64Spans' header as one byte; past it, write_spans
+        # raises ValueError, which the backend's _emit does not absorb.
+        value = int(text)
+        if not 0 <= value <= SPANS_FIELD_MAX:
+            raise argparse.ArgumentTypeError(f"{value} is not 0-{SPANS_FIELD_MAX}")
+        return value
+
+    ap.add_argument("--tr-slicing", choices=["auto", "on", "off"], default=None)
+    ap.add_argument(
+        "--slice-bytes", type=header_byte, default=None, help="[teensyrom].dma_slice_bytes"
+    )
+    ap.add_argument(
+        "--slice-gap", type=header_byte, default=None, help="[teensyrom].dma_slice_gap_us"
+    )
+
+
+def apply_tr_slicing(cfg, args) -> None:
+    """Write the ``add_tr_slicing_args`` flags that were given into ``cfg``."""
+    tr = cfg.teensyrom
+    if args.tr_slicing is not None:
+        tr.dma_slicing = args.tr_slicing
+    if args.slice_bytes is not None:
+        tr.dma_slice_bytes = args.slice_bytes
+    if args.slice_gap is not None:
+        tr.dma_slice_gap_us = args.slice_gap
+
+
+def describe_tr_writes(be) -> str:
+    """How a TeensyROM backend is writing, for a tool's setup banner — the
+    resolved mode, not the requested one, since 'auto' and 'on' both fall
+    back to WriteC64Mem on firmware without WriteC64Spans."""
+    from c64cast.hw.teensyrom_api import TeensyROMBackend
+
+    if not isinstance(be, TeensyROMBackend):
+        return "not a TeensyROM (slicing flags ignored)"
+    return be.describe_writes()
 
 
 def __getattr__(name: str) -> object:

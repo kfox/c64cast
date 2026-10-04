@@ -20,6 +20,7 @@ from _fakes import FakeTime, make_psid
 from c64cast.app import config as cfgmod
 from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr_api
+from c64cast.hw import teensyrom_dma as tr_dma
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
 from c64cast.hw.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
 from c64cast.hw.teensyrom_api import TeensyROMBackend
@@ -34,7 +35,9 @@ from c64cast.hw.teensyrom_dma import (
     TRBusyError,
     TRClient,
     TRError,
+    TRSpansRefused,
     TRTransport,
+    span_touches_cart_io,
 )
 
 
@@ -202,6 +205,331 @@ class FramingTest(unittest.TestCase):
         for _ in range(3):
             self.t.queue_token(TOK_ACK)
         self.client.post_file(b"AB", "x.prg", DRIVE_SD)  # must NOT raise
+
+
+_SPANS_TOK = bytes([0x64, 0xFC])
+_MEM_TOK = bytes([0x64, 0xFB])
+
+
+class _SpansLoopback(LoopbackTransport):
+    """A loopback that can answer the four-byte span header with text, the way
+    firmware does when it refuses a zero-span header, and records every quiet
+    window drain_text was asked to wait out."""
+
+    def __init__(self, on_header: bytes = b""):
+        super().__init__()
+        self.on_header = on_header
+        self.quiet_waits: list[float] = []
+
+    def send_all(self, data: bytes) -> None:
+        super().send_all(data)
+        if data == bytes(4):
+            self.queue_stale(self.on_header)
+
+    def drain_text(self, quiet_s: float = 0.2) -> str:
+        self.quiet_waits.append(quiet_s)
+        return super().drain_text(quiet_s)
+
+
+class SpansFramingTest(unittest.TestCase):
+    def setUp(self):
+        self.t = _SpansLoopback()
+        self.c = TRClient(self.t)
+
+    def test_token_header_span_list_then_payload(self):
+        for _ in range(3):
+            self.t.queue_token(TOK_ACK)
+        self.c.write_spans([(0x4000, b"\x01\x02"), (0x5000, b"\x03")], 32, 40)
+        self.assertEqual(
+            bytes(self.t.sent),
+            _SPANS_TOK
+            + bytes([0, 32, 40, 2])
+            + bytes([0x40, 0x00, 0x00, 0x02, 0x50, 0x00, 0x00, 0x01])
+            + b"\x01\x02\x03",
+        )
+
+    def test_bus_held_at_the_token_is_a_refusal_with_nothing_more_sent(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.queue_stale(b"REU in use")
+        with self.assertRaisesRegex(TRSpansRefused, "REU in use"):
+            self.c.write_spans([(0x4000, b"\x01")], 32, 40)
+        self.assertEqual(bytes(self.t.sent), _SPANS_TOK)
+
+    def test_an_unexpected_token_reply_closes_the_command_with_a_zero_header(self):
+        self.t.queue_token(0x1234)
+        with self.assertRaisesRegex(TRError, "unexpected reply") as cm:
+            self.c.write_spans([(0x4000, b"\x01")], 32, 40)
+        self.assertNotIsInstance(cm.exception, TRSpansRefused)
+        self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
+        self.assertEqual(self.t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+
+    def test_a_lost_token_reply_closes_the_command_with_a_zero_header(self):
+        with self.assertRaises(TRError):
+            self.c.write_spans([(0x4000, b"\x01")], 32, 40)
+        self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
+        self.assertEqual(self.t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+
+    def test_a_failed_landing_waits_out_the_discard_without_sending_more(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_token(TOK_FAIL)
+        with self.assertRaises(TRError) as cm:
+            self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
+        self.assertNotIsInstance(cm.exception, TRSpansRefused)
+        self.assertTrue(bytes(self.t.sent).endswith(b"\x01\x02"))
+        self.assertEqual(self.t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+
+    def test_a_send_the_transport_could_not_finish_still_recovers(self):
+        class _Fails(_SpansLoopback):
+            def send_all(self, data: bytes) -> None:
+                if data == b"\x01\x02":
+                    raise TimeoutError("sendall timed out")
+                super().send_all(data)
+
+        t = _Fails()
+        t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)
+        with self.assertRaises(OSError):
+            TRClient(t).write_spans([(0x4000, b"\x01\x02")], 32, 40)
+        self.assertEqual(t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+
+    def test_a_token_the_transport_could_not_send_closes_the_command(self):
+        class _Fails(_SpansLoopback):
+            def send_all(self, data: bytes) -> None:
+                if data == _SPANS_TOK:
+                    raise TimeoutError("sendall timed out")
+                super().send_all(data)
+
+        t = _Fails()
+        with self.assertRaises(OSError):
+            TRClient(t).write_spans([(0x4000, b"\x01")], 32, 40)
+        self.assertEqual(bytes(t.sent), bytes(4))
+        self.assertEqual(t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+
+    def test_span_count_and_header_fields_are_bounded_before_the_wire(self):
+        for spans, slice_bytes, gap in (
+            ([], 32, 40),
+            ([(0x4000, b"\x00")] * 65, 32, 40),
+            ([(0x4000, b"\x00")], 256, 40),
+            ([(0x4000, b"\x00")], 32, 256),
+        ):
+            with self.assertRaises(ValueError):
+                self.c.write_spans(spans, slice_bytes, gap)
+        self.assertEqual(bytes(self.t.sent), b"")
+
+    def test_probe_always_closes_with_a_zero_header(self):
+        self.t.queue_token(TOK_ACK)
+        self.assertTrue(self.c.probe_spans())
+        self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
+
+    def test_probe_counts_a_held_bus_as_support(self):
+        self.t.queue_token(TOK_FAIL)
+        self.assertTrue(self.c.probe_spans())
+
+    def test_probe_reads_support_from_the_refusal_when_chatter_hid_the_reply(self):
+        t = _SpansLoopback(on_header=b"Want 1 to 64 spans")
+        t.queue_raw(b"TR")  # boot chatter where the reply token should be
+        self.assertTrue(TRClient(t).probe_spans())
+
+    def test_probe_on_firmware_without_the_command(self):
+        t = _SpansLoopback(on_header=b"Unk cmd: 0000")
+        t.queue_raw(b"Un")  # the text answer, read as a token
+        self.assertFalse(TRClient(t).probe_spans())
+
+    def test_cart_io_overlap_bounds(self):
+        self.assertFalse(span_touches_cart_io(0xDD00, 0x100))
+        self.assertTrue(span_touches_cart_io(0xDD00, 0x101))
+        self.assertTrue(span_touches_cart_io(0xDFFF, 1))
+        self.assertFalse(span_touches_cart_io(0xE000, 0x100))
+
+
+class SlicingBackendTest(unittest.TestCase):
+    def _backend(self, mode: str = "auto", *, supported: bool = True, slice_bytes: int = 32):
+        t = _SpansLoopback(on_header=b"" if supported else b"Unk cmd: 0000")
+        t.queue_token(TOK_FW_FULL)
+        t.queue_token(TOK_ACK)
+        t.queue_raw(b"\xe2\xfc")
+        if mode != "off":
+            if supported:
+                t.queue_token(TOK_ACK)
+            else:
+                t.queue_raw(b"Un")
+        b = TeensyROMBackend(
+            t,
+            profile=replace(TEENSYROM_PROFILE),
+            storage="sd",
+            dma_slicing=mode,
+            dma_slice_bytes=slice_bytes,
+            dma_slice_gap_us=40,
+        )
+        t.sent.clear()
+        return b, t
+
+    def _write(self, b, t, addr: str, size: int, acks: int) -> bytes:
+        for _ in range(acks):
+            t.queue_token(TOK_ACK)
+        b.write_memory_file(addr, bytes(size))
+        return bytes(t.sent)
+
+    def test_no_nmi_consumer_keeps_writes_on_writec64mem(self):
+        b, t = self._backend()
+        sent = self._write(b, t, "4000", 256, 1)
+        self.assertTrue(sent.startswith(_MEM_TOK))
+        self.assertNotIn(_SPANS_TOK, sent)
+
+    def test_nmi_consumer_slices_a_write_longer_than_one_slice(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        sent = self._write(b, t, "4000", 33, 3)
+        self.assertTrue(sent.startswith(_SPANS_TOK + bytes([0, 32, 40, 1])))
+        self.assertEqual(b.stats["errors"], 0)
+
+    def test_a_write_of_one_slice_or_less_stays_on_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        sent = self._write(b, t, "4000", 32, 1)
+        self.assertTrue(sent.startswith(_MEM_TOK))
+
+    def test_the_consumer_stopping_returns_writes_to_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        b.note_nmi_consumer(False)
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
+
+    def test_cart_io_stays_on_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        self.assertTrue(self._write(b, t, "DE00", 64, 1).startswith(_MEM_TOK))
+
+    def test_sliced_commands_are_capped_at_the_segment_size(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        size = tr_dma.SPANS_SEGMENT_BYTES * 2 + 33
+        sent = self._write(b, t, "4000", size, 9)
+        self.assertEqual(sent.count(_SPANS_TOK + bytes([0, 32, 40, 1])), 3)
+        self.assertEqual(b.stats["writes"], 3)
+
+    def test_a_tail_of_one_slice_or_less_goes_on_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        size = tr_dma.SPANS_SEGMENT_BYTES + 5
+        sent = self._write(b, t, "4000", size, 4)
+        self.assertEqual(sent.count(_SPANS_TOK), 1)
+        self.assertTrue(sent.endswith(_MEM_TOK + bytes([0x44, 0x00, 0x00, 0x05]) + bytes(5)))
+        self.assertEqual(b.stats["errors"], 0)
+
+    def test_slice_zero_halts_per_segment_on_writec64mem(self):
+        # A whole-span command halts as long as a WriteC64Mem of the same
+        # segment, so only the segment cap is left to apply.
+        b, t = self._backend(slice_bytes=0)
+        b.note_nmi_consumer(True)
+        self.assertNotIn(_SPANS_TOK, self._write(b, t, "4000", 2, 1))
+        t.sent.clear()
+        sent = self._write(b, t, "6000", tr_dma.SPANS_SEGMENT_BYTES * 2, 2)
+        self.assertNotIn(_SPANS_TOK, sent)
+        self.assertEqual(sent.count(_MEM_TOK), 2)
+        self.assertIn(_MEM_TOK + bytes([0x64, 0x00, 0x04, 0x00]), sent)
+
+    def test_a_refused_segment_is_carried_by_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        t.queue_token(TOK_FAIL)
+        t.queue_token(TOK_ACK)
+        b.write_memory_file("4000", bytes(64))
+        sent = bytes(t.sent)
+        self.assertEqual(sent[:4], _SPANS_TOK + _MEM_TOK)
+        self.assertEqual(sent[4:6], bytes([0x40, 0x00]))
+        self.assertEqual(b.stats["errors"], 0)
+        self.assertEqual(b.stats["writes"], 1)
+
+    def test_a_refusal_carries_the_rest_of_the_write_on_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        t.queue_token(TOK_FAIL)
+        t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)
+        t.quiet_waits.clear()
+        b.write_memory_file("4000", bytes(tr_dma.SPANS_SEGMENT_BYTES * 3))
+        sent = bytes(t.sent)
+        self.assertEqual(sent.count(_SPANS_TOK), 1)
+        self.assertEqual(sent.count(_MEM_TOK + bytes([0x44, 0x00])), 1)
+        self.assertEqual(t.quiet_waits.count(0.15), 1)
+        self.assertEqual(b.stats["errors"], 0)
+
+    def test_off_never_probes(self):
+        b, t = self._backend("off")
+        b.note_nmi_consumer(True)
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
+
+    def test_auto_on_firmware_without_the_command_stays_unsliced(self):
+        b, t = self._backend(supported=False)
+        b.note_nmi_consumer(True)
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
+
+    def test_on_warns_when_the_firmware_lacks_the_command(self):
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
+            self._backend("on", supported=False)
+        self.assertTrue(any("lacks WriteC64Spans" in m for m in cm.output))
+
+    def test_connect_log_names_the_command_the_writes_go_on(self):
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            self._backend()
+        self.assertTrue(any("WriteC64Spans, 32-byte slices" in m for m in cm.output))
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            self._backend(slice_bytes=0)
+        writes = [m for m in cm.output if "TR writes:" in m]
+        self.assertEqual(len(writes), 1)
+        self.assertIn("WriteC64Mem in 1024-byte halts", writes[0])
+        self.assertNotIn("WriteC64Spans", writes[0])
+
+    def test_bitmap_tempo_follows_the_write_path(self):
+        sliced, _ = self._backend()
+        self.assertEqual(sliced.dac_bitmap_tempo(True), 0.97)
+        self.assertEqual(sliced.dac_bitmap_tempo(False), 0.97)
+        plain, _ = self._backend("off")
+        self.assertEqual(plain.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(plain.dac_bitmap_tempo(False), 0.89)
+
+    def test_bitmap_tempo_at_slice_zero_is_the_unsliced_figure(self):
+        # Each command is then one 1 KiB halt, as costly to the NMI player
+        # per byte as WriteC64Mem's.
+        whole, _ = self._backend(slice_bytes=0)
+        self.assertEqual(whole.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(whole.dac_bitmap_tempo(False), 0.89)
+
+
+class SlicingConfigTest(unittest.TestCase):
+    def test_slice_fields_are_bounded_to_a_header_byte(self):
+        for name in ("dma_slice_bytes", "dma_slice_gap_us"):
+            for bad in (-1, 256, True, 3.0):
+                cfg = cfgmod.Config()
+                setattr(cfg.teensyrom, name, bad)
+                with self.assertRaisesRegex(ValueError, name):
+                    cfgmod.validate_sections(cfg)
+            cfg = cfgmod.Config()
+            setattr(cfg.teensyrom, name, 255)
+            cfgmod.validate_sections(cfg)
+
+    def test_make_backend_passes_the_slicing_settings(self):
+        cfg = cfgmod.Config()
+        cfg.hardware.backend = "teensyrom"
+        cfg.teensyrom.transport = "serial"
+        cfg.teensyrom.serial_port = "/dev/ttyACM0"
+        cfg.teensyrom.dma_slicing = "on"
+        cfg.teensyrom.dma_slice_bytes = 64
+        cfg.teensyrom.dma_slice_gap_us = 20
+        captured: dict[str, object] = {}
+
+        def fake_backend(transport, **kw):
+            captured.update(kw)
+            return object()
+
+        with mock.patch("c64cast.hw.teensyrom_api.TeensyROMBackend", side_effect=fake_backend):
+            make_backend(cfg)
+        self.assertEqual(
+            (captured["dma_slicing"], captured["dma_slice_bytes"], captured["dma_slice_gap_us"]),
+            ("on", 64, 20),
+        )
 
 
 class ErrorSurfacingTest(unittest.TestCase):
@@ -912,7 +1240,7 @@ class MakeBackendTest(unittest.TestCase):
         cfg.teensyrom.serial_port = None
         captured: dict[str, str] = {}
 
-        def fake_backend(transport, *, profile, storage):
+        def fake_backend(transport, *, profile, storage, **_slicing):
             captured["port"] = transport.port
             return object()
 
@@ -939,7 +1267,7 @@ class MakeBackendTest(unittest.TestCase):
         cfg.teensyrom.serial_port = "/dev/ttyACM0"
         captured: dict[str, str] = {}
 
-        def fake_backend(transport, *, profile, storage):
+        def fake_backend(transport, *, profile, storage, **_slicing):
             captured["port"] = transport.port
             return object()
 

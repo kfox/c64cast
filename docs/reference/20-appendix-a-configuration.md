@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 20 sections and 178 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 20 sections and 181 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -46,8 +46,8 @@ backend = "auto"     # auto | dac | sampler
 | **`pitch_mult_mhires`**<br>*Type:* `float`<br>*Default:* `1.0` | Host-DMA servo playback-rate multiplier for MultiHires mode. 1.0 = none (default; modern fps caps + REU staging leave ~0 loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts. Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) — 1.005 is a no-op, 1.015 lands on +1.19%. |
 | **`pitch_mult_mcm`**<br>*Type:* `float`<br>*Default:* `1.0` | Host-DMA servo playback-rate multiplier for MCM mode (char-based, light load; U64-II NTSC: good at 1.0). Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) — 1.005 is a no-op, 1.015 lands on +1.19%. |
 | **`pitch_mult_blank`**<br>*Type:* `float`<br>*Default:* `1.0` | Host-DMA servo playback-rate multiplier for Blank mode (no video input; 1.0 = none). Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) — 1.005 is a no-op, 1.015 lands on +1.19%. |
-| **`dac_bitmap_tempo_hires`**<br>*Type:* `float`<br>*Default:* `0.89` | Observed $D418-DAC playback-speed fraction on Hires / Hires-edges bitmap modes (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio sampler or the REU pump. Default 0.89 = U64-II NTSC (Hires drains slightly faster than MHires); re-measure per platform (PAL / TR+). |
-| **`dac_bitmap_tempo_mhires`**<br>*Type:* `float`<br>*Default:* `0.88` | Observed $D418-DAC playback-speed fraction on MultiHires bitmap mode (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio sampler or the REU pump. Default 0.88 = U64-II NTSC; re-measure per platform (PAL / TR+). |
+| **`dac_bitmap_tempo_hires`**<br>*Type:* `float \| None`<br>*Default:* `None` | Observed $D418-DAC playback-speed fraction on Hires / Hires-edges bitmap modes (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio sampler or the REU pump. Unset = measured for the connected hardware: 0.89 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure for PAL. |
+| **`dac_bitmap_tempo_mhires`**<br>*Type:* `float \| None`<br>*Default:* `None` | Observed $D418-DAC playback-speed fraction on MultiHires bitmap mode (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio sampler or the REU pump. Unset = measured for the connected hardware: 0.88 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure for PAL. |
 
 ## `[audio_features]`
 
@@ -373,6 +373,9 @@ storage = "sd"        # sd | usb
 | **`host`**<br>*Type:* `str \| None`<br>*Default:* `None` | TR IP address for transport=tcp (find via CCGMS "ATC" or RTC sync). Required for tcp. |
 | **`tcp_port`**<br>*Type:* `int`<br>*Default:* `2112` | TR TCP listener port (firmware default 2112). |
 | **`storage`**<br>*Type:* `str`<br>*Default:* `'sd'` | Where helper PRGs are uploaded + launched from. Choices: `sd`, `usb`. |
+| **`dma_slicing`**<br>*Type:* `str`<br>*Default:* `'auto'` | Write C64 memory with WriteC64Spans, which DMAs in slices and lets the 6510 run between them, so a large write no longer halts the CPU across many NMI/IRQ periods. Only while $D418-DAC audio plays, and only for writes longer than one slice: slicing costs bulk throughput, so otherwise every write stays on WriteC64Mem. 'auto' uses it when the firmware has it (TR+ v0.9+); 'on' warns if it does not; 'off' always uses the single-halt WriteC64Mem. Choices: `auto`, `on`, `off`. |
+| **`dma_slice_bytes`**<br>*Type:* `int`<br>*Default:* `32` | Largest single DMA halt, in bytes, when dma_slicing is in use (1-255; 0 = no slicing, writes split into 1 KiB halts while DAC audio plays). Each slice also costs ~75 cycles of handshake, so smaller is gentler on audio and raster IRQs but slower. |
+| **`dma_slice_gap_us`**<br>*Type:* `int`<br>*Default:* `40` | Microseconds the 6510 runs between slices (0-255) — the time an NMI or IRQ that fired during a slice has to finish. Below ~20 us the next slice starts before the handler does. |
 
 ## `[ultimate64]`
 

@@ -231,7 +231,7 @@ class InterleavedVideoWiringTest(unittest.TestCase):
         videos = self._interleaved(cfg, cast(object, object()))
         self.assertTrue(videos)
         for v in videos:
-            self.assertEqual(v.tempo_scale, cfg.audio.dac_bitmap_tempo_hires)
+            self.assertEqual(v.tempo_scale, FakeAPI().dac_bitmap_tempo(multicolor=False))
 
     def test_the_epilogue_stamps_reach_an_interleaved_video(self):
         cfg = Config()

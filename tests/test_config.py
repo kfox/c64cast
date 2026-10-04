@@ -2415,7 +2415,7 @@ class DacBitmapTempoValidationTest(unittest.TestCase):
         return cfg
 
     def test_defaults_ok(self):
-        scene_factory.validate_dac_bitmap_tempo_cfg(self._cfg())  # default 0.88
+        scene_factory.validate_dac_bitmap_tempo_cfg(self._cfg())  # default unset
 
     def test_off_value_ok(self):
         scene_factory.validate_dac_bitmap_tempo_cfg(
@@ -2686,6 +2686,26 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
         # hires_edges shares the Hires VIC fetch → the hires factor.
         scene = self._scene(self._dac_cfg(), display="hires_edges", audio=self.audio)
         self.assertEqual(scene.tempo_scale, 0.90)
+
+    def test_unset_resolves_from_the_connected_backend(self):
+        from c64cast.scenes.scenes import VideoScene
+
+        cfg = self._dac_cfg()
+        cfg.audio.dac_bitmap_tempo_hires = None
+        cfg.audio.dac_bitmap_tempo_mhires = None
+        api = FakeAPI()
+        api.dac_bitmap_tempo = lambda multicolor: 0.97 if multicolor else 0.95  # type: ignore[method-assign]
+        for display, want in (("mhires", 0.97), ("hires", 0.95)):
+            s = cfgmod.SceneCfg(type="video", display=display, file=self.clip)
+            scene = scene_factory.build_scene(s, cfg, cast(C64Backend, api), self.audio, None)
+            assert isinstance(scene, VideoScene)
+            self.assertEqual(scene.tempo_scale, want, display)
+
+    def test_unset_is_valid(self):
+        cfg = self._dac_cfg()
+        cfg.audio.dac_bitmap_tempo_hires = None
+        cfg.audio.dac_bitmap_tempo_mhires = None
+        scene_factory.validate_dac_bitmap_tempo_cfg(cfg)
 
     def test_dac_petscii_is_off(self):
         scene = self._scene(self._dac_cfg(), display="petscii", audio=self.audio)

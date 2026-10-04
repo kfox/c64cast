@@ -109,7 +109,7 @@ Pitch survives because the `$D418` *output* rate stays ≈ `sample_rate` — a p
 
 **The fix — pre-compress the content.** Compress the content in the time domain by the inverse factor, so the system's own stretch nets back to real time.
 
-`config.build_scene` resolves `tempo_scale = s`, the observed speed fraction, from `[audio].dac_bitmap_tempo_hires` / `_mhires`. It is gated to `backend == "dac"` **and** `isinstance(mode, BitmapDisplayMode)` **and** not `use_reu_pump`; anything else gets 1.0, since the off-bus sampler, the REU pump, char modes, and muted scenes do not stretch. It threads through `VideoScene._tempo_scale` into `AVFileSource`.
+`config.build_scene` resolves `tempo_scale = s`, the observed speed fraction, from `[audio].dac_bitmap_tempo_hires` / `_mhires`. Both default to unset, which asks the connected backend (`C64Backend.dac_bitmap_tempo`): `s` depends on how the link's writes halt the NMI player, so no one number fits every machine. The ABC returns the U64-II NTSC figures, 0.89 hires / 0.88 mhires, which a TeensyROM writing with WriteC64Mem also matches; a TR+ writing sliced returns 0.97 ([teensyrom_api.py](hardware-io.md#teensyrom_apipy--the-teensyrom-backend)). An explicit value always wins. `s` is also content-dependent — a mostly static clip drains near 1.0 on either link, so there a fixed `s` makes it play fast (11% at 0.88, 2.5% at 0.97); only reading the drain live would remove that. It is gated to `backend == "dac"` **and** `isinstance(mode, BitmapDisplayMode)` **and** not `use_reu_pump`; anything else gets 1.0, since the off-bus sampler, the REU pump, char modes, and muted scenes do not stretch. It threads through `VideoScene._tempo_scale` into `AVFileSource`.
 
 There, when `tempo_scale < 1.0`:
 
