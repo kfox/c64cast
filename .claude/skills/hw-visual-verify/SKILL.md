@@ -52,6 +52,23 @@ substring, or `VID:PID` — through the same resolver, so `-d 0fd9:0066` opens t
 Cam Link whatever the indices did since the last replug. `$C64_DIAG_CAMERA` sets
 the default for a shell (an index-only `$C64_DIAG_CV2` still works).
 
+## When a capture returns no frame
+
+`hdmi_capture.py` and the other tools retry a no-frame read for a few seconds
+before failing, so a failure means the device gave nothing for that whole
+window. It does not mean the capture stick is dead. Check for these first:
+
+- **The HDMI link is renegotiating.** After a video-mode change on the
+  machine (PAL/NTSC), the Cam Link has returned no frames for anything from
+  seconds to over a minute, and has dropped off the device list for part of
+  that. Wait, then rerun; a reset or a reboot has not been seen to do this.
+  While the stick is off the list, the next camera is renumbered into its
+  index, which is why you select it by name (`-d "Cam Link"`), never by
+  index.
+- **The source sends no signal**, or another program holds the device.
+
+`c64cast --list-devices` shows whether the stick is listed at all.
+
 ## Scope
 
 Local-only machine specifics (which OpenCV index is the capture device on this

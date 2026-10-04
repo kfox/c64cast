@@ -262,6 +262,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The HDMI capture diag tools wait out a capture that returns no frame for a
+  moment.** `scripts/diags/hdmi_capture.py` gave up on the first read that
+  came back empty, so a capture landing while the HDMI link was settling
+  failed and read as a dead capture stick. It now retries for 5 seconds, and
+  the error names the likely causes (the HDMI link renegotiating, no signal,
+  the device held by another program) and points at
+  `c64cast --list-devices`. `menu_inject.py`, `run_and_capture.py` and
+  `scripts/capture_guide_figure.py` retry their stills the same way; the
+  last two used to drop a failed still silently and now print why.
+
 - **Mic and webcam audio through the REU pump now plays under `mhires`
   and `hires` REU-staged video (#551).** With `[audio].use_reu_pump` on a
   mic or webcam scene whose display used REU staging, the C64 could crash

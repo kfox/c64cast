@@ -15,7 +15,10 @@ artifacts).
     scripts/diags/hdmi_capture.py --burst 8        # consecutive frames at capture rate
 
 Prints the written path(s). The capture device warms up slowly, so the first
-few grabbed frames are discarded before the kept one.
+few grabbed frames are discarded before the kept one. A read that returns no
+frame is retried for a few seconds (``_diaglib.NO_FRAME_RETRY_S``) before the
+tool gives up, because a capture stick whose HDMI input is renegotiating
+returns nothing for a while and then recovers.
 
 ``-d/--device`` takes what ``[video].device`` takes — a cv2 index, a camera name
 substring, or a USB ``VID:PID`` — and resolves it through the app's own
@@ -63,10 +66,10 @@ def grab(device: int | str, warmup: int = 5):
     try:
         for _ in range(max(0, warmup)):  # let exposure/handshake settle
             cap.read()
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            raise SystemExit(f"capture device {device!r} opened but returned no frame")
-        return frame
+        try:
+            return d.read_frame(cap, device)
+        except d.NoFrameError as e:
+            raise SystemExit(str(e)) from e
     finally:
         cap.release()
 
@@ -77,6 +80,11 @@ def burst(device: int | str, count: int, *, size: tuple[int, int], fps: int, war
     Returns (frames, measured_fps). The device is asked for `size`/`fps` before
     the warm-up because a UVC stick renegotiates the stream on those calls, and
     frames pulled across that switch are torn or stale.
+
+    The first frame gets :func:`_diaglib.read_frame`'s retry window, since the
+    clock starts at it. A failed read after that is fatal rather than retried:
+    the frames would no longer be consecutive and the measured rate would
+    include the gap.
     """
     import cv2  # local import: opencv is a hard dep but keep tool import cheap
 
@@ -87,11 +95,17 @@ def burst(device: int | str, count: int, *, size: tuple[int, int], fps: int, war
         cap.set(cv2.CAP_PROP_FPS, fps)
         for _ in range(max(0, warmup)):
             cap.read()
-        frames, stamps = [], []
+        try:
+            frames = [d.read_frame(cap, device)]
+        except d.NoFrameError as e:
+            raise SystemExit(str(e)) from e
+        stamps = [time.perf_counter()]
         while len(frames) < count:
             ok, frame = cap.read()
             if not ok or frame is None:
-                raise SystemExit(f"capture device {device!r} returned no frame mid-burst")
+                raise SystemExit(
+                    d.no_frame_message(device, f"mid-burst, after {len(frames)} of {count} frames")
+                )
             frames.append(frame)
             stamps.append(time.perf_counter())
         span = stamps[-1] - stamps[0]
