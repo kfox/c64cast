@@ -665,6 +665,19 @@ class MicLeadServoWiringTest(unittest.TestCase):
         self.assertEqual(data[:fill], bytes([NEUTRAL_SAMPLE]) * fill)
         self.assertEqual(s._mic_reu_write_pos, (start + fill + 256) % REU_MIC_SIZE)
 
+    def test_a_failed_reanchor_fill_leaves_the_head_where_it_was(self):
+        # Moving the head before a write that then fails would drop the fill
+        # and leave the next block a chunk or two past the pump.
+        s = self._streamer(anchor=REU_MIC_SIZE - 100)
+
+        def boom(off: int, data: bytes) -> None:
+            raise RuntimeError("link down")
+
+        cast(Any, s).api.reu_write = boom
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s._mic_callback_reu(np.full((256, 1), 0.5, dtype=np.float32), 256, None, None)
+        self.assertEqual(s._mic_reu_write_pos, 5000)
+
     def test_without_a_reanchor_the_head_continues(self):
         s = self._streamer(anchor=None)
         fake = cast(FakeAPI, s.api)

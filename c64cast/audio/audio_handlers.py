@@ -1102,7 +1102,8 @@ def servo_period(
         integ,
         kp=kp,
         ki=ki,
-        integ_limit=integ_limit,
+        integ_min=-integ_limit,
+        integ_max=integ_limit,
         out_min=(HOST_DMA_SERVO_PERIOD_MIN_FRAC - 1.0) * chunk_period,
         out_max=(HOST_DMA_SERVO_PERIOD_MAX_FRAC - 1.0) * chunk_period,
     )
@@ -1115,17 +1116,21 @@ def pi_step(
     *,
     kp: float,
     ki: float,
-    integ_limit: float,
+    integ_min: float,
+    integ_max: float,
     out_min: float,
     out_max: float,
 ) -> tuple[float, float]:
     """One step of a clamped PI controller: ``(kp·e + ki·integ, new_integ)``.
 
     ``integ`` accumulates ``error`` once per step and is held to
-    ``±integ_limit`` (anti-windup); the output is clamped to
-    ``[out_min, out_max]``. The host-DMA pace servo (``servo_period``) and the
-    REU mic lead servo (``mic_lead.mic_lead_correction``) both run on it."""
-    integ = max(-integ_limit, min(integ_limit, integ + error))
+    ``[integ_min, integ_max]`` (anti-windup); the output is clamped to
+    ``[out_min, out_max]``. Bounds that put ``ki·integ`` past the output clamp
+    let the integrator wind up where the output cannot follow, so a caller with
+    an asymmetric output range passes asymmetric integrator bounds. The host-DMA
+    pace servo (``servo_period``) and the REU mic lead servo
+    (``mic_lead.mic_lead_correction``) both run on it."""
+    integ = max(integ_min, min(integ_max, integ + error))
     return max(out_min, min(out_max, kp * error + ki * integ)), integ
 
 

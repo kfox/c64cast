@@ -98,6 +98,18 @@ class MicLeadCorrectionTest(unittest.TestCase):
         self.assertLess(drops[0], drops[1])
         self.assertLess(drops[1], drops[2])
 
+    def test_a_pinned_repeat_does_not_wind_the_integrator_past_it(self):
+        # Short of target for a minute, the output sits at the resample floor.
+        # An integrator that kept winding past what that floor can express
+        # would hold the output there after the lead swung well past target.
+        integ = 0.0
+        for _ in range(60):
+            _, integ = ml.mic_lead_correction(
+                REU_MIC_BOOTSTRAP_BYTES - 800, integ, sample_rate=RATE
+            )
+        drop, _ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES + 2000, integ, sample_rate=RATE)
+        self.assertGreater(drop, 0.0)
+
 
 class MicLeadClosedLoopTest(unittest.TestCase):
     """The loop against the drift measured on a U64 (#560)."""
@@ -157,6 +169,26 @@ class MicLeadReanchorTest(unittest.TestCase):
         # has moved on at the pump's rate.
         self.assertEqual(rig.servo.take_reanchor(0.5), RATE // 2)
         self.assertIsNone(rig.servo.take_reanchor(0.5))
+
+    def test_the_anchor_is_stamped_at_the_middle_of_its_read(self):
+        # Each read takes 0.1 s; the second runs from t=0.1 to t=0.2, so the
+        # pump position it returned is dated t=0.15, not when it came back.
+        rig = _Rig(drift=0.0, lead=-500)
+
+        def slow_read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            raw = rig.read(address, length, timeout)
+            rig.t += 0.1
+            return raw
+
+        servo = ml.MicLeadServo(
+            read_memory=slow_read,
+            write_pos=lambda: int(rig.host) % REU_MIC_SIZE,
+            sample_rate=RATE,
+            clock=lambda: rig.t,
+        )
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            servo.tick()
+        self.assertEqual(servo.take_reanchor(0.25), RATE // 10)
 
     def test_a_lead_far_past_target_is_reanchored(self):
         rig = _Rig(drift=0.0, lead=ml.MIC_LEAD_REANCHOR_ABOVE + 1000)

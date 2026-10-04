@@ -108,7 +108,7 @@ from .audio_handlers import (
 from .audio_rate import NmiTimer, RateServo
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import AudioDSP, DSPParams
-from .mic_lead import MIC_LEAD_REANCHOR_GUARD, MicLeadServo, MicLeadShaper
+from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
 
@@ -1248,23 +1248,25 @@ class AudioStreamer:
         self._push_to_tap(mono)
         lead, shaper = self._mic_lead, self._mic_shaper
         fill = b""
+        start: int | None = None
         if lead is not None and shaper is not None:
             anchor = lead.take_reanchor(time.monotonic())
             if anchor is not None:
                 # Restart the write head REU_MIC_BOOTSTRAP_BYTES past the pump,
                 # NEUTRAL over the span the pump reaches first: the overtaken
                 # or lapped ring there holds audio from a lap ago.
-                self._mic_reu_write_pos = (anchor + MIC_LEAD_REANCHOR_GUARD) % REU_MIC_SIZE
-                fill = bytes([self._neutral_byte]) * (
-                    REU_MIC_BOOTSTRAP_BYTES - MIC_LEAD_REANCHOR_GUARD
-                )
+                start, fill_len = reanchor_fill(anchor)
+                fill = bytes([self._neutral_byte]) * fill_len
             mono = shaper.process(mono, lead.drop_frac)
         vol = self._encode_dac(mono) if len(mono) else np.zeros(0, dtype=np.uint8)
-        self._push_mic_to_reu(fill + vol.tobytes())
+        self._push_mic_to_reu(fill + vol.tobytes(), start)
 
-    def _push_mic_to_reu(self, encoded: bytes) -> None:
-        """REUWRITE `encoded` to the mic ring at `_mic_reu_write_pos`,
-        wrapping at REU_MIC_SIZE. Splits the write across the ring boundary
+    def _push_mic_to_reu(self, encoded: bytes, start: int | None = None) -> None:
+        """REUWRITE `encoded` to the mic ring at `start` (default: the write
+        head, `_mic_reu_write_pos`), wrapping at REU_MIC_SIZE. The head moves
+        to the end of the write only when it succeeds, so a re-anchor whose
+        fill fails leaves the head where it was, for the next measurement to
+        find still overtaken or lapped. Splits the write across the ring boundary
         when needed so the C64 pump always reads a contiguous stream
         (otherwise the wrap-end half of the chunk would be stale silence
         for one ring period).
@@ -1277,7 +1279,7 @@ class AudioStreamer:
         n = len(encoded)
         if n == 0:
             return
-        pos = self._mic_reu_write_pos
+        pos = self._mic_reu_write_pos if start is None else start
         end = pos + n
         try:
             if end <= REU_MIC_SIZE:
