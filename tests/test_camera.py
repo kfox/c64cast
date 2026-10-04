@@ -130,6 +130,25 @@ class PickCaptureCameraTest(unittest.TestCase):
             self._pick([CAMLINK, second])
         self.assertIn("2 connected cameras", str(cm.exception))
 
+    # cv2-enumerate-cameras under CAP_ANY on Linux: every camera once per
+    # backend (GStreamer 1800, V4L2 200) at backend + N, reported as CAP_ANY.
+    @staticmethod
+    def _linux(n, name, vid=None, pid=None):
+        return [_cam(backend + n, name, vid, pid, backend=0) for backend in (1800, 200)]
+
+    def test_a_linux_stick_listed_once_per_backend_is_one_camera(self):
+        cams = [*self._linux(0, "Integrated Camera"), *self._linux(2, "Cam Link 4K", 0x0FD9, 0x66)]
+        self.assertEqual(self._pick(cams).name, "Cam Link 4K")
+
+    def test_two_identical_linux_sticks_stay_two(self):
+        cams = [
+            *self._linux(2, "Cam Link 4K", 0x0FD9, 0x66),
+            *self._linux(4, "Cam Link 4K", 0x0FD9, 0x66),
+        ]
+        with self.assertRaises(camera.CaptureCameraError) as cm:
+            self._pick(cams)
+        self.assertIn("2 connected cameras", str(cm.exception))
+
     def test_a_missing_extra_says_so(self):
         with self.assertRaises(camera.CaptureCameraError) as cm:
             self._pick([CAMLINK], available=False)

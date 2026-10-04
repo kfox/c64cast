@@ -50,8 +50,10 @@ class CameraInfo:
 def _platform_api_preference() -> int:
     """The ``cv2.CAP_*`` backend to enumerate against for this platform.
 
-    macOS → AVFoundation, Windows → Media Foundation, else ``CAP_ANY`` (Linux
-    lets the package pick V4L2/GStreamer). Only affects *which* backend we
+    macOS → AVFoundation, Windows → Media Foundation, else ``CAP_ANY``, for
+    which the package lists each Linux camera once per backend it supports
+    (GStreamer, V4L2) at OpenCV's ``backend + N`` index, with ``backend``
+    reported as ``CAP_ANY``. Only affects *which* backend we
     enumerate; the caller always opens with the per-camera ``backend`` reported
     on :class:`CameraInfo`, so the index stays consistent regardless."""
     if sys.platform == "darwin":
@@ -232,14 +234,23 @@ def pick_capture_camera() -> CameraInfo:
         )
     cams = enumerate_cameras()
     picked = [c for c in cams if looks_like_hdmi_capture(c.name, c.vidpid_str())]
-    if len(picked) == 1:
+    devices = {_device_identity(c) for c in picked}
+    if len(devices) == 1:
         return picked[0]
     reason = (
         "no connected camera looks like an HDMI capture device"
         if not picked
-        else f"{len(picked)} connected cameras look like HDMI capture devices"
+        else f"{len(devices)} connected cameras look like HDMI capture devices"
     )
     raise CaptureCameraError(reason, cams)
+
+
+def _device_identity(cam: CameraInfo) -> tuple[str, str | None, int]:
+    """What one physical camera has in common across its listings: on Linux
+    each backend lists it at ``backend + N`` (see
+    :func:`_platform_api_preference`), and OpenCV reads ``N`` back as
+    ``index % 100``."""
+    return (cam.name, cam.vidpid_str(), cam.index % 100)
 
 
 def resolve_camera_index(device: int | str) -> tuple[int, int | None]:
