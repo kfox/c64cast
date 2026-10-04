@@ -1476,12 +1476,25 @@ class LifecycleTest(unittest.TestCase):
         s._pushed_count = 8000
         s._queued_samples = 0
         self.assertEqual(s.position_seconds(), 0.0)
-        self.assertEqual(s.ring_lead_seconds(), 0.0)
+        self.assertAlmostEqual(s.ring_lead_seconds(), 8000 / s.effective_rate, places=6)
         s.servo.ring_lead = 2000.0
         self.assertAlmostEqual(s.position_seconds(), 6000 / s.effective_rate, places=6)
         self.assertAlmostEqual(s.ring_lead_seconds(), 2000 / s.effective_rate, places=6)
         s.servo.reset_after_stop()
         self.assertEqual(s.position_seconds(), 0.0)
+
+    def test_a_splice_during_the_prebuffer_waits_out_what_already_landed(self):
+        # The pre-splice prebuffer plays first once the consumer starts, so the
+        # splice's anchor, position + lead, has to sit past it on both sides of
+        # the start.
+        s = _make()
+        s._pushed_count = 3072
+        s._queued_samples = 1024
+        landed = 2048 / s.effective_rate
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertAlmostEqual(s.ring_lead_seconds(), landed, places=6)
+        s.servo.reset_for_consumer_start(2048)
+        self.assertAlmostEqual(s.position_seconds() + s.ring_lead_seconds(), landed, places=6)
 
     def test_position_seconds_starts_at_zero_after_the_prebuffer(self):
         # The prebuffer lands before the consumer starts, so it is all lead.

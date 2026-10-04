@@ -2116,7 +2116,8 @@ class AudioStreamer:
     def position_seconds(self) -> float:
         """Approximate playback position from the consumer's perspective.
 
-        Host-DMA mode: (samples pushed - samples still queued) / effective_rate.
+        Host-DMA mode: (samples pushed - samples still queued - the ring's
+        unplayed content lead) / effective_rate.
         REU pump mode: wall-clock seconds since the IRQ pump armed, clamped to
         the total source length so over-runs don't desync video — but only when
         there IS a total. A live REU-mic session has no finite length and never
@@ -2160,11 +2161,18 @@ class AudioStreamer:
     def ring_lead_seconds(self) -> float:
         """Audio landed in the C64 ring but not yet played. A splice anchors
         on ``position_seconds() + ring_lead_seconds()``, where its first
-        sample lands, so the video waits until that sample is heard."""
+        sample lands, so the video waits until that sample is heard.
+
+        Before the consumer starts, nothing landed has played, so the lead is
+        the whole landed count: a splice during the prebuffer is heard only
+        after the pre-splice prebuffer it lands behind."""
         rate = self.effective_rate
-        lead = self._content_lead()
-        if not rate or self._reu_pump_armed or lead is None:
+        if not rate or self._reu_pump_armed:
             return 0.0
+        lead = self._content_lead()
+        if lead is None:
+            with self._count_lock:
+                lead = max(0, self._pushed_count - self._queued_samples)
         return lead / rate
 
     def _content_lead(self) -> float | None:
