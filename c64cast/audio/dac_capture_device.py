@@ -88,6 +88,11 @@ def _named_input(inputs: list[tuple[int, str]], preferred: int | str) -> int:
                 f"--audio-device {text} asks for the system default input, which "
                 "calibration never records from. " + pick_device_hint("Name the input with")
             )
+        if index not in {i for i, _ in inputs}:
+            raise CaptureUnavailableError(
+                f"--audio-device {text} is not an audio input. "
+                + pick_device_hint("Name the input with")
+            )
         return index
     found = named_positions([name for _, name in inputs], text)
     if len(found) == 1:

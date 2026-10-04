@@ -1469,6 +1469,11 @@ class FindCaptureDeviceTest(unittest.TestCase):
         self.assertIn("system default input", self._refused(inputs, "-1"))
         self.assertIn("system default input", self._refused(inputs, -1))
 
+    def test_an_index_that_is_not_an_input_is_refused(self):
+        inputs = [(_MIC, 1), ("Speakers", 0), ("Cam Link 4K", 2)]
+        self.assertIn("is not an audio input", self._refused(inputs, 1))
+        self.assertIn("is not an audio input", self._refused(inputs, "7"))
+
     def test_an_output_only_device_is_not_a_candidate(self):
         message = self._refused([("Cam Link 4K", 0)])
         self.assertIn("no audio input named like", message)
