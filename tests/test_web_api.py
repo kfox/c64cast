@@ -1891,6 +1891,18 @@ class StartByRefTest(WebApiTestCase):
         self.assertEqual(r.status_code, 400)
         self.assertEqual(self.build.calls, 0)
 
+    def test_a_body_nested_too_deeply_to_decode_is_a_400(self):
+        # How deep a body has to be to overflow depends on the server thread's
+        # stack, which can exceed the body cap; the decoder's RecursionError is
+        # what such a body produces, so it is injected here.
+        with (
+            mock.patch("c64cast._json.json.loads", side_effect=RecursionError),
+            self.client() as c,
+        ):
+            r = c.post("/api/session/start", headers=AUTH, content=b'{"config": null}')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.build.calls, 0)
+
 
 class EveryApiRouteIsProtectedTest(WebApiTestCase):
     def test_no_token_no_api(self):

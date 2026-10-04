@@ -214,7 +214,9 @@ length of the test process and raises `ChildProcessHung` naming the command and
 what it had written. It derives from `BaseException` because every one of those
 sites catches the `TimeoutExpired` it replaces and carries on. The production
 numbers do not move, and a caller that asked for *no more than* the bound keeps
-its own `TimeoutExpired`. That module's docstring is where the capped sites are
+its own `TimeoutExpired`; a wait that only reaps a child the caller already
+`kill()`ed is never cut below the module's reap allowance, so that caller's expiry
+survives a slow reap too. That module's docstring is where the capped sites are
 listed, with what each one does when its child's expiry is swallowed.
 
 **A test cannot leave the process-wide RNG seeded either.**

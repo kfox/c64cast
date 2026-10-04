@@ -47,8 +47,18 @@ interrupt grace, which is `BOUND_S` exactly, and `run_bounded`'s `timeout=`,
 both of which their tests grade — and converting it would grade something
 else.
 
-`Popen.communicate` and `Popen.wait` are the two hooks because every spelling
-that waits reaches one of them: `run` and `check_output` through
+A wait on a child the caller has already `kill()`ed is a reap, not the
+command, and the clamp never cuts it below :data:`_REAP_S`. `subprocess.run`
+answers its own expiry with `kill()` and then an unbounded `wait()`, which
+reaches the clamp; held to `BOUND_S`, it turned the caller's `TimeoutExpired`
+into a `ChildProcessHung` whenever the kernel took longer than `BOUND_S` to reap —
+under the 0.3 s a test patches in, on a loaded macOS runner (#539). The kill is
+recorded by wrapping `Popen.kill`, not inferred from timing. `terminate()` is
+not recorded: a child may ignore SIGTERM, so the wait after one is still the
+command's.
+
+`Popen.communicate` and `Popen.wait` are the waiting hooks because every
+spelling that waits reaches one of them: `run` and `check_output` through
 `communicate`, `call` and `Popen.__exit__` through `wait`.
 
 Blind spots worth knowing:
@@ -65,6 +75,7 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
+import weakref
 from typing import Any
 
 import _child_process
@@ -79,6 +90,11 @@ _REAP_S = 5.0
 #: the real `wait` rather than recurse into the wrapper that called it.
 _ORIGINAL_COMMUNICATE = subprocess.Popen.communicate
 _ORIGINAL_WAIT = subprocess.Popen.wait
+_ORIGINAL_KILL = subprocess.Popen.kill
+
+#: Every `Popen` whose `kill()` has returned. Weak, so the record goes when the
+#: `Popen` does.
+_killed: weakref.WeakSet[subprocess.Popen[Any]] = weakref.WeakSet()
 
 _armed = False
 
@@ -88,7 +104,7 @@ class ChildProcessHung(BaseException):
 
 
 def arm() -> None:
-    """Install the clamp on `Popen.communicate` and `Popen.wait`. Idempotent."""
+    """Install the clamp on `Popen.communicate`, `Popen.wait` and `Popen.kill`. Idempotent."""
     global _armed
     if _armed:
         return
@@ -96,8 +112,8 @@ def arm() -> None:
     def communicate(
         self: subprocess.Popen[Any], input: Any = None, timeout: float | None = None
     ) -> tuple[Any, Any]:
-        bound = _child_process.BOUND_S
-        if timeout is not None and timeout <= bound:
+        bound = _bound(self, timeout)
+        if bound is None:
             return _ORIGINAL_COMMUNICATE(self, input, timeout)
         try:
             return _ORIGINAL_COMMUNICATE(self, input, bound)
@@ -105,17 +121,32 @@ def arm() -> None:
             raise _hung(self, bound, timeout, expired) from expired
 
     def wait(self: subprocess.Popen[Any], timeout: float | None = None) -> int:
-        bound = _child_process.BOUND_S
-        if timeout is not None and timeout <= bound:
+        bound = _bound(self, timeout)
+        if bound is None:
             return _ORIGINAL_WAIT(self, timeout)
         try:
             return _ORIGINAL_WAIT(self, bound)
         except subprocess.TimeoutExpired as expired:
             raise _hung(self, bound, timeout, expired) from expired
 
+    def kill(self: subprocess.Popen[Any]) -> None:
+        _ORIGINAL_KILL(self)
+        _killed.add(self)
+
     subprocess.Popen.communicate = communicate  # type: ignore[method-assign]
     subprocess.Popen.wait = wait  # type: ignore[method-assign]
+    subprocess.Popen.kill = kill  # type: ignore[method-assign]
     _armed = True
+
+
+def _bound(popen: subprocess.Popen[Any], requested: float | None) -> float | None:
+    """The bound to wait under in place of `requested`, or None to keep the caller's."""
+    bound = _child_process.BOUND_S
+    if popen in _killed:
+        bound = max(bound, _REAP_S)
+    if requested is not None and requested <= bound:
+        return None
+    return bound
 
 
 def _hung(

@@ -247,7 +247,9 @@ elsewhere, so nothing short of a `BaseException` clears every such handler. The 
 they are — `--doctor` run by hand still gives `uv` its 60 seconds — and a
 caller that asked for *no more than* `BOUND_S` keeps its own `TimeoutExpired`
 (`upgrade._stop`'s interrupt grace is `BOUND_S` exactly), because that bound is
-the caller's own behavior and its own tests grade it.
+the caller's own behavior and its own tests grade it. A wait on a child the
+caller has already `kill()`ed is a reap rather than the command, and the clamp
+never cuts it below the module's `_REAP_S`, however short a test patches `BOUND_S` (#539).
 
 **A test may not leave the process-wide RNG seeded.** `random` and numpy's
 legacy global generator both carry state across tests in a worker, and this
@@ -323,6 +325,12 @@ changes need a capture to verify. [`scripts/diags/`](scripts/diags) holds the
 committed diagnostic tooling that drives one — a U64 REST/DMA probe, HDMI still
 capture, audio capture with level analysis, and a launch-capture-reset harness.
 Improve those rather than writing fresh throwaway scripts.
+
+The U64's DMA service takes one connection at a time and a capture device has
+one reader. When more than one shell or agent can reach the same rig, prefix
+every command that touches it with
+[`scripts/diags/hw_lock.py`](scripts/diags/hw_lock.py), which makes them take
+turns: `python3 scripts/diags/hw_lock.py uv run python -m c64cast -u u64://HOST`.
 
 If you touch the hardware paths, leave every machine you tested against silent
 and reset when you are done.

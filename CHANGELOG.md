@@ -30,6 +30,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **`scripts/diags/hw_lock.py` runs a command while holding a per-user lock on
+  one rig**, so the shells and agents one user account runs against a rig take
+  turns on the U64's single-connection DMA service and the capture device instead of
+  breaking each other's runs. It waits, says on stderr who holds the lock, then
+  execs the command, so the exit code and Ctrl-C are the command's own.
+  `--device` keys the lock on a URL's host, so a second rig does not wait on the
+  first. POSIX only.
+
 - **`[color].hardware_palette = "source"` re-chooses an Ultimate 64's own 16
   colors for each video and slideshow scene.** The palette is fitted to the
   scene's content (black, white and the three grays stay the machine's),
@@ -239,6 +247,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   still wins. Animation on those scenes is half as smooth and should tear
   visibly less.
 
+### Removed
+
+- **`scripts/diags/reu_servo_probe.py`.** It tested a host-side servo on the
+  REU pump's CIA #1 latch, a design that never shipped: the pump is held to
+  the reader by the C64-side governor in its own IRQ handler instead. The
+  probe had failed at import since the 8 kHz pump latch was renamed, and its
+  latch writes went to CIA #2's Timer A, the NMI sample clock, instead of the
+  pump's. `reu_margin_probe.py` measures the pump's lead over the reader.
+
 ### Fixed
 
 - **REU-pump audio no longer echoes under bitmap REU-staged video
@@ -257,6 +274,24 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   at 12 kHz) the chunk that crossed the ring's end lost 48-79 samples. It
   now moves 64 bytes at a time, at the same byte rate.
 
+- **A deeply nested JSON answer no longer crashes the connect.** Anything
+  answering at the Ultimate's address with a JSON body nested some 60,000
+  levels deep (60 KB of `[`) made Python's decoder run out of stack, and the
+  error that raised slipped past the handlers meant for a bad answer: the
+  device-identity line and the config-category probe at connect, and the
+  keyboard and joystick input reads, raised into the run instead of treating
+  the answer as unreadable. They now handle it like
+  any other body that isn't JSON. The diag tools' REST config read and write
+  in `scripts/diags/` do too, and also no longer raise on a body that is JSON
+  but not an object.
+
+- **The web console answers a too-deeply-nested request like any other bad
+  one.** The same body sent to the web console's API or the `/perf` command
+  route got a 500 and an error traceback in the log instead of a 400, and as a
+  frame on either console socket it closed that socket — the console's only
+  feed for session state and log lines. Both now treat it as JSON that does not
+  decode.
+
 - **The diag tools' REST memory writes work on Ultimate firmware 3.15.**
   `scripts/diags/_diaglib.py`'s `rest_writemem` sent the bytes in the URL of
   a POST, which firmware 3.15a refuses with HTTP 412 "Expected Body, but got
@@ -264,8 +299,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `run_and_capture.py --border-flash` drew no markers and said nothing. It now
   sends a PUT, the form 3.14, 3.15 and the C64 Ultimate's 1.1.0 all accept for
   up to 128 bytes, and a refused write raises with the firmware's error text.
-  `reu_servo_probe.py` sets its latch through the same helper, and a failed
-  border flash or latch restore is printed.
+  A failed border flash is printed.
 
 - **A still picture now repaints after a dropped Ultimate DMA connection.**
   When the connection to an Ultimate was reset with writes still unconfirmed

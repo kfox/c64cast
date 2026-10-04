@@ -25,13 +25,14 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`playlist_support.py` — playlist collaborators](#playlist_supportpy--playlist-collaborators)
 * [`profiler.py` — per-frame timing](#profilerpy--per-frame-timing)
 * [`recording_metadata.py` — per-scene SCENE_CONFIG_JSON logging](#recording_metadatapy--per-scene-scene_config_json-logging)
-* [The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_wire_log.py`](#the-package-root-utilities--_pollthreadpy-_midipy-_native_iopy-_redactpy-_teardownpy-_wire_logpy)
+* [The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_transport_log.py`, `_wire_log.py`, `_json.py`](#the-package-root-utilities--_pollthreadpy-_midipy-_native_iopy-_redactpy-_teardownpy-_transport_logpy-_wire_logpy-_jsonpy)
   * [`_pollthread.py` — the background-loop idiom](#_pollthreadpy--the-background-loop-idiom)
   * [`_midi.py` — the guarded mido import](#_midipy--the-guarded-mido-import)
   * [`_redact.py` — keeping the console token off the durable log paths](#_redactpy--keeping-the-console-token-off-the-durable-log-paths)
   * [`_native_io.py` — fd-level stderr muting](#_native_iopy--fd-level-stderr-muting)
   * [`_teardown.py` — a teardown's steps are independent guarantees](#_teardownpy--a-teardowns-steps-are-independent-guarantees)
   * [`_wire_log.py` — wire-triggered logging is O(1) per stream](#_wire_logpy--wire-triggered-logging-is-o1-per-stream)
+  * [`_json.py` — one failure type for an undecodable body](#_jsonpy--one-failure-type-for-an-undecodable-body)
 
 ---
 
@@ -417,7 +418,7 @@ The `source` block is scene-type-specific. For `video`, `config.build_scene` (se
 
 `extract_scene_configs(log_text)` pulls every `SCENE_CONFIG_JSON` payload back out of a `--log-file` run (formatter-agnostic — it searches for the marker substring, not a fixed line format), and `render_description(payload)` renders one entry as a human, paste-ready text block; both are pure functions so [scripts/scene_config_to_description.py](../../scripts/scene_config_to_description.py) is a thin argparse+file-I/O shell around them (default: render the last entry; `--all`/`--index N` for the rest).
 
-## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_transport_log.py`, `_wire_log.py`
+## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_transport_log.py`, `_wire_log.py`, `_json.py`
 
 The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
 
@@ -490,3 +491,9 @@ The decoder is stateless, so the alternative was to surface the over-cap fact on
 The gate is worth its own cost, but not for the reason first written down here. Measured (CPython 3.14.6, arm64 macOS, 300k iterations, best of 7): a *suppressed* `LogThrottle.warn()` costs ~206 ns against ~90 ns for the level-rejected `log.warning()` it stands in front of — so the gate is about **2× more expensive than the call it replaces**, of which ~82 ns is the uncontended lock. The docstring originally claimed the opposite (~10× cheaper), which is the wrong comparison as well as the wrong number: what decides whether a third site can afford this gate is 206 ns against the ~322 µs record it suppresses, a factor of ~1,600. `LogThrottleLockTest` is what holds the lock in place now that it is paid for: an injected clock records `_lock.locked()` at the read inside the gate, and a second test parks one thread in that read and asserts a second cannot complete `_admit` behind it. The interleaving is forced rather than raced for because racing for it does not work here — against the lock-free body, 8 threads × 400 calls lost an occurrence in 0 of 40 trials, the GIL retiring the whole read-modify-write between switches.
 
 Sites checked and left alone because they are already O(1) per stream: `AsidScene._warned_cmds` (a set, so at most one record per distinct command byte), `_warned_downmix` and `_warned_frame_budget` (one-shot flags), `_remap_failed` (WARNING once then DEBUG per failure run, and on the render thread), and `asid_player.clamp_frame_rate`, which the 250 ms retune window already holds to a few records a second. Converting them would be churn, not a fix.
+
+### `_json.py` — one failure type for an undecodable body
+
+A JSON body from another machine — an Ultimate's REST answer, a console request or frame — fails to decode in two ways. Malformed text raises `ValueError`, but a body nested deeper than the decoder can recurse raises `RecursionError`, a `RuntimeError`, which the `ValueError` and `requests.RequestException` handlers every reader had did not catch. Since CPython 3.14 the C decoder is bounded by the thread's real stack rather than `sys.getrecursionlimit()`: about 60,000 unclosed `[` overflow an 8 MiB stack, and between 200,000 and 500,000 overflow the 64 MiB one `make test` gets on macOS. So `describe_device`, documented as answering `""` when the device won't, and `refine_capabilities`, documented as never raising, both raised into the connect path on 60 KB from anything answering at the Ultimate's address (#530).
+
+`decode_json` takes a document or a response and raises `requests.exceptions.JSONDecodeError` for every undecodable body. That type subclasses both `ValueError` and `requests.RequestException`, so each caller's existing handler catches it unchanged — `get_device_info` callers catch `RequestException`, `send_input` catches `ValueError` — and no handler needs `RecursionError` spelled out. The alternative, adding `RecursionError` to each handler, is what had already been done at one site (`_body_names_an_error`) and missed at the others. Every JSON read of a device body in `hw/api.py` and `scripts/diags/_diaglib.py` goes through it, and so do the web console's request bodies (`web_api._body`, `perf_console`'s command body) and its socket frames (`perf_console.SocketReader`, which receives text and decodes it here rather than calling `receive_json`), where the same body used to answer a 500 instead of a 400, or close the console's feed. The WLED bridge's `/json` routes and socket do not, because they turn every malformed body into a 500 or a closed socket already, deep or not. `tests/_fakes.py`'s `TOO_DEEP_JSON` is ten million levels so that it overflows any stack the suite runs on, and `tests/test_json_body.py` asserts that premise, so a stack that holds it fails there rather than letting the readers' tests pass without exercising the overflow.

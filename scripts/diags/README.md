@@ -32,11 +32,18 @@ These are **dev tools, not part of the shipped package** — they live under
   | `C64_DIAG_CV2` | `0` | Cam Link cv2 capture index |
   | `C64_DIAG_AVF_AUDIO` | `:3` | Cam Link avfoundation audio device |
   | `C64_DIAG_VERIFY_WIDTH` | `960` | longest-edge px for captures saved via `save_image` (downscale default) |
+  | `C64_DIAG_LOCK_DIR` | `~/.cache/c64cast/locks` | where `hw_lock.py` keeps its per-device lock files |
+- **One user of a rig at a time.** The DMA service takes a single connection
+  and the capture device a single reader, so when more than one shell or agent
+  can reach the rig, run every command that touches it under
+  [`hw_lock.py`](hw_lock.py): `python3 scripts/diags/hw_lock.py <command…>`.
+  It needs no project environment, so it wraps `uv run …` as readily as a tool.
 
 ## Tools
 
 | Tool | What it does |
 |------|--------------|
+| [`hw_lock.py`](hw_lock.py) | Run a command under an exclusive per-user lock on one rig: waits (naming the holder on stderr), then execs the command, so its exit code and Ctrl-C are its own. `--device URL` keys the lock on the URL's host (`u64://H` and `http://H` share one); the default key suits a one-rig machine. Stdlib only, POSIX only. |
 | [`u64_probe.py`](u64_probe.py) | REST reachability + DMA-service (port 64) check; `--reset` / `--reset-only`. |
 | [`hdmi_capture.py`](hdmi_capture.py) | Grab still frame(s) from the Cam Link (VIC ground-truth) → `out/`. Downscales to `--width` (default 960px) so captures read back cheaply; `--full` keeps native 1080p for pixel-peeking. New capture tools should write via `_diaglib.save_image` for the same default. |
 | [`audio_capture.py`](audio_capture.py) | Record Cam Link audio via ffmpeg/avfoundation + `volumedetect` level summary. |
