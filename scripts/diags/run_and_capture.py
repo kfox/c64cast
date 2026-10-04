@@ -255,15 +255,19 @@ def main() -> int:
             if wait > 0:
                 time.sleep(wait)
             cap = d.open_capture(args.device)
-            for _ in range(4):
-                cap.read()
-            ok, frame = cap.read()
-            cap.release()
-            if ok and frame is not None:
-                p = out / f"{args.label}_frame{grabbed:02d}.png"
-                d.save_image(frame, p)  # downscaled to ~960px (cheap to read back)
-                print(f"[frame] {p}")
-                grabbed += 1
+            try:
+                for _ in range(4):
+                    cap.read()
+                frame = d.read_frame(cap, args.device)
+            except d.NoFrameError as e:
+                print(f"[frame] skipped: {e}")
+                continue
+            finally:
+                cap.release()
+            p = out / f"{args.label}_frame{grabbed:02d}.png"
+            d.save_image(frame, p)  # downscaled to ~960px (cheap to read back)
+            print(f"[frame] {p}")
+            grabbed += 1
         remaining = args.seconds + boot_margin - (time.time() - t0)
         if remaining > 0:
             time.sleep(remaining)

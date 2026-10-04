@@ -135,6 +135,13 @@ class CamLinkAbsentTest(CaptureDeviceTestCase):
         self.assertNotIn("not connected", str(cm.exception))
 
 
+class DefaultDeviceMessageTest(unittest.TestCase):
+    def test_a_no_frame_error_names_the_default_device(self) -> None:
+        message = _diaglib.no_frame_message(None, "for 5s")
+        self.assertTrue(message.startswith("the default capture device returned"))
+        self.assertNotIn("None", message)
+
+
 class CaptureDeviceArgTest(unittest.TestCase):
     def _parser(self, *aliases: str) -> argparse.ArgumentParser:
         ap = argparse.ArgumentParser()

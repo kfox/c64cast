@@ -120,17 +120,19 @@ def main() -> int:
         import cv2
 
         cap = d.open_capture(args.device)
-        for _ in range(15):  # flush the Cam Link's buffered (stale) frames
-            cap.read()
-        ok, frame = cap.read()
-        cap.release()
-        if ok and frame is not None:
-            p = out / f"menu_inject_{tag}.png"
-            cv2.imwrite(str(p), frame)
-            frames.append(str(p))
-            print(f"[frame] {p}")
-        else:
-            print(f"[frame] capture failed for {tag}")
+        try:
+            for _ in range(15):  # flush the Cam Link's buffered (stale) frames
+                cap.read()
+            frame = d.read_frame(cap, args.device)
+        except d.NoFrameError as e:
+            print(f"[frame] capture failed for {tag}: {e}")
+            return
+        finally:
+            cap.release()
+        p = out / f"menu_inject_{tag}.png"
+        cv2.imwrite(str(p), frame)
+        frames.append(str(p))
+        print(f"[frame] {p}")
 
     try:
         print(f"[boot] waiting {args.boot_s:g}s for scene setup")

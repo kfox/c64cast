@@ -46,7 +46,7 @@ These are **dev tools, not part of the shipped package** — they live under
 |------|--------------|
 | [`hw_lock.py`](hw_lock.py) | Run a command under an exclusive per-user lock on one rig: waits (naming the holder on stderr), then execs the command, so its exit code and Ctrl-C are its own. `--device URL` keys the lock on the URL's host (`u64://H` and `http://H` share one); the default key suits a one-rig machine. Stdlib only, POSIX only. |
 | [`u64_probe.py`](u64_probe.py) | REST reachability + DMA-service (port 64) check; `--reset` / `--reset-only`. |
-| [`hdmi_capture.py`](hdmi_capture.py) | Grab still frame(s) from the Cam Link (VIC ground-truth) → `out/`. Downscales to `--width` (default 960px) so captures read back cheaply; `--full` keeps native 1080p for pixel-peeking. New capture tools should write via `_diaglib.save_image` for the same default. |
+| [`hdmi_capture.py`](hdmi_capture.py) | Grab still frame(s) from the Cam Link (VIC ground-truth) → `out/`. Downscales to `--width` (default 960px) so captures read back cheaply; `--full` keeps native 1080p for pixel-peeking. New capture tools should write via `_diaglib.save_image` for the same default, and read their kept frame through `_diaglib.read_frame`, which retries a no-frame read for `NO_FRAME_RETRY_S` (5 s) and then fails naming the likely causes. |
 | [`audio_capture.py`](audio_capture.py) | Record Cam Link audio via ffmpeg/avfoundation + `volumedetect` level summary. |
 | [`run_and_capture.py`](run_and_capture.py) | Launch c64cast with a config, capture A/V across the run, then stop + reset. |
 | [`make_fixtures.py`](make_fixtures.py) | Generate synthetic tone/clip/test-pattern A/V fixtures for the video path. |

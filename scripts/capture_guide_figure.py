@@ -151,10 +151,13 @@ def cmd_shoot(args) -> int:
                     if app.poll() is not None:
                         print(f"[run] app exited early rc={app.returncode}")
                         break
-                    ok, frame = cap.read()
-                    if ok and frame is not None:
-                        keep(frame, i)
-                        print(f"[frame] {written[-1]}")
+                    try:
+                        frame = d.read_frame(cap, args.device)
+                    except d.NoFrameError as e:
+                        print(f"[frame] shot {i} skipped: {e}")
+                        continue
+                    keep(frame, i)
+                    print(f"[frame] {written[-1]}")
         finally:
             if cap is not None:
                 cap.release()
