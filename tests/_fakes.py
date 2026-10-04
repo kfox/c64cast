@@ -470,6 +470,41 @@ def new_streamer(**overrides):
     return AudioStreamer(cast(Ultimate64API, FakeAPI()), **kwargs)
 
 
+def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
+    """Model the link losing writes to C64 address ``addr``: each of the first
+    ``times`` of them (every one, if None) lands nowhere and moves
+    ``delivery_epoch``, the way a failed `_emit` or a lossy redial does. A lost
+    write goes to ``api.ops`` as ``("lost", ADDR)`` and every ``flush()`` as
+    ``("flush",)``, beside the writes FakeAPI already logs there."""
+    key = f"{addr:04X}"
+    remaining = [times]
+    real_memory, real_file = api.write_memory, api.write_memory_file
+
+    def lost(address: str) -> bool:
+        if str(address).upper() != key or remaining[0] == 0:
+            return False
+        if remaining[0] is not None:
+            remaining[0] -= 1
+        api.delivery_epoch += 1
+        api.ops.append(("lost", key))
+        return True
+
+    def write_memory(address, data_hex):
+        if not lost(address):
+            real_memory(address, data_hex)
+
+    def write_memory_file(address, data):
+        if not lost(address):
+            real_file(address, data)
+
+    def flush(timeout=5.0):
+        api.ops.append(("flush",))
+
+    api.write_memory = write_memory  # type: ignore[method-assign]
+    api.write_memory_file = write_memory_file  # type: ignore[method-assign]
+    api.flush = flush  # type: ignore[method-assign]
+
+
 def run_irq_handler(
     handler: bytes,
     *,

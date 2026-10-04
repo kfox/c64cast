@@ -988,12 +988,9 @@ assert len(FLICKER_SWAP_IRQ_HANDLER) == 63, (
 DD00_BANK_0 = CIA2.PORT_A_BANK_0  # $97
 DD00_BANK_2 = CIA2.PORT_A_BANK_2  # $95
 
-# CIA #1 ICR control words for raster-IRQ bring-up / teardown.
-# CIA1_ICR_DISABLE_TIMER_A clears bit 0 of the ICR; CIA1_ICR_ENABLE_TIMER_A
-# re-arms it (high bit = 1 = set bits, plus bit 0 = timer A IRQ source).
-# Mirrors the audio.py CIA #2 disable/enable pattern but on CIA #1.
-_CIA1_ICR_DISABLE_TIMER_A = 0x7F
-_CIA1_ICR_ENABLE_TIMER_A = 0x81
+# CIA #1 ICR control words for raster-IRQ bring-up / teardown (see CIA1).
+_CIA1_ICR_DISABLE_TIMER_A = CIA1.ICR_DISABLE_ALL
+_CIA1_ICR_ENABLE_TIMER_A = CIA1.ICR_ENABLE_TIMER_A
 
 
 def install_bank_swap_irq(

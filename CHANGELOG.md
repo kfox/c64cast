@@ -271,6 +271,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   The mic pump now uses the same main-RAM address trackers
   as the video pump, and the REU video setup parks a safe return where the
   pump will go. Measured on an Ultimate 64 with firmware 3.15a.
+  Each step of the pump install is now confirmed delivered before the next one
+  starts. If a step still has not landed after three tries, the scene logs an
+  error and plays without audio. Before, the pump started anyway, and on
+  addresses it had never been given it could overwrite C64 memory.
 
 - **REU-pump audio no longer echoes under bitmap REU-staged video
   (#544).** With `[audio].use_reu_pump` on an `mhires`/`hires` scene that

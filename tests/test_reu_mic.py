@@ -12,7 +12,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, new_streamer, run_irq_handler
+from _fakes import FakeAPI, lose_writes_to, new_streamer, run_irq_handler
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer
@@ -504,3 +504,113 @@ class PushMicToReuNormalizationTest(unittest.TestCase):
         for off, _data in fake.socket_dma.reuwrites:
             self.assertGreaterEqual(off, REU_MIC_BASE)
             self.assertLess(off, REU_MIC_BASE + REU_MIC_SIZE)
+
+
+class TrackedPumpDeliveryTest(unittest.TestCase):
+    """_install_tracked_pump confirms each stage (trackers, body, entry)
+    delivered before starting the next. A lost tracker write followed by a
+    body and entry that land would run the body on stale trackers, whose
+    first DMA goes to whatever address the dst tracker held — over the body
+    itself, or upward through zero page."""
+
+    def _start(self, *, lose: int | None = None, times: int | None = None, skip_hook: bool):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, lose if lose is not None else 0x0000, 0 if lose is None else times)
+        opened: list[int] = []
+
+        def open_stream(device, callback=None, *, sample_rate=None):
+            opened.append(device)
+            return _FakeStream()
+
+        s._open_input_stream = open_stream
+        s._start_mic_for_reu_pump(device=-1, skip_irq_vector_hook=skip_hook)
+        return s, fake, opened
+
+    @staticmethod
+    def _index(fake: FakeAPI, *op) -> int:
+        return next(i for i, o in enumerate(fake.ops) if o[: len(op)] == op)
+
+    def test_each_stage_is_flushed_before_the_next_starts(self):
+        for skip_hook in (False, True):
+            with self.subTest(skip_hook=skip_hook):
+                _s, fake, _ = self._start(skip_hook=skip_hook)
+                tracker = self._index(fake, "write_memory", "C200")
+                body = self._index(fake, "write_memory_file", "C180")
+                entry = self._index(fake, "write_memory_file", "C100")
+                self.assertIn(("flush",), fake.ops[tracker:body])
+                self.assertIn(("flush",), fake.ops[body:entry])
+                self.assertIn(("flush",), fake.ops[entry:])
+
+    def test_a_lost_tracker_write_is_resent_before_the_body(self):
+        s, fake, opened = self._start(lose=REU_AUDIO_SRC_TRACKER_ADDR, times=1, skip_hook=True)
+        lost = self._index(fake, "lost", "C200")
+        resent = self._index(fake, "write_memory", "C200")
+        body = self._index(fake, "write_memory_file", "C180")
+        self.assertLess(lost, resent)
+        self.assertLess(resent, body)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(opened, [-1])
+
+    def test_trackers_that_never_land_abort_the_bring_up(self):
+        for skip_hook in (False, True):
+            with self.subTest(skip_hook=skip_hook):
+                with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+                    s, fake, opened = self._start(
+                        lose=REU_AUDIO_SRC_TRACKER_ADDR, skip_hook=skip_hook
+                    )
+                self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+                self.assertEqual(
+                    sum(1 for o in fake.ops if o == ("lost", "C200")),
+                    audio_mod.TRACKED_PUMP_INSTALL_TRIES,
+                )
+                # Neither the body nor the entry went up, and $C180 is parked on
+                # an RTS for a dispatcher that JSRs it.
+                self.assertNotIn(
+                    REU_MIC_PUMP_BODY_SUBROUTINE,
+                    [o[2] for o in fake.ops if o[:2] == ("write_memory_file", "C180")],
+                )
+                self.assertFalse(any(o[:2] == ("write_memory_file", "C100") for o in fake.ops))
+                self.assertEqual(fake.memories["C180"], "60")
+                # Nothing armed, no mic stream, and the NMI bring-up undone.
+                self.assertFalse(s._reu_pump_armed)
+                self.assertFalse(s.running)
+                self.assertEqual(opened, [])
+                self.assertNotIn("0314", fake.regs)
+                self.assertEqual(fake.regs["DD0D"][0], 0x7F)
+                self.assertEqual(fake.nmi_consumer_notes[-1], False)
+
+    def test_dispatcher_entry_upload_is_bracketed_by_a_cia1_mask(self):
+        _s, fake, _ = self._start(skip_hook=True)
+        mask = self._index(fake, "write_memory", "DC0D", "7F")
+        entry = self._index(fake, "write_memory_file", "C100")
+        unmask = self._index(fake, "write_memory", "DC0D", "81")
+        self.assertLess(mask, entry)
+        self.assertLess(entry, unmask)
+        # The mask is confirmed delivered before the entry goes up.
+        self.assertIn(("flush",), fake.ops[mask:entry])
+
+    def test_solo_path_leaves_cia1_alone(self):
+        # $0314 is hooked last on the solo path, so $C100 is unreachable while
+        # the entry goes up and masking would only cost keyboard ticks.
+        _s, fake, _ = self._start(skip_hook=False)
+        self.assertFalse(any(o[:2] == ("write_memory", "DC0D") for o in fake.ops))
+
+    def test_a_failed_dispatcher_install_leaves_cia1_unmasked(self):
+        # The body stage masks CIA #1, so a body or an entry that never lands
+        # must not leave the keyboard scan and the pump's fall-through dead.
+        for lost in (REU_PUMP_BODY_SUBROUTINE_ADDR, REU_PUMP_HANDLER_ADDR):
+            with self.subTest(lost=f"${lost:04X}"):
+                with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+                    s, fake, _ = self._start(lose=lost, skip_hook=True)
+                self.assertFalse(s._reu_pump_armed)
+                icr = [o for o in fake.ops if o[:2] == ("write_memory", "DC0D")]
+                self.assertEqual(icr[0][2], "7F")
+                self.assertEqual(icr[-1][2], "81")
+
+    def test_an_entry_that_never_lands_parks_the_body(self):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, skip_hook=True)
+        park = max(i for i, o in enumerate(fake.ops) if o == ("write_memory", "C180", "60"))
+        body = self._index(fake, "write_memory_file", "C180")
+        self.assertLess(body, park)

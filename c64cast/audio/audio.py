@@ -205,6 +205,21 @@ def downmix_to_mono(indata: np.ndarray) -> np.ndarray:
     return indata.mean(axis=1) if indata.ndim > 1 else indata
 
 
+# Attempts per stage of AudioStreamer._install_tracked_pump before it gives up.
+TRACKED_PUMP_INSTALL_TRIES = 3
+# How long the entry upload waits after masking CIA #1 under a bank-swap
+# dispatcher: longer than the chunked mhires dispatcher's ~18 ms run, so a CIA #1
+# IRQ that was already asserted when the mask landed has been serviced (through
+# the $C100 stub) before the entry bytes replace it.
+TRACKED_PUMP_ENTRY_DRAIN_S = 0.03
+
+
+class PumpInstallError(RuntimeError):
+    """The tracked REU pump could not be installed with every write confirmed
+    delivered. Raised by ``AudioStreamer._install_tracked_pump``; the
+    streamer has already put the C64 side back in a safe state."""
+
+
 class AudioStreamer:
     """Threaded NMI audio with anti-underrun pad."""
 
@@ -1405,36 +1420,119 @@ class AudioStreamer:
         )
         return latch
 
-    def _install_tracked_pump(self, body: bytes, *, src: int, dst: int) -> None:
+    def _install_tracked_pump(
+        self, body: bytes, *, src: int, dst: int, dispatcher_owns_irq: bool
+    ) -> None:
         """Seed the $C200 trackers, then upload ``body`` at $C180 and the
-        REU_IRQ_HANDLER_TRACKED entry at $C100, in that order.
+        REU_IRQ_HANDLER_TRACKED entry at $C100, in that order, confirming each
+        stage delivered before starting the next.
 
         ``src`` is the 24-bit REU offset of the first chunk and ``dst`` the
         C64 ring address it lands at. Both pumps that reload their REC
         addresses from the trackers come through here: the tracked video pump
-        and the REU mic pump.
+        and the REU mic pump. ``dispatcher_owns_irq`` is True when a bank-swap
+        dispatcher already owns $0314 and reaches $C100/$C180 itself.
 
         The order is what keeps a CIA #1 tick that lands mid-install safe. A
         bank-swap dispatcher that owns $0314 can reach $C180 directly (the
         chunked mhires one JSRs it between REC families) and $C100 through its
         fall-through, and its installer leaves an RTS at $C180 and a JMP $EA31
         at $C100 until this runs. Seeding the trackers first means the body
-        never runs on stale ones (static into the ring, writes into color RAM),
-        and uploading the body before the entry means the entry never JSRs into
-        a body that is not there yet.
+        never runs on stale ones, and uploading the body before the entry means
+        the entry never JSRs into a body that is not there yet.
+
+        The order only holds if every write lands, and a write can be lost
+        without an error reaching here (``_emit`` swallows transport failures,
+        and a redial can drop what the old connection had not confirmed). A
+        body running on unseeded trackers DMAs a chunk to whatever C64 address
+        the dst tracker held before its wrap check runs — over the body itself,
+        or upward from below the ring through zero page and the vectors. So
+        each stage is flushed and checked against ``delivery_epoch``, retried
+        up to TRACKED_PUMP_INSTALL_TRIES times, and the next stage starts only
+        once it held.
+
+        Under a dispatcher, CIA #1 is masked around the entry upload: a DMA can
+        stall the 6510 between the stub's JMP opcode and its operands, which
+        then read the entry's bytes and jump to $8020. The flag still latches
+        while masked, so no tick is lost; it fires on the unmask.
+
+        Raises PumpInstallError when a stage never confirms, after parking an
+        RTS at $C180 and, under a dispatcher, unmasking CIA #1 again.
         """
-        self.api.write_memory(
-            f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}",
-            f"{src & 0xFF:02X}{(src >> 8) & 0xFF:02X}{(src >> 16) & 0xFF:02X}"
-            f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}",
-        )
-        # Seed the tick divider to 1 so the first IRQ DECs to 0, reloads N and
-        # chains. Unseeded, $C205 holds whatever was in RAM — 0 wraps to $FF on
-        # the DEC, costing 254 lean exits (~2.5 s of unresponsive keyboard)
-        # before the first kernal tail.
-        self.api.write_memory(f"{REU_PUMP_TICK_COUNTER_ADDR:04X}", "01")
-        self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
-        self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_IRQ_HANDLER_TRACKED)
+
+        def seed_trackers() -> None:
+            self.api.write_memory(
+                f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}",
+                f"{src & 0xFF:02X}{(src >> 8) & 0xFF:02X}{(src >> 16) & 0xFF:02X}"
+                f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}",
+            )
+            # Seed the tick divider to 1 so the first IRQ DECs to 0, reloads N
+            # and chains. Unseeded, $C205 holds whatever was in RAM — 0 wraps to
+            # $FF on the DEC, costing 254 lean exits (~2.5 s of unresponsive
+            # keyboard) before the first kernal tail.
+            self.api.write_memory(f"{REU_PUMP_TICK_COUNTER_ADDR:04X}", "01")
+
+        def upload_body() -> None:
+            self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
+            if dispatcher_owns_irq:
+                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
+
+        def upload_entry() -> None:
+            if dispatcher_owns_irq:
+                time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
+            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_IRQ_HANDLER_TRACKED)
+            if dispatcher_owns_irq:
+                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+
+        stages = (("trackers", seed_trackers), ("body", upload_body), ("entry", upload_entry))
+        for stage, write in stages:
+            if not self._write_confirmed(write):
+                self._park_tracked_pump(dispatcher_owns_irq)
+                raise PumpInstallError(
+                    f"REU pump install: the {stage} write was not confirmed delivered "
+                    f"after {TRACKED_PUMP_INSTALL_TRIES} attempts"
+                )
+
+    def _write_confirmed(self, write: Callable[[], None]) -> bool:
+        """Run ``write`` and flush until a run leaves ``delivery_epoch``
+        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did."""
+        for _ in range(TRACKED_PUMP_INSTALL_TRIES):
+            epoch = self.api.delivery_epoch
+            write()
+            self.api.flush()
+            if self.api.delivery_epoch == epoch:
+                return True
+        return False
+
+    def _park_tracked_pump(self, dispatcher_owns_irq: bool) -> None:
+        """Best-effort safe state after a failed tracked-pump install: an RTS at
+        $C180 so neither the $C100 entry nor a dispatcher's inline JSR runs a
+        body on unconfirmed trackers, and CIA #1 unmasked if the install masked
+        it. A one-byte write cannot tear an instruction the 6510 is fetching."""
+        steps: list[tuple[str, Callable[[], object]]] = [
+            (
+                "pump body park",
+                lambda: self.api.write_memory(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", "60"),
+            )
+        ]
+        if dispatcher_owns_irq:
+            steps.append(
+                (
+                    "CIA #1 unmask",
+                    lambda: self.api.write_memory(
+                        f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+                    ),
+                )
+            )
+        steps.append(("pump park flush", self.api.flush))
+        run_teardown_steps(log, type(self).__name__, steps)
+
+    def _abandon_pump_bring_up(self, err: PumpInstallError) -> None:
+        """Undo the NMI bring-up a failed pump install left behind and say so
+        loudly; the scene carries on without audio."""
+        log.error("audio: %s — this scene plays without audio", err)
+        run_teardown_steps(log, type(self).__name__, self._hardware_teardown_steps())
+        self.api.note_nmi_consumer(False)
 
     def _start_mic_for_reu_pump(
         self, device: int | str, *, skip_irq_vector_hook: bool = False
@@ -1484,9 +1582,16 @@ class AudioStreamer:
         # five REC addresses from the trackers, so a bank-swap REC DMA or a REU
         # screen push between ticks cannot redirect it (#551). Address control
         # = 0: both sides auto-increment, no autoload.
-        self._install_tracked_pump(
-            REU_MIC_PUMP_BODY_SUBROUTINE, src=REU_MIC_BASE, dst=RING_BUFFER_ADDR
-        )
+        try:
+            self._install_tracked_pump(
+                REU_MIC_PUMP_BODY_SUBROUTINE,
+                src=REU_MIC_BASE,
+                dst=RING_BUFFER_ADDR,
+                dispatcher_owns_irq=skip_irq_vector_hook,
+            )
+        except PumpInstallError as e:
+            self._abandon_pump_bring_up(e)
+            return
         self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
         # Match the pump rate to the NMI consume rate, derived from the live NMI
@@ -1733,7 +1838,10 @@ class AudioStreamer:
         ValueError unless it divides both RING_BUFFER_SIZE and
         REU_PUMP_INITIAL_MARGIN (reu_pump_chunk_fits_ring): any other chunk
         DMAs past the ring end once per lap. With reu_pump_governor on it must
-        also be at most REU_GOVERNOR_MAX_CHUNK, or ValueError.
+        also be at most REU_GOVERNOR_MAX_CHUNK, or ValueError. Raises
+        PumpInstallError when the tracked pump's install never confirms
+        (``_install_tracked_pump``), with the NMI bring-up already undone and
+        nothing armed: the caller plays on without audio.
 
         ``on_progress`` (fraction 0..1 of payload + EOF-pad bytes uploaded) is
         called once per upload slice — the seconds-long upload is the bulk of
@@ -1860,7 +1968,13 @@ class AudioStreamer:
                 body = patch_chunk_size(
                     REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS, chunk
                 )
-            self._install_tracked_pump(body, src=initial_src_off, dst=initial_dst)
+            try:
+                self._install_tracked_pump(
+                    body, src=initial_src_off, dst=initial_dst, dispatcher_owns_irq=True
+                )
+            except PumpInstallError as e:
+                self._abandon_pump_bring_up(e)
+                raise
         elif self.reu_pump_governor:
             # Governor handler: skip-when-ahead prefix + the pump body.
             handler = patch_chunk_size(
