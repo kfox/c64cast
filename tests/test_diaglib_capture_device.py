@@ -132,6 +132,7 @@ class CamLinkAbsentTest(CaptureDeviceTestCase):
             with self.assertRaises(SystemExit) as cm:
                 _diaglib.resolve_capture(None)
         self.assertIn("camera' extra", str(cm.exception))
+        self.assertNotIn("not connected", str(cm.exception))
 
 
 class CaptureDeviceArgTest(unittest.TestCase):

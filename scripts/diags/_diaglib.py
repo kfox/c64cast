@@ -153,13 +153,13 @@ def resolve_capture(device: int | str | None) -> tuple[int, int | None]:
     Raises ``SystemExit`` when nothing matches. The default identity that
     matches nothing fails here too: there is no fallback to an index or to any
     other camera, since that camera may be pointed at a person."""
-    from c64cast.control.camera import resolve_camera_index
+    from c64cast.control import camera
 
     spec = default_capture_device() if device is None else device
     try:
-        return resolve_camera_index(spec)
+        return camera.resolve_camera_index(spec)
     except RuntimeError as e:
-        if spec == CAMLINK_ID:
+        if spec == CAMLINK_ID and camera.camera_enumeration_available():
             raise SystemExit(
                 f"the Cam Link 4K (USB {CAMLINK_ID}) is not connected, and no other "
                 f"camera will be opened in its place. {e} Replug it, or name a "
