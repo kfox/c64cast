@@ -262,12 +262,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
-- **The diag and capture tools open the Cam Link by its USB ID, and stop if it
-  is absent.** With no device flag they opened cv2 index 0. When a U64
-  PAL/NTSC switch dropped the Cam Link off the USB bus, the laptop's own
-  camera moved to index 0 and the tools filmed the room instead of the C64.
-  The default is now the Cam Link's `0fd9:0066`, and a missing Cam Link ends
-  the run with a message rather than opening another camera. Every tool in
+- **The diag and capture tools pick the HDMI capture device themselves, and
+  stop rather than open another camera.** With no device flag they opened cv2
+  index 0. When a U64 PAL/NTSC switch dropped the Cam Link off the USB bus,
+  the laptop's own camera moved to index 0 and the tools filmed the room
+  instead of the C64. With no `--device` and no `C64_DIAG_CAMERA`, a tool now
+  opens the one connected camera that looks like an HDMI capture device: a USB
+  device whose name matches no webcam, phone or virtual-camera pattern. With
+  none or several, it exits listing every camera's name and VID:PID rather
+  than opening one. Every tool in
   `scripts/diags/` that captures video, and `scripts/capture_guide_figure.py`,
   now takes the same `--device` (an index, a name substring, or a VID:PID);
   the older `--index`, `--cv2-index` and `--cam` still work. An index-only

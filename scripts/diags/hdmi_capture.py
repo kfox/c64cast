@@ -26,8 +26,9 @@ substring, or a USB ``VID:PID`` — and resolves it through the app's own
 indices renumber whenever something else on the bus is plugged or unplugged, and
 an index that has drifted onto the webcam grabs a perfectly good frame of the
 wrong thing. ``c64cast --list-devices`` prints the names and IDs. With no
-``-d``, the tool opens the Cam Link by its USB ``VID:PID`` (or
-``$C64_DIAG_CAMERA``) and exits if it is absent rather than open another camera.
+``-d``, the tool opens ``$C64_DIAG_CAMERA``, else the one connected camera that
+looks like an HDMI capture device, and exits listing every camera when there
+is none or more than one rather than open a camera nobody chose.
 
 Frames are downscaled to ``--width`` (default 960px longest edge) before writing
 so a capture read back into an agent's context costs a fraction of the tokens a

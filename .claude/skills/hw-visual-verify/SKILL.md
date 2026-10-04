@@ -49,10 +49,12 @@ webcam scene can target the capture stick stably.
 
 Every capture tool takes the same three forms on `--device` (`-d` on
 `hdmi_capture.py` and `run_and_capture.py`) — index, name substring, or
-`VID:PID` — through the same resolver. Leave it out: the default is the Cam
-Link's `0fd9:0066`, which survives index renumbering, and a tool whose Cam Link
-is absent exits rather than open another camera — the laptop's own camera is
-one renumbering away from index 0. Never pass an index to find out which camera
+`VID:PID` — through the same resolver. Leave it out: the tool opens the one
+connected camera that looks like an HDMI capture device — a USB device whose
+name matches no webcam, phone or virtual-camera pattern — and prints
+`[capture] auto-picked …` to stderr. With none or several, it exits listing
+every camera rather than open one — the laptop's own camera is one
+renumbering away from index 0. Never pass an index to find out which camera
 is which; read `c64cast --list-devices` instead. `$C64_DIAG_CAMERA` sets the
 default for a shell; an index-only `$C64_DIAG_CV2` still works, with a warning.
 
