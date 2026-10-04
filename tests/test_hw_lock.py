@@ -105,6 +105,7 @@ class RunUnderLockTest(unittest.TestCase):
         self.assertNotIn("waiting", result.stderr)
 
     def test_waits_for_the_holder_and_not_for_another_device(self) -> None:
+        assert sys.platform != "win32"  # the class skips there; this narrows fcntl for pyright
         import fcntl
 
         released = self.tmp / "released"
