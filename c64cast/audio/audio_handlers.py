@@ -262,12 +262,28 @@ REU_AUDIO_MAX_BYTES = REU_AUDIO_REGION_END - REU_AUDIO_BASE
 # startup. See AudioStreamer.start_for_reu_staged step 3.
 REU_PUMP_INITIAL_MARGIN = RING_BUFFER_SIZE // 2  # 4096 B = half the ring
 
-# A heavy-bus display mode (mhires DMAWRITE at ~300 KB/s) costs NMI ~30% of
-# its ticks — HW-measured 4020 Hz effective, U64, 2026-05-26 — so the default
-# chunk of 128 over-produces 2x and overflows the ring in ~2 s. 80 slightly
-# under-produces in the worst case (NEUTRAL padding on a few percent of
-# samples, mild hiss) and never overflows. Char/blank scenes keep 128.
-REU_PUMP_CHUNK_SIZE_HEAVY_BUS = 80
+# Pump chunk for bitmap (heavy-bus) scenes; char/blank scenes keep 128. The
+# CIA #1 latch is derived from the chunk (_program_reu_pump_rate), so the
+# chunk sets the length of each pump DMA's bus halt, not the byte rate.
+# Bitmap scenes ran 80 from 2026-05-26 (chosen while the latch was still a
+# constant) until 80 turned out not to divide the ring: the chunk crossing
+# RING_BUFFER_END DMA'd its tail into $6000+, the wrap reset dst to the ring
+# start, and 48-79 samples per lap were never played. Every chunk must
+# divide RING_BUFFER_SIZE and REU_PUMP_INITIAL_MARGIN (asserted below).
+REU_PUMP_CHUNK_SIZE_HEAVY_BUS = 64
+
+
+def reu_pump_chunk_fits_ring(chunk: int) -> bool:
+    """True when ``chunk`` tiles the audio ring from the pump's seeded write
+    position: a positive divisor of both RING_BUFFER_SIZE and
+    REU_PUMP_INITIAL_MARGIN. Otherwise the chunk that crosses RING_BUFFER_END
+    DMAs past it, and the pump's end-of-ring wrap drops the overshoot."""
+    return chunk > 0 and RING_BUFFER_SIZE % chunk == 0 and REU_PUMP_INITIAL_MARGIN % chunk == 0
+
+
+for _chunk in (REU_PUMP_CHUNK_SIZE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS):
+    assert reu_pump_chunk_fits_ring(_chunk), f"pump chunk {_chunk} does not tile the audio ring"
+del _chunk
 
 # The matched pump latch AT 8 kHz ONLY — a reference value, never a default to
 # write. Pump period = chunk × NMI period, so chunk 128 at an NMI latch of 127
@@ -612,10 +628,10 @@ _TRK_HI_BYTE = (REU_AUDIO_SRC_TRACKER_ADDR >> 8) & 0xFF
 REU_PUMP_TICK_COUNTER_ADDR = 0xC205
 _TCTR_LO = REU_PUMP_TICK_COUNTER_ADDR & 0xFF
 _TCTR_HI_BYTE = (REU_PUMP_TICK_COUNTER_ADDR >> 8) & 0xFF
-# N=3 → kernal tail at ~33 Hz with chunk=80 (CIA #1 @ 100 Hz): below the 60 Hz
-# the kernal expects, but no service depends on the exact rate and it still
-# clears the 10 Hz keyboard poller. Do not exceed 8 — SCNKEY then misses held
-# keys.
+# N=3 → kernal tail at ~63 Hz with chunk 64 at 12 kHz (CIA #1 @ ~188 Hz
+# matched), ~94 Hz governed (REU_GOVERNOR_PUMP_OVERDRIVE). No service depends
+# on the exact rate, and it clears the 10 Hz keyboard poller. Do not exceed
+# 8 — SCNKEY then misses held keys.
 REU_PUMP_TICK_DIVIDER = 3
 
 

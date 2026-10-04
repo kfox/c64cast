@@ -101,6 +101,7 @@ from .audio_handlers import (
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
     patch_chunk_size,
+    reu_pump_chunk_fits_ring,
     stomp_spans,
 )
 from .audio_rate import NmiTimer, RateServo
@@ -1708,11 +1709,12 @@ class AudioStreamer:
         consistent with the host-DMA path).
 
         ``chunk_size`` overrides the default REU_PUMP_CHUNK_SIZE for scenes
-        where the C64 bus is heavily halted (e.g. mhires DMAWRITE). The pump
-        production rate is chunk × pump_irq_rate; when NMI consumption drops
-        below the configured sample_rate due to bus halts, a smaller chunk keeps
-        the ring from overflowing. See REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the measured
-        value (4020 Hz NMI under mhires-like halts → ~65 bytes/IRQ).
+        where the C64 bus is heavily halted (bitmap modes pass
+        REU_PUMP_CHUNK_SIZE_HEAVY_BUS). The CIA #1 latch is derived from it, so
+        it sets each pump DMA's bus halt rather than the byte rate. Raises
+        ValueError unless it divides both RING_BUFFER_SIZE and
+        REU_PUMP_INITIAL_MARGIN (reu_pump_chunk_fits_ring): any other chunk
+        DMAs past the ring end once per lap.
 
         ``on_progress`` (fraction 0..1 of payload + EOF-pad bytes uploaded) is
         called once per upload slice — the seconds-long upload is the bulk of
@@ -1742,11 +1744,17 @@ class AudioStreamer:
         No Python worker thread is started — the C64-side IRQ handler is
         the pump. self.running stays True so stop() does proper teardown.
         """
+        chunk = REU_PUMP_CHUNK_SIZE if chunk_size is None else chunk_size
+        if not reu_pump_chunk_fits_ring(chunk):
+            raise ValueError(
+                f"REU pump chunk_size={chunk} must be a positive divisor of the "
+                f"{RING_BUFFER_SIZE}-byte ring and of its {REU_PUMP_INITIAL_MARGIN}-byte "
+                "initial margin"
+            )
         if not audio_4bit:
             log.warning("audio: start_for_reu_staged called with empty data")
             return
         self._listen_mode = False
-        chunk = REU_PUMP_CHUNK_SIZE if chunk_size is None else chunk_size
         # Seed the write pointer REU_PUMP_INITIAL_MARGIN behind the reader for
         # symmetric jitter headroom, keeping src offset ≡ dst position (mod
         # ring) so the sample→position mapping stays constant. Both the plain

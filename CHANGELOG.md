@@ -251,6 +251,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Measured on an Ultimate 64 with firmware 3.15a, the write head now stays
   at least 3.7 KB ahead of the reader. The REU mic pump is unchanged.
 
+- **REU-pump audio under bitmap video no longer drops a few samples on
+  every pass around the audio ring.** The pump moved 80 bytes at a time,
+  which does not divide the 8 KB ring, so once per lap (about every 0.7 s
+  at 12 kHz) the chunk that crossed the ring's end lost 48-79 samples. It
+  now moves 64 bytes at a time, at the same byte rate.
+
 - **The diag tools' REST memory writes work on Ultimate firmware 3.15.**
   `scripts/diags/_diaglib.py`'s `rest_writemem` sent the bytes in the URL of
   a POST, which firmware 3.15a refuses with HTTP 412 "Expected Body, but got
