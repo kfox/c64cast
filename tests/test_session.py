@@ -639,7 +639,8 @@ class ReloadPinsReuPumpTest(unittest.TestCase):
                 '[ensemble]\nsystems = [{ name = "a", config = "a.toml" }]\n'
                 "[audio]\nuse_reu_pump = true\n"
             )
-        with open(os.path.join(tmp.name, "a.toml"), "w", encoding="utf-8") as f:
+        self.system_toml = os.path.join(tmp.name, "a.toml")
+        with open(self.system_toml, "w", encoding="utf-8") as f:
             f.write(
                 '[ultimate64]\nurl = "u64://192.0.2.1"\n'
                 "[video]\nuse_reu_staged = true\n"
@@ -684,8 +685,20 @@ class ReloadPinsReuPumpTest(unittest.TestCase):
         self.assertTrue(cfg.audio.use_reu_pump)
         self.assertFalse(self._petscii_staged(cfg))
 
+    def _system_file_turns_the_pump_on(self):
+        with open(self.system_toml, "a", encoding="utf-8") as f:
+            f.write("[audio]\nuse_reu_pump = true\n")
+
     def test_no_streamer_pins_the_pump_off(self):
+        self._system_file_turns_the_pump_on()
         self.sess.stacks[0].audio = None
+        with mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc:
+            session.reload_all(self.sess)
+        self.assertFalse(sfc.call_args.args[0].audio.use_reu_pump)
+
+    def test_streamer_without_the_pump_pins_it_off(self):
+        self._system_file_turns_the_pump_on()
+        self.sess.stacks[0].audio.use_reu_pump = False
         with mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]) as sfc:
             session.reload_all(self.sess)
         self.assertFalse(sfc.call_args.args[0].audio.use_reu_pump)
