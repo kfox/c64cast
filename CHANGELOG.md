@@ -246,7 +246,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   uses `use_reu_staged`, the pump's write head used to overrun the audio
   reader every 10.5-12 s, which you heard as an echo or overlap. The
   `reu_pump_governor` (on by default) now covers that path too. A governed
-  pump also runs 1.5x faster than the reader and skips the surplus, because
+  pump also runs 1.5x faster than matched and skips the surplus, because
   a pump that only matched the reader fell behind it under bitmap video.
   Measured on an Ultimate 64 with firmware 3.15a, the write head now stays
   at least 3.7 KB ahead of the reader. The REU mic pump is unchanged.
