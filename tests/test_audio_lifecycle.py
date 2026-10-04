@@ -1487,7 +1487,13 @@ class LifecycleTest(unittest.TestCase):
         # The prebuffer lands before the consumer starts, so it is all lead.
         s = _make_worker_streamer(chunk_size=32)
         started = threading.Event()
-        s.nmi.start = lambda **kw: started.set()  # type: ignore[method-assign]
+        seed = s.servo.reset_for_consumer_start
+
+        def seed_then_signal(ring_lead: int) -> None:
+            seed(ring_lead)
+            started.set()
+
+        s.servo.reset_for_consumer_start = seed_then_signal  # type: ignore[method-assign]
         s.host_dma_servo = False
         s.start_for_external_source()
         self.addCleanup(s.stop)
