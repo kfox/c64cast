@@ -144,12 +144,19 @@ class ClampTest(unittest.TestCase):
                 _child_sandbox._ORIGINAL_WAIT(popen, _child_sandbox._REAP_S)
 
         self.addCleanup(reap_survivors)
+        # No pipes: on Windows, `Popen.__exit__` closing a pipe that a reader
+        # thread still holds blocks for as long as the live child keeps it open.
         with (
             mock.patch.object(_child_sandbox, "_ORIGINAL_KILL", survivors.append),
             mock.patch.object(_child_sandbox, "_REAP_S", _TEST_BOUND_S),
             self.assertRaises(ChildProcessHung) as caught,
         ):
-            subprocess.run(_hangs(), timeout=_TEST_BOUND_S / 5, capture_output=True)
+            subprocess.run(
+                _hangs(),
+                timeout=_TEST_BOUND_S / 5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         self.assertIn("the caller allowed no bound at all", str(caught.exception))
 
     def test_a_bounded_wait_after_a_kill_is_not_lengthened_past_the_caller(self):
