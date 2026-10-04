@@ -189,8 +189,6 @@ class WiredModeRecOwnershipTest(unittest.TestCase):
                     # set does, so the set and the property cannot drift apart.
                     expected = (not pump) and d in _HOST_REC_STAGED_MODES
                     self.assertEqual(mode.drives_rec_from_host, expected)
-                    if not pump:
-                        self.assertEqual(d in _HOST_REC_STAGED_MODES, mode.drives_rec_from_host)
 
 
 class ReuPumpSkipsIrqHookTest(unittest.TestCase):
