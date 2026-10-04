@@ -108,6 +108,7 @@ from .audio_handlers import (
 from .audio_rate import NmiTimer, RateServo
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import AudioDSP, DSPParams
+from .mic_lead import MIC_LEAD_REANCHOR_GUARD, MicLeadServo, MicLeadShaper
 
 log = logging.getLogger(__name__)
 
@@ -327,6 +328,11 @@ class AudioStreamer:
         # PortAudio callback, which has none of the worker counters below.
         self._mic_reu_write_pos = 0
         self._mic_reu_write_errors = 0
+        # The closed loop on that position's lead over the pump (#560): the
+        # servo thread measures, the shaper applies its drop fraction on the
+        # callback. Both None outside a REU mic session.
+        self._mic_lead: MicLeadServo | None = None
+        self._mic_shaper: MicLeadShaper | None = None
         # Producer missed the pace deadline. full_underruns: the queue was
         # empty, so the whole chunk is NEUTRAL (an audible click at
         # chunk_period). partial_underruns: NEUTRAL padding at the tail only.
@@ -1240,8 +1246,21 @@ class AudioStreamer:
             mono[np.abs(mono) < self.noise_gate] = 0
         mono = self._apply_dsp(mono.astype(np.float32, copy=False))
         self._push_to_tap(mono)
-        vol = self._encode_dac(mono)
-        self._push_mic_to_reu(vol.tobytes())
+        lead, shaper = self._mic_lead, self._mic_shaper
+        fill = b""
+        if lead is not None and shaper is not None:
+            anchor = lead.take_reanchor(time.monotonic())
+            if anchor is not None:
+                # Restart the write head REU_MIC_BOOTSTRAP_BYTES past the pump,
+                # NEUTRAL over the span the pump reaches first: the overtaken
+                # or lapped ring there holds audio from a lap ago.
+                self._mic_reu_write_pos = (anchor + MIC_LEAD_REANCHOR_GUARD) % REU_MIC_SIZE
+                fill = bytes([self._neutral_byte]) * (
+                    REU_MIC_BOOTSTRAP_BYTES - MIC_LEAD_REANCHOR_GUARD
+                )
+            mono = shaper.process(mono, lead.drop_frac)
+        vol = self._encode_dac(mono) if len(mono) else np.zeros(0, dtype=np.uint8)
+        self._push_mic_to_reu(fill + vol.tobytes())
 
     def _push_mic_to_reu(self, encoded: bytes) -> None:
         """REUWRITE `encoded` to the mic ring at `_mic_reu_write_pos`,
@@ -1639,6 +1658,7 @@ class AudioStreamer:
         # variant for this path.
         self.mic_stream = self._open_input_stream(device, callback=self._mic_callback_reu)
         self.mic_stream.start()
+        self._start_mic_lead_servo()
         log.info(
             "audio[reu mic]: device=%d %dHz sensitivity=%.2f noise_gate=%.3f "
             "bootstrap=%dB (%.0fms latency)",
@@ -1648,6 +1668,43 @@ class AudioStreamer:
             self.noise_gate,
             REU_MIC_BOOTSTRAP_BYTES,
             1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate,
+        )
+
+    def _start_mic_lead_servo(self) -> None:
+        """Close the loop on the write head's lead over the pump (#560), or
+        say why it stays open: without reads there is nothing to measure."""
+        self._mic_shaper = MicLeadShaper(self.sample_rate)
+        if not self.api.profile.supports_read:
+            log.warning(
+                "audio[reu mic]: this backend cannot read C64 memory, so the mic "
+                "lead servo is off; latency drifts with the pump's rate"
+            )
+            self._mic_lead = None
+            return
+        self._mic_lead = MicLeadServo(
+            read_memory=self.api.read_memory,
+            write_pos=lambda: self._mic_reu_write_pos,
+            sample_rate=self.sample_rate,
+        )
+        self._mic_lead.start()
+
+    def _stop_mic_lead_servo(self) -> None:
+        lead, self._mic_lead = self._mic_lead, None
+        shaper, self._mic_shaper = self._mic_shaper, None
+        if lead is None:
+            return
+        lead.stop()
+        if lead.lead_min is None:
+            return
+        log.info(
+            "audio[reu mic]: lead %d..%d B, %d re-anchor(s), %d open-loop spell(s), "
+            "%d splice(s) skipping %d samples",
+            lead.lead_min,
+            lead.lead_max,
+            lead.reanchors,
+            lead.open_loop_spells,
+            shaper.splices if shaper is not None else 0,
+            shaper.skipped_samples if shaper is not None else 0,
         )
 
     def _resolve_input_device(self, device: int | str) -> tuple[int | None, str]:
@@ -2245,6 +2302,7 @@ class AudioStreamer:
         # NMI is already silenced; let the worker / mic threads tear down
         # at their own pace.
         self._close_mic_stream()
+        self._stop_mic_lead_servo()
         if self._worker_thread:
             # A plain bounded join, not session.join_bounded: a daemon thread
             # joined off the main thread, and the audio layer must not import

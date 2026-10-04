@@ -558,7 +558,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | `--upgrade` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 | `--url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Flags in Ensemble Mode (1)](02-config-rules.md#flags-in-ensemble-mode) |
 | `url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings) |
-| `use_reu_pump` | [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself), [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`audio` (A)](20-appendix-a-configuration.md#audio) |
+| `use_reu_pump` | [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself), [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen) |
 | `use_reu_staged` | [The Preview Window (6)](07-inputs-and-outputs.md#the-preview-window), [`video` (A)](20-appendix-a-configuration.md#video) |
 
 ## V

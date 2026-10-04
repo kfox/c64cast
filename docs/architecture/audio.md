@@ -211,7 +211,7 @@ The src side has always come from the tracker rather than `$DF06` read-back. Thi
 
 The src wrap's BCC must land on the `RTS`, and a module-level assert checks it, because the py65 runs in `tests/test_reu_mic.py` still reach a return when it is one byte short. The 125-byte subroutine has no room for the governor's 17-byte test, so the mic pump stays ungoverned and matched. Since it now takes the tracked entry, its kernal tail runs only on every `REU_PUMP_TICK_DIVIDER`-th tick, like the video pump's.
 
-Bootstrap latency is `REU_MIC_BOOTSTRAP_BYTES / sample_rate`, ≈133 ms at the 12 kHz default. The one `use_reu_pump` flag covers both the video (`start_for_reu_staged`) and mic (`start_mic`) paths — `AudioStreamer` picks the matching bring-up from whichever start method was called.
+Bootstrap latency is `REU_MIC_BOOTSTRAP_BYTES / sample_rate`, ≈133 ms at the 12 kHz default, and `mic_lead.py` (below) holds the write head there for the rest of the session. The one `use_reu_pump` flag covers both the video (`start_for_reu_staged`) and mic (`start_mic`) paths — `AudioStreamer` picks the matching bring-up from whichever start method was called.
 
 **The matched CIA #1 latch is derived, never a constant.** Pump period = chunk × the NMI period, and the NMI period is `nominal_latch + 1` cycles — a ratio of periods, so it is the same on NTSC and PAL, but it tracks `[audio].sample_rate`. `_program_reu_pump_rate(chunk)` is the one derivation, the one register write and the one place the host records what it wrote; both bring-ups call it. The mic path used to write `REU_PUMP_CIA1_LATCH` — the value for chunk 128 at an NMI latch of 127, i.e. 8 kHz — so at the shipped 12 kHz default it asked the pump for 85/128 of what the NMI drains: the ring under-filled and the NMI re-read a lap-old span, the exact artifact the derivation exists to prevent. The constant is now named `REU_PUMP_CIA1_LATCH_8KHZ` so the rate assumption cannot be borrowed by accident, and `_reu_cia1_latch_nominal` starts at 0 rather than inheriting it. A derived latch above `0xFFFF` (roughly `sample_rate` below 2 kHz at the default chunk, which `c64.nmi_rate_safety` does not reject — it bounds only the fast end) is clamped with a warning rather than silently truncated modulo 65536 by the two-register write.
 
@@ -579,9 +579,49 @@ Both the paired subtract and the queued-only subtract now live in one place each
 
 `flush()` is a no-op in REU-pump mode: that path owns its own C64-side timeline, and it is force-disabled under transport anyway.
 
+## `mic_lead.py` — REU mic lead servo
+
+**Why a loop (#560).** The REU mic path runs on three clocks. The host mic produces exactly `sample_rate`. The pump REC-DMAs the REU mic ring into the NMI ring at whatever rate its IRQ ticks actually achieve. The NMI reader drains that ring. `_start_mic_for_reu_pump` starts the host's write head `REU_MIC_BOOTSTRAP_BYTES` ahead of the pump's src tracker, and before this module nothing kept them apart. On a U64-II (3.15a, NTSC, 12 kHz) the lead drifted as follows:
+- **REU-staged `mhires`:** about +1.8 KB/s. The pump and the reader both ran near 10 kB/s, because the bank-swap halts cost the C64 its ticks. The host lapped the pump about every 34 s.
+- **`petscii`:** about −32 B/s, from CIA latch quantization. The pump overtook the write head after about 50 s and then played a lap-old ring, about 5.4 s late.
+
+The 64 KB ring was never the margin. The 1600-byte lead was. A C64-side governor cannot fix this, because the host's write position is not visible there.
+
+**`MicLeadServo`** is a thread started after the mic stream opens and stopped in `stop()`.
+- **Measurement.** About once a second it reads `$C200-$C202` twice over the backend's `read_memory` (REST on the U64), each read bracketed by the host write position. Both reads stay off the PortAudio callback. If the two resulting leads disagree by more than `MIC_LEAD_TORN_TOLERANCE`, one three-byte read was torn mid-carry and the measurement is discarded. A tracker outside the mic ring counts as a failed read.
+- **Control.** The signed lead goes through `mic_lead_correction`, a PI step on the shared `audio_handlers.pi_step`. `servo_period` runs on the same step, so the clamp and anti-windup logic exist once. The result is a drop fraction in `[−MIC_LEAD_RESAMPLE_MAX, MIC_LEAD_MAX_DROP]`. The integrator is seeded from the first measured pump rate, so it does not wind up through an overshoot: in simulation the startup overshoot under mhires drift is ~1.8 KB rather than ~3.4 KB.
+- **Re-anchor.** A negative lead (overtaken) or one past `MIC_LEAD_REANCHOR_ABOVE` (8 KB, a lap or an outage) is not steered. The servo posts a re-anchor, and the callback claims it: it extrapolates the pump's position at the measured rate and restarts the write head `MIC_LEAD_REANCHOR_GUARD` past it, behind a NEUTRAL fill up to the bootstrap lead. That is one step into silence where the ring held lap-old audio. A steered correction never jumps.
+- **Pump idle or reads failing.** An idle tracker means teardown or a dead pump, and the servo stops steering. After `MIC_LEAD_OPEN_LOOP_AFTER` consecutive failed measurements, including a backend that raises, the loop opens (drop fraction 0) with a WARNING. A recovery is logged at INFO. A backend whose profile has no `supports_read` gets a WARNING at bring-up and no thread. `stop()` logs the run's lead range, re-anchors, open-loop spells and splices.
+
+**`MicLeadShaper`** runs on the callback, after the DSP and before the encoder. It applies the drop fraction in one of two modes:
+- **Resample mode.** Within ±3 % (`MIC_LEAD_RESAMPLE_MAX`) it resamples by linear interpolation. Single samples are effectively dropped or repeated, and the read phase carries across blocks, so a block edge is an ordinary sample.
+- **Splice mode.** Above 3 % it switches to splices for the whole correction and resamples nothing. It drops back below `MIC_LEAD_SPLICE_EXIT` (1 %), and the gap keeps a correction that hovers at the cap from flapping the pitch. Each splice cuts about `MIC_SPLICE_MS` (30 ms) of input. The exact cut is searched within ±10 ms for the best normalized cross-correlation with the outgoing 8 ms (`best_splice_cut`) and joined with an 8 ms linear crossfade. Splices fire as the drop accrues, so they are evenly spaced, about 5.6 per second at a 15 % drop. A pending splice holds back at most `cut_max + fade` samples (~48 ms) until there is enough input to search.
+
+**Pitch versus skipping.** Under mhires the C64 plays only about 83 % of the stream, but every sample it does play is spaced at the 12 kHz NMI period, with gaps during the halts. That is why the tone stays at 440 Hz even while the lead drifts. Resampling the input by 15 % would hold the delay at the cost of raising every played sample's pitch by ~20 %. A first hardware cut that resampled up to its 3 % cap measured 452 Hz. Splicing keeps the pitch exact and skips content instead, which is the usual trade for a live input. The splice geometry was chosen offline (`MicLeadShaper` at a 15 % drop, 20 s of tone):
+
+| splice / fade | splices/s | out-of-band energy: sine / 3-tone chord / 5 Hz vibrato |
+|---|---|---|
+| 15 ms / 4 ms | 11.4 | −153 / −33.1 / −35.8 dB |
+| **30 ms / 8 ms** | **5.6** | −153 / −32.0 / −33.4 dB |
+| 30 ms / 4 ms | 6.0 | −153 / −26.3 / −33.8 dB |
+| 60 ms / 10 ms | 2.5 | −153 / −34.7 / −31.2 dB |
+
+The four geometries sit within a few dB of each other except for the short fade on the chord. 30/8 halves the splice rate of 15/4 for about the same distortion, and it keeps each skip short enough that speech loses fragments of a syllable rather than whole ones.
+
+**Measured on hardware** (U64-II 3.15a, NTSC, 12 kHz, silent synthetic 440 Hz mic, the `$C200` tracker probed every 2 s over 75 s, Cam Link audio):
+
+| | lead (probe) | Cam Link tone, 1 s windows | 50 ms windows ≥50 % in the 440 Hz band |
+|---|---|---|---|
+| mhires, before | +1.8 KB/s, laps every ~34 s | 440 Hz, 57/65 | 39.5 % |
+| mhires, after | 726..2810 B, 0 re-anchors, ~6 splices/s | 440 Hz, 56/66 | 40.8 % |
+| petscii, before | −31 B/s, overtaken at ~51 s | 424..441 Hz | 78.3 % |
+| petscii, after | 1472..1771 B, 0 splices | 424..444 Hz | 77.3 % |
+
+The mhires continuity figure is low in both rows because the halt gaps chop the tone. The splices add nothing measurable on top of them. The baseline's 262 to 285 Hz windows come from those same halts, and they appear in both runs.
+
 ## `audio_handlers.py` — the 6502 machine-code layer
 
-Everything the DAC path uploads to C64 RAM, split out of `audio.py` (2026-08) so the byte arrays and their memory map live apart from the streamer that drives them: the `$C020` NMI DAC routine (`NMI_ROUTINE`), the `$C100` REU pump IRQ handlers (`REU_IRQ_HANDLER`, `REU_IRQ_HANDLER_GOVERNOR`, `REU_IRQ_HANDLER_TRACKED`), the `$C180` tracked pump-body subroutine in its open-loop, governed and mic forms (`REU_PUMP_BODY_SUBROUTINE`, `REU_PUMP_BODY_SUBROUTINE_GOVERNOR`, `REU_MIC_PUMP_BODY_SUBROUTINE`) that both `REU_IRQ_HANDLER_TRACKED` and `modes_irq.py`'s chunked bank-swap dispatcher JSR into, the ring/pump memory-map constants (`RING_BUFFER_*`, the `$C200` tracker slots), the control-loop tuning constants, and the pure pacing helpers `stomp_spans` / `servo_period` / `nmi_rate_step`.
+Everything the DAC path uploads to C64 RAM, split out of `audio.py` (2026-08) so the byte arrays and their memory map live apart from the streamer that drives them: the `$C020` NMI DAC routine (`NMI_ROUTINE`), the `$C100` REU pump IRQ handlers (`REU_IRQ_HANDLER`, `REU_IRQ_HANDLER_GOVERNOR`, `REU_IRQ_HANDLER_TRACKED`), the `$C180` tracked pump-body subroutine in its open-loop, governed and mic forms (`REU_PUMP_BODY_SUBROUTINE`, `REU_PUMP_BODY_SUBROUTINE_GOVERNOR`, `REU_MIC_PUMP_BODY_SUBROUTINE`) that both `REU_IRQ_HANDLER_TRACKED` and `modes_irq.py`'s chunked bank-swap dispatcher JSR into, the ring/pump memory-map constants (`RING_BUFFER_*`, the `$C200` tracker slots), the control-loop tuning constants, and the pure pacing helpers `stomp_spans` / `servo_period` / `pi_step` / `nmi_rate_step`.
 
 Where the caller patches a per-scene chunk size into each REU handler variant is stated here too, beside the assembly that defines it (`REU_IRQ_HANDLER_CHUNK_OFFSETS` and its tracked/governor siblings, applied by `patch_chunk_size`), because a wrong offset writes a length into some other instruction's operand and DMAs from or to a garbage address. Those were literals at the call site in `audio.py`, where they could not follow a re-assembly here — and the in-caller note about the byte layout had already gone 16 bytes stale. A module-level assert checks every offset still holds a chunk-size byte, which catches the same-length re-arrangement the length asserts cannot see.
 

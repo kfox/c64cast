@@ -7,6 +7,7 @@ hand-assembled regression can't pass tests."""
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 from typing import Any, cast
 from unittest import mock
@@ -36,6 +37,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_END_HI,
     RING_BUFFER_HI,
 )
+from c64cast.audio.mic_lead import MIC_LEAD_REANCHOR_GUARD, MicLeadServo, MicLeadShaper
 
 
 def _new_streamer(use_reu_pump: bool = True, **overrides) -> AudioStreamer:
@@ -251,6 +253,7 @@ class StartMicForReuPumpTest(unittest.TestCase):
         s = _new_streamer(**overrides)
         s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
         s._start_mic_for_reu_pump(device=-1, skip_irq_vector_hook=skip_irq_vector_hook)
+        self.addCleanup(s._stop_mic_lead_servo)
         return s
 
     def test_reu_ring_is_prefilled_with_neutral(self):
@@ -439,10 +442,6 @@ class MicCallbackReuTest(unittest.TestCase):
         self.assertEqual(fake.socket_dma.reuwrites, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PushMicToReuFailureTest(unittest.TestCase):
     """The mic pump REUWRITEs straight from the PortAudio callback, which has
     no worker and so none of the worker's telemetry. An exception leaving a
@@ -525,6 +524,7 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
 
         s._open_input_stream = open_stream
         s._start_mic_for_reu_pump(device=-1, skip_irq_vector_hook=skip_hook)
+        self.addCleanup(s._stop_mic_lead_servo)
         return s, fake, opened
 
     @staticmethod
@@ -628,3 +628,93 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         park = max(i for i, o in enumerate(fake.ops) if o == ("write_memory", "C180", "60"))
         body = self._index(fake, "write_memory_file", "C180")
         self.assertLess(body, park)
+
+
+class _PendingAnchor:
+    """A lead servo with one re-anchor waiting and a fixed drop fraction."""
+
+    def __init__(self, anchor: int | None, drop_frac: float = 0.0) -> None:
+        self.anchor = anchor
+        self.drop_frac = drop_frac
+
+    def take_reanchor(self, now: float) -> int | None:
+        anchor, self.anchor = self.anchor, None
+        return anchor
+
+
+class MicLeadServoWiringTest(unittest.TestCase):
+    """The streamer side of the #560 lead servo: the callback applies its
+    re-anchor and drop fraction, and bring-up/teardown own its thread."""
+
+    def _streamer(self, anchor: int | None, drop_frac: float = 0.0) -> AudioStreamer:
+        s = _new_streamer()
+        s.running = True
+        s._mic_reu_write_pos = 5000
+        cast(Any, s)._mic_lead = _PendingAnchor(anchor, drop_frac)
+        s._mic_shaper = MicLeadShaper(s.sample_rate)
+        return s
+
+    def test_a_reanchor_restarts_the_head_past_the_pump_behind_a_neutral_fill(self):
+        s = self._streamer(anchor=REU_MIC_SIZE - 100)
+        fake = cast(FakeAPI, s.api)
+        s._mic_callback_reu(np.full((256, 1), 0.5, dtype=np.float32), 256, None, None)
+        fill = REU_MIC_BOOTSTRAP_BYTES - MIC_LEAD_REANCHOR_GUARD
+        start = (REU_MIC_SIZE - 100 + MIC_LEAD_REANCHOR_GUARD) % REU_MIC_SIZE
+        off, data = fake.socket_dma.reuwrites[0]
+        self.assertEqual(off, REU_MIC_BASE + start)
+        self.assertEqual(data[:fill], bytes([NEUTRAL_SAMPLE]) * fill)
+        self.assertEqual(s._mic_reu_write_pos, (start + fill + 256) % REU_MIC_SIZE)
+
+    def test_without_a_reanchor_the_head_continues(self):
+        s = self._streamer(anchor=None)
+        fake = cast(FakeAPI, s.api)
+        s._mic_callback_reu(np.full((256, 1), 0.5, dtype=np.float32), 256, None, None)
+        self.assertEqual(fake.socket_dma.reuwrites[0][0], REU_MIC_BASE + 5000)
+        self.assertEqual(s._mic_reu_write_pos, 5256)
+
+    def test_the_drop_fraction_shortens_what_is_written(self):
+        s = self._streamer(anchor=None, drop_frac=0.02)
+        for _ in range(40):
+            s._mic_callback_reu(np.full((256, 1), 0.5, dtype=np.float32), 256, None, None)
+        written = (s._mic_reu_write_pos - 5000) % REU_MIC_SIZE
+        self.assertAlmostEqual(written / (40 * 256), 0.98, delta=0.002)
+
+    def test_bring_up_starts_the_servo_and_stop_ends_it(self):
+        s = _new_streamer()
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        s._start_mic_for_reu_pump(device=-1)
+        lead = s._mic_lead
+        assert lead is not None
+        thread = lead._thread
+        assert thread is not None and thread.is_alive()
+        s.stop()
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(s._mic_lead)
+        self.assertIsNone(s._mic_shaper)
+
+    def test_a_backend_without_reads_runs_open_loop_and_says_so(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        fake.profile = dataclasses.replace(fake.profile, supports_read=False)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        with self.assertLogs("c64cast.audio.audio", "WARNING") as cm:
+            s._start_mic_for_reu_pump(device=-1)
+        self.assertTrue(any("lead servo is off" in m for m in cm.output), cm.output)
+        self.assertIsNone(s._mic_lead)
+        self.assertIsNotNone(s._mic_shaper)
+
+    def test_stop_summarizes_a_run_the_servo_measured(self):
+        s = _new_streamer()
+        servo = MicLeadServo(
+            read_memory=lambda *a, **k: None, write_pos=lambda: 0, sample_rate=12000
+        )
+        servo.lead_min, servo.lead_max, servo.reanchors = 1400, 1800, 2
+        s._mic_lead = servo
+        s._mic_shaper = MicLeadShaper(12000)
+        with self.assertLogs("c64cast.audio.audio", "INFO") as cm:
+            s.stop()
+        self.assertTrue(any("lead 1400..1800 B, 2 re-anchor(s)" in m for m in cm.output), cm.output)
+
+
+if __name__ == "__main__":
+    unittest.main()
