@@ -1163,6 +1163,9 @@ class VideoScene(MediaFileMixin, Scene):
         # The OSD text baked into the last rendered frame; compared each tick so
         # a post or expiry busts the identity-skip for one render.
         self._last_osd_shown: str | None = None
+        # The backend's delivery_epoch at the last render; a move busts the
+        # identity-skip, since that frame may never have reached the machine.
+        self._last_render_epoch: int | None = None
         # A/V-lag telemetry: per-displayed-frame audio_clock − frame PTS.
         self._av_lag_min = math.inf
         self._av_lag_max = -math.inf
@@ -1521,10 +1524,13 @@ class VideoScene(MediaFileMixin, Scene):
         # ~10 ms per-frame mhires/hires REU bus halt to ~60 % of the time, which
         # AM-modulates the SID DAC at the playlist rate — an audible 60 Hz buzz,
         # measured via Cam Link envelope FFT 2026-05-26. An OSD post or expiry
-        # busts the skip for one render so the message appears or clears.
+        # busts the skip for one render so the message appears or clears, and
+        # so does a delivery_epoch move, so a paused frame a lost write
+        # damaged is repainted instead of held until playback resumes.
         osd_now = self.osd.current()
         new_source = img is not self._last_rendered_img
-        if not new_source and osd_now == self._last_osd_shown:
+        epoch = self.api.delivery_epoch
+        if not new_source and osd_now == self._last_osd_shown and epoch == self._last_render_epoch:
             return True
         # A/V-lag accounting and the rolling auto_fit accumulator count real
         # frames, so an OSD-only re-render must not advance them.
@@ -1554,6 +1560,7 @@ class VideoScene(MediaFileMixin, Scene):
         if osd_now:
             img = _annotate_osd(img, osd_now, self.osd.position)
         self._last_osd_shown = osd_now
+        self._last_render_epoch = epoch
         assert self.display_mode is not None
         _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
         return True
@@ -1624,6 +1631,7 @@ class VideoScene(MediaFileMixin, Scene):
         # and suppress its first OSD repaint.
         self._last_rendered_img = None
         self._last_osd_shown = None
+        self._last_render_epoch = None
 
     def _log_av_lag_summary(self) -> None:
         if not self._av_lag_count:

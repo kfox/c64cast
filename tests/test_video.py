@@ -8,12 +8,14 @@ import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 import numpy as np
 from _fakes import FrozenClock
 
 from c64cast.control.transport import LoopPresetStore, timecode
+from c64cast.hw.c64 import RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.video.video import (
@@ -946,6 +948,35 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertEqual(scene.source.seeks, [])  # type: ignore[union-attr]
 
 
+class VideoSceneIdentitySkipTest(unittest.TestCase):
+    """process_frame skips a render when the source hands back the same frame
+    object (a pause, or polling faster than the video's frame rate), except
+    when a write may have been lost since the last render (c64cast#531)."""
+
+    def _renders(self, scene: VideoScene, n: int) -> int:
+        with (
+            mock.patch.object(scenes, "_render_with_overlays") as render,
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            for _ in range(n):
+                scene.process_frame(0.0)
+        return render.call_count
+
+    def test_a_held_frame_renders_once(self):
+        scene = _make_video_scene_stub(_StubSource())
+        api = cast(mock.MagicMock, scene.api)
+        api.delivery_epoch = 0
+        self.assertEqual(self._renders(scene, 3), 1)
+
+    def test_a_lost_write_repaints_a_held_frame_once(self):
+        scene = _make_video_scene_stub(_StubSource())
+        api = cast(mock.MagicMock, scene.api)
+        api.delivery_epoch = 0
+        self._renders(scene, 1)
+        api.delivery_epoch = 1
+        self.assertEqual(self._renders(scene, 3), 1)
+
+
 class VideoSceneLoopToggleTest(unittest.TestCase):
     """transport_loop_toggle's 3-state cycle (mark A -> mark B + active ->
     clear), and the red-border feedback it shares with the Record/Stop pair
@@ -986,6 +1017,8 @@ class VideoSceneLoopToggleTest(unittest.TestCase):
             scene.transport_loop_toggle()
         self.assertFalse(scene.transport.record_border_active)
         scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
+        # So a petscii/blank border that is not black comes back on the next push.
+        scene.api.invalidate_region.assert_called_with(RegionID.VIC_D020)  # type: ignore[attr-defined]
 
 
 class VideoSceneRecordStopTest(unittest.TestCase):

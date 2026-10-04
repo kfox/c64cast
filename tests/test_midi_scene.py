@@ -721,6 +721,25 @@ class PaintTests(_MidiTestCase):
         self.assertIn(f"RES {scene.filter_resonance:2d}", ctl)
         self.assertEqual(len(ctl), 40)  # _paint_text_row needs exactly 40
 
+    def test_rows_painted_on_change_are_resent_after_a_lost_write(self):
+        # c64cast#531: the info rows and strip colors are painted only when
+        # they change, so after a write that may not have landed nothing else
+        # would repaint them; a delivery_epoch move sends them again, once.
+        scene, api = _make_scene()
+        _bring_up_display(scene)
+        scene._note_on(60, 100)
+        scene.process_frame(0.0)
+        scene.process_frame(1.0)
+        api.regions.clear()
+        api.delivery_epoch += 1
+        scene.process_frame(2.0)
+        for addr in (_TITLE_BITMAP, _TITLE_SCREEN, _META_BITMAP, _SCREEN_BASE):
+            self.assertIn(addr, api.regions, hex(addr))
+        api.regions.clear()
+        scene.process_frame(3.0)
+        self.assertNotIn(_TITLE_BITMAP, api.regions)
+        self.assertNotIn(_SCREEN_BASE, api.regions)
+
     def test_info_rows_repaint_only_when_dirty(self):
         # The scope strips redraw every frame, but the change-detected text
         # rows repaint only on note/CC events — keeps DMA low.
