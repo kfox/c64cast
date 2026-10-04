@@ -210,6 +210,23 @@ class MicLeadReanchorTest(unittest.TestCase):
         rig.servo.tick()
         self.assertEqual(rig.reads, reads)
 
+    def test_an_unclaimed_reanchor_is_dropped_and_measuring_resumes(self):
+        rig = _Rig(drift=0.0, lead=-500)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        reads = rig.reads
+        rig.t = ml.MIC_LEAD_REANCHOR_CLAIM_INTERVALS * ml.MIC_LEAD_SERVO_INTERVAL_S
+        rig.servo.tick()  # still within the claim window
+        self.assertEqual(rig.reads, reads)
+        rig.t += 0.5
+        rig.pump += RATE // 2
+        rig.host = rig.pump + REU_MIC_BOOTSTRAP_BYTES
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING") as cm:
+            rig.servo.tick()
+        self.assertIn("has not taken a re-anchor", cm.output[0])
+        self.assertGreater(rig.reads, reads)
+        self.assertIsNone(rig.servo.take_reanchor())
+
     def test_later_reanchors_log_below_warning(self):
         rig = _Rig(drift=0.0, lead=-500)
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):

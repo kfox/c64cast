@@ -771,7 +771,7 @@ and transients land more precisely. That is the VJ arrangement — the real musi
 is on a PA, and only the picture tracks it.
 
 With `[audio].use_reu_pump` on, a `mic` scene keeps its delay near
-133 ms by watching where the machine is reading and trimming the input to
+133 ms (at the default 12 kHz `sample_rate`) by watching where the machine is reading and trimming the input to
 match. Under `mhires` the delay wanders between roughly 40 and 250 ms once
 it settles, which takes about 20 s. The machine does not always keep pace with the microphone. Under
 `petscii` it plays about 0.3 % fast, and the input is stretched by that much,

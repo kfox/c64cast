@@ -266,8 +266,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
-- **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms (40–250 ms
-  under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
+- **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms at 12 kHz
+  (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
   pump that plays it. Under REU-staged `mhires` the delay grew by about
   1.8 seconds every ten seconds, until after about 34 s the host overwrote
   audio that had not played yet. Under `petscii` the pump caught up with

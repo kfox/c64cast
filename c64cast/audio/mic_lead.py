@@ -82,9 +82,14 @@ MIC_LEAD_REANCHOR_ABOVE = REU_MIC_SIZE // 8
 # estimate ahead of the pump leaves the pump that many bytes of the overtaken
 # or lapped ring to play before the fill.
 MIC_LEAD_REANCHOR_GUARD = 2 * REU_PUMP_CHUNK_SIZE
-# The two leads of one read pair must agree this closely, else one of the
-# three-byte tracker reads was torn mid-update by the pump.
+# The two leads of one read pair must agree this closely, else one read came
+# back stale or garbled. A read that lands inside the pump's own lo/mi carry
+# is off by at most 256 B and passes; it costs ~128 B of lead error.
 MIC_LEAD_TORN_TOLERANCE = 1024
+# A re-anchor the callback has not claimed within this many intervals is
+# dropped with a warning, and measuring resumes: a callback that has stopped
+# reaching it (every block flagged by PortAudio) must not freeze the loop.
+MIC_LEAD_REANCHOR_CLAIM_INTERVALS = 3
 # Consecutive failed measurements before the loop opens (drop fraction 0).
 MIC_LEAD_OPEN_LOOP_AFTER = 3
 # Per tracker read. requests applies it to each phase (connect, then each
@@ -325,8 +330,17 @@ class MicLeadServo:
         """One measurement and decision. Public for the tests, which drive it
         without the thread."""
         with self._lock:
-            if self._reanchor is not None:
-                return  # the callback has not applied the last one yet
+            pending = self._reanchor
+            if pending is not None:
+                if self._clock() - pending[1] <= MIC_LEAD_REANCHOR_CLAIM_INTERVALS * self._interval:
+                    return  # the callback has not applied the last one yet
+                self._reanchor = None
+        if pending is not None:
+            log.warning(
+                "audio[reu mic]: the mic callback has not taken a re-anchor in %.0fs; "
+                "dropping it and measuring again",
+                MIC_LEAD_REANCHOR_CLAIM_INTERVALS * self._interval,
+            )
         m = self._measure()
         if m is None:
             if not self._stop.is_set():
@@ -381,7 +395,8 @@ class MicLeadServo:
 
     def _measure(self) -> tuple[int, int, float] | None:
         """Two tracker reads, each against the host position midway across
-        it; a pair that disagrees means a torn read and counts as a failure."""
+        it; a pair that disagrees means a stale or garbled read and counts as a
+        failure."""
         h0 = self._write_pos()
         p1 = self._read_pump()
         h1 = self._write_pos()
