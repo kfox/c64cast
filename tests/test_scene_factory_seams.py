@@ -17,7 +17,7 @@ import os
 import sys
 import tempfile
 import unittest
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 from c64cast.app import config as cfgmod
@@ -217,13 +217,17 @@ class BigTextReuPumpRefusalTest(unittest.TestCase):
         self.clip = os.path.join(self.tmp.name, "clip.mp4")
         open(self.clip, "wb").close()
 
-    def _validate(self, *, pump=True, audio_enabled=True, backend="ultimate", **scene):
+    def _validate(
+        self, *, pump=True, audio_enabled=True, backend="ultimate", is_ensemble=False, **scene
+    ):
         cfg = Config()
         cfg.audio.use_reu_pump = pump
         cfg.hardware.backend = backend
         scene.setdefault("type", "blank")
         scene.setdefault("overlays", [{"type": "big_text", "messages": [{"text": "HI"}]}])
-        scene_factory.validate_scene_cfg(SceneCfg(**scene), cfg, audio_enabled=audio_enabled)
+        scene_factory.validate_scene_cfg(
+            SceneCfg(**scene), cfg, audio_enabled=audio_enabled, is_ensemble=is_ensemble
+        )
 
     def test_blank_scene_with_the_pump_on_is_refused(self):
         with self.assertRaisesRegex(ValueError, r"big_text.*use_reu_pump"):
@@ -252,6 +256,51 @@ class BigTextReuPumpRefusalTest(unittest.TestCase):
 
     def test_another_overlay_is_unaffected(self):
         self._validate(overlays=[{"type": "clock"}])
+
+    def test_an_ensemble_blank_scene_is_allowed(self):
+        # An ensemble mutes every live scene, so the blank scene never starts
+        # the pump and the overlay's IRQ has nothing to silence.
+        self._validate(is_ensemble=True)
+
+    def test_an_ensemble_video_on_a_blank_display_is_still_refused(self):
+        # Video keeps its audio in an ensemble; only live scenes are muted.
+        with self.assertRaisesRegex(ValueError, "use_reu_pump"):
+            self._validate(type="video", display="blank", file=self.clip, is_ensemble=True)
+
+    def _build_blank(self, *, is_ensemble):
+        cfg = Config()
+        cfg.audio.use_reu_pump = True
+        s = SceneCfg(type="blank", overlays=[{"type": "big_text", "messages": [{"text": "HI"}]}])
+        cfg.scenes = [s]
+        return scene_factory.build_scene(
+            s, cfg, _api(), cast(Any, object()), None, is_ensemble=is_ensemble
+        )
+
+    def test_an_ensemble_follower_builds_the_scene_silent(self):
+        # The broadcast follower path builds the conductor's scene this way.
+        self.assertIsNone(self._build_blank(is_ensemble=True).audio)
+
+    def test_an_ensemble_follower_only_scene_passes_the_eager_check(self):
+        # scenes_from_config validates follower-only scenes up front; in an
+        # ensemble that check has to mute live audio the way the build does.
+        cfg = Config()
+        cfg.audio.use_reu_pump = True
+        cfg.scenes = [
+            SceneCfg(type="blank", name="own"),
+            SceneCfg(
+                type="blank",
+                follower_only=True,
+                overlays=[{"type": "big_text", "messages": [{"text": "HI"}]}],
+            ),
+        ]
+        built = scene_factory.scenes_from_config(
+            cfg, _api(), cast(Any, object()), None, is_ensemble=True
+        )
+        self.assertEqual([sc.name for sc in built], ["own"])
+
+    def test_a_single_system_build_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "use_reu_pump"):
+            self._build_blank(is_ensemble=False)
 
 
 class InterleavedVideoWiringTest(unittest.TestCase):

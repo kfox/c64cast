@@ -1984,8 +1984,26 @@ _AUDIO_SCENE_TYPES: tuple[str, ...] = next(
 )
 
 
+# The scene types whose builder takes its audio from `_resolve_live_audio`
+# whatever else the scene sets. Generative goes there only for some
+# `audio_source` values, so it is not listed.
+_LIVE_AUDIO_SCENE_TYPES: tuple[str, ...] = ("webcam", "blank")
+
+
+def _live_audio_suppressed(s: SceneCfg, *, is_ensemble: bool) -> bool:
+    """Whether `_resolve_live_audio` hands scene `s` no audio: the scene opted
+    out, or it runs in an ensemble, where live scenes never hold the audio."""
+    return s.audio is False or is_ensemble
+
+
 def reject_irq_hook_conflict(
-    overlay: Overlay, display_mode: DisplayMode, s: SceneCfg, cfg: Config, *, audio_enabled: bool
+    overlay: Overlay,
+    display_mode: DisplayMode,
+    s: SceneCfg,
+    cfg: Config,
+    *,
+    audio_enabled: bool,
+    is_ensemble: bool = False,
 ) -> None:
     """Raise ValueError when `overlay` would take the $0314 IRQ vector and mask
     CIA #1 on a scene whose audio runs the REU pump.
@@ -2005,6 +2023,8 @@ def reject_irq_hook_conflict(
         return
     if s.type not in _AUDIO_SCENE_TYPES or s.audio is False:
         return
+    if s.type in _LIVE_AUDIO_SCENE_TYPES and _live_audio_suppressed(s, is_ensemble=is_ensemble):
+        return
     raise ValueError(
         f"overlay {overlay.name!r} on a {mode_name!r} display installs its own "
         "$0314 IRQ handler and masks CIA #1, the REU audio pump's interrupt, so "
@@ -2013,7 +2033,9 @@ def reject_irq_hook_conflict(
     )
 
 
-def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:
+def validate_scene_cfg(
+    s: SceneCfg, cfg: Config, *, audio_enabled: bool, is_ensemble: bool = False
+) -> None:
     """Pre-construction validation for a SceneCfg.
 
     Runs every check that `build_scene` would surface at load time, without
@@ -2085,7 +2107,9 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         ov = build_overlay(ov_cfg, audio_proxy)
         for check_mode in check_modes:
             validate_for_scene(ov, check_mode)
-            reject_irq_hook_conflict(ov, check_mode, s, cfg, audio_enabled=audio_enabled)
+            reject_irq_hook_conflict(
+                ov, check_mode, s, cfg, audio_enabled=audio_enabled, is_ensemble=is_ensemble
+            )
 
     if s.orchestrate:
         resolve_orchestrator(s)
@@ -2219,17 +2243,16 @@ def _resolve_live_audio(ctx: _SceneBuildContext, name: str, label: str) -> Audio
     per-scene to opt out even when the global is on. In ensemble mode live
     scenes never hold the audio spotlight, so audio is always suppressed —
     with a log line when the scene explicitly opted in."""
-    scene_audio = None if ctx.s.audio is False else ctx.audio
-    if ctx.is_ensemble and scene_audio is not None:
-        if ctx.s.audio is True:
-            log.info(
-                "[%s] %s: audio suppressed in ensemble mode "
-                "(live scenes never hold the audio spotlight)",
-                name,
-                label,
-            )
-        scene_audio = None
-    return scene_audio
+    if ctx.audio is None or not _live_audio_suppressed(ctx.s, is_ensemble=ctx.is_ensemble):
+        return ctx.audio
+    if ctx.is_ensemble and ctx.s.audio is True:
+        log.info(
+            "[%s] %s: audio suppressed in ensemble mode "
+            "(live scenes never hold the audio spotlight)",
+            name,
+            label,
+        )
+    return None
 
 
 def _resolve_sampler_audio(ctx: _SceneBuildContext) -> UltimateAudioSampler | None:
@@ -2773,7 +2796,7 @@ def build_scene(
     below applies what every scene gets — duration resolution, an explicit
     target_fps, the effect chain, overlays, and the debug/OSD/pre-emphasis
     stamps."""
-    validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
+    validate_scene_cfg(s, cfg, audio_enabled=audio is not None, is_ensemble=is_ensemble)
 
     ctx = _SceneBuildContext(
         s=s,
@@ -2888,7 +2911,7 @@ def scenes_from_config(
     # without this call a bad cfg would only surface mid-broadcast.
     for s in cfg.scenes:
         if s.follower_only:
-            validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
+            validate_scene_cfg(s, cfg, audio_enabled=audio is not None, is_ensemble=is_ensemble)
 
     base: list[Scene] = []
     for index, s in enumerate(cfg.scenes):

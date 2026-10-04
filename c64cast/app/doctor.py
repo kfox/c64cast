@@ -715,7 +715,9 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
             label = s.name or f"{s.type}#{idx}"
             subject = f"{name}/{label}"
             try:
-                validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
+                validate_scene_cfg(
+                    s, cfg, audio_enabled=cfg.audio.enabled, is_ensemble=loaded.is_ensemble
+                )
             except OrchestratorError as e:
                 out.append(
                     Diagnostic(

@@ -1090,7 +1090,9 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
         # moves ahead of the hardware, it does not change identity.
         for idx, s in enumerate(cfg.scenes):
             try:
-                scene_factory.validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
+                scene_factory.validate_scene_cfg(
+                    s, cfg, audio_enabled=cfg.audio.enabled, is_ensemble=loaded.is_ensemble
+                )
             except (ValueError, OrchestratorError) as e:
                 detail = f"scene {s.name or f'{s.type}#{idx}'}: {e}"
                 log.error(detail)
