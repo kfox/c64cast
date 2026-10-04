@@ -28,6 +28,8 @@ from c64cast.audio import dac_capture_device as dcap
 from c64cast.audio import dac_curve_resolve as dcr
 from c64cast.audio import dac_slot_ring as dsr
 from c64cast.audio.dac_curves import MAHONEY_ULTISID
+from c64cast.control import camera
+from c64cast.control.camera import CameraInfo
 from c64cast.hw.backend import HardwareProfile
 from c64cast.sid.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
 from c64cast.sid.emusid_mixer import CAT_EMUSID
@@ -948,18 +950,21 @@ class SlotRingExtractionTest(unittest.TestCase):
             dsr.extract_slot_levels(np.zeros(4 * dsr.CAP_SR), 40, RING)
 
 
-def _dev(name, max_in, default_sr=48000.0):
-    return {"name": name, "max_input_channels": max_in, "default_samplerate": default_sr}
+def _dev(name, max_in, default_sr=48000.0, hostapi=0):
+    return {
+        "name": name,
+        "max_input_channels": max_in,
+        "default_samplerate": default_sr,
+        "hostapi": hostapi,
+    }
 
 
 class _FakeSD:
     """Minimal sounddevice stand-in: a device table plus a settings check that
     accepts only the (channels, rate) combinations each device really supports."""
 
-    def __init__(self, devices, accept=None, default_input=0):
+    def __init__(self, devices, accept=None):
         self._devices = devices
-        # sd.default.device is (input, output); -1 means "none".
-        self.default = SimpleNamespace(device=(default_input, -1))
         # {device_index: {(channels, rate), …}}; default = anything up to max_in
         # at any rate.
         self._accept = accept
@@ -967,6 +972,10 @@ class _FakeSD:
 
     def query_devices(self, dev=None):
         return self._devices if dev is None else self._devices[dev]
+
+    @property
+    def default(self):
+        raise AssertionError("the system default device was read")
 
     def check_input_settings(self, device: int, channels: int, samplerate: int, dtype: str):
         self.checked.append((device, channels, samplerate))
@@ -1380,39 +1389,146 @@ class ResolveCaptureFormatTest(unittest.TestCase):
             self._run(fake)
 
 
-class FindCaptureDeviceTest(unittest.TestCase):
-    """Only "cam link" used to be recognized, so every other rig fell through to
-    the system default input — on Windows the on-board microphone, which records
-    room noise for the whole run and measures like a dead chip."""
+_FACETIME = CameraInfo(index=0, name="FaceTime HD Camera", vid=None, pid=None, backend=1200)
+_CAMLINK = CameraInfo(index=1, name="Cam Link 4K", vid=0x0FD9, pid=0x0066, backend=1200)
+_HD60 = CameraInfo(index=2, name="Game Capture HD60 S+", vid=0x0FD9, pid=0x006A, backend=1200)
+_MIC = "MacBook Pro Microphone"
 
-    def _run(self, fake, preferred=None):
-        with patch.dict("sys.modules", {"sounddevice": fake}):
+
+class FindCaptureDeviceTest(unittest.TestCase):
+    """The capture input is the one --audio-device names, else the one named
+    like the HDMI capture device; it is never the system default input, which
+    on a laptop is the microphone and measures room noise (#568). Reading
+    ``sd.default`` fails these tests through :class:`_FakeSD`."""
+
+    cameras = [_FACETIME, _CAMLINK]
+
+    def _run(self, inputs, preferred=None, *, cameras=None, camera_extra=True):
+        fake = _FakeSD([_dev(name, ch, hostapi=sum(api)) for name, ch, *api in inputs])
+        cams = self.cameras if cameras is None else cameras
+        with (
+            patch.dict("sys.modules", {"sounddevice": fake}),
+            patch.object(camera, "camera_enumeration_available", return_value=camera_extra),
+            patch.object(camera, "enumerate_cameras", return_value=list(cams)),
+            self.assertLogs("c64cast.audio.dac_capture_device", level="INFO") as logs,
+        ):
+            logs.records.append(None)  # keep assertLogs satisfied when nothing logs
             return dcap.find_capture_device(preferred)
 
-    def test_an_explicit_device_is_used_as_given(self):
-        fake = _FakeSD([_dev("Microphone (Realtek)", 2), _dev("Cam Link 4K", 2)])
-        self.assertEqual(self._run(fake, preferred=0), 0)
+    def _refused(self, inputs, preferred=None, **kwargs):
+        with self.assertRaises(dcap.CaptureUnavailableError) as cm:
+            self._run(inputs, preferred, **kwargs)
+        message = str(cm.exception)
+        self.assertIn("--audio-device", message)
+        for name, ch, *_ in inputs:
+            if ch > 0:
+                self.assertIn(name, message)
+        return message
 
-    def test_an_hdmi_stick_is_picked_over_the_default_microphone(self):
-        fake = _FakeSD(
-            [_dev("Microphone (2- Realtek(R) Audio", 2), _dev("USB3.0 HD Video Capture", 2)],
-            default_input=0,
+    def test_the_input_named_like_the_capture_device_is_picked(self):
+        self.assertEqual(self._run([(_MIC, 1), ("Speakers", 0), ("Cam Link 4K", 2)]), 2)
+
+    def test_a_microphone_alone_is_refused(self):
+        message = self._refused([(_MIC, 1)])
+        self.assertIn("no audio input named like the capture device 'Cam Link 4K'", message)
+
+    def test_no_capture_device_is_refused(self):
+        message = self._refused([(_MIC, 1), ("Cam Link 4K", 2)], cameras=[_FACETIME])
+        self.assertIn("no connected camera looks like an HDMI capture device", message)
+        self.assertIn("FaceTime HD Camera", message)
+
+    def test_two_capture_devices_are_ambiguous(self):
+        message = self._refused(
+            [(_MIC, 1), ("Cam Link 4K", 2), ("Game Capture HD60 S+", 2)],
+            cameras=[_FACETIME, _CAMLINK, _HD60],
         )
-        self.assertEqual(self._run(fake), 1)
+        self.assertIn("2 connected cameras", message)
 
-    def test_a_cam_link_wins_over_another_capture_input(self):
-        fake = _FakeSD([_dev("USB Video", 2), _dev("Cam Link 4K", 2)])
-        self.assertEqual(self._run(fake), 1)
+    def test_two_inputs_named_like_the_capture_device_are_ambiguous(self):
+        message = self._refused([("Cam Link 4K", 2), ("Cam Link 4K #2", 2)])
+        self.assertIn("more than one audio input named like", message)
 
-    def test_an_output_only_capture_device_is_skipped(self):
-        fake = _FakeSD([_dev("HDMI Output", 0), _dev("HDMI Capture", 2)])
-        self.assertEqual(self._run(fake), 1)
+    def test_a_missing_camera_extra_is_refused(self):
+        message = self._refused([(_MIC, 1), ("Cam Link 4K", 2)], camera_extra=False)
+        self.assertIn("'camera' extra", message)
 
-    def test_falls_back_to_the_system_default_when_nothing_is_recognized(self):
-        fake = _FakeSD([_dev("Speakers", 0), _dev("Line In", 2)], default_input=1)
-        self.assertEqual(self._run(fake), 1)
-        self.assertFalse(dcap.looks_like_capture_input("Line In"))
-        self.assertTrue(dcap.looks_like_capture_input("Cam Link 4K"))
+    def test_audio_device_overrides_the_discovery(self):
+        inputs = [("Microphone (Realtek)", 2), ("Cam Link 4K", 2)]
+        self.assertEqual(self._run(inputs, preferred=0), 0)
+        self.assertEqual(self._run(inputs, preferred="0"), 0)
+        self.assertEqual(self._run(inputs, preferred="realtek"), 0)
+
+    def test_audio_device_needs_neither_the_extra_nor_a_capture_device(self):
+        inputs = [(_MIC, 1), ("Line In", 2)]
+        self.assertEqual(self._run(inputs, "line in", cameras=[], camera_extra=False), 1)
+
+    def test_an_exact_name_wins_over_a_longer_one(self):
+        self.assertEqual(self._run([("Cam Link 4K #2", 2), ("Cam Link 4K", 2)], "cam link 4k"), 1)
+
+    def test_an_audio_device_naming_nothing_is_refused_not_rerouted(self):
+        inputs = [(_MIC, 1), ("Cam Link 4K", 2)]
+        self.assertIn("matches no audio input", self._refused(inputs, "scarlett"))
+        self.assertIn(
+            "matches more than one", self._refused(inputs + [("Cam Link 4K #2", 2)], "link")
+        )
+        self.assertIn("system default input", self._refused(inputs, "-1"))
+        self.assertIn("system default input", self._refused(inputs, -1))
+
+    def test_an_index_that_is_not_an_input_is_refused(self):
+        inputs = [(_MIC, 1), ("Speakers", 0), ("Cam Link 4K", 2)]
+        self.assertIn("is not an audio input", self._refused(inputs, 1))
+        self.assertIn("is not an audio input", self._refused(inputs, "7"))
+
+    # Windows lists each input once per host API; MME (0) truncates names to 31
+    # characters, the others (1, 2) carry the full name.
+    windows = [
+        ("Microphone (Realtek Audio)", 2, 0),
+        ("Digital Audio Interface (Cam Li", 2, 0),
+        ("Microphone (Realtek Audio)", 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 2),
+    ]
+
+    def test_one_input_listed_by_several_host_apis_is_one_input(self):
+        self.assertEqual(self._run(self.windows), 3)
+        self.assertEqual(self._run(self.windows, "cam link"), 3)
+        self.assertEqual(self._run(self.windows, "realtek"), 0)
+
+    def test_two_inputs_in_one_host_api_stay_ambiguous(self):
+        inputs = self.windows + [("Digital Audio Interface (Cam Link 4K #2)", 2, 2)]
+        self.assertIn("more than one audio input named like", self._refused(inputs))
+        line_in = self.windows + [("Line In (Realtek Audio)", 2, 1)]
+        self.assertIn("matches more than one", self._refused(line_in, "realtek"))
+        self.assertIn("matches more than one", self._refused(inputs, "link 4k"))
+
+    def test_an_output_only_device_is_not_a_candidate(self):
+        message = self._refused([("Cam Link 4K", 0)])
+        self.assertIn("no audio input named like", message)
+
+
+class RunCalibrateDacCaptureInputTest(unittest.TestCase):
+    """A capture input that cannot be found stops ``--calibrate-dac`` before it
+    connects, so nothing is written to the machine."""
+
+    def test_an_unfound_capture_input_exits_3_before_connecting(self):
+        import argparse
+
+        from c64cast.app import cli_commands
+
+        error = dcap.CaptureUnavailableError("install the 'camera' extra, or --audio-device")
+        with (
+            patch.object(cli_commands, "AUDIO_AVAILABLE", True),
+            patch.object(cli_commands, "find_capture_device", side_effect=error) as find,
+            patch.object(cli_commands, "make_backend") as make_backend,
+            self.assertLogs("c64cast", level="ERROR") as cm,
+        ):
+            rc = cli_commands.run_calibrate_dac(
+                _u64_cfg(), argparse.Namespace(audio_device="scarlett")
+            )
+        self.assertEqual(rc, 3)
+        find.assert_called_once_with("scarlett")
+        make_backend.assert_not_called()
+        self.assertIn("--audio-device", cm.output[0])
 
 
 class StatusScreenTest(unittest.TestCase):
@@ -1540,6 +1656,7 @@ class RunCalibrateDacBackendLeakTest(unittest.TestCase):
 
         with (
             patch.object(cli_commands, "AUDIO_AVAILABLE", True),
+            patch.object(cli_commands, "find_capture_device", return_value=1),
             patch.object(cli_commands, "make_backend", return_value=be),
             patch.object(
                 cli_commands.hw_provision,
@@ -1573,6 +1690,7 @@ class RunCalibrateDacConnectFailureTest(unittest.TestCase):
             with (
                 self.subTest(exc=type(exc).__name__),
                 patch.object(cli_commands, "AUDIO_AVAILABLE", True),
+                patch.object(cli_commands, "find_capture_device", return_value=1),
                 patch.object(cli_commands, "make_backend", side_effect=exc),
                 patch.object(cli_commands.dac_calibration, "run_calibration") as run,
             ):
@@ -1590,6 +1708,7 @@ class RunCalibrateDacConnectFailureTest(unittest.TestCase):
 
         with (
             patch.object(cli_commands, "AUDIO_AVAILABLE", True),
+            patch.object(cli_commands, "find_capture_device", return_value=1),
             patch.object(cli_commands, "make_backend", side_effect=ValueError("a defect")),
             self.assertNoLogs("c64cast", level="ERROR"),
             self.assertRaisesRegex(ValueError, "a defect"),

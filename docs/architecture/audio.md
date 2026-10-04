@@ -310,9 +310,16 @@ The machine spends the whole run parked in the BASIC clear loop with a dead scre
 
 #### Picking the capture device
 
-`find_capture_device` resolves it: `--audio-device` if given, else the first input-capable device whose name matches `CAPTURE_NAME_HINTS` (`"cam link"`, `"elgato"`, `"hdmi"`, `"capture"`, `"macrosilicon"`, `"usb video"`, `"av to usb"` — tried in that order, so a rig with both a Cam Link and another HDMI input still picks the Cam Link), else the system default input.
+`find_capture_device` resolves it in one of two ways, and neither is the system default input.
 
-The hint list has to be broad because the fallback is a bad one: the system default input is the on-board microphone on most machines, and a calibration measured off room noise fails in the expensive way (below) rather than the obvious one. So when that fallback does fire, `run_calibration` warns immediately — `looks_like_capture_input` is false for the chosen name, so the log carries the warning and the input list while the run is 5 s old rather than 50.
+- **`--audio-device` names it**: an index, or a name — an input whose name equals it (ignoring case), else the one input whose name contains it (`named_positions`). A name matching none or several inputs, a negative index, or an index that is not an input raises `CaptureUnavailableError` listing the inputs. It does not fall through to discovery, because the run would then measure an input nobody asked for.
+- **Otherwise it is discovered**: the one input whose name `names_match` (one contains the other, ignoring case) the HDMI capture device [`camera.pick_capture_camera`](control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) singles out. A capture stick enumerates as a camera and an audio input under the same name, and the camera side is where the classifier can tell a capture stick from a webcam: the stick is the one USB video device whose name matches none of `NOT_CAPTURE_NAME_PATTERNS`. That makes the `camera` extra, which enumerates cameras, a requirement for discovery. Without it, or with zero or several capture cameras, or zero or several inputs named like the one picked, the call raises `CaptureUnavailableError` with the cameras and inputs listed and `--audio-device` as the way out.
+
+Either way, matches that each sit in a different PortAudio host API count as one input (`one_device`), taken from the lowest-numbered host API: Windows lists every input once per host API (MME, DirectSound, WASAPI, WDM-KS), so a rule of exactly one listing would refuse every Windows rig. Two matches in one host API are two inputs.
+
+No device name, index or `VID:PID` is built into this choice. The input it replaced, a list of name hints (`"cam link"`, `"elgato"`, …) with the system default input behind it, recorded from a laptop's microphone whenever the hints missed (#568). A calibration taken from room noise fails in the expensive way (below), 50 s in.
+
+`cli`'s `run_calibrate_dac` calls `find_capture_device` once before it connects, so a rig whose input cannot be found exits 3 before anything is written to the machine. `_open_capture` calls it again after the HDMI settle and PortAudio re-initialization, because the indices can change when PortAudio re-enumerates. The scripts in `scripts/diags/` pick their audio input with the same `names_match`, `named_positions` and `one_device` and their capture camera with the same `pick_capture_camera`.
 
 #### Resolving the capture format
 

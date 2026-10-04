@@ -28,10 +28,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
-
-if TYPE_CHECKING:
-    from c64cast.control.camera import CameraInfo
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "scripts" / "diags" / "out"
@@ -88,46 +85,6 @@ U64_URL = os.environ.get("C64_DIAG_URL", "http://192.168.2.64")
 #: Ultimate II+ on the same LAN. Override: C64_DIAG_U2P_URL.
 U2P_URL = os.environ.get("C64_DIAG_U2P_URL", "http://192.168.2.65")
 
-#: Name substrings (lowercase) of video devices that are not HDMI capture
-#: devices: built-in and USB webcams, phones, and virtual cameras. Webcams,
-#: built-in cameras, phones and virtual devices mostly call themselves a
-#: "camera"; an HDMI capture device names itself after the stick.
-NOT_CAPTURE_NAME_PATTERNS: tuple[str, ...] = (
-    "camera",
-    # webcams
-    "webcam",
-    "facecam",
-    "lifecam",
-    "brio",
-    "kiyo",
-    "insta360",
-    "obs",
-    # phones
-    "iphone",
-    "ipad",
-    "epoccam",
-    "droidcam",
-    "camo",
-    # virtual cameras
-    "virtual",
-    "xsplit",
-    "mmhmm",
-    "broadcast",
-    "screen",
-)
-
-
-def looks_like_hdmi_capture(name: str, usb_id: str | None) -> bool:
-    """Whether a device called ``name``, with USB ``VID:PID`` ``usb_id``
-    (``None`` when it reports none), may be auto-picked as the HDMI capture
-    device: it must be a USB device with a non-empty name that matches none of
-    :data:`NOT_CAPTURE_NAME_PATTERNS`. A device with no USB identity, or no
-    name to judge, is not picked: built-in and virtual cameras report none."""
-    lowered = name.strip().lower()
-    if not lowered or not usb_id:
-        return False
-    return not any(pattern in lowered for pattern in NOT_CAPTURE_NAME_PATTERNS)
-
 
 def capture_device_from_env() -> str | None:
     """The capture device the environment names, or ``None`` to auto-pick.
@@ -173,16 +130,9 @@ def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> No
     )
 
 
-def _camera_listing(cams: list[CameraInfo]) -> str:
-    """Every enumerated camera, one per line, with its index, name and VID:PID."""
-    if not cams:
-        return "  (no cameras found)"
-    return "\n".join(f"  [{c.index}] {c.name} ({c.vidpid_str() or 'no USB VID:PID'})" for c in cams)
-
-
 def autopick_capture() -> tuple[int, int]:
-    """``(cv2_index, backend)`` of the one connected camera
-    :func:`looks_like_hdmi_capture` accepts, from the app's own enumeration.
+    """``(cv2_index, backend)`` of the camera the app's own
+    :func:`c64cast.control.camera.pick_capture_camera` singles out.
 
     Raises ``SystemExit``, listing every camera found, when it accepts none or
     more than one, or when the ``camera`` extra is missing: no camera is opened
@@ -190,30 +140,24 @@ def autopick_capture() -> tuple[int, int]:
     pointed at a person."""
     from c64cast.control import camera
 
-    if not camera.camera_enumeration_available():
+    try:
+        chosen = camera.pick_capture_camera()
+    except camera.CaptureCameraError as e:
+        if e.extra_missing:
+            raise SystemExit(
+                "picking the capture device needs the 'camera' extra: run `uv sync "
+                "--all-extras`, or name one with --device. No camera is opened by index "
+                "in its place."
+            ) from None
         raise SystemExit(
-            "picking the capture device needs the 'camera' extra: run `uv sync "
-            "--all-extras`, or name one with --device. No camera is opened by index "
-            "in its place."
-        )
-    cams = camera.enumerate_cameras()
-    picked = [c for c in cams if looks_like_hdmi_capture(c.name, c.vidpid_str())]
-    if len(picked) == 1:
-        chosen = picked[0]
-        print(
-            f"[capture] auto-picked [{chosen.index}] {chosen.name} ({chosen.vidpid_str()})",
-            file=sys.stderr,
-        )
-        return chosen.index, chosen.backend
-    reason = (
-        "no connected camera looks like an HDMI capture device"
-        if not picked
-        else f"{len(picked)} connected cameras look like HDMI capture devices"
+            f"{e.reason}, so none is opened. Cameras found:\n{camera.camera_listing(e.cameras)}\n"
+            "Choose one with --device NAME|VID:PID, or set C64_DIAG_CAMERA."
+        ) from None
+    print(
+        f"[capture] auto-picked [{chosen.index}] {chosen.name} ({chosen.vidpid_str()})",
+        file=sys.stderr,
     )
-    raise SystemExit(
-        f"{reason}, so none is opened. Cameras found:\n{_camera_listing(cams)}\n"
-        "Choose one with --device NAME|VID:PID, or set C64_DIAG_CAMERA."
-    )
+    return chosen.index, chosen.backend
 
 
 def autopick_webcam() -> str:
@@ -231,19 +175,20 @@ def autopick_webcam() -> str:
             "or name one with --device."
         )
     cams = camera.enumerate_cameras()
-    picked = [c for c in cams if not looks_like_hdmi_capture(c.name, c.vidpid_str())]
-    if len(picked) == 1:
+    picked = [c for c in cams if not camera.looks_like_hdmi_capture(c.name, c.vidpid_str())]
+    webcams = {camera.device_identity(c) for c in picked}
+    if len(webcams) == 1:
         name = picked[0].name
-        if sum(name.lower() in c.name.lower() for c in cams) == 1:
+        if len({camera.device_identity(c) for c in cams if name.lower() in c.name.lower()}) == 1:
             print(f"[camera] auto-picked [{picked[0].index}] {name}", file=sys.stderr)
             return name
         reason = f"the webcam's name {name!r} also matches another camera"
     elif not picked:
         reason = "every connected camera looks like an HDMI capture device"
     else:
-        reason = f"{len(picked)} connected cameras do not look like HDMI capture devices"
+        reason = f"{len(webcams)} connected cameras do not look like HDMI capture devices"
     raise SystemExit(
-        f"{reason}, so none is opened. Cameras found:\n{_camera_listing(cams)}\n"
+        f"{reason}, so none is opened. Cameras found:\n{camera.camera_listing(cams)}\n"
         "Choose one with --device NAME|VID:PID|INDEX."
     )
 
@@ -349,11 +294,14 @@ def read_frame(cap, device: int | str | None, *, timeout_s: float = NO_FRAME_RET
 
 class AudioInput(NamedTuple):
     """An audio input a tool records from: ``device`` is what the backend
-    takes (a sounddevice index, or ffmpeg avfoundation's ``:N``) and ``name``
-    is what the device calls itself, which outlives a re-enumeration."""
+    takes (a sounddevice index, or ffmpeg avfoundation's ``:N``), ``name``
+    is what the device calls itself, which outlives a re-enumeration, and
+    ``hostapi`` is the PortAudio host API listing it (always 0 for
+    avfoundation)."""
 
     device: int | str
     name: str
+    hostapi: int = 0
 
 
 #: The environment variable that names each backend's audio input.
@@ -382,7 +330,7 @@ def sd_audio_inputs() -> list[AudioInput]:
     import sounddevice as sd
 
     return [
-        AudioInput(i, str(dev["name"]))
+        AudioInput(i, str(dev["name"]), int(dev.get("hostapi", 0)))
         for i, dev in enumerate(sd.query_devices())
         if dev["max_input_channels"] > 0
     ]
@@ -429,11 +377,6 @@ def _audio_listing(inputs: list[AudioInput]) -> str:
     return "\n".join(f"  {a.device}: {a.name}" for a in inputs)
 
 
-def _names_match(a: str, b: str) -> bool:
-    a, b = a.strip().lower(), b.strip().lower()
-    return bool(a and b) and (a in b or b in a)
-
-
 def capture_camera_name(camera: int | str | None) -> str:
     """The name of the camera :func:`resolve_capture` picks for ``camera``."""
     from c64cast.control import camera as cam
@@ -464,10 +407,12 @@ def _named_audio_input(inputs: list[AudioInput], spec: str, backend: str) -> Aud
             f"audio input {spec!r} is not an audio input index. Inputs found:\n"
             + _audio_listing(inputs)
         )
-    exact = [a for a in inputs if a.name.strip().lower() == text.lower()]
-    matches = exact or [a for a in inputs if text.lower() in a.name.lower()]
-    if len(matches) == 1:
-        return matches[0]
+    from c64cast.audio.dac_capture_device import named_positions, one_device
+
+    matches = [inputs[i] for i in named_positions([a.name for a in inputs], text)]
+    one = one_device(matches)
+    if one is not None:
+        return one
     reason = "matches no audio input" if not matches else "matches more than one audio input"
     raise SystemExit(f"audio input {spec!r} {reason}. Inputs found:\n" + _audio_listing(inputs))
 
@@ -498,15 +443,17 @@ def resolve_audio_input(
             f"{e}\nThe audio input is picked by the capture camera's name, so none is "
             "opened. " + flag_hint + _audio_listing(inputs)
         ) from None
-    matches = [a for a in inputs if _names_match(a.name, camera_name)]
-    if len(matches) == 1:
+    from c64cast.audio.dac_capture_device import names_match, one_device
+
+    matches = [a for a in inputs if names_match(a.name, camera_name)]
+    one = one_device(matches)
+    if one is not None:
         print(
-            f"[audio] picked {matches[0].device} {matches[0].name} "
-            f"(named like capture camera {camera_name!r})",
+            f"[audio] picked {one.device} {one.name} (named like capture camera {camera_name!r})",
             file=sys.stderr,
         )
-        return matches[0]
-    reason = "no audio input" if not matches else f"{len(matches)} audio inputs"
+        return one
+    reason = "no audio input" if not matches else "more than one audio input"
     raise SystemExit(
         f"{reason} named like capture camera {camera_name!r}, so none is opened. "
         + flag_hint
@@ -516,14 +463,20 @@ def resolve_audio_input(
 
 def refind_sd_audio_input(audio: AudioInput) -> int:
     """The sounddevice index of ``audio`` once PortAudio has re-enumerated,
-    found by its exact name: another input whose name merely contains it is
-    a different device. Among several inputs with that exact name, the one
-    still at ``audio``'s index is taken.
+    found by its exact name in its own host API: another input whose name
+    merely contains it is a different device, and the same name in another
+    host API is the same device listed again. Among several inputs with that
+    exact name in that host API, the one still at ``audio``'s index is taken.
 
-    Raises ``SystemExit`` listing the inputs when the name is gone, or is
-    shared by several inputs none of which is at that index."""
+    Raises ``SystemExit`` listing the inputs when the name is gone from that
+    host API, or is shared there by several inputs none of which is at that
+    index."""
     inputs = sd_audio_inputs()
-    named = [a for a in inputs if a.name.strip().lower() == audio.name.strip().lower()]
+    named = [
+        a
+        for a in inputs
+        if a.hostapi == audio.hostapi and a.name.strip().lower() == audio.name.strip().lower()
+    ]
     reason = "is gone" if not named else "now names more than one input"
     if len(named) > 1:
         named = [a for a in named if a.device == audio.device]

@@ -14,7 +14,7 @@ Extras do not accumulate. Installing `c64cast[midi]` over `c64cast[video]` leave
 <!-- table: fields -->
 | Extra | Description |
 |---|---|
-| **`camera`**<br>`cv2_enumerate_cameras` | [video].device by name/VID:PID; `--list-devices` detail. `cv2-enumerate-cameras>=1.3.3,<2`. |
+| **`camera`**<br>`cv2_enumerate_cameras` | [video].device by name/VID:PID; `--list-devices` detail; `--calibrate-dac` capture input without `--audio-device`. `cv2-enumerate-cameras>=1.3.3,<2`. |
 | **`control`**<br>`fastapi` | [control] enabled HTTP plane. `fastapi>=0.140.0,<1`, `uvicorn>=0.51.0,<1`. |
 | **`logging`**<br>`rich` | colored log output. `rich>=15.0.0,<16`. |
 | **`mic`**<br>`sounddevice` | [audio] enabled, mic capture. `sounddevice>=0.5.5,<0.6`. |
