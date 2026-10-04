@@ -308,6 +308,16 @@ class WebcamAutopickTest(unittest.TestCase):
             self.pick([webcam, _HD60])
         self.assertIn("also matches another camera", str(cm.exception))
 
+    def test_a_linux_webcam_listed_once_per_backend_is_one_camera(self) -> None:
+        """Under CAP_ANY, Linux lists every camera once per backend (GStreamer
+        1800, V4L2 200) at backend + N."""
+        cams = [
+            CameraInfo(index=backend + n, name=name, vid=vid, pid=0x66, backend=0)
+            for n, name, vid in ((0, "Integrated Webcam", None), (2, "Cam Link 4K", 0x0FD9))
+            for backend in (1800, 200)
+        ]
+        self.assertEqual(self.pick(cams), "Integrated Webcam")
+
 
 if __name__ == "__main__":
     unittest.main()

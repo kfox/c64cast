@@ -234,7 +234,7 @@ def pick_capture_camera() -> CameraInfo:
         )
     cams = enumerate_cameras()
     picked = [c for c in cams if looks_like_hdmi_capture(c.name, c.vidpid_str())]
-    devices = {_device_identity(c) for c in picked}
+    devices = {device_identity(c) for c in picked}
     if len(devices) == 1:
         return picked[0]
     reason = (
@@ -245,7 +245,7 @@ def pick_capture_camera() -> CameraInfo:
     raise CaptureCameraError(reason, cams)
 
 
-def _device_identity(cam: CameraInfo) -> tuple[str, str | None, int]:
+def device_identity(cam: CameraInfo) -> tuple[str, str | None, int]:
     """What one physical camera has in common across its listings: on Linux
     each backend lists it at ``backend + N`` (see
     :func:`_platform_api_preference`), and OpenCV reads ``N`` back as

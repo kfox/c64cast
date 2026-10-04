@@ -176,16 +176,17 @@ def autopick_webcam() -> str:
         )
     cams = camera.enumerate_cameras()
     picked = [c for c in cams if not camera.looks_like_hdmi_capture(c.name, c.vidpid_str())]
-    if len(picked) == 1:
+    webcams = {camera.device_identity(c) for c in picked}
+    if len(webcams) == 1:
         name = picked[0].name
-        if sum(name.lower() in c.name.lower() for c in cams) == 1:
+        if len({camera.device_identity(c) for c in cams if name.lower() in c.name.lower()}) == 1:
             print(f"[camera] auto-picked [{picked[0].index}] {name}", file=sys.stderr)
             return name
         reason = f"the webcam's name {name!r} also matches another camera"
     elif not picked:
         reason = "every connected camera looks like an HDMI capture device"
     else:
-        reason = f"{len(picked)} connected cameras do not look like HDMI capture devices"
+        reason = f"{len(webcams)} connected cameras do not look like HDMI capture devices"
     raise SystemExit(
         f"{reason}, so none is opened. Cameras found:\n{camera.camera_listing(cams)}\n"
         "Choose one with --device NAME|VID:PID|INDEX."
