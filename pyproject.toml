@@ -241,6 +241,7 @@ files = [
     "c64cast/audio/audio.py",
     "c64cast/audio/audio_rate.py",
     "c64cast/audio/audio_handlers.py",
+    "c64cast/audio/mic_lead.py",
     "c64cast/app/playlist.py",
     "c64cast/app/session.py",
     "c64cast/app/serve.py",

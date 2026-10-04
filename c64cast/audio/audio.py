@@ -108,6 +108,7 @@ from .audio_handlers import (
 from .audio_rate import NmiTimer, RateServo
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import AudioDSP, DSPParams
+from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
 
@@ -327,6 +328,11 @@ class AudioStreamer:
         # PortAudio callback, which has none of the worker counters below.
         self._mic_reu_write_pos = 0
         self._mic_reu_write_errors = 0
+        # The closed loop on that position's lead over the pump (#560): the
+        # servo thread measures, the shaper applies its drop fraction on the
+        # callback. Both None outside a REU mic session.
+        self._mic_lead: MicLeadServo | None = None
+        self._mic_shaper: MicLeadShaper | None = None
         # Producer missed the pace deadline. full_underruns: the queue was
         # empty, so the whole chunk is NEUTRAL (an audible click at
         # chunk_period). partial_underruns: NEUTRAL padding at the tail only.
@@ -1252,12 +1258,27 @@ class AudioStreamer:
             mono[np.abs(mono) < self.noise_gate] = 0
         mono = self._apply_dsp(mono.astype(np.float32, copy=False))
         self._push_to_tap(mono)
+        lead, shaper = self._mic_lead, self._mic_shaper
+        fill = b""
+        start: int | None = None
+        if lead is not None and shaper is not None:
+            anchor = lead.take_reanchor()
+            if anchor is not None:
+                # Restart the write head REU_MIC_BOOTSTRAP_BYTES past the pump,
+                # NEUTRAL over the span the pump reaches first: the overtaken
+                # or lapped ring there holds audio from a lap ago.
+                start, fill_len = reanchor_fill(anchor)
+                fill = bytes([self._neutral_byte]) * fill_len
+            mono = shaper.process(mono, lead.drop_frac)
         vol = self._encode_dac(mono)
-        self._push_mic_to_reu(vol.tobytes())
+        self._push_mic_to_reu(fill + vol.tobytes(), start)
 
-    def _push_mic_to_reu(self, encoded: bytes) -> None:
-        """REUWRITE `encoded` to the mic ring at `_mic_reu_write_pos`,
-        wrapping at REU_MIC_SIZE. Splits the write across the ring boundary
+    def _push_mic_to_reu(self, encoded: bytes, start: int | None = None) -> None:
+        """REUWRITE `encoded` to the mic ring at `start` (default: the write
+        head, `_mic_reu_write_pos`), wrapping at REU_MIC_SIZE. The head moves
+        to the end of the write only when it succeeds, so a re-anchor whose
+        fill fails leaves the head where it was, for the next measurement to
+        find still overtaken or lapped. Splits the write across the ring boundary
         when needed so the C64 pump always reads a contiguous stream
         (otherwise the wrap-end half of the chunk would be stale silence
         for one ring period).
@@ -1270,7 +1291,7 @@ class AudioStreamer:
         n = len(encoded)
         if n == 0:
             return
-        pos = self._mic_reu_write_pos
+        pos = self._mic_reu_write_pos if start is None else start
         end = pos + n
         try:
             if end <= REU_MIC_SIZE:
@@ -1651,6 +1672,7 @@ class AudioStreamer:
         # variant for this path.
         self.mic_stream = self._open_input_stream(device, callback=self._mic_callback_reu)
         self.mic_stream.start()
+        self._start_mic_lead_servo()
         log.info(
             "audio[reu mic]: device=%d %dHz sensitivity=%.2f noise_gate=%.3f "
             "bootstrap=%dB (%.0fms latency)",
@@ -1660,6 +1682,45 @@ class AudioStreamer:
             self.noise_gate,
             REU_MIC_BOOTSTRAP_BYTES,
             1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate,
+        )
+
+    def _start_mic_lead_servo(self) -> None:
+        """Close the loop on the write head's lead over the pump (#560), or
+        say why it stays open: without reads there is nothing to measure."""
+        self._mic_shaper = MicLeadShaper(self.sample_rate)
+        if not self.api.profile.supports_read:
+            log.warning(
+                "audio[reu mic]: this backend cannot read C64 memory, so the mic "
+                "lead servo is off; latency drifts with the pump's rate"
+            )
+            self._mic_lead = None
+            return
+        self._mic_lead = MicLeadServo(
+            read_memory=self.api.read_memory,
+            write_pos=lambda: self._mic_reu_write_pos,
+            sample_rate=self.sample_rate,
+        )
+        self._mic_lead.start()
+
+    def _stop_mic_lead_servo(self) -> None:
+        lead, self._mic_lead = self._mic_lead, None
+        shaper, self._mic_shaper = self._mic_shaper, None
+        if lead is None:
+            return
+        lead.stop()
+        if lead.lead_min is None:
+            return
+        log.info(
+            "audio[reu mic]: lead %d..%d B, %d re-anchor(s) (%d dropped unclaimed), "
+            "%d open-loop spell(s), "
+            "%d splice(s) skipping %d samples",
+            lead.lead_min,
+            lead.lead_max,
+            lead.reanchors,
+            lead.reanchors_dropped,
+            lead.open_loop_spells,
+            shaper.splices if shaper is not None else 0,
+            shaper.skipped_samples if shaper is not None else 0,
         )
 
     def _resolve_input_device(self, device: int | str) -> tuple[int | None, str]:
@@ -2300,6 +2361,10 @@ class AudioStreamer:
         #  - The DAC-bias gate release goes last, so the bias collapse it
         #    starts (release=0 under digi-boost) happens at volume 0.
         self.running = False
+        # The callback stops claiming re-anchors at running=False; the servo
+        # must stop posting them before the teardown below can stall.
+        if self._mic_lead is not None:
+            self._mic_lead.request_stop()
         # Ahead of everything a producer could outlast: the push path's epoch
         # check is what drops a blob from a producer this clear just released,
         # and the drain at the bottom only catches one that beats it there.
@@ -2312,6 +2377,7 @@ class AudioStreamer:
         # NMI is already silenced; let the worker / mic threads tear down
         # at their own pace.
         self._close_mic_stream()
+        self._stop_mic_lead_servo()
         if self._worker_thread:
             # A plain bounded join, not session.join_bounded: a daemon thread
             # joined off the main thread, and the audio layer must not import

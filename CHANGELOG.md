@@ -283,6 +283,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms at 12 kHz
+  (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
+  pump that plays it. Under REU-staged `mhires` the delay grew by about
+  1.8 seconds every ten seconds, until after about 34 s the host overwrote
+  audio that had not played yet. Under `petscii` the pump caught up with
+  the host after about 50 s and from then on played audio a lap (about 5 s)
+  old. A host-side loop now reads the pump's position once a second and
+  trims the input to hold the delay. A drift of up to 3 % is absorbed by
+  resampling. A larger one, such as mhires's ~15 %, is absorbed by short
+  crossfaded cuts that skip some input, so the pitch stays put. If the reads
+  fail, the loop opens and the log says so (#560).
+
 - **On Linux, a camera named in `[video].device` or `-d` opens through V4L2.**
   A camera is listed once per Linux capture backend, so a name or VID:PID
   matched it twice, warned that it matched 2 cameras, and opened its GStreamer

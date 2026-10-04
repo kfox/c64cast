@@ -5,7 +5,7 @@ uploads to C64 RAM (the $C020 NMI DAC routine, the $C100 REU pump IRQ
 handlers, the $C180 pump-body subroutine that modes_irq.py's chunked bank-swap
 dispatcher JSRs into), the ring/pump memory-map constants those bytes are
 assembled against, the control-loop tuning constants, and the pure pacing
-helpers (stomp_spans, servo_period, nmi_rate_step) that keep the control
+helpers (stomp_spans, servo_period, pi_step, nmi_rate_step) that keep the control
 math unit-testable without hardware. Nothing here touches hardware or holds
 state — bring-up, the worker thread, and teardown live in audio.AudioStreamer.
 
@@ -14,6 +14,8 @@ See docs/architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer,
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -962,15 +964,19 @@ assert REU_PUMP_HANDLER_ADDR + len(REU_IRQ_HANDLER_TRACKED) <= REU_PUMP_BODY_SUB
 # first burst of real mic data lands ahead of the pump's read position
 # (= steady-state latency of REU_MIC_BOOTSTRAP_BYTES / sample_rate).
 #
-# 64 KB. The host produces at the exact mic rate, the pump consumes at the
-# NMI-matched rate (~0.16% slower on NTSC, faster on PAL) — ~16 B/sec of drift,
-# which this size absorbs for hours before the host laps the pump and samples
-# start dropping.
+# 64 KB. The host produces at the mic's clock and the pump consumes at
+# whatever rate its IRQ ticks actually achieve, so the two drift apart: on a
+# U64 (NTSC, 12 kHz) the pump gains ~32 B/s under petscii and falls behind by
+# ~1.8 KB/s under REU-staged mhires (#560). The margin that limits this is the
+# REU_MIC_BOOTSTRAP_BYTES lead, not the ring size — the pump overtakes the
+# write head once that lead is spent. mic_lead.MicLeadServo closes the loop on
+# it; the ring size only bounds how far the lead can wander before it reads as
+# a lap.
 # 1 MB into REU. A scene runs at most one pump, so this never coexists with
 # the staged-audio upload at REU_AUDIO_BASE — REU_AUDIO_MAX_BYTES is bounded
 # by the video staging region instead, which does coexist with it.
 REU_MIC_BASE = 0x100000
-REU_MIC_SIZE = 0x10000  # 64 KB (several seconds of headroom)
+REU_MIC_SIZE = 0x10000  # 64 KB (~5.4 s at 12 kHz)
 REU_MIC_END = REU_MIC_BASE + REU_MIC_SIZE
 REU_MIC_BASE_HI = (REU_MIC_BASE >> 16) & 0xFF
 REU_MIC_END_HI = (REU_MIC_END >> 16) & 0xFF
@@ -1093,18 +1099,43 @@ def servo_period(
     to zero so the gap parks at target_gap. Pure (no I/O, no clock) so the
     control math is unit-testable without hardware.
     """
-    e = gap - target_gap
-    integ += e
     # Anti-windup: bound the integral's *contribution* to ±INTEG_CLAMP·period.
-    if ki > 0:
-        integ_limit = HOST_DMA_SERVO_INTEG_CLAMP * chunk_period / ki
-        integ = max(-integ_limit, min(integ_limit, integ))
-    period = chunk_period + kp * e + ki * integ
-    period = max(
-        HOST_DMA_SERVO_PERIOD_MIN_FRAC * chunk_period,
-        min(HOST_DMA_SERVO_PERIOD_MAX_FRAC * chunk_period, period),
+    integ_limit = HOST_DMA_SERVO_INTEG_CLAMP * chunk_period / ki if ki > 0 else math.inf
+    correction, integ = pi_step(
+        gap - target_gap,
+        integ,
+        kp=kp,
+        ki=ki,
+        integ_min=-integ_limit,
+        integ_max=integ_limit,
+        out_min=(HOST_DMA_SERVO_PERIOD_MIN_FRAC - 1.0) * chunk_period,
+        out_max=(HOST_DMA_SERVO_PERIOD_MAX_FRAC - 1.0) * chunk_period,
     )
-    return period, integ
+    return chunk_period + correction, integ
+
+
+def pi_step(
+    error: float,
+    integ: float,
+    *,
+    kp: float,
+    ki: float,
+    integ_min: float,
+    integ_max: float,
+    out_min: float,
+    out_max: float,
+) -> tuple[float, float]:
+    """One step of a clamped PI controller: ``(kp·e + ki·integ, new_integ)``.
+
+    ``integ`` accumulates ``error`` once per step and is held to
+    ``[integ_min, integ_max]`` (anti-windup); the output is clamped to
+    ``[out_min, out_max]``. Bounds that put ``ki·integ`` past the output clamp
+    let the integrator wind up where the output cannot follow, so a caller with
+    an asymmetric output range passes asymmetric integrator bounds. The host-DMA
+    pace servo (``servo_period``) and the REU mic lead servo
+    (``mic_lead.mic_lead_correction``) both run on it."""
+    integ = max(integ_min, min(integ_max, integ + error))
+    return max(out_min, min(out_max, kp * error + ki * integ)), integ
 
 
 def nmi_rate_step(

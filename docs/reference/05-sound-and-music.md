@@ -777,6 +777,20 @@ by default, so hi-hats and cymbals above the DAC's 6 kHz ceiling exist at all
 and transients land more precisely. That is the VJ arrangement — the real music
 is on a PA, and only the picture tracks it.
 
+With `[audio].use_reu_pump` on, a `mic` scene keeps its delay near
+133 ms (at the default 12 kHz `sample_rate`) by watching where the machine is reading and trimming the input to
+match. Under `mhires` the delay wanders between roughly 40 and 250 ms once
+it settles, which takes about 20 s. The machine does not always keep pace with the microphone. Under
+`petscii` it plays about 0.3 % fast, and the input is stretched by that much,
+which you cannot hear. Under REU-staged `mhires` it falls about 15 % behind.
+There the input is not resampled, because that would raise the pitch by about
+20 %. Instead, about five times a second, roughly 30 ms of input is cut out
+and the join is crossfaded. Pitch stays exact and the delay stays short, at
+the cost of skipping some of what was said or played. Both the Ultimate 64 and
+the C64 Ultimate do this the same way. It relies on reading the machine's
+memory, and if those reads fail, the log says so and the delay starts to drift
+again.
+
 In both cases the analyzer taps the signal *before* the processing chain.
 Compression exists to flatten dynamics into four bits, and dynamics are exactly
 what an onset detector reads; a compressed kick barely moves the spectral flux.
