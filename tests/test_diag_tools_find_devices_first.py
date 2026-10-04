@@ -3,6 +3,7 @@ missing or ambiguous device stops the tool before the machine is touched."""
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import subprocess
@@ -23,14 +24,24 @@ _DIAGS = Path(__file__).resolve().parents[1] / "scripts" / "diags"
 
 def _load_tool(name: str) -> ModuleType:
     """Load scripts/diags/<name>.py by path, with its bare ``import _diaglib``
-    resolved, leaving neither the sys.path entry nor the modules behind."""
+    resolved, leaving neither the sys.path entry nor the modules behind.
+
+    ``sounddevice`` is a stand-in module: the suite runs without the ``mic``
+    extra, and no tool under test reaches it before it exits."""
     with patch.object(sys, "path", [str(_DIAGS), *sys.path]), patch.dict(sys.modules):
+        sys.modules["sounddevice"] = ModuleType("sounddevice")
         spec = importlib.util.spec_from_file_location(name, _DIAGS / f"{name}.py")
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module  # @dataclass looks its module up there
         spec.loader.exec_module(module)
         return module
+
+
+def _temp_file(suffix: str) -> str:
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    return path
 
 
 class _Booted(Exception):
@@ -58,7 +69,6 @@ class FindDeviceBeforeBootTest(unittest.TestCase):
             patch.object(sys, "argv", [f"{name}.py", *argv]),
             patch.object(d, "resolve_capture", no_device),
             patch.object(d, "open_capture", side_effect=boot),
-            patch.object(d, "camlink_avf_audio", lambda: "faked"),
             patch.object(d, "machine_reset", side_effect=boot),
             patch.object(d, "rest_reset", side_effect=boot),
             patch.object(subprocess, "Popen", side_effect=boot),
@@ -71,10 +81,9 @@ class FindDeviceBeforeBootTest(unittest.TestCase):
         return calls
 
     def test_run_and_capture(self) -> None:
-        fd, cfg = tempfile.mkstemp(suffix=".toml")
-        os.close(fd)
         self.assertEqual(
-            self.run_tool("run_and_capture", "--config", cfg, "--no-audio"), ["resolve"]
+            self.run_tool("run_and_capture", "--config", _temp_file(".toml"), "--no-audio"),
+            ["resolve"],
         )
 
     def test_doublebuffer_tear_ab(self) -> None:
@@ -88,6 +97,77 @@ class FindDeviceBeforeBootTest(unittest.TestCase):
 
     def test_flicker_score_grid(self) -> None:
         self.assertEqual(self.run_tool("flicker_score_grid"), ["resolve"])
+
+
+class FindAudioBeforeBootTest(unittest.TestCase):
+    """Each audio tool runs with an audio input that resolves to nothing. It
+    must exit on that before it reaches the machine or starts a recording."""
+
+    def run_tool(self, name: str, *argv: str) -> list[str]:
+        tool = _load_tool(name)
+        d = tool.d
+        calls: list[str] = []
+
+        def no_audio(backend, spec=None, **_kwargs):
+            calls.append("audio")
+            raise SystemExit("no audio input")
+
+        def boot(*_a, **_k):
+            calls.append("boot")
+            raise _Booted
+
+        boot_paths = [
+            patch.object(d, "resolve_capture", side_effect=boot),
+            patch.object(d, "machine_reset", side_effect=boot),
+            patch.object(d, "rest_reset", side_effect=boot),
+            patch.object(d, "rest_get_config", side_effect=boot),
+            patch.object(subprocess, "Popen", side_effect=boot),
+            patch.object(subprocess, "run", side_effect=boot),
+            patch("c64cast.hw.backend.make_backend", side_effect=boot),
+        ]
+        boot_paths += [
+            patch.object(tool, attr, side_effect=boot)
+            for attr in ("make_backend", "Ultimate64API", "build_backend")
+            if hasattr(tool, attr)
+        ]
+        with (
+            patch.object(sys, "argv", [f"{name}.py", *argv]),
+            patch.object(d, "resolve_audio_input", no_audio),
+            contextlib.ExitStack() as stack,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            for p in boot_paths:
+                stack.enter_context(p)
+            tool.main()
+        self.assertEqual(str(raised.exception), "no audio input")
+        return calls
+
+    def test_every_audio_tool(self) -> None:
+        clip = _temp_file(".wav")
+        cfg = _temp_file(".toml")
+        tools = {
+            "run_and_capture": ("--config", cfg, "--frames", "0"),
+            "audio_capture": (),
+            "capture_fidelity_probe": (),
+            "mhires_pitch_tempo_ab": (),
+            "nmi_rate_sweep_ab": (),
+            "nmi_pitch_ab": (),
+            "tr_audio_sid_probe": ("--tcp", "127.0.0.1"),
+            "reu_audio_spectrum": ("--config", cfg),
+            "sampler_av_align_calib": (),
+            "sampler_clock_calib": (),
+            "audio_fm_probe": (),
+            "mahoney_dac_calib": (),
+            "tr_nmi_rate_ceiling": (),
+            "dsp_hw_ab": (clip,),
+            "dac_curve": (),
+            "nmi_rate_ab": (clip,),
+            "dac_curve_playback_ab": ("--url", "u64://192.0.2.1"),
+            "mahoney_slot_ring_probe": ("--url", "u64://192.0.2.1"),
+        }
+        for name, argv in tools.items():
+            with self.subTest(tool=name):
+                self.assertEqual(self.run_tool(name, *argv), ["audio"])
 
 
 if __name__ == "__main__":

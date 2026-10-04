@@ -39,7 +39,6 @@ from c64cast.video.video import _compute_normalization_gain, decode_audio_full
 
 SR = 8000
 CAP_SR = 48000
-CAP_DEVICE = 1
 
 
 def save_wav(path: str, mono: np.ndarray, sr: int) -> None:
@@ -96,7 +95,7 @@ def main() -> int:
     )
     ap.add_argument("clip", help="audio file under assets/audio/")
     ap.add_argument("--url", default=d.U64_URL)
-    ap.add_argument("--device", type=int, default=CAP_DEVICE)
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     ap.add_argument("--secs", type=float, default=15.0)
     ap.add_argument(
         "--param", default="pre_emphasis", help="DSPParams field to vary between A and B"
@@ -110,6 +109,7 @@ def main() -> int:
         ap.error(f"clip not found: {args.clip}")
     if not any(f.name == args.param for f in dataclasses.fields(DSPParams)):
         ap.error(f"unknown DSPParams field: {args.param}")
+    device = int(d.resolve_audio_input("sd", args.device).device)
 
     int16 = decode_audio_full(args.clip, SR)[: int(args.secs * SR)]
     print(
@@ -128,7 +128,7 @@ def main() -> int:
     for label, val in passes:
         tag = label.split("=")[0].strip()
         wav = str(d.stamped(f"dsp_ab_{tag}", "wav"))
-        play(args.url, int16, mk(val), label, wav, args.device)
+        play(args.url, int16, mk(val), label, wav, device)
         time.sleep(0.5)
 
     print("\nDone. Which sounded better / more intelligible — A or B?")

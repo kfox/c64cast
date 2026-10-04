@@ -121,7 +121,7 @@ def main() -> int:
         help="leave the machine running for inspection (default: reset)",
     )
     d.add_capture_device_arg(ap, "-d", "--cv2-index")
-    ap.add_argument("--avf-audio", default=d.CAMLINK_AVF_AUDIO)
+    d.add_audio_device_arg(ap, "-D", "--avf-audio", dest="avf_audio", backend="avf")
     ap.add_argument(
         "--border-flash",
         type=float,
@@ -151,6 +151,8 @@ def main() -> int:
     # Every device is found before c64cast touches the machine.
     if args.frames > 0 or args.burst > 0 or args.field_burst > 0:
         d.resolve_capture(args.device)
+    if not args.no_audio:
+        avf_audio = d.resolve_audio_input("avf", args.avf_audio, camera=args.device).device
 
     boot_margin = 6.0  # c64cast boot + reach first PLAY
     audio_len = args.seconds + boot_margin + 2.0
@@ -170,7 +172,7 @@ def main() -> int:
                 "-f",
                 "avfoundation",
                 "-i",
-                args.avf_audio,
+                str(avf_audio),
                 "-t",
                 str(audio_len),
                 "-ac",

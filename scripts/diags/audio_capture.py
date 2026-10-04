@@ -5,7 +5,7 @@ tool used when "I heard audio / I heard silence" needs to become a number.
 
     scripts/diags/audio_capture.py                 # 15s capture + analysis
     scripts/diags/audio_capture.py -t 30           # longer window
-    scripts/diags/audio_capture.py --device :5     # avfoundation index drift
+    scripts/diags/audio_capture.py -D :5           # name the avfoundation input
     scripts/diags/audio_capture.py --analyze x.wav # just analyze an existing file
 
 Capture-window gotcha (bitten repeatedly): c64cast takes ~5s to boot + reach
@@ -71,12 +71,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument(
-        "--device",
-        default=d.CAMLINK_AVF_AUDIO,
-        help=f"avfoundation audio device (default {d.CAMLINK_AVF_AUDIO}; "
-        'confirm with: ffmpeg -f avfoundation -list_devices true -i "")',
-    )
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="avf")
     ap.add_argument("-t", "--seconds", type=float, default=15.0)
     ap.add_argument("-o", "--out", default=None, help="output wav path")
     ap.add_argument(
@@ -88,8 +83,9 @@ def main() -> int:
         analyze(args.analyze)
         return 0
 
+    device = str(d.resolve_audio_input("avf", args.device).device)
     out_path = args.out or str(d.stamped("camlink_audio", "wav"))
-    record(args.device, args.seconds, out_path)
+    record(device, args.seconds, out_path)
     analyze(out_path)
     return 0
 

@@ -36,13 +36,13 @@ import sys
 import time
 from pathlib import Path
 
+import _diaglib as d
 import numpy as np
 import sounddevice as sd
 
 from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.audio import dac_calibration as dc
-from c64cast.audio import dac_capture_device as dcap
 from c64cast.audio import dac_slot_ring as dsr
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
@@ -179,7 +179,7 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dsr.Slot
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        dev = dcap.find_capture_device(args.device)
+        dev = int(d.resolve_audio_input("sd", args.device).device)
         print(f"[cap] device idx {dev}: {sd.query_devices(dev)['name']}")
 
         saved = snapshot_sid_config(be)
@@ -253,7 +253,7 @@ def main() -> int:
         help="which SID source to isolate at $D400 (default socket1)",
     )
     ap.add_argument("--system", default="NTSC", choices=("NTSC", "PAL"))
-    ap.add_argument("--device", type=int, default=None, help="capture device index")
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     ap.add_argument(
         "--rounds",
         type=int,
@@ -274,6 +274,8 @@ def main() -> int:
     if args.replay:
         batches = replay(args.replay)
     elif args.url:
+        # Found by name now, and again by that name once the reset re-enumerates.
+        args.device = d.resolve_audio_input("sd", args.device).name
         batches = capture_hardware(args)
     else:
         ap.error("one of --url or --replay is required")

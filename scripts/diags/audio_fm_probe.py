@@ -118,7 +118,6 @@ from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 
 CAP_SR = 48000
-CAP_DEVICE = 1  # Cam Link 4K audio (sounddevice idx); resolved by name at runtime
 
 # The ring holds exactly RING_CYCLES sine periods so it loops with no wrap
 # discontinuity. 256 cycles over 8 KB = 32 samples/period; at the 12 kHz default
@@ -448,16 +447,6 @@ def analyze(mono: np.ndarray, sr: int, expected: float, cadence_hz: float) -> An
     )
 
 
-def find_camlink(fallback: int) -> int:
-    """Resolve the Cam Link audio index by NAME — PortAudio re-enumerates after
-    the HDMI hotplug a reset causes, so a remembered index goes stale."""
-    for i, dev in enumerate(sd.query_devices()):
-        name = dev["name"].lower()
-        if ("cam link" in name or "shadowcast" in name) and dev["max_input_channels"] > 0:
-            return i
-    return fallback
-
-
 def write_wav(path: Path, mono: np.ndarray, sr: int) -> None:
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
@@ -531,9 +520,10 @@ def main() -> int:
     )
     ap.add_argument("--secs", type=float, default=8.0, help="capture seconds per condition")
     ap.add_argument("--ring-cycles", type=int, default=RING_CYCLES)
-    ap.add_argument("--device", type=int, default=CAP_DEVICE, help="Cam Link audio sd index")
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     d.add_tr_slicing_args(ap)
     args = ap.parse_args()
+    audio = d.resolve_audio_input("sd", args.device)
 
     sizes = [int(s) for s in args.write_bytes.split(",")]
     targets = [t.strip() for t in args.targets.split(",") if t.strip()]
@@ -565,7 +555,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        device = find_camlink(args.device)
+        device = int(d.resolve_audio_input("sd", audio.name).device)  # re-enumerated
         print(f"[cap] capturing from idx {device}: {sd.query_devices(device)['name']}")
 
         print("\n=== ref (no background writes) ===")

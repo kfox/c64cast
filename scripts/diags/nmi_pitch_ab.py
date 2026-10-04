@@ -262,9 +262,7 @@ def main() -> int:
     )
     ap.add_argument("--url", default="u64://192.168.2.64", help="connection target")
     ap.add_argument("--seconds", type=float, default=22.0, help="play seconds per condition")
-    ap.add_argument(
-        "--avf-audio", default=d.CAMLINK_AVF_AUDIO, help="ffmpeg avfoundation audio input"
-    )
+    d.add_audio_device_arg(ap, "-D", "--avf-audio", dest="avf_audio", backend="avf")
     ap.add_argument(
         "--only",
         nargs="+",
@@ -274,6 +272,7 @@ def main() -> int:
     ap.add_argument("--no-reset", action="store_true", help="leave the machine running")
     ap.add_argument("--analyze-only", metavar="WAV", help="skip playback; analyze an existing wav")
     args = ap.parse_args()
+    args.avf_audio = str(d.resolve_audio_input("avf", args.avf_audio).device)
 
     if args.analyze_only:
         analyze(args.analyze_only, args.clip)

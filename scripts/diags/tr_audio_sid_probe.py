@@ -155,7 +155,7 @@ def main() -> int:
     ap.add_argument("--sid", help="SID file for --mode sid")
     ap.add_argument("--freq", type=float, default=440.0, help="tone frequency (Hz)")
     ap.add_argument("--secs", type=float, default=8.0, help="playback seconds")
-    ap.add_argument("--device", default=d.CAMLINK_AVF_AUDIO, help="avfoundation audio device")
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="avf")
     ap.add_argument("--flash", action="store_true", help="1 Hz $D020 border sync marker")
     ap.add_argument("--no-capture", action="store_true", help="skip Cam Link capture")
     ap.add_argument("--no-reset-exit", action="store_true", help="leave the C64 running")
@@ -163,6 +163,8 @@ def main() -> int:
 
     if args.mode == "sid" and not args.sid:
         ap.error("--mode sid needs --sid PATH")
+    if not args.no_capture:
+        args.device = str(d.resolve_audio_input("avf", args.device).device)
 
     api = build_backend(tcp_host=args.tcp, serial_port=args.serial)
     cap: subprocess.Popen | None = None

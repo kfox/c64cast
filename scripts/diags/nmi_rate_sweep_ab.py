@@ -128,11 +128,10 @@ def main() -> int:
     )
     ap.add_argument("--display", default="mhires", help="display mode (mhires = heaviest bus load)")
     ap.add_argument("--seconds", type=float, default=25.0, help="play seconds per rate")
-    ap.add_argument(
-        "--avf-audio", default=d.CAMLINK_AVF_AUDIO, help="ffmpeg avfoundation audio input"
-    )
+    d.add_audio_device_arg(ap, "-D", "--avf-audio", dest="avf_audio", backend="avf")
     ap.add_argument("--no-reset", action="store_true", help="leave the machine running")
     args = ap.parse_args()
+    args.avf_audio = str(d.resolve_audio_input("avf", args.avf_audio).device)
 
     if not Path(args.clip).exists():
         ap.error(f"clip not found: {args.clip}")
