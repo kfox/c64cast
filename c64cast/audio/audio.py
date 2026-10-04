@@ -1474,11 +1474,16 @@ class AudioStreamer:
 
         def upload_body() -> None:
             self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
-            if dispatcher_owns_irq:
-                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
 
         def upload_entry() -> None:
+            # Every attempt masks afresh: a retry follows an attempt whose
+            # unmask may have landed even though its entry did not.
             if dispatcher_owns_irq:
+                epoch = self.api.delivery_epoch
+                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
+                self.api.flush()
+                if self.api.delivery_epoch != epoch:
+                    return
                 time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
             self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_IRQ_HANDLER_TRACKED)
             if dispatcher_owns_irq:

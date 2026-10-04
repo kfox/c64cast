@@ -597,7 +597,7 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         self.assertFalse(any(o[:2] == ("write_memory", "DC0D") for o in fake.ops))
 
     def test_a_failed_dispatcher_install_leaves_cia1_unmasked(self):
-        # The body stage masks CIA #1, so a body or an entry that never lands
+        # The entry stage masks CIA #1, so a body or an entry that never lands
         # must not leave the keyboard scan and the pump's fall-through dead.
         for lost in (REU_PUMP_BODY_SUBROUTINE_ADDR, REU_PUMP_HANDLER_ADDR):
             with self.subTest(lost=f"${lost:04X}"):
@@ -605,8 +605,22 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
                     s, fake, _ = self._start(lose=lost, skip_hook=True)
                 self.assertFalse(s._reu_pump_armed)
                 icr = [o for o in fake.ops if o[:2] == ("write_memory", "DC0D")]
-                self.assertEqual(icr[0][2], "7F")
                 self.assertEqual(icr[-1][2], "81")
+
+    def test_a_resent_entry_goes_up_under_a_fresh_mask(self):
+        # The first attempt's unmask lands even though its entry did not, so
+        # the retry has to mask again before the entry replaces the stub.
+        s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, times=1, skip_hook=True)
+        self.assertTrue(s._reu_pump_armed)
+        entries = [
+            i
+            for i, o in enumerate(fake.ops)
+            if o == ("lost", "C100") or o[:2] == ("write_memory_file", "C100")
+        ]
+        self.assertEqual(len(entries), 2)
+        for i in entries:
+            icr = [o for o in fake.ops[:i] if o[:2] == ("write_memory", "DC0D")]
+            self.assertEqual(icr[-1][2], "7F")
 
     def test_an_entry_that_never_lands_parks_the_body(self):
         with self.assertLogs("c64cast.audio.audio", level="ERROR"):
