@@ -1801,6 +1801,61 @@ class LifecycleTest(unittest.TestCase):
             s.running = False
             t.join(timeout=1.0)
 
+    def test_a_retired_worker_takes_nothing_from_the_next_activations_queue(self):
+        # Its discard is fenced out of the counts, so a blob it pulled off the
+        # queue after its stalled write returned would stay counted as queued
+        # for the rest of the next activation, holding the clock back.
+        s = _make_worker_streamer()
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        parked, release = threading.Event(), threading.Event()
+        arm = [False]
+
+        def stalling_write(addr: str, data: bytes) -> None:
+            if arm[0]:
+                arm[0] = False
+                parked.set()
+                release.wait(2.0)
+            real_write(addr, data)
+
+        api.write_memory_file = stalling_write
+
+        def push(blob: bytes) -> None:
+            s.q.put(blob)
+            with s._count_lock:
+                s._queued_samples += len(blob)
+                s._pushed_count += len(blob)
+
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            for _ in range(PREBUFFER_CHUNKS + 4):
+                push(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+            deadline = time.monotonic() + 2.0
+            while not s.q.empty() and time.monotonic() < deadline:
+                time.sleep(0.002)
+            arm[0] = True
+            self.assertTrue(parked.wait(2.0), "the worker never reached a ring write")
+            # stop() minus its join: retire, splice, clear the counts.
+            with s._ring_pad_lock:
+                s._worker_generation += 1
+            s._flush_epoch += 1
+            s._drain_queue_samples()
+            s._pushed_count = s._queued_samples = 0
+            s.running = True  # the next activation
+            for _ in range(4):
+                push(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+            release.set()
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive())
+            in_queue = sum(len(b) for b in list(s.q.queue))
+            self.assertEqual(s._queued_samples, in_queue)
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+
     def test_the_worker_records_the_pad_before_it_counts_the_landing(self):
         # Content landing behind a dry tail: a reader between the two steps
         # must not pair the new landed count with the old pad record, which would

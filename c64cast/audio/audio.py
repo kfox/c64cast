@@ -537,10 +537,22 @@ class AudioStreamer:
         return self.nmi.effective_rate
 
     def _collect_until(
-        self, chunk_buf: bytearray, n: int, leftover: bytes, deadline: float
+        self,
+        chunk_buf: bytearray,
+        n: int,
+        leftover: bytes,
+        deadline: float,
+        *,
+        generation: int,
     ) -> tuple[int, int, bytes]:
         """Fill ``chunk_buf`` from ``leftover`` then the queue until it holds
         ``chunk_size`` bytes or ``deadline`` passes.
+
+        A worker retired while parked in a ring write takes nothing more from
+        the queue: those blobs are the next activation's, already counted in
+        its queued count, and the retired worker's discard is fenced out of
+        that count (see :meth:`_discard_unpushed`), so a blob it took would
+        stay counted as queued for the rest of the run.
 
         Returns ``(new_n, taken_this_call, new_leftover)``. Split out of the
         worker so collection can be resumed across several short deadlines —
@@ -555,7 +567,7 @@ class AudioStreamer:
             n += take
             taken += take
             leftover = leftover[take:]
-        while n < size and not leftover and self.running:
+        while n < size and not leftover and self.running and generation == self._worker_generation:
             remaining = deadline - time.monotonic()
             # Past the deadline, still take what is already waiting rather than
             # reporting an underrun over a full queue: one over-long sub-write
@@ -581,6 +593,8 @@ class AudioStreamer:
         leftover: bytes,
         base_time: float,
         chunk_period: float,
+        *,
+        generation: int,
     ) -> tuple[int, int, bytes]:
         """Write `payload` into the ring as sub-NMI-period pieces spread evenly
         across `chunk_period`, collecting the *next* chunk in the gaps between
@@ -606,9 +620,13 @@ class AudioStreamer:
         taken_total = 0
         for i in range(slots):
             slot_deadline = base_time + i * slot_period
-            n, taken, leftover = self._collect_until(chunk_buf, n, leftover, slot_deadline)
+            n, taken, leftover = self._collect_until(
+                chunk_buf, n, leftover, slot_deadline, generation=generation
+            )
             taken_total += taken
-            if not self.running:
+            # Retired between slots: the rest of the payload is not this
+            # worker's to write into a ring the next activation owns.
+            if not self.running or generation != self._worker_generation:
                 break
             sleep_s = slot_deadline - time.monotonic()
             self._total_slots += 1
@@ -968,7 +986,13 @@ class AudioStreamer:
                             self._stomp_requested = False
                             self._stomp_ring(pending_addr)
                         n, from_queue, leftover = self._drip_chunk(
-                            pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
+                            pending,
+                            pending_addr,
+                            chunk_buf,
+                            leftover,
+                            pace_deadline,
+                            chunk_period,
+                            generation=generation,
                         )
                         self._note_ring_landed(generation, len(pending), pending_pad)
                         self._consume_queued(pending_from_queue, generation=generation)
@@ -985,11 +1009,11 @@ class AudioStreamer:
                         pace_deadline if prebuffered else time.monotonic() + chunk_period
                     )
                     n, taken, leftover = self._collect_until(
-                        chunk_buf, n, leftover, collect_deadline
+                        chunk_buf, n, leftover, collect_deadline, generation=generation
                     )
                     from_queue += taken
 
-                if not self.running:
+                if not self.running or generation != self._worker_generation:
                     break
 
                 pad = 0
@@ -1056,6 +1080,10 @@ class AudioStreamer:
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
                 self._note_ring_landed(generation, n, pad)
                 self._consume_queued(from_queue, generation=generation)
+                # Retired while parked in that write: the NMI start below would
+                # reprogram the timer under whatever activation came next.
+                if generation != self._worker_generation:
+                    break
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1080,7 +1108,10 @@ class AudioStreamer:
             # can tell a dead worker from a live one rather than inferring it
             # from silence.
             log.exception("audio worker crashed")
-            self.running = False
+            # A retired worker's late write failing is not the next
+            # activation's crash: clearing `running` would stop that one.
+            if generation == self._worker_generation:
+                self.running = False
 
     def note_playback_disturbance(self) -> None:
         """Re-arm the adaptive NMI-rate loop's warm-up gate after a large playback
