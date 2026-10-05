@@ -1056,9 +1056,11 @@ class AudioStreamer:
                     leftover = b""
                     continue
 
-                # Pause fast mute, priming iteration only; steady state goes
-                # through the pending path above, which stomps against the chunk
-                # about to go out rather than this one.
+                # Pause fast mute, for a request the pending path above did not
+                # take: no chunk was pending (the first iteration after the arm,
+                # or one after a splice dropped it), or the request arrived
+                # during that path's drip and collect. That path stomps from
+                # the chunk about to go out; this one from the chunk in hand.
                 if self._stomp_requested and prebuffered:
                     self._stomp_ring(write_addr, current)
 
