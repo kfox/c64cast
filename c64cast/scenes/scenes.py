@@ -1437,9 +1437,18 @@ class VideoScene(MediaFileMixin, Scene):
             # timeout on silence. AudioFileSource.setup keeps the same order.
             # Armed before the demuxer pushes: the sampler is reused by every
             # activation of this scene.
-            self.audio.arm()
-            self.source.start(audio_push=self.audio.push_samples)
-            self.audio.start()
+            try:
+                self.audio.arm()
+            except RuntimeError as e:
+                # The last activation's writer outlived its stop (wedged on the
+                # link). The playlist does not catch a setup() raise, so this
+                # lap plays silent on the wall clock, like a failed pump install.
+                log.error("video: %s; playing %s silent", e, self.filepath)
+                self._audio_set_aside, self.audio = self.audio, None
+                self.source.start(audio_push=None)
+            else:
+                self.source.start(audio_push=self.audio.push_samples)
+                self.audio.start()
             progress.complete("audio-start")
         elif has_audio and getattr(self.audio, "use_reu_pump", False):
             # audio_push=None makes the demuxer skip audio decode entirely: the

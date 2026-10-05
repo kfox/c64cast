@@ -711,6 +711,34 @@ class SamplerArmedBeforeProducerTest(unittest.TestCase):
         names = [c[0] for c in order.mock_calls if c[0] in ("arm", "source_start", "start")]
         self.assertEqual(names, ["arm", "source_start", "start"])
 
+    def test_video_scene_plays_silent_when_the_sampler_refuses_to_arm(self):
+        # The playlist does not catch a setup() raise, so a refusal (the last
+        # writer outlived stop()) must not escape and end the whole run.
+        from c64cast.scenes.scenes import VideoScene
+
+        audio = mock.MagicMock(spec=s.UltimateAudioSampler)
+        audio.sample_rate = 44000
+        audio.arm.side_effect = RuntimeError("writer still running")
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=audio,
+                display_mode=mock.MagicMock(),
+                file="https://stub.invalid/clip.mp4",
+                setup_progress=False,
+            )
+            with self.assertLogs("c64cast.scenes.scenes", "ERROR") as logs:
+                scene.setup()
+            source_cls.return_value.start.assert_called_once_with(audio_push=None)
+            audio.start.assert_not_called()
+            self.assertIn("playing", logs.output[0])
+            self.assertIsNone(scene.audio)
+            scene.teardown()
+        self.assertIs(scene.audio, audio, "teardown did not restore the set-aside sampler")
+
     @unittest.skipUnless(
         __import__("c64cast.video.video", fromlist=["ensure_pyav"]).ensure_pyav(),
         "PyAV (video extra) not installed",
