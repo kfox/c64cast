@@ -112,6 +112,16 @@ _INT16_FULL_SCALE = 32768.0
 # splice latency; raise it if HW shows a splice click.
 FLUSH_GUARD_S = 0.15
 
+# A REU write that raises (a link failure that survived socket_dma's one
+# redial) is retried with a doubling back-off between these bounds. Once the
+# lead runs out the gated ring replays audio it already played, so after
+# WRITER_GIVE_UP_S of unbroken failure (two of socket_dma's 5 s connect
+# timeouts) the writer gates the channel off rather than loop stale audio
+# for the rest of the scene.
+WRITER_BACKOFF_MIN_S = 0.02
+WRITER_BACKOFF_MAX_S = 0.5
+WRITER_GIVE_UP_S = 10.0
+
 
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
     """Sample-rate divider for the sampler reference clock (≥ 1). ``ref_clock``
@@ -351,6 +361,9 @@ class UltimateAudioSampler:
         self._running = False
         self._stopped = False
         self._eof = False
+        # Set when the writer gave up on a dead link; push_samples then drops
+        # rather than park the producer on a queue nothing drains.
+        self._failed = False
 
         self._gate_time = 0.0
         self._written = 0  # absolute bytes written to the ring (monotone)
@@ -425,6 +438,7 @@ class UltimateAudioSampler:
             except queue.Empty:
                 break
         self._stopped = False
+        self._failed = False
         self._eof = False
         self._pushed_samples = 0
         with self._io_lock:
@@ -547,7 +561,7 @@ class UltimateAudioSampler:
 
         Blocks when the queue is full so PyAV naturally throttles to the
         playback rate (same backpressure as the DAC's ``push_samples``)."""
-        if self._stopped:
+        if self._stopped or self._failed:
             return
         # The chunk carries the epoch it was produced in. A splice that lands
         # while this call waits on a full queue makes the put pointless, so the
@@ -562,7 +576,7 @@ class UltimateAudioSampler:
             floats = self._dsp.process(floats)
         out_i16 = np.clip(np.rint(floats * 32767.0), -32768, 32767).astype(np.int16)
         pack = pack_pcm(out_i16, self.bits)
-        while not self._stopped:
+        while not (self._stopped or self._failed):
             if self._flush_epoch != epoch:
                 return
             try:
@@ -634,8 +648,12 @@ class UltimateAudioSampler:
             consumed = self._read_consumed_bytes()
             margin = int(FLUSH_GUARD_S * self._actual_rate) * self.bps
             new_written = consumed + margin
-            lo = min(self._written, new_written)
+            # Nothing behind the read head is worth rewriting, and no rewrite
+            # spans more than the ring: a writer stalled far behind would
+            # otherwise make this one write without bound under the lock.
+            lo = max(min(self._written, new_written), consumed)
             hi = max(self._written, new_written)
+            lo = max(lo, hi - self.ring_size)
             if hi > lo:
                 # One formula covers both the normal rewrite-the-lead case
                 # (new_written < old _written: blank [consumed+margin, old W))
@@ -648,41 +666,101 @@ class UltimateAudioSampler:
             self._eof = False
 
     def _writer_loop(self, gen: int) -> None:
+        """Run writer steps until stopped, superseded, or the link is given up.
+
+        A step that raises (a REU write the link could not deliver) is
+        retried after a doubling back-off rather than ending the thread: a
+        dead writer leaves the channel gated, looping the ring's stale audio
+        while the producer parks on a queue nothing drains. Past
+        WRITER_GIVE_UP_S of unbroken failure it gates the channel off."""
+        failing_since: float | None = None
+        backoff = 0.0
         while self._running and gen == self._writer_gen:
-            lead = self._written - self._read_consumed_bytes()
-            self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
-            self._lead_max = max(self._lead_max, lead)
-            if lead >= self._lead_target:
-                # Far enough ahead. The bounded queue + blocking push give the
-                # producer backpressure, so the lead can't run away.
-                time.sleep(0.002)
-                continue
             try:
-                epoch, data = self._q.get(timeout=0.02)
-            except queue.Empty:
-                # Queue momentarily empty. A NEUTRAL pad inserts silence, so it
-                # waits for the low watermark — a real underrun, where the
-                # alternative is the FPGA replaying stale ring data.
-                if lead > self._lead_panic:
-                    continue
-                pad_frames = max(1, (self._lead_target - lead) // self.bps)
-                pad_frames = min(pad_frames, REU_WRITE_SLICE // self.bps)
-                data = self._neutral_unit * pad_frames
-                self._underrun_pads += 1
-                # A pad is current by construction; one a flush overtakes is
-                # dropped, which is harmless since the flush rewrote the lead.
-                epoch = self._flush_epoch
-            # Serialized against flush()'s ring cut-over, which also reads
-            # _written and rewrites the ring. Held for one chunk (tens of ms).
-            # The generation is re-checked here because a stop() and the next
-            # start() can both land while this thread waits on the queue.
-            with self._io_lock:
-                if gen != self._writer_gen:
+                wrote = self._writer_step(gen)
+            except Exception as e:
+                now = time.monotonic()
+                if failing_since is None:
+                    failing_since = now
+                    log.warning("sampler: ring write failed (%s); retrying", e)
+                elif now - failing_since >= WRITER_GIVE_UP_S:
+                    self._give_up(e)
                     return
-                if epoch != self._flush_epoch:
-                    continue
-                self._write_wrapped(self._written % self.ring_size, data)
-                self._written += len(data)
+                backoff = min(WRITER_BACKOFF_MAX_S, max(WRITER_BACKOFF_MIN_S, backoff * 2))
+                time.sleep(backoff)
+                continue
+            if wrote and failing_since is not None:
+                log.info(
+                    "sampler: ring writes recovered after %.1f s",
+                    time.monotonic() - failing_since,
+                )
+                failing_since = None
+                backoff = 0.0
+
+    def _give_up(self, error: Exception) -> None:
+        self._failed = True
+        log.error(
+            "sampler: ring writes failing for %.0f s (%s); gating the channel off",
+            WRITER_GIVE_UP_S,
+            error,
+        )
+        try:
+            gate_off(self.api, self.channel)
+        except Exception as e:  # the link is what failed; nothing more to try
+            log.error("sampler: gate-off after giving up failed too: %s", e)
+
+    def _writer_step(self, gen: int) -> bool:
+        """One writer pass: sleep while far enough ahead, else write the next
+        chunk or an underrun pad. Returns whether it wrote to the ring."""
+        lead = self._written - self._read_consumed_bytes()
+        self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
+        self._lead_max = max(self._lead_max, lead)
+        if lead >= self._lead_target:
+            # Far enough ahead. The bounded queue + blocking push give the
+            # producer backpressure, so the lead can't run away.
+            time.sleep(0.002)
+            return False
+        try:
+            epoch, data = self._q.get(timeout=0.02)
+        except queue.Empty:
+            # Queue momentarily empty. A NEUTRAL pad inserts silence, so it
+            # waits for the low watermark — a real underrun, where the
+            # alternative is the FPGA replaying stale ring data.
+            if lead > self._lead_panic:
+                return False
+            pad_frames = max(1, (self._lead_target - lead) // self.bps)
+            pad_frames = min(pad_frames, REU_WRITE_SLICE // self.bps)
+            data = self._neutral_unit * pad_frames
+            self._underrun_pads += 1
+            # A pad is current by construction; one a flush overtakes is
+            # dropped, which is harmless since the flush rewrote the lead.
+            epoch = self._flush_epoch
+        # Serialized against flush()'s ring cut-over, which also reads
+        # _written and rewrites the ring. Held for one chunk (tens of ms).
+        # The generation is re-checked here because a stop() and the next
+        # start() can both land while this thread waits on the queue.
+        with self._io_lock:
+            if gen != self._writer_gen or epoch != self._flush_epoch:
+                return False
+            self._resync_behind_reader()
+            self._write_wrapped(self._written % self.ring_size, data)
+            self._written += len(data)
+        return True
+
+    def _resync_behind_reader(self) -> None:
+        """Caller holds _io_lock. If the read head has passed the write head
+        (writes failed, or stalled on the link, for longer than the lead),
+        a write at the old head would land behind the reader, to be heard a
+        lap later. Jump the head to FLUSH_GUARD_S past the reader instead,
+        blanking the stale bytes the reader is about to play on the way."""
+        consumed = self._read_consumed_bytes()
+        if self._written >= consumed:
+            return
+        floor = consumed + int(FLUSH_GUARD_S * self._actual_rate) * self.bps
+        self._write_wrapped(
+            consumed % self.ring_size, self._neutral_unit * ((floor - consumed) // self.bps)
+        )
+        self._written = floor
 
     def _write_wrapped(self, ring_pos: int, data: bytes) -> None:
         """REUWRITE ``data`` into the ring at ``ring_pos``, splitting at the ring

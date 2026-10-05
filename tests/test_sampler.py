@@ -429,6 +429,105 @@ class SamplerWriterSurvivorTest(unittest.TestCase):
             smp.stop()
 
 
+class _FailingBackend(_FakeBackend):
+    """REU writes from the writer thread raise while ``failures`` is nonzero
+    (counted down per raise; -1 = forever), the way a write fails when the
+    link is still down after socket_dma's one redial."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def reu_write(self, offset: int, data: bytes) -> None:
+        if self.failures and threading.current_thread().name == "uaudio-writer":
+            if self.failures > 0:
+                self.failures -= 1
+            raise ConnectionError("send failed again after reconnect")
+        super().reu_write(offset, data)
+
+
+class SamplerWriterFailureTest(unittest.TestCase):
+    TONE = np.full(256, 8000, dtype=np.int16)
+
+    def _started(self, api: _FakeBackend) -> s.UltimateAudioSampler:
+        smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.01)
+
+        def quiet_stop() -> None:
+            with quiet_logging():  # idle-writer pads are timing, not the subject
+                smp.stop()
+
+        self.addCleanup(quiet_stop)
+        smp.start(prebuffer_timeout=0.01)
+        return smp
+
+    def _wait(self, cond: Any, timeout: float = 3.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while not cond() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return bool(cond())
+
+    def test_a_failed_write_is_retried_not_fatal(self):
+        api = _FailingBackend(failures=2)
+        with self.assertLogs("c64cast.audio.sampler", level="WARNING") as logs:
+            smp = self._started(api)
+            api.audible_writes = 0
+            for _ in range(4):
+                smp.push_samples(self.TONE)
+            self.assertTrue(self._wait(lambda: api.audible_writes > 0), "the writer died")
+        self.assertTrue(any("ring write failed" in m for m in logs.output), logs.output)
+        assert smp._writer is not None
+        self.assertTrue(smp._writer.is_running())
+
+    def test_a_dead_link_gates_the_channel_off_and_stops_parking_the_producer(self):
+        api = _FailingBackend(failures=-1)
+        with mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1):
+            with self.assertLogs("c64cast.audio.sampler", level="ERROR"):
+                smp = self._started(api)
+                self.assertTrue(self._wait(lambda: smp._failed), "the writer never gave up")
+        self.assertEqual(api.mem_writes[-1], ("DF20", "00"), "the channel still loops stale audio")
+        smp._q = s.queue.Queue(maxsize=1)
+        smp._q.put((smp._flush_epoch, b""))
+        t0 = time.monotonic()
+        smp.push_samples(self.TONE)  # a full queue nothing drains
+        self.assertLess(time.monotonic() - t0, 0.05, "the producer parked on a dead sampler")
+
+    def test_a_producer_parked_when_the_writer_gives_up_is_released(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8, queue_max_chunks=1)
+        smp._q.put((smp._flush_epoch, b""))
+        t = threading.Thread(target=smp.push_samples, args=(self.TONE,))
+        self.addCleanup(t.join, 1.0)
+        self.addCleanup(setattr, smp, "_stopped", True)
+        t.start()
+        time.sleep(0.02)  # parked in put(timeout=0.1)
+        smp._failed = True
+        t.join(timeout=0.5)
+        self.assertFalse(t.is_alive(), "the producer stays parked on a sampler that gave up")
+
+    def test_a_write_head_the_reader_passed_resyncs_ahead_of_it(self):
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=4096)
+        smp._running = True
+        consumed = 1000
+        smp._read_consumed_bytes = lambda: consumed  # type: ignore[method-assign]
+        smp._written = 200  # 800 bytes behind the reader
+        margin = int(s.FLUSH_GUARD_S * smp._actual_rate) * smp.bps
+        items = [(smp._flush_epoch, b"\x01" * 32)]
+
+        def get(*_a: Any, **_kw: Any) -> Any:
+            if not items:
+                smp._running = False
+                raise s.queue.Empty
+            return items.pop(0)
+
+        smp._q.get = get  # type: ignore[method-assign]
+        smp._writer_loop(smp._writer_gen)
+        audible = [w for w in api.reu_writes if w == (0x200000 + consumed + margin, 32)]
+        self.assertEqual(len(audible), 1, api.reu_writes)
+        self.assertIn(
+            (0x200000 + consumed, margin), api.reu_writes, "the skipped span was not blanked"
+        )
+
+
 class SamplerArmedBeforeProducerTest(unittest.TestCase):
     """Both scene setups arm the sampler before their producer can push into
     it; a push into a still-stopped sampler is dropped."""
@@ -653,6 +752,25 @@ class SamplerFlushTests(unittest.TestCase):
         smp._q.put((smp._flush_epoch - 1, b"\x01" * 8))
         smp._q.put((smp._flush_epoch, b"\x02" * 8))
         self.assertEqual(smp._collect_prebuffer(16, 0.05), b"\x02" * 8)
+
+    def test_flush_rewrites_nothing_behind_the_reader_and_at_most_a_ring(self):
+        # A writer stalled for minutes leaves _written far behind the reader;
+        # the rewrite must not grow with the stall.
+        api = _FakeBackend()
+        smp = self._running(api, ring=512, consumed=100_000)
+        smp._written = 0
+        api.reu_writes.clear()
+        smp.flush()
+        self.assertLessEqual(sum(n for _, n in api.reu_writes), 512)
+        self.assertEqual(api.reu_writes[0][0], 0x200000 + 100_000 % 512)
+
+    def test_flush_rewrites_at_most_a_ring_of_lead(self):
+        api = _FakeBackend()
+        smp = self._running(api, ring=512, consumed=0)
+        smp._written = 5000
+        api.reu_writes.clear()
+        smp.flush()
+        self.assertLessEqual(sum(n for _, n in api.reu_writes), 512)
 
     def test_silence_output_writes_volume_zero_then_restores(self):
         api = _FakeBackend()
