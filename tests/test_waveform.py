@@ -2857,6 +2857,31 @@ class WaveformPoolPickTest(unittest.TestCase):
         scene.prepare_next()
         self.assertAlmostEqual(scene.duration_s, 42.0)
 
+    def test_a_duration_stepped_up_and_back_is_no_live_change(self):
+        # The menu steps by adding its step, so +5 then -5 from 123.456 leaves
+        # 123.45600000000002. Read as a live change, that pinned the old song's
+        # length on every later pick instead of looking each one up.
+        from types import SimpleNamespace
+
+        from c64cast.scenes.overlays.menu import _build_duration
+        from c64cast.sid.waveform import WaveformScene
+
+        self._write_sid("one.sid", name=b"ONE")
+        self._write_sid("two.sid", name=b"TWO")
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 123.456
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(FakeAPI(), audio=None, file=self.tmpdir, songlengths_db=fake_db)
+        item = _build_duration(scene, SimpleNamespace(), None, None, None)
+        assert item is not None
+        item.change(+1)
+        item.change(-1)
+        fake_db.lookup.return_value = 200.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene.prepare_next()
+        self.assertIsNone(scene._explicit_duration_s)
+        self.assertAlmostEqual(scene.duration_s, 200.0)
+
     def test_single_file_pool_skips_repick_at_setup(self):
         """Single-file specs stay deterministic AND keep cycle_style
         mutations (self.song advances) across setup/teardown cycles — the

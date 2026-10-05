@@ -289,9 +289,10 @@ class Scene:
     # Consulted by the Playlist's ensemble audio lock before setup; ignored
     # entirely in single-system mode.
     WANTS_AUDIO_LOCK: bool = False
-    # The `duration_s` this scene last derived from its content (an audio pick,
-    # a SID's song length), or None while it has derived none. A class
-    # attribute so a scene built without __init__ (tests) still has one.
+    # The `duration_s` this scene last set through _set_derived_duration: one
+    # derived from its content (an audio pick, a SID's song length), or a
+    # waveform cycle's re-applied explicit one; None while it has set none.
+    # A class attribute so a scene built without __init__ (tests) still has one.
     _derived_duration_s: float | None = None
 
     def __init__(
@@ -398,8 +399,16 @@ class Scene:
     def _duration_set_live(self) -> bool:
         """True when `duration_s` differs from what `_set_derived_duration`
         last set: the live menu's DURATION changed it, and that is an explicit
-        duration from then on, as one in the config is."""
-        return self._derived_duration_s is not None and self.duration_s != self._derived_duration_s
+        duration from then on, as one in the config is.
+
+        Compared within a microsecond, not exactly: the menu steps by adding
+        and subtracting its step, so +5 then -5 from a song length such as
+        123.456 lands on 123.45600000000002, and that is no change."""
+        if self._derived_duration_s is None:
+            return False
+        return not math.isclose(
+            self.duration_s, self._derived_duration_s, rel_tol=1e-9, abs_tol=1e-6
+        )
 
     def prepare_next(self) -> None:
         """Called by the Playlist right before the interstitial that
