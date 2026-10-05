@@ -2580,6 +2580,12 @@ class AudioStreamer:
             )
 
     def stop(self) -> None:
+        # Retire the worker's generation here, not only in the next
+        # _start_worker: the REU-pump and listen-only starts set running back
+        # to True without starting a worker, and start_mic sets it before its
+        # _start_worker bumps. Either way an orphan that outlived the join
+        # below would otherwise read its fence as current again.
+        self._worker_generation += 1
         # A listen-only session never touched the NMI/DAC/SID, so writing $D418
         # or the NMI vectors here would be spurious U64 traffic.
         if self._listen_mode:
@@ -2626,8 +2632,9 @@ class AudioStreamer:
                 # A ring write on a stalled link can outlast the bounded join,
                 # and the counters cleared just below are still being mutated.
                 # Dropping the reference is safe: the surviving worker is
-                # generation-fenced (see _worker), so the next start_* cannot
-                # resurrect it into a second live writer.
+                # generation-fenced (see _worker, and the bump at the top of
+                # this method), so no later start_* can resurrect it into a
+                # second live writer.
                 log.warning(
                     "audio: worker did not exit within %.1fs; ring writes may still "
                     "be in flight (it will exit when its write returns)",

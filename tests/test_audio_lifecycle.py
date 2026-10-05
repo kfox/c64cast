@@ -3190,6 +3190,50 @@ class StopWorkerJoinTest(unittest.TestCase):
         self.assertGreater(WORKER_JOIN_TIMEOUT_S, 0.0)
         self.assertIsNone(s._worker_thread)
 
+    def test_an_orphan_stays_fenced_out_by_a_start_that_starts_no_worker(self):
+        # The REU-pump and listen-only starts set running back to True without
+        # a _start_worker, so only stop() can retire the orphan's generation.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        parked = threading.Event()
+        release = threading.Event()
+        after_release: list[str] = []
+
+        def parking_write(addr, data):  # type: ignore[no-untyped-def]
+            if not parked.is_set():
+                parked.set()
+                release.wait(2.0)
+                return
+            after_release.append(addr)
+            real_write(addr, data)
+
+        api.write_memory_file = parking_write
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        s._worker_thread = t
+        t.start()
+        try:
+            self.assertTrue(parked.wait(2.0), "worker never reached its first write")
+            with (
+                mock.patch.object(audio_mod, "WORKER_JOIN_TIMEOUT_S", 0.05),
+                self.assertLogs("c64cast.audio.audio", level="WARNING") as cm,
+            ):
+                s.stop()
+            self.assertTrue(any("did not exit within" in m for m in cm.output), cm.output)
+            s.running = True  # what start_for_reu_staged and start_listen do
+            release.set()
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "orphan kept running under the next start")
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(after_release, [], "orphan wrote into the next session's ring")
+
     def test_silent_when_the_worker_exited(self):
         s = _make()
         s.running = True
