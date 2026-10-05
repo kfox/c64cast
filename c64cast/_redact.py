@@ -87,6 +87,14 @@ _TRIPLE = ('"""', "'''")
 _URL_USERINFO = re.compile(r"[a-z][a-z0-9+.\-]*://[^/?#\"']*@", re.IGNORECASE)
 
 
+#: Userinfo inside a well-formed URL on a log line: `scheme://user:pass@`. Unlike
+#: `_URL_USERINFO` (for malformed config lines) whitespace *does* bound it here:
+#: a URL a program opened has no raw space in it, and an unbounded match would
+#: run from `tr://COM3` across a whole sentence to someone's `me@example.com`.
+#: Greedy up to the netloc's last `@`, so a password holding a raw `@` goes too.
+_INLINE_URL_USERINFO = re.compile(r"(?P<scheme>[a-z][a-z0-9+.\-]*://)[^\s/?#\"']*@", re.IGNORECASE)
+
+
 def _mask(m: re.Match[str]) -> str:
     prefix = m.group("kv_prefix")
     return f"{prefix if prefix is not None else m.group('bearer_prefix')}{REDACTED}"
@@ -96,8 +104,10 @@ def redact_secrets(text: str) -> str:
     """`text` with every recognized secret value reduced to ``REDACTED`` —
     `token=VALUE`, `password: VALUE`, `secret=VALUE`, `api_key=VALUE`,
     `key=VALUE`, `sig=VALUE`, `signature=VALUE` (`=` or `:`, and the first four
-    with any prefix, so `viewer_token` and `client_secret` match) and
-    `Bearer VALUE`.
+    with any prefix, so `viewer_token` and `client_secret` match),
+    `Bearer VALUE`, and the userinfo of a URL (`https://user:pass@host` comes
+    back as `https://REDACTED@host`) — a private media file is legitimately
+    reached that way, and FFmpeg quotes the URL it failed on into its errors.
 
     The short names take a prefix only when a `_` or `-` separates it, so
     `signing_key=` is covered and `sortkey=` is left alone.
@@ -112,6 +122,7 @@ def redact_secrets(text: str) -> str:
     Masking a value means finding where it starts and ends, which a malformed
     line does not offer — :func:`redact_source_line` is for the caller quoting
     one of those."""
+    text = _INLINE_URL_USERINFO.sub(rf"\g<scheme>{REDACTED}@", text)
     return _SECRET_VALUE.sub(_mask, text)
 
 

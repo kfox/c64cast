@@ -164,6 +164,39 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertEqual(redact_secrets(line), line)
 
 
+class RedactUrlUserinfoTest(unittest.TestCase):
+    """A private media file is reached as `https://user:token@host/...`, and
+    FFmpeg quotes the URL it failed on into the error every caller logs. The
+    log file and the console's log tail redact at output, so the userinfo has
+    to be one of the shapes they recognize."""
+
+    def test_userinfo_is_masked(self):
+        self.assertEqual(
+            redact_secrets("open failed: 'https://alice:S3CRET@cdn.example/a.mp3'"),
+            "open failed: 'https://REDACTED@cdn.example/a.mp3'",
+        )
+
+    def test_a_raw_at_sign_in_the_password_goes_too(self):
+        self.assertEqual(redact_secrets("u64://kelly:p@ss@host/x"), "u64://REDACTED@host/x")
+
+    def test_a_signature_on_the_same_url_is_masked_as_well(self):
+        out = redact_secrets("https://a:b@cdn.example/v?sig=abc&x=1")
+        self.assertEqual(out, "https://REDACTED@cdn.example/v?sig=REDACTED&x=1")
+
+    def test_an_at_sign_outside_a_netloc_is_left_alone(self):
+        for line in (
+            "mail me@example.com",
+            "https://host/feed?to=me@example.com",
+            "tr://COM3 for kelly@host",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_masking_is_idempotent(self):
+        once = redact_secrets("https://alice:S3CRET@cdn.example/a.mp3")
+        self.assertEqual(redact_secrets(once), once)
+
+
 class RedactSourceLineTest(unittest.TestCase):
     """The malformed-line path. `redact_secrets` needs a value's bounds to mask
     it, and the lines this function is handed are exactly the ones a parser

@@ -1046,6 +1046,16 @@ class CaptureErrorsTest(unittest.TestCase):
             logging.getLogger("c64cast.here").error("boom")
         self.assertEqual(messages, ["boom"])
 
+    def test_a_captured_media_url_loses_its_credential_and_signature(self):
+        # The report is rendered in a browser, unlike the terminal.
+        with config_store._capture_errors() as messages:
+            logging.getLogger("c64cast.here").error(
+                "could not open %s", "https://alice:S3CRET@cdn.example/a.mp3?sig=SIG"
+            )
+        self.assertEqual(
+            messages, ["could not open https://REDACTED@cdn.example/a.mp3?sig=REDACTED"]
+        )
+
     def test_an_error_on_another_thread_is_not_captured(self):
         ready = threading.Event()
         release = threading.Event()

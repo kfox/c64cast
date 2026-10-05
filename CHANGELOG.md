@@ -289,6 +289,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   the scene ends and the playlist moves on. Before, a server that accepted the
   connection and then sent nothing held the playlist on that scene forever.
 
+- **A username and password in a media URL no longer reach `--log-file`,
+  the web console's log, or its config-check report.** When a private
+  `https://user:token@…` audio or video file failed to open, the error
+  quoted the whole URL, and only `token=`/`sig=`-style values were masked.
+  The `user:token@` part is masked now as well. The terminal still shows the
+  URL as it was.
+
 - **An audio-file scene ends when its audio does.** The scene used to last
   as long as the file's header said, so a truncated download, a file that
   stopped decoding, or a header claiming a wrong length played silence for
