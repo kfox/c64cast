@@ -298,6 +298,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   still stuck, a video scene now plays that lap silent and an audio-file scene
   is skipped.
 
+- **On the Ultimate Audio sampler, a seek, loop wrap or resume cuts cleanly
+  to the new spot.** A scrap of the audio from before the cut used to play
+  right at the splice, and the first moment of the new spot could be lost.
+
 - **On the Ultimate Audio sampler, sound stays in sync with the picture after
   a seek, an A/B loop wrap, a resume from pause, or a decoding hiccup.** After
   every seek, loop wrap or resume, the sound had been running behind the
