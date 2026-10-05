@@ -158,8 +158,6 @@ class HardwareProfile:
             self.write_cost_intercept_s + self.write_cost_per_byte_s * nbytes,
         )
 
-    audio_ring_addr: int = 0x4000  # base of the audio DAC ring buffer
-
     # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
     # convention rather than a user declaration, so consumers can say so.
@@ -232,7 +230,6 @@ ULTIMATE_PROFILE = HardwareProfile(
     write_cost_floor_s=5.222e-3,
     write_cost_intercept_s=1.328e-3,
     write_cost_per_byte_s=1.8454e-6,
-    audio_ring_addr=0x4000,
 )
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
@@ -268,7 +265,6 @@ TEENSYROM_PROFILE = HardwareProfile(
     write_cost_floor_s=0.287e-3,
     write_cost_intercept_s=0.210e-3,
     write_cost_per_byte_s=1.4429e-6,
-    audio_ring_addr=0x4000,
 )
 
 # The `[hardware].backend` tokens the CLI/config layer offers (`--describe`,
