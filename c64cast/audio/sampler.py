@@ -1344,12 +1344,14 @@ class UltimateAudioSampler:
         """Wall-clock seconds since the ring was gated on — the read head (same
         contract as ``AudioStreamer.position_seconds`` in REU-pump mode); the
         heard position is this less `reanchor_lag_seconds()`, which
-        `audio_source.heard_seconds` takes off for every A/V reader. Clamped after EOF to the pushed total plus `content_lag_seconds`,
-        where the last pushed sample is heard: clamped at the total alone, the
-        heard position (this less `reanchor_lag_seconds()`) stopped that lag
-        short of the end, and a video clock reading it never showed the last
-        lag's worth of the track. The FPGA crystal vs the host monotonic clock
-        differ by ~ppm, so this is drift-free for A/V sync."""
+        `audio_source.heard_seconds` takes off for every A/V reader. Clamped
+        after EOF to the pushed total plus `content_lag_seconds`, where the
+        last pushed sample is heard, so the heard position stops at the pushed
+        total. A video scene calls `mark_eof` only once it has shown its last
+        frame; clamped at the total alone, the heard position (and a transport
+        position read off it) then stepped back by that lag. The FPGA crystal
+        vs the host monotonic clock differ by ~ppm, so this is drift-free for
+        A/V sync."""
         if not self._running:
             return 0.0
         elapsed = time.monotonic() - self._gate_time
