@@ -336,6 +336,8 @@ class RateServo:
         self.read_holdoff_s = 0.0
         self.slow_reads = 0
         self.slow_read_warned = False
+        # How long the read that armed the current backoff took.
+        self.last_slow_read_s = 0.0
         # Per-window excursions, read and reset by _maybe_log_health.
         self.health_gap_min = -1
         self.health_gap_max = -1
@@ -377,7 +379,7 @@ class RateServo:
         # arm verification and the pause stomp call `read_consumer_ptr` too,
         # and those are one-shot, so they stay visible.
         with quiet_transport():
-            r_addr, prompt = self._timed_read(chunk_period)
+            r_addr, prompt, _ = self._timed_read(chunk_period)
         if r_addr is not None:
             # A late reading is too late to pace by but still says whether the
             # consumer is alive: a server that stays slow sends every reading
@@ -407,34 +409,39 @@ class RateServo:
         """True while a slow read's backoff is running: R is not read at all."""
         return time.monotonic() < self.read_holdoff_until
 
-    def _timed_read(self, chunk_period: float) -> tuple[int | None, bool]:
-        """Read R once against the read budget; returns ``(r_addr, prompt)``.
-        A read over budget arms the backoff and comes back with ``prompt``
-        False; a prompt one resets the backoff."""
+    def _timed_read(self, chunk_period: float) -> tuple[int | None, bool, float]:
+        """Read R once against the servo's read budget; returns ``(r_addr,
+        prompt, took)``. A read over budget arms the backoff and comes back
+        with ``prompt`` False; a prompt one resets the backoff."""
         started = time.monotonic()
         r_addr = self._st.read_consumer_ptr()
         took = time.monotonic() - started
         if took > HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period:
             self._hold_off_slow_read(took, chunk_period)
-            return r_addr, False
+            return r_addr, False, took
         self.read_holdoff_s = 0.0
-        return r_addr, True
+        return r_addr, True, took
 
-    def read_r_promptly(self, chunk_period: float) -> int | None:
+    def read_r_promptly(self, chunk_period: float, budget_s: float) -> int | None:
         """R for a one-off decision that acts on where R is *now* (the stall
-        re-anchor), or None. None inside a slow read's backoff, without
-        reading, and for a read that comes back over budget: R moved on while
-        it was in flight, by up to the read's whole duration, so placing W
-        relative to it can land W at or behind the live R."""
-        if self.reads_held_off():
+        re-anchor), or None. ``budget_s`` is how stale that decision can
+        stand R: R moves on while the read is in flight, by up to the read's
+        whole duration, so a read slower than that comes back None. So does
+        a call inside a backoff armed by a read already slower than
+        ``budget_s``, without reading. A backoff armed by a read the servo
+        could not pace by but that beats ``budget_s`` does not stop this one:
+        it is a single read, and the reading is still good enough to act on.
+        The read counts toward the servo's backoff like any other."""
+        if self.reads_held_off() and self.last_slow_read_s > budget_s:
             return None
-        r_addr, prompt = self._timed_read(chunk_period)
-        return r_addr if prompt else None
+        r_addr, _, took = self._timed_read(chunk_period)
+        return r_addr if took <= budget_s else None
 
     def _hold_off_slow_read(self, took: float, chunk_period: float) -> None:
         """Drop a reading that came back too late to pace by, and stop reading
         for a backoff that doubles while reads stay slow."""
         self.slow_reads += 1
+        self.last_slow_read_s = took
         self.read_holdoff_s = min(
             HOST_DMA_SERVO_READ_HOLDOFF_MAX_S,
             max(HOST_DMA_SERVO_READ_HOLDOFF_MIN_S, self.read_holdoff_s * 2),

@@ -95,6 +95,7 @@ from .audio_handlers import (
     SID_MAHONEY_CONTROL,
     SID_MAHONEY_RES_FILT,
     SID_MAHONEY_SR,
+    STALL_REANCHOR_READ_BUDGET_FRAC,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
     patch_chunk_size,
@@ -1106,9 +1107,10 @@ class AudioStreamer:
         decoded source's is kept, and plays late — the picture is slaved to
         the audio clock, which did not advance for what was not played.
 
-        R comes from ``RateServo.read_r_promptly``: a stall is often a slow
-        server, and a read as slow as the one that tripped this would leave R
-        stale by more than the lead the anchor puts between them.
+        R comes from ``RateServo.read_r_promptly``, against a budget of
+        ``STALL_REANCHOR_READ_BUDGET_FRAC`` of the lead: a stall is often a
+        slow server, and a read as slow as the one that tripped this would
+        leave R stale by more than the lead the anchor puts between them.
 
         ``generation`` is the worker's own, as in :meth:`_worker`. A worker
         parked in that read, or in a stomp write, can outlive stop()'s bounded
@@ -1117,7 +1119,10 @@ class AudioStreamer:
         and reset its clock state. Each step that blocks is followed by a
         fence check, and a superseded worker returns None and touches nothing
         more."""
-        r_addr = self.servo.read_r_promptly(self.chunk_size / self.effective_rate)
+        r_addr = self.servo.read_r_promptly(
+            self.chunk_size / self.effective_rate,
+            STALL_REANCHOR_READ_BUDGET_FRAC * HOST_DMA_SERVO_TARGET_GAP / self.effective_rate,
+        )
         if self._superseded(generation):
             return None
         dropped = 0

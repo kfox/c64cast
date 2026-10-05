@@ -399,6 +399,14 @@ HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
 HOST_DMA_SERVO_READ_BUDGET_FRAC = 0.5  # of chunk_period
 HOST_DMA_SERVO_READ_HOLDOFF_MIN_S = 1.0
 HOST_DMA_SERVO_READ_HOLDOFF_MAX_S = 8.0
+# The stall re-anchor's own R-read budget, as a fraction of the lead it puts
+# W ahead of R in seconds. R moves on while the read is in flight, so the
+# anchor is only ahead of the live R if the read beats the lead, and the
+# quarter kept back (≈85 ms at 12 kHz) covers the NEUTRAL stomp before W's
+# first write. The servo's
+# per-chunk budget is far tighter (it is a pacing deadline, not a safety
+# bound), and borrowing it threw away readings this one can safely use.
+STALL_REANCHOR_READ_BUDGET_FRAC = 0.75  # of the re-anchor lead, in seconds
 # Per-reading weight of the ring-lead EMA the A/V clock subtracts: about a
 # second at one R read per 1 KiB chunk, so one torn R read moves the clock by
 # a few ms rather than jumping it by up to a whole ring.

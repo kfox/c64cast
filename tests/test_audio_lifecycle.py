@@ -1009,17 +1009,47 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(s.q.qsize(), 4)
         self.assertEqual(s._queued_samples, 2048)
 
-    def test_no_r_read_inside_a_slow_read_holdoff(self):
-        # The holdoff says reads are slow right now; another one would block
-        # the worker that long again and come back with an R that moved on.
+    def test_no_r_read_inside_a_holdoff_armed_by_a_read_too_slow_to_anchor_on(self):
+        # The holdoff says reads are slower than the anchor can stand right
+        # now; another one would block the worker that long again and come
+        # back with an R that moved on.
         api = _RFakeAPI([100])
         s = self._backlogged(api, live=False)
         s.servo.read_holdoff_until = audio_rate_mod.time.monotonic() + 60.0
+        s.servo.last_slow_read_s = 0.4
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
             self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
         self.assertEqual(api.r_reads, 0)
         self.assertEqual(api.writes, [], "re-anchored without a read of R")
         self.assertIn("could not be re-anchored", cm.output[0])
+
+    def test_a_read_too_slow_to_pace_by_is_still_anchored_on(self):
+        # 0.1 s is over the servo's ≈43 ms pacing budget, so its backoff is
+        # running, but R moves ≈1.2 KB in that time against a 4 KB lead: the
+        # anchor is still ahead of the live R. Falling back to snap-only here
+        # left W a near-lap behind R, and the ring lapped later in the scene.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.servo.read_holdoff_until = clock.monotonic() + 60.0
+        s.servo.last_slow_read_s = 0.1
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.1)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            anchor = s._resync_after_stall(1.5, s._worker_generation)
+        self.assertEqual(api.r_reads, 1)
+        self.assertEqual(
+            anchor, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, s.chunk_size)
+        )
+        self.assertTrue(any("Re-anchored" in line for line in cm.output))
 
     def test_a_slow_r_read_is_not_anchored_on(self):
         # R read over budget: by the time it returns the consumer has moved
@@ -1041,6 +1071,9 @@ class StallResyncTest(unittest.TestCase):
         ):
             self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
             self.assertTrue(s.servo.reads_held_off(), "a slow read did not arm the backoff")
+            # The backoff that read armed is one the next stall must not read
+            # through: it would block the worker another 0.4 s for nothing.
+            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
         self.assertEqual(api.r_reads, 1)
         self.assertEqual(api.writes, [], "re-anchored on a slow read of R")
         self.assertTrue(any("could not be re-anchored" in line for line in cm.output))
