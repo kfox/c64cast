@@ -1296,6 +1296,31 @@ class StallResyncTest(unittest.TestCase):
         catch_up = [t for t in api.write_times if 0 < t - api.stalled_until <= 0.5]
         self.assertTrue(56 <= len(catch_up) <= 76, len(catch_up))
 
+    def test_a_stall_inside_the_lead_refills_all_of_the_gap_to_the_target(self):
+        # Same open-loop run: R is ≈1.6 KiB short of W when the stall ends.
+        # The refill owes TARGET_GAP - gap, all of it: 0.3 s on, W−R is
+        # ≈4.8 KiB (the target plus the slow consumer's drift), where owing
+        # half the shortfall left it ≈3.5 KiB, under the target for good.
+        # W and R both start at RING_BUFFER_ADDR, so bytes landed less bytes
+        # played is W−R after each write.
+        leads: list[tuple[float, int]] = []
+        written = [0]
+        real_write = _StallingConsumerAPI.write_memory_file
+
+        def tracking(api: _StallingConsumerAPI, addr: str, data: bytes) -> None:
+            real_write(api, addr, data)
+            written[0] += len(data)
+            leads.append((api.clock.monotonic(), written[0] - api.consumed))
+
+        with mock.patch.object(_StallingConsumerAPI, "write_memory_file", tracking):
+            api, outcomes = self._judged_run(0.42, servo=False, consumer_scale=0.85)
+        self.assertEqual(len(outcomes), 1, outcomes)
+        self.assertIsInstance(outcomes[0], audio_mod.StallInsideLead)
+        assert api.stalled_until is not None
+        lead = [g for t, g in leads if t <= api.stalled_until + 0.3][-1]
+        target = audio_mod.HOST_DMA_SERVO_TARGET_GAP
+        self.assertTrue(target <= lead <= target + 1024, lead)
+
     def _judged_run(
         self, stall_s: float, *, servo: bool, consumer_scale: float
     ) -> tuple[_StallingConsumerAPI, list[object]]:
