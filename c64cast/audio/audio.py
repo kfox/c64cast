@@ -929,7 +929,7 @@ class AudioStreamer:
             pending_pad = 0
             pending_epoch = 0
 
-            while self.running and generation == self._worker_generation:
+            while not self._superseded(generation):
                 # Captured before the collect: if flush() bumps it while this
                 # iteration holds data, that data is pre-splice and is dropped
                 # before the ring write below.
