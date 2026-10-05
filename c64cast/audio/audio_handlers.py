@@ -1184,8 +1184,8 @@ def stall_lapped(r_addr: int, w_head: int, behind: int, slack: int) -> bool:
 
     A gap under ``slack`` counts as lapped too: R kept moving while it was
     read and while the caller acts on it, so a W only that far ahead may
-    already be behind it. The caller passes R's travel over the read plus a
-    chunk."""
+    already be behind it. The caller passes R's travel over the read plus
+    ``STALL_INSIDE_LEAD_SLACK``."""
     gap = (w_head - r_addr) % RING_BUFFER_SIZE
     return gap < slack or gap + behind >= RING_BUFFER_SIZE
 
