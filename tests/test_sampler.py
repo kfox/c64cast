@@ -1063,6 +1063,79 @@ class SamplerLateReanchorTest(unittest.TestCase):
         smp.arm()
         self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
 
+    def test_a_reanchor_published_after_the_lag_read_s_head_does_not_step_back(self):
+        # The reader reads the head, then a re-anchor further on lands before
+        # it reads the lag. Inside a hold, that lag taken at the earlier head
+        # stepped the heard sample back by the distance between the two.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            smp._pushed_samples = 10**9  # far ahead: the tap never clamps
+            self.assertTrue(self._write(40))
+        self.consumed = smp._content_pos + 10  # inside the hold, still late
+        head = self.consumed
+        held = self._heard(10**9)
+
+        def head_then_reanchor() -> int:
+            smp._read_consumed_bytes = lambda: self.consumed  # type: ignore[method-assign]
+            self.consumed += 30
+            with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+                self.assertTrue(self._write(40))
+            self.assertEqual(smp._reanchors, 2)
+            return head
+
+        smp._read_consumed_bytes = head_then_reanchor  # type: ignore[method-assign]
+        lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
+        self.assertEqual(head - lag, held, "the heard sample stepped back")
+
+    def test_a_lag_read_while_a_reanchor_is_in_flight_waits_for_it(self):
+        # The writer has read the head it re-anchors at and not yet published
+        # the lag; a reader whose head is past the writer's took the old lag,
+        # heard audio the new one then held it short of, and stepped back.
+        smp = self.smp
+        self._reanchor_late()
+        smp._pushed_samples = 10**9  # far ahead: the tap never clamps
+        self.consumed = smp._content_pos + 10  # past the hold, still late
+        heard: list[int] = []
+
+        def read() -> None:
+            lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
+            heard.append(self.consumed - lag)
+
+        reader = threading.Thread(target=read)
+        compute = smp._lag_after_reanchor
+
+        def reanchor_with_a_read_in_flight(consumed: int, c: int, shift: int) -> Any:
+            self.consumed = consumed + 20  # the reader's head, past the writer's
+            reader.start()
+            reader.join(0.2)  # a reader that does not wait has read by now
+            return compute(consumed, c, shift)
+
+        smp._lag_after_reanchor = reanchor_with_a_read_in_flight  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(self._write(40))
+        reader.join(5.0)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(heard, [self._heard(10**9)], "the heard sample stepped back")
+
+    def test_a_lag_read_at_a_given_position_takes_that_position_s_head(self):
+        # AudioFileSource subtracts the lag from a position_seconds() it read
+        # first; inside a hold, a lag read at the head as of later stepped the
+        # heard sample back by however far the head had moved in between.
+        smp = self.smp
+        self._reanchor_late()
+        position = self.consumed / smp._actual_rate
+        held = self.consumed - round(smp.reanchor_lag_seconds() * smp._actual_rate)
+        self.consumed += 25  # still inside the hold
+        lag = smp.reanchor_lag_seconds(position)
+        sample = 1 / smp._actual_rate
+        self.assertAlmostEqual(position - lag, held * sample, delta=1.5 * sample)
+        self.assertAlmostEqual(lag, smp.reanchor_lag_seconds() - 25 * sample, delta=1.5 * sample)
+
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped
         # and the rest land at their own slots, so sync is unchanged.

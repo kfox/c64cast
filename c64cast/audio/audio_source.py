@@ -558,7 +558,9 @@ class AudioFileSource:
         lag's worth of a re-anchored track is not cut off."""
         played = self._audio.position_seconds() or 0.0
         if self._is_sampler:
-            played -= cast("UltimateAudioSampler", self._audio).reanchor_lag_seconds()
+            # At this position's read head: the clock moves between the two
+            # reads, and inside a re-anchor's hold that stepped the sample back.
+            played -= cast("UltimateAudioSampler", self._audio).reanchor_lag_seconds(played)
         return played
 
     def teardown(self) -> None:

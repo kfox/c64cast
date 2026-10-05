@@ -1549,12 +1549,42 @@ class AudioFileSourceEndTest(unittest.TestCase):
             self.now[0] += 1.0
             smp.start()
             self.addCleanup(smp.stop)
-            smp._reanchor_lag = (int(0.5 * smp.effective_rate) * smp.bps, ())
+            smp._reanchor_lag = (int(0.5 * smp.effective_rate) * smp.bps, (), 0)
             gate = self.now[0]
             self.now[0] = gate + 6.4
             self.assertFalse(src.finished, "ended before the re-anchored tail played")
             self.now[0] = gate + 6.55
             self.assertTrue(src.finished)
+
+    def test_a_reanchor_hold_reads_the_lag_at_the_position_it_comes_off(self):
+        # Inside a re-anchor's hold the heard sample stands still while the
+        # clock runs. With the lag read at the head as of a later clock read
+        # than the position, the heard sample stepped back by the time between.
+        from c64cast.audio import sampler
+        from c64cast.audio.audio_source import AudioFileSource
+
+        ConfigGenerativeTest._make_wav(self.wav, seconds=6.0, rate=44100)
+        ticks = [self.now[0]]
+
+        def monotonic() -> float:
+            ticks[0] += 0.005  # every clock read is 5 ms after the last
+            return ticks[0]
+
+        with (
+            mock.patch.object(sampler, "time", SimpleNamespace(monotonic=monotonic)),
+            mock.patch.object(sampler, "PollThread", _NoWriter),
+        ):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+            src = AudioFileSource(smp, self.wav, reactive=False)
+            smp.arm()
+            src._decode_loop()
+            smp.start()
+            self.addCleanup(smp.stop)
+            held = 1000  # samples: the hold below runs far past the head
+            smp._reanchor_lag = (10**9 - held * smp.bps, ((0, 10**9),), 0)
+            rate = smp.effective_rate
+            for _ in range(3):
+                self.assertAlmostEqual(src._heard_seconds(), held / rate, delta=1.5 / rate)
 
     def test_the_wait_bound_counts_a_reanchored_sampler_s_unheard_tail(self):
         # Decoding ends with the sampler's clock at the length but its last
@@ -1563,7 +1593,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
         class _LaggedSampler(_FileSink):
             is_sampler = True
 
-            def reanchor_lag_seconds(self) -> float:
+            def reanchor_lag_seconds(self, position: float | None = None) -> float:
                 return 0.3
 
         src = self._source(_LaggedSampler(played=0.4))
@@ -1683,7 +1713,7 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
             src._decode_loop()  # a 4 s file fits the queue: decoded whole up front
             self.now[0] += 1.0
             smp.start()
-            smp._reanchor_lag = (int(reanchor_lag_s * smp.effective_rate) * smp.bps, ())
+            smp._reanchor_lag = (int(reanchor_lag_s * smp.effective_rate) * smp.bps, (), 0)
             gate = self.now[0]
             onsets = []
             assert src._features is not None
