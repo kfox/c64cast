@@ -987,7 +987,6 @@ class AudioStreamer:
                         # the read head. Stomping from pending_addr keeps the
                         # chunk about to be written at the front of the span.
                         if self._stomp_requested:
-                            self._stomp_requested = False
                             self._stomp_ring(pending_addr, current)
                         n, from_queue, leftover = self._drip_chunk(
                             pending,
@@ -1061,7 +1060,6 @@ class AudioStreamer:
                 # through the pending path above, which stomps against the chunk
                 # about to go out rather than this one.
                 if self._stomp_requested and prebuffered:
-                    self._stomp_requested = False
                     self._stomp_ring(write_addr, current)
 
                 if prebuffered:
@@ -2518,7 +2516,13 @@ class AudioStreamer:
 
         ``current`` is the worker's fence: the R read and each stomp write can
         park past stop()'s join, as the stall re-anchor's can, and a worker
-        superseded meanwhile writes nothing more (see :meth:`_stomp_from`)."""
+        superseded meanwhile writes nothing more (see :meth:`_stomp_from`).
+        It is checked before the request is taken, too: a worker already
+        superseded leaves ``_stomp_requested`` alone, because once a later
+        start_* has run, a pause that set it is the next session's."""
+        if not current():
+            return
+        self._stomp_requested = False
         r_addr = self.read_consumer_ptr()
         if r_addr is None:
             return

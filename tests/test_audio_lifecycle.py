@@ -33,6 +33,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
     SAMPLE_TAP_SIZE,
+    STOMP_GUARD_BYTES,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
     nmi_rate_step,
@@ -530,6 +531,65 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(armed, [], "armed the NMI for the next session")
         self.assertEqual(s._health_last_log, 123.0)
         self.assertEqual((s.q.qsize(), s._queued_samples), seen[0])
+
+    def _superseded_in_a_wrapped_pause_stomp(self, *, in_pacing_read: bool) -> list[str]:
+        """Run the worker with R near the ring's end, ask for the pause stomp
+        inside its last prebuffer write or inside its first pacing read, and
+        bump the generation inside the stomp's first write. Return every
+        write's address from that one on."""
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        r_offset = audio_mod.RING_BUFFER_SIZE - 1000
+        r_addr = RING_BUFFER_ADDR + r_offset
+        real_read = api.read_memory
+        real_write = api.write_memory_file
+
+        def read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            if address == audio_mod.READ_PTR_LO_ADDR and length == 2:
+                if in_pacing_read and len(api.writes) == PREBUFFER_CHUNKS:
+                    s._stomp_requested = True  # the playlist's pause
+                return bytes([r_addr & 0xFF, r_addr >> 8])
+            return real_read(address, length, timeout)
+
+        first_span = f"{r_addr + STOMP_GUARD_BYTES:04X}"
+        superseded_at: list[int] = []
+
+        def write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            if not in_pacing_read and len(api.writes) == PREBUFFER_CHUNKS:
+                s._stomp_requested = True  # the playlist's pause
+            if addr == first_span and not superseded_at:
+                superseded_at.append(len(api.writes) - 1)
+                s._worker_generation += 1  # the next scene's _start_worker
+
+        api.read_memory = read
+        api.write_memory_file = write
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(superseded_at), 1, "the pause stomp never ran")
+        return [key for key, _ in api.writes[superseded_at[0] :]]
+
+    def test_a_worker_superseded_in_its_priming_pause_stomp_skips_the_wrapped_write(self):
+        # Asked during the last prebuffer write, the stomp runs on the next
+        # iteration's own check, against the chunk in hand.
+        writes = self._superseded_in_a_wrapped_pause_stomp(in_pacing_read=False)
+        self.assertEqual(len(writes), 1, f"wrote into the next session's ring: {writes}")
+
+    def test_a_worker_superseded_in_its_steady_pause_stomp_skips_the_wrapped_write(self):
+        # Asked during the pacing read after a hand-off, the stomp runs from
+        # the pending path, against the chunk about to go out.
+        writes = self._superseded_in_a_wrapped_pause_stomp(in_pacing_read=True)
+        self.assertEqual(len(writes), 1, f"wrote into the next session's ring: {writes}")
 
     def test_a_worker_superseded_during_the_arm_leaves_the_next_session_alone(self):
         # The arm reads R and writes the CIA, so it can park as well; past it,
@@ -1383,6 +1443,19 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(len(audio_mod.stomp_spans(r_addr, write_addr)), 2)
         s._stomp_ring(write_addr, lambda: not s._superseded(generation))
         self.assertEqual(len(api.writes), 1, "stomped the next session's prebuffer")
+
+    def test_a_superseded_worker_leaves_the_pause_stomp_request_alone(self):
+        # Once a later start_* has run, a pause that set the flag is the next
+        # session's: an orphan that took it would read R, write nothing, and
+        # leave that pause un-muted.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        generation = s._worker_generation
+        s._worker_generation += 1  # the next scene's _start_worker
+        s._stomp_requested = True  # the next scene's pause
+        s._stomp_ring(audio_mod.RING_BUFFER_ADDR, lambda: not s._superseded(generation))
+        self.assertTrue(s._stomp_requested, "took the next session's stomp request")
+        self.assertEqual((api.r_reads, api.writes), (0, []))
 
     def _r_read_returning_after_supersession(self, read_s: float) -> AudioStreamer:
         """A resync whose R read takes ``read_s`` and returns after a stop()
