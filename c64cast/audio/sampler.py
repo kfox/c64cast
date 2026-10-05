@@ -1020,8 +1020,11 @@ class UltimateAudioSampler:
         if self._reanchor_sticky:
             pass  # already shown slow since the last splice: no window
         elif gap:
+            # A hold carried through LATE_REANCHOR_S of a stall lets go as the
+            # attempt after a gap, and it does not start a burst there either
+            # (a 1.5x decoder 0.35 s behind, from a 1.0 s lead, re-anchored).
             prev, ended = self._prev_start, self._burst_start
-            self._prev_start, self._burst_start = ended, here
+            self._prev_start, self._burst_start = ended, here if dropped else None
             self._late_ref = here
             if prev is None or ended is None or self._gaining(prev, ended):
                 return c

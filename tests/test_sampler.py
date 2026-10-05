@@ -623,10 +623,9 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertGreater(writes, 0)
         self.assertLessEqual(writes, -(-6000 // smp._write_quantum), api.reu_writes)
 
-    def _hold_floor(self, smp: s.UltimateAudioSampler, size: int) -> int:
-        """The lowest lead at which a ``size``-byte partial quantum is held:
-        more than HOLD_GUARD_S over the write floor, whatever its size."""
-        del size
+    def _hold_floor(self, smp: s.UltimateAudioSampler) -> int:
+        """The lowest lead at which a partial quantum is held: more than
+        HOLD_GUARD_S over the write floor, whatever its size."""
         return smp._flush_margin + smp._hold_guard + smp.bps
 
     def test_a_real_time_producer_is_coalesced_below_the_low_watermark(self):
@@ -636,7 +635,7 @@ class SamplerWriteSizingTest(unittest.TestCase):
         # quantum, without padding meanwhile.
         api = _FakeBackend()
         smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
-        pos = self._hold_floor(smp, 20)
+        pos = self._hold_floor(smp)
         self.assertLess(pos, smp._lead_panic)
         self._place(smp, pos)
         frames = 0
@@ -657,7 +656,7 @@ class SamplerWriteSizingTest(unittest.TestCase):
         smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
         consumed = [0]
         smp._read_consumed_bytes = lambda: consumed[0]  # type: ignore[method-assign]
-        pos = self._hold_floor(smp, 20)
+        pos = self._hold_floor(smp)
         self._place(smp, pos)
         smp._carry = (smp._flush_epoch, memoryview(b"\x01" * 20))
 
@@ -672,7 +671,7 @@ class SamplerWriteSizingTest(unittest.TestCase):
     def test_at_the_holds_deadline_a_partial_quantum_is_written(self):
         api = _FakeBackend()
         smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
-        pos = self._hold_floor(smp, 20) - smp.bps
+        pos = self._hold_floor(smp) - smp.bps
         self._place(smp, pos)
         smp._q.put((smp._flush_epoch, b"\x01" * 20))
         self.assertTrue(smp._writer_step(smp._writer_gen))
@@ -686,7 +685,7 @@ class SamplerWriteSizingTest(unittest.TestCase):
         api = _FakeBackend()
         smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
         self.assertGreater(smp._write_quantum - 20, 2 * smp.bps)
-        self._place(smp, self._hold_floor(smp, 20) + smp.bps)
+        self._place(smp, self._hold_floor(smp) + smp.bps)
         smp._q.put((smp._flush_epoch, b"\x01" * 20))
         self.assertFalse(smp._writer_step(smp._writer_gen))
         self.assertEqual(api.reu_writes, [])
@@ -712,7 +711,7 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertEqual(api.reu_writes, [(smp.ring_base + smp._flush_margin, 20)])
         # A carry that is held still makes the pass's one bounded wait, so a
         # writer holding a partial quantum does not spin.
-        self._place(smp, self._hold_floor(smp, 20))
+        self._place(smp, self._hold_floor(smp))
         smp._carry = (smp._flush_epoch, memoryview(b"\x01" * 20))
         self.assertFalse(smp._writer_step(smp._writer_gen))
         self.assertEqual(blocking, [0.02])
@@ -1315,6 +1314,15 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
         "1.5x decoder 0.35 s behind": (
             _behind_then(1.5),
             {"seconds": 12.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
+        ),
+        # The same from a 1.0 s lead: the hold carries its partial quantum
+        # through LATE_REANCHOR_S of the stall, so the gather written short as
+        # it lets go is the attempt after a gap, and must not start a burst
+        # there either (it re-anchored this decoder, 0.51 s lag).
+        "1.5x decoder 0.35 s behind, from a 1.0 s lead": (
+            _behind_then(1.5),
+            {"seconds": 12.0, "prebuffer_s": 1.0},
             {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
         ),
         # Catching up, but 50 ms a window: it would drop everything for
