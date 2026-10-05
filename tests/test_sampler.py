@@ -1416,6 +1416,14 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
             {"seconds": 12.0, "prebuffer_s": 1.0},
             {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
         ),
+        # Catching up 100 ms a window, lined up in 1.75 s: inside
+        # LATE_CATCHUP_S by only 12 ms a window, so a pace test that took the
+        # write interval's 20 ms off the gain re-anchored it (0.44 s lag).
+        "1.2x decoder 0.35 s behind": (
+            _behind_then(1.2),
+            {"seconds": 12.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
+        ),
         # Catching up, but 50 ms a window: it would drop everything for
         # 3.5 s before lining up, so it is re-anchored. At 44.1 kHz that gain
         # is two write quanta, so slicing jitter is not what decides it.

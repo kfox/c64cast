@@ -995,12 +995,16 @@ class UltimateAudioSampler:
     def _gaining(self, then: tuple[int, int], now: tuple[int, int]) -> bool:
         """Whether lateness went from ``then`` to ``now`` (each (read head,
         lateness)) fast enough to be catching up: at a pace that, from
-        ``then``, lines up within LATE_CATCHUP_S. The first
-        MIN_WRITE_INTERVAL_S of the shrinkage does not count: the floor holds
-        a gather's head up to that long, so lateness measured at the write
-        swings by as much with no change in the producer."""
+        ``then``, lines up within LATE_CATCHUP_S, and by more than
+        MIN_WRITE_INTERVAL_S: the floor holds a gather's head up to that long,
+        so lateness measured at the write swings by as much with no change in
+        the producer. The interval is a minimum, not a deduction: taken off
+        the shrinkage, it re-anchored a decoder lining up at 1.2x from 0.35 s
+        late (1.75 s to line up), whose window gains only 12 ms more than
+        the pace asks."""
         (t0, l0), (t1, l1) = then, now
-        return (l0 - l1 - self._write_interval) * self._late_catchup_bytes > l0 * (t1 - t0)
+        shrink = l0 - l1
+        return shrink > self._write_interval and shrink * self._late_catchup_bytes > l0 * (t1 - t0)
 
     def _late_anchor(self, consumed: int) -> int:
         """Under _io_lock: where the next real sample is written. That is
