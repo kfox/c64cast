@@ -14,6 +14,7 @@ See docs/architecture/audio.md#audiopy--audiostreamer.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 import logging
@@ -368,6 +369,11 @@ class AudioStreamer:
         # MAX_QUEUED_SAMPLES caps the buffer so a stalled consumer cannot
         # accumulate a wall of stale audio.
         self._max_queued_samples = MAX_QUEUED_SAMPLES
+        # Set by end_input() once the producer will push nothing more. A
+        # producer that ends short of the prebuffer would otherwise leave the
+        # worker waiting for it forever, the NMI never started and the clip
+        # never heard. Cleared by every _start_worker.
+        self._input_ended = False
         self.running = False
         # Bumped by every _start_worker; a worker exits when it stops matching.
         self._worker_generation = 0
@@ -551,6 +557,9 @@ class AudioStreamer:
             try:
                 piece = self.q.get(timeout=remaining) if remaining > 0 else self.q.get_nowait()
             except queue.Empty:
+                break
+            if not piece:
+                # end_input()'s wake-up: nothing more is coming to wait for.
                 break
             take = min(len(piece), size - n)
             chunk_buf[n : n + take] = piece[:take]
@@ -811,6 +820,7 @@ class AudioStreamer:
         as it no longer matches, so it cannot be resurrected by this method
         setting ``running`` back to True (see :meth:`_worker`)."""
         self._worker_generation += 1
+        self._input_ended = False
         thread = threading.Thread(
             target=self._worker,
             args=(self._worker_generation,),
@@ -953,11 +963,19 @@ class AudioStreamer:
                         pending = None
                         pending_from_queue = 0
 
+                # Read before the collect: end_input() follows the producer's
+                # last push, so a collect that comes back empty after it was
+                # seen leaves nothing behind in the queue.
+                input_ended = self._input_ended
                 if pending is None and n < self.chunk_size:
                     # Priming, or the drip's interleaved slots did not fill the
                     # chunk: fall back to a blocking collect on the same deadline.
+                    # A priming collect after the producer ended takes only what
+                    # is queued: nothing more is coming to wait for.
                     collect_deadline = (
-                        pace_deadline if prebuffered else time.monotonic() + chunk_period
+                        pace_deadline
+                        if prebuffered
+                        else time.monotonic() + (0.0 if input_ended else chunk_period)
                     )
                     n, taken, leftover = self._collect_until(
                         chunk_buf, n, leftover, collect_deadline
@@ -969,13 +987,17 @@ class AudioStreamer:
 
                 pad = 0
                 if n == 0:
-                    if not prebuffered:
+                    if not prebuffered and not (input_ended and bytes_prebuffered):
                         # Idle: no producer data, no NMI to feed.
                         continue
-                    # Real underrun: refresh ring with silence.
+                    # Real underrun: refresh ring with silence. Or, priming, a
+                    # producer that ended short of the prebuffer: fill the rest
+                    # of it with silence so the NMI starts on what it pushed,
+                    # behind the same lead as any other start.
                     chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
                     n = pad = self.chunk_size
-                    self._full_underruns += 1
+                    if prebuffered:
+                        self._full_underruns += 1
                 elif n < self.chunk_size:
                     # Pad every short chunk, including during the prebuffer fill:
                     # a raw-length write takes write_addr off the chunk grid
@@ -2186,6 +2208,18 @@ class AudioStreamer:
         # drives reactive visuals through the same analyzer.
         self._push_to_analysis(floats)
         return self._encode_and_enqueue(floats, block_on_full=True)
+
+    def end_input(self) -> None:
+        """The ``push_samples`` producer has ended: start the consumer on what
+        it pushed even when that is short of the prebuffer, which otherwise
+        never fills and leaves a short clip unplayed. Call it after the last
+        push returns. Cleared when the next worker starts."""
+        self._input_ended = True
+        # An empty blob wakes a worker parked in a priming collect, which
+        # would otherwise wait out its chunk period for samples that will not
+        # come. Nothing else enqueues one. A full queue has no parked worker.
+        with contextlib.suppress(queue.Full):
+            self.q.put_nowait(b"")
 
     def position_seconds(self) -> float:
         """Approximate playback position from the consumer's perspective.

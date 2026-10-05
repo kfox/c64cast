@@ -510,7 +510,11 @@ class AudioFileSource:
     def _mark_decode_done(self, pushed_samples: int) -> None:
         """Record the end of decoding: the length of the audio pushed, on the
         sink's clock, and the deadline past which `finished` stops waiting for
-        that clock (the audio unplayed now, plus `_DRAIN_GRACE_S`)."""
+        that clock (the audio unplayed now, plus `_DRAIN_GRACE_S`).
+
+        Also tells the sink no more is coming: both wait for a prebuffer before
+        they play, and a clip shorter than it never fills one."""
+        self._audio.end_input()
         # The sink's clock divides by its effective rate, so the length does
         # too; the resampler's rounded integer rate would put it out of reach.
         rate = float(self._audio.effective_rate or self._audio.sample_rate)

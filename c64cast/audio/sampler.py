@@ -102,6 +102,9 @@ DEFAULT_LEAD_SECONDS = 1.0
 # lead so playback starts promptly; the writer then ramps up to it. The read
 # head begins at the first prebuffered sample, so this adds no startup delay.
 DEFAULT_PREBUFFER_SECONDS = 0.5
+# How often the prebuffer collect re-checks end_input() while the queue is
+# empty: the most a short clip's gate waits past its producer's end.
+_PREBUFFER_POLL_S = 0.02
 
 REU_WRITE_SLICE = 32 * 1024  # cap per REUWRITE so a NEUTRAL pad can't burst huge
 SAMPLE_TAP_SIZE = 2048  # most-recent-samples tap for spectrum overlays
@@ -446,6 +449,10 @@ class UltimateAudioSampler:
         self._running = False
         self._stopped = False
         self._eof = False
+        # Set by end_input() once the producer will push nothing more, so
+        # start() stops waiting for a prebuffer a short clip cannot fill.
+        # Unlike _eof it leaves the clock alone. Cleared by arm().
+        self._input_ended = False
         # Set when the writer gave up on a dead link; push_samples then drops
         # rather than park the producer on a queue nothing drains.
         self._failed = False
@@ -579,6 +586,7 @@ class UltimateAudioSampler:
         self._stopped = False
         self._failed = False
         self._eof = False
+        self._input_ended = False
         # The scene reinstalls its analyzer every activation, so a failure on an
         # earlier one must not leave this activation's failure unlogged.
         self._analysis_sink_failed = False
@@ -703,7 +711,10 @@ class UltimateAudioSampler:
         ``timeout`` total for the producer to deliver it (whatever arrived by
         then is used — the writer fills the rest ahead of the reader, NEUTRAL
         on underrun). Returns **all** collected bytes (never truncated — a
-        partial-chunk truncation would drop samples and glitch the stream)."""
+        partial-chunk truncation would drop samples and glitch the stream).
+
+        Stops early once ``end_input()`` has been called and the queue is
+        empty: a clip shorter than the prebuffer has nothing more to deliver."""
         deadline = time.monotonic() + timeout
         chunks: list[bytes] = []
         have = 0
@@ -711,10 +722,15 @@ class UltimateAudioSampler:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
+            # Read before the get: end_input() follows the producer's last put,
+            # so a get that times out after it was seen leaves nothing behind.
+            ended = self._input_ended
             try:
-                epoch, chunk = self._q.get(timeout=remaining)
+                epoch, chunk = self._q.get(timeout=min(remaining, _PREBUFFER_POLL_S))
             except queue.Empty:
-                break
+                if ended:
+                    break
+                continue
             if epoch != self._flush_epoch:
                 continue
             chunks.append(chunk)
@@ -760,6 +776,13 @@ class UltimateAudioSampler:
         accepted = int(samples_int16.shape[0])
         self._pushed_samples += accepted
         return accepted
+
+    def end_input(self) -> None:
+        """The ``push_samples`` producer has ended: ``start()`` gates the ring
+        on what it pushed rather than waiting out the prebuffer timeout for
+        audio that will not come. Call it after the last push returns. Leaves
+        ``position_seconds`` alone, unlike ``mark_eof``."""
+        self._input_ended = True
 
     def mark_eof(self) -> None:
         """Source exhausted — clamp ``position_seconds`` to the pushed total so

@@ -1382,6 +1382,9 @@ class _FileSink:
         self.pushed += int(arr.size)
         return int(arr.size)
 
+    def end_input(self):
+        pass
+
     def position_seconds(self):
         if self._played is None:
             return self.pushed / self.effective_rate
@@ -1624,6 +1627,107 @@ class AudioFileSourceEndTest(unittest.TestCase):
         sink.push_samples = torn_down
         src._decode_loop()
         self.assertFalse(src.finished)
+
+
+class _ConsumerLink:
+    """A DAC link whose NMI read pointer R advances at the consumer's rate from
+    the moment the NMI starts, so the servo and the streamer's clock see a
+    consumer that plays the ring."""
+
+    def __init__(self, api, rate: float):
+        self._api = api
+        self._rate = rate
+        self.started_at: float | None = None
+
+    def read_memory(self, address, length, timeout=1.0):
+        from c64cast.audio import audio_handlers as h
+
+        if address != h.READ_PTR_LO_ADDR or length != 2:
+            return self._api.read_memory(address, length, timeout)
+        played = 0 if self.started_at is None else time.monotonic() - self.started_at
+        r = h.RING_BUFFER_ADDR + int(played * self._rate) % h.RING_BUFFER_SIZE
+        return bytes([r & 0xFF, r >> 8])
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class AudioFileShortClipTest(unittest.TestCase):
+    """A clip shorter than the sink's prebuffer ends with its audio. Both sinks
+    wait for a prebuffer before they play: the DAC starts its NMI after
+    PREBUFFER_CHUNKS chunks (about 0.5 s at 12 kHz), the sampler gates its ring
+    after `prebuffer_seconds` or a 2 s timeout. A clip shorter than that never
+    filled it, so the DAC never started the NMI and the scene ran to the
+    length + 5 s deadline in silence, and the sampler held setup() for the 2 s
+    timeout before gating. Real time: the subject is the sinks' own threads."""
+
+    CLIP_S = 0.3
+    # The worst case either sink should take past the clip: one idle collect on
+    # the DAC, the poll on the sampler, plus headroom for a loaded runner. The
+    # defect overran by 2 s (sampler) and 5 s (DAC).
+    SLACK_S = 1.0
+
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.wav = f"{tmp.name}/clip.wav"
+        ConfigGenerativeTest._make_wav(self.wav, seconds=self.CLIP_S)
+
+    def _run_scene(self, sink) -> float:
+        """Set the source up and return the seconds until it finishes."""
+        from c64cast.audio.audio_source import AudioFileSource
+
+        src = AudioFileSource(sink, self.wav, reactive=False)
+        t0 = time.monotonic()
+        try:
+            src.setup()
+            while not src.finished and time.monotonic() - t0 < self.CLIP_S + 6.0:
+                time.sleep(0.01)
+            return time.monotonic() - t0
+        finally:
+            src.teardown()
+
+    def test_a_dac_plays_a_clip_shorter_than_its_prebuffer(self):
+        from _fakes import FakeAPI, quiet_logging
+
+        api = FakeAPI()
+        dac = AudioStreamer(cast(C64Backend, api), 8000, "NTSC")
+        link = _ConsumerLink(FakeAPI(), dac.effective_rate)
+        api.read_memory = link.read_memory  # type: ignore[method-assign]
+        start_nmi = dac.nmi.start
+
+        def started(*args, **kwargs):
+            link.started_at = time.monotonic()
+            return start_nmi(*args, **kwargs)
+
+        with quiet_logging(), mock.patch.object(dac.nmi, "start", side_effect=started):
+            took = self._run_scene(dac)
+        self.assertIsNotNone(link.started_at, "the NMI never started, so the clip never played")
+        self.assertLess(took, self.CLIP_S + self.SLACK_S, "the scene ran out the deadline")
+
+    def test_end_input_wakes_a_dac_collect(self):
+        # A priming collect waits a chunk period for samples; once the producer
+        # has ended, none are coming, so the wait only delays the start.
+        from _fakes import FakeAPI
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac.running = True
+        dac.end_input()
+        t0 = time.monotonic()
+        n, _, _ = dac._collect_until(bytearray(dac.chunk_size), 0, b"", t0 + 5.0)
+        self.assertEqual(n, 0)
+        self.assertLess(time.monotonic() - t0, 1.0, "the collect waited out its deadline")
+
+    def test_a_sampler_plays_a_clip_shorter_than_its_prebuffer(self):
+        from _fakes import quiet_logging
+
+        from c64cast.audio import sampler
+
+        with mock.patch.object(sampler, "PollThread", _NoWriter):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=8000)
+            with quiet_logging():
+                took = self._run_scene(smp)
+        self.assertLess(took, self.CLIP_S + self.SLACK_S, "setup sat out the prebuffer timeout")
 
 
 class ConfigGenerativeTest(unittest.TestCase):

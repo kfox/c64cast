@@ -320,6 +320,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   picked rather than the one playing. An explicit `duration_s` or `-t` still
   cuts the scene short.
 
+- **An audio file shorter than about half a second plays.** On the 4-bit
+  `$D418` DAC it was never heard, and its scene sat silent for five seconds
+  past its length; on the Ultimate Audio sampler it started two seconds late.
+
 - **A DURATION set from the on-C64 menu now holds in a waveform scene.** The
   next tune picked from a folder of SIDs, or the next subtune SHIFT cycled
   to, used to take its song length (or the 180 s fallback) instead. The
