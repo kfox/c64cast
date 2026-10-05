@@ -291,6 +291,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Audio-file scenes also stopped reacting to the music. The scene now resets
   the sampler before it starts feeding it.
 
+- **On the Ultimate Audio sampler, sound stays in sync with the picture after
+  a seek, an A/B loop wrap, a resume from pause, or a decoding hiccup.** After
+  every seek, loop wrap or resume, the sound had been running behind the
+  picture by 0.15 s, and by about half a second once the clip took more than
+  a moment to seek. A decoding stall long enough to run the audio buffer
+  down added about 0.37 s more each time. The lag never recovered. Now the
+  sound lines up again straight away. What a seek costs instead is the first
+  few tens of milliseconds of the new position's audio.
+
 - **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms at 12 kHz
   (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
   pump that plays it. Under REU-staged `mhires` the delay grew by about

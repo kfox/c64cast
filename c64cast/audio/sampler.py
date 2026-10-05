@@ -349,6 +349,9 @@ class UltimateAudioSampler:
         self._lead_target -= self._lead_target % self.bps
         # Clamped to the lead target so a misconfigured prebuffer can't exceed
         # the runtime depth.
+        # What flush() leaves between the read head and the first post-splice
+        # byte, and the floor below which a write would race the reader.
+        self._flush_margin = int(FLUSH_GUARD_S * self._actual_rate) * self.bps
         prebuf_bytes = int(self._actual_rate * prebuffer_seconds) * self.bps
         self._prebuffer_target = max(self.bps, min(prebuf_bytes, self._lead_target))
         # Low watermark: below this the writer NEUTRAL-pads, treating the lead
@@ -381,7 +384,17 @@ class UltimateAudioSampler:
         self._failed = False
 
         self._gate_time = 0.0
-        self._written = 0  # absolute bytes written to the ring (monotone)
+        # Absolute byte positions (the read head is (monotonic - gate) * rate).
+        # _written is how far the ring holds anything current, real or pad;
+        # _content_pos is where the next real sample belongs. Sample k of an
+        # activation (or of a splice) is anchored at a fixed position, so an
+        # underrun pad is provisional: real data overwrites the part not yet
+        # played, and data whose slot the reader already passed is dropped.
+        # Audio therefore stays on position_seconds()'s wall clock instead of
+        # sliding later by every pad.
+        self._written = 0
+        self._content_pos = 0
+        self._late_bytes = 0  # real PCM dropped because its slot had passed
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
         # flush() bumps _flush_epoch under _io_lock, and the writer compares a
@@ -400,8 +413,8 @@ class UltimateAudioSampler:
         self._writer_gen = 0
 
         self._underrun_pads = 0
-        self._lead_min = -1
-        self._lead_max = -1
+        self._lead_min: int | None = None
+        self._lead_max: int | None = None
 
         self._tap_buf = np.zeros(SAMPLE_TAP_SIZE, dtype=np.float32)
         self._tap_write = 0
@@ -459,10 +472,12 @@ class UltimateAudioSampler:
         self._carry = None
         with self._io_lock:
             self._written = 0
+            self._content_pos = 0
         self._output_silenced = False
         self._underrun_pads = 0
-        self._lead_min = -1
-        self._lead_max = -1
+        self._late_bytes = 0
+        self._lead_min = None
+        self._lead_max = None
         with self._tap_lock:
             self._tap_buf[:] = 0.0
             self._tap_write = 0
@@ -506,6 +521,7 @@ class UltimateAudioSampler:
             if head:
                 self._write_wrapped(0, prebuf[:head])
             self._written = head
+            self._content_pos = head
         if len(prebuf) > head:
             self._carry = (self._flush_epoch, memoryview(prebuf)[head:])
 
@@ -640,7 +656,8 @@ class UltimateAudioSampler:
     def flush(self, *, silence_output: bool = False) -> None:
         """Cut the ring over to post-splice audio: drain the queue and
         NEUTRAL-rewrite the unconsumed lead past a small guard margin, then pull
-        _written back to consumed+margin so the writer resumes from there. Used
+        the write head back to consumed+margin, where the first post-splice
+        sample is anchored (`ring_lead_seconds()` reports that margin). Used
         by VideoScene's transport splice (seek / loop wrap / resume) so stale
         pre-splice audio doesn't play after the demuxer re-seeks.
         ``position_seconds()`` (wall-based) is unaffected — the read head keeps
@@ -668,8 +685,7 @@ class UltimateAudioSampler:
                 break
         with self._io_lock:
             consumed = self._read_consumed_bytes()
-            margin = int(FLUSH_GUARD_S * self._actual_rate) * self.bps
-            new_written = consumed + margin
+            new_written = consumed + self._flush_margin
             # Nothing behind the read head is worth rewriting, and no rewrite
             # spans more than the ring: a writer stalled far behind would
             # otherwise make this one write without bound under the lock.
@@ -685,6 +701,7 @@ class UltimateAudioSampler:
                     lo % self.ring_size, self._neutral_unit * ((hi - lo) // self.bps)
                 )
             self._written = new_written
+            self._content_pos = new_written
             self._eof = False
 
     def _writer_loop(self, gen: int) -> None:
@@ -733,10 +750,14 @@ class UltimateAudioSampler:
 
     def _writer_step(self, gen: int) -> bool:
         """One writer pass: sleep while far enough ahead, else write the next
-        chunk or an underrun pad. Returns whether it wrote to the ring."""
-        lead = self._written - self._read_consumed_bytes()
-        self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
-        self._lead_max = max(self._lead_max, lead)
+        chunk at its anchored position, or an underrun pad. Returns whether it
+        wrote to the ring."""
+        consumed = self._read_consumed_bytes()
+        # The real-audio cushion: pads ahead of _content_pos do not count, so
+        # the writer keeps pulling data to overwrite them.
+        lead = self._content_pos - consumed
+        self._lead_min = lead if self._lead_min is None else min(self._lead_min, lead)
+        self._lead_max = lead if self._lead_max is None else max(self._lead_max, lead)
         room = self._lead_target - lead
         if room < self._write_quantum:
             # Far enough ahead. The bounded queue + blocking push give the
@@ -744,39 +765,67 @@ class UltimateAudioSampler:
             time.sleep(0.002)
             return False
         payload = self._next_payload(room)
-        if payload is not None:
-            epoch, data = payload
-        else:
-            # Queue momentarily empty. A NEUTRAL pad inserts silence, so it
-            # waits for the low watermark — a real underrun, where the
-            # alternative is the FPGA replaying stale ring data.
-            if lead > self._lead_panic:
-                return False
-            pad_frames = max(1, (self._lead_target - lead) // self.bps)
-            pad_frames = min(pad_frames, REU_WRITE_SLICE // self.bps)
-            data = self._neutral_unit * pad_frames
-            self._underrun_pads += 1
-            # A pad is current by construction; one a flush overtakes is
-            # dropped, which is harmless since the flush rewrote the lead.
-            epoch = self._flush_epoch
-        # Serialized against flush()'s ring cut-over, which also reads
-        # _written and rewrites the ring. Held for one chunk (tens of ms).
-        # The generation is re-checked here because a stop() and the next
-        # start() can both land while this thread waits on the queue.
+        if payload is None:
+            return self._pad_underrun(gen)
+        return self._write_payload(gen, *payload)
+
+    def _write_payload(self, gen: int, epoch: int, data: bytes) -> bool:
+        """Write ``data`` at its anchored position, dropping its leading bytes
+        whose slot is already within FLUSH_GUARD_S of the reader (they are
+        late, and a write there would race the FPGA's fetch). Serialized
+        against flush()'s cut-over; the generation is re-checked because a
+        stop() and the next start() can both land while this thread waits on
+        the queue."""
         with self._io_lock:
             if gen != self._writer_gen or epoch != self._flush_epoch:
                 return False
-            try:
-                self._resync_behind_reader()
-                self._write_wrapped(self._written % self.ring_size, data)
-            except Exception:
-                if payload is not None:
-                    # Retried at the same head on the next pass: rewriting the
-                    # slices that did land is idempotent.
+            c = self._content_pos
+            end = c + len(data)
+            consumed = self._read_consumed_bytes()
+            first = max(c, consumed + self._flush_margin)
+            if first < end:
+                try:
+                    # A write head the reader passed (a link stall longer than
+                    # the lead) leaves stale ring bytes just ahead of it; blank
+                    # them rather than let the reader replay a lap-old span.
+                    gap = max(self._written, consumed)
+                    if gap < first:
+                        self._write_wrapped(
+                            gap % self.ring_size,
+                            self._neutral_unit * ((first - gap) // self.bps),
+                        )
+                    self._write_wrapped(first % self.ring_size, data[first - c :])
+                except Exception:
+                    # Retried at the same anchor on the next pass: rewriting
+                    # the slices that did land is idempotent.
                     self._carry_back(epoch, data)
-                raise
-            self._written += len(data)
-        return True
+                    raise
+                self._written = max(self._written, end)
+            self._late_bytes += min(len(data), max(0, first - c))
+            self._content_pos = end
+            return first < end
+
+    def _pad_underrun(self, gen: int) -> bool:
+        """The queue came up empty. Below the low watermark the ring is about
+        to run out of anything current, so NEUTRAL-pad ahead of it — a real
+        underrun, where the alternative is the FPGA replaying stale ring data.
+        The pad leaves _content_pos alone, so the data that follows overwrites
+        whatever of it has not been played."""
+        with self._io_lock:
+            if gen != self._writer_gen:
+                return False
+            consumed = self._read_consumed_bytes()
+            if self._written - consumed > self._lead_panic:
+                return False
+            lo = max(self._written, consumed)
+            hi = min(lo + REU_WRITE_SLICE, consumed + self._lead_target)
+            hi -= (hi - lo) % self.bps
+            if hi <= lo:
+                return False
+            self._underrun_pads += 1
+            self._write_wrapped(lo % self.ring_size, self._neutral_unit * ((hi - lo) // self.bps))
+            self._written = hi
+            return True
 
     def _carry_back(self, epoch: int, data: bytes) -> None:
         carry = self._carry
@@ -818,21 +867,6 @@ class UltimateAudioSampler:
             whole = whole[:limit]
         return epoch, bytes(whole)
 
-    def _resync_behind_reader(self) -> None:
-        """Caller holds _io_lock. If the read head has passed the write head
-        (writes failed, or stalled on the link, for longer than the lead),
-        a write at the old head would land behind the reader, to be heard a
-        lap later. Jump the head to FLUSH_GUARD_S past the reader instead,
-        blanking the stale bytes the reader is about to play on the way."""
-        consumed = self._read_consumed_bytes()
-        if self._written >= consumed:
-            return
-        floor = consumed + int(FLUSH_GUARD_S * self._actual_rate) * self.bps
-        self._write_wrapped(
-            consumed % self.ring_size, self._neutral_unit * ((floor - consumed) // self.bps)
-        )
-        self._written = floor
-
     def _write_wrapped(self, ring_pos: int, data: bytes) -> None:
         """REUWRITE ``data`` into the ring at ``ring_pos``, splitting at the ring
         boundary and capping each transfer at one slice."""
@@ -861,9 +895,11 @@ class UltimateAudioSampler:
         return max(0.0, elapsed)
 
     def ring_lead_seconds(self) -> float:
-        """The ``AudioStreamer`` splice hook. The sampler's clock is its read
-        head, and nothing here models what a flush leaves ahead of it."""
-        return 0.0
+        """The ``AudioStreamer`` splice hook: how long after a flush() the first
+        post-splice sample is heard. flush() keeps FLUSH_GUARD_S of old audio
+        ahead of the read head and anchors the new audio right behind it, so a
+        transport splice anchors the picture there too."""
+        return self._flush_margin / self.bps / self._actual_rate
 
     def start_for_external_source(self) -> None:
         """Alias for ``start()`` so a caller feeding via ``push_samples`` (e.g.
@@ -947,7 +983,15 @@ class UltimateAudioSampler:
                 "sampler: %d underrun pads this session (producer stalled)",
                 self._underrun_pads,
             )
-        if self._lead_min >= 0:
+        if self._late_bytes:
+            # INFO: every splice drops the post-seek audio the demuxer delivers
+            # after its slot, so this is routine; the underrun warning above is
+            # the stall signal.
+            log.info(
+                "sampler: dropped %.2f s of audio that reached the ring after its slot",
+                self._late_bytes / self.bps / self._actual_rate,
+            )
+        if self._lead_min is not None:
             log.info(
                 "sampler: write-ahead lead min=%d max=%d bytes (target=%d, ring=%d)",
                 self._lead_min,
@@ -957,5 +1001,6 @@ class UltimateAudioSampler:
             )
         # Reported once per activation, however often stop() is called.
         self._underrun_pads = 0
-        self._lead_min = -1
-        self._lead_max = -1
+        self._late_bytes = 0
+        self._lead_min = None
+        self._lead_max = None

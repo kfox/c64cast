@@ -264,6 +264,17 @@ class StreamerTest(unittest.TestCase):
         )
 
 
+def _run_steps(test: unittest.TestCase, smp: s.UltimateAudioSampler) -> None:
+    """Writer steps on the test's thread until a patched queue ends the run by
+    clearing _running; bounded, so a writer that stops asking for data fails
+    the test instead of spinning in its sleep branch."""
+    for _ in range(200):
+        if not smp._running:
+            return
+        smp._writer_step(smp._writer_gen)
+    test.fail("the writer stopped draining the queue")
+
+
 class SamplerReuseTest(unittest.TestCase):
     """A scene builds its sampler once and a looping playlist sets the scene up
     again, so a second activation of the same object has to play."""
@@ -300,7 +311,8 @@ class SamplerReuseTest(unittest.TestCase):
         self._lap(smp, api)
         api.audible_writes = 0
         smp.start(prebuffer_timeout=0.01)
-        smp.push_samples(self.TONE)
+        for _ in range(4):  # more than the start-up slot the reader passes
+            smp.push_samples(self.TONE)
         deadline = time.monotonic() + 2.0
         while api.audible_writes == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -319,8 +331,10 @@ class SamplerReuseTest(unittest.TestCase):
         self.assertFalse(smp._stopped)
         self.assertFalse(smp._eof)
         self.assertFalse(smp._output_silenced)
-        self.assertEqual((smp._pushed_samples, smp._written, smp._underrun_pads), (0, 0, 0))
-        self.assertEqual((smp._lead_min, smp._lead_max), (-1, -1))
+        self.assertEqual(
+            (smp._pushed_samples, smp._written, smp._content_pos, smp._underrun_pads), (0, 0, 0, 0)
+        )
+        self.assertEqual((smp._lead_min, smp._lead_max), (None, None))
         self.assertTrue(smp._q.empty())
         self.assertGreater(smp._flush_epoch, epoch)
         self.assertFalse(np.any(smp.get_recent_samples(s.SAMPLE_TAP_SIZE)))
@@ -471,7 +485,7 @@ class SamplerWriterFailureTest(unittest.TestCase):
         with self.assertLogs("c64cast.audio.sampler", level="WARNING") as logs:
             smp = self._started(api)
             api.audible_writes = 0
-            for _ in range(4):
+            for _ in range(16):
                 smp.push_samples(self.TONE)
             self.assertTrue(self._wait(lambda: api.audible_writes > 0), "the writer died")
         self.assertTrue(any("ring write failed" in m for m in logs.output), logs.output)
@@ -503,14 +517,16 @@ class SamplerWriterFailureTest(unittest.TestCase):
         t.join(timeout=0.5)
         self.assertFalse(t.is_alive(), "the producer stays parked on a sampler that gave up")
 
-    def test_a_write_head_the_reader_passed_resyncs_ahead_of_it(self):
+    def test_a_write_head_the_reader_passed_skips_ahead_of_it(self):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=4096)
         smp._running = True
         consumed = 1000
         smp._read_consumed_bytes = lambda: consumed  # type: ignore[method-assign]
         smp._written = 200  # 800 bytes behind the reader
-        margin = int(s.FLUSH_GUARD_S * smp._actual_rate) * smp.bps
+        margin = smp._flush_margin
+        # A chunk whose first 16 bytes' slot is already within the guard.
+        smp._content_pos = consumed + margin - 16
         items = [(smp._flush_epoch, b"\x01" * 32)]
 
         def get(*_a: Any, **_kw: Any) -> Any:
@@ -520,9 +536,10 @@ class SamplerWriterFailureTest(unittest.TestCase):
             return items.pop(0)
 
         smp._q.get = get  # type: ignore[method-assign]
-        smp._writer_loop(smp._writer_gen)
-        audible = [w for w in api.reu_writes if w == (0x200000 + consumed + margin, 32)]
+        _run_steps(self, smp)
+        audible = [w for w in api.reu_writes if w == (0x200000 + consumed + margin, 16)]
         self.assertEqual(len(audible), 1, api.reu_writes)
+        self.assertEqual(smp._late_bytes, 16)
         self.assertIn(
             (0x200000 + consumed, margin), api.reu_writes, "the skipped span was not blanked"
         )
@@ -536,7 +553,13 @@ class SamplerWriteSizingTest(unittest.TestCase):
         smp = _make(api, sample_rate=8000, bits=8, **kw)
         smp._running = True
         smp._read_consumed_bytes = lambda: 0  # type: ignore[method-assign]
+        # The first writable byte: anything nearer the reader is late.
+        self._place(smp, smp._flush_margin)
         return smp
+
+    @staticmethod
+    def _place(smp: s.UltimateAudioSampler, pos: int) -> None:
+        smp._written = smp._content_pos = pos
 
     def _drain(self, smp: s.UltimateAudioSampler) -> None:
         """Writer steps until it has nothing left to write for this lead."""
@@ -575,7 +598,9 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertLessEqual(max(n for _, n in api.reu_writes), s.REU_WRITE_SLICE)
         self.assertLessEqual(smp._written, smp._lead_target)
         assert smp._carry is not None
-        self.assertEqual(smp._written + len(smp._carry[1]), len(big), "samples were dropped")
+        self.assertEqual(
+            smp._written - smp._flush_margin + len(smp._carry[1]), len(big), "samples were dropped"
+        )
 
     def test_an_oversized_prebuffer_is_written_no_deeper_than_the_lead(self):
         api = _FakeBackend()
@@ -593,7 +618,7 @@ class SamplerWriteSizingTest(unittest.TestCase):
         # writing each sliver is what made 400 writes a second.
         api = _FakeBackend()
         smp = self._idle_reader(api, lead_seconds=1.0)
-        smp._written = smp._lead_target - smp._write_quantum // 2
+        self._place(smp, smp._lead_target - smp._write_quantum // 2)
         smp._q.put((smp._flush_epoch, b"\x01" * 4096))
         self.assertFalse(smp._writer_step(smp._writer_gen))
         self.assertEqual(api.reu_writes, [])
@@ -603,11 +628,11 @@ class SamplerWriteSizingTest(unittest.TestCase):
         # waits for the producer instead.
         api = _FakeBackend()
         smp = self._idle_reader(api, lead_seconds=1.0)
-        smp._written = smp._lead_target - smp._write_quantum
+        self._place(smp, smp._lead_target - smp._write_quantum)
         self.assertGreater(smp._written, smp._lead_panic)
         self.assertFalse(smp._writer_step(smp._writer_gen))
         self.assertEqual(api.reu_writes, [])
-        smp._written = smp._lead_panic
+        self._place(smp, smp._lead_panic)
         self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual(smp._underrun_pads, 1)
 
@@ -627,8 +652,8 @@ class SamplerWriteSizingTest(unittest.TestCase):
             with self.assertRaises(ConnectionError):
                 smp._writer_step(smp._writer_gen)
             smp._writer_step(smp._writer_gen)
-        self.assertIn((0x200000, 64), api.reu_writes)
-        self.assertEqual(smp._written, 64)
+        self.assertIn((0x200000 + smp._flush_margin, 64), api.reu_writes)
+        self.assertEqual(smp._written, smp._flush_margin + 64)
 
 
 class SamplerArmedBeforeProducerTest(unittest.TestCase):
@@ -728,8 +753,53 @@ class SamplerFlushTests(unittest.TestCase):
         smp._eof = True
         smp.flush()
         self.assertEqual(smp._written, 100 + self._margin(smp))
+        self.assertEqual(smp._content_pos, 100 + self._margin(smp))
         self.assertFalse(smp._eof)
         self.assertEqual(smp._flush_epoch, 1)
+
+    def test_ring_lead_is_the_flush_margin(self):
+        # The transport anchors a splice at position_seconds() + this; the
+        # first post-splice sample lands one margin past the read head.
+        smp = self._running(_FakeBackend(), consumed=0)
+        self.assertAlmostEqual(
+            smp.ring_lead_seconds(), self._margin(smp) / smp.bps / smp._actual_rate, places=9
+        )
+        self.assertAlmostEqual(smp.ring_lead_seconds(), s.FLUSH_GUARD_S, delta=0.001)
+
+    def test_post_splice_audio_lands_where_the_transport_anchored_it(self):
+        # The demuxer takes a while to deliver post-seek audio. Its first
+        # sample belongs one ring lead after the splice; whatever arrives after
+        # its slot is dropped rather than shifting everything behind it later.
+        api = _FakeBackend()
+        consumed = [1000]
+        smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=0x4000)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: consumed[0]  # type: ignore[method-assign]
+        smp._written = smp._content_pos = 1000 + 1500  # a 1500-byte lead
+        anchor = consumed[0] + round(smp.ring_lead_seconds() * smp._actual_rate) * smp.bps
+        smp.flush()
+        consumed[0] += 100  # the demuxer's seek latency
+        api.reu_writes.clear()
+        self._drive_writer(smp, [(smp._flush_epoch, bytes(range(1, 201)))])
+        # Sample k of the new stream sits at anchor + k: the first 100 were late.
+        self.assertIn((0x200000 + anchor + 100, 100), api.reu_writes, api.reu_writes)
+        self.assertEqual(smp._content_pos, anchor + 200)
+
+    def test_an_underrun_pad_is_overwritten_by_the_data_that_follows_it(self):
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=0x4000)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: 0  # type: ignore[method-assign]
+        start = smp._flush_margin
+        smp._written = smp._content_pos = start
+        self.assertTrue(smp._pad_underrun(smp._writer_gen))
+        padded_to = smp._written
+        self.assertGreater(padded_to, start)
+        self.assertEqual(smp._content_pos, start, "the pad moved the audio timeline")
+        api.reu_writes.clear()
+        self._drive_writer(smp, [(smp._flush_epoch, b"\x01" * 64)])
+        self.assertIn((0x200000 + start, 64), api.reu_writes)
+        self.assertEqual(smp._written, padded_to)
 
     def test_flush_drains_queue(self):
         smp = self._running(_FakeBackend())
@@ -812,7 +882,7 @@ class SamplerFlushTests(unittest.TestCase):
             return items.pop(0)
 
         smp._q.get = get  # type: ignore[method-assign]
-        smp._writer_loop(smp._writer_gen)
+        _run_steps(self, smp)
 
     def test_a_put_the_flush_drain_releases_is_dropped_by_the_writer(self):
         # The producer is parked on a full queue when the splice lands; the
@@ -846,7 +916,7 @@ class SamplerFlushTests(unittest.TestCase):
     def test_a_current_chunk_is_written(self):
         api = _FakeBackend()
         smp = self._running(api, consumed=0)
-        smp._written = 0
+        smp._written = smp._content_pos = smp._flush_margin
         self._drive_writer(smp, [(smp._flush_epoch, b"\x01" * 32)])
         self.assertGreater(api.audible_writes, 0)
 
