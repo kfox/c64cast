@@ -31,23 +31,23 @@ REDACTED = "REDACTED"
 #: name one of them recognizes the other does too.
 #:
 #: ``token``, ``password`` and ``secret`` take any prefix, glued or not, so
-#: ``viewer_token`` and ``client_secret`` match. ``key``, ``sig`` and
-#: ``signature`` are too short for that: a prefix has to end in ``_`` or ``-``,
+#: ``viewer_token`` and ``client_secret`` match. ``key``, ``sig``,
+#: ``signature`` and ``hmac`` are too short for that: a prefix has to end in ``_`` or ``-``,
 #: which is what makes the word its own component of the name rather than the
 #: tail of another one. So ``?key=``, ``api_key=``, ``signing-key=``, ``?sig=``
-#: and ``X-Amz-Signature=`` match — the spellings signed media and feed URLs
-#: use — while ``sortkey=``, ``hotkey=``, ``monkey=``, ``sig_level=`` and
+#: ``X-Amz-Signature=`` and the ``hmac=`` inside an Akamai ``__token__=`` or
+#: ``hdnts=`` match — the spellings signed media and feed URLs use — while ``sortkey=``, ``hotkey=``, ``monkey=``, ``sig_level=`` and
 #: ``sigma=`` do not.
 #:
 #: The rule is positional and knows nothing about meaning, so a name whose last
-#: component happens to be one of the three is masked whatever it holds:
+#: component happens to be one of the four is masked whatever it holds:
 #: ``cache_key=`` loses its value. That direction is the cheap one — a
 #: diagnostic value goes missing from two destinations — and the reverse is a
 #: credential in a file that outlives the run.
 _SECRET_KEY = r"""
     \b (?:
         \w* (?: token | password | secret | api[_-]?key )
-      | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? )
+      | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
     ) \b
 """
 
@@ -125,7 +125,7 @@ def _mask(m: re.Match[str]) -> str:
 def redact_secrets(text: str) -> str:
     """`text` with every recognized secret value reduced to ``REDACTED`` —
     `token=VALUE`, `password: VALUE`, `secret=VALUE`, `api_key=VALUE`,
-    `key=VALUE`, `sig=VALUE`, `signature=VALUE` (`=` or `:`, and the first four
+    `key=VALUE`, `sig=VALUE`, `signature=VALUE`, `hmac=VALUE` (`=` or `:`, and the first four
     with any prefix, so `viewer_token` and `client_secret` match),
     `Bearer VALUE`, and the userinfo of a URL (`https://user:pass@host` comes
     back as `https://REDACTED@host`) — a private media file is legitimately

@@ -157,11 +157,23 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertNotIn("deadbeef", redact_secrets("X-Amz-Signature=deadbeef"))
         self.assertNotIn("zzz", redact_secrets("signing_key=zzz"))
 
+    def test_an_akamai_token_loses_its_hmac(self):
+        """Akamai signs a URL with `__token__=` or `hdnts=`, neither of which
+        the key names reach (`__token__` has no word boundary after `token`).
+        Its signature is the `hmac=` field inside the value; the expiry and
+        path around it are not secret."""
+        for name in ("__token__", "hdnts"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    redact_secrets(f"https://cdn/a.mp3?{name}=exp=1~acl=/a/*~hmac=abc123&x=1"),
+                    f"https://cdn/a.mp3?{name}=exp=1~acl=/a/*~hmac=REDACTED&x=1",
+                )
+
     def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
         """The short names are why `\\w*` cannot front them: `sortkey` would be
         masked with the rest, and a masked diagnostic value reads as coverage
         while telling the reader nothing."""
-        line = "?sortkey=date&hotkey=F1 monkey=1 sig_level=3 sigma=2 keys=3 keyboard=on"
+        line = "?sortkey=date&hotkey=F1 monkey=1 sig_level=3 sigma=2 keys=3 keyboard=on hmacs=1"
         self.assertEqual(redact_secrets(line), line)
 
 
