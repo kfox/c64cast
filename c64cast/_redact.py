@@ -116,7 +116,21 @@ _SECRET_VALUE = re.compile(
 #: `Bearer` is the first one's value and the start of a match of its own. A
 #: value holds no whitespace and a match needs some after its `Bearer`, so no
 #: character is read as a value twice.
-_BEARER_VALUE = re.compile(r"\bBearer\s+(?=(?P<value>[^\s\"',}]+))", re.IGNORECASE)
+#:
+#: `Bearer` is also tried right after a percent-escape, as a name is: in
+#: `%22token%22%3ABearer abc` the escape's hex digit leaves no `\b` before it,
+#: and the `token` value ends at the space, so neither pattern reached `abc`.
+#: An encoded header spells the space `%20` or `+` (`Authorization%3A%20Bearer%20abc`).
+#: A value after an encoded space ends at the next one, which keeps the rule
+#: above: a value never holds the kind of space its `Bearer` was matched by.
+_BEARER_VALUE = re.compile(
+    r"""
+    (?: \b | % (?:25)*+ (?:[0-9a-f]{2})? (?<=[0-9a-f]) ) Bearer
+    (?: \s+ | (?P<enc> (?: \s | % (?:25)*+ 20 | \+ )+ ) )
+    (?= (?P<value> (?(enc) (?: (?! % (?:25)*+ 20 ) [^\s"',}+] )+ | [^\s"',}]+ ) ) )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 _SECRET_KEY_RE = re.compile(_SECRET_KEY, re.IGNORECASE | re.VERBOSE)
 

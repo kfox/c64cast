@@ -160,6 +160,35 @@ class RedactSecretsTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_a_bearer_after_a_percent_escape_is_covered(self):
+        """The escape's hex digit leaves no word boundary before `Bearer`, and
+        a secret name's value ends at the space after it, so the token behind
+        an encoded separator was masked by neither rule. An encoded header
+        spells the space `%20` or `+`, and its value ends at the next one."""
+        for line, want in (
+            ("%22token%22%3ABearer abc", "%22token%22%3AREDACTED REDACTED"),
+            ("token%3aBearer abc", "token%3aREDACTED REDACTED"),
+            ("%2522token%2522%253ABearer abc", "%2522token%2522%253AREDACTED REDACTED"),
+            ("x%3DBearer abc", "x%3DBearer REDACTED"),
+            ("h=Authorization%3A%20Bearer%20abc%20x", "h=Authorization%3A%20Bearer%20REDACTED%20x"),
+            (
+                "h=Authorization%253A%2520Bearer%2520abc",
+                "h=Authorization%253A%2520Bearer%2520REDACTED",
+            ),
+            ("h=Authorization:+Bearer+abc+x", "h=Authorization:+Bearer+REDACTED+x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_encoded_bearers_is_redacted_in_linear_time(self):
+        """Each `Bearer` is also the previous one's value. A value that ran
+        past an encoded space read the rest of the run once per `Bearer`, which
+        is quadratic: 144 KB of `Bearer%20` took 3.6 s."""
+        line = "Bearer%20" * 16_000
+        start = time.perf_counter()
+        redact_secrets(line)
+        self.assertLess(time.perf_counter() - start, 2.0)
+
     def test_a_bare_key_or_sig_parameter_is_covered(self):
         """The spellings a signed media or feed URL uses. `-vv` releases the
         urllib3 loggers, whose per-request record carries the query string, so a
