@@ -381,13 +381,14 @@ class MicLeadServo:
         # moves the lead, not the rate mismatch, and the integrator is the
         # loop's slow estimate of that mismatch. A stall reads the pump as slow
         # (and ends in a lap), but barely moves the integrator, and a lap
-        # reseeds the integrator to itself, so no stall, however many ticks it
-        # spans, sets the seed. A speed-up reads the pump as fast, where the
-        # integrator is the stale one: when it ends in an overtake, this
-        # interval's rate carries it; when the loop absorbs it and a stall laps
-        # a few ticks later, the average has already caught it. The slower
-        # reading is the one not to trust: an over-drop has the ~1.6 KB target
-        # to fall through zero, an under-drop ~6.6 KB to the lap limit.
+        # reseeds it to hold the host to a rate no slower than before, so no
+        # stall, however many ticks it spans, sets the seed. A speed-up reads
+        # the pump as fast, where the integrator is the stale one: when it ends
+        # in an overtake, this interval's rate carries it; when the loop
+        # absorbs it and a stall laps a few ticks later, the average has
+        # already caught it. The slower reading is the one not to trust: an
+        # over-drop has the ~1.6 KB target to fall through zero, an under-drop
+        # ~6.6 KB to the lap limit.
         seed_rate = max(self._rate - MIC_LEAD_KI * self._integ, self._pump_rate)
         if last is not None:
             advanced = (pump - last[0]) % REU_MIC_SIZE
