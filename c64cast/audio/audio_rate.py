@@ -431,7 +431,10 @@ class RateServo:
         if took > budget_s:
             self._hold_off_slow_read(took, budget_s)
             return r_addr, False, took
+        # The stall re-anchor can read inside a backoff, so a prompt read ends
+        # the running hold as well as restarting the doubling.
         self.read_holdoff_s = 0.0
+        self.read_holdoff_until = 0.0
         return r_addr, True, took
 
     def read_r_promptly(

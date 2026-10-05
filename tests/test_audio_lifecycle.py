@@ -1075,6 +1075,22 @@ class StallResyncTest(unittest.TestCase):
         )
         self.assertTrue(any("Re-anchored" in line for line in cm.output))
 
+    def test_a_prompt_read_inside_a_backoff_ends_it(self):
+        # The re-anchor reads through a backoff armed by a read it can still
+        # anchor on. When that read comes back prompt, the server is fast
+        # again, and the servo must not sit out the rest of a hold of up to
+        # 8 s with its pace correction frozen.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.servo.read_holdoff_until = audio_rate_mod.time.monotonic() + 60.0
+        s.servo.read_holdoff_s = 8.0
+        s.servo.last_slow_read_s = 0.1
+        with self.assertLogs("c64cast.audio", level="WARNING"):
+            s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(api.r_reads, 1)
+        self.assertFalse(s.servo.reads_held_off(), "a prompt read left the servo held off")
+        self.assertEqual(s.servo.read_holdoff_s, 0.0)
+
     def test_a_slow_r_read_is_not_anchored_on(self):
         # R read over budget: by the time it returns the consumer has moved
         # on by up to the read's duration, and at 0.4 s that is more than the
