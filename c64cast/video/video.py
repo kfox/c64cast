@@ -769,7 +769,7 @@ class AVFileSource:
         self._eof = False
         self._closed = False
         self._demux_poll: PollThread | None = None
-        self._audio_push: Callable[[np.ndarray], None] | None = None
+        self._audio_push: Callable[[np.ndarray], object] | None = None
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -834,7 +834,7 @@ class AVFileSource:
             return 0
         return peak
 
-    def start(self, audio_push: Callable[[np.ndarray], None] | None):
+    def start(self, audio_push: Callable[[np.ndarray], object] | None):
         """Start the demuxer thread. ``audio_push=None`` skips audio decode
         entirely — used by the REU-staged audio path where the soundtrack
         has already been pre-decoded into REU and the demuxer shouldn't

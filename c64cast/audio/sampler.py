@@ -721,13 +721,15 @@ class UltimateAudioSampler:
             have += len(chunk)
         return b"".join(chunks)
 
-    def push_samples(self, samples_int16: np.ndarray) -> None:
+    def push_samples(self, samples_int16: np.ndarray) -> int:
         """Accept mono int16 from the demuxer; encode + enqueue for the writer.
 
         Blocks when the queue is full so PyAV naturally throttles to the
-        playback rate (same backpressure as the DAC's ``push_samples``)."""
+        playback rate (same backpressure as the DAC's ``push_samples``).
+        Returns the samples accepted: 0 once stopped, after the writer has
+        given up on the link, or when a splice made the chunk stale."""
         if self._stopped or self._failed:
-            return
+            return 0
         # The chunk carries the epoch it was produced in. A splice that lands
         # while this call waits on a full queue makes the put pointless, so the
         # bounded put timeout re-checks; a put that lands just before the splice
@@ -743,18 +745,21 @@ class UltimateAudioSampler:
         pack = pack_pcm(out_i16, self.bits)
         while not (self._stopped or self._failed):
             if self._flush_epoch != epoch:
-                return
+                return 0
             try:
                 self._q.put((epoch, pack), timeout=0.1)
                 break
             except queue.Full:
                 continue
         else:
-            return
+            return 0
         # After a successful put of a still-current chunk only: a dropped chunk
         # must not inflate position_seconds's pushed-total EOF ceiling.
-        if self._flush_epoch == epoch:
-            self._pushed_samples += int(samples_int16.shape[0])
+        if self._flush_epoch != epoch:
+            return 0
+        accepted = int(samples_int16.shape[0])
+        self._pushed_samples += accepted
+        return accepted
 
     def mark_eof(self) -> None:
         """Source exhausted — clamp ``position_seconds`` to the pushed total so

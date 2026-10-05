@@ -2171,18 +2171,21 @@ class AudioStreamer:
             f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
         )
 
-    def push_samples(self, samples_int16: np.ndarray) -> None:
+    def push_samples(self, samples_int16: np.ndarray) -> int:
         """Convert mono int16 → 4-bit volume codes and enqueue. Blocks
         briefly when the queue is full so the PyAV demuxer naturally
         throttles to the audio sample rate. A no-op once stopped, as the
-        sampler's is."""
+        sampler's is.
+
+        Returns the samples enqueued: 0 once stopped, or when the queue stayed
+        full past ``QUEUE_PUT_TIMEOUT_S`` and the blob was dropped."""
         if not self.running:
-            return
+            return 0
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
         # Pre-DSP analysis tap, as in the mic callbacks, so a decoded file
         # drives reactive visuals through the same analyzer.
         self._push_to_analysis(floats)
-        self._encode_and_enqueue(floats, block_on_full=True)
+        return self._encode_and_enqueue(floats, block_on_full=True)
 
     def position_seconds(self) -> float:
         """Approximate playback position from the consumer's perspective.

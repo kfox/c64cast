@@ -492,13 +492,20 @@ class AudioFileSource:
             self._mark_decode_done(pushed)
 
     def _push_frame(self, resampled: Any) -> int:
-        """Push one resampled frame to the sink; returns the samples pushed."""
+        """Push one resampled frame to the sink; returns the samples it
+        accepted.
+
+        Not the samples handed over: the DAC drops a blob its queue held full
+        past the put timeout, and a sampler that gave up on its link takes
+        nothing. Counted, those put the length `finished` waits for past
+        anything the sink's clock reaches, and the scene sat out the deadline
+        on silence, the rest of the track when the sink died mid-file."""
         import numpy as np
 
         arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
-        if arr.size:
-            self._audio.push_samples(arr)
-        return int(arr.size)
+        if not arr.size:
+            return 0
+        return int(self._audio.push_samples(arr))
 
     def _mark_decode_done(self, pushed_samples: int) -> None:
         """Record the end of decoding: the length of the audio pushed, on the

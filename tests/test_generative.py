@@ -1369,9 +1369,17 @@ class _FileSink:
     def __init__(self, played: float | Callable[[], float] | None = None):
         self.pushed = 0
         self._played = played
+        # Pushes from this one on are refused, as a DAC drops a blob its full
+        # queue would not take and a sampler that gave up takes nothing.
+        self.refuse_from: int | None = None
+        self._calls = 0
 
     def push_samples(self, arr):
+        self._calls += 1
+        if self.refuse_from is not None and self._calls >= self.refuse_from:
+            return 0
         self.pushed += int(arr.size)
+        return int(arr.size)
 
     def position_seconds(self):
         if self._played is None:
@@ -1500,6 +1508,44 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.assertFalse(src.finished)
         self.now[0] += 0.02
         self.assertTrue(src.finished)
+
+    def test_audio_the_sink_refused_is_not_waited_for(self):
+        # A sink that stops taking samples mid-file (a sampler whose writer
+        # gave up on the link, a DAC blob dropped at the put timeout) never
+        # plays them, so its clock stops short of the file's length; counted,
+        # they held the scene to the deadline on silence.
+        sink = _FileSink()
+        sink.refuse_from = 2
+        src = self._source(sink)
+        src._decode_loop()
+        self.assertGreater(sink.pushed, 0)
+        self.assertLess(sink.pushed, 3200, "the sink refused nothing")
+        self.assertTrue(src.finished)
+
+    def test_a_dac_ends_with_the_last_sample_it_enqueued(self):
+        # Measured on hardware: a 6 s WAV on the DAC ran its scene for
+        # 10.4-11.4 s. The DAC drops a blob its queue held full past
+        # QUEUE_PUT_TIMEOUT_S, so its clock, which counts what it enqueued,
+        # stopped short of the length the decoder had handed over, and the
+        # scene sat out the deadline on silence. No worker drains the queue
+        # here, so every blob past the cap is dropped at once.
+        from _fakes import FakeAPI
+
+        from c64cast.audio import audio as audio_mod
+        from c64cast.audio.audio_source import AudioFileSource
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac._max_queued_samples = 1600
+        src = AudioFileSource(dac, self.wav, reactive=False)
+        dac.running = True
+        with mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 0.0):
+            src._decode_loop()
+        self.assertLess(dac._pushed_count, 3200, "the DAC dropped nothing")
+        # Everything it enqueued lands and plays: the queue is empty and the
+        # unplayed lead behind the last landed sample is gone.
+        dac._queued_samples = 0
+        dac.servo.ring_lead = 0.0
+        self.assertTrue(src.finished, "the scene waits for audio the DAC dropped")
 
     def test_a_sampler_ends_with_the_last_sample_it_plays(self):
         # Measured on hardware: a 6 s WAV on the sampler ended its scene

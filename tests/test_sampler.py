@@ -552,6 +552,17 @@ class SamplerWriterFailureTest(unittest.TestCase):
         smp.push_samples(self.TONE)  # a full queue nothing drains
         self.assertLess(time.monotonic() - t0, 0.05, "the producer parked on a dead sampler")
 
+    def test_push_samples_reports_what_it_accepted(self):
+        # An audio-file scene waits for the sink's clock to reach what it
+        # accepted, so a refused chunk must not be reported as taken.
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        self.assertEqual(smp.push_samples(self.TONE), len(self.TONE))
+        smp._failed = True
+        self.assertEqual(smp.push_samples(self.TONE), 0)
+        smp._failed = False
+        smp._stopped = True
+        self.assertEqual(smp.push_samples(self.TONE), 0)
+
     def test_a_producer_parked_when_the_writer_gives_up_is_released(self):
         smp = _make(_FakeBackend(), sample_rate=8000, bits=8, queue_max_chunks=1)
         smp._q.put((smp._flush_epoch, b""))
