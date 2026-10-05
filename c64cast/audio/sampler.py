@@ -660,8 +660,9 @@ class UltimateAudioSampler:
     def flush(self, *, silence_output: bool = False) -> None:
         """Cut the ring over to post-splice audio: retire everything queued
         (by bumping the flush epoch) and NEUTRAL-rewrite the unconsumed lead past a small guard margin, then pull
-        the write head back to consumed+margin, where the first post-splice
-        sample is anchored (`ring_lead_seconds()` reports that margin). Used
+        the write head back to consumed+margin. The first post-splice sample is
+        anchored one margin past the read head as of the call
+        (`ring_lead_seconds()` reports that margin). Used
         by VideoScene's transport splice (seek / loop wrap / resume) so stale
         pre-splice audio doesn't play after the demuxer re-seeks.
         ``position_seconds()`` (wall-based) is unaffected — the read head keeps
@@ -674,6 +675,13 @@ class UltimateAudioSampler:
         ``FLUSH_GUARD_S`` regardless."""
         if not self._running:
             return
+        # The post-splice anchor is the read head now, when the transport has
+        # just anchored the picture at position_seconds() + ring_lead_seconds().
+        # The volume write and the wait for _io_lock below (the writer holds it
+        # for a whole REU write, up to a slice, about 60 ms) come after, and an
+        # anchor taken past them would put the sound that much behind the
+        # picture. Audio whose slot that wait used up is dropped as late.
+        anchor = self._read_consumed_bytes() + self._flush_margin
         # Not under _io_lock: the writer holds it for a whole REU write, and the
         # demuxer may apply the seek and push post-splice audio meanwhile, which
         # an epoch bumped late would tag stale and drop. A stale chunk the
@@ -707,7 +715,7 @@ class UltimateAudioSampler:
                     lo % self.ring_size, self._neutral_unit * ((hi - lo) // self.bps)
                 )
             self._written = new_written
-            self._content_pos = new_written
+            self._content_pos = anchor
             self._eof = False
 
     def _writer_loop(self, gen: int) -> None:

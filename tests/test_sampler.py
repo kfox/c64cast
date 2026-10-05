@@ -876,6 +876,27 @@ class SamplerFlushTests(unittest.TestCase):
         self.assertIn((0x200000 + anchor + 100, 100), api.reu_writes, api.reu_writes)
         self.assertEqual(smp._content_pos, anchor + 200)
 
+    def test_the_splice_anchor_is_the_read_head_when_flush_is_called(self):
+        # Resume's flush restores the volume, and every flush waits for the
+        # writer's REU write to release _io_lock. The read head moves on
+        # meanwhile; the transport anchored the picture before either.
+        api = _FakeBackend()
+        consumed = [1000]
+        smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=0x4000)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: consumed[0]  # type: ignore[method-assign]
+        smp._written = smp._content_pos = 1000 + 1500
+        smp._output_silenced = True
+        anchor = consumed[0] + round(smp.ring_lead_seconds() * smp._actual_rate) * smp.bps
+
+        def slow_volume_write(_value: int) -> None:
+            consumed[0] += 60
+
+        smp._write_volume = slow_volume_write  # type: ignore[method-assign]
+        smp.flush()
+        self.assertEqual(smp._content_pos, anchor)
+        self.assertEqual(smp._written, consumed[0] + smp._flush_margin)
+
     def test_an_underrun_pad_is_overwritten_by_the_data_that_follows_it(self):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=0x4000)

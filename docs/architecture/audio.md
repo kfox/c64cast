@@ -737,9 +737,10 @@ Re-measure and bump `SAMPLER_REF_CLOCK_DEFAULT` after any firmware release that 
 
 Added for MIDI live-tune Phase 4. Cuts the ring over to post-splice audio:
 
-1. Bump `_flush_epoch`, without waiting on `_io_lock`. That retires everything queued: the writer and the prebuffer drop a chunk whose tag is stale.
-2. Under `_io_lock`, NEUTRAL-rewrite the unconsumed lead from `consumed + FLUSH_GUARD_S·rate` up to the old `_written`, and pull both `_written` and `_content_pos` back to that point. That point is the post-splice anchor. One formula covers both the normal rewrite-the-lead case and the rare lead < margin case, which blanks the lap-stale skip region. The rewrite never reaches behind the read head and never spans more than one ring.
-3. Clear the `_eof` latch.
+1. Take the post-splice anchor, `consumed + FLUSH_GUARD_S·rate`, from the read head at entry. That is the moment the transport anchored the picture. Taking it later, after the pause-restore volume write and the wait for `_io_lock` (the writer holds it for a whole REU write, up to a 32 KB slice, about 60 ms on the Ultimate), put the sound that much behind the picture.
+2. Bump `_flush_epoch`, without waiting on `_io_lock`. That retires everything queued: the writer and the prebuffer drop a chunk whose tag is stale.
+3. Under `_io_lock`, NEUTRAL-rewrite the unconsumed lead from `consumed + FLUSH_GUARD_S·rate` up to the old `_written`, and pull `_written` back to that point and `_content_pos` back to the anchor. Post-splice audio whose slot falls between the two is dropped as late. One formula covers both the normal rewrite-the-lead case and the rare lead < margin case, which blanks the lap-stale skip region. The rewrite never reaches behind the read head and never spans more than one ring.
+4. Clear the `_eof` latch.
 
 `position_seconds()` is wall-based and therefore unaffected — the computed read head keeps advancing, and we only change what it reads.
 
