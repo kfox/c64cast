@@ -428,6 +428,12 @@ class UltimateAudioSampler:
         # wall time.
         self._late_since: int | None = None
         self._late_last = 0  # read-head byte position of the latest late write
+        # Set by a re-anchor, cleared by the next splice or arm(): the producer
+        # has shown it cannot keep up, so later late audio is re-anchored at
+        # once instead of dropped for another window. It then plays late, as
+        # it did before audio was anchored, rather than losing a window of
+        # every cycle (~20% of a 0.95x decoder).
+        self._reanchor_sticky = False
         self._late_reanchor_bytes = int(LATE_REANCHOR_S * self._actual_rate) * self.bps
         # Re-anchors this activation, and how far they put the sound behind
         # the picture since the last splice re-aligned it.
@@ -522,6 +528,7 @@ class UltimateAudioSampler:
             self._content_pos = 0
             self._cut_epoch = self._flush_epoch
             self._late_since = None
+            self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
         self._output_silenced = False
         self._underrun_pads = 0
@@ -775,6 +782,7 @@ class UltimateAudioSampler:
             # The splice re-aligns sound and picture, and its own late drops
             # (the demuxer's re-seek delay) start a fresh window.
             self._late_since = None
+            self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
             self._eof = False
             self._cut_epoch = max(self._cut_epoch, epoch)
@@ -903,7 +911,8 @@ class UltimateAudioSampler:
         read-head time, in which case the producer is not catching up and the
         audio is re-anchored _reanchor_lead past the read head (moving
         _content_pos). A gap of that long with no late write starts a new
-        run."""
+        run. After one re-anchor, late audio is re-anchored at once until the
+        next splice or arm()."""
         c = self._content_pos
         floor = consumed + self._flush_margin
         if c >= floor:
@@ -911,17 +920,20 @@ class UltimateAudioSampler:
             return c
         quiet = consumed - self._late_last > self._late_reanchor_bytes
         self._late_last = consumed
-        if self._late_since is None or quiet:
+        if self._reanchor_sticky:
+            pass  # already shown slow since the last splice: no window
+        elif self._late_since is None or quiet:
             # A run is late writes in a row. One late write before a producer
             # stall and the next after it are not: nothing was dropped in
             # between, and the producer may be about to burst back on time.
             self._late_since = consumed
             return c
-        if consumed - self._late_since < self._late_reanchor_bytes:
+        elif consumed - self._late_since < self._late_reanchor_bytes:
             return c
         anchor = consumed + self._reanchor_lead
         shift = anchor - c
         self._late_since = None
+        self._reanchor_sticky = True
         self._reanchors += 1
         self._reanchor_lag_bytes += shift
         if self._reanchors == 1:

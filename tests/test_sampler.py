@@ -819,6 +819,40 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertFalse(self._write(100))
         self.assertEqual(smp._reanchors, 0)
 
+    def _reanchor_once(self) -> None:
+        smp = self.smp
+        self.consumed = max(self.consumed, smp._content_pos) + 3 * int(smp._actual_rate)
+        # The WARNING is once per activation; later re-anchors log at DEBUG.
+        level = "WARNING" if smp._reanchors == 0 else "DEBUG"
+        target = smp._reanchors + 1
+        with self.assertLogs("c64cast.audio.sampler", level):
+            while smp._reanchors < target:
+                self._write(40)
+                self.consumed += 40
+
+    def test_after_a_reanchor_late_audio_is_reanchored_at_once(self):
+        # A producer shown slower than real time plays late, as before
+        # anchoring, rather than losing another window every cycle.
+        smp = self.smp
+        self._reanchor_once()
+        self.consumed = smp._content_pos  # the cushion used up
+        self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 2)
+        self.assertEqual(smp._content_pos, self.consumed + smp._reanchor_lead + 40)
+
+    def test_a_splice_or_arm_clears_the_immediate_reanchor(self):
+        smp = self.smp
+        self._reanchor_once()
+        smp.flush()
+        self.consumed += smp._reanchor_lead
+        self.assertFalse(self._write(40))  # dropped: a fresh window
+        self.assertEqual(smp._reanchors, 1)
+        self._reanchor_once()
+        smp.arm()
+        self.consumed = 5000
+        self.assertFalse(self._write(40))
+        self.assertEqual(smp._reanchors, 0)
+
     def test_a_producer_stall_between_late_writes_restarts_the_window(self):
         # The last chunk before a stall lands a little late; the next arrives
         # after the stall. Nothing was dropped in between, so the backlog
