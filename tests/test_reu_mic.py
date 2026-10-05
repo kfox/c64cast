@@ -843,10 +843,6 @@ class MicLeadServoWiringTest(unittest.TestCase):
         self.assertEqual(seen, [True])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MicRingPrefillDeliveryTest(unittest.TestCase):
     """The NEUTRAL prefill of the REU mic ring is confirmed per slice: a lost
     slice would have the pump play stale FPGA SRAM, which can be loud."""
@@ -884,3 +880,7 @@ class MicRingPrefillDeliveryTest(unittest.TestCase):
         self.assertEqual(opened, [])
         self.assertNotIn(f"{REU_PUMP_HANDLER_ADDR:04X}", fake.mem_files)
         self.assertNotIn("0314", fake.regs)
+
+
+if __name__ == "__main__":
+    unittest.main()
