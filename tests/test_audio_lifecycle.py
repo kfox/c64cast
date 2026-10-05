@@ -470,6 +470,94 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(s.servo.last_r_reading, -1, "noted the next session's R")
         self.assertEqual(s._health_last_log, 0.0, "opened the next session's health window")
 
+    def _superseded_at_write(
+        self, s: AudioStreamer, at: int
+    ) -> tuple[list[tuple[int, int]], threading.Thread]:
+        """Run the worker until its ``at``-th ring write (0-based), bumping the
+        generation inside that write as the next scene's _start_worker would,
+        and return ``(queue size, queued samples)`` as they stood then."""
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        seen: list[tuple[int, int]] = []
+
+        def superseding_write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            if len(api.writes) == at + 1:
+                s._worker_generation += 1  # the next scene's _start_worker
+                seen.append((s.q.qsize(), s._queued_samples))
+
+        api.write_memory_file = superseding_write
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        t.join(timeout=2.0)
+        return seen, t
+
+    def test_a_worker_superseded_during_a_drip_write_leaves_the_next_session_alone(self):
+        # The steady state splits a chunk into several piece writes, any of
+        # which can park past stop()'s join. The rest of the chunk would land
+        # in the ring the next session is priming, and the collects between
+        # pieces would take that session's audio from its queue.
+        s = _make_worker_streamer()
+        s._halt_quantum = lambda: 8  # type: ignore[method-assign]  # 4 pieces per chunk
+        seen, t = self._superseded_at_write(s, PREBUFFER_CHUNKS)
+        try:
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(cast(Any, s.api).writes), PREBUFFER_CHUNKS + 1)
+        self.assertEqual((s.q.qsize(), s._queued_samples), seen[0])
+
+    def test_a_worker_superseded_during_its_last_prebuffer_write_does_not_arm(self):
+        # Arming after a parked prebuffer write would start the NMI on a ring
+        # the next session has not primed, and reset its servo and health.
+        s = _make_worker_streamer()
+        armed: list[bool] = []
+        s.nmi.start = lambda **kw: armed.append(True)  # type: ignore[method-assign]
+        s._health_last_log = 123.0
+        seen, t = self._superseded_at_write(s, PREBUFFER_CHUNKS - 1)
+        try:
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(armed, [], "armed the NMI for the next session")
+        self.assertEqual(s._health_last_log, 123.0)
+        self.assertEqual((s.q.qsize(), s._queued_samples), seen[0])
+
+    def test_a_worker_superseded_during_the_arm_leaves_the_next_session_alone(self):
+        # The arm reads R and writes the CIA, so it can park as well; past it,
+        # the servo reset and the health window are the next session's.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+
+        def superseding_start(**kw):  # type: ignore[no-untyped-def]
+            s._worker_generation += 1  # the next scene's _start_worker
+
+        s.nmi.start = superseding_start  # type: ignore[method-assign]
+        s._health_last_log = 123.0
+        resets: list[int] = []
+        s.servo.reset_for_consumer_start = resets.append  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(resets, [], "reset the next session's servo")
+        self.assertEqual(s._health_last_log, 123.0)
+
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.

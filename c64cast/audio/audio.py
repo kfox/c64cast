@@ -583,6 +583,7 @@ class AudioStreamer:
         leftover: bytes,
         base_time: float,
         chunk_period: float,
+        current: Callable[[], bool],
     ) -> tuple[int, int, bytes]:
         """Write `payload` into the ring as sub-NMI-period pieces spread evenly
         across `chunk_period`, collecting the *next* chunk in the gaps between
@@ -600,6 +601,11 @@ class AudioStreamer:
         Collecting between the writes rather than before them is what keeps the
         producer's full period of collect time — the writes now occupy the
         period that used to be spent asleep waiting for the pace deadline.
+
+        ``current`` is the worker's fence: each piece write can park past
+        stop()'s join, and a worker superseded meanwhile neither collects from
+        the next session's queue nor writes the rest of the chunk into the
+        ring that session is priming.
         """
         quantum = self._halt_quantum() or len(payload)
         slots = max(1, (len(payload) + quantum - 1) // quantum)
@@ -607,10 +613,12 @@ class AudioStreamer:
         n = 0
         taken_total = 0
         for i in range(slots):
+            if not current():
+                break
             slot_deadline = base_time + i * slot_period
             n, taken, leftover = self._collect_until(chunk_buf, n, leftover, slot_deadline)
             taken_total += taken
-            if not self.running:
+            if not current():
                 break
             sleep_s = slot_deadline - time.monotonic()
             self._total_slots += 1
@@ -966,6 +974,8 @@ class AudioStreamer:
                         # promises silence. Filling it also keeps w_head honest,
                         # so the servo isn't handed a W a chunk behind the head.
                         self._neutral_fill_ring(pending_addr, len(pending))
+                        if not current():
+                            break
                         self._note_ring_landed(len(pending), len(pending))
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
@@ -980,8 +990,18 @@ class AudioStreamer:
                             self._stomp_requested = False
                             self._stomp_ring(pending_addr, current)
                         n, from_queue, leftover = self._drip_chunk(
-                            pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
+                            pending,
+                            pending_addr,
+                            chunk_buf,
+                            leftover,
+                            pace_deadline,
+                            chunk_period,
+                            current,
                         )
+                        # Every ring write can park past stop()'s join; past
+                        # it, the counters below are the next session's.
+                        if not current():
+                            break
                         self._note_ring_landed(len(pending), pending_pad)
                         self._consume_queued(pending_from_queue)
                         w_head = pending_addr + len(pending)
@@ -1087,6 +1107,8 @@ class AudioStreamer:
                 # Prebuffer fill: the NMI is not consuming yet, so there is no
                 # halt to hide from and one unsplit write primes the ring fastest.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
+                if not current():
+                    break
                 self._note_ring_landed(n, pad)
                 self._consume_queued(from_queue)
                 write_addr += n
@@ -1097,6 +1119,9 @@ class AudioStreamer:
                 bytes_prebuffered += n
                 if bytes_prebuffered >= prebuffer_bytes:
                     self.nmi.start(adaptive=self.nmi_rate_adaptive)
+                    # The arm reads R and writes the CIA, and can park too.
+                    if not current():
+                        break
                     prebuffered = True
                     # R only becomes meaningful now that the NMI consumes: start
                     # the servo integrator and rate loop clean (the warm-up gate
