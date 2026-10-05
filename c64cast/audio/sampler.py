@@ -397,9 +397,10 @@ class UltimateAudioSampler:
         self._late_bytes = 0  # real PCM dropped because its slot had passed
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
-        # flush() bumps _flush_epoch under _io_lock, and the writer compares a
-        # chunk's tag against it under the same lock, so a chunk pushed before a
-        # splice is discarded instead of written past the cut-over. _io_lock
+        # flush() bumps _flush_epoch and then rewrites the lead under _io_lock,
+        # and the writer compares a chunk's tag against it under that lock, so
+        # a chunk pushed before a splice is discarded or overwritten instead of
+        # played past the cut-over. _io_lock
         # also serializes the {_write_wrapped, _written} read-modify-write
         # between flush() (playlist thread) and the writer thread. _output_silenced tracks the pause mute
         # ($DF21 volume 0) so the next flush() restores the channel volume.
@@ -606,8 +607,8 @@ class UltimateAudioSampler:
             return
         # The chunk carries the epoch it was produced in. A splice that lands
         # while this call waits on a full queue makes the put pointless, so the
-        # bounded put timeout re-checks; a put that the flush's own drain lets
-        # through is dropped by the writer on its stale tag.
+        # bounded put timeout re-checks; a put that lands just before the splice
+        # is dropped by the writer on its stale tag.
         epoch = self._flush_epoch
         floats = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
         self._tap_push(floats)
@@ -657,8 +658,8 @@ class UltimateAudioSampler:
         self.api.flush()
 
     def flush(self, *, silence_output: bool = False) -> None:
-        """Cut the ring over to post-splice audio: drain the queue and
-        NEUTRAL-rewrite the unconsumed lead past a small guard margin, then pull
+        """Cut the ring over to post-splice audio: retire everything queued
+        (by bumping the flush epoch) and NEUTRAL-rewrite the unconsumed lead past a small guard margin, then pull
         the write head back to consumed+margin, where the first post-splice
         sample is anchored (`ring_lead_seconds()` reports that margin). Used
         by VideoScene's transport splice (seek / loop wrap / resume) so stale
@@ -673,19 +674,21 @@ class UltimateAudioSampler:
         ``FLUSH_GUARD_S`` regardless."""
         if not self._running:
             return
-        with self._io_lock:
-            self._flush_epoch += 1
+        # Not under _io_lock: the writer holds it for a whole REU write, and the
+        # demuxer may apply the seek and push post-splice audio meanwhile, which
+        # an epoch bumped late would tag stale and drop. A stale chunk the
+        # writer has already passed its check for is written under the lock
+        # before the cut-over below takes it, and that cut-over rewrites it.
+        self._flush_epoch += 1
         if silence_output:
             self._write_volume(0)
             self._output_silenced = True
         elif self._output_silenced:
             self._write_volume(self._volume)
             self._output_silenced = False
-        while True:
-            try:
-                self._q.get_nowait()
-            except queue.Empty:
-                break
+        # The queue is not drained: the writer and the prebuffer drop stale
+        # tags, and a drain would also take post-splice audio pushed since the
+        # bump above, losing the start of the seek target.
         with self._io_lock:
             consumed = self._read_consumed_bytes()
             new_written = consumed + self._flush_margin

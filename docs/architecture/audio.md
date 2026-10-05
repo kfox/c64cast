@@ -737,10 +737,9 @@ Re-measure and bump `SAMPLER_REF_CLOCK_DEFAULT` after any firmware release that 
 
 Added for MIDI live-tune Phase 4. Cuts the ring over to post-splice audio:
 
-1. Bump `_flush_epoch`.
-2. Drain the queue.
-3. Under `_io_lock`, NEUTRAL-rewrite the unconsumed lead from `consumed + FLUSH_GUARD_S·rate` up to the old `_written`, and pull both `_written` and `_content_pos` back to that point. That point is the post-splice anchor. One formula covers both the normal rewrite-the-lead case and the rare lead < margin case, which blanks the lap-stale skip region. The rewrite never reaches behind the read head and never spans more than one ring.
-4. Clear the `_eof` latch.
+1. Bump `_flush_epoch`, without waiting on `_io_lock`. That retires everything queued: the writer and the prebuffer drop a chunk whose tag is stale.
+2. Under `_io_lock`, NEUTRAL-rewrite the unconsumed lead from `consumed + FLUSH_GUARD_S·rate` up to the old `_written`, and pull both `_written` and `_content_pos` back to that point. That point is the post-splice anchor. One formula covers both the normal rewrite-the-lead case and the rare lead < margin case, which blanks the lap-stale skip region. The rewrite never reaches behind the read head and never spans more than one ring.
+3. Clear the `_eof` latch.
 
 `position_seconds()` is wall-based and therefore unaffected — the computed read head keeps advancing, and we only change what it reads.
 
@@ -748,7 +747,7 @@ Added for MIDI live-tune Phase 4. Cuts the ring over to post-splice audio:
 
 **`FLUSH_GUARD_S` (0.15 s)** is the margin between the computed read head and the first rewritten byte. It has to cover open-loop consumed-estimate jitter, REUWRITE latency (so the FPGA never fetches a byte mid-write), and the calibrated-ref residual drift. It is also the audible splice latency: old content plays at most this long past the splice point.
 
-**Epoch checks.** Every queued chunk carries the flush epoch it was pushed in, as an `(epoch, pcm)` pair. `flush` bumps the epoch under `_io_lock`, and the writer compares the chunk's tag against it under the same lock, so nothing pushed before a splice is written after it. That covers a chunk dequeued just before the splice. It also covers the put of a producer parked on a full queue: `flush`'s own drain frees a slot, so that put goes through, and only the tag can catch it. A capturing epoch at dequeue time missed exactly this case. `push_samples` also gives up a put the epoch has overtaken. It counts `_pushed_samples` only for a put whose epoch is still current, so a dropped chunk cannot inflate the EOF clamp. `_collect_prebuffer` skips stale tags too.
+**Epoch checks.** Every queued chunk carries the flush epoch it was pushed in, as an `(epoch, pcm)` pair, and the writer compares the chunk's tag against the current epoch under `_io_lock`, so nothing pushed before a splice is written after it. `flush` bumps the epoch *before* taking that lock and does not drain the queue. The writer holds the lock for a whole REU write, and the demuxer can apply the seek and push the target's first audio in the meantime: a bump that waited for the lock would tag that audio stale, and a drain after the bump would throw it away, so either one loses the start of the seek target and puts the sound ahead of the picture. A stale chunk the writer had already passed its check for is written before `flush`'s locked cut-over, which then rewrites it. A producer parked on a full queue when the splice lands gives up its put at the next 0.1 s retry, because its epoch is no longer current. `push_samples` counts `_pushed_samples` only for a put whose epoch is still current after the put; chunks that were counted and then go stale in the queue stay counted, so after a splice the EOF clamp in `position_seconds()` is looser than the audio actually written. `mark_eof` fires only as the scene ends, so that clamp is coarse anyway. `_collect_prebuffer` skips stale tags too.
 
 **`silence_output=True` (pause)** additionally writes channel volume 0 to `$DF21` via `_write_volume` — one live DMA write, giving instant silence independent of ring content and REUWRITE latency — and sets `_output_silenced`. The next plain `flush()`, from resume's splice, restores the channel volume.
 

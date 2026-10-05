@@ -862,12 +862,35 @@ class SamplerFlushTests(unittest.TestCase):
         self.assertIn((0x200000 + start, 64), api.reu_writes)
         self.assertEqual(smp._written, padded_to)
 
-    def test_flush_drains_queue(self):
-        smp = self._running(_FakeBackend())
-        smp._q.put((0, b"\x00" * 32))
-        smp._q.put((0, b"\x00" * 32))
+    def test_flush_keeps_audio_pushed_after_its_bump(self):
+        # The demuxer can apply the seek and push between flush()'s epoch bump
+        # and the end of the call; that chunk is the start of the seek target.
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+        stale = smp._flush_epoch
+        smp._q.put((stale, b"\x01" * 32))
+        smp._q.put((stale + 1, b"\x02" * 32))  # tagged with the epoch flush() bumps to
         smp.flush()
-        self.assertTrue(smp._q.empty())
+        self.assertEqual(smp._flush_epoch, stale + 1)
+        api.reu_writes.clear()
+        api.audible_writes = 0
+        self._drive_writer(smp, [smp._q.get_nowait(), smp._q.get_nowait()])
+        self.assertEqual(
+            api.audible_writes, 1, "the post-splice chunk was lost, or the stale one written"
+        )
+
+    def test_flush_bumps_the_epoch_without_waiting_for_a_write(self):
+        smp = self._running(_FakeBackend(), consumed=0)
+        epoch = smp._flush_epoch
+        t = threading.Thread(target=smp.flush)
+        with smp._io_lock:  # the writer, mid REU write
+            t.start()
+            deadline = time.monotonic() + 1.0
+            while smp._flush_epoch == epoch and time.monotonic() < deadline:
+                time.sleep(0.005)
+            bumped = smp._flush_epoch != epoch
+        t.join(timeout=1.0)
+        self.assertTrue(bumped, "flush() waited on the writer before retiring the queue")
 
     def test_flush_noop_when_not_running(self):
         api = _FakeBackend()
@@ -901,9 +924,8 @@ class SamplerFlushTests(unittest.TestCase):
         # A push parked in the Full-retry loop when the flush epoch advances must
         # drop its chunk (return before the put) and NOT count it toward
         # _pushed_samples. Keeping the queue full means the put never succeeds, so
-        # the loop re-checks the epoch on each Full timeout and bails. A real
-        # flush() also drains, which lets the put through instead; that case is
-        # test_a_put_the_flush_drain_releases_is_dropped_by_the_writer.
+        # the loop re-checks the epoch on each Full timeout and bails; with a
+        # real flush() that case is test_a_producer_parked_across_a_flush_puts_nothing.
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, queue_max_chunks=1)
         smp._q.put((0, b"x"))  # fill and keep full
@@ -945,23 +967,39 @@ class SamplerFlushTests(unittest.TestCase):
         smp._q.get = get  # type: ignore[method-assign]
         _run_steps(self, smp)
 
-    def test_a_put_the_flush_drain_releases_is_dropped_by_the_writer(self):
-        # The producer is parked on a full queue when the splice lands; the
-        # flush's own drain frees the slot and the parked put goes through.
+    def test_a_producer_parked_across_a_flush_puts_nothing(self):
+        # The producer is parked on a full queue when the splice lands. flush()
+        # does not drain, so its put stays blocked until the epoch check gives
+        # it up, and the stale chunk ahead of it is dropped by the writer.
         api = _FakeBackend()
         smp = self._running(api, consumed=0)
-        smp._q = s.queue.Queue(maxsize=1)
+        parked = threading.Event()
+
+        class _SignalingQueue(s.queue.Queue):  # type: ignore[type-arg]
+            def put(self, *a: Any, **kw: Any) -> None:
+                parked.set()
+                super().put(*a, **kw)
+
+        smp._q = _SignalingQueue(maxsize=1)
         smp._q.put((smp._flush_epoch, b"\x01" * 32))
+        parked.clear()
         t = threading.Thread(target=smp.push_samples, args=(np.full(50, 8000, dtype=np.int16),))
+
+        def release() -> None:
+            smp._stopped = True
+            t.join(timeout=1.0)
+
+        self.addCleanup(release)
         t.start()
-        time.sleep(0.02)  # parked in put(timeout=0.1)
+        self.assertTrue(parked.wait(1.0), "the producer never reached its put")
         smp.flush()
         t.join(timeout=1.0)
+        self.assertFalse(t.is_alive())
         self.assertEqual(smp._pushed_samples, 0, "a pre-splice chunk counted toward EOF")
-        item = smp._q.get_nowait()
+        self.assertEqual(smp._q.qsize(), 1, "the parked put went through")
         api.reu_writes.clear()
         api.audible_writes = 0
-        self._drive_writer(smp, [item])
+        self._drive_writer(smp, [smp._q.get_nowait()])
         self.assertEqual(api.audible_writes, 0, "the pre-splice chunk was written after the cut")
 
     def test_a_flush_between_dequeue_and_write_drops_the_chunk(self):
