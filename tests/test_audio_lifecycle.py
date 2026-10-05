@@ -1279,14 +1279,48 @@ class StallResyncTest(unittest.TestCase):
         catch_up = [t for t in api.write_times if 0 < t - api.stalled_until <= 0.5]
         self.assertTrue(56 <= len(catch_up) <= 76, len(catch_up))
 
+    def _judged_run(
+        self, stall_s: float, *, servo: bool, consumer_scale: float
+    ) -> tuple[_StallingConsumerAPI, list[object]]:
+        """``_run``, also returning what each stall resync answered."""
+        real = AudioStreamer._resync_after_stall
+        outcomes: list[object] = []
+
+        def judged(s: AudioStreamer, *args: Any) -> object:
+            outcome = real(s, *args)
+            outcomes.append(outcome)
+            return outcome
+
+        with mock.patch.object(AudioStreamer, "_resync_after_stall", judged), quiet_logging():
+            _, api = self._run(stall_s=stall_s, servo=servo, consumer_scale=consumer_scale)
+        return api, outcomes
+
     def test_a_stall_inside_the_lead_is_judged_once_not_every_catch_up_iteration(self):
-        # Servo on, consumer 20 % slow, 0.55 s stall: W is still ahead. When
-        # the worker kept its old schedule, every catch-up iteration was still
-        # over the trigger and judged again, with a lag that no longer
-        # measured what R ate, until one passed for a lap and re-anchored with
-        # W ≈3 KiB ahead: 3004 B of unplayed audio NEUTRAL-filled.
-        with quiet_logging():
-            _, api = self._run(stall_s=0.55, servo=True, consumer_scale=0.8)
+        # Consumer 20 % slow, W still ahead after the stall. Keeping the old
+        # schedule left every catch-up iteration over the trigger, each judged
+        # again with a lag that no longer measured what R ate: servo on, a
+        # 0.5 s stall was judged six times; servo off, a 0.55 s one five
+        # times, the last passing for a lap and re-anchoring with W still
+        # ahead (3344 B of unplayed audio NEUTRAL-filled).
+        for servo, stall_s in ((True, 0.5), (False, 0.55)):
+            with self.subTest(servo=servo, stall_s=stall_s):
+                api, outcomes = self._judged_run(stall_s, servo=servo, consumer_scale=0.8)
+                self.assertEqual(len(outcomes), 1, outcomes)
+                self.assertIsInstance(outcomes[0], audio_mod.StallInsideLead)
+                assert api.stalled_until is not None
+                after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+                self.assertEqual(after, 0)
+
+    def test_a_stall_leaving_w_within_the_slack_of_r_is_reanchored_at_once(self):
+        # Servo on, consumer 20 % slow, 0.55 s stall: W is 684 B ahead of R
+        # when R is read, under the read's travel plus a chunk, so it counts
+        # as lapped and is re-anchored on the first judgment, NEUTRAL-filling
+        # what was left of that lead. Judged inside the lead with the old
+        # schedule kept, it was re-judged until a false lap NEUTRAL-filled
+        # 3004 B.
+        api, outcomes = self._judged_run(0.55, servo=True, consumer_scale=0.8)
+        self.assertEqual(len(outcomes), 1, outcomes)
+        self.assertIsInstance(outcomes[0], int)
         assert api.stalled_until is not None
         after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
         self.assertLessEqual(after, 1024)
