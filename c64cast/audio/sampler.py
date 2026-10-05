@@ -427,6 +427,7 @@ class UltimateAudioSampler:
         # in read-head bytes. The read head is the wall clock, so the window is
         # wall time.
         self._late_since: int | None = None
+        self._late_last = 0  # read-head byte position of the latest late write
         self._late_reanchor_bytes = int(LATE_REANCHOR_S * self._actual_rate) * self.bps
         # Re-anchors this activation, and how far they put the sound behind
         # the picture since the last splice re-aligned it.
@@ -901,13 +902,19 @@ class UltimateAudioSampler:
         _content_pos, unless writes have been late for LATE_REANCHOR_S of
         read-head time, in which case the producer is not catching up and the
         audio is re-anchored _reanchor_lead past the read head (moving
-        _content_pos)."""
+        _content_pos). A gap of that long with no late write starts a new
+        run."""
         c = self._content_pos
         floor = consumed + self._flush_margin
         if c >= floor:
             self._late_since = None
             return c
-        if self._late_since is None:
+        quiet = consumed - self._late_last > self._late_reanchor_bytes
+        self._late_last = consumed
+        if self._late_since is None or quiet:
+            # A run is late writes in a row. One late write before a producer
+            # stall and the next after it are not: nothing was dropped in
+            # between, and the producer may be about to burst back on time.
             self._late_since = consumed
             return c
         if consumed - self._late_since < self._late_reanchor_bytes:

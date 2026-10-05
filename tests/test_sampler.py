@@ -799,6 +799,18 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertFalse(self._write(100))
         self.assertEqual(smp._reanchors, 0)
 
+    def test_a_producer_stall_between_late_writes_restarts_the_window(self):
+        # The last chunk before a stall lands a little late; the next arrives
+        # after the stall. Nothing was dropped in between, so the backlog
+        # burst that follows gets a whole window to catch up in.
+        smp = self.smp
+        self.consumed = 1000
+        smp._written = smp._content_pos = self.consumed + smp._flush_margin - 10
+        self.assertTrue(self._write(100))  # 10 bytes late: a run begins
+        self.consumed += 2 * smp._late_reanchor_bytes  # the stall
+        self.assertFalse(self._write(100))
+        self.assertEqual(smp._reanchors, 0)
+
     def test_a_splice_restarts_the_late_window(self):
         # The demuxer's re-seek delay makes the first post-splice audio late;
         # that is a fresh run, not a continuation of the one before the splice.
