@@ -21,13 +21,29 @@ import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from _fakes import RestoresLogging
 
+from c64cast import _redact
 from c64cast._redact import redact_secrets, redact_source_line
 from c64cast.app import cli_commands
 
 LOGIN_LINE = "web console: open http://127.0.0.1:8123/api/login?token=s3cr3t&next=/"
+
+
+def _hidden_value_ladder(levels: int, filler: int) -> str:
+    """`levels` hidden values, each one separator level shallower than the
+    last, then `filler` characters, then the encoded `&`s that end them
+    deepest first, so each value runs on past the one before it."""
+    return (
+        "".join(
+            f"token%{'25' * (levels + 1)}3Dpassword%{'25' * e}3Dx%{'25' * (levels + 1)}26"
+            for e in range(levels - 1, -1, -1)
+        )
+        + "y" * filler
+        + "".join(f"%{'25' * d}26" for d in range(levels, -1, -1))
+    )
 
 
 def _record(message: str) -> logging.LogRecord:
@@ -344,19 +360,36 @@ class RedactSecretsTest(unittest.TestCase):
             "token%3Apassword " * 8_000,
             'sig="' + "token:'" * 8_000 + '"',
             ('sig="x token:\'"' + "sig='y token:\"'") * 4_000,
-            # Each `&` at the end ends one hidden value and lets the next, one
-            # level shallower, run on past it.
-            "".join(
-                f"token%{'25' * 201}3Dpassword%{'25' * e}3Dx%{'25' * 201}26"
-                for e in range(199, -1, -1)
-            )
-            + "y" * 400_000
-            + "".join(f"%{'25' * d}26" for d in range(200, -1, -1)),
+            _hidden_value_ladder(200, 400_000),
         ):
             with self.subTest(line=line[:24]):
                 start = time.perf_counter()
                 redact_secrets(line)
                 self.assertLess(time.perf_counter() - start, 2.0)
+
+    def test_a_hidden_value_ladder_reads_the_line_once(self):
+        """A hidden value that runs past an earlier one is read on from where
+        that one stopped, so the ends of every rung together cost one pass
+        over the line. Read from each rung's own end instead, the filler is
+        read once per rung. This counts characters rather than timing them:
+        at 200 rungs the rereading costs about 1 s, which a loaded machine
+        can hide under any time bound loose enough to stay quiet."""
+        line = _hidden_value_ladder(50, 5_000)
+        unquoted_end = _redact._unquoted_end
+        scanned = 0
+
+        def counting_unquoted_end(text: str, pos: int, depth: int) -> int:
+            nonlocal scanned
+            end = unquoted_end(text, pos, depth)
+            scanned += end - pos
+            return end
+
+        with mock.patch.object(_redact, "_unquoted_end", counting_unquoted_end):
+            redacted = redact_secrets(line)
+        self.assertNotIn("y", redacted)
+        # At least the filler was read, so the count measured this path.
+        self.assertGreaterEqual(scanned, 5_000)
+        self.assertLessEqual(scanned, len(line))
 
     def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
         """The short names are why `\\w*` cannot front them: `sortkey` would be
