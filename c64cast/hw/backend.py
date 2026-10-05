@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
@@ -162,9 +163,10 @@ class HardwareProfile:
         """The largest payload one write carries for the per-write floor alone:
         the knee of `write_cost_s`, ~2.1 KB on the Ultimate. A streaming writer
         coalesces up to this, since below it a second write costs a whole
-        floor and the bytes cost nothing."""
+        floor and the bytes cost nothing. A link with no marginal per-byte
+        cost has no knee, so every payload is free: `sys.maxsize`."""
         if self.write_cost_per_byte_s <= 0:
-            return 0
+            return sys.maxsize
         knee = (self.write_cost_floor_s - self.write_cost_intercept_s) / self.write_cost_per_byte_s
         return max(0, int(knee))
 
