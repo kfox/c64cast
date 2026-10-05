@@ -1777,10 +1777,12 @@ class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
                 # BEQ +3 (skip the 3-byte JSR if CIA #1 not pending)
                 self.assertEqual(self.HANDLER[lda_off + 5], 0xF0)
                 self.assertEqual(self.HANDLER[lda_off + 6], 0x03)
-                # JSR $C180 (pump body in audio.py)
+                # JSR REU_PUMP_BODY_SUBROUTINE_ADDR (pump body in audio.py)
                 self.assertEqual(self.HANDLER[lda_off + 7], 0x20)
-                self.assertEqual(self.HANDLER[lda_off + 8], 0x80)
-                self.assertEqual(self.HANDLER[lda_off + 9], 0xC1)
+                self.assertEqual(self.HANDLER[lda_off + 8], REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF)
+                self.assertEqual(
+                    self.HANDLER[lda_off + 9], (REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF
+                )
 
 
 class ReuPumpBodySubroutineTest(unittest.TestCase):
