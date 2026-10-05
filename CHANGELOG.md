@@ -354,6 +354,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   covers at least one frequency bin, and a band count larger than the window
   can split is refused with an error instead of producing empty bands.
 
+- **A video whose audio fell behind on the Ultimate Audio sampler stays in
+  sync with its sound.** When the decoder could not keep up, the sampler moved
+  the audio later to keep it playing, but the picture kept following the
+  sampler's own clock, so it ran ahead of the sound by the same amount for the
+  rest of the scene. The picture now follows the audio as heard.
+
 - **Reactive visuals for an audio file now pulse with the beat you hear.**
   The analyzer used to read the newest audio decoded, which runs ahead of
   playback by the audio queued for the C64: about 1.5 seconds on the 4-bit

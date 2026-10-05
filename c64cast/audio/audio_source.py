@@ -45,6 +45,22 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def heard_seconds(audio: AudioStreamer | UltimateAudioSampler) -> float:
+    """How much of the audio pushed to ``audio`` has been heard, on the
+    sink's clock. The sampler's clock is the wall since its gate, and a
+    re-anchor plays every later sample that much past its slot, so its lag
+    comes off; the DAC's clock counts the samples played and needs no
+    correction. Everything that reads a sink's clock as "the sound now" (an
+    audio file's analyzer and end, a video's playback clock) reads this, so
+    none of them runs a re-anchor's lag ahead of the sound."""
+    played = audio.position_seconds() or 0.0
+    if getattr(audio, "is_sampler", False):
+        # At this position's read head: the clock moves between the two
+        # reads, and inside a re-anchor's hold that stepped the sample back.
+        played -= cast("UltimateAudioSampler", audio).reanchor_lag_seconds(played)
+    return played
+
+
 @runtime_checkable
 class AudioSource(Protocol):
     """How a SourceScene makes sound. `setup`/`teardown` bracket the scene;
@@ -604,18 +620,10 @@ class AudioFileSource:
         return True
 
     def _heard_seconds(self) -> float:
-        """How much of the pushed audio has been heard, on the sink's clock.
-        The sampler's clock is the wall since its gate, and a re-anchor plays
-        every later sample that much past its slot, so its lag comes off; the
-        DAC's clock counts the samples played and needs no correction. The
-        analyzer's index and the end of track both read this, so the last
-        lag's worth of a re-anchored track is not cut off."""
-        played = self._audio.position_seconds() or 0.0
-        if self._is_sampler:
-            # At this position's read head: the clock moves between the two
-            # reads, and inside a re-anchor's hold that stepped the sample back.
-            played -= cast("UltimateAudioSampler", self._audio).reanchor_lag_seconds(played)
-        return played
+        """`heard_seconds` of the sink. The analyzer's index and the end of
+        track both read this, so the last lag's worth of a re-anchored track
+        is not cut off."""
+        return heard_seconds(self._audio)
 
     def teardown(self) -> None:
         # The sink is unhooked before the streamer stops, so no callback can

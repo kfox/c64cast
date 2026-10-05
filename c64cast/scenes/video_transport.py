@@ -21,6 +21,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Literal
 
+from c64cast.audio.audio_source import heard_seconds
 from c64cast.control.transport import LoopPresetStore, timecode
 from c64cast.hw.c64 import RegionID
 
@@ -61,7 +62,7 @@ class VideoTransportControls:
         self.wall_anchor_time = 0.0
         self.resync = False
         # The resync path's post-touch clock, in the scaled/PTS domain:
-        # audio_anchor_clock_s + (audio.position_seconds() - audio_anchor_pos),
+        # audio_anchor_clock_s + (heard_seconds(audio) - audio_anchor_pos),
         # frozen while paused, re-anchored at touch/pause/resume/seek.
         self.audio_anchor_clock_s = 0.0
         self.audio_anchor_pos = 0.0
@@ -102,14 +103,16 @@ class VideoTransportControls:
                 assert sc.audio is not None
                 if self.paused:
                     return self.audio_anchor_clock_s
-                return self.audio_anchor_clock_s + (
-                    sc.audio.position_seconds() - self.audio_anchor_pos
-                )
+                return self.audio_anchor_clock_s + (heard_seconds(sc.audio) - self.audio_anchor_pos)
             if self.paused:
                 return self.wall_anchor_clock_s
             return self.wall_anchor_clock_s + (time.time() - self.wall_anchor_time)
         if sc.audio and sc.audio.sample_rate:
-            return sc.audio.position_seconds()
+            # The heard position, not the sink's raw clock: a sampler that
+            # re-anchored late audio plays it that far behind its clock, and
+            # the picture read off the raw clock ran that far ahead of the
+            # sound and ended with the last lag's worth of audio unshown.
+            return heard_seconds(sc.audio)
         return time.time() - sc.wall_start_time
 
     def touch(self) -> None:
@@ -139,7 +142,7 @@ class VideoTransportControls:
             # The pre-touch clock is the audio position in the scaled domain, so
             # the anchor delta starts at zero and playback carries on unbroken.
             self.audio_anchor_clock_s = clock_s
-            self.audio_anchor_pos = sc.audio.position_seconds()
+            self.audio_anchor_pos = heard_seconds(sc.audio)
         else:
             self.wall_anchor_clock_s = clock_s
             self.wall_anchor_time = time.time()
@@ -167,7 +170,9 @@ class VideoTransportControls:
         assert sc.audio is not None and sc.source is not None
         self.audio_anchor_clock_s = self.content_to_clock(target_s)
         # The flush keeps what already sits in the C64 ring, so the target's
-        # first sample is heard one ring lead from now, not at once.
+        # first sample is heard one ring lead from now, not at once. The raw
+        # clock, not heard_seconds(): the splice clears a sampler's re-anchor
+        # lag, so after it the heard position is the clock.
         self.audio_anchor_pos = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
         sc.source.request_seek(target_s)
         if unmute:

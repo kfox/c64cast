@@ -958,6 +958,22 @@ class _FakeSceneAudio:
             self._events.append(("flush", silence_output))
 
 
+class _FakeSamplerAudio(_FakeSceneAudio):
+    """A `_FakeSceneAudio` that plays as a sampler whose re-anchors put the
+    sound `lag` seconds behind its clock."""
+
+    is_sampler = True
+
+    def __init__(self, position: float = 0.0):
+        super().__init__(position=position)
+        self.lag = 0.0
+        self.lag_read_at: list[float | None] = []
+
+    def reanchor_lag_seconds(self, position: float | None = None) -> float:
+        self.lag_read_at.append(position)
+        return self.lag
+
+
 class EmitAudioSeekGuardTest(unittest.TestCase):
     """AVFileSource._emit_audio drops audio while a seek is pending (so stale
     pre-seek samples don't reach the consumer past the splice flush)."""
@@ -1093,6 +1109,27 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertAlmostEqual(scene.transport_position(), 42.0)
         scene.transport_resume()
         self.assertEqual(source.seeks[-1], 42.0)
+
+    def test_untouched_clock_follows_a_sampler_s_reanchored_sound(self):
+        # A sampler that re-anchored late audio plays it that far behind its
+        # clock; read raw, the picture ran ahead of the sound by that much.
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        audio = _FakeSamplerAudio(position=10.0)
+        audio.lag = 0.25
+        scene.audio = audio  # type: ignore[assignment]
+        self.assertAlmostEqual(scene.transport.clock_s(), 9.75)
+        self.assertEqual(audio.lag_read_at, [10.0])  # taken at that position's head
+
+    def test_resync_clock_follows_a_sampler_s_reanchored_sound(self):
+        scene, source, _ = self._resync_scene(position=4.0)
+        audio = _FakeSamplerAudio(position=4.0)
+        scene.audio = audio  # type: ignore[assignment]
+        audio.lag = 0.1
+        scene.transport.touch()  # anchor_clock = heard 3.9, anchor_pos = heard 3.9
+        self.assertAlmostEqual(scene.transport.clock_s(), 3.9)
+        audio._position = 9.0
+        audio.lag = 0.6  # a re-anchor since the touch
+        self.assertAlmostEqual(scene.transport.clock_s(), 8.4)
 
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
