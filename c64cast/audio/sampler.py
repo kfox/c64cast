@@ -984,6 +984,7 @@ class UltimateAudioSampler:
                 return False
             consumed = self._read_consumed_bytes()
             before = self._content_pos
+            lag_before = self._reanchor_lag_bytes
             last_try, last_late = self._last_try, self._last_late
             c = self._late_anchor(consumed)
             # _writer_step sized this payload to the room under the lead target
@@ -1022,6 +1023,14 @@ class UltimateAudioSampler:
                     # again, and the outage counts as a gap with no attempt.
                     # Timed across the retries' back-off, the lateness grew and
                     # re-anchored a backlog that would have lined up at once.
+                    # A re-anchor this attempt made is undone with it, so the
+                    # retry anchors afresh: kept, every late retry of a
+                    # sticky producer re-anchored again, and the outage's
+                    # length went into content_lag_seconds for audio that
+                    # never landed, which an audio-file scene then waited out
+                    # on silence once the writer gave up.
+                    self._content_pos = before
+                    self._reanchor_lag_bytes = lag_before
                     self._late_ref = None
                     self._burst_start = self._prev_start = None
                     self._last_try, self._last_late = last_try, last_late

@@ -1061,6 +1061,31 @@ class SamplerLateReanchorTest(unittest.TestCase):
             smp.content_lag_seconds, first + shift / smp.bps / smp._actual_rate, places=9
         )
 
+    def test_a_reanchor_whose_write_failed_adds_no_content_lag(self):
+        # A link outage under a producer already shown slow: every retry is
+        # late and re-anchors at once. Kept, each failed one's shift added up
+        # to the outage's length of lag for audio that never landed, and an
+        # audio-file scene, which waits out the lag, sat that long on silence
+        # after the writer gave up. Only the re-anchor that lands counts.
+        smp = self.smp
+        self._reanchor_once()
+        before_lag, before_pos = smp.content_lag_seconds, smp._content_pos
+        with mock.patch.object(self.api, "reu_write", side_effect=OSError("link down")):
+            for _ in range(20):
+                self.consumed = max(self.consumed, smp._content_pos) + 400
+                with quiet_logging(), self.assertRaises(OSError):
+                    self._write(40)
+                smp._carry = None  # the writer's next pass takes the carry back
+        self.assertEqual(smp.content_lag_seconds, before_lag)
+        self.assertEqual(smp._content_pos, before_pos)
+        self.consumed += 400
+        with quiet_logging():
+            self.assertTrue(self._write(40))
+        shift = self.consumed + smp._reanchor_lead - before_pos
+        self.assertAlmostEqual(
+            smp.content_lag_seconds, before_lag + shift / smp.bps / smp._actual_rate, places=9
+        )
+
     def test_a_splice_or_arm_clears_the_content_lag(self):
         # A splice anchors the next audio afresh, and arm() starts an
         # activation whose clock and content both begin at zero.
