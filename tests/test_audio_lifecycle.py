@@ -1044,6 +1044,30 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(api.r_reads, 1)
         self.assertEqual(api.writes, [], "re-anchored on a slow read of R")
         self.assertTrue(any("could not be re-anchored" in line for line in cm.output))
+        self.assertTrue(any("holding the pace correction" in line for line in cm.output))
+
+    def test_a_slow_r_read_with_the_servo_off_claims_no_pace_correction(self):
+        # Servo off, the re-anchor is the only reader of R: the slow-read
+        # warning must not say a pace correction is being held.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.host_dma_servo = False
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.4)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs(audio_rate_mod.log, level="WARNING") as cm,
+            self.assertLogs(audio_mod.log, level="WARNING"),
+        ):
+            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+        self.assertIn("not reading it again", cm.output[0])
+        self.assertNotIn("pace correction", cm.output[0])
 
     def _superseded_during(self, op: str) -> tuple[AudioStreamer, _RFakeAPI]:
         """A live backlogged streamer whose worker is replaced by a stop() and

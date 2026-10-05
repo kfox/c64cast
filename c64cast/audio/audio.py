@@ -1127,8 +1127,8 @@ class AudioStreamer:
         if r_addr is None:
             self._stall_log.warn(
                 "audio: DAC worker stalled %.2f s behind the C64's playback "
-                "(a blocked or redialed link); the read pointer could not be read "
-                "in time, so the write head could not be re-anchored",
+                "(a blocked or redialed link); the read pointer could not be read, "
+                "or not in time, so the write head could not be re-anchored",
                 lag,
             )
             self.servo.note_disturbance()
