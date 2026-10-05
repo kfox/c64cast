@@ -308,11 +308,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   picture by 0.15 s, and by about half a second once the clip took more than
   a moment to seek. A decoding stall long enough to run the audio buffer
   down added about 0.37 s more each time. The lag never recovered. Now, when
-  the clip catches up after a seek or a stall, the sound lines up with the
-  picture again. What a seek costs instead is the first few tens of
-  milliseconds of the new position's audio. If the audio cannot catch up, it
-  keeps playing behind the picture, as it did before, and a warning is
-  logged. That happens with a source slower than real time, a live stream
+  the clip catches up within half a second after a seek or a stall, the sound
+  lines up with the picture again. A clip that takes longer to catch up keeps
+  about 0.2 s of lag until the next seek, loop wrap or resume. What a seek
+  costs instead is the first few tens of milliseconds of the new position's
+  audio. If the audio cannot catch up, it keeps playing behind the picture,
+  as it did before, and a warning is logged. That happens with a source slower than real time, a live stream
   that resumes after a long stall, or a stream whose start timed out.
 
 - **The Ultimate Audio sampler sends its audio to the Ultimate in about 40
