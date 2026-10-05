@@ -214,6 +214,10 @@ _SEPARATOR = re.compile(r"[=:] | % (?P<enc> (?:25)*+ ) 3[ad]", re.IGNORECASE | r
 #: encoded value whose separator is at least that deep.
 _ENCODED_AMP = re.compile(r"% (?P<enc> (?:25)*+ ) 26", re.IGNORECASE | re.VERBOSE)
 
+#: What may end an unquoted value: a character that ends every one, or an
+#: encoded `&`, which ends one only as :data:`_ENCODED_AMP` says.
+_UNQUOTED_STOP = re.compile(r"""[\s&"',}] | % (?P<enc> (?:25)*+ ) 26""", re.VERBOSE)
+
 #: The depth :func:`_hidden_values` gives a raw separator, which no encoded
 #: `&` ends, and the rank it gives a value that ended where every value does.
 _RAW, _EVERY = -1, -2
@@ -268,13 +272,24 @@ def _name_starts(text: str, lo: int, k: int) -> list[int]:
     return starts
 
 
-def _match_past(text: str, lo: int, k: int, end: int) -> re.Match[str] | None:
+def _unquoted_end(text: str, pos: int, depth: int) -> int:
+    """Where an unquoted value whose separator is at `depth` ends, given that
+    nothing before `pos` ends it."""
+    for stop in _UNQUOTED_STOP.finditer(text, pos):
+        if stop.group("enc") is None or _depth(stop) <= depth:
+            return stop.start()
+    return len(text)
+
+
+def _match_past(
+    text: str, lo: int, k: int, end: int, endpos: int | None = None
+) -> re.Match[str] | None:
     """A :data:`_SECRET_VALUE` match for a name ending at `k` whose value runs
-    past `end`."""
+    past `end`, reading `text` only as far as `endpos`."""
     if k <= lo or not _is_name_char(text[k - 1], dash=False):
         return None
     for start in _name_starts(text, lo, k):
-        m = _SECRET_VALUE.match(text, start)
+        m = _SECRET_VALUE.match(text, start, len(text) if endpos is None else endpos)
         if m is not None and m.end("kv_value") > end:
             return m
     return None
@@ -304,7 +319,10 @@ def _hidden_values(text: str, outer: re.Match[str], reach: list[int]) -> list[Sp
     only the shallowest one that names a secret, since its value ends no
     earlier than any deeper one's. `reach` is the furthest such value found
     so far and the depth of what ended it; a value inside it that the same
-    `&` would end is already masked, and is not read a second time. A value
+    `&` would end is already masked, and is not read a second time. One that
+    runs past it does so through all of it, so it is read on from there:
+    each `&` takes a separator one level shallower to pass, and re-reading
+    the whole of each value made a line of `n` levels cost `n` passes. A value
     an `&` ended is masked whole; what is lost is only the run of names past
     it, which the rule cannot tell from more of the value."""
     value_start, end = outer.span("kv_value")
@@ -342,10 +360,17 @@ def _hidden_values(text: str, outer: re.Match[str], reach: list[int]) -> list[Sp
             break
         quote = _back_over(text, value_start, sep_start, "\"'", ("22", "27"))
         for name_end in (sep_start, quote):
-            if name_end is not None and (m := _match_past(text, lo, name_end, end)) is not None:
-                found.append(m.span("kv_value"))
-                stop = _ENCODED_AMP.match(text, m.end("kv_value"))
-                reach[:] = [m.end("kv_value"), _depth(stop) if stop is not None else _EVERY]
+            # The outer value holds no quote, no space and no `&` this
+            # separator stops at, and neither is `amp` one, so only the name
+            # needs reading: the value is unquoted, and runs past `end`.
+            if (
+                name_end is not None
+                and (m := _match_past(text, lo, name_end, end, end + 1)) is not None
+            ):
+                value_end = _unquoted_end(text, max(end, reach[0]), depth)
+                found.append((m.start("kv_value"), value_end))
+                stop = _ENCODED_AMP.match(text, value_end)
+                reach[:] = [value_end, _depth(stop) if stop is not None else _EVERY]
                 return found
     return found
 

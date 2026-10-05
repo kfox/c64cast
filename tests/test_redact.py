@@ -316,6 +316,15 @@ class RedactSecretsTest(unittest.TestCase):
             ("token=password =S3CR", "token=REDACTED =REDACTED"),
             ("token%3Apassword=a%26S3CR", "token%3AREDACTED"),
             ("token%253Apassword%3Da%2526S3CR x", "token%253AREDACTED x"),
+            (
+                "token%3Dpassword=a%26b c token%3Dpassword=d%26S3CR",
+                "token%3DREDACTED c token%3DREDACTED",
+            ),
+            (
+                "token%25253Dpassword%253Dx%25252526token%25253Dpassword%3Dx%25252526"
+                "S3CR%252526S3CR%2526S3CR%26tail",
+                "token%25253DREDACTED%26tail",
+            ),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
@@ -334,6 +343,14 @@ class RedactSecretsTest(unittest.TestCase):
             "token%3Apassword " * 8_000,
             'sig="' + "token:'" * 8_000 + '"',
             ('sig="x token:\'"' + "sig='y token:\"'") * 4_000,
+            # Each `&` at the end ends one hidden value and lets the next, one
+            # level shallower, run on past it.
+            "".join(
+                f"token%{'25' * 201}3Dpassword%{'25' * e}3Dx%{'25' * 201}26"
+                for e in range(199, -1, -1)
+            )
+            + "y" * 400_000
+            + "".join(f"%{'25' * d}26" for d in range(200, -1, -1)),
         ):
             with self.subTest(line=line[:24]):
                 start = time.perf_counter()
