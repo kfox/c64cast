@@ -883,7 +883,15 @@ class UltimateAudioSampler:
                 self._carry_back(epoch, data)
                 return False
             consumed = self._read_consumed_bytes()
+            before = self._content_pos
             c = self._late_anchor(consumed)
+            # _writer_step sized this payload to the room under the lead target
+            # at the old _content_pos; a re-anchor moved it forward, so the tail
+            # past the target waits for the next pass.
+            keep = max(0, consumed + self._lead_target - c)
+            if c != before and len(data) > keep:
+                self._carry_back(epoch, data[keep:])
+                data = data[:keep]
             end = c + len(data)
             first = max(c, consumed + self._flush_margin)
             if first < end:

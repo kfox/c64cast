@@ -847,6 +847,19 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertFalse(self._write(100))  # late: dropped, and a new run begins
         self.assertEqual(smp._reanchors, 0)
 
+    def test_a_reanchored_write_stops_at_the_lead_target(self):
+        # The payload was sized for the room the late anchor left; written whole
+        # from the re-anchor it would pass the lead target, so its tail is carried.
+        smp = self.smp
+        self.consumed = 5000
+        self.assertFalse(self._write(100))  # late: a run begins
+        self.consumed += smp._late_reanchor_bytes
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            self.assertTrue(self._write(smp._lead_target))
+        self.assertEqual(smp._content_pos, self.consumed + smp._lead_target)
+        assert smp._carry is not None
+        self.assertEqual(len(smp._carry[1]), smp._reanchor_lead)
+
     def test_an_on_time_write_ends_the_late_run(self):
         smp = self.smp
         self.consumed = 1000
