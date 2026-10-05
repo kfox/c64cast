@@ -1408,6 +1408,42 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.consumed = smp._content_pos + 40  # and past it
         self.assertAlmostEqual(smp.reanchor_lag_seconds(), landed, places=9)
 
+    def test_a_reanchor_given_up_inside_a_landed_hold_leaves_that_hold_in_the_lag(self):
+        # A sticky re-anchor can come up to a flush margin before the landed
+        # one's anchor, with the head still inside that one's hold. Given up,
+        # the lag is the landed one's as it was: the head has not crossed the
+        # rest of its hold, so the heard sample must not jump past it.
+        smp = self.smp
+        self._reanchor_once()
+        hold_end = smp._reanchor_lag[1][-1][1]
+        self.consumed = smp._content_pos - smp._flush_margin + smp.bps  # late by one sample
+        self.assertLess(self.consumed, hold_end)
+        before = smp.reanchor_lag_seconds()
+        self.assertLess(before, smp.content_lag_seconds)  # inside the landed hold
+        with mock.patch.object(self.api, "reu_write", side_effect=OSError("link down")):
+            with self.assertNoLogs("c64cast.audio.sampler"), self.assertRaises(OSError):
+                self._write(40)
+        smp._carry = None
+        self.assertIsNotNone(smp._unlanded_reanchor)
+        smp._failed = True
+        self.assertAlmostEqual(smp.reanchor_lag_seconds(), before, places=9)
+        self.consumed = hold_end + 40
+        self.assertAlmostEqual(smp.reanchor_lag_seconds(), smp.content_lag_seconds, places=9)
+
+    def test_a_given_up_lag_is_taken_at_its_own_head_for_an_earlier_position(self):
+        # A position read before the head the lag was worked out at gets the
+        # sample heard at that head, given up or not: taken at the earlier
+        # position, the given-up lag put the heard sample behind what a fresh
+        # read had already reported.
+        smp = self.smp
+        self._reanchor_once()
+        self._fail_reanchors(3)
+        smp._failed = True
+        step = 40 / smp.bps / smp._actual_rate
+        earlier = (self.consumed - 40 + 0.5) / smp._actual_rate  # 40 samples before the head
+        fresh = smp.reanchor_lag_seconds()
+        self.assertAlmostEqual(smp.reanchor_lag_seconds(earlier), fresh - step, places=9)
+
     def _hook_lag_fields(self, on_get: Any = None, on_set: Any = None) -> None:
         # content_lag_seconds reads the lag and the pending re-anchor without
         # _io_lock, so the writer can land a re-anchor between its reads, or

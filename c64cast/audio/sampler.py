@@ -1435,7 +1435,7 @@ class UltimateAudioSampler:
             if self._lag_seq == seq:
                 break
         at = max(head, lag[2])
-        lag_bytes = self._lag_bytes(lag, at) - (at - head)
+        lag_bytes = self._lag_bytes(lag, at)
         failed = self._failed_lag_bytes()
         if failed:
             # The given-up shift's own hold is part of what the head has not
@@ -1443,8 +1443,12 @@ class UltimateAudioSampler:
             # shift off on top took it twice, and inside that hold read short
             # of the lag that did land. Without the given-up re-anchors the
             # lag is the content lag, less any of the landed holds' rest the
-            # head has not crossed, so it is the smaller of the two.
-            lag_bytes = max(0, min(lag_bytes, lag[0] - failed))
+            # head has not crossed, so it is the smaller of the two. Taken at
+            # the lag's own head like the rest of it: worked out after the
+            # step back below, an earlier position's heard sample fell behind
+            # the one heard at that head.
+            lag_bytes = min(lag_bytes, lag[0] - failed)
+        lag_bytes -= at - head
         return lag_bytes / self.bps / self._actual_rate
 
     def _end_lag_window(self) -> None:
