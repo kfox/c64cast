@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import time
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 import numpy as np
@@ -111,6 +112,22 @@ class BandTest(unittest.TestCase):
             band_edges(16, 32)
         with self.assertRaises(ValueError):
             AudioFeatureAnalyzer(SR, n_bands=16, fft_size=32)
+
+    def test_config_refuses_a_band_layout_the_analyzer_cannot_run(self):
+        # At load, not when a reactive scene starts: there the audio source
+        # logs the error and plays on without reacting.
+        from c64cast.app import config as cfgmod
+
+        bad: list[tuple[Any, int]] = [(512, 1024), (0, 1024), (8, 16), (8.5, 1024), (True, 1024)]
+        for bands, fft in bad:
+            cfg = cfgmod.Config()
+            cfg.audio_features.bands = bands
+            cfg.audio_features.fft_size = fft
+            with self.assertRaises(ValueError, msg=f"{bands} bands at {fft}"):
+                cfgmod.validate_sections(cfg)
+        cfg = cfgmod.Config()
+        cfg.audio_features.bands = 511
+        cfgmod.validate_sections(cfg)
 
     def test_sweep_moves_the_peak_band_upward(self):
         # A sine sweep must walk the peak band index low→high, monotonically.

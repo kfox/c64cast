@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from c64cast._redact import redact_source_line
+from c64cast.audio.audio_features import check_layout
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
@@ -3611,6 +3612,17 @@ def _validate_tr_dma_slicing(tr: TeensyromCfg) -> None:
             raise ValueError(f"[teensyrom].{name} = {value!r} — want an integer 0-255")
 
 
+def _validate_audio_features(af: AudioFeaturesCfg) -> None:
+    """A band count the analysis window cannot split fails here, at load,
+    instead of when a reactive scene starts its analyzer, where the error is
+    logged and the scene plays on without reacting."""
+    for name in ("bands", "fft_size"):
+        value = getattr(af, name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"[audio_features].{name} = {value!r} — want an integer")
+    check_layout(af.bands, af.fft_size)
+
+
 def _validate_choice_fields(cfg: Config) -> None:
     """Reject a scalar-section string value that is outside its declared
     `choices`.
@@ -3762,6 +3774,7 @@ def validate_sections(cfg: Config) -> None:
     _validate_host_sid_chips(cfg.hardware)
     _validate_host_sid_tune_match(cfg.hardware)
     _validate_tr_dma_slicing(cfg.teensyrom)
+    _validate_audio_features(cfg.audio_features)
     _validate_choice_fields(cfg)
     _validate_force_palette(cfg.color)
 

@@ -73,6 +73,19 @@ def band_edges(n_bands: int, fft_size: int) -> np.ndarray:
     return edges.astype(np.int32)
 
 
+def check_layout(n_bands: int, fft_size: int) -> None:
+    """Raise ValueError unless an analyzer can run `n_bands` bands over an
+    `fft_size`-sample window. `config.validate_sections` calls this too, so a
+    band count the window cannot split is refused when the config loads rather
+    than when a reactive scene starts, where the audio source swallows the
+    error and plays on without reacting."""
+    if fft_size < 32:
+        raise ValueError("audio features: fft_size must be >= 32")
+    if n_bands < 1:
+        raise ValueError("audio features: bands must be >= 1")
+    band_edges(n_bands, fft_size)
+
+
 class AnalysisTap:
     """A small lock-protected mono float ring the audio path pushes into and the
     feature thread reads windows out of.
@@ -179,10 +192,7 @@ class AudioFeatureAnalyzer:
         onset_sensitivity: float = 1.0,
         nominal_dt: float = 1.0 / 60.0,
     ):
-        if n_bands < 1:
-            raise ValueError("audio features: bands must be >= 1")
-        if fft_size < 32:
-            raise ValueError("audio features: fft_size must be >= 32")
+        check_layout(int(n_bands), int(fft_size))
         self.sample_rate = float(sample_rate)
         self.n_bands = int(n_bands)
         self.fft_size = int(fft_size)
