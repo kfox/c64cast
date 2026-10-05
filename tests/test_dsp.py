@@ -299,6 +299,19 @@ class AudioDSPChainTest(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(after)), bad)
             self.assertGreater(float(np.sqrt(np.mean(after**2))), 0.05, bad)
 
+    def test_a_huge_finite_sample_does_not_latch_the_chain(self):
+        # A finite sample near float32's limit overflows to inf inside
+        # PreEmphasis (and AGC's output), then latches the envelopes exactly
+        # as an inf input would.
+        for is_mic in (False, True):
+            dsp = AudioDSP(DSPParams(enabled=True, agc=True), sample_rate=SR, is_mic=is_mic)
+            block = _sine(500, 0.05, amp=0.5)
+            block[100], block[101] = 3e38, -3e38
+            self.assertTrue(np.all(np.isfinite(dsp.process(block))), is_mic)
+            after = dsp.process(_sine(500, 2.0, amp=0.5))[-int(SR * 0.5) :]
+            self.assertTrue(np.all(np.isfinite(after)), is_mic)
+            self.assertGreater(float(np.sqrt(np.mean(after**2))), 0.05, is_mic)
+
     def test_empty_input(self):
         dsp = AudioDSP(DSPParams(enabled=True), sample_rate=SR, is_mic=False)
         out = dsp.process(np.zeros(0, dtype=np.float32))
