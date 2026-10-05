@@ -1,8 +1,8 @@
-"""The fixed C64 RAM regions in `$C000-$CFFF`, held disjoint wherever two of
-them can be live at once.
+"""The fixed C64 RAM regions in `$C000-$CFFF` and in the `$4000-$5FFF` audio
+ring, held disjoint wherever two of them can be live at once.
 
-Every module that puts 6502 code or data at a fixed address in that 4 KB picks
-the address on its own, so nothing but this test sees two of them at once.
+Every module that puts 6502 code or data at a fixed address in those ranges
+picks the address on its own, so nothing but this test sees two of them at once.
 big_text kept its shadow `$D016`/`$D018` bytes at `$C100`/`$C101`, the REU
 audio pump's IRQ entry, and every frame overwrote the pump's first two opcodes
 (#559). Two halves close that class:
@@ -13,7 +13,7 @@ audio pump's IRQ entry, and every frame overwrote the pump's first two opcodes
   with the reason; anything not listed is assumed to share a scene, so a new
   pairing fails until someone says why it is safe.
 * `SweepTest` reads every module under `c64cast/` and fails on a module-level
-  integer constant in `$C000-$CFFF` that `_REGIONS` does not map, so the next
+  integer constant in a swept range that `_REGIONS` does not map, so the next
   fixed address cannot skip the first half.
 """
 
@@ -30,11 +30,12 @@ from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr
 from c64cast.scenes.overlays import big_text
 from c64cast.sid import asid_player as ap
+from c64cast.sid import waveform
 from c64cast.video import modes_irq as mi
 
 _PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "c64cast"
-_SWEEP_LO = 0xC000
-_SWEEP_HI = 0xD000  # exclusive
+#: (start, exclusive end): the handler page and the audio ring.
+_SWEEP_RANGES = ((ah.RING_BUFFER_ADDR, ah.RING_BUFFER_END), (0xC000, 0xD000))
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,20 @@ _REGIONS: tuple[Region, ...] = (
         big_text.SHADOW_D018_ADDR,
         1,
         "c64cast.scenes.overlays.big_text:SHADOW_D018_ADDR",
+    ),
+    Region(
+        "dac_nmi",
+        "audio ring the NMI routine reads",
+        ah.RING_BUFFER_ADDR,
+        ah.RING_BUFFER_SIZE,
+        f"{_AH}:RING_BUFFER_ADDR",
+    ),
+    Region(
+        "waveform",
+        "bank-1 screen matrix (last-resort display bank)",
+        waveform._BANK1_SCREEN,
+        1000,
+        "c64cast.sid.waveform:_BANK1_SCREEN",
     ),
     Region(
         "dac_nmi",
@@ -216,6 +231,9 @@ _REGIONS: tuple[Region, ...] = (
 _NOT_A_REGION: dict[str, str] = {
     f"{_API}:_AUDIO_REGION_LO": "lower bound the SID-player relocator keeps clear",
     f"{_API}:_AUDIO_REGION_HI": "upper bound the SID-player relocator keeps clear",
+    "c64cast.hw.c64:KERNAL_CIA1_LATCH_PAL": "a CIA #1 timer latch value, not an address",
+    "c64cast.hw.c64:KERNAL_CIA1_LATCH_NTSC": "a CIA #1 timer latch value, not an address",
+    "c64cast.hw.vdc_rom:FRAMEBUF_ADDR": "an address in the C128 VDC's own RAM, not the C64's",
 }
 
 #: Owner pairs that overlap but are never live in the same scene, and why.
@@ -240,6 +258,11 @@ _NEVER_LIVE_TOGETHER: dict[frozenset[str], str] = {
         )
         for other in ("big_text", "dac_nmi", "reu_pump", "sid_player", "bank_swap", "asid")
     },
+    frozenset({"waveform", "dac_nmi"}): (
+        "WaveformScene.setup stops the DAC streamer before the SID starts, and "
+        "the scene plays the SID rather than DAC audio, so the ring is dormant "
+        "whenever bank 1 is the display bank"
+    ),
     frozenset({"char_rom_dump", "tr_spin"}): (
         "the dump needs read_memory, which the spin-stub firmware lacks"
     ),
@@ -286,8 +309,18 @@ class CoResidencyTest(unittest.TestCase):
     def test_regions_stay_inside_the_sweep_range(self):
         for r in _REGIONS:
             with self.subTest(region=str(r)):
-                self.assertGreaterEqual(r.start, _SWEEP_LO)
-                self.assertLessEqual(r.end, _SWEEP_HI)
+                self.assertTrue(
+                    any(lo <= r.start and r.end <= hi for lo, hi in _SWEEP_RANGES),
+                    "a region outside every swept range escapes the sweep",
+                )
+
+    def test_sid_player_keep_clear_covers_every_audio_handler(self):
+        # The SID-player relocator refuses layouts inside api's audio region,
+        # so the region has to cover every byte the DAC NMI and the REU pump
+        # place in the handler page.
+        audio = [r for r in _REGIONS if r.owner in ("dac_nmi", "reu_pump") and r.start >= 0xC000]
+        self.assertLessEqual(api._AUDIO_REGION_LO, min(r.start for r in audio))
+        self.assertGreaterEqual(api._AUDIO_REGION_HI, max(r.end for r in audio))
 
     def test_big_text_shares_no_byte_with_the_audio_handlers(self):
         # The #559 instance by literal address: the symbolic check above moves
@@ -322,7 +355,7 @@ def _swept_constants() -> dict[str, int]:
                 continue
             if not (isinstance(value, ast.Constant) and type(value.value) is int):
                 continue
-            if not _SWEEP_LO <= value.value < _SWEEP_HI:
+            if not any(lo <= value.value < hi for lo, hi in _SWEEP_RANGES):
                 continue
             literal = ast.get_source_segment(source, value) or ""
             if not literal.lower().startswith("0x"):
