@@ -1090,7 +1090,7 @@ class AudioStreamer:
     def _resync_after_stall(self, lag: float) -> int | None:
         """Recover from a worker stall longer than the ring lead; returns the
         chunk-grid address the next chunk lands at, or None when R cannot be
-        read (the schedule is then only snapped forward).
+        read promptly (the schedule is then only snapped forward).
 
         By now the consumer has played all of the lead and some of the ring's
         previous lap, and nothing written meanwhile can change that. What the
@@ -1104,8 +1104,12 @@ class AudioStreamer:
         A live input's backlog is the stall's: played late it would only add
         that much latency for the rest of the session, so it is dropped. A
         decoded source's is kept, and plays late — the picture is slaved to
-        the audio clock, which did not advance for what was not played."""
-        r_addr = self.read_consumer_ptr()
+        the audio clock, which did not advance for what was not played.
+
+        R comes from ``RateServo.read_r_promptly``: a stall is often a slow
+        server, and a read as slow as the one that tripped this would leave R
+        stale by more than the lead the anchor puts between them."""
+        r_addr = self.servo.read_r_promptly(self.chunk_size / self.effective_rate)
         dropped = 0
         if self.mic_stream is not None:
             dropped = self._drain_queue_samples()
@@ -1113,8 +1117,8 @@ class AudioStreamer:
         if r_addr is None:
             self._stall_log.warn(
                 "audio: DAC worker stalled %.2f s behind the C64's playback "
-                "(a blocked or redialed link); the read pointer is unreadable, so "
-                "the write head could not be re-anchored",
+                "(a blocked or redialed link); the read pointer could not be read "
+                "in time, so the write head could not be re-anchored",
                 lag,
             )
             self.servo.note_disturbance()

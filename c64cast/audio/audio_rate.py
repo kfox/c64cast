@@ -368,25 +368,21 @@ class RateServo:
         st = self._st
         if not st.host_dma_servo:
             return chunk_period
-        started = time.monotonic()
-        if started < self.read_holdoff_until:
+        if self.reads_held_off():
             return servo_hold_period(self.integ, chunk_period=chunk_period)
         # The one read this class repeats — held out of `-vv` so a chunk-rate
         # transport record doesn't bury the requests an operator came for. The
         # arm verification and the pause stomp call `read_consumer_ptr` too,
         # and those are one-shot, so they stay visible.
         with quiet_transport():
-            r_addr = st.read_consumer_ptr()
-        took = time.monotonic() - started
-        if took > HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period:
-            self._hold_off_slow_read(took, chunk_period)
+            r_addr, prompt = self._timed_read(chunk_period)
+        if not prompt:
             # Too late to pace by, but still evidence of whether the consumer
             # is alive: a server that stays slow sends every reading here, and
             # the stall watchdog would otherwise never see one.
             if r_addr is not None:
                 self.note_r_reading(r_addr)
             return servo_hold_period(self.integ, chunk_period=chunk_period)
-        self.read_holdoff_s = 0.0
         if r_addr is None:
             return servo_hold_period(self.integ, chunk_period=chunk_period)
         self.note_r_reading(r_addr)
@@ -407,6 +403,34 @@ class RateServo:
             self.observe_r_rate(r_addr)
         period, self.integ = servo_period(gap, self.integ, chunk_period=chunk_period)
         return period
+
+    def reads_held_off(self) -> bool:
+        """True while a slow read's backoff is running: R is not read at all."""
+        return time.monotonic() < self.read_holdoff_until
+
+    def _timed_read(self, chunk_period: float) -> tuple[int | None, bool]:
+        """Read R once against the read budget; returns ``(r_addr, prompt)``.
+        A read over budget arms the backoff and comes back with ``prompt``
+        False; a prompt one resets the backoff."""
+        started = time.monotonic()
+        r_addr = self._st.read_consumer_ptr()
+        took = time.monotonic() - started
+        if took > HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period:
+            self._hold_off_slow_read(took, chunk_period)
+            return r_addr, False
+        self.read_holdoff_s = 0.0
+        return r_addr, True
+
+    def read_r_promptly(self, chunk_period: float) -> int | None:
+        """R for a one-off decision that acts on where R is *now* (the stall
+        re-anchor), or None. None inside a slow read's backoff, without
+        reading, and for a read that comes back over budget: R moved on while
+        it was in flight, by up to the read's whole duration, so placing W
+        relative to it can land W at or behind the live R."""
+        if self.reads_held_off():
+            return None
+        r_addr, prompt = self._timed_read(chunk_period)
+        return r_addr if prompt else None
 
     def _hold_off_slow_read(self, took: float, chunk_period: float) -> None:
         """Drop a reading that came back too late to pace by, and stop reading

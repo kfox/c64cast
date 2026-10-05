@@ -996,6 +996,42 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(s.q.qsize(), 4)
         self.assertEqual(s._queued_samples, 2048)
 
+    def test_no_r_read_inside_a_slow_read_holdoff(self):
+        # The holdoff says reads are slow right now; another one would block
+        # the worker that long again and come back with an R that moved on.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.servo.read_holdoff_until = audio_rate_mod.time.monotonic() + 60.0
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            self.assertIsNone(s._resync_after_stall(1.5))
+        self.assertEqual(api.r_reads, 0)
+        self.assertEqual(api.writes, [], "re-anchored without a read of R")
+        self.assertIn("could not be re-anchored", cm.output[0])
+
+    def test_a_slow_r_read_is_not_anchored_on(self):
+        # R read over budget: by the time it returns the consumer has moved
+        # on by up to the read's duration, and at 0.4 s that is more than the
+        # lead the anchor would put between them.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.4)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            self.assertIsNone(s._resync_after_stall(1.5))
+            self.assertTrue(s.servo.reads_held_off(), "a slow read did not arm the backoff")
+        self.assertEqual(api.r_reads, 1)
+        self.assertEqual(api.writes, [], "re-anchored on a slow read of R")
+        self.assertTrue(any("could not be re-anchored" in line for line in cm.output))
+
     def test_an_unreadable_r_still_warns_and_does_not_reanchor(self):
         s = self._backlogged(FakeAPI(), live=False)
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
