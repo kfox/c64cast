@@ -141,6 +141,17 @@ class RemoteRefusalMessageTest(unittest.TestCase):
             self.assertEqual(av_open("/tmp/clip.mp4"), "container")
         opened.assert_called_once_with("/tmp/clip.mp4")
 
+    def test_a_drive_letter_or_file_url_is_a_local_path(self):
+        # FFmpeg reads both with its `file` protocol, so neither gets the
+        # network bound — a one-letter "scheme" is a DOS drive, not a protocol.
+        import av
+
+        for path in ("C:\\clips\\clip.mp4", "file:/tmp/clip.mp4"):
+            with self.subTest(path=path):
+                with mock.patch.object(av, "open", return_value="container") as opened:
+                    av_open(path)
+                opened.assert_called_once_with(path)
+
 
 class _StallingHttpServer:
     """A loopback server that accepts, sends `preamble`, then never writes
@@ -234,6 +245,13 @@ class RemoteStallBoundTest(unittest.TestCase):
     def test_a_silent_server_fails_the_open(self):
         server = self._server()
         outcome = self._bounded(lambda: av_open(f"http://127.0.0.1:{server.port}/tune.wav"))
+        self.assertIsInstance(outcome, Exception)
+
+    def test_a_silent_peer_on_another_protocol_fails_the_open(self):
+        # http(s) is not the only network protocol FFmpeg honors, and an
+        # audio-file entry reaches av_open on its extension alone.
+        server = self._server()
+        outcome = self._bounded(lambda: av_open(f"tcp://127.0.0.1:{server.port}/tune.wav"))
         self.assertIsInstance(outcome, Exception)
 
     def test_a_stream_that_stalls_mid_body_fails_the_read(self):

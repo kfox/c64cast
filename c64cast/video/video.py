@@ -17,6 +17,7 @@ from __future__ import annotations
 import itertools
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -75,6 +76,25 @@ def _is_remote_url(path: str) -> bool:
     return path.startswith(("http://", "https://"))
 
 
+# FFmpeg's own protocol test (`url_find_protocol`): a run of these characters
+# followed by `:` names a protocol, except a single letter, which is a DOS
+# drive. Everything else, and an explicit `file:`, opens as a local file.
+_FFMPEG_PROTOCOL_PREFIX = re.compile(r"^([A-Za-z0-9+.-]+):")
+
+
+def _is_local_file(path: str) -> bool:
+    """True when FFmpeg opens `path` with its `file` protocol.
+
+    The open/read bound is keyed to this rather than to `_is_remote_url`
+    because http(s) is not the only network protocol FFmpeg honors: an
+    audio-file entry such as ``tcp://host:port/x.wav`` or ``rtsp://…`` passes
+    `resolve_file_spec` on its extension alone, has no existence check, and
+    blocks on a silent peer exactly as http does. Anything this does not
+    recognize as local is bounded, which is the safe direction."""
+    m = _FFMPEG_PROTOCOL_PREFIX.match(path)
+    return m is None or len(m.group(1)) == 1 or m.group(1) == "file"
+
+
 def _remote_refusal_message(e: Any) -> str:
     """The operator-facing text for a remote 4xx, carrying no URL.
 
@@ -103,9 +123,11 @@ def _remote_refusal_message(e: Any) -> str:
 def av_open(path: str):
     """`av.open` wrapper that injects the HTTP reconnect options for remote
     URLs so a transient CDN drop mid-stream resumes instead of crashing the
-    demuxer, and bounds the open and every later read
+    demuxer, and bounds the open and every later demux read
     (`_REMOTE_OPEN_TIMEOUT_S` / `_REMOTE_READ_TIMEOUT_S`) so a stalled server
-    raises instead of hanging the playlist. Local paths open unchanged.
+    raises instead of hanging the playlist. Any other network protocol gets
+    the same bound without the http-only reconnect options; local files
+    (`_is_local_file`) open unchanged.
 
     A remote 4xx is re-raised naming the likeliest cause, because the raw
     ``HTTPForbiddenError`` is unreadable on the one shape it usually means.
@@ -119,8 +141,12 @@ def av_open(path: str):
 
     The wording is built by :func:`_remote_refusal_message`, which is where
     the URL is kept out of it."""
-    if not _is_remote_url(path):
+    if _is_local_file(path):
         return av.open(path)
+    if not _is_remote_url(path):
+        # A non-http network protocol: no reconnect options (they are
+        # http-only), but the same bound on a peer that goes silent.
+        return av.open(path, timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S))
     try:
         return av.open(
             path,
