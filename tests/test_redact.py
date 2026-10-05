@@ -267,12 +267,14 @@ class RedactUrlUserinfoTest(unittest.TestCase):
         once = redact_secrets("https://alice:S3CRET@cdn.example/a.mp3")
         self.assertEqual(redact_secrets(once), once)
 
-    def test_an_apostrophe_in_the_password_goes_too(self):
+    def test_a_quote_in_the_password_goes_too(self):
         """RFC 3986 allows a raw `'` in userinfo, so the URL is well formed and
         FFmpeg opens it; a quote that bounded the match left it whole."""
         for line, want in (
             ("https://alice:it's@cdn.example/a.mp3", "https://REDACTED@cdn.example/a.mp3"),
             ('"https://alice:it\'s@cdn.example/a.mp3"', '"https://REDACTED@cdn.example/a.mp3"'),
+            # A TOML basic string's `\"` parses to a raw `"` in the URL opened.
+            ('https://alice:it"s@cdn.example/a.mp3', "https://REDACTED@cdn.example/a.mp3"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
@@ -421,9 +423,7 @@ class RedactSourceLineTest(unittest.TestCase):
     def test_a_space_inside_the_userinfo_does_not_evade_the_rule(self):
         """A space is illegal in a URL, so stopping the netloc at one reads as
         defensible — but a passphrase with a space in it is exactly the shape
-        that fails to parse and lands here, and it came back whole. A `"`
-        and `#` still bound the search, so nothing downwind of the value can
-        pull the cut earlier."""
+        that fails to parse and lands here, and it came back whole."""
         for line in (
             'url = "u64://kelly:my pass@192.168.2.64',
             "url = 'u64://kelly:my pass@192.168.2.64'",
@@ -435,17 +435,23 @@ class RedactSourceLineTest(unittest.TestCase):
                 self.assertFalse(verbatim)
                 self.assertTrue(safe.startswith("url = "), safe)
 
-    def test_an_apostrophe_inside_the_userinfo_does_not_evade_the_rule(self):
+    def test_a_quote_inside_the_userinfo_does_not_evade_the_rule(self):
         """RFC 3986 allows a raw `'` in userinfo. In a literal string it ends
         the value early, so the parser rejects that very line and it lands
-        here; a `'` that bounded the search echoed the password whole."""
+        here; a `'` that bounded the search echoed the password whole. A `"`
+        is not legal in a URL, but it is the same shape in a basic string: the
+        password's own quote ends the value, or an escaped one rides through
+        on a line refused for something else."""
         for line in (
             "file = 'https://kelly:it's@cdn.example/a.mp4'",
             'file = "https://kelly:it\'s@cdn.example/a.mp4" bogus',
+            'file = "https://kelly:it"s@cdn.example/a.mp4"',
+            'file = "https://kelly:it\\"s@cdn.example/a.mp4" bogus',
+            'file = """https://kelly:it"s@cdn.example/a.mp4""" bogus',
         ):
             with self.subTest(line=line):
                 safe, verbatim = redact_source_line([line], 1)
-                self.assertEqual(safe, "file = " + line[7] + "REDACTED")
+                self.assertEqual(safe, line[: line.index("https")] + "REDACTED")
                 self.assertFalse(verbatim)
 
     def test_an_at_sign_outside_a_netloc_is_not_userinfo(self):
