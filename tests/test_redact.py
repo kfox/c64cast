@@ -207,6 +207,21 @@ class RedactSecretsTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_an_open_name_partway_through_a_dashed_run_is_still_found(self):
+        """Only the short names are confined to the start of a run. `token`,
+        `password` and `secret` are still tried at every word boundary, which
+        is what reaches the one after a `-` or a `.`."""
+        for line, want in (
+            ("X-Auth-Token=zzz x", "X-Auth-Token=REDACTED x"),
+            ("dma-password: zzz", "dma-password: REDACTED"),
+            ("a.b-secret=zzz", "a.b-secret=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertNotIn("zzz", safe)
+                self.assertFalse(verbatim)
+
     def test_a_long_dash_joined_run_is_redacted_in_linear_time(self):
         """A `-` puts a word boundary at every letter of `a-a-a-…`. A prefixed
         name tried from each of them scanned the rest of the run every time,
