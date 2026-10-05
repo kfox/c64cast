@@ -34,6 +34,7 @@ from c64cast.hw.c64 import (
     NMI_SAFE_MIN_PERIOD_CYCLES,
     VECTORS,
     cpu_clock,
+    nearest_latch,
 )
 
 from .audio_handlers import (
@@ -102,7 +103,7 @@ class NmiTimer:
 
     def requested_latch(self) -> int:
         """The nearest-grid latch for sample_rate, before any clamp."""
-        return round(cpu_clock(self._st.system) / self._st.sample_rate) - 1
+        return nearest_latch(self._st.sample_rate, self._st.system)
 
     def clamp_latch(self, latch: int) -> int:
         """`latch` held to what the handler budget and the 16-bit timer allow."""

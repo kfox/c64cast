@@ -455,13 +455,22 @@ def kernal_cia1_latch(system: str) -> int:
 CIA_TIMER_LATCH_MAX: Final = 0xFFFF
 
 
+def nearest_latch(rate_hz: float, system: str) -> int:
+    """The CIA timer latch whose period (``latch + 1`` cycles) brings a timer
+    closest to `rate_hz`: ``round(cpu_clock/rate) - 1``, unclamped.
+
+    The one rounding the NMI timer, the load-time rate rule and
+    :func:`cia1_latch_for_rate` share, so load cannot accept a rate the timer
+    then arms on a different latch."""
+    return round(cpu_clock(system) / rate_hz) - 1
+
+
 def cia1_latch_for_rate(rate_hz: float, system: str) -> int:
-    """CIA #1 Timer A latch for a consume rate: ``round(cpu_clock/rate) - 1``,
+    """CIA #1 Timer A latch for a consume rate: :func:`nearest_latch`,
     clamped to a valid 16-bit timer value (>= 1)."""
     if rate_hz <= 0:
         raise ValueError(f"rate must be positive, got {rate_hz}")
-    latch = round(cpu_clock(system) / rate_hz) - 1
-    return max(1, min(latch, CIA_TIMER_LATCH_MAX))
+    return max(1, min(nearest_latch(rate_hz, system), CIA_TIMER_LATCH_MAX))
 
 
 def actual_rate_for_latch(latch: int, system: str) -> float:
@@ -520,8 +529,8 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "error
     on `system`. Returns ``(level, message)`` — pure (no I/O), so config
     validation, --doctor, and tests share one source of truth.
 
-    The latch is chosen the way ``NmiTimer.nominal_latch`` chooses it (nearest
-    grid point), and "error" is any rate whose latch falls outside what the
+    The latch is :func:`nearest_latch`, the one ``NmiTimer.nominal_latch``
+    clamps, and "error" is any rate whose latch falls outside what the
     timer will arm: a period under ``NMI_SAFE_MIN_PERIOD_CYCLES`` (NMIs queue
     below the handler worst case, and the entry-latency margin above it is the
     budget the timer clamps to) or a latch past the 16-bit timer. A rate the
@@ -530,7 +539,7 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "error
     if sample_rate <= 0:
         return ("error", f"sample_rate must be positive, got {sample_rate}")
     period = cpu_clock(system) / sample_rate
-    latch = round(period) - 1
+    latch = nearest_latch(sample_rate, system)
     safe_max = max_safe_sample_rate(system)
     if latch > CIA_TIMER_LATCH_MAX:
         min_rate = -(-cpu_clock(system) // (CIA_TIMER_LATCH_MAX + 1))
