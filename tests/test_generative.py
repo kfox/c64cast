@@ -2132,7 +2132,12 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
             src._features._process_tick()
             m = src._features.features()
             if m is not None and m.onset == 1.0:
-                onsets.append(streamer.position_seconds())
+                # The model's read head, as a time in the source: `played` is
+                # the index into `pcm` the NMI has reached. Not the streamer's
+                # clock, which is the thing under test: the analyzer indexes
+                # its window off that clock, so an onset read back off it too
+                # lands on a click however wrong the clock is.
+                onsets.append(int(played) / int(round(rate)))
         self.assertGreater(deepest, 15000, "the model never ran the queue up")
         self._assert_onsets_on_the_clicks(onsets)
 
