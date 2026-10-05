@@ -504,9 +504,13 @@ class UltimateAudioSampler:
         self._late_reanchor_bytes = int(LATE_REANCHOR_S * self._actual_rate) * self.bps
         self._late_catchup_bytes = int(LATE_CATCHUP_S * self._actual_rate) * self.bps
         # Re-anchors this activation, and how far they put the sound behind
-        # the picture since the last splice re-aligned it.
+        # the picture since the last splice re-aligned it. Both count a
+        # re-anchor once a ring write lands at it: until then it is
+        # _unlanded_reanchor, (shift in bytes, the log line's span), and the
+        # writer's retries of a failed write go back to its anchor.
         self._reanchors = 0
         self._reanchor_lag_bytes = 0
+        self._unlanded_reanchor: tuple[int, str] | None = None
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
         # flush() bumps _flush_epoch and then rewrites the lead under _io_lock,
@@ -603,6 +607,7 @@ class UltimateAudioSampler:
             self._late_from = None
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
+            self._unlanded_reanchor = None
             # The read head restarts at 0 with the next gate, so a head kept
             # from the last activation would hold every partial gather until
             # the new one passed it, and a clip shorter than a quantum forever.
@@ -884,6 +889,7 @@ class UltimateAudioSampler:
             self._late_from = None
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
+            self._unlanded_reanchor = None
             self._eof = False
             self._cut_epoch = max(self._cut_epoch, epoch)
 
@@ -984,7 +990,6 @@ class UltimateAudioSampler:
                 return False
             consumed = self._read_consumed_bytes()
             before = self._content_pos
-            lag_before = self._reanchor_lag_bytes
             last_try, last_late = self._last_try, self._last_late
             c = self._late_anchor(consumed)
             # _writer_step sized this payload to the room under the lead target
@@ -1023,14 +1028,16 @@ class UltimateAudioSampler:
                     # again, and the outage counts as a gap with no attempt.
                     # Timed across the retries' back-off, the lateness grew and
                     # re-anchored a backlog that would have lined up at once.
-                    # A re-anchor this attempt made is undone with it, so the
-                    # retry anchors afresh: kept, every late retry of a
-                    # sticky producer re-anchored again, and the outage's
-                    # length went into content_lag_seconds for audio that
-                    # never landed, which an audio-file scene then waited out
-                    # on silence once the writer gave up.
-                    self._content_pos = before
-                    self._reanchor_lag_bytes = lag_before
+                    # A re-anchor this attempt made keeps its anchor, so the
+                    # retry rewrites the same slots, but stays unlanded
+                    # (_land_reanchor): counted at once, an outage's retries
+                    # put content_lag_seconds past audio that never landed,
+                    # which an audio-file scene waited out on silence once the
+                    # writer gave up. Rolled back to the anchor before it, a
+                    # retry of a sticky producer re-anchored afresh past the
+                    # slices that did land, and the reader played their audio
+                    # twice (fake link: 10 bytes of a 40-byte write split at
+                    # the ring's end, retried 5 ms later).
                     self._late_ref = None
                     self._burst_start = self._prev_start = None
                     self._last_try, self._last_late = last_try, last_late
@@ -1038,6 +1045,7 @@ class UltimateAudioSampler:
                     raise
                 self._written = max(self._written, end)
                 self._last_write_head = consumed
+                self._land_reanchor()
             self._late_bytes += min(len(data), max(0, first - c))
             self._content_pos = end
             return first < end
@@ -1060,7 +1068,8 @@ class UltimateAudioSampler:
         """Under _io_lock: where the next real sample is written. That is
         _content_pos unless the producer is not keeping up, in which case the
         audio is re-anchored _reanchor_lead past the read head (moving
-        _content_pos).
+        _content_pos). The re-anchor's count, lag and log line wait for a ring
+        write to land at it (_land_reanchor).
 
         The question is the trend of the lateness L (how far the anchor sits
         behind the write floor), not how long writes have been late. A
@@ -1146,6 +1155,25 @@ class UltimateAudioSampler:
         else:
             late_for = f"for {(consumed - late_from) / self.bps / self._actual_rate:.1f} s"
         self._reanchor_sticky = True
+        # A re-anchor still waiting on a failed write moved the anchor this one
+        # moves on from: they land as one, logged with the first one's span.
+        unlanded = self._unlanded_reanchor
+        if unlanded is not None:
+            shift += unlanded[0]
+            late_for = unlanded[1]
+        self._unlanded_reanchor = (shift, late_for)
+        self._content_pos = anchor
+        return anchor
+
+    def _land_reanchor(self) -> None:
+        """Under _io_lock, once a ring write has landed: count the re-anchor
+        it landed at, if any, into the activation's count and the content lag,
+        and log it."""
+        unlanded = self._unlanded_reanchor
+        if unlanded is None:
+            return
+        self._unlanded_reanchor = None
+        shift, late_for = unlanded
         self._reanchors += 1
         self._reanchor_lag_bytes += shift
         if self._reanchors == 1:
@@ -1164,8 +1192,6 @@ class UltimateAudioSampler:
             note,
             self._reanchor_lag_bytes / self.bps / self._actual_rate,
         )
-        self._content_pos = anchor
-        return anchor
 
     def _pad_underrun(self, gen: int) -> bool:
         """The queue came up empty. Below the low watermark the ring is about

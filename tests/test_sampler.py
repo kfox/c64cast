@@ -1067,23 +1067,69 @@ class SamplerLateReanchorTest(unittest.TestCase):
         # to the outage's length of lag for audio that never landed, and an
         # audio-file scene, which waits out the lag, sat that long on silence
         # after the writer gave up. Only the re-anchor that lands counts.
+        # Nor does it count or log as a re-anchor until one lands.
         smp = self.smp
         self._reanchor_once()
         before_lag, before_pos = smp.content_lag_seconds, smp._content_pos
         with mock.patch.object(self.api, "reu_write", side_effect=OSError("link down")):
             for _ in range(20):
+                # Each retry late past the anchor the last one moved to.
                 self.consumed = max(self.consumed, smp._content_pos) + 400
-                with quiet_logging(), self.assertRaises(OSError):
+                with self.assertNoLogs("c64cast.audio.sampler"), self.assertRaises(OSError):
                     self._write(40)
                 smp._carry = None  # the writer's next pass takes the carry back
         self.assertEqual(smp.content_lag_seconds, before_lag)
-        self.assertEqual(smp._content_pos, before_pos)
-        self.consumed += 400
-        with quiet_logging():
+        self.assertEqual(smp._reanchors, 1)
+        self.consumed = smp._content_pos + 400
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG") as logs:
             self.assertTrue(self._write(40))
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("(re-anchor 2)", logs.output[0])
+        self.assertEqual(smp._reanchors, 2)
         shift = self.consumed + smp._reanchor_lead - before_pos
         self.assertAlmostEqual(
             smp.content_lag_seconds, before_lag + shift / smp.bps / smp._actual_rate, places=9
+        )
+
+    def test_a_retried_reanchor_rewrites_the_slots_its_failed_write_reached(self):
+        # The re-anchored write split at the ring's end and only its first
+        # slice landed. Retried before the reader nears that anchor, it goes
+        # back there: re-anchored afresh a back-off later, past slots the
+        # underrun pads had already claimed, the reader played the landed
+        # head and then the same audio again from the new anchor.
+        smp = self.smp
+        self._reanchor_once()
+        before_lag, before_pos = smp.content_lag_seconds, smp._content_pos
+        ring = smp.ring_size
+        anchor = ((before_pos + 1000 + smp._reanchor_lead) // ring + 1) * ring - 20
+        self.consumed = anchor - smp._reanchor_lead
+        smp._written = self.consumed + smp._lead_target  # underrun pads ran ahead
+        data = bytes(range(1, 41))
+        land = self.api.reu_write
+        calls = []
+
+        def second_slice_fails(offset: int, chunk: bytes) -> None:
+            calls.append(offset)
+            if len(calls) == 2:
+                raise OSError("link down")
+            land(offset, chunk)
+
+        with mock.patch.object(self.api, "reu_write", side_effect=second_slice_fails):
+            with self.assertRaises(OSError):
+                smp._write_payload(smp._writer_gen, smp._flush_epoch, data)
+        self.assertEqual(self.api.reu_bytes(smp.ring_base + anchor % ring, 20), data[:20])
+        smp._carry = None  # the writer's next pass takes the carry back
+        self.consumed += 10  # one short back-off later
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(smp._write_payload(smp._writer_gen, smp._flush_epoch, data))
+        self.assertEqual(smp._content_pos, anchor + 40)
+        self.assertEqual(self.api.reu_bytes(smp.ring_base + anchor % ring, 20), data[:20])
+        self.assertEqual(self.api.reu_bytes(smp.ring_base, 20), data[20:])
+        self.assertEqual(smp._reanchors, 2)
+        self.assertAlmostEqual(
+            smp.content_lag_seconds,
+            before_lag + (anchor - before_pos) / smp.bps / smp._actual_rate,
+            places=9,
         )
 
     def test_a_splice_or_arm_clears_the_content_lag(self):
