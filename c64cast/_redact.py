@@ -62,11 +62,15 @@ REDACTED = "REDACTED"
 #: escape ends the run before it, so the scan stays linear.
 #:
 #: A URL carried inside a parameter of a URL that is itself a parameter is
-#: encoded twice, and there `&sig=` is `%2526sig%253D`: the escape before the
-#: name is `%25` plus two digits and the separator is `%253D`. Its value ends at
-#: `%2526`, and at `%26` too, which is where the middle URL's own parameter
-#: ends. A once-encoded value does not end at `%2526`: that is a `%26` inside
-#: the secret itself.
+#: encoded twice, and there `&sig=` is `%2526sig%253D`; one level deeper it is
+#: `%252526sig%25253D`. Each level puts one more `25` after every `%`, so the
+#: escape before the name and the separator after it are read as `%`, any run
+#: of `25`, then the escape's own digits. The run is taken possessively: given
+#: back one pair at a time, every pair would rescan the name characters after
+#: it, which is quadratic on a long run of `25`. A value encoded `n` times ends
+#: at an `&` of any shallower level — `%26`, `%2526`, … up to `n - 1` pairs of
+#: `25` — but not at one with `n` or more, which is a `%26` inside the secret
+#: itself: a once-encoded value keeps its `%2526`.
 #:
 #: `%3A` counts as a separator too, and an encoded quote may close the name, as
 #: their raw spellings do: a JSON document carried in a query parameter spells
@@ -79,7 +83,7 @@ REDACTED = "REDACTED"
 _OPEN_SECRET_NAME = r"\w* (?: token | password | secret | api[_-]?key )"
 _SECRET_KEY = r"""
     (?:
-        (?: (?<![\w-]) -* \b | (?<= %[0-9a-f]{2} ) | (?<= %25[0-9a-f]{2} ) ) (?:
+        (?: (?<![\w-]) -* \b | % (?:25)*+ (?:[0-9a-f]{2})? (?<=[0-9a-f]) ) (?:
             {open}
           | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
         )
@@ -92,13 +96,12 @@ _SECRET_KEY = r"""
 _SECRET_VALUE = re.compile(
     r"""
     (?P<kv_prefix>
-        {key} (?: ["'] | %(?:25)?2[27] )? \s* (?: [=:] | (?P<pct> % (?P<pct2> 25 )? 3[ad] ) ) \s*
+        {key} (?: ["'] | %(?:25)*+2[27] )? \s* (?: [=:] | (?P<pct> % (?P<enc> (?:25)*+ ) 3[ad] ) ) \s*
         (?P<quote> ["]{3} | [']{3} | ["'] )?
     )
     (?P<kv_value>
         (?(quote) (?: \\[^\r\n] | (?!(?P=quote)) [^\r\n] )+
-        | (?(pct2) (?: (?!%(?:25)?26) [^\s&"',}] )+
-        | (?(pct) (?: (?!%26) [^\s&"',}] )+ | [^\s&"',}]+ ) ) )
+        | (?(pct) (?: (?! (?!%(?P=enc)25) %(?:25)*+26 ) [^\s&"',}] )+ | [^\s&"',}]+ ) )
     )
     """.replace("{key}", _SECRET_KEY),
     re.IGNORECASE | re.VERBOSE,
@@ -251,7 +254,7 @@ def redact_secrets(text: str) -> str:
     brace. A name inside a URL-encoded value (`%26sig%3DVALUE`,
     `%7Ehmac%3DVALUE`) is matched too, and its value also ends at `%26`; so
     is one encoded twice (`%2526sig%253DVALUE`), whose value also ends at
-    `%2526` or `%26`. `%3A` and an encoded quote are read as their raw
+    `%2526` or `%26`, and so on for each further level. `%3A` and an encoded quote are read as their raw
     spellings are, so `%22token%22%3AVALUE` is covered. A
     quoted one — `'`, `"`, `'''` or `\"\"\"` — runs to the matching
     quote that no backslash escapes, or to the end of the line, whichever comes

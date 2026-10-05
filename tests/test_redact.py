@@ -220,6 +220,25 @@ class RedactSecretsTest(unittest.TestCase):
         line = "u=%252Fmonkey%253D1%2526sortkey%253Ddate"
         self.assertEqual(redact_secrets(line), line)
 
+    def test_a_secret_encoded_any_number_of_times_is_covered(self):
+        """Each level of encoding puts one more `25` after every `%`. A value
+        encoded three times ends at an `&` of any shallower level, and keeps
+        its own `&`, which is `%25252526` there."""
+        for line, want in (
+            (
+                "u=%252526sig%25253Dab%25252526cd%252526n%25253D2",
+                "u=%252526sig%25253DREDACTED%252526n%25253D2",
+            ),
+            ("u=%252526token%25253Dab%2526n", "u=%252526token%25253DREDACTED%2526n"),
+            ("u=%25257Ehmac%25253Dab%26n", "u=%25257Ehmac%25253DREDACTED%26n"),
+            ("s=%25252522sig%25252522%2525253Aab", "s=%25252522sig%25252522%2525253AREDACTED"),
+            ("u=%25252526sig%2525253Dab", "u=%25252526sig%2525253DREDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        line = "u=%25252Fmonkey%25253D1%252526sortkey%25253Ddate"
+        self.assertEqual(redact_secrets(line), line)
+
     def test_an_encoded_colon_and_quote_read_as_their_raw_spellings(self):
         """A JSON document carried in a query parameter spells `"token":"v"`
         as `%22token%22%3A%22v%22`; with no encoded quote to end at, the value
@@ -276,6 +295,17 @@ class RedactSecretsTest(unittest.TestCase):
         which is quadratic: 10 KB of one took 1.5 s on a log line, and 100 KB
         took 139 s."""
         for line in ("a-" * 32_000, "key-" * 16_000, "x-" * 32_000 + "=1"):
+            with self.subTest(line=line[:16]):
+                start = time.perf_counter()
+                redact_secrets(line)
+                redact_source_line([line], 1)
+                self.assertLess(time.perf_counter() - start, 2.0)
+
+    def test_a_long_run_of_encoded_percent_signs_is_redacted_in_linear_time(self):
+        """An escape is read as `%`, any run of `25`, then its digits. Given
+        back a pair at a time, that run rescans the name characters after it
+        once per pair, which is quadratic: 32 KB of `%2525…` took 16 s."""
+        for line in ("%" + "25" * 8_000 + "a" * 16_000, "%" + "25" * 32_000 + "token"):
             with self.subTest(line=line[:16]):
                 start = time.perf_counter()
                 redact_secrets(line)
