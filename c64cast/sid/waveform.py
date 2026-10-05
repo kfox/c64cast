@@ -26,6 +26,7 @@ See docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscillosc
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import threading
@@ -374,7 +375,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self.file_spec = file
         self._song_arg = song
         self.songlengths_db = songlengths_db
-        self._explicit_duration_s = duration_s
+        # 0 is the config's "run until stopped". Resolved here, not only by
+        # build_scene's later `duration_s = inf`, which would otherwise differ
+        # from the derived 0.0 and pass for a live DURATION change.
+        self._explicit_duration_s = math.inf if duration_s == 0 else duration_s
         # "auto"/"6581"/"8580"/"off", already resolved to a plain string by
         # sid_autoconfig.resolve_sid_model_cfg. See _apply_sid_hw_config.
         self._sid_model = sid_model

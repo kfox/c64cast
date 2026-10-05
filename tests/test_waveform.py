@@ -2882,6 +2882,23 @@ class WaveformPoolPickTest(unittest.TestCase):
         self.assertIsNone(scene._explicit_duration_s)
         self.assertAlmostEqual(scene.duration_s, 200.0)
 
+    def test_a_configured_zero_duration_runs_until_stopped_from_the_start(self):
+        # build_scene writes `duration_s = inf` for a configured 0 after the
+        # constructor. The scene has to have derived inf itself, or that write
+        # reads as a live DURATION change and the 0 holds only by accident.
+        import math
+
+        from c64cast.sid.waveform import WaveformScene
+
+        self._write_sid("one.sid", name=b"ONE")
+        self._write_sid("two.sid", name=b"TWO")
+        scene = WaveformScene(FakeAPI(), audio=None, file=self.tmpdir, duration_s=0.0)
+        self.assertEqual(scene.duration_s, math.inf)
+        scene.duration_s = math.inf  # build_scene's write
+        self.assertFalse(scene._duration_set_live())
+        scene.prepare_next()
+        self.assertEqual(scene.duration_s, math.inf)
+
     def test_single_file_pool_skips_repick_at_setup(self):
         """Single-file specs stay deterministic AND keep cycle_style
         mutations (self.song advances) across setup/teardown cycles — the
