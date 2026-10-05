@@ -74,6 +74,9 @@ class NmiTimer:
         # Set by start(); the REU pump's nominal CIA #1 latch derives from
         # this, so the producer/consumer period ratio stays exact.
         self.latch = 0
+        # The fastest (smallest) latch armed since the servo last took it —
+        # see take_fastest_latch. 0 = none armed yet.
+        self.fastest_latch = 0
         # Sticky per-display-mode playback-rate multiplier (>1.0 = faster),
         # applied by start(); `started` gates a mid-stream update.
         self.pitch_multiplier = 1.0
@@ -179,7 +182,24 @@ class NmiTimer:
         """Record + write a new CIA #2 Timer A latch — the one live retune
         primitive both the adaptive loop and the static retune use."""
         self.latch = latch
+        self._note_armed(latch)
         self._st.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+
+    def _note_armed(self, latch: int) -> None:
+        self.fastest_latch = latch if self.fastest_latch <= 0 else min(self.fastest_latch, latch)
+
+    def take_fastest_latch(self) -> int:
+        """The fastest latch armed since the previous call, the one armed now
+        included, and restart the tracking at the one armed now. A retune
+        between two R readings (the adaptive loop, a mode change's seed or
+        pitch multiplier) leaves the latch slower than the consumer ran for
+        part of that interval; the servo's wrap bound has to use the fastest.
+        0 when nothing has been armed."""
+        fastest = self.fastest_latch
+        self.fastest_latch = self.latch
+        if fastest <= 0:
+            return self.latch
+        return min(fastest, self.latch) if self.latch > 0 else fastest
 
     def arm_once(self, latch: int) -> None:
         """One full arm of the NMI audio consumer, idempotent so a retry is just
@@ -236,6 +256,7 @@ class NmiTimer:
             )
         latch = self.seed_latch_for_mode(self.mode) if adaptive else self.compensated_latch()
         self.latch = latch
+        self._note_armed(latch)
         self.started = True
         before = self._st.read_consumer_ptr()
         if before is None:
@@ -434,6 +455,8 @@ class RateServo:
         """
         alpha = NMI_RATE_LOOP_ACQUIRE_ALPHA if self.loop_acquiring else NMI_RATE_LOOP_EMA_ALPHA
         now = time.monotonic()
+        # Taken on every reading, so it covers exactly the interval since the last.
+        fastest_latch = self._timer.take_fastest_latch()
         if self.last_r_addr >= 0 and self.last_r_time > 0.0:
             dt = now - self.last_r_time
             dr = (r_addr - self.last_r_addr) % RING_BUFFER_SIZE
@@ -442,7 +465,11 @@ class RateServo:
             # And discard any interval long enough for R to have wrapped: dr is
             # only known modulo the ring, so after a link stall a whole lap
             # plus a little reads as "a little" and seeds a rate far too low.
-            if dt > 0 and dr < RING_BUFFER_SIZE // 2 and dt < self.max_unambiguous_dt():
+            if (
+                dt > 0
+                and dr < RING_BUFFER_SIZE // 2
+                and dt < self.max_unambiguous_dt(fastest_latch)
+            ):
                 inst = dr / dt
                 if self.r_rate_ema < 0:
                     self.r_rate_ema = inst
@@ -453,12 +480,14 @@ class RateServo:
         self.last_r_addr = r_addr
         self.last_r_time = now
 
-    def max_unambiguous_dt(self) -> float:
+    def max_unambiguous_dt(self, latch: int) -> float:
         """Longest interval between two R readings whose modular advance still
-        has one reading: the time the consumer, at the latch armed now, takes
-        to cover half a ring (the torn-read guard's bound). Bus halts only slow
-        R, so the armed latch is the fastest it can be running."""
-        latch = self._timer.latch or self._timer.nominal_latch()
+        has one reading: the time the consumer, at ``latch`` (the fastest armed
+        over that interval, from ``NmiTimer.take_fastest_latch``), takes to
+        cover half a ring (the torn-read guard's bound). Bus halts only slow R,
+        so the fastest armed latch is the fastest it can have run. 0 (nothing
+        armed) falls back to nominal."""
+        latch = latch or self._timer.nominal_latch()
         return (RING_BUFFER_SIZE // 2) * (latch + 1) / cpu_clock(self._st.system)
 
     def update_rate_loop(self, r_addr: int) -> None:

@@ -37,7 +37,7 @@ from c64cast.audio.audio_handlers import (
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS
+from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS, cpu_clock
 
 
 def _make(**kw: Any) -> AudioStreamer:
@@ -1250,6 +1250,24 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.r_rate_ema = -1.0
         advanced = round(1.5 * s.effective_rate) % audio_mod.RING_BUFFER_SIZE
         self.assertLess(advanced, audio_mod.RING_BUFFER_SIZE // 2)  # passes the torn guard
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + advanced)
+        self.assertEqual(s.servo.r_rate_ema, -1.0)
+        self.assertEqual(s.servo.r_rate_min, -1.0)
+
+    def test_wrap_bound_uses_the_fastest_latch_armed_since_the_last_reading(self):
+        # A bitmap -> char mode change at 6 kHz reseeds the latch from the
+        # ceiling to nominal mid-interval. R ran at the ceiling's rate for the
+        # whole 0.65 s, a lap and a bit, but half a ring at nominal takes 0.68 s:
+        # judged by the latch armed now, the bit passed as a 1 kHz consumer.
+        s = _make(sample_rate=6000, nmi_rate_adaptive=True)
+        s.nmi.write_latch(s.nmi.ceiling_latch())
+        fast_rate = cpu_clock(s.system) / (s.nmi.ceiling_latch() + 1)
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR)  # baseline, at the ceiling
+        s.servo.last_r_time = time.monotonic() - 0.65
+        s.nmi.write_latch(s.nmi.nominal_latch())
+        self.assertGreater(s.servo.max_unambiguous_dt(s.nmi.latch), 0.65)  # the old bound
+        advanced = round(0.65 * fast_rate) % audio_mod.RING_BUFFER_SIZE
+        self.assertLess(advanced, audio_mod.RING_BUFFER_SIZE // 2)
         s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + advanced)
         self.assertEqual(s.servo.r_rate_ema, -1.0)
         self.assertEqual(s.servo.r_rate_min, -1.0)
