@@ -13,7 +13,14 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, lose_writes_to, new_streamer, run_irq_handler, written_addresses
+from _fakes import (
+    FakeAPI,
+    lose_reu_writes_to,
+    lose_writes_to,
+    new_streamer,
+    run_irq_handler,
+    written_addresses,
+)
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer
@@ -825,3 +832,42 @@ class MicLeadServoWiringTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MicRingPrefillDeliveryTest(unittest.TestCase):
+    """The NEUTRAL prefill of the REU mic ring is confirmed per slice: a lost
+    slice would have the pump play stale FPGA SRAM, which can be loud."""
+
+    def _start(self, lose: int, times: int | None):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_reu_writes_to(fake, lose, times)
+        opened: list[int] = []
+
+        def open_stream(device, callback=None, *, sample_rate=None):
+            opened.append(device)
+            return _FakeStream()
+
+        s._open_input_stream = open_stream
+        s._start_mic_for_reu_pump(device=-1)
+        self.addCleanup(s._stop_mic_lead_servo)
+        return s, fake, opened
+
+    def test_a_lost_slice_is_resent(self):
+        s, fake, opened = self._start(REU_MIC_BASE + REU_UPLOAD_SLICE, 1)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(opened, [-1])
+        landed = dict(fake.socket_dma.reuwrites)
+        self.assertEqual(
+            landed[REU_MIC_BASE + REU_UPLOAD_SLICE], bytes([NEUTRAL_SAMPLE]) * REU_UPLOAD_SLICE
+        )
+
+    def test_a_slice_that_never_lands_aborts_the_bring_up(self):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+            s, fake, opened = self._start(REU_MIC_BASE + REU_UPLOAD_SLICE, None)
+        self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertFalse(s.running)
+        self.assertEqual(opened, [])
+        self.assertNotIn(f"{REU_PUMP_HANDLER_ADDR:04X}", fake.mem_files)
+        self.assertNotIn("0314", fake.regs)

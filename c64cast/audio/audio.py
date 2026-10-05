@@ -1549,6 +1549,13 @@ class AudioStreamer:
                 f"after {TRACKED_PUMP_INSTALL_TRIES} attempts"
             )
 
+    def _reu_write_confirmed(self, what: str, reu_offset: int, data: bytes) -> None:
+        """One REUWRITE slice, confirmed like a pump install stage. Every
+        staged track lands at the same REU offset, so a slice lost to a lossy
+        redial would play the previous track's audio (or stale SRAM noise)
+        rather than fail. Raises PumpInstallError when it never confirms."""
+        self._require_confirmed(what, lambda: self.api.reu_write(reu_offset, data))
+
     def _patch_irq_vector_confirmed(self) -> None:
         """Point $0314 at the pump entry, confirmed like every stage before it.
         Raises PumpInstallError when it never confirms; the caller restores
@@ -1673,9 +1680,13 @@ class AudioStreamer:
             "audio[reu mic]: prefilling REU ring at $%06X (%d bytes)", REU_MIC_BASE, REU_MIC_SIZE
         )
         pad = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
-        for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
-            n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
-            self.api.reu_write(REU_MIC_BASE + off, pad[:n])
+        try:
+            for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
+                n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
+                self._reu_write_confirmed("mic ring prefill", REU_MIC_BASE + off, pad[:n])
+        except PumpInstallError as e:
+            log.error("audio: %s — this scene plays without audio", e)
+            return
 
         # Standard NMI bring-up (handler + ring + digi-boost). NMI consumes from
         # the $4000 ring _upload_nmi_and_buffers just NEUTRAL-filled.
@@ -1992,8 +2003,8 @@ class AudioStreamer:
         REU_PUMP_INITIAL_MARGIN (reu_pump_chunk_fits_ring): any other chunk
         DMAs past the ring end once per lap. With reu_pump_governor on it must
         also be at most REU_GOVERNOR_MAX_CHUNK, or ValueError. Raises
-        PumpInstallError when a write of the pump install never confirms (the
-        tracked pump's stages in ``_install_tracked_pump``; the plain handler;
+        PumpInstallError when a write of the pump install never confirms (each
+        REUWRITE slice of the track and its EOF pad; the tracked pump's stages in ``_install_tracked_pump``; the plain handler;
         the REC registers and CIA #1 latch; the $0314 patch), with the NMI
         bring-up already undone and nothing armed: the caller plays on without
         audio.
@@ -2064,21 +2075,31 @@ class AudioStreamer:
         )
         upload_total = len(audio_4bit) + eof_pad_bytes
         t0 = time.perf_counter()
-        for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
-            self.api.reu_write(REU_AUDIO_BASE + off, audio_4bit[off : off + REU_UPLOAD_SLICE])
-            if on_progress is not None:
-                on_progress(min(off + REU_UPLOAD_SLICE, len(audio_4bit)) / upload_total)
-        # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
-        # end-of-source plays silence instead of garbage.
-        pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
-        pad_off = len(audio_4bit)
-        pad_end = pad_off + eof_pad_bytes
-        while pad_off < pad_end:
-            chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
-            self.api.reu_write(REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len])
-            pad_off += chunk_len
-            if on_progress is not None:
-                on_progress(pad_off / upload_total)
+        try:
+            for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
+                self._reu_write_confirmed(
+                    "audio upload",
+                    REU_AUDIO_BASE + off,
+                    audio_4bit[off : off + REU_UPLOAD_SLICE],
+                )
+                if on_progress is not None:
+                    on_progress(min(off + REU_UPLOAD_SLICE, len(audio_4bit)) / upload_total)
+            # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
+            # end-of-source plays silence instead of garbage.
+            pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
+            pad_off = len(audio_4bit)
+            pad_end = pad_off + eof_pad_bytes
+            while pad_off < pad_end:
+                chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
+                self._reu_write_confirmed(
+                    "EOF pad", REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len]
+                )
+                pad_off += chunk_len
+                if on_progress is not None:
+                    on_progress(pad_off / upload_total)
+        except PumpInstallError as e:
+            log.error("audio: %s — this scene plays without audio", e)
+            raise
         log.info("audio: REU upload took %.2fs", time.perf_counter() - t0)
 
         self._upload_nmi_and_buffers()

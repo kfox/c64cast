@@ -18,6 +18,7 @@ from _fakes import (
     IRQ_ENTRY_A,
     RTI_RETURN_ADDR,
     FakeAPI,
+    lose_reu_writes_to,
     lose_writes_to,
     new_streamer,
     quiet_logging,
@@ -1572,3 +1573,54 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         # The dispatcher owns $0314, so the unwind leaves it alone.
         self.assertEqual(self._vector_writes(fake), [])
         self.assertFalse(s._reu_pump_armed)
+
+
+class StagedUploadDeliveryTest(unittest.TestCase):
+    """Each REUWRITE slice of the staged track and its EOF pad is confirmed
+    delivered. Every track lands at REU_AUDIO_BASE, so a slice lost to a
+    lossy redial would otherwise play the previous scene's audio there."""
+
+    PAYLOAD = bytes(range(256)) * (3 * REU_UPLOAD_SLICE // 256)
+
+    def _start(self, lose: int, times: int | None):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_reu_writes_to(fake, lose, times)
+        return s, fake
+
+    def test_every_slice_is_flushed_before_the_next(self):
+        s, fake = self._start(-1, 0)
+        s.start_for_reu_staged(self.PAYLOAD)
+        writes = [i for i, o in enumerate(fake.ops) if o[0] == "reu_write"]
+        self.assertGreater(len(writes), 3)
+        for a, b in zip(writes, writes[1:], strict=False):
+            self.assertIn(("flush",), fake.ops[a:b])
+
+    def test_a_lost_slice_is_resent_and_the_pump_arms(self):
+        s, fake = self._start(REU_AUDIO_BASE + REU_UPLOAD_SLICE, 1)
+        s.start_for_reu_staged(self.PAYLOAD)
+        self.assertTrue(s._reu_pump_armed)
+        landed = dict(fake.socket_dma.reuwrites)
+        self.assertEqual(
+            landed[REU_AUDIO_BASE + REU_UPLOAD_SLICE],
+            self.PAYLOAD[REU_UPLOAD_SLICE : 2 * REU_UPLOAD_SLICE],
+        )
+
+    def test_a_slice_that_never_lands_aborts_before_the_nmi_bring_up(self):
+        eof_pad_start = REU_AUDIO_BASE + len(self.PAYLOAD)
+        for lost in (REU_AUDIO_BASE + REU_UPLOAD_SLICE, eof_pad_start):
+            with self.subTest(lost=f"${lost:06X}"):
+                s, fake = self._start(lost, None)
+                with (
+                    self.assertLogs("c64cast.audio.audio", level="ERROR") as cm,
+                    self.assertRaises(PumpInstallError),
+                ):
+                    s.start_for_reu_staged(self.PAYLOAD)
+                self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+                self.assertEqual(
+                    fake.ops.count(("lost_reu", lost)), audio_mod.TRACKED_PUMP_INSTALL_TRIES
+                )
+                self.assertFalse(s._reu_pump_armed)
+                self.assertFalse(s.running)
+                self.assertNotIn(f"{NMI_ROUTINE_ADDR:04X}", fake.mem_files)
+                self.assertNotIn("0314", fake.regs)
