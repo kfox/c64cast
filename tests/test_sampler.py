@@ -860,6 +860,29 @@ class SamplerLateReanchorTest(unittest.TestCase):
         assert smp._carry is not None
         self.assertEqual(len(smp._carry[1]), smp._reanchor_lead)
 
+    def test_a_lead_with_no_room_past_the_reanchor_still_writes(self):
+        # A lead at the write floor re-anchors to the lead target itself, so
+        # nothing fits under it; carrying the whole payload would re-anchor
+        # it to no room again on every pass, and the ring would never be fed.
+        smp = _make(
+            self.api,
+            sample_rate=2000,
+            bits=8,
+            ring_base=0x200000,
+            ring_size=0x4000,
+            lead_seconds=0.15,
+        )
+        smp._running = True
+        smp._read_consumed_bytes = lambda: self.consumed  # type: ignore[method-assign]
+        self.smp = smp
+        self.assertEqual(smp._reanchor_lead, smp._lead_target)
+        smp._reanchor_sticky = True
+        self.consumed = 5000
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            self.assertTrue(self._write(40))
+        self.assertIsNone(smp._carry)
+        self.assertEqual(smp._content_pos, self.consumed + smp._reanchor_lead + 40)
+
     def test_an_on_time_write_ends_the_late_run(self):
         smp = self.smp
         self.consumed = 1000

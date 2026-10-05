@@ -896,9 +896,12 @@ class UltimateAudioSampler:
             c = self._late_anchor(consumed)
             # _writer_step sized this payload to the room under the lead target
             # at the old _content_pos; a re-anchor moved it forward, so the tail
-            # past the target waits for the next pass.
-            keep = max(0, consumed + self._lead_target - c)
-            if c != before and len(data) > keep:
+            # past the target waits for the next pass. A lead too shallow to
+            # leave any room past _reanchor_lead (keep 0) writes it whole: carried,
+            # it would be re-anchored to no room again on every pass, and nothing
+            # would ever land.
+            keep = consumed + self._lead_target - c
+            if c != before and 0 < keep < len(data):
                 self._carry_back(epoch, data[keep:])
                 data = data[:keep]
             end = c + len(data)
