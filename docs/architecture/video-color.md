@@ -165,6 +165,8 @@ The default `loop_audio = "on"` keeps audio playing across every transport splic
 
 That `_pending_seek` read is unlocked — racy, but benign. The consumer-side flush epoch closes the residual one-blob window: a chunk slipping through right as the seek lands is discarded by `AudioStreamer` / `UltimateAudioSampler`'s epoch check.
 
+`_emit_audio` also drops everything once `close()` has set `_closed`. `close()` joins the demux thread for at most a second, and a scene reuses its `UltimateAudioSampler` across activations: the next `setup()` re-arms it, so a demux thread that outlived the join would otherwise push the last lap's audio into the new lap's prebuffer.
+
 **`seek_pending`** is a `_lock`-guarded property that `VideoScene`'s resync loop-wrap reads, so it does not re-fire `transport_seek(A)` every frame until the demux thread clears the pending slot. Each re-fire would flush the first fresh post-A audio.
 
 The actual queue retraction lives in `AudioStreamer.flush()` / `UltimateAudioSampler.flush()` — see the [`audio.py` and `sampler.py`](audio.md#audiopy--audiostreamer) notes. `flush()` drops everything queued without moving `position_seconds()`, and a flush-epoch counter on both backends discards stale audio held by a pusher blocked mid-commit or by a consumer mid-write.

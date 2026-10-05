@@ -840,8 +840,15 @@ class AVFileSource:
         # is pending, or it plays after the splice's flush. The unlocked
         # _pending_seek read is racy but benign: a chunk slipping through right
         # as the seek lands is discarded consumer-side by the
-        # AudioStreamer/sampler flush epoch.
-        if self._audio_push is None or self._muted or self._pending_seek is not None:
+        # AudioStreamer/sampler flush epoch. A closed source pushes nothing: a
+        # demux thread that outlived close()'s bounded join would otherwise
+        # feed a reused sampler that the scene's next setup() has re-armed.
+        if (
+            self._closed
+            or self._audio_push is None
+            or self._muted
+            or self._pending_seek is not None
+        ):
             return
         if self.audio_noise_gate > 0:
             # Zero source-noise-floor samples before gain, or the encoder jitters

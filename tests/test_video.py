@@ -472,6 +472,15 @@ class MuteLatchTest(unittest.TestCase):
         src._emit_audio(np.array([1], dtype=np.int16))
         self.assertEqual(len(sink), 1)
 
+    def test_closed_source_drops_packets(self):
+        # A demux thread outliving close()'s bounded join must not feed the
+        # reused sampler that the scene's next setup() re-armed.
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src._closed = True
+        src._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+        self.assertEqual(sink, [])
+
 
 class TransportSeekTest(unittest.TestCase):
     """`request_seek`/`_apply_pending_seek` (MIDI live-tune Phase 2): a
