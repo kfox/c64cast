@@ -1600,6 +1600,15 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         s.stop()
         self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
 
+    def test_a_lost_vector_restore_at_stop_is_resent(self):
+        # stop()'s restore is the last write that can take an armed pump off
+        # $0314; one lost on the link would leave it running past the scene.
+        s, fake = self._start(0x0000, 0)
+        self.assertTrue(s._reu_pump_armed)
+        lose_writes_to(fake, VECTORS.IRQ, 1)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+
     def test_a_tracked_install_whose_latch_never_lands_parks_the_body(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)

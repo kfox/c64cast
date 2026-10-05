@@ -2274,14 +2274,18 @@ class AudioStreamer:
         vector restore (`_irq_vector_restore_owed`). Order: vector restore
         FIRST so the next kernal IRQ doesn't fire into a handler we're about
         to dismantle, then CIA #1 latch back to kernal's value, then the
-        normal NMI/SID teardown."""
+        normal NMI/SID teardown.
+
+        The vector restore is confirmed like the unwind's: this is the last
+        write that can take the pump off $0314, and one lost on a lossy link
+        leaves it running for every scene after."""
         if not (self._reu_pump_armed or self._irq_vector_restore_owed):
             return
         run_teardown_steps(
             log,
             type(self).__name__,
             [
-                ("IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)),
+                ("IRQ vector restore", self._restore_irq_vector_confirmed),
                 ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
                 ("REU pump disarm flush", self.api.flush),
             ],
