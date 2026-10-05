@@ -292,6 +292,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **`--calibrate-dac` can read a capture device that records at 12 kHz or
+  below.** Each slot's edges were trimmed by a fixed 24 samples, which at
+  those rates left nothing to measure, so a clean recording was refused as
+  holding no ring pass. The trim is now a settling time (0.5 ms) that scales
+  with the capture rate.
 - **No `$D418` DAC latch is armed outside what the NMI handler and the CIA
   timer allow.** A `pitch_mult_*` above about 1.13 at 12 kHz used to arm an NMI
   period shorter than the handler's safe budget, a zero multiplier crashed and

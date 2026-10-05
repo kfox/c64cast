@@ -915,6 +915,19 @@ class SlotRingExtractionTest(unittest.TestCase):
         self.assertLess(err, 0.01)
         self.assertAlmostEqual(got.diagnostics["nmi_rate_implied_hz"], NMI_TRUE, delta=2.0)
 
+    def test_recovers_the_levels_from_a_low_rate_capture(self):
+        """A fixed 24-sample edge guard left no plateau core in a 48-sample slot
+        (12 kHz), so a clean capture at 12 kHz or below was refused as holding
+        no ring pass. The guard is a settling time, so it scales with `sr`."""
+        codes = [dsr.ANCHOR_CODE, *range(40)]
+        for sr in (12000, 8000):
+            with self.subTest(sr=sr):
+                cap, want = _simulate(codes, sr=sr)
+                got = dsr.extract_slot_levels(cap, len(codes), RING, sr=sr)
+                scale = got.levels[0] / want[0]
+                err = np.abs(got.levels / scale - want).max() / np.abs(want).max()
+                self.assertLess(err, 0.02)
+
     def test_recovers_the_true_nmi_rate_not_the_nominal_one(self):
         """A slot is 192.24 capture samples, not 192: the NMI runs at
         1022727/128 = 7990.05 Hz, not the 8000 Hz it is asked for. Tracking that
