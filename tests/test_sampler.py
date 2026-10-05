@@ -833,6 +833,20 @@ class SamplerLateReanchorTest(unittest.TestCase):
         # Every chunk sits at its original slot: the audio did not shift.
         self.assertEqual(smp._content_pos, (chunks + 1) * 100)
 
+    def test_a_failed_ring_write_restarts_the_late_run(self):
+        # The link went down while the audio was turning late, and the retries
+        # backed off for a whole window. The backlog behind it drops through at
+        # once when the link returns, so the outage must not count as a run.
+        smp = self.smp
+        self.consumed = 1000
+        smp._written = smp._content_pos = self.consumed  # late, straddling the floor
+        with mock.patch.object(self.api, "reu_write", side_effect=OSError("link down")):
+            with self.assertRaises(OSError):
+                self._write(smp._flush_margin + 100)
+        self.consumed += smp._late_reanchor_bytes
+        self.assertFalse(self._write(100))  # late: dropped, and a new run begins
+        self.assertEqual(smp._reanchors, 0)
+
     def test_an_on_time_write_ends_the_late_run(self):
         smp = self.smp
         self.consumed = 1000

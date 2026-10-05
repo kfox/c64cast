@@ -897,7 +897,11 @@ class UltimateAudioSampler:
                     self._write_wrapped(first % self.ring_size, data[first - c :])
                 except Exception:
                     # Retried at the same anchor on the next pass: rewriting
-                    # the slices that did land is idempotent.
+                    # the slices that did land is idempotent. A link outage says
+                    # nothing about the producer, so the late run restarts once
+                    # writes land again; timed across the retries' back-off, it
+                    # re-anchored a backlog that would have lined up at once.
+                    self._late_since = None
                     self._carry_back(epoch, data)
                     raise
                 self._written = max(self._written, end)
