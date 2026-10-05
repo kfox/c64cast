@@ -375,7 +375,8 @@ class AudioStreamer:
         # accumulate a wall of stale audio.
         self._max_queued_samples = MAX_QUEUED_SAMPLES
         self.running = False
-        # Bumped by every _start_worker; a worker exits when it stops matching.
+        # Bumped by every _start_worker and by stop(); a worker exits when it
+        # stops matching.
         self._worker_generation = 0
         self.chunk_size = CHUNK_SIZE
         self.sensitivity = 1.0
@@ -824,27 +825,32 @@ class AudioStreamer:
         setting ``running`` back to True (see :meth:`_worker`)."""
         with self._ring_pad_lock:
             self._worker_generation += 1
+            generation = self._worker_generation
             self._clear_ring_clock_locked()
         thread = threading.Thread(
             target=self._worker,
-            args=(self._worker_generation,),
+            args=(generation,),
             daemon=True,
             name="audio-worker",
         )
         thread.start()
         return thread
 
-    def _consume_queued(self, n: int) -> None:
+    def _consume_queued(self, n: int, *, generation: int) -> None:
         """Account for ``n`` queued bytes that have now LANDED in the ring.
 
         Only the queued count drops, so ``position = pushed - queued`` advances
-        by exactly ``n`` — the audio clock moves because the audio played."""
+        by exactly ``n`` — the audio clock moves because the audio played. A
+        worker that outlived stop()'s bounded join counts nothing: its bytes
+        are not in the next activation's counts (see :meth:`_note_ring_landed`)."""
         if not n:
             return
         with self._count_lock:
+            if generation != self._worker_generation:
+                return
             self._queued_samples = max(0, self._queued_samples - n)
 
-    def _discard_unpushed(self, n: int) -> None:
+    def _discard_unpushed(self, n: int, *, generation: int | None = None) -> None:
         """Account for ``n`` bytes dropped before they reached the ring.
 
         Both counts drop — the paired subtract — so the bytes read as never
@@ -853,10 +859,15 @@ class AudioStreamer:
         without moving the audio clock, and the only difference from
         :meth:`_consume_queued` is whether the bytes were played: getting the
         two the wrong way round shifts A/V sync at every splice. Both live
-        here, once, rather than hand-written at each site."""
+        here, once, rather than hand-written at each site.
+
+        ``generation`` is the calling worker's, fenced as in
+        :meth:`_consume_queued`; flush()'s drain passes none."""
         if not n:
             return
         with self._count_lock:
+            if generation is not None and generation != self._worker_generation:
+                return
             self._queued_samples = max(0, self._queued_samples - n)
             self._pushed_count = max(0, self._pushed_count - n)
 
@@ -935,7 +946,7 @@ class AudioStreamer:
                     if epoch != pending_epoch:
                         # Splice landed after this chunk left the queue: drop it
                         # unplayed, with the paired subtract used below.
-                        self._discard_unpushed(pending_from_queue)
+                        self._discard_unpushed(pending_from_queue, generation=generation)
                         # write_addr passed this chunk at hand-off and
                         # pending_addr is already beyond it, so nothing would
                         # ever write [pending_addr, +len) and the NMI would
@@ -960,7 +971,7 @@ class AudioStreamer:
                             pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
                         )
                         self._note_ring_landed(generation, len(pending), pending_pad)
-                        self._consume_queued(pending_from_queue)
+                        self._consume_queued(pending_from_queue, generation=generation)
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -1010,7 +1021,7 @@ class AudioStreamer:
                 # leftover are pre-splice, so count them as never pushed (the
                 # paired subtract holds position) and skip the write and pace.
                 if self._flush_epoch != epoch:
-                    self._discard_unpushed(from_queue + len(leftover))
+                    self._discard_unpushed(from_queue + len(leftover), generation=generation)
                     leftover = b""
                     continue
 
@@ -1044,7 +1055,7 @@ class AudioStreamer:
                 # halt to hide from and one unsplit write primes the ring fastest.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
                 self._note_ring_landed(generation, n, pad)
-                self._consume_queued(from_queue)
+                self._consume_queued(from_queue, generation=generation)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -2552,6 +2563,12 @@ class AudioStreamer:
         #  - The DAC-bias gate release goes last, so the bias collapse it
         #    starts (release=0 under digi-boost) happens at volume 0.
         self.running = False
+        # Retire the worker here, not only at the next _start_worker:
+        # start_listen and the REU starts set running back to True without
+        # starting one, and a worker still parked in a ring write would read
+        # that as "keep going" and drip into a ring it no longer owns.
+        with self._ring_pad_lock:
+            self._worker_generation += 1
         # The callback stops claiming re-anchors at running=False; the servo
         # must stop posting them before the teardown below can stall.
         if self._mic_lead is not None:

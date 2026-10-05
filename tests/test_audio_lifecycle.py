@@ -1769,6 +1769,38 @@ class LifecycleTest(unittest.TestCase):
         s._note_ring_landed(s._worker_generation, 32, 32)
         self.assertEqual(s._ring_landed_total, 32)
 
+    def test_a_superseded_worker_does_not_move_the_counts(self):
+        # The landing is only half the clock: consumed = pushed - queued, and a
+        # late return that still subtracted its chunk from the next
+        # activation's queued count would put the clock that chunk early.
+        s = _make()
+        stale = s._worker_generation
+        with mock.patch.object(threading.Thread, "start"):
+            s._start_worker()
+        s._pushed_count, s._queued_samples = 100, 40
+        s._consume_queued(32, generation=stale)
+        s._discard_unpushed(32, generation=stale)
+        self.assertEqual((s._pushed_count, s._queued_samples), (100, 40))
+        s._consume_queued(32, generation=s._worker_generation)
+        self.assertEqual((s._pushed_count, s._queued_samples), (100, 8))
+
+    def test_stop_retires_the_worker_it_gave_up_on(self):
+        # start_listen and the REU starts set running back to True without
+        # starting a worker, so no _start_worker bump fences an orphan that
+        # outlived stop()'s join: stop() itself has to.
+        s = _make_worker_streamer()
+        orphan = s._worker_generation
+        s.stop()
+        s.running = True  # what start_listen / start_for_reu_staged do
+        t = threading.Thread(target=s._worker, args=(orphan,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "the orphan resumed under the next start")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+
     def test_the_worker_records_the_pad_before_it_counts_the_landing(self):
         # Content landing behind a dry tail: a reader between the two steps
         # must not pair the new landed count with the old pad record, which would
@@ -1779,8 +1811,8 @@ class LifecycleTest(unittest.TestCase):
         seen: list[float] = []
         consume = s._consume_queued
 
-        def consume_then_read(n: int) -> None:
-            consume(n)
+        def consume_then_read(n: int, *, generation: int) -> None:
+            consume(n, generation=generation)
             if n:
                 seen.append(s.position_seconds())
 
