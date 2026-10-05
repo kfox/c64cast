@@ -233,7 +233,10 @@ _NOT_A_REGION: dict[str, str] = {
     f"{_API}:_AUDIO_REGION_HI": "upper bound the SID-player relocator keeps clear",
     "c64cast.hw.c64:KERNAL_CIA1_LATCH_PAL": "a CIA #1 timer latch value, not an address",
     "c64cast.hw.c64:KERNAL_CIA1_LATCH_NTSC": "a CIA #1 timer latch value, not an address",
-    "c64cast.hw.vdc_rom:FRAMEBUF_ADDR": "an address in the C128 VDC's own RAM, not the C64's",
+    "c64cast.hw.vdc_rom:FRAMEBUF_ADDR": (
+        "the frame staging buffer in C128 RAM, used only by the native-128-mode "
+        "VDC cartridge, which never runs the C64-mode audio handlers"
+    ),
 }
 
 #: Owner pairs that overlap but are never live in the same scene, and why.
