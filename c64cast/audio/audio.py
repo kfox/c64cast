@@ -22,7 +22,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -111,9 +111,14 @@ from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
 
-# What AudioStreamer._resync_after_stall returns when R never reached the
-# write head: not a ring address, so it cannot be mistaken for an anchor.
-STALL_NOT_LAPPED = -1
+
+class StallInsideLead(NamedTuple):
+    """What ``AudioStreamer._resync_after_stall`` returns when R never
+    reached the write head: ``gap`` is how far W is still ahead of R, less
+    R's travel during the read."""
+
+    gap: int
+
 
 # Any so Pyright doesn't flag every sd.XXX as an attribute of None; the
 # intermediate name gives both branches one annotation, which mypy --strict
@@ -1052,14 +1057,20 @@ class AudioStreamer:
                     next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
                     lag = time.monotonic() - next_write_time
                     if lag > stall_resync_s:
-                        anchor = self._resync_after_stall(lag, generation, w_head)
-                        if anchor != STALL_NOT_LAPPED:
-                            if anchor is not None:
-                                pending_addr = anchor
-                                write_addr = anchor + n
-                                if write_addr >= RING_BUFFER_END:
-                                    write_addr = RING_BUFFER_ADDR
-                            next_write_time = time.monotonic()
+                        outcome = self._resync_after_stall(lag, generation, w_head)
+                        next_write_time = time.monotonic()
+                        if isinstance(outcome, StallInsideLead):
+                            # Owe only what refills the target lead, not the
+                            # whole stall: catching all of it up from a lead
+                            # longer than the target (a slow consumer's)
+                            # drove W more than a ring ahead of R.
+                            short = max(0, HOST_DMA_SERVO_TARGET_GAP - outcome.gap)
+                            next_write_time -= short / self.effective_rate
+                        elif outcome is not None:
+                            pending_addr = outcome
+                            write_addr = outcome + n
+                            if write_addr >= RING_BUFFER_END:
+                                write_addr = RING_BUFFER_ADDR
                     self._maybe_log_health(time.monotonic())
                     continue
 
@@ -1094,11 +1105,13 @@ class AudioStreamer:
             log.exception("audio worker crashed")
             self.running = False
 
-    def _resync_after_stall(self, lag: float, generation: int, w_head: int) -> int | None:
+    def _resync_after_stall(
+        self, lag: float, generation: int, w_head: int
+    ) -> int | StallInsideLead | None:
         """Recover from a worker stall longer than the ring lead; returns the
         chunk-grid address the next chunk lands at, None when R cannot be
-        read promptly (the schedule is then only snapped forward), or
-        ``STALL_NOT_LAPPED`` when R turns out not to have reached ``w_head``
+        read promptly (the schedule is then only snapped forward), or a
+        ``StallInsideLead`` when R turns out not to have reached ``w_head``
         (the live write head) after all.
 
         The trigger is ``HOST_DMA_SERVO_TARGET_GAP`` of lag, but the lead the
@@ -1107,8 +1120,12 @@ class AudioStreamer:
         bus-halt deficit. With W still ahead, the span from R to the anchor
         holds audio not yet played, and NEUTRAL-filling it cut a hole in the
         scene. R read here says which case this is (``stall_lapped``), and
-        when W is still ahead nothing is touched: the schedule catches up
-        as it does for a stall inside the lead.
+        when W is still ahead the ring is not touched; the worker restarts
+        its schedule from now, owing only what tops the lead back up to the
+        target. The whole stall is not caught up: from a lead grown longer
+        than the target, that drove W more than a ring ahead of R, and each
+        catch-up iteration still over the trigger read R and judged again,
+        until a lag that no longer measured what R ate passed for a lap.
 
         By now the consumer has played all of the lead and some of the ring's
         previous lap, and nothing written meanwhile can change that. What the
@@ -1141,24 +1158,32 @@ class AudioStreamer:
         def current() -> bool:
             return not self._superseded(generation)
 
+        read_started = time.monotonic()
         r_addr = self.servo.read_r_promptly(
             self.chunk_size / self.effective_rate,
             STALL_REANCHOR_READ_BUDGET_FRAC * HOST_DMA_SERVO_TARGET_GAP / self.effective_rate,
             current,
         )
+        read_travel = int((time.monotonic() - read_started) * self.effective_rate)
         if self._superseded(generation):
             return None
-        if r_addr is not None and not stall_lapped(r_addr, w_head, int(lag * self.effective_rate)):
-            log.debug(
-                "audio: DAC worker stalled %.2f s, inside its %d-byte lead; catching up",
-                lag,
-                (w_head - r_addr) % RING_BUFFER_SIZE + int(lag * self.effective_rate),
-            )
-            return STALL_NOT_LAPPED
         dropped = 0
         if self.mic_stream is not None:
             dropped = self._drain_queue_samples()
             self._discard_unpushed(dropped)
+        behind = int(lag * self.effective_rate)
+        if r_addr is not None and not stall_lapped(
+            r_addr, w_head, behind, read_travel + self.chunk_size
+        ):
+            gap = (w_head - r_addr) % RING_BUFFER_SIZE - read_travel
+            log.debug(
+                "audio: DAC worker stalled %.2f s, inside its %d-byte lead; "
+                "%d bytes still ahead of the C64's playback",
+                lag,
+                gap + read_travel + behind,
+                gap,
+            )
+            return StallInsideLead(gap)
         if r_addr is None:
             self._stall_log.warn(
                 "audio: DAC worker stalled %.2f s behind the C64's playback "

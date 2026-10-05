@@ -1162,20 +1162,26 @@ def stall_reanchor(r_addr: int, chunk: int, lead: int = HOST_DMA_SERVO_TARGET_GA
     return RING_BUFFER_ADDR + (-(-ahead // chunk) * chunk) % RING_BUFFER_SIZE
 
 
-def stall_lapped(r_addr: int, w_head: int, behind: int) -> bool:
+def stall_lapped(r_addr: int, w_head: int, behind: int, slack: int) -> bool:
     """Whether R has reached the write head ``w_head`` (the end of what has
     landed) during a stall the worker came back ``behind`` bytes of
     consumption late; R is read after the stall.
 
     The ring gap alone cannot say: R known modulo the ring reads the same a
     few bytes short of W as a lap and a few bytes past it. The stall's length
-    settles it. If W is still ahead, the gap is the lead W had (at most the
-    6 KiB prebuffer) less what R ate meanwhile, so gap + behind is that lead,
-    under a ring. If R passed W by x, the gap is a ring less x and
-    gap + behind is a ring plus the old lead, over one. The ~2 KiB either side
-    of the boundary covers a read that lands late and a consumer slower than
-    nominal (bus halts only slow it, which shrinks ``behind``'s overcount)."""
-    return (w_head - r_addr) % RING_BUFFER_SIZE + behind >= RING_BUFFER_SIZE
+    settles it. If W is still ahead, the gap is the lead W had less what R
+    ate meanwhile, so gap + behind is that lead, under a ring. If R passed W
+    by x, the gap is a ring less x and gap + behind is a ring plus the old
+    lead, over one. The margin either side is the old lead's distance from a
+    ring (≈4 KiB at the target gap, less as an open-loop lead grows) and the
+    old lead itself, less what R moved during the read.
+
+    A gap under ``slack`` counts as lapped too: R kept moving while it was
+    read and while the caller acts on it, so a W only that far ahead may
+    already be behind it. The caller passes R's travel over the read plus a
+    chunk."""
+    gap = (w_head - r_addr) % RING_BUFFER_SIZE
+    return gap < slack or gap + behind >= RING_BUFFER_SIZE
 
 
 def servo_hold_period(integ: float, *, chunk_period: float, ki: float = HOST_DMA_SERVO_KI) -> float:
