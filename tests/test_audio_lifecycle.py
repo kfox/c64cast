@@ -1826,15 +1826,22 @@ class LifecycleTest(unittest.TestCase):
                 s._queued_samples += len(blob)
                 s._pushed_count += len(blob)
 
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            push(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
         s.running = True
         t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
         try:
-            for _ in range(PREBUFFER_CHUNKS + 4):
-                push(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+            # Arm only after an underrun: with everything pushed up front, that
+            # proves every later collect comes back empty, so the parked write's
+            # iteration holds no full chunk and has to collect again after the
+            # release. Arming on an empty queue alone could park the write of an
+            # iteration already holding a full chunk, which skips the collect
+            # and lets an unguarded _collect_until pass.
             deadline = time.monotonic() + 2.0
-            while not s.q.empty() and time.monotonic() < deadline:
+            while s._full_underruns < 1 and time.monotonic() < deadline:
                 time.sleep(0.002)
+            self.assertGreaterEqual(s._full_underruns, 1, "the worker never ran dry")
             arm[0] = True
             self.assertTrue(parked.wait(2.0), "the worker never reached a ring write")
             # stop() minus its join: retire, splice, clear the counts.
