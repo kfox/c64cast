@@ -209,6 +209,19 @@ class StreamerTest(unittest.TestCase):
         self.assertEqual(consumed % smp.bps, 0)
         self.assertGreater(consumed, 0)
 
+    def test_start_programs_the_divider_of_the_configured_clock(self):
+        # The resample target (sample_rate) and the programmed divider must come
+        # from the same clock; at the shipped 6.16 MHz, 44.1 kHz is divider 140,
+        # where the 6.25 MHz design value would program 142 and play 1.4 % slow.
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=44100, bits=16, ref_clock_hz=s.SAMPLER_REF_CLOCK_DEFAULT)
+        smp.start(prebuffer_timeout=0.01)
+        with quiet_logging():  # the idle writer's pads are not the subject
+            smp.stop()
+        self.assertEqual(smp.sample_rate, 44000)
+        rate_reg = f"{s.SAMPLER_IO_BASE + s.REG_RATE:04X}"
+        self.assertIn((rate_reg, (0, 140)), api.reg_writes)
+
     def test_start_prefills_and_gates_then_stop_gates_off(self):
         api = _FakeBackend()
         smp = _make(
