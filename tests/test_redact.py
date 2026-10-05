@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 import unittest
 
 from _fakes import RestoresLogging
@@ -196,6 +197,28 @@ class RedactUrlUserinfoTest(unittest.TestCase):
         once = redact_secrets("https://alice:S3CRET@cdn.example/a.mp3")
         self.assertEqual(redact_secrets(once), once)
 
+    def test_an_apostrophe_in_the_password_goes_too(self):
+        """RFC 3986 allows a raw `'` in userinfo, so the URL is well formed and
+        FFmpeg opens it; a quote that bounded the match left it whole."""
+        for line, want in (
+            ("https://alice:it's@cdn.example/a.mp3", "https://REDACTED@cdn.example/a.mp3"),
+            ('"https://alice:it\'s@cdn.example/a.mp3"', '"https://REDACTED@cdn.example/a.mp3"'),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_scheme_characters_is_redacted_in_linear_time(self):
+        """Every line `--log-file` and the console's log tail receive goes
+        through here. A scheme pattern retried from every offset of a run of
+        scheme characters is quadratic in the run: 64 KB of hex took 11 s, and
+        the same run on a config line the parser refused took 17 s to quote."""
+        for line in ("a" * 64_000, "deadbeef0123" * 5_000, "x://" + "a" * 64_000):
+            with self.subTest(line=line[:16]):
+                start = time.perf_counter()
+                self.assertEqual(redact_secrets(line), line)
+                redact_source_line([line], 1)
+                self.assertLess(time.perf_counter() - start, 2.0)
+
 
 class RedactSourceLineTest(unittest.TestCase):
     """The malformed-line path. `redact_secrets` needs a value's bounds to mask
@@ -294,6 +317,15 @@ class RedactSourceLineTest(unittest.TestCase):
                 self.assertNotIn("kelly", safe)
                 self.assertFalse(verbatim)
                 self.assertTrue(safe.startswith("url = "), safe)
+
+    def test_the_cut_falls_where_the_scheme_begins(self):
+        """The cut keeps the key name and drops the whole URL, scheme
+        included, so nothing of the target is left to piece together."""
+        for line in ('url = "u64://kelly:hunter2@host"', "url=u64+x://kelly:hunter2@host"):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertEqual(safe, line[: line.index("u64")] + "REDACTED")
+                self.assertFalse(verbatim)
 
     def test_a_secret_key_later_on_the_line_does_not_carry_the_userinfo_through(self):
         """The key rule keeps the text up to the key name, so a password in a

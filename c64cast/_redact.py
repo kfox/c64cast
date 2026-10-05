@@ -84,7 +84,18 @@ _TRIPLE = ('"""', "'''")
 #: reading one as the end of the netloc is defensible — but a passphrase with a
 #: space in it is precisely the malformed shape this runs on, and
 #: `u64://kelly:my pass@host` would otherwise come back whole.
-_URL_USERINFO = re.compile(r"[a-z][a-z0-9+.\-]*://[^/?#\"']*@", re.IGNORECASE)
+#:
+#: Both userinfo patterns are anchored on the literal `://` and only *look
+#: behind* it for a scheme character, rather than matching the scheme itself.
+#: A `[a-z][a-z0-9+.\-]*://` pattern is retried from every offset of a run of
+#: scheme characters and scans the rest of the run each time, which is
+#: quadratic: a 64 KB hex dump on one log line took 11 s to redact, and every
+#: line `--log-file` or the console's log buffer receives goes through it.
+#: :func:`_scheme_start` recovers where the scheme began when a caller needs it.
+_URL_USERINFO = re.compile(r"://(?<=[a-z0-9+.\-]://)[^/?#\"']*@", re.IGNORECASE)
+
+#: The characters a URL scheme is spelled with (RFC 3986 §3.1).
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
 
 
 #: Userinfo inside a well-formed URL on a log line: `scheme://user:pass@`. Unlike
@@ -92,7 +103,18 @@ _URL_USERINFO = re.compile(r"[a-z][a-z0-9+.\-]*://[^/?#\"']*@", re.IGNORECASE)
 #: a URL a program opened has no raw space in it, and an unbounded match would
 #: run from `tr://COM3` across a whole sentence to someone's `me@example.com`.
 #: Greedy up to the netloc's last `@`, so a password holding a raw `@` goes too.
-_INLINE_URL_USERINFO = re.compile(r"(?P<scheme>[a-z][a-z0-9+.\-]*://)[^\s/?#\"']*@", re.IGNORECASE)
+#: A `'` does not bound it: RFC 3986 allows one unencoded in userinfo, so
+#: `https://user:it's@host` is well formed and its password has to go too.
+_INLINE_URL_USERINFO = re.compile(r"://(?<=[a-z0-9+.\-]://)[^\s/?#\"]*@", re.IGNORECASE)
+
+
+def _scheme_start(line: str, separator: int) -> int:
+    """The index in `line` where the scheme ending at the `://` found at
+    `separator` begins."""
+    i = separator
+    while i > 0 and line[i - 1] in _SCHEME_CHARS:
+        i -= 1
+    return i
 
 
 def _mask(m: re.Match[str]) -> str:
@@ -122,7 +144,7 @@ def redact_secrets(text: str) -> str:
     Masking a value means finding where it starts and ends, which a malformed
     line does not offer — :func:`redact_source_line` is for the caller quoting
     one of those."""
-    text = _INLINE_URL_USERINFO.sub(rf"\g<scheme>{REDACTED}@", text)
+    text = _INLINE_URL_USERINFO.sub(f"://{REDACTED}@", text)
     return _SECRET_VALUE.sub(_mask, text)
 
 
@@ -227,8 +249,9 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     line = lines[lineno - 1]
     key = _SECRET_KEY_RE.search(line)
     userinfo = _URL_USERINFO.search(line)
-    if userinfo is not None and (key is None or userinfo.start() < key.end()):
-        return f"{line[: userinfo.start()]}{REDACTED}", False
+    cut = _scheme_start(line, userinfo.start()) if userinfo is not None else None
+    if cut is not None and (key is None or cut < key.end()):
+        return f"{line[:cut]}{REDACTED}", False
     if key is not None:
         return f"{line[: key.end()]} {REDACTED}", False
     return line, True
