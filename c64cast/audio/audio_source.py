@@ -274,6 +274,12 @@ class AudioFileSource:
     # prebuffer wait) between the end of decoding and the gate.
     _DRAIN_GRACE_S = 5.0
 
+    # How far behind the decoder the analyzer can read. The sampler's queue
+    # alone holds about 23 s of a 44 kHz WAV (above) plus its 1 s ring lead;
+    # the DAC's holds about 1.4 s plus its ring. Past this the analyzer reads
+    # silence and says so once, rather than audio from the wrong moment.
+    _FEATURE_HISTORY_S = 30.0
+
     def __init__(
         self,
         audio: AudioStreamer | UltimateAudioSampler,
@@ -418,7 +424,12 @@ class AudioFileSource:
 
     def _start_features(self) -> None:
         """Install the pre-DSP analyzer at the streamer's DAC rate (what the DAC
-        actually plays, like the mic path). A failure must not cost playback."""
+        actually plays, like the mic path). A failure must not cost playback.
+
+        The decoder runs the sink's whole queue and ring ahead of what is
+        heard, so the analyzer reads the window ending at the sink's played
+        position rather than the newest one; the tap keeps enough history to
+        reach back that far."""
         if not self._reactive:
             return
         from c64cast.app.config import AudioFeaturesCfg
@@ -426,8 +437,17 @@ class AudioFileSource:
         from .audio_features import AnalysisTap, AudioFeatureStream
 
         cfg = self._features_cfg or AudioFeaturesCfg()
+        audio = self._audio
+        # The tap is indexed in pushed samples, which the decoder resamples to
+        # this rate, and the sink's clock divides by the same one.
+        rate = float(audio.effective_rate or audio.sample_rate)
+
+        def played_index() -> float:
+            return max(audio.position_seconds() or 0.0, 0.0) * rate
+
         try:
-            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096))
+            history = int(rate * self._FEATURE_HISTORY_S)
+            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096, history))
             stream = AudioFeatureStream(
                 tap,
                 self._audio.sample_rate,
@@ -435,6 +455,7 @@ class AudioFileSource:
                 fft_size=cfg.fft_size,
                 poll_hz=cfg.poll_hz,
                 onset_sensitivity=cfg.onset_sensitivity,
+                play_position=played_index,
             )
             self._audio.analysis_sink = tap.push
             stream.start()

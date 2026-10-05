@@ -1554,6 +1554,146 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.assertFalse(src.finished)
 
 
+def _make_click_wav(path: str, *, seconds: float, period: float, rate: int = 44100) -> list[float]:
+    """A click track: a 30 ms noise burst every `period` seconds, silence
+    between. Returns the click times in seconds."""
+    import wave
+
+    rng = np.random.default_rng(7)
+    n = int(rate * seconds)
+    x = np.zeros(n, dtype=np.float64)
+    clicks = [period * (k + 1) for k in range(int(seconds / period) - 1)]
+    burst = int(0.03 * rate)
+    for t in clicks:
+        i = int(t * rate)
+        x[i : i + burst] = rng.uniform(-0.8, 0.8, burst)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes((x * 32767).astype("<i2").tobytes())
+    return clicks
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class AudioFileSourceFeatureSyncTest(unittest.TestCase):
+    """A reactive file scene pulses with the click the listener hears, not the
+    one the decoder has just reached. Both sinks keep a queue and a ring of
+    decoded audio ahead of playback (≈1.4 s + the ring on the DAC, the whole
+    of a short file on the sampler), and analyzing the newest pushed window
+    put every onset that far ahead of its sound."""
+
+    PERIOD = 0.5
+    TOLERANCE_S = 0.12  # the 1024-sample window plus a few 60 Hz ticks
+
+    def setUp(self):
+        import tempfile
+
+        from c64cast.audio import audio_features, audio_source
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.wav = f"{tmp.name}/clicks.wav"
+        self.clicks = _make_click_wav(self.wav, seconds=4.0, period=self.PERIOD)
+        self.now = [1000.0]
+        clock = SimpleNamespace(monotonic=lambda: self.now[0])
+        for patcher in (
+            mock.patch.object(audio_source, "time", clock),
+            mock.patch.object(audio_features, "time", clock),
+            mock.patch.object(audio_features, "PollThread", _NoWriter),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _source(self, sink):
+        from c64cast.app.config import AudioFeaturesCfg
+        from c64cast.audio.audio_source import AudioFileSource
+
+        src = AudioFileSource(sink, self.wav, reactive=True, features_cfg=AudioFeaturesCfg())
+        src._start_features()
+        self.addCleanup(src.teardown)
+        assert src._features is not None
+        return src
+
+    def _assert_onsets_on_the_clicks(self, onsets: list[float]) -> None:
+        heard = [c for c in self.clicks if c < 3.0]
+        self.assertGreaterEqual(len(onsets), len(heard), f"onsets at {onsets}")
+        for t in onsets:
+            self.assertTrue(
+                any(0.0 <= t - c <= self.TOLERANCE_S for c in self.clicks),
+                f"onset at played {t:.3f} s is on no click {self.clicks}",
+            )
+
+    def test_sampler_onsets_land_on_the_heard_clicks(self):
+        from c64cast.audio import sampler
+
+        with (
+            mock.patch.object(sampler, "time", SimpleNamespace(monotonic=lambda: self.now[0])),
+            mock.patch.object(sampler, "PollThread", _NoWriter),
+        ):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+            src = self._source(smp)
+            smp.arm()
+            src._decode_loop()  # a 4 s file fits the queue: decoded whole up front
+            self.now[0] += 1.0
+            smp.start()
+            gate = self.now[0]
+            onsets = []
+            assert src._features is not None
+            for k in range(int(3.0 * 60)):
+                self.now[0] = gate + k / 60.0
+                src._features._process_tick()
+                m = src._features.features()
+                if m is not None and m.onset == 1.0:
+                    onsets.append(smp.position_seconds())
+        self._assert_onsets_on_the_clicks(onsets)
+
+    def test_dac_onsets_land_on_the_heard_clicks(self):
+        # The real streamer's push and clock; its worker is modeled: the ring
+        # holds `ring` samples ahead of the read head and the queue refills to
+        # its cap after every tick, the steady state of a file decoder.
+        import av
+        from _fakes import new_streamer
+
+        streamer = new_streamer(sample_rate=12000)
+        src = self._source(streamer)
+        rate = streamer.effective_rate
+        ring = 4096
+        streamer.running = True
+        streamer.servo.ring_lead = float(ring)
+        container = av.open(self.wav)
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=int(round(rate)))
+        pcm = np.concatenate(
+            [
+                r.to_ndarray().reshape(-1)
+                for f in container.decode(audio=0)
+                for r in resampler.resample(f)
+            ]
+        ).astype(np.int16)
+        container.close()
+        fed = 0
+        deepest = 0
+        onsets = []
+        assert src._features is not None
+        for k in range(int(3.0 * 60)):
+            played = k / 60.0 * rate
+            with streamer._count_lock:
+                streamer._queued_samples = max(0, streamer._pushed_count - int(played) - ring)
+            while not streamer.q.empty():
+                streamer.q.get_nowait()
+            while fed < pcm.size and streamer._queued_samples + 512 <= streamer._max_queued_samples:
+                streamer.push_samples(pcm[fed : fed + 512])
+                fed += 512
+            deepest = max(deepest, streamer._queued_samples)
+            self.now[0] += 1.0 / 60.0
+            src._features._process_tick()
+            m = src._features.features()
+            if m is not None and m.onset == 1.0:
+                onsets.append(streamer.position_seconds())
+        self.assertGreater(deepest, 15000, "the model never ran the queue up")
+        self._assert_onsets_on_the_clicks(onsets)
+
+
 class ConfigGenerativeTest(unittest.TestCase):
     def setUp(self):
         self.cfg = Config()

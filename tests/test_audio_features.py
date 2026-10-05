@@ -281,6 +281,48 @@ class AnalysisTapTest(unittest.TestCase):
         np.testing.assert_array_equal(tap.recent(4), np.zeros(4, dtype=np.float32))
 
 
+class TapWindowTest(unittest.TestCase):
+    """`window_ending_at` reads by absolute sample index: what a file source's
+    analyzer uses to read the audio being heard, behind the decoder."""
+
+    def _ramp_tap(self, size: int, total: int, block: int) -> AnalysisTap:
+        tap = AnalysisTap(size=size)
+        for i in range(0, total, block):
+            tap.push(np.arange(i, min(i + block, total), dtype=np.float32))
+        return tap
+
+    def test_window_reads_the_samples_at_those_indices(self):
+        tap = self._ramp_tap(64, 200, 7)
+        np.testing.assert_array_equal(tap.window_ending_at(180, 10), np.arange(170, 180))
+        self.assertEqual(tap.pushed, 200)
+
+    def test_index_survives_a_push_larger_than_the_ring(self):
+        tap = self._ramp_tap(64, 30, 30)
+        tap.push(np.arange(30, 130, dtype=np.float32))
+        np.testing.assert_array_equal(tap.window_ending_at(120, 8), np.arange(112, 120))
+
+    def test_an_end_past_what_was_pushed_reads_the_newest(self):
+        # Slots past the write head still hold a previous lap's audio.
+        tap = self._ramp_tap(64, 200, 7)
+        np.testing.assert_array_equal(tap.window_ending_at(230, 10), np.arange(190, 200))
+
+    def test_overwritten_and_never_pushed_samples_read_as_silence(self):
+        tap = self._ramp_tap(64, 200, 7)  # retains 136..199
+        w = tap.window_ending_at(140, 10)
+        np.testing.assert_array_equal(w[:6], np.zeros(6))
+        np.testing.assert_array_equal(w[6:], np.arange(136, 140))
+        np.testing.assert_array_equal(AnalysisTap(64).window_ending_at(5, 4), np.zeros(4))
+
+    def test_a_play_position_past_the_history_says_so_once(self):
+        tap = self._ramp_tap(FFT_SIZE * 4, FFT_SIZE * 10, FFT_SIZE)
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ, play_position=lambda: FFT_SIZE)
+        with self.assertLogs("c64cast.audio.audio_features", level="WARNING") as cm:
+            stream._process_tick()
+            stream._process_tick()
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("behind the decoder", cm.output[0])
+
+
 class StreamTest(unittest.TestCase):
     def test_features_none_before_first_tick(self):
         stream = AudioFeatureStream(AnalysisTap(), SR, poll_hz=POLL_HZ)
