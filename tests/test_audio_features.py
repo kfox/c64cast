@@ -398,6 +398,30 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(held, [False])
         self.assertIsNotNone(stream.features())
 
+    def test_a_tick_reads_its_window_and_clock_under_the_analyzer_lock(self):
+        # A tick that waited out another's analysis, or start()'s reset, must
+        # analyze the present: a window or timestamp read before the wait would
+        # fold a stale window into the analyzer, or a `now` older than the
+        # one the analyzer last saw.
+        tap = AnalysisTap()
+        tap.push(_sine(440.0))
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ)
+        held: list[tuple[str, bool]] = []
+
+        def play_position() -> float:
+            held.append(("window", stream._analyze_lock.locked()))
+            return float(FFT_SIZE)
+
+        def clock() -> float:
+            held.append(("clock", stream._analyze_lock.locked()))
+            return 1.0
+
+        stream._play_position = play_position
+        with patch("c64cast.audio.audio_features.time") as fake_time:
+            fake_time.monotonic.side_effect = clock
+            stream._process_tick()
+        self.assertEqual(held, [("window", True), ("clock", True)])
+
     def test_a_reset_cannot_land_between_an_analysis_and_its_publish(self):
         # A tick from a poll thread whose stop timed out can overlap start().
         # If the snapshot swap ran after the analyzer lock was released,
