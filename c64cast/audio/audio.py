@@ -1134,9 +1134,12 @@ class AudioStreamer:
         except Exception:
             # Clearing `running` is what stats()["running"] reports, so a caller
             # can tell a dead worker from a live one rather than inferring it
-            # from silence.
+            # from silence. A superseded worker's write most often ends this
+            # way — a parked write on a stalled link raises rather than
+            # returns — and by then `running` is the next session's.
             log.exception("audio worker crashed")
-            self.running = False
+            if current():
+                self.running = False
 
     def _resync_after_stall(
         self, lag: float, generation: int, w_head: int

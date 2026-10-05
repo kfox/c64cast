@@ -637,6 +637,31 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertFalse(s.running)
         self.assertTrue(any("audio worker crashed" in m for m in cm.output))
 
+    def test_a_superseded_worker_crashing_leaves_the_next_session_running(self):
+        # A write parked on a stalled link usually raises when it gives up;
+        # by then the next start_* owns `running`, and clearing it would
+        # fence that session's worker out.
+        s = _make_worker_streamer(chunk_size=8)
+        s.q.put(bytes([7] * 8))
+        s._queued_samples += 8
+
+        def superseded_then_boom(addr: str, data: bytes) -> None:
+            s._worker_generation += 1  # the next scene's _start_worker
+            raise RuntimeError("dma exploded")
+
+        cast(Any, s).api.write_memory_file = superseded_then_boom
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+            s.running = True
+            t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+            t.start()
+            t.join(timeout=1.0)
+        try:
+            self.assertFalse(t.is_alive())
+            self.assertTrue(s.running, "an orphan's crash stopped the next session")
+        finally:
+            s.running = False
+        self.assertTrue(any("audio worker crashed" in m for m in cm.output))
+
 
 class PitchCompensationLatchTest(unittest.TestCase):
     """set_nmi_latch_for_mode converts a playback-rate multiplier into a CIA #2
