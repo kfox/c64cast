@@ -407,6 +407,12 @@ HOST_DMA_SERVO_READ_HOLDOFF_MAX_S = 8.0
 # per-chunk budget is far tighter (it is a pacing deadline, not a safety
 # bound), and borrowing it threw away readings this one can safely use.
 STALL_REANCHOR_READ_BUDGET_FRAC = 0.75  # of the re-anchor lead, in seconds
+# A W still ahead of R by less than this past R's travel during the read
+# counts as lapped: the refill's first write has to land before R gets there,
+# and a quarter chunk is ≈21 ms at 12 kHz, several DMA writes. A whole chunk
+# NEUTRAL-filled unplayed audio (656 B in one virtual-clock case) without
+# saving a single lap-old replay over a 48-case sweep.
+STALL_INSIDE_LEAD_SLACK = CHUNK_SIZE // 4  # bytes
 # Per-reading weight of the ring-lead EMA the A/V clock subtracts: about a
 # second at one R read per 1 KiB chunk, so one torn R read moves the clock by
 # a few ms rather than jumping it by up to a whole ring.

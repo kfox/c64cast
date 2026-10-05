@@ -1312,19 +1312,17 @@ class StallResyncTest(unittest.TestCase):
                 after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
                 self.assertEqual(after, 0)
 
-    def test_a_stall_leaving_w_within_the_slack_of_r_is_reanchored_at_once(self):
-        # Servo on, consumer 20 % slow, 0.55 s stall: W is 684 B ahead of R
-        # when R is read, under the read's travel plus a chunk, so it counts
-        # as lapped and is re-anchored on the first judgment, NEUTRAL-filling
-        # what was left of that lead. Judged inside the lead with the old
-        # schedule kept, it was re-judged until a false lap NEUTRAL-filled
-        # 3004 B.
+    def test_a_w_a_few_hundred_bytes_ahead_of_r_is_left_alone(self):
+        # Servo on, consumer 20 % slow, 0.55 s stall: W is ≈690 B ahead of R
+        # when R is read. A whole-chunk slack counted that as lapped and
+        # NEUTRAL-filled the 656 B of it R had not yet played; past a
+        # quarter-chunk slack it is inside the lead, and nothing is lost.
         api, outcomes = self._judged_run(0.55, servo=True, consumer_scale=0.8)
         self.assertEqual(len(outcomes), 1, outcomes)
-        self.assertIsInstance(outcomes[0], int)
+        self.assertIsInstance(outcomes[0], audio_mod.StallInsideLead)
         assert api.stalled_until is not None
         after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
-        self.assertLessEqual(after, 1024)
+        self.assertEqual(after, 0)
 
     def test_a_stall_that_lapped_is_still_reanchored_with_a_slow_consumer(self):
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
@@ -1364,6 +1362,8 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(result, audio_mod.StallInsideLead(2000))
         self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
         self.assertEqual(s.q.qsize(), 4, "dropped a decoded backlog")
+        # The refill burst is a disturbance the adaptive rate loop sits out.
+        self.assertGreater(s.servo.warmup_until, clock.monotonic())
 
     def test_a_live_backlog_is_dropped_when_r_has_not_reached_w_too(self):
         # Same stall inside the lead, from a mic: played late, its backlog
@@ -1387,8 +1387,8 @@ class StallResyncTest(unittest.TestCase):
         self.assertTrue(any("of live input" in line for line in cm.output), cm.output)
 
     def test_a_w_ahead_by_less_than_r_moves_while_read_counts_as_lapped(self):
-        # 0.1 s of read carries R 1200 B on: a W 1500 B ahead when R was
-        # sampled is within a chunk of it by the time the answer is used.
+        # 0.1 s of read carries R 1200 B on: a W 1400 B ahead when R was
+        # sampled is within the slack of it by the time the answer is used.
         clock = SleepDrivenClock()
         api = _RFakeAPI([100])
         s = self._backlogged(api, live=False)
@@ -1405,14 +1405,15 @@ class StallResyncTest(unittest.TestCase):
             self.assertLogs("c64cast.audio", level="WARNING") as cm,
         ):
             result = s._resync_after_stall(
-                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 1600
+                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 1500
             )
         self.assertEqual(result, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, 1024))
         self.assertTrue(any("Re-anchored" in line for line in cm.output))
 
     def test_the_gap_left_inside_the_lead_is_net_of_r_travel_during_the_read(self):
-        # W 3000 B ahead when R was sampled, 0.1 s of read: what the worker
-        # tops up to the target lead is measured from where R is now.
+        # W 3000 B ahead when R was sampled, 0.1 s of read, 0.2 s of stall
+        # (an old lead of ≈6.6 KiB): what the worker tops up to the target
+        # lead is measured from where R is now.
         clock = SleepDrivenClock()
         api = _RFakeAPI([100])
         s = self._backlogged(api, live=False)
@@ -1429,7 +1430,7 @@ class StallResyncTest(unittest.TestCase):
             self.assertLogs("c64cast.audio", level="WARNING"),  # the slow read's
         ):
             result = s._resync_after_stall(
-                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 3100
+                0.2, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 3100
             )
         assert isinstance(result, audio_mod.StallInsideLead)
         self.assertAlmostEqual(result.gap, 3000 - 0.1 * s.effective_rate, delta=2)
@@ -1455,6 +1456,31 @@ class StallResyncTest(unittest.TestCase):
         # A gap under the slack R covers while being read counts as lapped.
         self.assertFalse(audio_mod.stall_lapped(r, r + 1000, 4800, 1000))
         self.assertTrue(audio_mod.stall_lapped(r, r + 1000, 4800, 1001))
+
+    def test_a_read_that_outlasts_the_old_lead_is_still_a_lap(self):
+        # A live lead of ≈2.2 KiB, then a 0.05 s stall and a 0.25 s read
+        # (≈3.6 KiB of consumption): R passed W during the read. Counting
+        # only the stall as consumption, the ≈6.8 KiB gap read as W still
+        # ahead, by ≈3.8 KiB once the read's travel came off.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.25)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        w_head = audio_mod.RING_BUFFER_ADDR + (100 + 1024 + 600 - 3000) % audio_mod.RING_BUFFER_SIZE
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            result = s._resync_after_stall(0.05, s._worker_generation, w_head)
+        self.assertNotIsInstance(result, audio_mod.StallInsideLead)
+        self.assertTrue(any("Re-anchored" in line for line in cm.output))
 
 
 class NmiRateSafetyTest(unittest.TestCase):

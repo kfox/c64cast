@@ -95,6 +95,7 @@ from .audio_handlers import (
     SID_MAHONEY_CONTROL,
     SID_MAHONEY_RES_FILT,
     SID_MAHONEY_SR,
+    STALL_INSIDE_LEAD_SLACK,
     STALL_REANCHOR_READ_BUDGET_FRAC,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
@@ -1171,19 +1172,24 @@ class AudioStreamer:
         if self.mic_stream is not None:
             dropped = self._drain_queue_samples()
             self._discard_unpushed(dropped)
-        behind = int(lag * self.effective_rate)
+        # R's consumption since the missed slot, counting the read: R may be
+        # sampled at the read's end, and a read that outlasts the old lead
+        # otherwise leaves a lap judged as W a ring's worth ahead.
+        behind = int(lag * self.effective_rate) + read_travel
         if r_addr is not None and not stall_lapped(
-            r_addr, w_head, behind, read_travel + self.chunk_size
+            r_addr, w_head, behind, read_travel + STALL_INSIDE_LEAD_SLACK
         ):
             gap = (w_head - r_addr) % RING_BUFFER_SIZE - read_travel
             log.debug(
                 "audio: DAC worker stalled %.2f s, inside its %d-byte lead; "
                 "%d bytes still ahead of the C64's playback%s",
                 lag,
-                gap + read_travel + behind,
+                gap + behind,
                 gap,
                 f"; dropped {dropped / self.effective_rate:.2f} s of live input" if dropped else "",
             )
+            # The refill is a short burst the adaptive loop should not steer on.
+            self.servo.note_disturbance()
             return StallInsideLead(gap)
         if r_addr is None:
             self._stall_log.warn(
