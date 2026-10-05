@@ -12,6 +12,7 @@ No real U64 and no real sound device — FakeAPI plus a fake `sd` module.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import queue
 import threading
 import time
@@ -1363,6 +1364,27 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(result, audio_mod.StallInsideLead(2000))
         self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
         self.assertEqual(s.q.qsize(), 4, "dropped a decoded backlog")
+
+    def test_a_live_backlog_is_dropped_when_r_has_not_reached_w_too(self):
+        # Same stall inside the lead, from a mic: played late, its backlog
+        # would add that much latency for the rest of the session.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=True)
+        clock = SleepDrivenClock()
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs(audio_mod.log, level="DEBUG") as cm,
+        ):
+            result = s._resync_after_stall(
+                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 2100
+            )
+        self.assertEqual(result, audio_mod.StallInsideLead(2000))
+        self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
+        self.assertTrue(s.q.empty())
+        self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
+        self.assertTrue(all(r.levelno < logging.WARNING for r in cm.records), cm.output)
+        self.assertTrue(any("of live input" in line for line in cm.output), cm.output)
 
     def test_a_w_ahead_by_less_than_r_moves_while_read_counts_as_lapped(self):
         # 0.1 s of read carries R 1200 B on: a W 1500 B ahead when R was

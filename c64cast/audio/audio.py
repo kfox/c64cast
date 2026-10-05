@@ -1178,10 +1178,11 @@ class AudioStreamer:
             gap = (w_head - r_addr) % RING_BUFFER_SIZE - read_travel
             log.debug(
                 "audio: DAC worker stalled %.2f s, inside its %d-byte lead; "
-                "%d bytes still ahead of the C64's playback",
+                "%d bytes still ahead of the C64's playback%s",
                 lag,
                 gap + read_travel + behind,
                 gap,
+                f"; dropped {dropped / self.effective_rate:.2f} s of live input" if dropped else "",
             )
             return StallInsideLead(gap)
         if r_addr is None:
