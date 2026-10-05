@@ -138,6 +138,24 @@ def mic_lead_correction(
     )
 
 
+def mic_lead_rate_seed(pump_rate: float, *, sample_rate: int) -> tuple[float, float]:
+    """``(drop_frac, integ)`` for a loop whose lead was just reset to the
+    target: the drop that matches the host to ``pump_rate`` (bytes/s), and the
+    integrator that holds it with no error left for the proportional term.
+    A re-anchor jumps the lead but not the rate mismatch, so the loop restarts
+    from what the pump is doing now rather than from what it was steering
+    before the jump. Clamped like ``mic_lead_correction``'s output, so the
+    integrator stays inside its anti-windup bounds. A rate that is not a
+    positive finite number says nothing about the pump and seeds the startup
+    state ``(0.0, 0.0)``, as an idle tracker stops steering: NaN would
+    otherwise fall through the clamp to the full drop, the dangerous side."""
+    if not (math.isfinite(pump_rate) and pump_rate > 0.0):
+        return 0.0, 0.0
+    rate = float(sample_rate)
+    need = max(-MIC_LEAD_RESAMPLE_MAX, min(MIC_LEAD_MAX_DROP, 1.0 - pump_rate / rate))
+    return need, need * rate / MIC_LEAD_KI
+
+
 def reanchor_fill(anchor: int) -> tuple[int, int]:
     """Where a re-anchor restarts the write head, and how many NEUTRAL bytes
     it writes there first: ``(pos, fill_len)``. ``anchor`` is the pump's
@@ -357,6 +375,21 @@ class MicLeadServo:
         lead, pump, at = m
         self._note_success()
         last, self._last_pump = self._last_pump, (pump, at)
+        # A re-anchor reseeds the loop from the fastest of three rates: the
+        # one the integrator already holds the host to, the rate average
+        # before this interval, and this interval's own. A lap or an overtake
+        # moves the lead, not the rate mismatch, and the integrator is the
+        # loop's slow estimate of that mismatch. A stall reads the pump as slow
+        # (and ends in a lap), but barely moves the integrator, and a lap
+        # reseeds it to hold the host to a rate no slower than before, so no
+        # stall, however many ticks it spans, sets the seed. A speed-up reads
+        # the pump as fast, where the integrator is the stale one: when it ends
+        # in an overtake, this interval's rate carries it; when the loop
+        # absorbs it and a stall laps a few ticks later, the average has
+        # already caught it. The slower reading is the one not to trust: an
+        # over-drop has the ~1.6 KB target to fall through zero, an under-drop
+        # ~6.6 KB to the lap limit.
+        seed_rate = max(self._rate - MIC_LEAD_KI * self._integ, self._pump_rate)
         if last is not None:
             advanced = (pump - last[0]) % REU_MIC_SIZE
             if advanced == 0:
@@ -367,10 +400,16 @@ class MicLeadServo:
             if at > last[1]:
                 measured = advanced / (at - last[1])
                 self._pump_rate += 0.5 * (measured - self._pump_rate)
+                seed_rate = max(seed_rate, measured)
         self.lead_min = lead if self.lead_min is None else min(self.lead_min, lead)
         self.lead_max = lead if self.lead_max is None else max(self.lead_max, lead)
         if lead < 0 or lead > MIC_LEAD_REANCHOR_ABOVE:
             self.reanchors += 1
+            # The fill restarts the lead at the target, so the drop that steered
+            # toward this jump is stale: a pump that sped up mid-scene would keep
+            # being over-dropped from, overtake again, and re-anchor every few
+            # seconds, each one a NEUTRAL dropout.
+            self.drop_frac, self._integ = mic_lead_rate_seed(seed_rate, sample_rate=self._rate)
             with self._lock:
                 self._reanchor = (pump, at, self._pump_rate)
             (log.warning if self.reanchors == 1 else log.debug)(

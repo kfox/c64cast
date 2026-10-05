@@ -18,6 +18,7 @@ from _fakes import (
     IRQ_ENTRY_A,
     RTI_RETURN_ADDR,
     FakeAPI,
+    lose_reu_writes_to,
     lose_writes_to,
     new_streamer,
     quiet_logging,
@@ -25,6 +26,7 @@ from _fakes import (
     written_addresses,
 )
 
+from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     HOST_DMA_SERVO_INTEG_CLAMP,
@@ -49,6 +51,7 @@ from c64cast.audio.audio_handlers import (
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_HANDLER_STUB,
     REU_PUMP_INITIAL_MARGIN,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
@@ -60,7 +63,8 @@ from c64cast.audio.audio_handlers import (
     patch_chunk_size,
     servo_period,
 )
-from c64cast.hw.c64 import CIA_TIMER_LATCH_MAX
+from c64cast.hw.c64 import CIA1, CIA_TIMER_LATCH_MAX, KERNAL, REU, VECTORS, kernal_cia1_latch
+from c64cast.hw.socket_dma import SocketDMAError
 from c64cast.scenes.scenes import VideoScene
 
 # The matched pump latch at the fixture's rate, spelled out rather than
@@ -1501,3 +1505,295 @@ class TrackedVideoPumpInstallFailureTest(unittest.TestCase):
         with quiet_logging():
             scene.teardown()
         self.assertIs(scene.audio, s)
+
+
+class StagedPumpInstallDeliveryTest(unittest.TestCase):
+    """Every write the staged pump's bring-up depends on is confirmed before
+    $0314 is pointed at $C100: the plain handler, the REC registers and the
+    CIA #1 latch, and the vector patch itself. A lost handler under a patched
+    vector runs whatever $C100 held; lost REC registers leave the plain pump
+    DMAing from wherever a bank-swap scene left $DF02-$DF06."""
+
+    TRIES = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+    KERNAL_IRQ = (KERNAL.IRQ_HANDLER & 0xFF, KERNAL.IRQ_HANDLER >> 8)
+    PUMP_IRQ = (REU_PUMP_HANDLER_ADDR & 0xFF, REU_PUMP_HANDLER_ADDR >> 8)
+
+    def _start(self, lose: int, times: int | None, *, governor: bool = False, skip_hook=False):
+        s = new_streamer(dither=False, use_reu_pump=True, reu_pump_governor=governor)
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, lose, times)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=skip_hook)
+        return s, fake
+
+    def _start_failing(self, lose: int, times: int | None, **kw):
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR") as cm,
+            self.assertRaises(PumpInstallError),
+        ):
+            self._start(lose, times, **kw)
+        self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+
+    @staticmethod
+    def _vector_writes(fake: FakeAPI) -> list[tuple]:
+        return [o[2] for o in fake.ops if o[:2] == ("write_regs", "0314")]
+
+    def test_each_install_write_is_flushed_before_the_vector_patch(self):
+        for governor in (False, True):
+            with self.subTest(governor=governor):
+                _s, fake = self._start(0x0000, 0, governor=governor)
+                ops = fake.ops
+                handler = next(
+                    i for i, o in enumerate(ops) if o[:2] == ("write_memory_file", "C100")
+                )
+                rec = next(i for i, o in enumerate(ops) if o[:2] == ("write_memory", "DF02"))
+                latch = next(i for i, o in enumerate(ops) if o[:2] == ("write_memory", "DC04"))
+                vector = next(i for i, o in enumerate(ops) if o[:2] == ("write_regs", "0314"))
+                self.assertIn(("flush",), ops[handler:rec])
+                self.assertIn(("flush",), ops[latch:vector])
+                self.assertIn(("flush",), ops[vector:])
+
+    def test_a_lost_handler_is_resent_and_the_pump_arms(self):
+        s, fake = self._start(REU_PUMP_HANDLER_ADDR, 1)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(self._vector_writes(fake), [self.PUMP_IRQ])
+
+    def test_a_handler_that_never_lands_leaves_the_vector_alone(self):
+        for governor in (False, True):
+            with self.subTest(governor=governor):
+                s = new_streamer(dither=False, use_reu_pump=True, reu_pump_governor=governor)
+                fake = cast(FakeAPI, s.api)
+                lose_writes_to(fake, REU_PUMP_HANDLER_ADDR)
+                with (
+                    self.assertLogs("c64cast.audio.audio", level="ERROR"),
+                    self.assertRaises(PumpInstallError),
+                ):
+                    s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+                self.assertNotIn(self.PUMP_IRQ, self._vector_writes(fake))
+                self.assertFalse(s._reu_pump_armed)
+                self.assertFalse(s.running)
+                self.assertEqual(fake.regs["DD0D"][0], 0x7F)
+                self.assertEqual(fake.nmi_consumer_notes[-1], False)
+
+    def test_lost_rec_or_latch_writes_abort_before_the_vector_patch(self):
+        kernal_latch = _packed_latch(kernal_cia1_latch("NTSC"))
+        for lost in (REU.C64_ADDR_LO, REU.LENGTH_LO, CIA1.TIMER_A_LO):
+            with self.subTest(lost=f"${lost:04X}"):
+                s = _new_streamer()
+                fake = cast(FakeAPI, s.api)
+                lose_writes_to(fake, lost, self.TRIES)
+                with (
+                    self.assertLogs("c64cast.audio.audio", level="ERROR"),
+                    self.assertRaises(PumpInstallError),
+                ):
+                    s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+                self.assertNotIn(self.PUMP_IRQ, self._vector_writes(fake))
+                self.assertFalse(s._reu_pump_armed)
+                # The pump rate the install may have landed goes back to the kernal's.
+                self.assertEqual(fake.memories["DC04"], kernal_latch)
+
+    def test_a_vector_patch_that_never_confirms_is_restored_to_the_kernal(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertEqual(self._vector_writes(fake)[-1], self.KERNAL_IRQ)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertEqual(fake.regs["DD0D"][0], 0x7F)
+
+    def test_a_lost_vector_restore_is_resent(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES + 1)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertEqual(self._vector_writes(fake), [self.KERNAL_IRQ])
+        # A restore that confirmed leaves nothing owed, so stop() has no
+        # vector to write.
+        s.stop()
+        self.assertEqual(self._vector_writes(fake), [self.KERNAL_IRQ])
+
+    def test_a_vector_restore_that_never_confirms_is_owed_to_stop(self):
+        # Each patch lands but a redial moves the epoch behind it, so the pump
+        # is live on $0314; then every restore is lost. Nothing armed, so only
+        # the owed restore puts the kernal back when the scene stops.
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        real_regs = fake.write_regs
+        vector_writes = [0]
+
+        def write_regs(base, *vals):
+            if base.upper() == f"{VECTORS.IRQ:04X}" and vector_writes[0] < 2 * self.TRIES:
+                vector_writes[0] += 1
+                fake.delivery_epoch += 1
+                if vector_writes[0] > self.TRIES:
+                    return
+            real_regs(base, *vals)
+
+        fake.write_regs = write_regs  # type: ignore[method-assign]
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertEqual(fake.regs["0314"], self.PUMP_IRQ)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+
+    def test_a_lost_vector_restore_at_stop_is_resent(self):
+        # stop()'s restore is the last write that can take an armed pump off
+        # $0314; one lost on the link would leave it running past the scene.
+        s, fake = self._start(0x0000, 0)
+        self.assertTrue(s._reu_pump_armed)
+        lose_writes_to(fake, VECTORS.IRQ, 1)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+
+    def test_a_stop_restore_that_never_confirms_stays_owed(self):
+        # The streamer is shared across scenes: a restore stop() could not
+        # land is written again by the next stop(), whatever that scene armed.
+        s, fake = self._start(0x0000, 0)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s.stop()
+        self.assertEqual(fake.regs["0314"], self.PUMP_IRQ)
+        self.assertTrue(s._irq_vector_restore_owed)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+        self.assertFalse(s._irq_vector_restore_owed)
+
+    def test_a_tracked_install_whose_latch_never_lands_parks_the_body(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, CIA1.TIMER_A_LO, self.TRIES)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertEqual(fake.memories["C180"], "60")
+        # The dispatcher owns $0314, so the unwind leaves it alone.
+        self.assertEqual(self._vector_writes(fake), [])
+        self.assertFalse(s._reu_pump_armed)
+
+    def test_a_failed_dispatcher_arm_puts_the_entry_stub_back_before_the_latch(self):
+        # The dispatcher keeps JMPing to $C100 after the abort. Left in place,
+        # the tracked entry's tick divider would chain the kernal on every
+        # third tick once CIA #1 is back at the kernal latch.
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, CIA1.TIMER_A_LO, self.TRIES)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
+        stub = max(
+            i
+            for i, o in enumerate(fake.ops)
+            if o == ("write_memory_file", "C100", REU_PUMP_HANDLER_STUB)
+        )
+        icr = [o[2] for o in fake.ops[:stub] if o[:2] == ("write_memory", "DC0D")]
+        self.assertEqual(icr[-1], "7F")
+        latch = max(i for i, o in enumerate(fake.ops) if o[:2] == ("write_memory", "DC04"))
+        self.assertLess(stub, latch)
+        self.assertEqual(fake.memories["DC0D"], "81")
+
+
+class StagedUploadDeliveryTest(unittest.TestCase):
+    """Each REUWRITE slice of the staged track and its EOF pad is confirmed
+    delivered. Every track lands at REU_AUDIO_BASE, so a slice lost to a
+    lossy redial would otherwise play the previous scene's audio there."""
+
+    PAYLOAD = bytes(range(256)) * (3 * REU_UPLOAD_SLICE // 256)
+
+    def _start(self, lose: int, times: int | None):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_reu_writes_to(fake, lose, times)
+        return s, fake
+
+    def test_every_slice_is_flushed_before_the_next(self):
+        s, fake = self._start(-1, 0)
+        s.start_for_reu_staged(self.PAYLOAD)
+        writes = [i for i, o in enumerate(fake.ops) if o[0] == "reu_write"]
+        self.assertGreater(len(writes), 3)
+        for a, b in zip(writes, writes[1:], strict=False):
+            self.assertIn(("flush",), fake.ops[a:b])
+
+    def test_a_lost_slice_is_resent_and_the_pump_arms(self):
+        s, fake = self._start(REU_AUDIO_BASE + REU_UPLOAD_SLICE, 1)
+        s.start_for_reu_staged(self.PAYLOAD)
+        self.assertTrue(s._reu_pump_armed)
+        landed = dict(fake.socket_dma.reuwrites)
+        self.assertEqual(
+            landed[REU_AUDIO_BASE + REU_UPLOAD_SLICE],
+            self.PAYLOAD[REU_UPLOAD_SLICE : 2 * REU_UPLOAD_SLICE],
+        )
+
+    def test_a_slice_that_never_lands_aborts_before_the_nmi_bring_up(self):
+        eof_pad_start = REU_AUDIO_BASE + len(self.PAYLOAD)
+        for lost in (REU_AUDIO_BASE + REU_UPLOAD_SLICE, eof_pad_start):
+            with self.subTest(lost=f"${lost:06X}"):
+                s, fake = self._start(lost, None)
+                with (
+                    self.assertLogs("c64cast.audio.audio", level="ERROR") as cm,
+                    self.assertRaises(PumpInstallError),
+                ):
+                    s.start_for_reu_staged(self.PAYLOAD)
+                self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+                self.assertEqual(
+                    fake.ops.count(("lost_reu", lost)), audio_mod.TRACKED_PUMP_INSTALL_TRIES
+                )
+                self.assertFalse(s._reu_pump_armed)
+                self.assertFalse(s.running)
+                self.assertNotIn(f"{NMI_ROUTINE_ADDR:04X}", fake.mem_files)
+                self.assertNotIn("0314", fake.regs)
+
+    def _refuse_reu_writes_to(self, fake: FakeAPI, reu_offset: int, times: int | None) -> None:
+        """Each of the first ``times`` REU writes at ``reu_offset`` raises, as
+        socket DMA's reuwrite does when a redial fails or is refused under
+        backoff. Unlike a lossy redial it leaves ``delivery_epoch`` alone."""
+        real = fake.reu_write
+        remaining = [times]
+
+        def reu_write(offset, data):
+            if offset == reu_offset and remaining[0] != 0:
+                if remaining[0] is not None:
+                    remaining[0] -= 1
+                raise SocketDMAError("socket dma: did not answer the last redial")
+            real(offset, data)
+
+        fake.reu_write = reu_write  # type: ignore[method-assign]
+
+    def test_a_slice_whose_write_raises_is_resent(self):
+        s, fake = self._start(-1, 0)
+        lost = REU_AUDIO_BASE + REU_UPLOAD_SLICE
+        self._refuse_reu_writes_to(fake, lost, 1)
+        s.start_for_reu_staged(self.PAYLOAD)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(
+            dict(fake.socket_dma.reuwrites)[lost],
+            self.PAYLOAD[REU_UPLOAD_SLICE : 2 * REU_UPLOAD_SLICE],
+        )
+
+    def test_a_slice_whose_write_always_raises_aborts_like_a_lost_one(self):
+        s, fake = self._start(-1, 0)
+        lost = REU_AUDIO_BASE + REU_UPLOAD_SLICE
+        self._refuse_reu_writes_to(fake, lost, None)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR") as cm,
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(self.PAYLOAD)
+        self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+        self.assertNotIn(lost, dict(fake.socket_dma.reuwrites))
+        self.assertFalse(s._reu_pump_armed)
+        self.assertNotIn(f"{NMI_ROUTINE_ADDR:04X}", fake.mem_files)

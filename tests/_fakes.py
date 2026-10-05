@@ -478,7 +478,7 @@ def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
     ``("flush",)``, beside the writes FakeAPI already logs there."""
     key = f"{addr:04X}"
     remaining = [times]
-    real_memory, real_file = api.write_memory, api.write_memory_file
+    real_memory, real_file, real_regs = api.write_memory, api.write_memory_file, api.write_regs
 
     def lost(address: str) -> bool:
         if str(address).upper() != key or remaining[0] == 0:
@@ -497,11 +497,42 @@ def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
         if not lost(address):
             real_file(address, data)
 
+    def write_regs(base, *vals):
+        if not lost(base):
+            real_regs(base, *vals)
+
     def flush(timeout=5.0):
         api.ops.append(("flush",))
 
     api.write_memory = write_memory  # type: ignore[method-assign]
     api.write_memory_file = write_memory_file  # type: ignore[method-assign]
+    api.write_regs = write_regs  # type: ignore[method-assign]
+    api.flush = flush  # type: ignore[method-assign]
+
+
+def lose_reu_writes_to(api: FakeAPI, reu_offset: int, times: int | None = None) -> None:
+    """`lose_writes_to` for REUWRITEs: each of the first ``times`` REU writes
+    starting at ``reu_offset`` (every one, if None) lands nowhere and moves
+    ``delivery_epoch``. A lost one goes to ``api.ops`` as ``("lost_reu",
+    offset)``, a delivered one as ``("reu_write", offset)``, and every
+    ``flush()`` as ``("flush",)``."""
+    remaining = [times]
+    real = api.reu_write
+
+    def reu_write(offset, data):
+        if offset == reu_offset and remaining[0] != 0:
+            if remaining[0] is not None:
+                remaining[0] -= 1
+            api.delivery_epoch += 1
+            api.ops.append(("lost_reu", offset))
+            return
+        api.ops.append(("reu_write", offset))
+        real(offset, data)
+
+    def flush(timeout=5.0):
+        api.ops.append(("flush",))
+
+    api.reu_write = reu_write  # type: ignore[method-assign]
     api.flush = flush  # type: ignore[method-assign]
 
 

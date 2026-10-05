@@ -40,6 +40,7 @@ from c64cast.hw.c64 import (
     halt_quantum_bytes,
     kernal_cia1_latch,
 )
+from c64cast.hw.socket_dma import SocketDMAError
 
 from .audio_handlers import (
     AUDIO_HEALTH_LOG_INTERVAL_S,
@@ -60,6 +61,7 @@ from .audio_handlers import (
     QUEUE_PUT_TIMEOUT_S,
     READ_PTR_LO_ADDR,
     REU_AUDIO_BASE,
+    REU_AUDIO_DST_TRACKER_ADDR,
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_GOVERNOR_MAX_CHUNK,
@@ -72,6 +74,7 @@ from .audio_handlers import (
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_PUMP_BODY_SUBROUTINE,
+    REU_MIC_RING_LEAD,
     REU_MIC_SIZE,
     REU_PUMP_BODY_SUBROUTINE,
     REU_PUMP_BODY_SUBROUTINE_ADDR,
@@ -80,6 +83,7 @@ from .audio_handlers import (
     REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_HANDLER_STUB,
     REU_PUMP_INITIAL_MARGIN,
     REU_PUMP_SETTLE_S,
     REU_PUMP_TICK_COUNTER_ADDR,
@@ -97,6 +101,8 @@ from .audio_handlers import (
     SID_MAHONEY_SR,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
+    mic_ring_lead_ok,
+    mic_ring_seed,
     patch_chunk_size,
     reu_pump_chunk_fits_ring,
     stomp_spans,
@@ -324,6 +330,9 @@ class AudioStreamer:
         # _reu_pump_start_time is what position_seconds() uses in REU mode: the
         # host never sees the samples, so the queue counter does not apply.
         self._reu_pump_armed = False
+        # A failed install's $0314 restore that never confirmed: stop() owes
+        # it even though no pump armed (_unwind_pump_install).
+        self._irq_vector_restore_owed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
         # The matched CIA #1 pump latch this run derived; 0 before any pump
@@ -1569,60 +1578,196 @@ class AudioStreamer:
             self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
 
         def upload_entry() -> None:
-            # Every attempt masks afresh: a retry follows an attempt whose
-            # unmask may have landed even though its entry did not.
-            if dispatcher_owns_irq:
-                epoch = self.api.delivery_epoch
-                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
-                self.api.flush()
-                if self.api.delivery_epoch != epoch:
-                    return
-                time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_IRQ_HANDLER_TRACKED)
-            if dispatcher_owns_irq:
-                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+            self._write_pump_entry(REU_IRQ_HANDLER_TRACKED, dispatcher_owns_irq=dispatcher_owns_irq)
 
         stages = (("trackers", seed_trackers), ("body", upload_body), ("entry", upload_entry))
         for stage, write in stages:
-            if not self._write_confirmed(write):
-                self._park_tracked_pump(dispatcher_owns_irq)
-                raise PumpInstallError(
-                    f"REU pump install: the {stage} write was not confirmed delivered "
-                    f"after {TRACKED_PUMP_INSTALL_TRIES} attempts"
+            try:
+                self._require_confirmed(stage, write)
+            except PumpInstallError:
+                self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=stage == "entry")
+                raise
+
+    def _write_pump_entry(self, code: bytes, *, dispatcher_owns_irq: bool) -> None:
+        """Write ``code`` at the $C100 pump entry. Under a dispatcher, CIA #1 is
+        masked around it (see _install_tracked_pump), and nothing is written
+        when the mask did not confirm. Every call masks afresh: a retry follows
+        an attempt whose unmask may have landed even though its entry did not."""
+        if dispatcher_owns_irq:
+            epoch = self.api.delivery_epoch
+            self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
+            self.api.flush()
+            if self.api.delivery_epoch != epoch:
+                return
+            time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
+        self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", code)
+        if dispatcher_owns_irq:
+            self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+
+    def _require_confirmed(self, stage: str, write: Callable[[], None]) -> None:
+        """``_write_confirmed``, raising PumpInstallError naming ``stage`` when
+        no attempt held."""
+        if not self._write_confirmed(write):
+            raise PumpInstallError(
+                f"REU pump install: the {stage} write was not confirmed delivered "
+                f"after {TRACKED_PUMP_INSTALL_TRIES} attempts"
+            )
+
+    def _reu_write_confirmed(self, what: str, reu_offset: int, data: bytes) -> None:
+        """One REUWRITE slice, confirmed like a pump install stage. Every
+        staged track lands at the same REU offset, so a slice lost to a lossy
+        redial would play the previous track's audio (or stale SRAM noise)
+        rather than fail. Raises PumpInstallError when it never confirms."""
+        self._require_confirmed(what, lambda: self.api.reu_write(reu_offset, data))
+
+    def _write_irq_vector(self, handler: int) -> None:
+        """Point $0314/$0315 at ``handler``. write_regs coalesces into one DMA,
+        so both bytes change at once and no IRQ jumps through half a vector."""
+        self.api.write_regs(f"{VECTORS.IRQ:04X}", handler & 0xFF, (handler >> 8) & 0xFF)
+
+    def _arm_installed_pump(
+        self,
+        program_rec_and_rate: Callable[[], None],
+        *,
+        tracked: bool,
+        dispatcher_owns_irq: bool,
+    ) -> None:
+        """The tail both pump bring-ups share once their code is up: confirm
+        ``program_rec_and_rate`` (the REC registers and the CIA #1 latch), arm
+        the NMI, and point $0314 at the pump entry unless a dispatcher owns it.
+
+        The playback-clock origin is captured immediately before the NMI
+        starts firing: position_seconds() must measure time since audio became
+        audible, or video sync trails it by the bring-up cost. The settle lets
+        the NMI catch a few samples before the pump arms (REU_PUMP_SETTLE_S);
+        the pump then starts on the next CIA #1 IRQ.
+
+        A write that never confirms unwinds the install and the NMI bring-up
+        and raises PumpInstallError, with nothing armed."""
+        patched = False
+        try:
+            self._require_confirmed("REC and CIA #1 latch", program_rec_and_rate)
+            self._reu_pump_start_time = time.monotonic()
+            self.nmi.start(adaptive=self.nmi_rate_adaptive)
+            time.sleep(REU_PUMP_SETTLE_S)
+            if not dispatcher_owns_irq:
+                # Set first: an unconfirmed patch may have landed all the same.
+                patched = True
+                self._require_confirmed(
+                    "IRQ vector", lambda: self._write_irq_vector(REU_PUMP_HANDLER_ADDR)
                 )
+        except PumpInstallError as e:
+            self._unwind_pump_install(
+                restore_irq_vector=patched,
+                tracked=tracked,
+                dispatcher_owns_irq=dispatcher_owns_irq,
+            )
+            self._abandon_pump_bring_up(e)
+            raise
+
+    def _unwind_pump_install(
+        self, *, restore_irq_vector: bool, tracked: bool, dispatcher_owns_irq: bool
+    ) -> None:
+        """Best-effort undo of a pump install that failed after its code went
+        up: $0314 back to the kernal when this install may have patched it,
+        the tracked body parked on an RTS for anything still reaching $C180,
+        and CIA #1 Timer A back to the kernal latch. A dispatcher's $0314 is
+        never touched.
+
+        The vector restore is confirmed like the patch was, and stays owed to
+        `_disarm_reu_pump` until it lands: nothing is armed after this, so
+        without the debt stop() would leave every CIA #1 tick running a pump
+        whose session has ended."""
+        if restore_irq_vector:
+            self._irq_vector_restore_owed = True
+            run_teardown_steps(
+                log,
+                type(self).__name__,
+                [("IRQ vector restore", self._restore_irq_vector_confirmed)],
+            )
+        if tracked:
+            self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=True)
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
+                ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
+                ("pump unwind flush", self.api.flush),
+            ],
+        )
+
+    def _restore_irq_vector_confirmed(self) -> None:
+        """$0314 back to the kernal, confirmed; clears the restore debt only
+        once it held. Raises PumpInstallError when it never confirms."""
+        self._require_confirmed(
+            "IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)
+        )
+        self._irq_vector_restore_owed = False
 
     def _write_confirmed(self, write: Callable[[], None]) -> bool:
         """Run ``write`` and flush until a run leaves ``delivery_epoch``
-        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did."""
+        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did.
+
+        A run whose ``write`` raises a transport error counts as unconfirmed:
+        ``reu_write`` is not routed through ``_emit`` and raises when a redial
+        fails or is refused under backoff, which leaves ``delivery_epoch``
+        unmoved although nothing was sent."""
         for _ in range(TRACKED_PUMP_INSTALL_TRIES):
             epoch = self.api.delivery_epoch
-            write()
+            try:
+                write()
+            except (OSError, SocketDMAError) as e:
+                log.debug("audio: pump install write raised: %s", e)
+                continue
             self.api.flush()
             if self.api.delivery_epoch == epoch:
                 return True
         return False
 
-    def _park_tracked_pump(self, dispatcher_owns_irq: bool) -> None:
+    def _park_tracked_pump(self, dispatcher_owns_irq: bool, *, entry_may_be_up: bool) -> None:
         """Best-effort safe state after a failed tracked-pump install: an RTS at
         $C180 so neither the $C100 entry nor a dispatcher's inline JSR runs a
         body on unconfirmed trackers, and CIA #1 unmasked if the install masked
-        it. A one-byte write cannot tear an instruction the 6510 is fetching."""
-        steps: list[tuple[str, Callable[[], object]]] = [
-            (
+        it. A one-byte write cannot tear an instruction the 6510 is fetching.
+
+        Under a dispatcher, an entry that may have gone up (``entry_may_be_up``)
+        also goes back to the JMP $EA31 stub its installer left: the dispatcher
+        keeps JMPing to $C100 for the rest of the scene, and once CIA #1 is back
+        at the kernal latch the entry's tick divider would chain the kernal on
+        only every Nth tick (the jiffy clock, SCNKEY and the cursor blink at a
+        third speed).
+
+        Every write here is confirmed like an install stage, since the link
+        that lost the install can lose these too, and one that never confirms
+        is logged rather than dropped. A lost RTS leaves a torn body where the
+        chunked dispatcher JSRs, and a lost unmask after a masked entry upload
+        leaves the kernal with no jiffy IRQ at all, keyboard scan included."""
+
+        def confirmed(stage: str, write: Callable[[], None]) -> tuple[str, Callable[[], None]]:
+            return (stage, lambda: self._require_confirmed(stage, write))
+
+        steps = [
+            confirmed(
                 "pump body park",
                 lambda: self.api.write_memory(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", "60"),
             )
         ]
+        if dispatcher_owns_irq and entry_may_be_up:
+            steps.append(
+                confirmed(
+                    "pump entry stub restore",
+                    lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
+                )
+            )
         if dispatcher_owns_irq:
             steps.append(
-                (
+                confirmed(
                     "CIA #1 unmask",
                     lambda: self.api.write_memory(
                         f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
                     ),
                 )
             )
-        steps.append(("pump park flush", self.api.flush))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _abandon_pump_bring_up(self, err: PumpInstallError) -> None:
@@ -1654,7 +1799,7 @@ class AudioStreamer:
         The two sequences are still written out separately, which is how the
         CIA #1 latch came to be derived on one and hardcoded on the other;
         everything the two must agree on now lives in something they share
-        (_program_reu_pump_rate, REU_PUMP_SETTLE_S, the handler constants).
+        (_program_reu_pump_rate, _arm_installed_pump, the handler constants).
         A new field either goes in a shared helper or is a divergence again.
         """
         # Idempotent on an int (start_mic already resolved before delegating);
@@ -1667,65 +1812,67 @@ class AudioStreamer:
             "audio[reu mic]: prefilling REU ring at $%06X (%d bytes)", REU_MIC_BASE, REU_MIC_SIZE
         )
         pad = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
-        for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
-            n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
-            self.api.reu_write(REU_MIC_BASE + off, pad[:n])
+        try:
+            for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
+                n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
+                self._reu_write_confirmed("mic ring prefill", REU_MIC_BASE + off, pad[:n])
+        except PumpInstallError as e:
+            log.error("audio: %s — this scene plays without audio", e)
+            return
 
         # Standard NMI bring-up (handler + ring + digi-boost). NMI consumes from
         # the $4000 ring _upload_nmi_and_buffers just NEUTRAL-filled.
         self._upload_nmi_and_buffers()
 
         # Install the tracked pump with the mic body at $C180: src tracker =
-        # REU_MIC_BASE, dst tracker = RING_BUFFER_ADDR. Every tick reloads all
-        # five REC addresses from the trackers, so a bank-swap REC DMA or a REU
-        # screen push between ticks cannot redirect it (#551). Address control
-        # = 0: both sides auto-increment, no autoload.
+        # REU_MIC_BASE, dst tracker = REU_MIC_RING_LEAD into the ring, where
+        # the NMI reader (still parked at the ring start) is that far behind.
+        # _seed_mic_ring_lead re-measures that lead once both are running.
+        # Every tick reloads all five REC addresses from the trackers, so a
+        # bank-swap REC DMA or a REU screen push between ticks cannot redirect
+        # it (#551). Address control = 0: both sides auto-increment, no
+        # autoload.
         try:
             self._install_tracked_pump(
                 REU_MIC_PUMP_BODY_SUBROUTINE,
                 src=REU_MIC_BASE,
-                dst=RING_BUFFER_ADDR,
+                dst=RING_BUFFER_ADDR + REU_MIC_RING_LEAD,
                 dispatcher_owns_irq=skip_irq_vector_hook,
             )
         except PumpInstallError as e:
             self._abandon_pump_bring_up(e)
             return
-        self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
         # Match the pump rate to the NMI consume rate, derived from the live NMI
         # latch by the same helper the video path uses (_program_reu_pump_rate
-        # says why it cannot be a constant).
-        cia1_latch = self._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
-        self.api.flush()
+        # says why it cannot be a constant). Then arm the NMI, which consumes
+        # the prebuilt NEUTRAL ring, and patch $0314 at the mic pump entry
+        # unless a bank-swap dispatcher owns it and JMPs to $C100 itself; the
+        # pump reads NEUTRAL until the bootstrap window has passed.
+        def program_rec_and_rate() -> None:
+            self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
+            self._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
+
+        try:
+            self._arm_installed_pump(
+                program_rec_and_rate, tracked=True, dispatcher_owns_irq=skip_irq_vector_hook
+            )
+        except PumpInstallError:
+            return
         log.info(
             "audio[reu mic]: pump installed at $%04X, CIA #1 latch=$%04X",
             REU_PUMP_HANDLER_ADDR,
-            cia1_latch,
+            self._reu_cia1_latch_nominal,
         )
-
-        # Arm NMI (CIA #2 Timer A). NMI now consumes the prebuilt
-        # NEUTRAL ring at the consume rate.
-        self._reu_pump_start_time = time.monotonic()
-        self.nmi.start(adaptive=self.nmi_rate_adaptive)
-        time.sleep(REU_PUMP_SETTLE_S)  # let NMI catch a few samples first
-
-        # Patch the IRQ vector at the mic pump handler; it starts on the next
-        # kernal IRQ (~16 ms), reading NEUTRAL until the bootstrap window has
-        # passed. Skipped when the display mode's bank-swap dispatcher owns
-        # $0314 and JMPs to $C100 itself.
-        if not skip_irq_vector_hook:
-            self.api.write_regs(
-                f"{VECTORS.IRQ:04X}",
-                REU_PUMP_HANDLER_ADDR & 0xFF,
-                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF,
-            )
-            self.api.flush()
 
         self.running = True
         self._reu_pump_armed = True
         self._pushed_count = 0
-        # Start the host write head ahead of the pump's read head: steady-state
-        # latency is REU_MIC_BOOTSTRAP_BYTES / sample_rate, ~133 ms at 12 kHz.
+        ring_lead = self._seed_mic_ring_lead()
+        # Start the host write head ahead of the pump's src tracker. Latency is
+        # this lead plus the pump's lead over the NMI in the $4000 ring:
+        # (REU_MIC_BOOTSTRAP_BYTES + REU_MIC_RING_LEAD) / sample_rate, ~0.3 s
+        # at 12 kHz.
         self._mic_reu_write_pos = REU_MIC_BOOTSTRAP_BYTES
 
         # _open_input_stream hardcodes self._mic_callback, so swap in the REU
@@ -1733,16 +1880,98 @@ class AudioStreamer:
         self.mic_stream = self._open_input_stream(device, callback=self._mic_callback_reu)
         self.mic_stream.start()
         self._start_mic_lead_servo()
+        # An unread ring lead is logged as the nominal one it was seeded at.
+        ring_bytes = REU_MIC_RING_LEAD if ring_lead is None else ring_lead
         log.info(
             "audio[reu mic]: device=%d %dHz sensitivity=%.2f noise_gate=%.3f "
-            "bootstrap=%dB (%.0fms latency)",
+            "host lead=%dB + C64 ring lead=%dB%s (%.0fms latency)",
             device,
             self.sample_rate,
             self.sensitivity,
             self.noise_gate,
             REU_MIC_BOOTSTRAP_BYTES,
-            1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate,
+            ring_bytes,
+            "" if ring_lead is not None else " (nominal, unread)",
+            1000 * (REU_MIC_BOOTSTRAP_BYTES + ring_bytes) / self.sample_rate,
         )
+
+    def _read_mic_ring_phase(self) -> tuple[int, int] | None:
+        """``(R, W)`` from one read spanning the NMI read pointer at $C025 and
+        the pump's dst tracker at $C203, so the two come from the same instant
+        and their difference carries no round-trip skew. None when the read
+        fails or either pointer is outside the ring."""
+        span = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
+        try:
+            raw = self.api.read_memory(READ_PTR_LO_ADDR, span)
+        except Exception as e:
+            # A backend that cannot read raises rather than returning None.
+            log.debug("audio[reu mic]: ring pointer read failed: %s", e)
+            return None
+        if raw is None or len(raw) != span:
+            return None
+        w_off = REU_AUDIO_DST_TRACKER_ADDR - READ_PTR_LO_ADDR
+        r = raw[0] | (raw[1] << 8)
+        w = raw[w_off] | (raw[w_off + 1] << 8)
+        if not (
+            RING_BUFFER_ADDR <= r < RING_BUFFER_END and RING_BUFFER_ADDR <= w < RING_BUFFER_END
+        ):
+            return None
+        return r, w
+
+    def _seed_mic_ring_lead(self) -> int | None:
+        """Put the mic pump's write head ``REU_MIC_RING_LEAD`` ahead of the NMI
+        reader in the $4000 ring, once both are running, and return the lead
+        read back (bytes), or None when it could not be read.
+
+        The install seeded the dst tracker that far past the ring start, where
+        R sits until the NMI arms, but the two do not start together: on the
+        solo path the pump starts only at the $0314 patch, after the NMI has
+        already played ~1 KB, and under a dispatcher the pump runs from the
+        moment its body lands, before the NMI arms. So the lead is measured
+        here and, when it is off, the dst tracker is rewritten at a
+        chunk-aligned R + REU_MIC_RING_LEAD and read back. The pump advances
+        the same tracker every tick, and a host write that lands between its
+        load and its store is overwritten, so a read-back that does not show
+        the seed is retried. A backend without reads keeps the install seed.
+
+        A read that fails once a seed has gone out is retried within the same
+        bound: the tracker no longer holds the install seed, and one read can
+        land in the instant either pointer's HI byte sits at the ring end."""
+        if not self.api.profile.supports_read:
+            return None
+        phase: int | None = None
+        seeds = 0
+        for attempt in range(TRACKED_PUMP_INSTALL_TRIES + 1):
+            got = self._read_mic_ring_phase()
+            if got is None and seeds == 0:
+                log.info(
+                    "audio[reu mic]: could not read the C64 ring pointers; the pump's "
+                    "lead over the NMI stays at its install seed"
+                )
+                return None
+            if got is None:
+                phase = None
+                continue
+            r, w = got
+            phase = (w - r) % RING_BUFFER_SIZE
+            if mic_ring_lead_ok(phase):
+                return phase
+            if attempt == TRACKED_PUMP_INSTALL_TRIES:
+                break
+            dst = mic_ring_seed(r)
+            self.api.write_memory(
+                f"{REU_AUDIO_DST_TRACKER_ADDR:04X}", f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}"
+            )
+            self.api.flush()
+            seeds += 1
+        log.warning(
+            "audio[reu mic]: the pump's lead over the NMI reads %s B after %d seed(s), "
+            "not ~%d B; mic audio may run late or replay lap-old audio",
+            phase,
+            seeds,
+            REU_MIC_RING_LEAD,
+        )
+        return phase
 
     def _start_mic_lead_servo(self) -> None:
         """Close the loop on the write head's lead over the pump (#560), or
@@ -1977,9 +2206,11 @@ class AudioStreamer:
         REU_PUMP_INITIAL_MARGIN (reu_pump_chunk_fits_ring): any other chunk
         DMAs past the ring end once per lap. With reu_pump_governor on it must
         also be at most REU_GOVERNOR_MAX_CHUNK, or ValueError. Raises
-        PumpInstallError when the tracked pump's install never confirms
-        (``_install_tracked_pump``), with the NMI bring-up already undone and
-        nothing armed: the caller plays on without audio.
+        PumpInstallError when a write of the pump install never confirms (each
+        REUWRITE slice of the track and its EOF pad; the tracked pump's stages in ``_install_tracked_pump``; the plain handler;
+        the REC registers and CIA #1 latch; the $0314 patch), with the NMI
+        bring-up already undone and nothing armed: the caller plays on without
+        audio.
 
         ``on_progress`` (fraction 0..1 of payload + EOF-pad bytes uploaded) is
         called once per upload slice — the seconds-long upload is the bulk of
@@ -2047,21 +2278,31 @@ class AudioStreamer:
         )
         upload_total = len(audio_4bit) + eof_pad_bytes
         t0 = time.perf_counter()
-        for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
-            self.api.reu_write(REU_AUDIO_BASE + off, audio_4bit[off : off + REU_UPLOAD_SLICE])
-            if on_progress is not None:
-                on_progress(min(off + REU_UPLOAD_SLICE, len(audio_4bit)) / upload_total)
-        # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
-        # end-of-source plays silence instead of garbage.
-        pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
-        pad_off = len(audio_4bit)
-        pad_end = pad_off + eof_pad_bytes
-        while pad_off < pad_end:
-            chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
-            self.api.reu_write(REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len])
-            pad_off += chunk_len
-            if on_progress is not None:
-                on_progress(pad_off / upload_total)
+        try:
+            for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
+                self._reu_write_confirmed(
+                    "audio upload",
+                    REU_AUDIO_BASE + off,
+                    audio_4bit[off : off + REU_UPLOAD_SLICE],
+                )
+                if on_progress is not None:
+                    on_progress(min(off + REU_UPLOAD_SLICE, len(audio_4bit)) / upload_total)
+            # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
+            # end-of-source plays silence instead of garbage.
+            pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
+            pad_off = len(audio_4bit)
+            pad_end = pad_off + eof_pad_bytes
+            while pad_off < pad_end:
+                chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
+                self._reu_write_confirmed(
+                    "EOF pad", REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len]
+                )
+                pad_off += chunk_len
+                if on_progress is not None:
+                    on_progress(pad_off / upload_total)
+        except PumpInstallError as e:
+            log.error("audio: %s — this scene plays without audio", e)
+            raise
         log.info("audio: REU upload took %.2fs", time.perf_counter() - t0)
 
         self._upload_nmi_and_buffers()
@@ -2113,63 +2354,58 @@ class AudioStreamer:
             except PumpInstallError as e:
                 self._abandon_pump_bring_up(e)
                 raise
-        elif self.reu_pump_governor:
-            # Governor handler: skip-when-ahead prefix + the pump body.
-            handler = patch_chunk_size(
-                REU_IRQ_HANDLER_GOVERNOR, REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS, chunk
-            )
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
         else:
-            handler = patch_chunk_size(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, chunk)
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
-        self.api.write_memory(
-            f"{REU.C64_ADDR_LO:04X}", f"{initial_dst & 0xFF:02X}{(initial_dst >> 8) & 0xFF:02X}"
-        )
-        self.api.write_memory(
-            f"{REU.REU_ADDR_LO:04X}",
-            f"{initial_src_off & 0xFF:02X}{(initial_src_off >> 8) & 0xFF:02X}"
-            f"{(initial_src_off >> 16) & 0xFF:02X}",
-        )
-        self.api.write_memory(
-            f"{REU.LENGTH_LO:04X}", f"{chunk & 0xFF:02X}{(chunk >> 8) & 0xFF:02X}"
-        )
-        self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
+            # The governor handler is the skip-when-ahead prefix + the pump body.
+            if self.reu_pump_governor:
+                handler = patch_chunk_size(
+                    REU_IRQ_HANDLER_GOVERNOR, REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS, chunk
+                )
+            else:
+                handler = patch_chunk_size(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, chunk)
+            try:
+                self._require_confirmed(
+                    "handler",
+                    lambda: self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler),
+                )
+            except PumpInstallError as e:
+                self._abandon_pump_bring_up(e)
+                raise
 
-        # Reprogram CIA #1 Timer A latch for the matched pump rate (see
-        # _program_reu_pump_rate, which the mic bring-up shares).
-        cia1_latch = self._program_reu_pump_rate(
-            chunk, overdrive=REU_GOVERNOR_PUMP_OVERDRIVE if self.reu_pump_governor else 1.0
-        )
+        def program_rec_and_rate() -> None:
+            self.api.write_memory(
+                f"{REU.C64_ADDR_LO:04X}",
+                f"{initial_dst & 0xFF:02X}{(initial_dst >> 8) & 0xFF:02X}",
+            )
+            self.api.write_memory(
+                f"{REU.REU_ADDR_LO:04X}",
+                f"{initial_src_off & 0xFF:02X}{(initial_src_off >> 8) & 0xFF:02X}"
+                f"{(initial_src_off >> 16) & 0xFF:02X}",
+            )
+            self.api.write_memory(
+                f"{REU.LENGTH_LO:04X}", f"{chunk & 0xFF:02X}{(chunk >> 8) & 0xFF:02X}"
+            )
+            self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
+            # Reprogram CIA #1 Timer A latch for the matched pump rate (see
+            # _program_reu_pump_rate, which the mic bring-up shares).
+            self._program_reu_pump_rate(
+                chunk,
+                overdrive=REU_GOVERNOR_PUMP_OVERDRIVE if self.reu_pump_governor else 1.0,
+            )
 
-        self.api.flush()
+        # Arm the NMI on the pre-filled ring and patch $0314 at the pump entry,
+        # skipped when the display mode's bank-swap dispatcher owns $0314 and
+        # JMPs to $C100 itself.
+        self._arm_installed_pump(
+            program_rec_and_rate,
+            tracked=skip_irq_vector_hook,
+            dispatcher_owns_irq=skip_irq_vector_hook,
+        )
         log.info(
             "audio: REU pump installed at $%04X, chunk=%d, CIA #1 latch=$%04X",
             REU_PUMP_HANDLER_ADDR,
             chunk,
-            cia1_latch,
+            self._reu_cia1_latch_nominal,
         )
-
-        # Arm the NMI on the pre-filled ring, capturing the playback-clock
-        # origin immediately before it starts firing: position_seconds() must
-        # measure time since audio became audible, or video sync trails it by
-        # the bring-up cost.
-        self._reu_pump_start_time = time.monotonic()
-        self.nmi.start(adaptive=self.nmi_rate_adaptive)
-
-        # Brief settle so NMI is already firing before the REU pump arms
-        # (see REU_PUMP_SETTLE_S).
-        time.sleep(REU_PUMP_SETTLE_S)
-
-        # Patch the IRQ vector at the pump handler; it starts on the next kernal
-        # IRQ (~16 ms). Skipped when the display mode's bank-swap dispatcher owns
-        # $0314 and JMPs to $C100 itself.
-        if not skip_irq_vector_hook:
-            self.api.write_regs(
-                f"{VECTORS.IRQ:04X}",
-                REU_PUMP_HANDLER_ADDR & 0xFF,
-                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF,
-            )
-            self.api.flush()
 
         self.running = True
         self._reu_pump_armed = True
@@ -2186,25 +2422,25 @@ class AudioStreamer:
         """Restore IRQ vector to kernal default and CIA #1 Timer A to ~60 Hz.
 
         Idempotent — safe to call from stop() even if the REU pump was never
-        armed. Order: vector restore FIRST so the next kernal IRQ doesn't
-        fire into a handler we're about to dismantle, then CIA #1 latch
-        back to kernal's value, then the normal NMI/SID teardown."""
-        if not self._reu_pump_armed:
+        armed. Also runs when a failed install's unwind could not confirm its
+        vector restore (`_irq_vector_restore_owed`). Order: vector restore
+        FIRST so the next kernal IRQ doesn't fire into a handler we're about
+        to dismantle, then CIA #1 latch back to kernal's value, then the
+        normal NMI/SID teardown.
+
+        The vector restore is confirmed like the unwind's: this is the last
+        write that can take the pump off $0314, and one lost on a lossy link
+        leaves it running for every scene after. One that never confirms stays
+        owed, so the shared streamer's next stop() writes it again."""
+        if not (self._reu_pump_armed or self._irq_vector_restore_owed):
             return
+        # Cleared by the confirmed restore only once it held.
+        self._irq_vector_restore_owed = True
         run_teardown_steps(
             log,
             type(self).__name__,
             [
-                # write_regs coalesces into one DMA, so $0314 and $0315
-                # atomically point at the kernal.
-                (
-                    "IRQ vector restore",
-                    lambda: self.api.write_regs(
-                        f"{VECTORS.IRQ:04X}",
-                        KERNAL.IRQ_HANDLER & 0xFF,
-                        (KERNAL.IRQ_HANDLER >> 8) & 0xFF,
-                    ),
-                ),
+                ("IRQ vector restore", self._restore_irq_vector_confirmed),
                 ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
                 ("REU pump disarm flush", self.api.flush),
             ],
@@ -2459,8 +2695,9 @@ class AudioStreamer:
         # check is what drops a blob from a producer this clear just released,
         # and the drain at the bottom only catches one that beats it there.
         self._flush_epoch += 1
-        # No-op if the pump was never armed. The governor lives entirely in the
-        # C64-side handler, so disarming the IRQ vector stops it.
+        # No-op if the pump was never armed and no $0314 restore is owed. The
+        # governor lives entirely in the C64-side handler, so disarming the IRQ
+        # vector stops it.
         self._disarm_reu_pump()
         run_teardown_steps(log, type(self).__name__, self._hardware_teardown_steps())
         self.api.note_nmi_consumer(False)

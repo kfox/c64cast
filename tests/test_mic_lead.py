@@ -254,6 +254,161 @@ class MicLeadReanchorTest(unittest.TestCase):
         self.assertEqual(rig.servo.reanchors, 2)
 
 
+class MicLeadReanchorReseedTest(unittest.TestCase):
+    """AUD-7 A-F1: a re-anchor resets the lead but not the rate mismatch, so it
+    restarts the loop from the pump's measured rate. Left at the pre-jump drop,
+    a pump that sped up mid-scene kept being over-dropped from: the lead fell
+    through zero again within seconds, and the loop re-anchored every couple of
+    seconds, each one a NEUTRAL dropout."""
+
+    def test_the_seed_matches_the_host_to_the_pump_rate(self):
+        drop, integ = ml.mic_lead_rate_seed(RATE * 0.85, sample_rate=RATE)
+        self.assertAlmostEqual(drop, 0.15)
+        # With the lead back on target the proportional term is zero, so the
+        # integrator alone has to carry the drop.
+        held, _ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES, integ, sample_rate=RATE)
+        self.assertAlmostEqual(held, 0.15)
+
+    def test_the_seed_is_clamped_to_the_output_range(self):
+        self.assertEqual(
+            ml.mic_lead_rate_seed(RATE * 2.0, sample_rate=RATE)[0], -ml.MIC_LEAD_RESAMPLE_MAX
+        )
+        self.assertEqual(
+            ml.mic_lead_rate_seed(RATE * 0.25, sample_rate=RATE)[0], ml.MIC_LEAD_MAX_DROP
+        )
+
+    def test_a_rate_that_says_nothing_about_the_pump_seeds_the_startup_state(self):
+        # NaN slipped through the clamp as the full 35 % drop, the side that
+        # overtakes; a stopped or nonsense rate is no basis for a drop at all.
+        for bad in (float("nan"), float("inf"), float("-inf"), 0.0, -RATE):
+            with self.subTest(pump_rate=bad):
+                self.assertEqual(ml.mic_lead_rate_seed(bad, sample_rate=RATE), (0.0, 0.0))
+
+    def test_a_pump_that_speeds_up_mid_scene_does_not_cycle_through_reanchors(self):
+        # Settled under the mhires deficit, then the pump comes up to within
+        # the petscii drift of the host. The lead falls through zero within the
+        # first interval, once; unseeded, the stale 15 % drop re-anchored on
+        # every tick, and seeded from the rate before that interval (the same
+        # 15 %) it overtook twice more while the rate average caught up.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 0)
+        rig.drift = 32.0
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            leads = []
+            seeded = None
+            for _ in range(60):
+                rig.step()
+                leads.append(rig.lead)
+                if seeded is None and rig.servo.reanchors == 1:
+                    seeded = rig.servo.drop_frac
+        self.assertEqual(rig.servo.reanchors, 1)
+        # The overtaking interval's own rate, not the 15 % before it.
+        assert seeded is not None
+        self.assertAlmostEqual(seeded, 32.0 / RATE, delta=0.015)
+        for lead in leads[-20:]:
+            self.assertGreater(lead, 0)
+            self.assertLess(abs(lead - REU_MIC_BOOTSTRAP_BYTES), 300)
+
+    def test_a_stall_that_forces_the_reanchor_does_not_set_its_seed(self):
+        # The pump halts for one interval, so the lead jumps past the re-anchor
+        # threshold. That interval reads the pump as stopped; the seed comes
+        # from the rate before it, the ~15 % deficit the pump resumes at.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.t += 1.0
+        rig.host += RATE * (1.0 - rig.servo.drop_frac)  # the pump does not move
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual(rig.servo.reanchors, 1)
+        self.assertAlmostEqual(rig.servo.drop_frac, 1800.0 / RATE, delta=0.01)
+
+    def test_a_stall_that_crosses_a_tick_does_not_set_its_seed_either(self):
+        # The pump halts for the second half of one interval and the first half
+        # of the next. The first tick reads it at half speed and steers; the lap
+        # comes at the second, by which time the rate average has taken in the
+        # first half. Seeded from that average the loop over-drops and overtakes
+        # within the next interval, a second NEUTRAL dropout.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.servo.tick()
+
+        def half_stalled_interval() -> None:
+            rig.t += 1.0
+            rig.pump += (RATE - rig.drift) / 2
+            rig.host += RATE * (1.0 - rig.servo.drop_frac)
+
+        half_stalled_interval()
+        rig.servo.tick()
+        self.assertEqual(rig.servo.reanchors, 0)
+        half_stalled_interval()
+        self.assertGreater(rig.lead, ml.MIC_LEAD_REANCHOR_ABOVE)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual(rig.servo.reanchors, 1)
+        # The tick that steered on the first half folded its error into the
+        # integrator: one tick's worth, short of the lap limit, on top of 15 %.
+        one_tick = ml.MIC_LEAD_KI * ml.MIC_LEAD_REANCHOR_ABOVE / RATE
+        self.assertGreater(rig.servo.drop_frac, 1800.0 / RATE - 0.01)
+        self.assertLess(rig.servo.drop_frac, 1800.0 / RATE + one_tick)
+        rig.servo.take_reanchor()
+        rig.host = rig.pump + REU_MIC_BOOTSTRAP_BYTES
+        rig.t += 1.0
+        rig.pump += RATE - rig.drift
+        rig.host += RATE * (1.0 - rig.servo.drop_frac)
+        for _ in range(30):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 1)
+
+    def test_a_crawl_that_laps_for_several_ticks_does_not_set_its_seed(self):
+        # The pump crawls at a tenth of its rate for three intervals, lapping
+        # at every tick. Each lapping interval reads the pump as slow; a seed
+        # taken from a rate average, however far back it reaches, is pulled
+        # down by the third, over-drops, and overtakes once the pump resumes.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.drift = RATE - 0.1 * (RATE - 1800.0)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            for _ in range(3):
+                rig.step()
+            rig.drift = 1800.0
+            rig.step()  # its tick laps on the third crawling interval
+        crawled = rig.servo.reanchors
+        self.assertEqual(crawled, 3)
+        self.assertAlmostEqual(rig.servo.drop_frac, 1800.0 / RATE, delta=0.01)
+        for _ in range(30):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, crawled)
+
+    def test_a_stall_soon_after_an_absorbed_speed_up_does_not_seed_the_old_drop(self):
+        # Settled under the mhires deficit, the pump speeds up to a 6.7 %
+        # deficit: too little to overtake, so the loop steers through it while
+        # the integrator still holds most of the old 15 %. A stall laps a tick
+        # later. Seeded from the integrator alone, the loop puts the stale
+        # 15 % back and overtakes once the pump resumes, a second dropout.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.drift = 800.0
+        rig.step()
+        self.assertEqual(rig.servo.reanchors, 0)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+            rig.t += 1.0
+            rig.pump += 0.1 * (RATE - rig.drift)
+            rig.host += RATE * (1.0 - rig.servo.drop_frac)
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 1)
+        self.assertLess(rig.servo.drop_frac, 1800.0 / RATE - 0.02)
+        for _ in range(30):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 1)
+
+
 class MicLeadOpenLoopTest(unittest.TestCase):
     def _closed(self, drift: float = 1800.0) -> _Rig:
         rig = _Rig(drift)

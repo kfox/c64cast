@@ -361,6 +361,21 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Flashes, onsets and an `audio`-driven tempo arrived that far before the
   sound. They now follow the audio's played position.
 
+- **An REU video scene no longer plays part of the previous scene's soundtrack
+  after a network blip during setup.** The track upload, its silent tail and
+  the REU mic ring's silent prefill are now confirmed slice by slice and
+  resent when lost. Before, a slice dropped by a broken DMA connection left
+  the previous track's audio (or loud noise) in its place, with only a log
+  warning. If a slice still does not land, the scene plays without audio.
+
+- **An REU audio pump no longer starts on writes that never reached the C64.**
+  On petscii and blank REU video scenes, and for the tail of every REU pump
+  setup, a write lost on the network (a dropped or redialed DMA connection)
+  went unnoticed, and the C64's interrupt was pointed at the pump anyway. It
+  could then run leftover code or copy audio into color RAM. Each of those
+  writes is now confirmed and retried; if one still does not land, the scene
+  logs an error and plays without audio.
+
 - **A remote video or audio URL whose server stops answering no longer
   freezes the show.** Opening a stream now gives up after 20 seconds, and a
   stream that goes silent mid-play gives up after 30 seconds without data, so
@@ -445,8 +460,27 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   holding up a seek until it was done. And a write the link failed to
   deliver lost its audio; it is now retried.
 
-- **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms at 12 kHz
-  (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
+- **A live mic on `[audio].use_reu_pump` no longer drops out every couple of
+  seconds after the machine speeds up mid-scene.** When the mic's delay had to
+  be reset (the C64 caught up with the computer, or fell far behind), the
+  correction that had been running before the reset carried on. If the C64 had
+  meanwhile sped up, for instance as a bank-switched video mode got lighter,
+  that stale correction caught it up again within seconds, and each reset is a
+  short silence: in simulation, about 24 silences a minute. The correction now
+  restarts from the speed the C64 is actually running at.
+
+- **A live mic on `[audio].use_reu_pump` plays about 0.3 s behind the input
+  at 12 kHz, down from about 0.73 s, and no longer replays old audio under
+  mhires.** The 133 ms the host holds is only the first stage of the delay;
+  the second is how far the C64 copies ahead of the sample it is playing,
+  and nothing chose it. Without a bank-switched video mode the copying started
+  behind the playback, so every sample waited most of an 8 KB lap. Under
+  `mhires` it started just ahead, and playback could catch up with it and play
+  audio from 0.7 s earlier. The scene now sets that lead to 2 KB (about
+  170 ms) once both are running, and logs a warning if it cannot.
+
+- **A live mic on `[audio].use_reu_pump` keeps the host's share of its delay
+  near 133 ms at 12 kHz (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
   pump that plays it. Under REU-staged `mhires` the delay grew by about
   1.8 seconds every ten seconds, until after about 34 s the host overwrote
   audio that had not played yet. Under `petscii` the pump caught up with
