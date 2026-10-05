@@ -243,18 +243,24 @@ class RemoteStallBoundTest(unittest.TestCase):
         return server
 
     def test_a_silent_server_fails_the_open(self):
+        import av.error
+
         server = self._server()
         outcome = self._bounded(lambda: av_open(f"http://127.0.0.1:{server.port}/tune.wav"))
-        self.assertIsInstance(outcome, Exception)
+        self.assertIsInstance(outcome, av.error.ExitError)
 
     def test_a_silent_peer_on_another_protocol_fails_the_open(self):
+        import av.error
+
         # http(s) is not the only network protocol FFmpeg honors, and an
         # audio-file entry reaches av_open on its extension alone.
         server = self._server()
         outcome = self._bounded(lambda: av_open(f"tcp://127.0.0.1:{server.port}/tune.wav"))
-        self.assertIsInstance(outcome, Exception)
+        self.assertIsInstance(outcome, av.error.ExitError)
 
     def test_a_stream_that_stalls_mid_body_fails_the_read(self):
+        import av.error
+
         # Enough body that probing finishes and the open returns: the stall
         # has to land in demux, past the open bound, for this to test reads.
         body = _wav_bytes(30.0)
@@ -264,13 +270,19 @@ class RemoteStallBoundTest(unittest.TestCase):
         )
         server = self._server(head + body[:200_000])
         container = av_open(f"http://127.0.0.1:{server.port}/tune.wav")
-        self.addCleanup(container.close)
 
         def drain():
             for _ in container.demux(container.streams.audio[0]):
                 pass
 
-        self.assertIsInstance(self._bounded(drain), Exception)
+        # Closed here, not from a cleanup: if the bound regresses, `_bounded`
+        # fails with the worker still inside av_read_frame, and closing the
+        # container under it would free the context it is reading. Left open,
+        # the worker's own reference keeps it alive until the server's
+        # cleanup releases the read.
+        outcome = self._bounded(drain)
+        container.close()
+        self.assertIsInstance(outcome, av.error.ExitError)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
