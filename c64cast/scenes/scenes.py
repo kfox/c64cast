@@ -389,7 +389,8 @@ class Scene:
         return self.name
 
     def _set_derived_duration(self, duration_s: float) -> None:
-        """Set `duration_s` from the content, not from the user, so that
+        """Set `duration_s` by the scene's own rule (from the content, or a
+        configured value it re-applies), not from the live menu, so that
         `_duration_set_live` can tell the two apart."""
         self.duration_s = duration_s
         self._derived_duration_s = duration_s

@@ -743,8 +743,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _adopt_live_duration(self) -> None:
         """Make a `duration_s` set from the live menu the explicit duration,
         so the next song's length lookup leaves it alone, as it leaves a
-        configured one."""
-        if self._explicit_duration_s is None and self._duration_set_live():
+        configured one. A later live change replaces it the same way, whether
+        the explicit value came from the config or an earlier live change."""
+        if self._duration_set_live():
             self._explicit_duration_s = self.duration_s
 
     def _resolve_duration_for_current_sid(self) -> float:
@@ -1557,7 +1558,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if self.is_done:
             return None
         if self._explicit_duration_s is not None:
-            self.duration_s = float(self._explicit_duration_s)
+            self._set_derived_duration(float(self._explicit_duration_s))
         elif chosen_duration is not None:
             self._set_derived_duration(float(chosen_duration))
         log.info(
@@ -1598,7 +1599,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         least-surprising fallback."""
         self._host_emu = new_emu
         if self._explicit_duration_s is not None:
-            self.duration_s = float(self._explicit_duration_s)
+            self._set_derived_duration(float(self._explicit_duration_s))
         elif chosen_duration is not None:
             self._set_derived_duration(float(chosen_duration))
             log.info(
