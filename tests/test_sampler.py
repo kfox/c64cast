@@ -1098,7 +1098,11 @@ class SamplerFlushTests(unittest.TestCase):
         t.join(timeout=1.0)
         self.assertFalse(t.is_alive())
         self.assertEqual(smp._pushed_samples, 0, "a pre-splice chunk counted toward EOF")
-        self.assertEqual(smp._q.qsize(), 1, "the parked put went through")
+        # A drain would free the slot and let the parked put through, which
+        # leaves one item queued as well: the item itself tells them apart.
+        self.assertEqual(
+            [item for _, item in smp._q.queue], [b"\x01" * 32], "the parked put went through"
+        )
         api.reu_writes.clear()
         api.audible_writes = 0
         self._drive_writer(smp, [smp._q.get_nowait()])
