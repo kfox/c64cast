@@ -143,6 +143,26 @@ LATE_CATCHUP_S = 2.0
 # one bounded queue wait (20 ms) plus a REU write.
 HOLD_GUARD_S = 0.03
 
+# A partial write quantum goes to the ring no sooner than this after the
+# previous audio write, in every state: steady, after a splice, while late, and
+# re-anchored. The link carries about 200 writes/s and the picture shares
+# them, and below its free-payload knee a write costs the same whatever it
+# carries, so the audio's budget is a write count: about 60 a second, of
+# which the floor gives partial writes 50, leaving the rest for the whole
+# quanta and underrun pads it does not hold (at 1/60 s a 0.99x stream's
+# busiest second came to 62). Rules keyed to one state each kept leaving
+# another where every 2.5 ms frame went out on its own (~245 writes in the
+# second after a splice, ~210 in a first late window, ~400 as a slow stream's
+# cushion ran out). A whole quantum is
+# not held by it, and a write retried after a failure already waits out the
+# writer's back-off (WRITER_BACKOFF_MIN_S, at least this long). It must not
+# exceed the writer's bounded queue wait (20 ms): the floor's wait then runs
+# inside the one HOLD_GUARD_S already budgets past the hold's deadline, so it
+# never holds an on-time gather into lateness, and the re-anchor rule sees
+# none of it. At 25 ms a gather released at the deadline was held 10 ms past
+# the write floor and dropped (8 kHz/8-bit, fake clock).
+MIN_WRITE_INTERVAL_S = 0.02
+
 
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
     """Sample-rate divider for the sampler reference clock (≥ 1). ``ref_clock``
@@ -394,6 +414,16 @@ class UltimateAudioSampler:
         quantum = min(profile.free_payload_bytes(), self._lead_target // 2, REU_WRITE_SLICE)
         self._write_quantum = max(self.bps, quantum - quantum % self.bps)
         self._hold_guard = int(HOLD_GUARD_S * self._actual_rate) * self.bps
+        self._write_interval = int(MIN_WRITE_INTERVAL_S * self._actual_rate) * self.bps
+        # The hold's deadline: a partial gather is carried while the lead is
+        # above it (_holds).
+        self._hold_deadline = self._flush_margin + self._hold_guard
+        # Read head at the latest audio write (_write_payload), for the
+        # MIN_WRITE_INTERVAL_S floor; None before the first. Pads and the
+        # splice's blank are not counted: they are rare, and a floor timed
+        # from the cut-over's blank held the first post-splice audio, whose
+        # anchor sits on the write floor, a whole interval into lateness.
+        self._last_write_head: int | None = None
         # A real-time producer re-anchored here keeps enough slack over the
         # hold's deadline to gather whole quanta, rather than written frame by
         # frame (a 2.5 ms Opus frame each is 400 writes a second). The second
@@ -436,13 +466,13 @@ class UltimateAudioSampler:
         # wall time. _late_ref is (read head, lateness) where the current
         # window began, None while writes land on time. A burst is a run of
         # attempts with no LATE_REANCHOR_S gap between them: _burst_start is
-        # (read head, lateness) at the current one's first late attempt, _prev_start
-        # the previous one's. _last_try is the read head at the latest write
-        # attempt, one dropped whole included; an attempt whose ring write
-        # failed does not count (_write_payload puts the one before it back).
-        # Whether a gap preceded the first late attempt
-        # of an activation or a splice does not matter: with no burst behind
-        # it, a gap and a fresh window start the same way. _late_from is the
+        # (read head, lateness) at the current one's first late attempt,
+        # _prev_start the previous one's. _last_try is the read head at the
+        # latest write attempt, one dropped whole included; an attempt whose
+        # ring write failed does not count (_write_payload puts the one before
+        # it back). Whether a gap preceded the first late attempt of an
+        # activation or a splice does not matter: with no burst behind it, a
+        # gap and a fresh window start the same way. _late_from is the
         # read head at the first late attempt since writes were last on time
         # (or since the last splice, arm() or re-anchor), so the re-anchor's
         # WARNING says how long the audio was late: across gaps that is
@@ -915,7 +945,7 @@ class UltimateAudioSampler:
             consumed = self._read_consumed_bytes()
             before = self._content_pos
             last_try = self._last_try
-            c = self._late_anchor(consumed, len(data))
+            c = self._late_anchor(consumed)
             # _writer_step sized this payload to the room under the lead target
             # at the old _content_pos; a re-anchor moved it forward, so the tail
             # past the target waits for the next pass. A lead too shallow to
@@ -951,6 +981,7 @@ class UltimateAudioSampler:
                     self._carry_back(epoch, data)
                     raise
                 self._written = max(self._written, end)
+                self._last_write_head = consumed
             self._late_bytes += min(len(data), max(0, first - c))
             self._content_pos = end
             return first < end
@@ -962,7 +993,7 @@ class UltimateAudioSampler:
         (t0, l0), (t1, l1) = then, now
         return (l0 - l1) * self._late_catchup_bytes > l0 * (t1 - t0)
 
-    def _late_anchor(self, consumed: int, size: int) -> int:
+    def _late_anchor(self, consumed: int) -> int:
         """Under _io_lock: where the next real sample is written. That is
         _content_pos unless the producer is not keeping up, in which case the
         audio is re-anchored _reanchor_lead past the read head (moving
@@ -984,65 +1015,37 @@ class UltimateAudioSampler:
         delivering in bursts seconds behind (a segmented live stream) is no
         closer (or barely closer) from one burst to the next and is
         re-anchored, while a decoder that stalls gets the burst after the
-        stall to catch up in, whatever the chunks before the stall did. The
-        comparison waits for that second burst because at the first one after
-        a gap the two cannot be told apart. After one re-anchor, late audio is
-        re-anchored at once until the next splice or arm().
-
-        A ``size`` short of a write quantum counts as late too: the writer
-        holds a partial gather until the hold's deadline (_holds), so one
-        written short is the lead running out of room to coalesce in. A
-        producer slightly slower than real time otherwise wrote ever smaller
-        pieces as the last of its cushion ran out, down to every frame on
-        its own (2.5 ms frames: ~400 writes/s, twice the link's ceiling),
-        before it turned late. L is measured from the hold threshold of an
-        empty gather for every attempt, so the trend does not jump when a
-        producer goes from short writes to late ones."""
+        stall to catch up in, whatever the chunks before the stall did. The comparison waits for that
+        second burst because at the first one after a gap the two cannot be
+        told apart. After one re-anchor, late audio is re-anchored at once
+        until the next splice or arm()."""
         c = self._content_pos
-        lateness = consumed + self._hold_threshold(0) - c
+        lateness = consumed + self._flush_margin - c
         last, self._last_try = self._last_try, consumed
-        dropped = c < consumed + self._flush_margin
-        if lateness <= 0 or not (dropped or size < self._write_quantum):
+        if lateness <= 0:
             self._late_ref = None
             self._burst_start = self._prev_start = None
             self._late_from = None
             return c
-        # A short write that drops nothing is also how a hold lets go when the
-        # producer stalls, so within a burst it opens a window but does not
-        # start the burst (_burst_start stays None until a drop): the gather
-        # written short as a stall began is not a burst behind the stall.
-        here = (consumed, lateness)
-        window_from = consumed if self._late_ref is None else self._late_ref[0]
-        if self._late_from is None and dropped:
+        if self._late_from is None:
             self._late_from = consumed
-        late_from = window_from if self._late_from is None else self._late_from
+        late_from = self._late_from
         gap = last is not None and consumed - last >= self._late_reanchor_bytes
+        here = (consumed, lateness)
         if self._reanchor_sticky:
             pass  # already shown slow since the last splice: no window
         elif gap:
-            # A hold carried through LATE_REANCHOR_S of a stall lets go as the
-            # attempt after a gap, and it does not start a burst there either
-            # (a 1.5x decoder 0.35 s behind, from a 1.0 s lead, re-anchored).
             prev, ended = self._prev_start, self._burst_start
-            self._prev_start, self._burst_start = ended, here if dropped else None
+            self._prev_start, self._burst_start = ended, here
             self._late_ref = here
             if prev is None or ended is None or self._gaining(prev, ended):
                 return c
             # The burst that just ended began too little closer than the one
             # before it to be catching up.
         elif self._late_ref is None:
-            self._late_ref = here
-            if dropped and self._burst_start is None:
-                self._burst_start = here
+            self._late_ref = self._burst_start = here
             return c
         else:
-            if dropped and self._burst_start is None:
-                # The first drop after short writes alone: those were a hold
-                # letting go as the producer stalled, and the window is the
-                # drops' own (spanning the stall, it re-anchored a 1.5x
-                # decoder that was about to line up).
-                self._late_ref = self._burst_start = here
-                return c
             if consumed - self._late_ref[0] < self._late_reanchor_bytes:
                 return c
             if self._gaining(self._late_ref, here):  # a new window
@@ -1114,7 +1117,8 @@ class UltimateAudioSampler:
         ``room`` bytes and one slice. Queued chunks are coalesced up to the
         write quantum; a chunk larger than the write is split, its tail
         carried to the next pass. Less than a quantum is carried rather than
-        written until the lead comes within HOLD_GUARD_S of the write floor
+        written until the lead comes down to the hold's deadline, and never
+        sooner than MIN_WRITE_INTERVAL_S after the previous audio write
         (_holds).
         None when nothing current arrived within the queue timeout, or when it
         was held."""
@@ -1162,25 +1166,28 @@ class UltimateAudioSampler:
     def _holds(self, size: int) -> bool:
         """Writer-thread only: whether a ``size``-byte gather is carried to
         wait for the rest of its quantum, on the read head as of now. It is
-        until the lead comes within HOLD_GUARD_S (one queue wait and a write)
-        of the write floor, when it is written as it stands.
+        while the lead is above the hold's deadline (the write floor plus
+        HOLD_GUARD_S, one queue wait and a write), and in any case until
+        MIN_WRITE_INTERVAL_S has passed since the previous audio write.
 
-        That is a deadline, not a forecast. The writer used to hold only while
-        the rest of the quantum, arriving at real time, would still beat the
-        deadline, and below that wrote what it had: a producer slightly slower
-        than real time then wrote every 2.5 ms frame on its own for the last
-        ~50 ms of its cushion (~400 writes/s, twice the link's ceiling, for
-        seconds at 0.99x). Held to the deadline, it writes what the slack
-        gathered, and a write that comes up short feeds the re-anchor rule
-        (_late_anchor)."""
-        lead = self._content_pos - self._read_consumed_bytes()
-        return size < self._write_quantum and lead > self._flush_margin + self._hold_guard
+        The deadline is a deadline, not a forecast: the writer used to hold
+        only while the rest of the quantum, arriving at real time, would
+        still beat it, so a producer slightly slower than real time wrote
+        every 2.5 ms frame on its own for the last ~50 ms of its cushion. The
+        interval is the one rule that bounds the write count whatever state
+        the lead is in (MIN_WRITE_INTERVAL_S)."""
+        if size >= self._write_quantum:
+            return False
+        consumed = self._read_consumed_bytes()
+        if self._content_pos - consumed > self._hold_deadline:
+            return True
+        last = self._last_write_head
+        return last is not None and consumed - last < self._write_interval
 
     def _hold_threshold(self, size: int) -> int:
         """The content lead from which a held ``size``-byte gather fills its
-        quantum at real time before the hold's deadline (_holds): the write
-        floor, HOLD_GUARD_S, and the rest of the quantum."""
-        return self._flush_margin + (self._write_quantum - size) + self._hold_guard
+        quantum at real time before the hold's deadline (_holds)."""
+        return self._hold_deadline + (self._write_quantum - size)
 
     def _blank(self, lo: int, hi: int) -> None:
         """NEUTRAL-write the absolute byte span [lo, hi) of the ring."""

@@ -624,9 +624,10 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertLessEqual(writes, -(-6000 // smp._write_quantum), api.reu_writes)
 
     def _hold_floor(self, smp: s.UltimateAudioSampler) -> int:
-        """The lowest lead at which a partial quantum is held: more than
-        HOLD_GUARD_S over the write floor, whatever its size."""
-        return smp._flush_margin + smp._hold_guard + smp.bps
+        """The lowest lead at which a partial quantum is held: past the hold's
+        deadline (HOLD_GUARD_S and MIN_WRITE_INTERVAL_S over the write
+        floor), whatever its size."""
+        return smp._hold_deadline + smp.bps
 
     def test_a_real_time_producer_is_coalesced_below_the_low_watermark(self):
         # A live stream never builds a queue backlog: each pass finds one
@@ -690,6 +691,61 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertFalse(smp._writer_step(smp._writer_gen))
         self.assertEqual(api.reu_writes, [])
         self.assertIsNotNone(smp._carry)
+
+    def test_the_write_interval_floor_never_holds_an_on_time_gather_late(self):
+        # The writer has just written, and a partial gather is held one byte
+        # past the hold's deadline. Its queue waits pass real time; the floor
+        # must have run out by the end of the first, inside HOLD_GUARD_S, or
+        # the next wait takes the gather past the write floor.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        consumed = [0]
+        smp._read_consumed_bytes = lambda: consumed[0]  # type: ignore[method-assign]
+        smp._last_write_head = 0
+        pos = self._hold_floor(smp)
+        self._place(smp, pos)
+        smp._carry = (smp._flush_epoch, memoryview(b"\x01" * 20))
+
+        def waiting_get(block: bool = True, timeout: float | None = None) -> Any:
+            if block and timeout:
+                consumed[0] += int(timeout * smp._actual_rate) * smp.bps
+            raise s.queue.Empty
+
+        smp._q.get = waiting_get  # type: ignore[method-assign]
+        for _ in range(5):
+            if smp._writer_step(smp._writer_gen):
+                break
+        self.assertEqual(api.reu_writes, [(smp.ring_base + pos, 20)])
+        self.assertEqual(smp._late_bytes, 0)
+
+    def test_partial_writes_are_spaced_by_the_write_interval(self):
+        # In every state a partial quantum waits out MIN_WRITE_INTERVAL_S
+        # after the previous audio write: here the lead is already at the
+        # write floor, as right after a splice.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        consumed = [0]
+        smp._read_consumed_bytes = lambda: consumed[0]  # type: ignore[method-assign]
+        smp._last_write_head = 0
+        self._place(smp, smp._flush_margin + smp._write_interval)
+        smp._q.put((smp._flush_epoch, b"\x01" * 20))
+        self.assertFalse(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [])
+        consumed[0] = smp._write_interval
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(
+            api.reu_writes, [(smp.ring_base + smp._flush_margin + smp._write_interval, 20)]
+        )
+
+    def test_a_whole_quantum_does_not_wait_out_the_write_interval(self):
+        # A producer catching up fills quanta faster than the floor's pace;
+        # holding them would only turn its backlog late.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        smp._last_write_head = 0
+        smp._q.put((smp._flush_epoch, b"\x01" * smp._write_quantum))
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [(smp.ring_base + smp._flush_margin, smp._write_quantum)])
 
     def test_only_a_held_carry_waits_on_the_queue(self):
         # Right after a splice the anchor sits on the write floor: a carry
@@ -1146,8 +1202,9 @@ def _run_scenario(
     and a step that raises (an outage) is retried on the next tick, as the
     writer loop's back-off would. Returns the re-anchor count, the lag of
     the audio behind its anchor (ms), and over the last ``tail_s`` the share
-    of real time the ring got audio for, the REU writes per second, and the
-    most REU writes in any one of its whole seconds."""
+    of real time the ring got audio for and the REU writes per second; the
+    most REU writes in any whole second of the run; and the audio still
+    queued or carried, unwritten, at the end (ms)."""
     clock = [0.0]
     link = _ScenarioLink(clock, outage)
     smp = _make(link, sample_rate=sample_rate, bits=bits, lead_seconds=lead_seconds)
@@ -1199,9 +1256,10 @@ def _run_scenario(
         "audible": (link.audible - tail_audible) / (tail_s * rate * bps),
         "writes_s": (link.writes - tail_writes) / tail_s,
         "peak_writes_s": max(
-            (n for sec, n in link.per_second.items() if sec >= tail_from and sec + 1 <= seconds),
+            (n for sec, n in link.per_second.items() if sec + 1 <= seconds),
             default=0,
         ),
+        "held_ms": held / bps / rate * 1000,
     }
 
 
@@ -1285,9 +1343,10 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
 
     # name: (rate_of, run kwargs, expectations). Expectations: reanchors as
     # an exact count or a (min, max) range, lag_ms as a (min, max) range,
-    # audible as a minimum share, writes_s as a (min, max) range. Every row
-    # also holds its busiest whole second of the tail to PEAK_WRITES_S: the
-    # link carries about 200 writes/s, shared with the picture.
+    # audible as a minimum share, writes_s as a (min, max) range, held_ms as
+    # a maximum. Every row also holds its busiest whole second, splices and
+    # first late windows included, to PEAK_WRITES_S: the link carries about
+    # 200 writes/s, shared with the picture.
     PEAK_WRITES_S = 60
 
     ROWS: dict[str, tuple[Any, dict[str, Any], dict[str, Any]]] = {
@@ -1406,6 +1465,48 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
             },
             {"audible": 0.95, "writes_s": (30, 50)},
         ),
+        "2.5 ms frames at 8 kHz/8-bit, after a splice": (
+            lambda t, prod, late: 1.0,
+            {
+                "seconds": 6.0,
+                "sample_rate": 8000,
+                "bits": 8,
+                "frame_s": 0.0025,
+                "splice_at": 2.0,
+                "tail_s": 3.0,
+            },
+            {"audible": 0.95},
+        ),
+        # A first late window, before re-anchoring is sticky: frames that
+        # land partly late each went out on their own (~210 writes/s).
+        "1.0x live after a 0.33 s stall": (
+            lambda t, prod, late: 0.0 if 3.0 <= t < 3.33 else 1.0,
+            {"seconds": 10.0, "sample_rate": 44100, "frame_s": 0.0025},
+            {"reanchors": (0, 1), "audible": 0.95},
+        ),
+        "0.9x live": (
+            lambda t, prod, late: 0.9,
+            {"seconds": 16.0, "sample_rate": 44100, "frame_s": 0.0025, "tail_s": 8.0},
+            {"reanchors": (1, 99), "audible": 0.85},
+        ),
+        # Re-anchored once, then an 80 ms hiccup every second, caught up at
+        # 2x: the cushion absorbs it, so there is no second re-anchor.
+        "80 ms hiccups each second after a 2 s stall": (
+            lambda t, prod, late: (
+                0.0
+                if 3.0 <= t < 5.0 or (t > 6.0 and t % 1.0 < 0.08)
+                else (2.0 if t > 6.0 and t % 1.0 < 0.2 else 1.0)
+            ),
+            {"seconds": 16.0, "sample_rate": 44100, "frame_s": 0.0025},
+            {"reanchors": 1, "audible": 0.95},
+        ),
+        # The end of a stream after a re-anchor: the last partial gather is
+        # written where it belongs, not re-anchored past a gap.
+        "end of stream after a re-anchor": (
+            lambda t, prod, late: 0.0 if 3.0 <= t < 5.0 or t >= 8.013 else 1.0,
+            {"seconds": 10.0, "sample_rate": 44100, "frame_s": 0.0025, "tail_s": 1.0},
+            {"reanchors": 1, "lag_ms": (1700, 1900), "audible": 0.0, "held_ms": 0.0},
+        ),
     }
 
     def run_row(self, name: str) -> dict[str, float]:
@@ -1429,6 +1530,8 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
                 if "writes_s" in expect:
                     lo, hi = expect["writes_s"]
                     self.assertTrue(lo <= got["writes_s"] <= hi, got)
+                if "held_ms" in expect:
+                    self.assertLessEqual(got["held_ms"], expect["held_ms"], got)
                 self.assertLessEqual(got["peak_writes_s"], self.PEAK_WRITES_S, got)
 
 
