@@ -155,6 +155,7 @@ class RedactSecretsTest(unittest.TestCase):
         for line, want in (
             ("access_token: Bearer s3cr3t", "access_token: REDACTED REDACTED"),
             ("u=%2526token%253D Bearer s3cr3t", "u=%2526token%253D REDACTED REDACTED"),
+            ("key: Bearer Bearer s3cr3t", "key: REDACTED REDACTED REDACTED"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)

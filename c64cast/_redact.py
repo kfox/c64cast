@@ -111,8 +111,12 @@ _SECRET_VALUE = re.compile(
 #: :data:`_SECRET_VALUE`. One pattern's matches cannot overlap, so there an
 #: unquoted value ending at the space after `Bearer` took the word as the whole
 #: secret and hid the token behind it: `access_token: Bearer eyJ…` kept the
-#: `eyJ…`.
-_BEARER_VALUE = re.compile(r"\bBearer\s+(?P<value>[^\s\"',}]+)", re.IGNORECASE)
+#: `eyJ…`. The value is read inside a lookahead for the same reason, so the
+#: next search starts where it does: in `Bearer Bearer eyJ…` the second
+#: `Bearer` is the first one's value and the start of a match of its own. A
+#: value holds no whitespace and a match needs some after its `Bearer`, so no
+#: character is read as a value twice.
+_BEARER_VALUE = re.compile(r"\bBearer\s+(?=(?P<value>[^\s\"',}]+))", re.IGNORECASE)
 
 _SECRET_KEY_RE = re.compile(_SECRET_KEY, re.IGNORECASE | re.VERBOSE)
 
