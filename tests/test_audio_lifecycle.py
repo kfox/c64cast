@@ -572,6 +572,71 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(len(cast(Any, s.api).writes), PREBUFFER_CHUNKS + 1)
         self.assertEqual((s.q.qsize(), s._queued_samples), seen[0])
 
+    def test_a_worker_superseded_during_a_drip_write_collects_no_more(self):
+        # The collect between drip pieces takes from the queue, which by then
+        # is the next session's.
+        s = _make_worker_streamer()
+        s._halt_quantum = lambda: 8  # type: ignore[method-assign]  # 4 pieces per chunk
+        real_collect = s._collect_until
+        stale_collects: list[int] = []
+        start_generation = s._worker_generation
+
+        def spying_collect(*args):  # type: ignore[no-untyped-def]
+            if s._worker_generation != start_generation:
+                stale_collects.append(s._worker_generation)
+            return real_collect(*args)
+
+        s._collect_until = spying_collect  # type: ignore[method-assign]
+        seen, t = self._superseded_at_write(s, PREBUFFER_CHUNKS)
+        try:
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(stale_collects, [], "collected from the next session's queue")
+
+    def test_a_worker_superseded_during_a_splice_fill_counts_nothing_landed(self):
+        # The splice's NEUTRAL fill can park like any ring write; past it, the
+        # landed-bytes accounting is the next session's.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+
+        def splicing_pace(*args):  # type: ignore[no-untyped-def]
+            s._flush_epoch += 1  # a flush() lands after the hand-off
+            return 0.001
+
+        s.servo.next_pace_increment = splicing_pace  # type: ignore[method-assign]
+        real_fill = s._neutral_fill_ring
+        real_landed = s._note_ring_landed
+        landed: list[tuple[int, int]] = []
+        landed_at_fill: list[int] = []
+
+        def superseding_fill(addr: int, n: int) -> None:
+            real_fill(addr, n)
+            s._worker_generation += 1  # the next scene's _start_worker
+            landed_at_fill.append(len(landed))
+
+        def spying_landed(n: int, pad: int) -> None:
+            landed.append((n, pad))
+            real_landed(n, pad)
+
+        s._neutral_fill_ring = superseding_fill  # type: ignore[method-assign]
+        s._note_ring_landed = spying_landed  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(landed_at_fill), 1, "never reached the splice fill")
+        self.assertEqual(len(landed), landed_at_fill[0], "counted the fill as landed")
+
     def test_a_worker_superseded_during_its_last_prebuffer_write_does_not_arm(self):
         # Arming after a parked prebuffer write would start the NMI on a ring
         # the next session has not primed, and reset its servo and health.
