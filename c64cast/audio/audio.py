@@ -2186,9 +2186,13 @@ class AudioStreamer:
             return
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
         # Pre-DSP analysis tap, as in the mic callbacks, so a decoded file
-        # drives reactive visuals through the same analyzer.
-        self._push_to_analysis(floats)
-        self._encode_and_enqueue(floats, block_on_full=True)
+        # drives reactive visuals through the same analyzer. Only audio the
+        # queue took: the file source reads the tap at this streamer's played
+        # count, which a blob dropped on a backpressure timeout never enters,
+        # so tapping it too would leave every later window that far behind
+        # the sound.
+        if self._encode_and_enqueue(floats, block_on_full=True):
+            self._push_to_analysis(floats)
 
     def position_seconds(self) -> float:
         """Approximate playback position from the consumer's perspective.

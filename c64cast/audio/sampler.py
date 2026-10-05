@@ -1266,6 +1266,15 @@ class UltimateAudioSampler:
             return max(0.0, min(elapsed, total_s))
         return max(0.0, elapsed)
 
+    def reanchor_lag_seconds(self) -> float:
+        """How far re-anchors have put the audio behind `position_seconds()`
+        since the last arm() or splice. Each one moves every later sample that
+        much past the slot it was pushed for, so the sample heard now is the
+        one pushed for ``position_seconds() - reanchor_lag_seconds()``. An
+        unlocked read: the writer adds a re-anchor's shift before it writes
+        the audio that shift moved."""
+        return self._reanchor_lag_bytes / self.bps / self._actual_rate
+
     def ring_lead_seconds(self) -> float:
         """The ``AudioStreamer`` splice hook: how long after a flush() the first
         post-splice sample is heard. flush() keeps FLUSH_GUARD_S of old audio

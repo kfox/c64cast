@@ -1624,7 +1624,10 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
                 f"onset at played {t:.3f} s is on no click {self.clicks}",
             )
 
-    def test_sampler_onsets_land_on_the_heard_clicks(self):
+    def _sampler_onsets(self, *, reanchor_lag_s: float = 0.0) -> list[float]:
+        """Onset times, as heard, over a real sampler on the fake clock. A
+        nonzero `reanchor_lag_s` stands for re-anchors the writer made before
+        the gate: every sample then plays that much past its slot."""
         from c64cast.audio import sampler
 
         with (
@@ -1637,16 +1640,45 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
             src._decode_loop()  # a 4 s file fits the queue: decoded whole up front
             self.now[0] += 1.0
             smp.start()
+            smp._reanchor_lag_bytes = int(reanchor_lag_s * smp.effective_rate) * smp.bps
             gate = self.now[0]
             onsets = []
             assert src._features is not None
-            for k in range(int(3.0 * 60)):
+            for k in range(int((3.0 + reanchor_lag_s) * 60)):
                 self.now[0] = gate + k / 60.0
                 src._features._process_tick()
                 m = src._features.features()
                 if m is not None and m.onset == 1.0:
-                    onsets.append(smp.position_seconds())
-        self._assert_onsets_on_the_clicks(onsets)
+                    onsets.append(smp.position_seconds() - reanchor_lag_s)
+        return onsets
+
+    def test_sampler_onsets_land_on_the_heard_clicks(self):
+        self._assert_onsets_on_the_clicks(self._sampler_onsets())
+
+    def test_sampler_onsets_follow_the_sound_a_reanchor_delayed(self):
+        # A producer that fell behind is re-anchored past the read head, and
+        # the sound then lags the sampler's wall clock by the shift: the
+        # analyzer has to read that much behind the clock too.
+        self._assert_onsets_on_the_clicks(self._sampler_onsets(reanchor_lag_s=0.25))
+
+    def test_dac_a_blob_dropped_on_backpressure_never_reaches_the_tap(self):
+        # The tap is read at the streamer's played count, which a blob the
+        # queue refused never enters; tapped anyway, it would put every later
+        # window that far behind the sound.
+        from _fakes import new_streamer
+
+        from c64cast.audio import audio as audio_mod
+        from c64cast.audio.audio_features import AnalysisTap
+
+        streamer = new_streamer(sample_rate=12000)
+        tap = AnalysisTap(size=1 << 16)
+        streamer.analysis_sink = tap.push
+        streamer.running = True
+        streamer.push_samples(np.full(streamer._max_queued_samples, 1000, dtype=np.int16))
+        with mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 0.0):
+            streamer.push_samples(np.full(512, 2000, dtype=np.int16))
+        self.assertEqual(streamer._pushed_count, streamer._max_queued_samples)
+        self.assertEqual(tap.pushed, streamer._pushed_count)
 
     def test_dac_onsets_land_on_the_heard_clicks(self):
         # The real streamer's push and clock; its worker is modeled: the ring

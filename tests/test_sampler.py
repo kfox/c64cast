@@ -901,6 +901,7 @@ class SamplerLateReanchorTest(unittest.TestCase):
                 self.assertFalse(self._write(40))
                 self.consumed += 40
             self.assertEqual(self.api.audible_writes, 0)
+            slot = smp._content_pos  # where the dropped audio left the next sample
             self.assertTrue(self._write(40))
         self.assertIn("re-anchored", logs.output[0])
         self.assertIn("arrived late for 0.5 s", logs.output[0])
@@ -914,6 +915,11 @@ class SamplerLateReanchorTest(unittest.TestCase):
             self.assertTrue(self._write(40))
         self.assertEqual(smp._content_pos, anchor + 51 * 40)
         self.assertEqual(smp._reanchors, 1)
+        # Every sample from here plays that far past its slot: the sound's lag
+        # behind position_seconds(), which a file source's analyzer subtracts.
+        lag = (anchor - slot) / smp.bps / smp._actual_rate
+        self.assertGreater(lag, 3.0)
+        self.assertAlmostEqual(smp.reanchor_lag_seconds(), lag)
 
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped

@@ -441,9 +441,17 @@ class AudioFileSource:
         # The tap is indexed in pushed samples, which the decoder resamples to
         # this rate, and the sink's clock divides by the same one.
         rate = float(audio.effective_rate or audio.sample_rate)
+        # The sampler's clock is the wall since its gate, and a re-anchor
+        # plays every later sample that much past its slot; the DAC's clock
+        # counts the samples played, so it needs no correction.
+        lag = (
+            cast("UltimateAudioSampler", audio).reanchor_lag_seconds
+            if self._is_sampler
+            else lambda: 0.0
+        )
 
         def played_index() -> float:
-            return max(audio.position_seconds() or 0.0, 0.0) * rate
+            return max((audio.position_seconds() or 0.0) - lag(), 0.0) * rate
 
         try:
             history = int(rate * self._FEATURE_HISTORY_S)
