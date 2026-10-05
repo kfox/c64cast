@@ -1285,6 +1285,19 @@ class StallResyncTest(unittest.TestCase):
         after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
         self.assertLessEqual(after, 1024)
 
+    def test_a_stall_just_past_the_lead_is_judged_against_the_landed_head(self):
+        # Servo off: 0.4 s of stall carries R a few hundred bytes past the
+        # ≈4.1 KiB open-loop lead. Judged against write_addr, a chunk past the
+        # last byte that landed, R reads as still short of W, the worker
+        # catches up instead of re-anchoring, and the catch-up overwrites
+        # ≈1.7 KiB of audio not yet played.
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            s, api = self._run(stall_s=0.4, servo=False)
+        self.assertIn("Re-anchored", cm.output[0])
+        assert api.stalled_until is not None
+        after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+        self.assertLessEqual(after, s.chunk_size // 4)
+
     def test_the_resync_leaves_a_ring_r_has_not_reached_alone(self):
         # R at offset 100 with W 1000 B ahead of it after 0.4 s (4800 B) of
         # stall: the lead was 5800 B, and W is still ahead.
