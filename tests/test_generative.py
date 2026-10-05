@@ -1456,8 +1456,12 @@ class AudioFileSourceEndTest(unittest.TestCase):
         sink = _FileSink()
         sink.effective_rate = 44000.0
         sink.sample_rate = 44000
-        self._source(sink)._decode_loop()
+        src = self._source(sink)
+        src._decode_loop()
         self.assertEqual(sink.pushed, 17600)
+        # The tail counts toward the length the scene waits out, too.
+        assert src._end is not None
+        self.assertAlmostEqual(src._end[0], 0.4, places=6)
 
     def test_waits_for_what_the_sink_has_not_played(self):
         start = self.now[0]

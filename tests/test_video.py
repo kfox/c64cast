@@ -305,11 +305,10 @@ class ResamplerTailTest(unittest.TestCase):
 
         self.assertEqual(decode_audio_full(self._wav(), 44000).size, self.EXPECTED)
 
-    def test_the_demux_path_flushes_the_tail_at_eof(self):
+    def _demux_source(self, pushed: list[int]) -> AVFileSource:
         import av
 
         src = AVFileSource.__new__(AVFileSource)
-        pushed: list[int] = []
         src._audio_push = lambda arr: pushed.append(int(arr.size))
         src._resampler = av.AudioResampler(format="s16", layout="mono", rate=44000)
         src._atempo_graph = None
@@ -324,6 +323,28 @@ class ResamplerTailTest(unittest.TestCase):
         src.path = "t.wav"
         src._lock = threading.Lock()
         src._eof = False
+        return src
+
+    def test_the_demux_path_flushes_the_tail_at_eof(self):
+        pushed: list[int] = []
+        src = self._demux_source(pushed)
+        src._demux_loop()
+        self.assertTrue(src._eof)
+        self.assertEqual(sum(pushed), self.EXPECTED)
+
+    def test_a_demuxer_that_ends_by_raising_eof_still_flushes_the_tail(self):
+        # Some demuxers end by raising EOFError instead of running dry; that
+        # branch flushes too.
+        pushed: list[int] = []
+        src = self._demux_source(pushed)
+        real = src.container
+
+        class _RaisesAtEof:
+            def demux(self, *streams):
+                yield from real.demux(*streams)
+                raise EOFError
+
+        src.container = _RaisesAtEof()
         src._demux_loop()
         self.assertTrue(src._eof)
         self.assertEqual(sum(pushed), self.EXPECTED)
