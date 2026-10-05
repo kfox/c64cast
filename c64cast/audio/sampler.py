@@ -588,6 +588,10 @@ class UltimateAudioSampler:
             self._late_from = None
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
+            # The read head restarts at 0 with the next gate, so a head kept
+            # from the last activation would hold every partial gather until
+            # the new one passed it, and a clip shorter than a quantum forever.
+            self._last_write_head = None
         self._output_silenced = False
         self._underrun_pads = 0
         self._late_bytes = 0

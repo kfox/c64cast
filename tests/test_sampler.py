@@ -625,8 +625,8 @@ class SamplerWriteSizingTest(unittest.TestCase):
 
     def _hold_floor(self, smp: s.UltimateAudioSampler) -> int:
         """The lowest lead at which a partial quantum is held: past the hold's
-        deadline (HOLD_GUARD_S and MIN_WRITE_INTERVAL_S over the write
-        floor), whatever its size."""
+        deadline (HOLD_GUARD_S over the write floor), whatever its size and
+        however long ago the last write was."""
         return smp._hold_deadline + smp.bps
 
     def test_a_real_time_producer_is_coalesced_below_the_low_watermark(self):
@@ -736,6 +736,20 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertEqual(
             api.reu_writes, [(smp.ring_base + smp._flush_margin + smp._write_interval, 20)]
         )
+
+    def test_arm_forgets_the_last_activations_write_head(self):
+        # The read head restarts at 0 with the next gate. Timed from a head
+        # the last activation left, the floor held a partial gather until the
+        # new head passed it: a clip shorter than a quantum was never written.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        smp._last_write_head = 60 * int(smp._actual_rate) * smp.bps
+        smp.arm()
+        smp._running = True
+        self._place(smp, smp._flush_margin)
+        smp._q.put((smp._flush_epoch, b"\x01" * 20))
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [(smp.ring_base + smp._flush_margin, 20)])
 
     def test_a_whole_quantum_does_not_wait_out_the_write_interval(self):
         # A producer catching up fills quanta faster than the floor's pace;
