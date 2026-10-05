@@ -835,6 +835,18 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertLessEqual(api.audible_writes - before, quanta + 1)
         self.assertEqual(smp._reanchors, 1)
 
+    def test_the_lead_summary_is_what_the_ring_holds_ahead_of_the_reader(self):
+        # Paused or late, the audio's anchor falls far behind the reader while
+        # pads keep the ring itself ahead; the summary reports the ring.
+        smp = self.smp
+        self.consumed = 5000
+        smp._content_pos = 0
+        smp._written = self.consumed + 800
+        smp._writer_step(smp._writer_gen)
+        with self.assertLogs("c64cast.audio.sampler", "INFO") as logs:
+            smp.stop()
+        self.assertTrue(any("lead min=800 max=800" in m for m in logs.output), logs.output)
+
     def test_repeated_reanchors_are_summarized_at_stop_and_cleared_by_arm(self):
         smp = self.smp
         smp._reanchors = 3

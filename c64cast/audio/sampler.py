@@ -835,8 +835,13 @@ class UltimateAudioSampler:
         # The real-audio cushion: pads ahead of _content_pos do not count, so
         # the writer keeps pulling data to overwrite them.
         lead = self._content_pos - consumed
-        self._lead_min = lead if self._lead_min is None else min(self._lead_min, lead)
-        self._lead_max = lead if self._lead_max is None else max(self._lead_max, lead)
+        # The stop() summary reports what the ring holds ahead of the reader,
+        # pads included: the cushion against the reader running dry. The
+        # content lead above goes far negative while audio is late or paused,
+        # which says nothing about the ring. (An unlocked read; telemetry.)
+        ahead = self._written - consumed
+        self._lead_min = ahead if self._lead_min is None else min(self._lead_min, ahead)
+        self._lead_max = ahead if self._lead_max is None else max(self._lead_max, ahead)
         room = self._lead_target - lead
         if room < self._write_quantum:
             # Far enough ahead. The bounded queue + blocking push give the
