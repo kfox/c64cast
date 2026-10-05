@@ -2622,6 +2622,27 @@ class SamplerFlushTests(unittest.TestCase):
         self._drive_writer(smp, [smp._q.get_nowait()])
         self.assertEqual(api.audible_writes, 0, "the pre-splice chunk was written after the cut")
 
+    def test_a_chunk_a_flush_overtakes_after_its_put_is_not_accepted(self):
+        # The put went through, but the splice bumped the epoch before
+        # push_samples counted it, so the writer drops the chunk on its stale
+        # tag. Taken as accepted, it put a file source's length past audio
+        # that never plays; counted, the EOF ceiling; tapped, a window the
+        # analyzer reads at a slot the chunk never takes.
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+
+        class _SplicedAfterPut(s.queue.Queue):  # type: ignore[type-arg]
+            def put(self, *a: Any, **kw: Any) -> None:
+                super().put(*a, **kw)
+                smp._flush_epoch += 1  # flush()'s bump, just after the put
+
+        smp._q = _SplicedAfterPut(maxsize=4)
+        tapped: list[np.ndarray] = []
+        smp.analysis_sink = tapped.append
+        self.assertEqual(smp.push_samples(np.full(50, 8000, dtype=np.int16)), 0)
+        self.assertEqual(smp._pushed_samples, 0)
+        self.assertEqual(tapped, [])
+
     def test_a_flush_between_dequeue_and_write_drops_the_chunk(self):
         api = _FakeBackend()
         smp = self._running(api, consumed=0)
