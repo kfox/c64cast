@@ -1539,6 +1539,29 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.now[0] += 0.02
         self.assertTrue(src.finished)
 
+    def test_a_lag_that_keeps_growing_cannot_hold_the_scene_open(self):
+        # A producer that never catches up is re-anchored again and again,
+        # and each re-anchor adds to the lag. A bound that counted the whole
+        # lag moved away as fast as the clock approached it, so the scene
+        # never ended; the lag counts up to a cap, and passing it is logged.
+        sink = _FileSink(played=-1e9)
+        src = self._source(sink)
+        src._decode_loop()
+        start = self.now[0]
+        cap = src._MAX_COUNTED_LAG_S
+        ceiling = start + 0.4 + src._DRAIN_GRACE_S + cap
+        # The lag runs ahead of the clock: 2 s gained for each second played.
+        sink.content_lag_seconds = 2.0 * (ceiling - 0.01 - start)
+        self.now[0] = ceiling - 0.01
+        self.assertFalse(src.finished)
+        self.now[0] = ceiling + 0.01
+        sink.content_lag_seconds = 2.0 * (self.now[0] - start)
+        with self.assertLogs("c64cast.audio.audio_source", "WARNING") as logs:
+            self.assertTrue(src.finished)
+            self.assertTrue(src.finished)
+        self.assertEqual(len(logs.records), 1, "the cap is logged once, not per poll")
+        self.assertIn(f"{sink.content_lag_seconds:.1f} s", logs.output[0])
+
     def test_waits_for_a_sink_that_starts_playing_after_decoding_ends(self):
         # The sampler gates its ring, and starts its clock, only after the
         # prebuffer and ring prefill, by when a short file is decoded whole.
