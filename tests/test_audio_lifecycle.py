@@ -1725,9 +1725,39 @@ class LifecycleTest(unittest.TestCase):
         s._pushed_count = 100
         self.assertAlmostEqual(s.position_seconds(), 100 / s.effective_rate, places=6)
 
-    def test_the_worker_clears_the_tail_pad_before_it_counts_the_landing(self):
+    def test_a_reset_during_a_clock_read_still_starts_the_clock_from_zero(self):
+        # A reset landing between the read of the landed count and the floor
+        # update must not leave the old activation's position as the new
+        # one's floor.
+        s = _make()
+        s._pushed_count = 8000
+        s.servo.ring_lead = 0.0
+        count_lock = s._count_lock
+        resetter = threading.Thread(target=s.reset_position)
+
+        class ResetOnRelease:
+            def __enter__(self) -> None:
+                count_lock.acquire()
+
+            def __exit__(self, *exc: object) -> None:
+                count_lock.release()
+                if resetter.ident is None:
+                    resetter.start()
+                    # Long enough for an unfenced reset to finish here; a
+                    # fenced one waits on the clock read instead.
+                    resetter.join(0.2)
+
+        s._count_lock = ResetOnRelease()  # type: ignore[assignment]
+        s.position_seconds()
+        resetter.join(5.0)
+        self.assertFalse(resetter.is_alive())
+        s._count_lock = count_lock
+        s._pushed_count = 100
+        self.assertAlmostEqual(s.position_seconds(), 100 / s.effective_rate, places=6)
+
+    def test_the_worker_records_the_pad_before_it_counts_the_landing(self):
         # Content landing behind a dry tail: a reader between the two steps
-        # must not pair the new landed count with the old tail pad, which would
+        # must not pair the new landed count with the old pad record, which would
         # put the clock a ring of pad past anything heard.
         s = _make_worker_streamer(chunk_size=32)
         s.host_dma_servo = False

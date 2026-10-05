@@ -2386,13 +2386,16 @@ class AudioStreamer:
         counts the landing, so a read torn across one lags by that chunk
         rather than leading by it. Locked: the worker's discard of a
         pre-splice chunk drops both counts, and an unlocked read pairing the
-        old pushed with the new queued leads by that chunk."""
-        with self._count_lock:
-            consumed = max(0, self._pushed_count - self._queued_samples)
-        lead = self.servo.ring_lead
-        if lead < 0:
-            return consumed, 0.0
+        old pushed with the new queued leads by that chunk. Read inside
+        ``_ring_pad_lock`` too: a count read before a reset and a floor
+        written after it would hold the new activation's clock at the old
+        one's position."""
         with self._ring_pad_lock:
+            with self._count_lock:
+                consumed = max(0, self._pushed_count - self._queued_samples)
+            lead = self.servo.ring_lead
+            if lead < 0:
+                return consumed, 0.0
             content_lead = max(0.0, lead - self._unplayed_pad(lead))
             heard = max(self._position_floor, consumed - content_lead)
             self._position_floor = heard
@@ -2400,11 +2403,15 @@ class AudioStreamer:
 
     def _unplayed_pad(self, lead: float) -> float:
         """The pad bytes among the last ``lead`` bytes landed in the ring.
-        Caller holds ``_ring_pad_lock``."""
+        Caller holds ``_ring_pad_lock``. The record is in landing order, so
+        the walk is newest first and stops at the first pad wholly behind the
+        gap."""
         lo = self._ring_landed_total - lead
         pad_bytes = 0.0
-        for end, pad in self._ring_pads:
-            pad_bytes += max(0.0, end - max(lo, end - pad))
+        for end, pad in reversed(self._ring_pads):
+            if end <= lo:
+                break
+            pad_bytes += end - max(lo, end - pad)
         return pad_bytes
 
     def _note_ring_landed(self, nbytes: int, pad: int) -> None:
