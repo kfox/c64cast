@@ -560,6 +560,8 @@ So the DAC path runs at the nominal latch, dead-on, with the servo still centeri
 
 Three details of the steering loop, for when it is enabled. It targets `NmiTimer.effective_rate`, **not** `sample_rate`: R physically runs on the latch grid, so aiming at the request would walk the latch off nominal by the quantization error. A **warm-up gate** (`NMI_RATE_LOOP_WARMUP_S`, armed at consumer start and re-armed by `note_disturbance`) lets the EMA keep warming while the latch is held at its seed, so playback doesn't chase an unrepresentative spin-up R and glide back; the chunk counter isn't advanced, so the decide cadence resumes cleanly. And convergence writes the latch into `NmiTimer.learned_latch[mode]`, an in-session, per-process cache the next scene or loop in that display mode seeds from — which is why `reset_after_stop` does *not* clear it: dropping it would reintroduce the start-of-playback pitch glide on every scene change.
 
+The cache's key, `NmiTimer.mode`, is the opposite case: `reset_after_stop` clears it. Only a scene with a `display_mode` calls `set_nmi_latch_for_mode`, so a mode carried past the stop made the next mode-less scene seed from the old mode's learned (or ceiling) latch and then file its own converged latch under that old mode's name. A cleared mode seeds at nominal and records nothing.
+
 Unaffected: the U64's default video path uses the off-bus Ultimate Audio sampler, which never writes `$D418` and takes its pitch from `sampler_clock_hz`.
 
 ### `position_seconds()`

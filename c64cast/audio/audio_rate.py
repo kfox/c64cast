@@ -76,8 +76,9 @@ class NmiTimer:
         self.started = False
         # 1 = clean, or an unverifiable backend.
         self.arm_attempts = 0
-        # Per-mode converged latches the adaptive loop seeds from. In-session
-        # and per-process; NOT cleared by reset_after_stop.
+        # The current scene's display mode (cleared by reset_after_stop), and
+        # the per-mode converged latches the adaptive loop seeds from:
+        # in-session and per-process, NOT cleared by reset_after_stop.
         self.mode: str | None = None
         self.learned_latch: dict[str, int] = {}
 
@@ -265,12 +266,16 @@ class NmiTimer:
         )
 
     def reset_after_stop(self) -> None:
-        """Clear pitch-comp + arm state so the next scene's bring-up re-arms
-        from nominal (a scene with no display_mode never calls
-        set_nmi_latch_for_mode, so a stale multiplier must not leak across
-        scenes). The per-mode learned-latch cache deliberately survives."""
+        """Clear pitch-comp, display-mode and arm state so the next scene's
+        bring-up re-arms from nominal. A scene with no display_mode never calls
+        set_nmi_latch_for_mode, so neither a stale multiplier nor a stale mode
+        may leak across scenes: the mode would seed the adaptive start from the
+        old mode's learned latch, then file this scene's converged latch under
+        the old mode's name. The per-mode learned-latch cache deliberately
+        survives."""
         self.started = False
         self.pitch_multiplier = 1.0
+        self.mode = None
         self.arm_attempts = 0
 
 

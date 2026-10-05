@@ -2434,7 +2434,7 @@ class AudioStreamer:
                 self._mic_reu_write_errors,
             )
         self._mic_reu_write_errors = 0
-        # Clear the timer's pitch-comp/arm state and the servo's watchdog +
+        # Clear the timer's pitch-comp/mode/arm state and the servo's watchdog +
         # adaptive-rate state so the next scene re-acquires from nominal; the
         # per-mode learned-latch cache survives (NmiTimer.reset_after_stop).
         self.nmi.reset_after_stop()

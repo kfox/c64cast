@@ -978,6 +978,34 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
         self.assertEqual(s.nmi.learned_latch["mhires"], 88)
 
+    def _converge(self, s: AudioStreamer) -> None:
+        """One adaptive decision with R at target, so the loop settles."""
+        s.servo.warmup_until = 0.0
+        s.servo.r_rate_ema = s.nmi.effective_rate
+        s.servo.last_r_addr = -1
+        s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+
+    def test_stop_forgets_the_display_mode(self):
+        # A scene with no display_mode never calls set_nmi_latch_for_mode, so a
+        # mode that outlived stop() would seed it from mhires's learned latch and
+        # then overwrite that cache entry with its own converged latch.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._worker_thread = cast(Any, object())
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()
+        s.set_nmi_latch_for_mode("mhires")
+        self._converge(s)
+        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
+        s._worker_thread = None
+        s.stop()
+        # The next scene: no display_mode, adaptive start.
+        s.nmi.start(adaptive=s.nmi_rate_adaptive)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
+        s.nmi.latch = 90  # wherever this scene's load settles
+        self._converge(s)
+        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
+
     def test_loop_discards_torn_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
         s.servo.last_r_addr = audio_mod.RING_BUFFER_ADDR
