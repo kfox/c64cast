@@ -1043,6 +1043,35 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertEqual(smp._reanchors, 2)
         self.assertEqual(smp._content_pos, self.consumed + smp._reanchor_lead + 40)
 
+    def test_the_content_lag_adds_up_over_reanchors(self):
+        # A producer that stays slow is re-anchored again and again, and each
+        # one moves the sound further behind the clock: the end an audio-file
+        # scene waits out is past all of them, not only the latest.
+        smp = self.smp
+        self._reanchor_once()
+        first = smp.content_lag_seconds
+        self.assertGreater(first, 0.0)
+        before = smp._content_pos
+        self.consumed = before + 400  # the cushion used up, and then some
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 2)
+        shift = self.consumed + smp._reanchor_lead - before
+        self.assertAlmostEqual(
+            smp.content_lag_seconds, first + shift / smp.bps / smp._actual_rate, places=9
+        )
+
+    def test_a_splice_or_arm_clears_the_content_lag(self):
+        # A splice anchors the next audio afresh, and arm() starts an
+        # activation whose clock and content both begin at zero.
+        smp = self.smp
+        self._reanchor_once()
+        smp.flush()
+        self.assertEqual(smp.content_lag_seconds, 0.0)
+        self._reanchor_once()
+        smp.arm()
+        self.assertEqual(smp.content_lag_seconds, 0.0)
+
     def test_a_splice_or_arm_clears_the_immediate_reanchor(self):
         smp = self.smp
         self._reanchor_once()
