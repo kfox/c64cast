@@ -358,10 +358,11 @@ class RateServo:
         only shortens the next sleep — it does not snap the schedule forward.
 
         A read slower than ``HOST_DMA_SERVO_READ_BUDGET_FRAC`` of the chunk
-        period is not used, and the servo stops reading for a backoff, holding
-        its integral correction (``servo_hold_period``) meanwhile. A slow
-        server charged once per chunk otherwise makes the worker fall steadily
-        behind the consumer, which then plays the ring's previous lap.
+        period is not paced by (only the stall watchdog sees it), and the
+        servo stops reading for a backoff, holding its integral correction
+        (``servo_hold_period``) meanwhile. A slow server charged once per chunk
+        otherwise makes the worker fall steadily behind the consumer, which
+        then plays the ring's previous lap.
 
         Also the only place a consumer that dies *mid*-session becomes visible —
         see ``note_r_reading``.
@@ -377,16 +378,13 @@ class RateServo:
         # and those are one-shot, so they stay visible.
         with quiet_transport():
             r_addr, prompt = self._timed_read(chunk_period)
-        if not prompt:
-            # Too late to pace by, but still evidence of whether the consumer
-            # is alive: a server that stays slow sends every reading here, and
-            # the stall watchdog would otherwise never see one.
-            if r_addr is not None:
-                self.note_r_reading(r_addr)
+        if r_addr is not None:
+            # A late reading is too late to pace by but still says whether the
+            # consumer is alive: a server that stays slow sends every reading
+            # past the gap servo, and the watchdog would otherwise see none.
+            self.note_r_reading(r_addr)
+        if r_addr is None or not prompt:
             return servo_hold_period(self.integ, chunk_period=chunk_period)
-        if r_addr is None:
-            return servo_hold_period(self.integ, chunk_period=chunk_period)
-        self.note_r_reading(r_addr)
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
         self.gap_last = gap
         self.gap_min = gap if self.gap_min < 0 else min(self.gap_min, gap)
