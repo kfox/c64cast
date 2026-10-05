@@ -1537,7 +1537,10 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.now[0] += 1.4 + src._DRAIN_GRACE_S - 0.01
         self.assertFalse(src.finished)
         self.now[0] += 0.02
-        self.assertTrue(src.finished)
+        # A lag within the cap is waited out whole, so the cap did not decide
+        # the end and its warning stays quiet.
+        with self.assertNoLogs("c64cast.audio.audio_source", "WARNING"):
+            self.assertTrue(src.finished)
 
     def test_a_lag_that_keeps_growing_cannot_hold_the_scene_open(self):
         # A producer that never catches up is re-anchored again and again,
