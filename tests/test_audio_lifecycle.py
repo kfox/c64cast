@@ -806,10 +806,14 @@ class SlowReadPointerTest(unittest.TestCase):
         with self.assertLogs(audio_rate_mod.log, level="WARNING"):
             s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
         s.servo.reset_for_consumer_start(2048)
-        self.read_s = 0.01
-        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        # Still slow, so the backoff it arms shows what it doubled from: a
+        # prompt read would zero read_holdoff_s itself and hide a stale one.
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
         self.assertEqual(reader.call_count, 2, "the old holdoff skipped the new consumer's read")
-        self.assertEqual(s.servo.read_holdoff_s, 0.0)
+        self.assertEqual(
+            s.servo.read_holdoff_s, 1.0, "the new consumer's backoff doubled the old one"
+        )
 
     def test_the_slow_read_warning_rearms_after_stop(self):
         s, _, _ = self._streamer(read_s=0.1)
