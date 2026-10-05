@@ -748,7 +748,7 @@ So a producer that is catching up is never re-anchored, however long it takes, p
 
 **No servo, no governor, no NMI.** The read head is computed and never read back; the loop is fully open-loop.
 
-`sample_rate` is set to the FPGA's `REF/divider`, and `AVFileSource` resamples to it. `position_seconds()` is `clamp(monotonic - gate_time, 0, total)` — the same contract as the REU-pump branch, so `VideoScene._clock_s` works unchanged. After `mark_eof()` the total is the pushed samples plus `content_lag_seconds`: a re-anchored track's last sample is heard that much past the pushed total, and clamped at the total alone the heard position stopped that lag short of the end.
+`sample_rate` is set to the FPGA's `REF/divider`, and `AVFileSource` resamples to it. `position_seconds()` is `clamp(monotonic - gate_time, 0, total)` — the same contract as the REU-pump branch. The video clock reads it less `reanchor_lag_seconds()` (`audio_source.heard_seconds`, as an audio file's analyzer and end do), since a re-anchor plays every later sample that far behind it. After `mark_eof()` the total is the pushed samples plus `content_lag_seconds`: a re-anchored track's last sample is heard that much past the pushed total, and clamped at the total alone the heard position stopped that lag short of the end.
 
 ### Reference-clock calibration
 

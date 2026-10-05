@@ -333,7 +333,8 @@ class UltimateAudioSampler:
         sampler = UltimateAudioSampler(api, sample_rate=44100, bits=16)
         sampler.start()                 # prefill + gate the looping ring
         ...  sampler.push_samples(int16) # writer thread streams it into the ring
-        sampler.position_seconds()      # wall-clock read head → A/V master clock
+        sampler.position_seconds()      # wall-clock read head; less the re-anchor
+                                        # lag (audio_source.heard_seconds) → A/V clock
         sampler.stop()                  # gate off, join the writer
 
     The ring is the sampler's A↔B loop over ``[ring_base, ring_base+ring_size)``.
@@ -1340,9 +1341,10 @@ class UltimateAudioSampler:
                 pos = 0
 
     def position_seconds(self) -> float:
-        """Wall-clock seconds since the ring was gated on — the heard playback
-        position (same contract as ``AudioStreamer.position_seconds`` in REU-pump
-        mode). Clamped after EOF to the pushed total plus `content_lag_seconds`,
+        """Wall-clock seconds since the ring was gated on — the read head (same
+        contract as ``AudioStreamer.position_seconds`` in REU-pump mode); the
+        heard position is this less `reanchor_lag_seconds()`, which
+        `audio_source.heard_seconds` takes off for every A/V reader. Clamped after EOF to the pushed total plus `content_lag_seconds`,
         where the last pushed sample is heard: clamped at the total alone, the
         heard position (this less `reanchor_lag_seconds()`) stopped that lag
         short of the end, and a video clock reading it never showed the last
