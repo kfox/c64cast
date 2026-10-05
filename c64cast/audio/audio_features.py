@@ -291,7 +291,10 @@ class AudioFeatureStream:
             onset_sensitivity=onset_sensitivity,
             nominal_dt=self._poll_dt,
         )
+        # `_lock` guards only the snapshot `features()` reads; `_analyze_lock`
+        # guards the analyzer, so a render-thread read never waits on an FFT.
         self._lock = threading.Lock()
+        self._analyze_lock = threading.Lock()
         self._snapshot: MusicModulation | None = None
         self._poll: PollThread | None = None
 
@@ -299,8 +302,9 @@ class AudioFeatureStream:
         """Start the poll thread. A second call while running is a no-op."""
         if self._poll is not None and self._poll.is_running():
             return
-        with self._lock:
+        with self._analyze_lock:
             self._analyzer.reset()
+        with self._lock:
             self._snapshot = None
         self._poll = PollThread(
             self._process_tick, period=self._poll_dt, name="audio-features", run_first=True
@@ -315,12 +319,16 @@ class AudioFeatureStream:
 
     def _process_tick(self) -> None:
         """Analyze the most recent window. The FFT runs outside the lock; only
-        the snapshot swap takes it."""
+        the snapshot swap takes it, so `features()` on the render thread never
+        waits out an analysis. The analyzer has a lock of its own, against a
+        `start()` reset racing a tick from a poll thread whose stop timed out."""
         window = self._tap.recent(self._fft_size)
         now = time.monotonic()
-        with self._lock:
+        with self._analyze_lock:
             self._analyzer.update(window, now)
-            self._snapshot = self._analyzer.snapshot()
+            snapshot = self._analyzer.snapshot()
+        with self._lock:
+            self._snapshot = snapshot
 
     def features(self) -> MusicModulation | None:
         """Return the current snapshot, or None before the first tick."""

@@ -297,6 +297,24 @@ class StreamTest(unittest.TestCase):
         self.assertGreater(m.level, 0.0)
         self.assertEqual(len(m.bands), 8)
 
+    def test_features_is_not_held_up_by_the_analysis(self):
+        # The render thread reads features() every frame; the snapshot lock
+        # must not be held across the FFT, or each read waits out an analysis.
+        tap = AnalysisTap()
+        tap.push(_sine(440.0))
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ)
+        held: list[bool] = []
+        real_update = stream._analyzer.update
+
+        def update(window, now):
+            held.append(stream._lock.locked())
+            real_update(window, now)
+
+        stream._analyzer.update = update  # type: ignore[method-assign]
+        stream._process_tick()
+        self.assertEqual(held, [False])
+        self.assertIsNotNone(stream.features())
+
     def test_start_stop_smoke(self):
         tap = AnalysisTap()
         tap.push(_sine(440.0))
