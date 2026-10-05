@@ -215,6 +215,23 @@ class StreamerTest(unittest.TestCase):
         smp.mark_eof()
         self.assertAlmostEqual(smp.position_seconds(), 1.0, delta=0.1)
 
+    def test_the_eof_clamp_lets_a_reanchored_track_be_heard_to_its_end(self):
+        # A re-anchor plays the track's last sample its lag past the pushed
+        # total; clamped at the total, the heard position stopped that short.
+        from c64cast.audio.audio_source import heard_seconds
+
+        smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
+        smp._running = True
+        smp._gate_time = time.monotonic() - 100.0
+        smp._pushed_samples = smp.sample_rate  # ~1 s of audio pushed
+        lag_bytes = int(0.25 * smp._actual_rate) * smp.bps
+        smp._reanchor_lag = (lag_bytes, (), 0)  # every hold crossed
+        smp.mark_eof()
+        lag = lag_bytes / smp.bps / smp._actual_rate
+        total = smp._pushed_samples / smp._actual_rate
+        self.assertAlmostEqual(smp.position_seconds(), total + lag, places=6)
+        self.assertAlmostEqual(heard_seconds(smp), total, places=4)
+
     def test_read_consumed_bytes_is_frame_aligned(self):
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
         smp._running = True

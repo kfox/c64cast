@@ -804,8 +804,9 @@ class UltimateAudioSampler:
         self._input_ended = True
 
     def mark_eof(self) -> None:
-        """Source exhausted — clamp ``position_seconds`` to the pushed total so
-        an over-running wall clock can't desync the (now-ended) video."""
+        """Source exhausted — clamp ``position_seconds`` to the pushed total,
+        plus the re-anchor lag it plays behind, so an over-running wall clock
+        can't desync the (now-ended) video."""
         self._eof = True
 
     def set_pre_emphasis(self, amount: float | None) -> None:
@@ -1341,13 +1342,17 @@ class UltimateAudioSampler:
     def position_seconds(self) -> float:
         """Wall-clock seconds since the ring was gated on — the heard playback
         position (same contract as ``AudioStreamer.position_seconds`` in REU-pump
-        mode). Clamped to the pushed total after EOF. The FPGA crystal vs the
-        host monotonic clock differ by ~ppm, so this is drift-free for A/V sync."""
+        mode). Clamped after EOF to the pushed total plus `content_lag_seconds`,
+        where the last pushed sample is heard: clamped at the total alone, the
+        heard position (this less `reanchor_lag_seconds()`) stopped that lag
+        short of the end, and a video clock reading it never showed the last
+        lag's worth of the track. The FPGA crystal vs the host monotonic clock
+        differ by ~ppm, so this is drift-free for A/V sync."""
         if not self._running:
             return 0.0
         elapsed = time.monotonic() - self._gate_time
         if self._eof and self._pushed_samples:
-            total_s = self._pushed_samples / self._actual_rate
+            total_s = self._pushed_samples / self._actual_rate + self.content_lag_seconds
             return max(0.0, min(elapsed, total_s))
         return max(0.0, elapsed)
 
