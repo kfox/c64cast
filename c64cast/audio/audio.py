@@ -1212,14 +1212,22 @@ class AudioStreamer:
             r_addr, w_head, behind, read_travel + STALL_INSIDE_LEAD_SLACK
         ):
             gap = (w_head - r_addr) % RING_BUFFER_SIZE - read_travel
-            log.debug(
+            inside_lead = (
                 "audio: DAC worker stalled %.2f s, inside its %d-byte lead; "
-                "%d bytes still ahead of the C64's playback%s",
-                lag,
-                gap + behind,
-                gap,
-                f"; dropped {dropped / self.effective_rate:.2f} s of live input" if dropped else "",
+                "%d bytes still ahead of the C64's playback"
             )
+            if dropped:
+                # Lost live input is audible, so it is reported at default
+                # verbosity, through the re-anchor's throttle.
+                self._stall_log.warn(
+                    inside_lead + "; dropped %.2f s of live input",
+                    lag,
+                    gap + behind,
+                    gap,
+                    dropped / self.effective_rate,
+                )
+            else:
+                log.debug(inside_lead, lag, gap + behind, gap)
             # The refill is a short burst the adaptive loop should not steer on.
             self.servo.note_disturbance()
             return StallInsideLead(gap)

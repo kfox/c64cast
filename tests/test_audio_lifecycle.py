@@ -1667,10 +1667,32 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
         self.assertTrue(s.q.empty())
         self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
-        self.assertTrue(all(r.levelno < logging.WARNING for r in cm.records), cm.output)
         # The four 512-byte blobs _backlogged queued, in seconds of playback.
+        # Lost mic audio is audible, so the line is a WARNING, as on the
+        # re-anchor path, and the only record the stall logs.
         dropped = f"dropped {2048 / s.effective_rate:.2f} s of live input"
-        self.assertTrue(any(dropped in line for line in cm.output), cm.output)
+        self.assertEqual(len(cm.records), 1, cm.output)
+        self.assertEqual(cm.records[0].levelno, logging.WARNING, cm.output)
+        self.assertIn(dropped, cm.output[0])
+
+    def test_a_second_live_drop_inside_the_lead_is_throttled(self):
+        # The drop shares the re-anchor's throttle: a stall that recurs
+        # within its interval adds no second WARNING.
+        api = _RFakeAPI([100, 100])
+        s = self._backlogged(api, live=True)
+        clock = SleepDrivenClock()
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs(audio_mod.log, level="DEBUG") as cm,
+        ):
+            for _ in range(2):
+                s.q.put(b"\x80" * 512)
+                s._queued_samples += 512
+                s._pushed_count += 1
+                s._resync_after_stall(0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 2100)
+        warnings = [r for r in cm.records if r.levelno >= logging.WARNING]
+        self.assertEqual(len(warnings), 1, cm.output)
 
     def test_a_w_ahead_by_less_than_r_moves_while_read_counts_as_lapped(self):
         # 0.1 s of read carries R 1200 B on: a W 1400 B ahead when R was
