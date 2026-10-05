@@ -770,7 +770,10 @@ class UltimateAudioSampler:
             # producer backpressure, so the lead can't run away.
             time.sleep(0.002)
             return False
-        payload = self._next_payload(room)
+        # Above the low watermark there is time to wait for a whole quantum: a
+        # producer paced at real time (a live stream) never builds a queue
+        # backlog, so writing what one pass gathered would write every frame.
+        payload = self._next_payload(room, hold=lead > self._lead_panic)
         if payload is None:
             return self._pad_underrun(gen)
         return self._write_payload(gen, *payload)
@@ -839,26 +842,31 @@ class UltimateAudioSampler:
             data += bytes(carry[1])
         self._carry = (epoch, memoryview(data))
 
-    def _next_payload(self, room: int) -> tuple[int, bytes] | None:
+    def _next_payload(self, room: int, *, hold: bool) -> tuple[int, bytes] | None:
         """Writer-thread only: the next current-epoch PCM to write, at most
         ``room`` bytes and one slice. Queued chunks are coalesced up to the
         write quantum; a chunk larger than the write is split, its tail
-        carried to the next pass. None when nothing current arrived within
-        the queue timeout."""
+        carried to the next pass. With ``hold``, less than a quantum is
+        carried rather than written. None when nothing current arrived within
+        the queue timeout, or when it was held."""
         limit = min(room, REU_WRITE_SLICE)
         limit -= limit % self.bps
         parts: list[bytes | memoryview] = []
         size = 0
         epoch = -1
+        waited = False
         while size < self._write_quantum:
             item: tuple[int, bytes | memoryview]
             if self._carry is not None:
                 item, self._carry = self._carry, None
             else:
+                # One bounded wait per pass, even behind a held carry, so a
+                # writer holding a partial quantum does not spin.
                 try:
-                    item = self._q.get_nowait() if parts else self._q.get(timeout=0.02)
+                    item = self._q.get_nowait() if waited else self._q.get(timeout=0.02)
                 except queue.Empty:
                     break
+                waited = True
             if item[0] != self._flush_epoch:
                 continue
             if item[0] != epoch:  # a flush landed mid-gather: start over
@@ -866,6 +874,9 @@ class UltimateAudioSampler:
             parts.append(item[1])
             size += len(item[1])
         if not parts:
+            return None
+        if hold and size < self._write_quantum:
+            self._carry = (epoch, memoryview(b"".join(parts)))
             return None
         whole = memoryview(parts[0]) if len(parts) == 1 else memoryview(b"".join(parts))
         if len(whole) > limit:

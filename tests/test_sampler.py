@@ -601,7 +601,8 @@ class SamplerWriteSizingTest(unittest.TestCase):
                 return
             if smp._q.empty() and smp._carry is None:
                 return
-            smp._writer_step(smp._writer_gen)
+            if not smp._writer_step(smp._writer_gen) and smp._q.empty():
+                return  # what is left is held for a whole quantum
 
     def test_the_write_quantum_is_the_links_free_payload(self):
         from c64cast.hw.backend import ULTIMATE_PROFILE
@@ -621,6 +622,32 @@ class SamplerWriteSizingTest(unittest.TestCase):
         writes = api.audible_writes
         self.assertGreater(writes, 0)
         self.assertLessEqual(writes, -(-6000 // smp._write_quantum), api.reu_writes)
+
+    def test_a_real_time_producer_is_coalesced_above_the_low_watermark(self):
+        # A live stream never builds a queue backlog: each pass finds one
+        # frame. Above the watermark the writer waits for a whole quantum.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=1.0)
+        self._place(smp, smp._lead_panic + smp.bps)
+        frames = 0
+        while (frames + 1) * 20 < smp._write_quantum:
+            smp._q.put((smp._flush_epoch, b"\x01" * 20))
+            frames += 1
+            self.assertFalse(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [])
+        smp._q.put((smp._flush_epoch, b"\x01" * 20))
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(
+            api.reu_writes, [(smp.ring_base + smp._lead_panic + smp.bps, 20 * (frames + 1))]
+        )
+
+    def test_at_the_low_watermark_a_partial_quantum_is_written(self):
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=1.0)
+        self._place(smp, smp._lead_panic)
+        smp._q.put((smp._flush_epoch, b"\x01" * 20))
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [(smp.ring_base + smp._lead_panic, 20)])
 
     def test_an_oversized_chunk_is_split_and_stops_at_the_lead_target(self):
         api = _FakeBackend()
