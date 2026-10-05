@@ -394,7 +394,10 @@ class RateServo:
             dr = (r_addr - self.last_r_addr) % RING_BUFFER_SIZE
             # Discard a torn/backward read (half-ring jump = a read tear mid
             # self-modify, not real advance) — same guard as hostdma_drift_probe.
-            if dt > 0 and dr < RING_BUFFER_SIZE // 2:
+            # And discard any interval long enough for R to have wrapped: dr is
+            # only known modulo the ring, so after a link stall a whole lap
+            # plus a little reads as "a little" and seeds a rate far too low.
+            if dt > 0 and dr < RING_BUFFER_SIZE // 2 and dt < self.max_unambiguous_dt():
                 inst = dr / dt
                 if self.r_rate_ema < 0:
                     self.r_rate_ema = inst
@@ -404,6 +407,14 @@ class RateServo:
                 self.r_rate_max = max(self.r_rate_max, inst)
         self.last_r_addr = r_addr
         self.last_r_time = now
+
+    def max_unambiguous_dt(self) -> float:
+        """Longest interval between two R readings whose modular advance still
+        has one reading: the time the consumer, at the latch armed now, takes
+        to cover half a ring (the torn-read guard's bound). Bus halts only slow
+        R, so the armed latch is the fastest it can be running."""
+        latch = self._timer.latch or self._timer.nominal_latch()
+        return (RING_BUFFER_SIZE // 2) * (latch + 1) / cpu_clock(self._st.system)
 
     def update_rate_loop(self, r_addr: int) -> None:
         """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2

@@ -988,6 +988,21 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.update_rate_loop(torn)
         self.assertEqual(s.servo.r_rate_ema, -1.0)  # estimate left unseeded
 
+    def test_loop_discards_a_reading_across_a_ring_wrap(self):
+        # A 1.5 s link stall: R really advanced 1.5 s of samples, a lap and a
+        # bit, and the bit is all the modulo shows. Accepted, it reads as a
+        # consumer at a seventh of its rate and the loop speeds the NMI up.
+        s = _make(sample_rate=12000, nmi_rate_adaptive=True)
+        s.nmi.latch = s.nmi.nominal_latch()
+        s.servo.last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s.servo.last_r_time = time.monotonic() - 1.5
+        s.servo.r_rate_ema = -1.0
+        advanced = round(1.5 * s.effective_rate) % audio_mod.RING_BUFFER_SIZE
+        self.assertLess(advanced, audio_mod.RING_BUFFER_SIZE // 2)  # passes the torn guard
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + advanced)
+        self.assertEqual(s.servo.r_rate_ema, -1.0)
+        self.assertEqual(s.servo.r_rate_min, -1.0)
+
     def test_loop_seeds_rate_on_valid_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
         s.servo.last_r_addr = audio_mod.RING_BUFFER_ADDR
