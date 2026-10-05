@@ -434,6 +434,42 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             s.running = False
             t.join(timeout=1.0)
 
+    def test_a_worker_superseded_during_its_pacing_read_acts_on_nothing_after_it(self):
+        """The pacing read can park past stop()'s join like a ring write. A
+        worker that gets its reading back after the next start_* must leave
+        straight away: the stall resync and the health line after the read
+        would otherwise act on the next session's ring and counters."""
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        real_read = api.read_memory
+        landed: list[int] = []
+
+        def superseding_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            if address == audio_mod.READ_PTR_LO_ADDR and length == 2:
+                landed.append(len(api.writes))
+                s._worker_generation += 1  # the next scene's _start_worker
+                addr = RING_BUFFER_ADDR + 100
+                return bytes([addr & 0xFF, addr >> 8])
+            return real_read(address, length, timeout)
+
+        api.read_memory = superseding_read
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(landed), 1)
+        self.assertEqual(len(api.writes), landed[0], "wrote after its pacing read")
+        self.assertEqual(s.servo.last_r_reading, -1, "noted the next session's R")
+        self.assertEqual(s._health_last_log, 0.0, "opened the next session's health window")
+
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.
@@ -826,6 +862,30 @@ class SlowReadPointerTest(unittest.TestCase):
         with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
             s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
         self.assertIn("1 slow so far", cm.output[0])
+
+    def test_a_pacing_read_returning_to_the_next_session_leaves_its_servo_alone(self):
+        # A worker parked in this read can outlive stop() and the next
+        # start_*. Its reading, slow or prompt, then belongs to nobody: it
+        # must not warn into the next scene, spend that scene's warning, arm
+        # or end its backoff, or reach the gap servo and the watchdog.
+        for read_s in (0.1, 0.01):
+            with self.subTest(read_s=read_s):
+                s, _, _ = self._streamer(read_s)
+                s.servo.read_holdoff_s = 4.0
+                s.servo.integ = 20000.0
+                held = audio_rate_mod.servo_hold_period(20000.0, chunk_period=self.CHUNK_PERIOD)
+                with self.assertNoLogs("c64cast.audio", level="DEBUG"):
+                    period = s.servo.next_pace_increment(
+                        audio_mod.RING_BUFFER_ADDR + 1000, self.CHUNK_PERIOD, lambda: False
+                    )
+                self.assertEqual(period, held)
+                servo = s.servo
+                self.assertEqual(
+                    (servo.slow_reads, servo.slow_read_warned, servo.read_holdoff_s),
+                    (0, False, 4.0),
+                )
+                self.assertEqual((servo.gap_last, servo.last_r_reading), (-1, -1))
+                self.assertEqual(servo.integ, 20000.0)
 
     def test_a_dead_consumer_behind_a_slow_server_still_warns(self):
         # Every reading is slow, so none is paced by, but R frozen across

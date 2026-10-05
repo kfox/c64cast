@@ -912,6 +912,10 @@ class AudioStreamer:
         :meth:`_resync_after_stall`.
 
         See docs/architecture/audio.md#the-worker-thread-and-its-pacing."""
+
+        def current() -> bool:
+            return not self._superseded(generation)
+
         try:
             write_addr = RING_BUFFER_ADDR
             # Just past the last byte actually written — what the servo needs as
@@ -940,7 +944,7 @@ class AudioStreamer:
             pending_pad = 0
             pending_epoch = 0
 
-            while not self._superseded(generation):
+            while current():
                 # Captured before the collect: if flush() bumps it while this
                 # iteration holds data, that data is pre-splice and is dropped
                 # before the ring write below.
@@ -1055,7 +1059,12 @@ class AudioStreamer:
                     write_addr += n
                     if write_addr >= RING_BUFFER_END:
                         write_addr = RING_BUFFER_ADDR
-                    next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
+                    next_write_time += self.servo.next_pace_increment(w_head, chunk_period, current)
+                    # The pacing read can park past stop()'s join like a ring
+                    # write: past it, the resync and the health line below
+                    # would act on the next session's ring and counters.
+                    if not current():
+                        break
                     lag = time.monotonic() - next_write_time
                     if lag > stall_resync_s:
                         outcome = self._resync_after_stall(lag, generation, w_head)

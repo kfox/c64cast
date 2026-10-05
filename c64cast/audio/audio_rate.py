@@ -346,7 +346,9 @@ class RateServo:
         self.r_rate_min = -1.0
         self.r_rate_max = -1.0
 
-    def next_pace_increment(self, write_addr: int, chunk_period: float) -> float:
+    def next_pace_increment(
+        self, write_addr: int, chunk_period: float, current: Callable[[], bool] | None = None
+    ) -> float:
         """Per-chunk pace increment for the prebuffered worker.
 
         Open-loop (host_dma_servo off) returns the bare ``chunk_period`` — the
@@ -370,6 +372,11 @@ class RateServo:
 
         Also the only place a consumer that dies *mid*-session becomes visible —
         see ``note_r_reading``.
+
+        ``current`` is the worker's fence, as for ``read_r_promptly``: a worker
+        parked in this read can outlive stop() and the next start_*, and a
+        reading it gets back after that is not paced by, noted, or counted
+        toward the backoff — the servo belongs to the next session by then.
         """
         st = self._st
         if not st.host_dma_servo:
@@ -381,7 +388,9 @@ class RateServo:
         # arm verification and the pause stomp call `read_consumer_ptr` too,
         # and those are one-shot, so they stay visible.
         with quiet_transport():
-            r_addr, prompt, _ = self._timed_read(HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period)
+            r_addr, prompt, _ = self._timed_read(
+                HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period, current
+            )
         if r_addr is not None:
             # A late reading is too late to pace by but still says whether the
             # consumer is alive: a server that stays slow sends every reading
