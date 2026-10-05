@@ -391,8 +391,11 @@ class UltimateAudioSampler:
         self._hold_guard = int(HOLD_GUARD_S * self._actual_rate) * self.bps
         # A real-time producer re-anchored here keeps enough slack over the
         # write floor to be held to whole quanta, rather than written frame by
-        # frame (a 2.5 ms Opus frame each is 400 writes a second).
-        hold_floor = self._flush_margin + self._write_quantum + self._hold_guard + self.bps
+        # frame (a 2.5 ms Opus frame each is 400 writes a second). The second
+        # HOLD_GUARD_S is for its frames arriving late: re-anchored one sample
+        # past the hold threshold, a frame 6 ms behind its schedule was
+        # written on its own (8-bit, 2 kHz, fake clock).
+        hold_floor = self._hold_threshold(self.bps) + self._hold_guard + self.bps
         self._reanchor_lead = max(self._reanchor_lead, min(hold_floor, self._lead_target))
         # Writer-owned: the unwritten tail of a chunk larger than one write,
         # tagged with its flush epoch like a queue item.
@@ -1050,9 +1053,13 @@ class UltimateAudioSampler:
         wait for the rest of its quantum, on the read head as of now. It is
         while waiting for the rest at real time would still clear the write
         floor by HOLD_GUARD_S."""
-        short = self._write_quantum - size
-        slack = self._content_pos - self._read_consumed_bytes() - self._flush_margin
-        return short > 0 and slack - short > self._hold_guard
+        lead = self._content_pos - self._read_consumed_bytes()
+        return size < self._write_quantum and lead > self._hold_threshold(size)
+
+    def _hold_threshold(self, size: int) -> int:
+        """The content lead a ``size``-byte gather is held above: the write
+        floor, the rest of its quantum at real time, and HOLD_GUARD_S."""
+        return self._flush_margin + (self._write_quantum - size) + self._hold_guard
 
     def _blank(self, lo: int, hi: int) -> None:
         """NEUTRAL-write the absolute byte span [lo, hi) of the ring."""

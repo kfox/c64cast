@@ -929,13 +929,16 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertTrue(self._write(400))
         self.assertEqual(smp._reanchors, 0)
 
-    def test_a_reanchored_real_time_producer_is_coalesced(self):
-        # The re-anchor leaves a live stream enough slack over the write floor
-        # to be held to whole quanta, not written one small frame at a time.
+    def _writes_after_a_reanchor(self, quanta: int, *, late: bool) -> int:
+        """Audible writes for ``quanta`` write quanta of a real-time 10-byte
+        frame feed, after it stayed late long enough to be re-anchored. With
+        ``late``, every other frame from then on arrives HOLD_GUARD_S behind
+        its schedule."""
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, ring_size=0x10000, lead_seconds=4.0)
         smp._running = True
-        smp._read_consumed_bytes = lambda: self.consumed  # type: ignore[method-assign]
+        behind = [0]
+        smp._read_consumed_bytes = lambda: self.consumed + behind[0]  # type: ignore[method-assign]
         self.consumed = 3 * int(smp._actual_rate)
 
         def frame() -> None:
@@ -947,11 +950,21 @@ class SamplerLateReanchorTest(unittest.TestCase):
             while smp._reanchors == 0:
                 frame()
         before = api.audible_writes
-        quanta = 10
-        for _ in range(quanta * smp._write_quantum // 10):
+        for n in range(quanta * smp._write_quantum // 10):
+            behind[0] = smp._hold_guard if late and n % 2 else 0
             frame()
-        self.assertLessEqual(api.audible_writes - before, quanta + 1)
         self.assertEqual(smp._reanchors, 1)
+        return api.audible_writes - before
+
+    def test_a_reanchored_real_time_producer_is_coalesced(self):
+        # The re-anchor leaves a live stream enough slack over the write floor
+        # to be held to whole quanta, not written one small frame at a time.
+        self.assertLessEqual(self._writes_after_a_reanchor(10, late=False), 11)
+
+    def test_a_reanchored_producer_whose_frames_arrive_late_is_coalesced(self):
+        # A live stream's frames do not arrive on the sample: one a little
+        # behind its schedule must not tip the hold into writing it alone.
+        self.assertLessEqual(self._writes_after_a_reanchor(10, late=True), 11)
 
     def test_the_lead_summary_is_what_the_ring_holds_ahead_of_the_reader(self):
         # Paused or late, the audio's anchor falls far behind the reader while
