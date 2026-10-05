@@ -528,6 +528,109 @@ class SamplerWriterFailureTest(unittest.TestCase):
         )
 
 
+class SamplerWriteSizingTest(unittest.TestCase):
+    """Write count is the lever on the Ultimate's link, and no single chunk may
+    push the write head past the lead target or a write past one slice."""
+
+    def _idle_reader(self, api: _FakeBackend, **kw: Any) -> s.UltimateAudioSampler:
+        smp = _make(api, sample_rate=8000, bits=8, **kw)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: 0  # type: ignore[method-assign]
+        return smp
+
+    def _drain(self, smp: s.UltimateAudioSampler) -> None:
+        """Writer steps until it has nothing left to write for this lead."""
+        for _ in range(500):
+            if smp._lead_target - smp._written < smp._write_quantum:
+                return
+            if smp._q.empty() and smp._carry is None:
+                return
+            smp._writer_step(smp._writer_gen)
+
+    def test_the_write_quantum_is_the_links_free_payload(self):
+        from c64cast.hw.backend import ULTIMATE_PROFILE
+
+        free = ULTIMATE_PROFILE.free_payload_bytes()
+        self.assertTrue(2000 <= free <= 2200, free)  # the measured ~2.1 KB knee
+        smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
+        self.assertEqual(smp._write_quantum, free - free % 2)
+
+    def test_tiny_chunks_are_coalesced(self):
+        # 2.5 ms Opus frames: 20 bytes each at 8 kHz/8-bit.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=1.0, queue_max_chunks=512)
+        for _ in range(300):
+            smp._q.put((smp._flush_epoch, b"\x01" * 20))
+        self._drain(smp)
+        writes = api.audible_writes
+        self.assertGreater(writes, 0)
+        self.assertLessEqual(writes, -(-6000 // smp._write_quantum), api.reu_writes)
+
+    def test_an_oversized_chunk_is_split_and_stops_at_the_lead_target(self):
+        api = _FakeBackend()
+        smp = self._idle_reader(api, ring_size=0x20000, lead_seconds=4.0)
+        big = b"\x01" * (3 * s.REU_WRITE_SLICE)
+        smp._q.put((smp._flush_epoch, big))
+        self._drain(smp)
+        self.assertLessEqual(max(n for _, n in api.reu_writes), s.REU_WRITE_SLICE)
+        self.assertLessEqual(smp._written, smp._lead_target)
+        assert smp._carry is not None
+        self.assertEqual(smp._written + len(smp._carry[1]), len(big), "samples were dropped")
+
+    def test_an_oversized_prebuffer_is_written_no_deeper_than_the_lead(self):
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=8000, bits=8, ring_size=0x8000, lead_seconds=1.0)
+        self.addCleanup(smp.stop)
+        big = np.full(0x20000, 8000, dtype=np.int16)  # 128 KiB of 8-bit PCM, 4 rings
+        smp.push_samples(big)
+        smp.start(prebuffer_timeout=0.05)
+        self.assertEqual(smp._written, smp._lead_target)
+        assert smp._carry is not None
+        self.assertEqual(smp._written + len(smp._carry[1]), len(big))
+
+    def test_less_room_than_a_quantum_waits_instead_of_writing_a_sliver(self):
+        # In steady state the reader frees a few hundred bytes between passes;
+        # writing each sliver is what made 400 writes a second.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=1.0)
+        smp._written = smp._lead_target - smp._write_quantum // 2
+        smp._q.put((smp._flush_epoch, b"\x01" * 4096))
+        self.assertFalse(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [])
+
+    def test_an_empty_queue_pads_only_below_the_low_watermark(self):
+        # A pad inserts silence, so a briefly empty queue above the watermark
+        # waits for the producer instead.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=1.0)
+        smp._written = smp._lead_target - smp._write_quantum
+        self.assertGreater(smp._written, smp._lead_panic)
+        self.assertFalse(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [])
+        smp._written = smp._lead_panic
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(smp._underrun_pads, 1)
+
+    def test_the_lead_never_exceeds_half_the_ring(self):
+        # Write-ahead deeper than half the ring could lap the reader.
+        smp = _make(
+            _FakeBackend(), sample_rate=44100, bits=16, ring_size=0x10000, lead_seconds=10.0
+        )
+        self.assertEqual(smp._lead_target, 0x8000)
+
+    def test_a_chunk_whose_write_fails_is_retried(self):
+        api = _FailingBackend(failures=1)
+        smp = self._idle_reader(api)
+        smp._q.put((smp._flush_epoch, b"\x01" * 64))
+        with mock.patch("threading.current_thread") as current:
+            current.return_value.name = "uaudio-writer"
+            with self.assertRaises(ConnectionError):
+                smp._writer_step(smp._writer_gen)
+            smp._writer_step(smp._writer_gen)
+        self.assertIn((0x200000, 64), api.reu_writes)
+        self.assertEqual(smp._written, 64)
+
+
 class SamplerArmedBeforeProducerTest(unittest.TestCase):
     """Both scene setups arm the sampler before their producer can push into
     it; a push into a still-stopped sampler is dropped."""

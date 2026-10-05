@@ -158,6 +158,16 @@ class HardwareProfile:
             self.write_cost_intercept_s + self.write_cost_per_byte_s * nbytes,
         )
 
+    def free_payload_bytes(self) -> int:
+        """The largest payload one write carries for the per-write floor alone:
+        the knee of `write_cost_s`, ~2.1 KB on the Ultimate. A streaming writer
+        coalesces up to this, since below it a second write costs a whole
+        floor and the bytes cost nothing."""
+        if self.write_cost_per_byte_s <= 0:
+            return 0
+        knee = (self.write_cost_floor_s - self.write_cost_intercept_s) / self.write_cost_per_byte_s
+        return max(0, int(knee))
+
     # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
     # convention rather than a user declaration, so consumers can say so.

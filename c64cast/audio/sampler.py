@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from c64cast._pollthread import PollThread
+from c64cast.hw.backend import ULTIMATE_PROFILE, HardwareProfile
 from c64cast.hw.c64 import ULTIMATE_AUDIO
 
 if TYPE_CHECKING:
@@ -345,6 +346,7 @@ class UltimateAudioSampler:
         lead_bytes = int(self._actual_rate * lead_seconds) * self.bps
         # Keep the lead under half the ring so write-ahead can't lap the reader.
         self._lead_target = max(self.bps, min(lead_bytes, self.ring_size // 2))
+        self._lead_target -= self._lead_target % self.bps
         # Clamped to the lead target so a misconfigured prebuffer can't exceed
         # the runtime depth.
         prebuf_bytes = int(self._actual_rate * prebuffer_seconds) * self.bps
@@ -352,6 +354,19 @@ class UltimateAudioSampler:
         # Low watermark: below this the writer NEUTRAL-pads, treating the lead
         # as a genuine producer stall rather than a briefly-empty queue.
         self._lead_panic = max(self.bps, self._lead_target // 4)
+        # The writer moves at least this much per ring write. Below the link's
+        # free payload a second write costs a whole per-write floor while the
+        # bytes cost nothing, so write count is the lever: a decoder that
+        # emits 2.5 ms frames must not become 400 REU writes a second. Half
+        # the lead target caps it for a lead too shallow to hold two.
+        profile = getattr(api, "profile", None)
+        if not isinstance(profile, HardwareProfile):
+            profile = ULTIMATE_PROFILE
+        quantum = min(profile.free_payload_bytes(), self._lead_target // 2, REU_WRITE_SLICE)
+        self._write_quantum = max(self.bps, quantum - quantum % self.bps)
+        # Writer-owned: the unwritten tail of a chunk larger than one write,
+        # tagged with its flush epoch like a queue item.
+        self._carry: tuple[int, memoryview] | None = None
 
         # (flush epoch at push time, packed PCM): the writer drops an item whose
         # epoch is no longer current, so nothing pushed before a splice is
@@ -441,6 +456,7 @@ class UltimateAudioSampler:
         self._failed = False
         self._eof = False
         self._pushed_samples = 0
+        self._carry = None
         with self._io_lock:
             self._written = 0
         self._output_silenced = False
@@ -482,10 +498,16 @@ class UltimateAudioSampler:
         self._prefill_neutral()
 
         prebuf = self._collect_prebuffer(self._prebuffer_target, prebuffer_timeout)
+        # No deeper than the runtime lead: one oversized chunk would otherwise
+        # be written whole, past the lead and even past the ring. The rest is
+        # carried to the writer, so no sample is dropped.
+        head = min(len(prebuf), self._lead_target)
         with self._io_lock:
-            if prebuf:
-                self._write_wrapped(0, prebuf)
-            self._written = len(prebuf)
+            if head:
+                self._write_wrapped(0, prebuf[:head])
+            self._written = head
+        if len(prebuf) > head:
+            self._carry = (self._flush_epoch, memoryview(prebuf)[head:])
 
         program_channel(
             self.api,
@@ -715,14 +737,16 @@ class UltimateAudioSampler:
         lead = self._written - self._read_consumed_bytes()
         self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
         self._lead_max = max(self._lead_max, lead)
-        if lead >= self._lead_target:
+        room = self._lead_target - lead
+        if room < self._write_quantum:
             # Far enough ahead. The bounded queue + blocking push give the
             # producer backpressure, so the lead can't run away.
             time.sleep(0.002)
             return False
-        try:
-            epoch, data = self._q.get(timeout=0.02)
-        except queue.Empty:
+        payload = self._next_payload(room)
+        if payload is not None:
+            epoch, data = payload
+        else:
             # Queue momentarily empty. A NEUTRAL pad inserts silence, so it
             # waits for the low watermark — a real underrun, where the
             # alternative is the FPGA replaying stale ring data.
@@ -742,10 +766,57 @@ class UltimateAudioSampler:
         with self._io_lock:
             if gen != self._writer_gen or epoch != self._flush_epoch:
                 return False
-            self._resync_behind_reader()
-            self._write_wrapped(self._written % self.ring_size, data)
+            try:
+                self._resync_behind_reader()
+                self._write_wrapped(self._written % self.ring_size, data)
+            except Exception:
+                if payload is not None:
+                    # Retried at the same head on the next pass: rewriting the
+                    # slices that did land is idempotent.
+                    self._carry_back(epoch, data)
+                raise
             self._written += len(data)
         return True
+
+    def _carry_back(self, epoch: int, data: bytes) -> None:
+        carry = self._carry
+        if carry is not None and carry[0] == epoch:
+            data += bytes(carry[1])
+        self._carry = (epoch, memoryview(data))
+
+    def _next_payload(self, room: int) -> tuple[int, bytes] | None:
+        """Writer-thread only: the next current-epoch PCM to write, at most
+        ``room`` bytes and one slice. Queued chunks are coalesced up to the
+        write quantum; a chunk larger than the write is split, its tail
+        carried to the next pass. None when nothing current arrived within
+        the queue timeout."""
+        limit = min(room, REU_WRITE_SLICE)
+        limit -= limit % self.bps
+        parts: list[bytes | memoryview] = []
+        size = 0
+        epoch = -1
+        while size < self._write_quantum:
+            item: tuple[int, bytes | memoryview]
+            if self._carry is not None:
+                item, self._carry = self._carry, None
+            else:
+                try:
+                    item = self._q.get_nowait() if parts else self._q.get(timeout=0.02)
+                except queue.Empty:
+                    break
+            if item[0] != self._flush_epoch:
+                continue
+            if item[0] != epoch:  # a flush landed mid-gather: start over
+                parts, size, epoch = [], 0, item[0]
+            parts.append(item[1])
+            size += len(item[1])
+        if not parts:
+            return None
+        whole = memoryview(parts[0]) if len(parts) == 1 else memoryview(b"".join(parts))
+        if len(whole) > limit:
+            self._carry = (epoch, whole[limit:])
+            whole = whole[:limit]
+        return epoch, bytes(whole)
 
     def _resync_behind_reader(self) -> None:
         """Caller holds _io_lock. If the read head has passed the write head
