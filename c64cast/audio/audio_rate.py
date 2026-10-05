@@ -344,14 +344,15 @@ class RateServo:
     def next_pace_increment(self, write_addr: int, chunk_period: float) -> float:
         """Per-chunk pace increment for the prebuffered worker.
 
-        Open-loop (host_dma_servo off, or a failed/insane R read) returns the
-        bare ``chunk_period`` — the original strict wall-clock schedule. With the
+        Open-loop (host_dma_servo off) returns the bare ``chunk_period`` — the
+        original strict wall-clock schedule. With the
         servo on, reads the NMI read pointer R over REST, computes the ring gap
         ``(write_addr - R) % RING_BUFFER_SIZE`` (write_addr is the live W head —
         already advanced past the byte just written), and runs the PI controller
         (``servo_period``) so W's pace tracks R and the gap locks near half a
-        ring instead of lapping. A flaky read degrades to open-loop for that one
-        chunk; it never crashes or freezes the schedule. The increment is added
+        ring instead of lapping. A failed or out-of-ring read holds the integral
+        correction for that one chunk (``servo_hold_period``), as a slow one
+        does; it never crashes or freezes the schedule. The increment is added
         to the *absolute* ``next_write_time`` by the caller, so REST read latency
         only shortens the next sleep — it does not snap the schedule forward.
 
@@ -387,7 +388,7 @@ class RateServo:
             return servo_hold_period(self.integ, chunk_period=chunk_period)
         self.read_holdoff_s = 0.0
         if r_addr is None:
-            return chunk_period
+            return servo_hold_period(self.integ, chunk_period=chunk_period)
         self.note_r_reading(r_addr)
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
         self.gap_last = gap

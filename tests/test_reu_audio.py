@@ -58,6 +58,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_SIZE,
     RING_LEAD_EMA_ALPHA,
     patch_chunk_size,
+    servo_hold_period,
     servo_period,
 )
 from c64cast.hw.c64 import CIA_TIMER_LATCH_MAX
@@ -1197,7 +1198,8 @@ class HostDmaServoTest(unittest.TestCase):
 
     def test_next_pace_increment_guards_bad_reads(self):
         # _next_pace_increment falls back to open-loop chunk_period when the
-        # servo is off, the read fails/short, or R is out of the ring; and runs
+        # servo is off; holds the integral term (the bare chunk_period at
+        # integ 0) when the read fails/short or R is out of the ring; and runs
         # the controller for an in-ring read.
         s = _new_streamer(use_reu_pump=False)
         write_addr = RING_BUFFER_ADDR + HOST_DMA_SERVO_TARGET_GAP + 1500
@@ -1219,6 +1221,15 @@ class HostDmaServoTest(unittest.TestCase):
             s.servo.integ = 0.0
             s.api.read_memory = lambda a, n, timeout=1.0, _r=ret: _r  # type: ignore[method-assign]
             self.assertEqual(s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD), expect)
+
+        # A failed read keeps the learned bus-halt correction rather than
+        # dropping to the bare period, which would hand that drift back.
+        s.servo.integ = 20000.0
+        s.api.read_memory = lambda a, n, timeout=1.0: None  # type: ignore[method-assign]
+        held = servo_hold_period(20000.0, chunk_period=self.CHUNK_PERIOD)
+        self.assertGreater(held, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD), held)
+        self.assertEqual(s.servo.integ, 20000.0)
 
         # In-ring read: R=$4200, W=$4000+6000 → gap=(22384-16896)%8192=5488,
         # well above target, so the controller lengthens the period. Telemetry
