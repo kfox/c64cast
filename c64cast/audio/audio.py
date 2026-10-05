@@ -1020,7 +1020,7 @@ class AudioStreamer:
                     )
                     from_queue += taken
 
-                if not self.running:
+                if not current():
                     break
 
                 pad = 0
@@ -1086,6 +1086,10 @@ class AudioStreamer:
                     lag = time.monotonic() - next_write_time
                     if lag > stall_resync_s:
                         outcome = self._resync_after_stall(lag, generation, w_head)
+                        # A superseded resync returns None, as an unreadable R
+                        # does; past it, the health line is the next session's.
+                        if not current():
+                            break
                         next_write_time = time.monotonic()
                         if isinstance(outcome, StallInsideLead):
                             # Owe only what refills the target lead, not the

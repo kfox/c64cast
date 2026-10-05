@@ -497,6 +497,64 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         t.join(timeout=2.0)
         return seen, t
 
+    def test_a_worker_superseded_during_its_collect_does_not_write_the_prebuffer(self):
+        # The collect is the last step before the unsplit prebuffer write; a
+        # worker superseded inside it while running is True again must not
+        # land that chunk in the ring the next session is priming.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        real_collect = s._collect_until
+
+        def superseding_collect(*args):  # type: ignore[no-untyped-def]
+            out = real_collect(*args)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return out
+
+        s._collect_until = superseding_collect  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(cast(Any, s.api).writes, [], "wrote into the next session's ring")
+
+    def test_a_worker_superseded_during_its_stall_resync_skips_the_health_line(self):
+        # A resync superseded in its R read returns None, as an unreadable R
+        # does; the health line after it would reset the next session's window.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        # A pace increment far in the past reads as a stall past the lead.
+        s.servo.next_pace_increment = lambda *a: -10.0  # type: ignore[method-assign]
+        resyncs: list[float] = []
+
+        def superseded_resync(lag, generation, w_head):  # type: ignore[no-untyped-def]
+            resyncs.append(lag)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return None
+
+        health: list[float] = []
+        s._resync_after_stall = superseded_resync  # type: ignore[method-assign]
+        s._maybe_log_health = health.append  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(resyncs), 1)
+        self.assertEqual(health, [], "touched the next session's health window")
+
     def test_a_worker_superseded_during_a_drip_write_leaves_the_next_session_alone(self):
         # The steady state splits a chunk into several piece writes, any of
         # which can park past stop()'s join. The rest of the chunk would land
