@@ -383,8 +383,8 @@ CLOCK_PAL: Final = 985248
 
 def _canonical_system(system: str) -> Literal["NTSC", "PAL"]:
     """Normalize `system` to "NTSC" or "PAL" (case-insensitive, surrounding
-    whitespace tolerated — nothing at config load enforces
-    `config.SYSTEM_CHOICES`' canonical spelling).
+    whitespace tolerated — config load canonicalizes the spelling, but a
+    caller handed a string from anywhere else gets no such guarantee).
 
     Raises ValueError for anything else, "auto" included: every derived
     timing constant (CPU clock, frame rate, CIA latch, NMI budget) is wrong

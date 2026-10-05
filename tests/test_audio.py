@@ -299,6 +299,15 @@ class EffectiveRateTest(unittest.TestCase):
             with self.subTest(rate=rate, system=system):
                 self.assertAlmostEqual(self._at(rate, system).effective_rate, want, places=6)
 
+    def test_a_lowercase_system_gets_its_own_clock(self):
+        # A bare `system == "NTSC"` gave "ntsc" the PAL clock: latch 81, which
+        # an NTSC machine plays at 12472 Hz while effective_rate said 12015.
+        for spelling in ("ntsc", " NTSC "):
+            with self.subTest(spelling=spelling):
+                self.assertAlmostEqual(
+                    self._at(12000, spelling).effective_rate, 1022727 / 85, places=6
+                )
+
     def test_the_default_rate_is_not_what_was_requested(self):
         # The whole point of the property: at the shipped default the achieved
         # rate is 0.267% high, and reading sample_rate hides that.

@@ -30,10 +30,9 @@ from typing import TYPE_CHECKING
 from c64cast._transport_log import quiet_transport
 from c64cast.hw.c64 import (
     CIA2,
-    CLOCK_NTSC,
-    CLOCK_PAL,
     NMI_SAFE_MIN_PERIOD_CYCLES,
     VECTORS,
+    cpu_clock,
 )
 
 from .audio_handlers import (
@@ -92,7 +91,7 @@ class NmiTimer:
         The rate that latch actually yields is `effective_rate` — read that,
         not `sample_rate`, whenever the number means real time.
         """
-        clock = CLOCK_NTSC if self._st.system == "NTSC" else CLOCK_PAL
+        clock = cpu_clock(self._st.system)
         return max(1, round(clock / self._st.sample_rate) - 1)
 
     @property
@@ -104,7 +103,7 @@ class NmiTimer:
             # Callers read a falsy rate as "no audio clock" (position_seconds);
             # nominal_latch would divide by zero.
             return 0.0
-        clock = CLOCK_NTSC if self._st.system == "NTSC" else CLOCK_PAL
+        clock = cpu_clock(self._st.system)
         return clock / (self.nominal_latch() + 1)
 
     def ceiling_latch(self) -> int:

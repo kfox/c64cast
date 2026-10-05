@@ -909,9 +909,9 @@ def make_backend(cfg: Config) -> C64Backend:
     # `system = "auto"` can't be settled yet (it needs a live REST read, and
     # there is no API until this function returns) — assume NTSC and let
     # hw_provision.resolve_system re-fold these fields once the answer is in.
-    # Normalize once: nothing at config load enforces SYSTEM_CHOICES' canonical
-    # spelling, so `system = "ntsc"` reaches here intact and a bare
-    # `== "NTSC"` would fold it onto the PAL fps with no diagnostic.
+    # Normalize once: load canonicalizes the spelling, but a Config built in
+    # code skips load, and there a bare `== "NTSC"` would fold "ntsc" onto
+    # the PAL fps with no diagnostic.
     configured_system = cfg.ultimate64.system.upper()
     system = "NTSC" if configured_system == "AUTO" else configured_system
     fps = 60.0 if system == "NTSC" else 50.0

@@ -1454,9 +1454,11 @@ class ChoiceEnforcementTest(unittest.TestCase):
         )
 
     def test_system_is_matched_case_insensitively(self):
-        # hw/backend.py and hw/hw_provision.py both .upper() this, so the
-        # lowercase spelling works today and has to keep working.
-        self.assertEqual(self._load('[ultimate64]\nsystem = "ntsc"\n').ultimate64.system, "ntsc")
+        # The lowercase spelling is accepted and stored as the declared one, so
+        # a consumer comparing it bare (audio_rate picked the PAL clock for
+        # "ntsc") sees "NTSC".
+        self.assertEqual(self._load('[ultimate64]\nsystem = "ntsc"\n').ultimate64.system, "NTSC")
+        self.assertEqual(self._load('[ultimate64]\nsystem = "Auto"\n').ultimate64.system, "auto")
 
     def test_a_system_typo_is_still_refused(self):
         with self.assertRaises(ValueError):

@@ -3594,11 +3594,9 @@ _CHOICES_OPEN: dict[str, str] = {
     # "auto"/"off" plus any positive float (Hz) — see the field's own help.
     "ultimate64.sid_play_rate": "also accepts a rate in Hz",
 }
-# Fields matched case-insensitively rather than exactly, because the value is
-# case-normalized downstream (hw/backend.py and hw/hw_provision.py both
-# `.upper()` it, each with a comment saying nothing at load enforces the
-# canonical spelling) — so `system = "ntsc"` works today and has to keep
-# working, while `system = "ntscc"` should not.
+# Fields matched case-insensitively rather than exactly, and rewritten to the
+# declared spelling when they match — so `system = "ntsc"` keeps working and
+# reaches every consumer as "NTSC", while `system = "ntscc"` is refused.
 _CHOICES_CASE_INSENSITIVE: frozenset[str] = frozenset({"ultimate64.system"})
 
 
@@ -3634,7 +3632,11 @@ def _validate_choice_fields(cfg: Config) -> None:
             if not isinstance(value, str):
                 continue
             if key in _CHOICES_CASE_INSENSITIVE:
-                if value.casefold() in {str(c).casefold() for c in choices}:
+                canonical = {str(c).casefold(): c for c in choices}.get(value.casefold())
+                if canonical is not None:
+                    # Store the declared spelling: a consumer that compares
+                    # it bare must not see "ntsc" and fall through to PAL.
+                    setattr(section, f.name, canonical)
                     continue
             elif value in choices:
                 continue
