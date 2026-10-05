@@ -1572,6 +1572,10 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         ):
             s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
         self.assertEqual(self._vector_writes(fake), [self.KERNAL_IRQ])
+        # A restore that confirmed leaves nothing owed, so stop() has no
+        # vector to write.
+        s.stop()
+        self.assertEqual(self._vector_writes(fake), [self.KERNAL_IRQ])
 
     def test_a_vector_restore_that_never_confirms_is_owed_to_stop(self):
         # Each patch lands but a redial moves the epoch behind it, so the pump
