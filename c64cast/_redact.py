@@ -60,12 +60,19 @@ REDACTED = "REDACTED"
 #: `\b` falls before the name. That start costs one scan per escape, and an
 #: escape ends the run before it, so the scan stays linear.
 #:
+#: A URL carried inside a parameter of a URL that is itself a parameter is
+#: encoded twice, and there `&sig=` is `%2526sig%253D`: the escape before the
+#: name is `%25` plus two digits and the separator is `%253D`. Its value ends at
+#: `%2526`, and at `%26` too, which is where the middle URL's own parameter
+#: ends. A once-encoded value does not end at `%2526`: that is a `%26` inside
+#: the secret itself.
+#:
 #: The open form appears in both branches, spliced from one spelling so a name
 #: added to it is found at a run's start and partway through it alike.
 _OPEN_SECRET_NAME = r"\w* (?: token | password | secret | api[_-]?key )"
 _SECRET_KEY = r"""
     (?:
-        (?: (?<![\w-]) -* \b | (?<= %[0-9a-f]{2} ) ) (?:
+        (?: (?<![\w-]) -* \b | (?<= %[0-9a-f]{2} ) | (?<= %25[0-9a-f]{2} ) ) (?:
             {open}
           | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
         )
@@ -78,12 +85,13 @@ _SECRET_KEY = r"""
 _SECRET_VALUE = re.compile(
     r"""
     (?P<kv_prefix>
-        {key} ["']? \s* (?: [=:] | (?P<pct> %3d ) ) \s*
+        {key} ["']? \s* (?: [=:] | (?P<pct> % (?P<pct2> 25 )? 3d ) ) \s*
         (?P<quote> ["]{3} | [']{3} | ["'] )?
     )
     (?P<kv_value>
         (?(quote) (?: \\[^\r\n] | (?!(?P=quote)) [^\r\n] )+
-        | (?(pct) (?: (?!%26) [^\s&"',}] )+ | [^\s&"',}]+ ) )
+        | (?(pct2) (?: (?!%(?:25)?26) [^\s&"',}] )+
+        | (?(pct) (?: (?!%26) [^\s&"',}] )+ | [^\s&"',}]+ ) ) )
     )
     |
     (?P<bearer_prefix>\bBearer\s+) (?P<bearer_value>[^\s"',}]+)
@@ -169,7 +177,9 @@ def redact_secrets(text: str) -> str:
 
     An unquoted value ends at whitespace, `&`, a comma, a quote, or a closing
     brace. A name inside a URL-encoded value (`%26sig%3DVALUE`,
-    `%7Ehmac%3DVALUE`) is matched too, and its value also ends at `%26`. A
+    `%7Ehmac%3DVALUE`) is matched too, and its value also ends at `%26`; so
+    is one encoded twice (`%2526sig%253DVALUE`), whose value also ends at
+    `%2526` or `%26`. A
     quoted one — `'`, `"`, `'''` or `\"\"\"` — runs to the matching
     quote that no backslash escapes, or to the end of the line, whichever comes
     first: a value written across several lines is masked only as far as its

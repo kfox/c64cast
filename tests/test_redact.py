@@ -189,6 +189,26 @@ class RedactSecretsTest(unittest.TestCase):
         line = "u=%2Fmonkey%3D1%26sortkey%3Ddate"
         self.assertEqual(redact_secrets(line), line)
 
+    def test_a_secret_inside_a_twice_encoded_value_is_covered(self):
+        """A URL inside a parameter of a URL that is itself a parameter is
+        encoded twice: `&sig=` becomes `%2526sig%253D`. Its value ends at
+        `%2526`, or at the `%26` ending the middle URL's own parameter, while a
+        once-encoded value keeps a `%2526` as part of the secret."""
+        self.assertEqual(
+            redact_secrets("u=a%3Fr%3Dh%253A%252F%252Fh%252F%253Fsig%253Ddeadbeef%2526n%253D2"),
+            "u=a%3Fr%3Dh%253A%252F%252Fh%252F%253Fsig%253DREDACTED%2526n%253D2",
+        )
+        self.assertEqual(
+            redact_secrets("u=a%3Fr%3D%253Ftoken%253Dabc%26n%3D2"),
+            "u=a%3Fr%3D%253Ftoken%253DREDACTED%26n%3D2",
+        )
+        self.assertEqual(
+            redact_secrets("u=%3Fsig%3Dabc%2526def%26n%3D2"),
+            "u=%3Fsig%3DREDACTED%26n%3D2",
+        )
+        line = "u=%252Fmonkey%253D1%2526sortkey%253Ddate"
+        self.assertEqual(redact_secrets(line), line)
+
     def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
         """The short names are why `\\w*` cannot front them: `sortkey` would be
         masked with the rest, and a masked diagnostic value reads as coverage
