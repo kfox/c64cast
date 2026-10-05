@@ -442,9 +442,13 @@ class AudioDSP:
             proc.reset()
 
     def process(self, x: np.ndarray) -> np.ndarray:
+        """Run the chain over one block. Non-finite samples become 0 / ±1
+        first: every stage carries recursive state, and one NaN or inf there
+        (Compressor's envelope, AGC's RMS and gain) poisons every later block
+        until `reset()`, which the DAC encoder renders as a stuck rail."""
         if not self._chain or x.size == 0:
             return x
-        y = x.astype(np.float32, copy=False)
+        y = np.nan_to_num(x.astype(np.float32, copy=False), nan=0.0, posinf=1.0, neginf=-1.0)
         for proc in self._chain:
             y = proc.process(y)
         return y

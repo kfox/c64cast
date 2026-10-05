@@ -286,6 +286,19 @@ class AudioDSPChainTest(unittest.TestCase):
         x = _sine(500, 0.2, amp=0.5)
         np.testing.assert_allclose(dsp.process(x), x, atol=1e-6)
 
+    def test_a_non_finite_sample_does_not_latch_the_chain(self):
+        # One NaN or inf used to poison Compressor's envelope and AGC's
+        # RMS/gain for good: every later block came out NaN (or 0 after an
+        # inf), which the DAC encoder renders as a stuck rail.
+        for bad in (np.nan, np.inf, -np.inf):
+            dsp = AudioDSP(DSPParams(enabled=True, agc=True), sample_rate=SR, is_mic=True)
+            block = _sine(500, 0.05, amp=0.5)
+            block[100] = bad
+            self.assertTrue(np.all(np.isfinite(dsp.process(block))), bad)
+            after = dsp.process(_sine(500, 0.5, amp=0.5))
+            self.assertTrue(np.all(np.isfinite(after)), bad)
+            self.assertGreater(float(np.sqrt(np.mean(after**2))), 0.05, bad)
+
     def test_empty_input(self):
         dsp = AudioDSP(DSPParams(enabled=True), sample_rate=SR, is_mic=False)
         out = dsp.process(np.zeros(0, dtype=np.float32))

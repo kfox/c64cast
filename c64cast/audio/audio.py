@@ -200,8 +200,14 @@ def downmix_to_mono(indata: np.ndarray) -> np.ndarray:
     all three capture callbacks used to spell that fallback ``indata[:, 0]``,
     which can only raise IndexError on the 1-D input it exists for. One
     helper, so the three copies cannot drift apart again.
+
+    It is also where a device's floats enter, so non-finite samples become
+    0 / ±1 here: a NaN from a misbehaving driver would otherwise latch the
+    analyzer's level follower and the DSP chain's envelopes for the rest of
+    the run, and the DAC encoder casts NaN to the bottom rail.
     """
-    return indata.mean(axis=1) if indata.ndim > 1 else indata
+    mono = indata.mean(axis=1) if indata.ndim > 1 else indata
+    return np.asarray(np.nan_to_num(mono, nan=0.0, posinf=1.0, neginf=-1.0))
 
 
 # Attempts per stage of AudioStreamer._install_tracked_pump before it gives up.

@@ -292,6 +292,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A single bad sample from an audio input no longer silences the rest of
+  the scene.** If a capture driver delivered one invalid (NaN or infinite)
+  sample, the DSP stages held on to it and the 4-bit DAC output stayed stuck
+  until the next scene. Invalid samples are now treated as silence (or full
+  scale, for an infinite one) when they arrive.
+
 - **`[audio_features].bands` of 10 or more no longer leaves the lowest band
   dead.** At the default 1024-sample window the lowest band read zero
   forever, which weakened the bass that drives brightness. Every band now

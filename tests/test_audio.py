@@ -52,6 +52,15 @@ class DownmixToMonoTest(unittest.TestCase):
         flat = np.array([0.25, -0.75], dtype=np.float32)
         np.testing.assert_allclose(downmix_to_mono(flat), flat)
 
+    def test_non_finite_samples_enter_as_silence_or_full_scale(self):
+        # The device's floats enter here; a NaN past this point latches the
+        # analyzer and DSP state for the rest of the run.
+        block = np.array([[np.nan, np.nan], [np.inf, np.inf], [-np.inf, -np.inf]], np.float32)
+        np.testing.assert_array_equal(downmix_to_mono(block), [0.0, 1.0, -1.0])
+        np.testing.assert_array_equal(
+            downmix_to_mono(np.array([np.nan, 0.5], dtype=np.float32)), [0.0, 0.5]
+        )
+
     def test_single_channel_block_is_flattened(self):
         np.testing.assert_allclose(
             downmix_to_mono(np.array([[0.25], [-0.75]], dtype=np.float32)), [0.25, -0.75]
