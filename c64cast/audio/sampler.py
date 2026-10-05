@@ -711,9 +711,7 @@ class UltimateAudioSampler:
                 # (new_written < old _written: blank [consumed+margin, old W))
                 # and the rare lead<margin case (new_written > old _written:
                 # blank the lap-stale region the reader is about to enter).
-                self._write_wrapped(
-                    lo % self.ring_size, self._neutral_unit * ((hi - lo) // self.bps)
-                )
+                self._blank(lo, hi)
             self._written = new_written
             self._content_pos = anchor
             self._eof = False
@@ -807,10 +805,7 @@ class UltimateAudioSampler:
                     # them rather than let the reader replay a lap-old span.
                     gap = max(self._written, consumed)
                     if gap < first:
-                        self._write_wrapped(
-                            gap % self.ring_size,
-                            self._neutral_unit * ((first - gap) // self.bps),
-                        )
+                        self._blank(gap, first)
                     self._write_wrapped(first % self.ring_size, data[first - c :])
                 except Exception:
                     # Retried at the same anchor on the next pass: rewriting
@@ -840,7 +835,7 @@ class UltimateAudioSampler:
             if hi <= lo:
                 return False
             self._underrun_pads += 1
-            self._write_wrapped(lo % self.ring_size, self._neutral_unit * ((hi - lo) // self.bps))
+            self._blank(lo, hi)
             self._written = hi
             return True
 
@@ -891,6 +886,10 @@ class UltimateAudioSampler:
             self._carry = (epoch, whole[limit:])
             whole = whole[:limit]
         return epoch, bytes(whole)
+
+    def _blank(self, lo: int, hi: int) -> None:
+        """NEUTRAL-write the absolute byte span [lo, hi) of the ring."""
+        self._write_wrapped(lo % self.ring_size, self._neutral_unit * ((hi - lo) // self.bps))
 
     def _write_wrapped(self, ring_pos: int, data: bytes) -> None:
         """REUWRITE ``data`` into the ring at ``ring_pos``, splitting at the ring
