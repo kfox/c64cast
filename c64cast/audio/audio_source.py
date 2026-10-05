@@ -441,17 +441,9 @@ class AudioFileSource:
         # The tap is indexed in pushed samples, which the decoder resamples to
         # this rate, and the sink's clock divides by the same one.
         rate = float(audio.effective_rate or audio.sample_rate)
-        # The sampler's clock is the wall since its gate, and a re-anchor
-        # plays every later sample that much past its slot; the DAC's clock
-        # counts the samples played, so it needs no correction.
-        lag = (
-            cast("UltimateAudioSampler", audio).reanchor_lag_seconds
-            if self._is_sampler
-            else lambda: 0.0
-        )
 
         def played_index() -> float:
-            return max((audio.position_seconds() or 0.0) - lag(), 0.0) * rate
+            return max(self._heard_seconds(), 0.0) * rate
 
         try:
             history = int(rate * self._FEATURE_HISTORY_S)
@@ -537,7 +529,7 @@ class AudioFileSource:
         # too; the resampler's rounded integer rate would put it out of reach.
         rate = float(self._audio.effective_rate or self._audio.sample_rate)
         length = pushed_samples / rate if rate > 0 else 0.0
-        played = min(max(self._audio.position_seconds() or 0.0, 0.0), length)
+        played = min(max(self._heard_seconds(), 0.0), length)
         self._end = (length, time.monotonic() + (length - played) + self._DRAIN_GRACE_S)
 
     @property
@@ -555,8 +547,19 @@ class AudioFileSource:
         length, deadline = end
         if time.monotonic() >= deadline:
             return True
+        return self._heard_seconds() >= length - 1e-3
+
+    def _heard_seconds(self) -> float:
+        """How much of the pushed audio has been heard, on the sink's clock.
+        The sampler's clock is the wall since its gate, and a re-anchor plays
+        every later sample that much past its slot, so its lag comes off; the
+        DAC's clock counts the samples played and needs no correction. The
+        analyzer's index and the end of track both read this, so the last
+        lag's worth of a re-anchored track is not cut off."""
         played = self._audio.position_seconds() or 0.0
-        return played >= length - 1e-3
+        if self._is_sampler:
+            played -= cast("UltimateAudioSampler", self._audio).reanchor_lag_seconds()
+        return played
 
     def teardown(self) -> None:
         # The sink is unhooked before the streamer stops, so no callback can

@@ -1530,6 +1530,32 @@ class AudioFileSourceEndTest(unittest.TestCase):
             self.now[0] = gate + 6.05
             self.assertTrue(src.finished)
 
+    def test_a_reanchored_sampler_ends_with_the_last_sample_it_plays(self):
+        # A re-anchor plays every later sample that much past its slot, so
+        # the last one is heard that much after the clock reaches the length.
+        from c64cast.audio import sampler
+        from c64cast.audio.audio_source import AudioFileSource
+
+        ConfigGenerativeTest._make_wav(self.wav, seconds=6.0, rate=44100)
+        clock = SimpleNamespace(monotonic=lambda: self.now[0])
+        with (
+            mock.patch.object(sampler, "time", clock),
+            mock.patch.object(sampler, "PollThread", _NoWriter),
+        ):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+            src = AudioFileSource(smp, self.wav, reactive=False)
+            smp.arm()
+            src._decode_loop()
+            self.now[0] += 1.0
+            smp.start()
+            self.addCleanup(smp.stop)
+            smp._reanchor_step = (0, 0, int(0.5 * smp.effective_rate) * smp.bps)
+            gate = self.now[0]
+            self.now[0] = gate + 6.4
+            self.assertFalse(src.finished, "ended before the re-anchored tail played")
+            self.now[0] = gate + 6.55
+            self.assertTrue(src.finished)
+
     def test_a_decode_that_cannot_open_finishes(self):
         import os
 
