@@ -1110,6 +1110,70 @@ class SamplerLateReanchorTest(unittest.TestCase):
         smp._failed = True
         self.assertEqual(smp.content_lag_seconds, before_lag)
 
+    def _hook_lag_fields(self, on_get: Any = None, on_set: Any = None) -> None:
+        # content_lag_seconds reads the two fields without _io_lock, so the
+        # writer can land a re-anchor between its reads, or the reader can
+        # read between the writer's two stores. A subclass whose fields run a
+        # hook on each access puts the other thread there deterministically.
+        smp = self.smp
+
+        def field(name: str) -> property:
+            def get(obj: Any) -> Any:
+                value = obj.__dict__[name]
+                if on_get is not None:
+                    on_get()
+                return value
+
+            def put(obj: Any, value: Any) -> None:
+                obj.__dict__[name] = value
+                if on_set is not None:
+                    on_set()
+
+            return property(get, put)
+
+        cls = type(smp)
+        fields = ("_reanchor_lag_bytes", "_unlanded_reanchor")
+        smp.__class__ = type("Hooked", (cls,), {name: field(name) for name in fields})
+        self.addCleanup(setattr, smp, "__class__", cls)
+
+    def _pending_reanchor(self) -> float:
+        """A re-anchor left pending by an outage; returns the content lag
+        it lands at, which a lock-free reader must never read short of."""
+        smp = self.smp
+        self._reanchor_once()
+        self._fail_reanchors(3)
+        assert smp._unlanded_reanchor is not None
+        return smp.content_lag_seconds
+
+    def test_a_reader_between_the_landing_writes_does_not_miss_the_shift(self):
+        smp = self.smp
+        lands_at = self._pending_reanchor()
+        seen: list[float] = []
+        self._hook_lag_fields(on_set=lambda: seen.append(smp.content_lag_seconds))
+        self.consumed = smp._content_pos - smp._flush_margin  # on time at the anchor
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(self._write(40))
+        self.assertIsNone(smp._unlanded_reanchor)
+        self.assertEqual(len(seen), 2)  # one read after each store
+        self.assertGreaterEqual(min(seen), lands_at)
+        self.assertAlmostEqual(smp.content_lag_seconds, lands_at, places=9)
+
+    def test_a_landing_between_the_readers_reads_does_not_hide_the_shift(self):
+        smp = self.smp
+        lands_at = self._pending_reanchor()
+        landings: list[int] = []
+
+        def land_once() -> None:
+            if not landings:
+                landings.append(1)
+                smp._land_reanchor()
+
+        self._hook_lag_fields(on_get=land_once)
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            read = smp.content_lag_seconds  # the writer lands after its first read
+        self.assertIsNone(smp._unlanded_reanchor)
+        self.assertGreaterEqual(read, lands_at)
+
     def test_a_retried_reanchor_rewrites_the_slots_its_failed_write_reached(self):
         # The re-anchored write split at the ring's end and only its first
         # slice landed. Retried before the reader nears that anchor, it goes
