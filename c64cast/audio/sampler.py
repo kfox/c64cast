@@ -1438,7 +1438,13 @@ class UltimateAudioSampler:
         lag_bytes = self._lag_bytes(lag, at) - (at - head)
         failed = self._failed_lag_bytes()
         if failed:
-            lag_bytes = max(0, lag_bytes - failed)
+            # The given-up shift's own hold is part of what the head has not
+            # crossed, which _lag_bytes already left out: taking the whole
+            # shift off on top took it twice, and inside that hold read short
+            # of the lag that did land. Without the given-up re-anchors the
+            # lag is the content lag, less any of the landed holds' rest the
+            # head has not crossed, so it is the smaller of the two.
+            lag_bytes = max(0, min(lag_bytes, lag[0] - failed))
         return lag_bytes / self.bps / self._actual_rate
 
     def _end_lag_window(self) -> None:

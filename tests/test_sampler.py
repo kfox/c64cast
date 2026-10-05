@@ -1388,6 +1388,26 @@ class SamplerLateReanchorTest(unittest.TestCase):
         smp._failed = True
         self.assertEqual(smp.content_lag_seconds, before_lag)
 
+    def test_a_reanchor_given_up_inside_its_hold_leaves_the_landed_lag_whole(self):
+        # The writer gives up with the read head still inside the hold of the
+        # latest re-anchor, whose write never landed. The part of its shift
+        # the head has not crossed is already out of the lag; taking the
+        # whole shift off on top took that part twice, and the heard position
+        # ran ahead of the sound that did land by as much.
+        smp = self.smp
+        self._reanchor_once()
+        landed = smp.content_lag_seconds
+        self._fail_reanchors(3)
+        uncrossed = (smp._content_pos - self.consumed) / smp.bps / smp._actual_rate
+        self.assertGreater(uncrossed, 0.0)  # inside the latest hold
+        self.assertAlmostEqual(
+            smp.reanchor_lag_seconds(), smp.content_lag_seconds - uncrossed, places=9
+        )
+        smp._failed = True
+        self.assertAlmostEqual(smp.reanchor_lag_seconds(), landed, places=9)
+        self.consumed = smp._content_pos + 40  # and past it
+        self.assertAlmostEqual(smp.reanchor_lag_seconds(), landed, places=9)
+
     def _hook_lag_fields(self, on_get: Any = None, on_set: Any = None) -> None:
         # content_lag_seconds reads the lag and the pending re-anchor without
         # _io_lock, so the writer can land a re-anchor between its reads, or
