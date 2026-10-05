@@ -1856,6 +1856,80 @@ class LifecycleTest(unittest.TestCase):
             s.running = False
             t.join(timeout=1.0)
 
+    def _park_in_ring_write(self, s: AudioStreamer, park_on: int, fail: bool = False):
+        """Stall the worker's ``park_on``-th ring write (1-based) until released;
+        ``fail`` makes that write raise once released. Returns (parked, release)."""
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        parked, release = threading.Event(), threading.Event()
+        count = [0]
+
+        def stalling_write(addr: str, data: bytes) -> None:
+            count[0] += 1
+            if count[0] == park_on:
+                parked.set()
+                release.wait(2.0)
+                if fail:
+                    raise RuntimeError("late write failed")
+            real_write(addr, data)
+
+        api.write_memory_file = stalling_write
+        return parked, release
+
+    def test_a_retired_worker_does_not_start_the_nmi_after_its_prebuffer(self):
+        # The write completing the prebuffer returns after a stop(): starting
+        # the NMI and resetting the servo there would reprogram the timer and
+        # wipe the servo under whatever activation came next.
+        s = _make_worker_streamer()
+        nmi_starts: list[dict[str, Any]] = []
+        servo_resets: list[int] = []
+        s.nmi.start = lambda **kw: nmi_starts.append(kw)  # type: ignore[method-assign]
+        s.servo.reset_for_consumer_start = servo_resets.append  # type: ignore[method-assign]
+        parked, release = self._park_in_ring_write(s, park_on=PREBUFFER_CHUNKS)
+        for _ in range(PREBUFFER_CHUNKS):
+            s.q.put(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            self.assertTrue(parked.wait(2.0), "the worker never reached its last prebuffer write")
+            with s._ring_pad_lock:
+                s._worker_generation += 1  # stop() retired it
+            release.set()
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive())
+            self.assertEqual(nmi_starts, [])
+            self.assertEqual(servo_resets, [])
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+
+    def test_a_retired_workers_late_crash_leaves_the_next_activation_running(self):
+        # Its write fails only after a stop() and the next start_*: clearing
+        # `running` then would stop the activation that owns the ring now.
+        s = _make_worker_streamer()
+        parked, release = self._park_in_ring_write(s, park_on=1, fail=True)
+        s.q.put(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            self.assertTrue(parked.wait(2.0), "the worker never reached a ring write")
+            with s._ring_pad_lock:
+                s._worker_generation += 1  # stop() retired it
+            s.running = True  # the next activation
+            with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+                release.set()
+                t.join(timeout=2.0)
+            self.assertFalse(t.is_alive())
+            self.assertTrue(any("audio worker crashed" in m for m in cm.output))
+            self.assertTrue(s.running, "a retired worker's crash stopped the next activation")
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+
     def test_the_worker_records_the_pad_before_it_counts_the_landing(self):
         # Content landing behind a dry tail: a reader between the two steps
         # must not pair the new landed count with the old pad record, which would
