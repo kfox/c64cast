@@ -438,8 +438,10 @@ class UltimateAudioSampler:
         # window began, None while writes land on time. A burst is a run of
         # attempts with no LATE_REANCHOR_S gap between them: _burst_start is
         # (read head, lateness) at the current one's first late attempt, _prev_start
-        # the previous one's. _last_try is the read head at the latest attempt
-        # that reached the link. Whether a gap preceded the first late attempt
+        # the previous one's. _last_try is the read head at the latest write
+        # attempt, one dropped whole included; an attempt whose ring write
+        # failed does not count (_write_payload puts the one before it back).
+        # Whether a gap preceded the first late attempt
         # of an activation or a splice does not matter: with no burst behind
         # it, a gap and a fresh window start the same way. _late_from is the
         # read head at the first late attempt since writes were last on time
