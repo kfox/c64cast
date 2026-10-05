@@ -668,6 +668,9 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.addCleanup(smp.stop)
         big = np.full(0x20000, 8000, dtype=np.int16)  # 128 KiB of 8-bit PCM, 4 rings
         smp.push_samples(big)
+        # The read head held at the gate: a reader that moved a quantum before
+        # the assertions ran would let the writer take more of the carry.
+        smp._read_consumed_bytes = lambda: 0  # type: ignore[method-assign]
         smp.start(prebuffer_timeout=0.05)
         self.assertEqual(smp._written, smp._lead_target)
         assert smp._carry is not None
