@@ -1431,6 +1431,10 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         api.profile = HardwareProfile(
             name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
         )
+        # The socket map reads back with an UltiSID core at $D400, the one
+        # owner the baked table is right for.
+        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D420"}
+        api.config_store["SID Sockets Configuration"] = {"SID Socket 1": "Enabled"}
         diags = doctor._probe_dac_calibration_status("sys", cfg, api)
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "ok")

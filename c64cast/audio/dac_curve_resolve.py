@@ -12,7 +12,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from .dac_calibration_store import (
-    active_socket_at_d400,
+    D400_UNKNOWN,
+    d400_owner,
     load_calibrated_table,
     path_for_key,
     resolve_calibration_key,
@@ -47,14 +48,28 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
     # (audio.md#table-selection-auto-and-per-system-calibration), which lands as
     # signal-correlated distortion rather than a level trim.
     if cfg.hardware.backend == "ultimate":
-        socket = active_socket_at_d400(be) if be is not None else None
-        if socket is not None:
+        owner = d400_owner(be) if be is not None else None
+        if isinstance(owner, int):
             log.warning(
                 "SID socket %d (a physical chip) answers $D400 and no "
                 "calibration for it was found at %s; falling back to the "
                 "4-bit linear DAC. Run `c64cast -u <target> --calibrate-dac` "
                 "to measure this chip for full-fidelity playback.",
-                socket,
+                owner,
+                key,
+            )
+            return ("linear", None)
+        if owner == D400_UNKNOWN:
+            # Not "an UltiSID core owns it": an Ultimate II+ has no socket
+            # map to read and drives the C64's own chip, and a failed read
+            # says nothing. The baked table on a physical chip is the ≈29%
+            # RMS mismatch, so an unknown owner gets the safe path.
+            log.warning(
+                "could not tell which SID answers $D400 (no SID socket "
+                "configuration on this device, or reading it failed) and no "
+                "calibration was found at %s; falling back to the 4-bit linear "
+                "DAC. Run `c64cast -u <target> --calibrate-dac` to measure the "
+                "SID for full-fidelity playback.",
                 key,
             )
             return ("linear", None)
@@ -88,9 +103,10 @@ def resolve_dac_curve_for_backend(
       core answers ``$D400`` (the baked table *is* that core's curve); else
       ``linear`` (a physical/unknown SID with no calibration: the baked
       emulated table would not match it, so stay on the safe 4-bit path).
-      Which source owns ``$D400`` is resolved live via
-      :func:`active_socket_at_d400`, so a populated socket mapped there gets
-      ``linear`` rather than a table measured on a different chip.
+      Which source owns ``$D400`` is resolved live via :func:`d400_owner`,
+      so a populated socket mapped there gets ``linear`` rather than a table
+      measured on a different chip — and so does an owner that cannot be
+      read (an Ultimate II+, or a failed read).
     * ``"calibrated"`` — force the applicable calibrated table; raise if absent.
     * ``"linear"`` / ``"mahoney_ultisid"`` — explicit; passed through.
 

@@ -292,6 +292,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **`[audio].dac_curve = "auto"` no longer applies the built-in UltiSID table
+  to a real SID chip it couldn't identify.** On an Ultimate II+, and on an
+  Ultimate 64 whose SID socket settings couldn't be read, `auto` assumed the
+  emulated UltiSID was playing and picked its table. On a real 6581/8580 that
+  table plays as heavy distortion. `auto` now uses the 4-bit linear DAC and
+  warns, unless a `--calibrate-dac` calibration applies.
+
 - **A single bad sample from an audio input no longer silences the rest of
   the scene.** If a capture driver delivered one invalid (NaN or infinite)
   sample, the DSP stages held on to it and the 4-bit DAC output stayed stuck

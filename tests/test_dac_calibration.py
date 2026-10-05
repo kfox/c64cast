@@ -615,9 +615,11 @@ class MissingCalibrationLogTest(DataDirIsolated):
     case separately and can't even confirm the identity key."""
 
     def test_ultimate_live_no_cal_logs_info(self):
+        # An UltiSID core answers $D400: the socket map must say so. An
+        # unreadable one is unknown, not UltiSID (AutoCurveD400OwnershipTest).
         cfg = _u64_cfg()
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="INFO") as cm:
-            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.ultimate())
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultisid_at_d400())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
         joined = "\n".join(cm.output)
@@ -748,6 +750,69 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
             label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
+
+    def test_an_ultimate_ii_plus_gets_linear_not_the_ultisid_table(self):
+        # A U2+ has no socket map: its $D400 is the C64's own chip, which the
+        # baked emulated table mismatches. Unknown is not "UltiSID owns it".
+        cfg = _u64_cfg()
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.u2plus())
+        self.assertEqual((label, table), ("linear", None))
+        self.assertIn("could not tell which SID answers $D400", "\n".join(cm.output))
+
+    def test_an_unrefined_ultimate_ii_plus_gets_linear(self):
+        # Before refine_capabilities (or under --skip-probe) a U2+ still claims
+        # the multi-SID surface, and the categories come back unregistered.
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING"):
+            label, _ = dcr.resolve_dac_curve_for_backend(_u64_cfg(), be=FakeAPI.ultimate())
+        self.assertEqual(label, "linear")
+
+    def test_a_failed_socket_map_read_gets_linear(self):
+        api = _socket_at_d400(1)
+
+        def unreachable(*args, **kwargs):
+            raise ConnectionError("REST timeout")
+
+        api.get_config_category = unreachable  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING"):
+            label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg(), be=api)
+        self.assertEqual((label, table), ("linear", None))
+
+    def test_a_u2plus_calibration_still_wins(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"default": _result(5)})
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.u2plus())
+        self.assertTrue(label.startswith("calibrated:"))
+        self.assertEqual(table, bytes([5] * 256))
+
+    def test_a_failed_read_uses_the_mapping_the_file_recorded(self):
+        # Unknown on the Ultimate is reasoned about like a link with no
+        # socket query: the file's own d400_socket, not "UltiSID, no table".
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": _result(1), "2": _result(2)}, d400=2)
+        api = _socket_at_d400(2)
+
+        def unreachable(*args, **kwargs):
+            raise ConnectionError("REST timeout")
+
+        api.get_config_category = unreachable  # type: ignore[method-assign]
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=api)
+        self.assertTrue(label.startswith("calibrated:"))
+        self.assertEqual(table, bytes([2] * 256))
+
+    def test_d400_owner_tells_unknown_from_no_socket(self):
+        self.assertEqual(dcs.d400_owner(_socket_at_d400(2)), 2)
+        self.assertEqual(dcs.d400_owner(_ultisid_at_d400()), dcs.D400_NO_SOCKET)
+        self.assertEqual(dcs.d400_owner(FakeAPI.u2plus()), dcs.D400_UNKNOWN)
+        self.assertEqual(dcs.d400_owner(FakeAPI.ultimate()), dcs.D400_UNKNOWN)
+        self.assertIsNone(dcs.active_socket_at_d400(_ultisid_at_d400()))
+
+    def test_a_link_without_the_socket_map_is_not_asked(self):
+        # No multi-SID surface means no answer worth a round-trip.
+        api = FakeAPI.u2plus()
+        with patch.object(api, "get_config_category", wraps=api.get_config_category) as read:
+            self.assertEqual(dcs.d400_owner(api), dcs.D400_UNKNOWN)
+        read.assert_not_called()
 
     def test_explicit_mahoney_is_not_second_guessed(self):
         # The guard only shapes "auto".

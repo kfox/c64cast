@@ -19,7 +19,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlparse
 
 from c64cast.app import paths
@@ -40,6 +40,14 @@ if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
 
 log = logging.getLogger(__name__)
+
+#: `d400_owner` answers: read live, no physical socket owns $D400 (an UltiSID
+#: core does, or nothing does); or it could not be read at all — no SID config
+#: surface on this link, or the read failed. The two are not the same answer,
+#: and a physical-chip decision must never be made on the second.
+D400_NO_SOCKET: Final = "no-socket"
+D400_UNKNOWN: Final = "unknown"
+D400Owner = int | Literal["no-socket", "unknown"]
 
 # Tables land under paths.calibration_dir(), resolved at use time so
 # $C64CAST_DATA_DIR (and the tests) can redirect it. Captured machine-specific
@@ -201,17 +209,17 @@ def _select_sid_entry(
     evidence available on a link that can't ask the machine itself."""
     has_socket_entries = "1" in sids or "2" in sids
     if has_socket_entries and be is not None:
-        if cfg.hardware.backend == "ultimate" and getattr(be.profile, "supports_sid_config", False):
-            socket = active_socket_at_d400(be)
-            if socket is None:
-                # Something else (an UltiSID core) owns $D400, so no
-                # physical-chip table in this file applies.
-                return None
-            key = str(socket)
+        owner = d400_owner(be) if cfg.hardware.backend == "ultimate" else D400_UNKNOWN
+        if owner == D400_NO_SOCKET:
+            # Something else (an UltiSID core) owns $D400, so no
+            # physical-chip table in this file applies.
+            return None
+        if isinstance(owner, int):
+            key = str(owner)
             return key if key in sids else None
-        # No SID config query on this link: ownership of $D400 is *unknown*,
-        # which is not the "an UltiSID owns it" the branch above answers None
-        # for. Collapsing the two discards a good multi-socket file.
+        # Ownership of $D400 is *unknown* (no SID config query on this link,
+        # or the read failed), which is not the "an UltiSID owns it" answered
+        # above. Collapsing the two discards a good multi-socket file.
         if recorded_d400 is not None:
             # The file names the chip reached at $D400; if it holds no table
             # for that chip, no table in it is the right one. Falling through
@@ -220,7 +228,7 @@ def _select_sid_entry(
         if len(sids) > 1 and "1" in sids:
             log.warning(
                 "audio: this calibration holds tables for %d SID sockets and the %s link "
-                "cannot ask which one answers $D400, so socket 1 (the default mapping) is "
+                "could not say which one answers $D400, so socket 1 (the default mapping) is "
                 "assumed. If this machine maps socket 2 there instead, the wrong chip's "
                 "ladder is being applied — re-run `--calibrate-dac` over a link with a SID "
                 "config query to record the mapping in the file.",
@@ -236,16 +244,31 @@ def _select_sid_entry(
 
 
 def active_socket_at_d400(be: C64Backend) -> int | None:
-    """Which physical SID socket (1 or 2), if any, currently answers $D400 —
-    the fixed address the NMI DAC handler's hand-assembled ``STA $D418``
-    reaches. None if neither socket owns it (an UltiSID core does, or
-    nothing does)."""
+    """Which physical SID socket (1 or 2) currently answers $D400, or None
+    when none does *or it cannot be told* — for a caller that records what it
+    saw and treats a miss as "not recorded". A decision about which table to
+    play through needs the difference: use :func:`d400_owner`."""
+    owner = d400_owner(be)
+    return owner if isinstance(owner, int) else None
+
+
+def d400_owner(be: C64Backend) -> D400Owner:
+    """Who answers $D400 — the fixed address the NMI DAC handler's
+    hand-assembled ``STA $D418`` reaches: physical socket 1 or 2,
+    :data:`D400_NO_SOCKET` (an UltiSID core, or nothing), or
+    :data:`D400_UNKNOWN` when the link has no multi-SID config surface (a
+    TeensyROM+, a refined Ultimate II+), the read fails, or the categories
+    come back unregistered (an Ultimate II+ not yet refined)."""
+    if not getattr(be.profile, "supports_sid_config", False):
+        return D400_UNKNOWN
     try:
         addressing = be.get_config_category(CAT_ADDRESSING)
         sockets = be.get_config_category(CAT_SOCKETS)
-    except Exception:  # noqa: BLE001 — best-effort
+    except Exception:  # noqa: BLE001 — best-effort; answered as unknown
         log.debug("dac_calibration: live SID addressing read failed", exc_info=True)
-        return None
+        return D400_UNKNOWN
+    if not addressing or not sockets:
+        return D400_UNKNOWN
     for n, addr_item, en_item, type_item in (
         (1, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, ITEM_SOCKET1_TYPE),
         (2, ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, ITEM_SOCKET2_TYPE),
@@ -256,7 +279,7 @@ def active_socket_at_d400(be: C64Backend) -> int | None:
             and sockets.get(type_item, "None") not in ("None", "")
         ):
             return n
-    return None
+    return D400_NO_SOCKET
 
 
 def load_calibrated_table(
