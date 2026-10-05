@@ -318,8 +318,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   that resumes after a long stall, or a stream whose start timed out.
 
 - **The Ultimate Audio sampler sends its audio to the Ultimate in about 40
-  writes a second, and never much more than 50, whatever the source's frame
-  size.** It had sent one write per decoded frame, so audio decoded in
+  writes a second, whatever the source's frame size.** It had sent one write per decoded frame, so audio decoded in
   2.5 ms Opus frames took about 400 writes a second, twice what the link
   can carry. Even after that was fixed, it fell back to one write per frame
   for a moment after every seek, loop wrap or resume, and while a source
