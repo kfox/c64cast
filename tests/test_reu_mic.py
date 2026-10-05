@@ -690,6 +690,27 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         icr = [o for o in fake.ops if o[:2] == ("write_memory", "DC0D")]
         self.assertEqual(icr[-1][2], "81")
 
+    def test_a_lost_body_park_is_resent(self):
+        # A body stage that never confirmed may have left a torn body where the
+        # chunked dispatcher JSRs, so the RTS that parks it is confirmed too.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(
+                lose=REU_PUMP_BODY_SUBROUTINE_ADDR, times=tries + 1, skip_hook=True
+            )
+        self.assertEqual(sum(1 for o in fake.ops if o == ("lost", "C180")), tries + 1)
+        self.assertEqual(fake.memories["C180"], "60")
+
+    def test_a_lost_cia1_unmask_is_resent(self):
+        # Every entry and stub-restore attempt masks CIA #1, and a link that
+        # lost all of those can lose the unmask too, which would leave the
+        # kernal with no jiffy IRQ for the rest of the scene.
+        lost = 2 * audio_mod.TRACKED_PUMP_INSTALL_TRIES + 1
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(lose=0xDC0D, times=lost, skip_hook=True)
+        self.assertEqual(sum(1 for o in fake.ops if o == ("lost", "DC0D")), lost)
+        self.assertEqual(fake.memories["DC0D"], "81")
+
     @staticmethod
     def _vector_writes(fake: FakeAPI) -> list[tuple]:
         return [o[2] for o in fake.ops if o[:2] == ("write_regs", "0314")]

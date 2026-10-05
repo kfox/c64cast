@@ -1681,37 +1681,39 @@ class AudioStreamer:
         keeps JMPing to $C100 for the rest of the scene, and once CIA #1 is back
         at the kernal latch the entry's tick divider would chain the kernal on
         only every Nth tick (the jiffy clock, SCNKEY and the cursor blink at a
-        third speed). That restore is confirmed like an install stage, since
-        the link that lost the entry can lose it too, and one that never
-        confirms is logged rather than dropped."""
-        steps: list[tuple[str, Callable[[], object]]] = [
-            (
+        third speed).
+
+        Every write here is confirmed like an install stage, since the link
+        that lost the install can lose these too, and one that never confirms
+        is logged rather than dropped. A lost RTS leaves a torn body where the
+        chunked dispatcher JSRs, and a lost unmask after a masked entry upload
+        leaves the kernal with no jiffy IRQ at all, keyboard scan included."""
+
+        def confirmed(stage: str, write: Callable[[], None]) -> tuple[str, Callable[[], None]]:
+            return (stage, lambda: self._require_confirmed(stage, write))
+
+        steps = [
+            confirmed(
                 "pump body park",
                 lambda: self.api.write_memory(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", "60"),
             )
         ]
         if dispatcher_owns_irq and entry_may_be_up:
             steps.append(
-                (
+                confirmed(
                     "pump entry stub restore",
-                    lambda: self._require_confirmed(
-                        "pump entry stub restore",
-                        lambda: self._write_pump_entry(
-                            REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True
-                        ),
-                    ),
+                    lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
                 )
             )
         if dispatcher_owns_irq:
             steps.append(
-                (
+                confirmed(
                     "CIA #1 unmask",
                     lambda: self.api.write_memory(
                         f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
                     ),
                 )
             )
-        steps.append(("pump park flush", self.api.flush))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _abandon_pump_bring_up(self, err: PumpInstallError) -> None:
