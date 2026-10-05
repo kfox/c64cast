@@ -857,8 +857,17 @@ class _StallingConsumerAPI(FakeAPI):
     WRITE_S = 0.0052
     READ_S = 0.008
 
-    def __init__(self, clock: SleepDrivenClock, stall_at: float, stall_s: float) -> None:
+    def __init__(
+        self,
+        clock: SleepDrivenClock,
+        stall_at: float,
+        stall_s: float,
+        consumer_scale: float = 1.0,
+    ) -> None:
         super().__init__()
+        # The consumer's rate as a fraction of effective_rate: bus halts make
+        # a real one run slow, which an open-loop worker never corrects.
+        self.consumer_scale = consumer_scale
         self.profile = dataclasses.replace(self.profile, max_write_rate_hz=200.0)
         self.clock = clock
         self.stall_at = stall_at
@@ -868,13 +877,16 @@ class _StallingConsumerAPI(FakeAPI):
         self.consumed = 0
         self.unplayed = bytearray(audio_mod.RING_BUFFER_SIZE)
         self.overwritten = 0
+        # (when, bytes) for each write that landed on audio not yet played.
+        self.overwrites: list[tuple[float, int]] = []
         self.write_times: list[float] = []
         self.stalled_until: float | None = None
 
     def _consume(self) -> None:
         if self.t0 is None or self.streamer is None:
             return
-        target = int((self.clock.monotonic() - self.t0) * self.streamer.effective_rate)
+        rate = self.streamer.effective_rate * self.consumer_scale
+        target = int((self.clock.monotonic() - self.t0) * rate)
         while self.consumed < target:
             self.unplayed[self.consumed % audio_mod.RING_BUFFER_SIZE] = 0
             self.consumed += 1
@@ -892,10 +904,14 @@ class _StallingConsumerAPI(FakeAPI):
             self.stalled_until = self.clock.monotonic() + cost
         self._spend(cost)
         base = int(addr, 16) - audio_mod.RING_BUFFER_ADDR
+        hit = 0
         for i in range(len(data)):
             a = (base + i) % audio_mod.RING_BUFFER_SIZE
-            self.overwritten += self.unplayed[a]
+            hit += self.unplayed[a]
             self.unplayed[a] = 1
+        self.overwritten += hit
+        if hit:
+            self.overwrites.append((self.clock.monotonic(), hit))
         self.write_times.append(self.clock.monotonic())
         super().write_memory_file(addr, data)
 
@@ -928,10 +944,15 @@ class StallResyncTest(unittest.TestCase):
 
     RUN_S = 4.0
 
-    def _run(self, stall_s: float) -> tuple[AudioStreamer, _StallingConsumerAPI]:
+    def _run(
+        self, stall_s: float, *, servo: bool = True, consumer_scale: float = 1.0
+    ) -> tuple[AudioStreamer, _StallingConsumerAPI]:
         clock = SleepDrivenClock()
-        api = _StallingConsumerAPI(clock, stall_at=1.0, stall_s=stall_s)
+        api = _StallingConsumerAPI(
+            clock, stall_at=1.0, stall_s=stall_s, consumer_scale=consumer_scale
+        )
         s = AudioStreamer(cast(Ultimate64API, api), 12000, "NTSC")
+        s.host_dma_servo = servo
         api.streamer = s
         s.q = cast(Any, _AlwaysFullQueue())
 
@@ -996,7 +1017,7 @@ class StallResyncTest(unittest.TestCase):
     def test_a_live_backlog_is_dropped_at_the_resync(self):
         s = self._backlogged(_RFakeAPI([100]), live=True)
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            anchor = s._resync_after_stall(1.5, s._worker_generation)
+            anchor = s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
         self.assertIsNotNone(anchor)
         self.assertTrue(s.q.empty())
         self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
@@ -1005,7 +1026,7 @@ class StallResyncTest(unittest.TestCase):
     def test_a_decoded_backlog_is_kept_at_the_resync(self):
         s = self._backlogged(_RFakeAPI([100]), live=False)
         with self.assertLogs(audio_mod.log, level="WARNING"):
-            s._resync_after_stall(1.5, s._worker_generation)
+            s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
         self.assertEqual(s.q.qsize(), 4)
         self.assertEqual(s._queued_samples, 2048)
 
@@ -1018,7 +1039,9 @@ class StallResyncTest(unittest.TestCase):
         s.servo.read_holdoff_until = audio_rate_mod.time.monotonic() + 60.0
         s.servo.last_slow_read_s = 0.4
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
         self.assertEqual(api.r_reads, 0)
         self.assertEqual(api.writes, [], "re-anchored without a read of R")
         self.assertIn("could not be re-anchored", cm.output[0])
@@ -1044,7 +1067,7 @@ class StallResyncTest(unittest.TestCase):
             mock.patch.object(audio_rate_mod, "time", clock),
             self.assertLogs("c64cast.audio", level="WARNING") as cm,
         ):
-            anchor = s._resync_after_stall(1.5, s._worker_generation)
+            anchor = s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
         self.assertEqual(api.r_reads, 1)
         self.assertEqual(
             anchor, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, s.chunk_size)
@@ -1069,11 +1092,15 @@ class StallResyncTest(unittest.TestCase):
             mock.patch.object(audio_rate_mod, "time", clock),
             self.assertLogs("c64cast.audio", level="WARNING") as cm,
         ):
-            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
             self.assertTrue(s.servo.reads_held_off(), "a slow read did not arm the backoff")
             # The backoff that read armed is one the next stall must not read
             # through: it would block the worker another 0.4 s for nothing.
-            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
         self.assertEqual(api.r_reads, 1)
         self.assertEqual(api.writes, [], "re-anchored on a slow read of R")
         self.assertTrue(any("could not be re-anchored" in line for line in cm.output))
@@ -1098,7 +1125,9 @@ class StallResyncTest(unittest.TestCase):
             self.assertLogs(audio_rate_mod.log, level="WARNING") as cm,
             self.assertLogs(audio_mod.log, level="WARNING"),
         ):
-            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
         self.assertIn("not reading it again", cm.output[0])
         self.assertNotIn("pace correction", cm.output[0])
 
@@ -1121,7 +1150,7 @@ class StallResyncTest(unittest.TestCase):
             mock.patch.object(audio_rate_mod, "time", clock),
             self.assertLogs("c64cast.audio", level="WARNING") as cm,
         ):
-            anchor = s._resync_after_stall(1.5, s._worker_generation)
+            anchor = s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
             self.assertFalse(s.servo.reads_held_off(), "an anchored-on read armed the backoff")
         self.assertEqual(
             anchor, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, s.chunk_size)
@@ -1145,7 +1174,7 @@ class StallResyncTest(unittest.TestCase):
         setattr(api, op, superseding)
         s._ring_tail_pad = 77
         s.servo.ring_lead = 1234.0
-        self.assertIsNone(s._resync_after_stall(1.5, generation))
+        self.assertIsNone(s._resync_after_stall(1.5, generation, audio_mod.RING_BUFFER_ADDR))
         return s, api
 
     def test_a_worker_superseded_during_the_r_read_leaves_the_next_session_alone(self):
@@ -1191,7 +1220,7 @@ class StallResyncTest(unittest.TestCase):
             mock.patch.object(audio_rate_mod, "time", clock),
             self.assertNoLogs("c64cast.audio", level="DEBUG"),
         ):
-            self.assertIsNone(s._resync_after_stall(1.5, generation))
+            self.assertIsNone(s._resync_after_stall(1.5, generation, audio_mod.RING_BUFFER_ADDR))
         self.assertEqual(api.r_reads, 1)
         return s
 
@@ -1213,19 +1242,80 @@ class StallResyncTest(unittest.TestCase):
         api = _RFakeAPI([100])
         s = self._backlogged(api, live=False)
         s.running = False
-        self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+        self.assertIsNone(
+            s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        )
         self.assertEqual(api.writes, [])
 
     def test_an_unreadable_r_still_warns_and_does_not_reanchor(self):
         s = self._backlogged(FakeAPI(), live=False)
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
         self.assertIn("could not be re-anchored", cm.output[0])
 
     def test_a_short_stall_is_caught_up_without_a_resync(self):
         with self.assertNoLogs(audio_mod.log, level="WARNING"):
             _, api = self._run(stall_s=0.2)
         self.assertEqual(api.overwritten, 0)
+
+    def test_a_stall_inside_a_lead_grown_past_the_target_is_ridden_out(self):
+        # Servo off, a consumer 15 % slow: the open-loop lead grows from the
+        # ≈4 KiB it starts at to ≈5.9 KiB by the stall. 0.42 s of stall is
+        # past the 4096 B trigger but R is still ≈1.5 KiB short of W, so a
+        # re-anchor would NEUTRAL-fill that unplayed span. It catches up
+        # instead. (Later the drift laps the ring, as open loop always does;
+        # only the half second after the stall is this test's business.)
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            _, api = self._run(stall_s=0.42, servo=False, consumer_scale=0.85)
+        assert api.stalled_until is not None
+        after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+        self.assertEqual(after, 0)
+        # Caught up, not snapped: the half second after writes the stall's
+        # backlog on top of the steady ≈48, which restores the lead.
+        catch_up = [t for t in api.write_times if 0 < t - api.stalled_until <= 0.5]
+        self.assertGreater(len(catch_up), 70)
+
+    def test_a_stall_that_lapped_is_still_reanchored_with_a_slow_consumer(self):
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            _, api = self._run(stall_s=1.5, servo=False, consumer_scale=0.85)
+        self.assertIn("Re-anchored", cm.output[0])
+        assert api.stalled_until is not None
+        after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+        self.assertLessEqual(after, 1024)
+
+    def test_the_resync_leaves_a_ring_r_has_not_reached_alone(self):
+        # R at offset 100 with W 1000 B ahead of it after 0.4 s (4800 B) of
+        # stall: the lead was 5800 B, and W is still ahead.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=True)
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            result = s._resync_after_stall(
+                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 1100
+            )
+        self.assertEqual(result, audio_mod.STALL_NOT_LAPPED)
+        self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
+        self.assertEqual(s.q.qsize(), 4, "dropped a live backlog it will catch up")
+
+    def test_the_resync_reanchors_once_r_has_passed_w(self):
+        # Same R, but W 100 B *behind* it: R passed W, and the ring it plays
+        # until W gets back ahead is a lap old.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            result = s._resync_after_stall(0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(result, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, 1024))
+
+    def test_stall_lapped_splits_at_a_ring_of_gap_plus_stall(self):
+        base, size = audio_mod.RING_BUFFER_ADDR, audio_mod.RING_BUFFER_SIZE
+        r = base + 100
+        self.assertFalse(audio_mod.stall_lapped(r, r + 1000, 4800))
+        self.assertFalse(audio_mod.stall_lapped(r, r + 1000, size - 1001))
+        self.assertTrue(audio_mod.stall_lapped(r, r + 1000, size - 1000))
+        self.assertTrue(audio_mod.stall_lapped(r, r - 100, 4800))
+        # Several laps: any gap, W is long behind.
+        self.assertTrue(audio_mod.stall_lapped(r, r + 1000, 3 * size))
 
 
 class NmiRateSafetyTest(unittest.TestCase):

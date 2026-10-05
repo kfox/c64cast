@@ -1162,6 +1162,22 @@ def stall_reanchor(r_addr: int, chunk: int, lead: int = HOST_DMA_SERVO_TARGET_GA
     return RING_BUFFER_ADDR + (-(-ahead // chunk) * chunk) % RING_BUFFER_SIZE
 
 
+def stall_lapped(r_addr: int, w_head: int, behind: int) -> bool:
+    """Whether R has reached the write head ``w_head`` (the end of what has
+    landed) during a stall the worker came back ``behind`` bytes of
+    consumption late; R is read after the stall.
+
+    The ring gap alone cannot say: R known modulo the ring reads the same a
+    few bytes short of W as a lap and a few bytes past it. The stall's length
+    settles it. If W is still ahead, the gap is the lead W had (at most the
+    6 KiB prebuffer) less what R ate meanwhile, so gap + behind is that lead,
+    under a ring. If R passed W by x, the gap is a ring less x and
+    gap + behind is a ring plus the old lead, over one. The ~2 KiB either side
+    of the boundary covers a read that lands late and a consumer slower than
+    nominal (bus halts only slow it, which shrinks ``behind``'s overcount)."""
+    return (w_head - r_addr) % RING_BUFFER_SIZE + behind >= RING_BUFFER_SIZE
+
+
 def servo_hold_period(integ: float, *, chunk_period: float, ki: float = HOST_DMA_SERVO_KI) -> float:
     """The pace period with no gap reading to act on: only the integral term,
     which carries the standing rate correction (the consumer's bus-halt

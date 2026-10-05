@@ -100,6 +100,7 @@ from .audio_handlers import (
     encode_floats_to_dac,
     patch_chunk_size,
     reu_pump_chunk_fits_ring,
+    stall_lapped,
     stall_reanchor,
     stomp_spans,
 )
@@ -109,6 +110,10 @@ from .dsp import AudioDSP, DSPParams
 from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
+
+# What AudioStreamer._resync_after_stall returns when R never reached the
+# write head: not a ring address, so it cannot be mistaken for an anchor.
+STALL_NOT_LAPPED = -1
 
 # Any so Pyright doesn't flag every sd.XXX as an attribute of None; the
 # intermediate name gives both branches one annotation, which mypy --strict
@@ -1047,13 +1052,14 @@ class AudioStreamer:
                     next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
                     lag = time.monotonic() - next_write_time
                     if lag > stall_resync_s:
-                        anchor = self._resync_after_stall(lag, generation)
-                        if anchor is not None:
-                            pending_addr = anchor
-                            write_addr = anchor + n
-                            if write_addr >= RING_BUFFER_END:
-                                write_addr = RING_BUFFER_ADDR
-                        next_write_time = time.monotonic()
+                        anchor = self._resync_after_stall(lag, generation, w_head)
+                        if anchor != STALL_NOT_LAPPED:
+                            if anchor is not None:
+                                pending_addr = anchor
+                                write_addr = anchor + n
+                                if write_addr >= RING_BUFFER_END:
+                                    write_addr = RING_BUFFER_ADDR
+                            next_write_time = time.monotonic()
                     self._maybe_log_health(time.monotonic())
                     continue
 
@@ -1088,10 +1094,21 @@ class AudioStreamer:
             log.exception("audio worker crashed")
             self.running = False
 
-    def _resync_after_stall(self, lag: float, generation: int) -> int | None:
+    def _resync_after_stall(self, lag: float, generation: int, w_head: int) -> int | None:
         """Recover from a worker stall longer than the ring lead; returns the
-        chunk-grid address the next chunk lands at, or None when R cannot be
-        read promptly (the schedule is then only snapped forward).
+        chunk-grid address the next chunk lands at, None when R cannot be
+        read promptly (the schedule is then only snapped forward), or
+        ``STALL_NOT_LAPPED`` when R turns out not to have reached ``w_head``
+        (the live write head) after all.
+
+        The trigger is ``HOST_DMA_SERVO_TARGET_GAP`` of lag, but the lead the
+        stall ate can be longer: the ≈5 KiB the consumer starts behind before
+        the servo pulls it in, or an open-loop lead grown by the consumer's
+        bus-halt deficit. With W still ahead, the span from R to the anchor
+        holds audio not yet played, and NEUTRAL-filling it cut a hole in the
+        scene. R read here says which case this is (``stall_lapped``), and
+        when W is still ahead nothing is touched: the schedule catches up
+        as it does for a stall inside the lead.
 
         By now the consumer has played all of the lead and some of the ring's
         previous lap, and nothing written meanwhile can change that. What the
@@ -1131,6 +1148,13 @@ class AudioStreamer:
         )
         if self._superseded(generation):
             return None
+        if r_addr is not None and not stall_lapped(r_addr, w_head, int(lag * self.effective_rate)):
+            log.debug(
+                "audio: DAC worker stalled %.2f s, inside its %d-byte lead; catching up",
+                lag,
+                (w_head - r_addr) % RING_BUFFER_SIZE + int(lag * self.effective_rate),
+            )
+            return STALL_NOT_LAPPED
         dropped = 0
         if self.mic_stream is not None:
             dropped = self._drain_queue_samples()
