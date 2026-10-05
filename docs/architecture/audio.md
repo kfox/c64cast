@@ -686,7 +686,20 @@ It wraps at the boundary and NEUTRAL-pads only past a low watermark (`_lead_pani
 
 **Anchored content: a pad is provisional.** The writer keeps two heads. `_written` is how far the ring holds anything current, real audio or pad. `_content_pos` is where the next *real* sample belongs. Sample k of an activation sits at prebuffer start + k, and sample k after a splice sits at the flush's anchor + k. A pad advances only `_written`. When data arrives, it is written at `_content_pos`, overwriting whatever of the pad the reader has not reached. Any leading bytes whose slot is already within `FLUSH_GUARD_S` of the read head are dropped as late and counted in `_late_bytes`. They are dropped because that slot has passed, and a write there would race the FPGA's fetch. The writer's lead, and so its room under the target, is measured from `_content_pos`, so it keeps pulling data to overwrite pads.
 
-Before this, every pad shifted all later audio behind `position_seconds()` by the pad's length, permanently. A producer stall that crossed the watermark left a 4K clip's sound about 0.37 s late for the rest of the scene. Now a stall costs only the audio that arrived too late to play, and sync is unchanged. Measured with a fake link at 44.1 kHz/16-bit and an 8-chunk queue: a 1.2 s stall left a 372 ms lag before and 0 ms after, and 2 s and 3 s stalls also measured 0 ms after.
+Before this, every pad shifted all later audio behind `position_seconds()` by the pad's length, permanently. A producer stall that crossed the watermark left a 4K clip's sound about 0.37 s late for the rest of the scene. Now a stall that the producer catches up from costs only the audio that arrived too late to play, and sync is unchanged. A file decoder catches up because it has a backlog to burst through. Measured with a fake link at 44.1 kHz/16-bit and an 8-chunk queue: a 1.2 s stall left a 372 ms lag before and 0 ms after, and 2 s and 3 s stalls also measured 0 ms after.
+
+**A producer that cannot catch up is re-anchored.** Dropping late audio only lines up a producer that gets ahead of real time again. Some producers never do: a decoder slower than real time, a live stream that resumes at 1.0x after a stall past the lead, or a start whose prebuffer timed out, leaving the anchor at 0 while the stream turns up seconds later. With nothing to move the anchor forward, every later chunk of such a producer would be dropped, and the scene would stay silent. So `_late_anchor` times each run of late writes in read-head bytes, which is wall time. An on-time write ends the run, and so does a splice. Once a run lasts `LATE_REANCHOR_S` (0.5 s), the writer moves `_content_pos` to `_reanchor_lead` past the read head and plays on, with the sound behind the picture by the shortfall, as it was before anchoring. The first re-anchor of an activation logs a WARNING, and stop() reports a count when there was more than one.
+
+`_reanchor_lead` is the low watermark, not the bare flush margin. A slow producer uses up the cushion above the margin at its shortfall, then spends another 0.5 s dropping. A re-anchor at the margin left a 0.95x decoder audible about 20% of the time, and the watermark cushion raises that to about 80%.
+
+Measured on a fake clock (review sim, 10 ms chunks, 44.1 kHz/16-bit), as seconds of audio written per second, before → after:
+
+| Case | Before | After |
+|---|---|---|
+| 0.95x decoder | silent from 7 s on | 0.57–0.95, lag grows |
+| 2 s stall, then 1.0x | silent from the stall on | 1.0, from 0.5 s after the resume; lag 1.76 s |
+| prebuffer timed out, stream at 3 s | silent throughout | 1.0, from 3.5 s; lag 3.26 s |
+| 2 s stall, then an 8x backlog burst | lag 0 ms | lag 0 ms, no re-anchor |
 
 **Prebuffer and lead target are separate knobs.** `DEFAULT_PREBUFFER_SECONDS` (0.5 s) is seeded before gating so playback starts promptly; `DEFAULT_LEAD_SECONDS` (1.0 s) is then ramped up to at runtime. The lead is *buffer depth, not A/V latency* — video tracks the read head — so a deeper target only buys resilience against heavier PyAV decode stalls. Measured on hardware: a 4K h264 clip's lead floor doubled from ≈9 KB to ≈21 KB going 0.5 s → 1.0 s.
 

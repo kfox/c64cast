@@ -719,6 +719,100 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertEqual(smp._written, smp._flush_margin + 64)
 
 
+class SamplerLateReanchorTest(unittest.TestCase):
+    """Audio whose slot has passed is dropped, so a producer catching up after a
+    stall lines up again. One that stays late for LATE_REANCHOR_S is not
+    catching up, and is re-anchored past the read head instead of left silent."""
+
+    def setUp(self) -> None:
+        self.api = _FakeBackend()
+        self.consumed = 0
+        smp = _make(self.api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=0x4000)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: self.consumed  # type: ignore[method-assign]
+        self.smp = smp
+
+    def _write(self, n: int) -> bool:
+        smp = self.smp
+        return smp._write_payload(smp._writer_gen, smp._flush_epoch, b"\x01" * n)
+
+    def test_a_producer_that_stays_late_is_reanchored_and_keeps_playing(self):
+        # The prebuffer timed out (nothing anchored past 0) and the stream
+        # turned up 3 s later at real time: without a re-anchor every chunk
+        # would be dropped for the rest of the scene.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING") as logs:
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self.assertFalse(self._write(40))
+                self.consumed += 40
+            self.assertEqual(self.api.audible_writes, 0)
+            self.assertTrue(self._write(40))
+        self.assertIn("re-anchored", logs.output[0])
+        anchor = self.consumed + smp._reanchor_lead
+        self.assertGreaterEqual(smp._reanchor_lead, smp._flush_margin)
+        self.assertEqual(self.api.reu_writes[-1], (0x200000 + anchor % smp.ring_size, 40))
+        for _ in range(50):  # real time from here: nothing more is dropped
+            self.consumed += 40
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._content_pos, anchor + 51 * 40)
+        self.assertEqual(smp._reanchors, 1)
+
+    def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
+        # A decoder with a backlog after a stall: its late chunks are dropped
+        # and the rest land at their own slots, so sync is unchanged.
+        smp = self.smp
+        self.consumed = 2000
+        started = self.consumed
+        chunks = 0
+        while not self._write(100):  # 10x real time
+            chunks += 1
+            self.consumed += 10
+        self.assertGreater(chunks, 0)
+        self.assertLess(self.consumed - started, smp._late_reanchor_bytes)
+        for _ in range(50):
+            chunks += 1
+            self.consumed += 10
+            self.assertTrue(self._write(100))
+        self.assertEqual(smp._reanchors, 0)
+        # Every chunk sits at its original slot: the audio did not shift.
+        self.assertEqual(smp._content_pos, (chunks + 1) * 100)
+
+    def test_an_on_time_write_ends_the_late_run(self):
+        smp = self.smp
+        self.consumed = 1000
+        smp._written = smp._content_pos = self.consumed + smp._flush_margin - 10
+        self.assertTrue(self._write(100))  # 10 bytes late: a run begins
+        self.assertTrue(self._write(100))  # on time
+        # Late again, past the window from the first run's start: a new run.
+        self.consumed += smp._late_reanchor_bytes + 1000
+        self.assertFalse(self._write(100))
+        self.assertEqual(smp._reanchors, 0)
+
+    def test_a_splice_restarts_the_late_window(self):
+        # The demuxer's re-seek delay makes the first post-splice audio late;
+        # that is a fresh run, not a continuation of the one before the splice.
+        smp = self.smp
+        self.consumed = 1000
+        self.assertFalse(self._write(100))
+        self.consumed += smp._late_reanchor_bytes
+        smp.flush()
+        self.consumed += 100
+        self.assertTrue(self._write(400))
+        self.assertEqual(smp._reanchors, 0)
+
+    def test_repeated_reanchors_are_summarized_at_stop_and_cleared_by_arm(self):
+        smp = self.smp
+        smp._reanchors = 3
+        with self.assertLogs("c64cast.audio.sampler", "WARNING") as logs:
+            smp.stop()
+        self.assertTrue(any("re-anchored late audio 3 times" in m for m in logs.output))
+        smp._reanchors = 3
+        smp.arm()
+        self.assertEqual(smp._reanchors, 0)
+
+
 class SamplerArmedBeforeProducerTest(unittest.TestCase):
     """Both scene setups arm the sampler before their producer can push into
     it; a push into a still-stopped sampler is dropped."""

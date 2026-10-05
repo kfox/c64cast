@@ -123,6 +123,15 @@ WRITER_BACKOFF_MIN_S = 0.02
 WRITER_BACKOFF_MAX_S = 0.5
 WRITER_GIVE_UP_S = 10.0
 
+# Audio is anchored to the read-head clock, so a chunk whose slot has passed
+# is dropped. A producer catching up after a stall drops only for a moment; one
+# that keeps dropping for this long of read-head time is not catching up (a
+# decoder slower than real time, a live stream resumed at 1.0x, a start whose
+# prebuffer timed out), and would otherwise stay silent for good. The writer
+# then re-anchors the audio a cushion past the read head and plays on, behind
+# the picture by the shortfall.
+LATE_REANCHOR_S = 0.5
+
 
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
     """Sample-rate divider for the sampler reference clock (≥ 1). ``ref_clock``
@@ -357,6 +366,12 @@ class UltimateAudioSampler:
         # Low watermark: below this the writer NEUTRAL-pads, treating the lead
         # as a genuine producer stall rather than a briefly-empty queue.
         self._lead_panic = max(self.bps, self._lead_target // 4)
+        # Where a re-anchor (LATE_REANCHOR_S) puts the audio: past the write
+        # floor, with the low watermark's cushion. A producer slower than real
+        # time eats a cushion at its shortfall and then spends another
+        # LATE_REANCHOR_S dropping, so re-anchoring at the floor alone left a
+        # 0.95x decoder audible ~20% of the time (fake link, 10 ms chunks).
+        self._reanchor_lead = max(self._flush_margin, self._lead_panic)
         # The writer moves at least this much per ring write. Below the link's
         # free payload a second write costs a whole per-write floor while the
         # bytes cost nothing, so write count is the lever: a decoder that
@@ -395,6 +410,16 @@ class UltimateAudioSampler:
         self._written = 0
         self._content_pos = 0
         self._late_bytes = 0  # real PCM dropped because its slot had passed
+        # Read-head byte position where the current run of late writes began
+        # (None while writes land on time), and the LATE_REANCHOR_S run length
+        # in read-head bytes. The read head is the wall clock, so the window is
+        # wall time.
+        self._late_since: int | None = None
+        self._late_reanchor_bytes = int(LATE_REANCHOR_S * self._actual_rate) * self.bps
+        # Re-anchors this activation, and how far they put the sound behind
+        # the picture since the last splice re-aligned it.
+        self._reanchors = 0
+        self._reanchor_lag_bytes = 0
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
         # flush() bumps _flush_epoch and then rewrites the lead under _io_lock,
@@ -483,9 +508,12 @@ class UltimateAudioSampler:
             self._written = 0
             self._content_pos = 0
             self._cut_epoch = self._flush_epoch
+            self._late_since = None
+            self._reanchor_lag_bytes = 0
         self._output_silenced = False
         self._underrun_pads = 0
         self._late_bytes = 0
+        self._reanchors = 0
         self._lead_min = None
         self._lead_max = None
         with self._tap_lock:
@@ -731,6 +759,10 @@ class UltimateAudioSampler:
                 self._blank(lo, hi)
             self._written = new_written
             self._content_pos = anchor
+            # The splice re-aligns sound and picture, and its own late drops
+            # (the demuxer's re-seek delay) start a fresh window.
+            self._late_since = None
+            self._reanchor_lag_bytes = 0
             self._eof = False
             self._cut_epoch = max(self._cut_epoch, epoch)
 
@@ -822,9 +854,9 @@ class UltimateAudioSampler:
                 # after this pass's check above): held for the new anchor.
                 self._carry_back(epoch, data)
                 return False
-            c = self._content_pos
-            end = c + len(data)
             consumed = self._read_consumed_bytes()
+            c = self._late_anchor(consumed)
+            end = c + len(data)
             first = max(c, consumed + self._flush_margin)
             if first < end:
                 try:
@@ -844,6 +876,46 @@ class UltimateAudioSampler:
             self._late_bytes += min(len(data), max(0, first - c))
             self._content_pos = end
             return first < end
+
+    def _late_anchor(self, consumed: int) -> int:
+        """Under _io_lock: where the next real sample is written. That is
+        _content_pos, unless writes have been late for LATE_REANCHOR_S of
+        read-head time, in which case the producer is not catching up and the
+        audio is re-anchored _reanchor_lead past the read head (moving
+        _content_pos)."""
+        c = self._content_pos
+        floor = consumed + self._flush_margin
+        if c >= floor:
+            self._late_since = None
+            return c
+        if self._late_since is None:
+            self._late_since = consumed
+            return c
+        if consumed - self._late_since < self._late_reanchor_bytes:
+            return c
+        anchor = consumed + self._reanchor_lead
+        shift = anchor - c
+        self._late_since = None
+        self._reanchors += 1
+        self._reanchor_lag_bytes += shift
+        if self._reanchors == 1:
+            level = logging.WARNING
+            note = ""
+        else:
+            # A steadily slow producer re-anchors every few seconds; stop()
+            # reports the count.
+            level = logging.DEBUG
+            note = f" (re-anchor {self._reanchors})"
+        log.log(
+            level,
+            "sampler: audio arrived late for %.1f s and is not catching up; "
+            "re-anchored at the read head%s — sound now lags the picture by %.2f s",
+            LATE_REANCHOR_S,
+            note,
+            self._reanchor_lag_bytes / self.bps / self._actual_rate,
+        )
+        self._content_pos = anchor
+        return anchor
 
     def _pad_underrun(self, gen: int) -> bool:
         """The queue came up empty. Below the low watermark the ring is about
@@ -1043,6 +1115,12 @@ class UltimateAudioSampler:
                 "sampler: dropped %.2f s of audio that reached the ring after its slot",
                 self._late_bytes / self.bps / self._actual_rate,
             )
+        if self._reanchors > 1:
+            log.warning(
+                "sampler: re-anchored late audio %d times this session (producer "
+                "slower than real time)",
+                self._reanchors,
+            )
         if self._lead_min is not None:
             log.info(
                 "sampler: write-ahead lead min=%d max=%d bytes (target=%d, ring=%d)",
@@ -1054,5 +1132,6 @@ class UltimateAudioSampler:
         # Reported once per activation, however often stop() is called.
         self._underrun_pads = 0
         self._late_bytes = 0
+        self._reanchors = 0
         self._lead_min = None
         self._lead_max = None
