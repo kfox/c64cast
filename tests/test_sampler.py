@@ -852,8 +852,12 @@ class SamplerLateReanchorTest(unittest.TestCase):
         # from the re-anchor it would pass the lead target, so its tail is carried.
         smp = self.smp
         self.consumed = 5000
-        self.assertFalse(self._write(100))  # late: a run begins
-        self.consumed += smp._late_reanchor_bytes
+        start = self.consumed
+        self.assertFalse(self._write(50))  # late: a window begins
+        while self.consumed - start < smp._late_reanchor_bytes - 50:
+            self.consumed += 50  # real time: the lateness holds
+            self.assertFalse(self._write(50))
+        self.consumed += 50
         with self.assertLogs("c64cast.audio.sampler", "WARNING"):
             self.assertTrue(self._write(smp._lead_target))
         self.assertEqual(smp._content_pos, self.consumed + smp._lead_target)
@@ -937,8 +941,10 @@ class SamplerLateReanchorTest(unittest.TestCase):
         # burst that follows gets a whole window to catch up in.
         smp = self.smp
         self.consumed = 1000
-        smp._written = smp._content_pos = self.consumed + smp._flush_margin - 10
-        self.assertTrue(self._write(100))  # 10 bytes late: a run begins
+        smp._written = smp._content_pos = self.consumed + smp._flush_margin
+        self.assertTrue(self._write(10))  # playing on time until now
+        self.consumed += 20
+        self.assertTrue(self._write(100))  # 10 bytes late: a window begins
         self.consumed += 2 * smp._late_reanchor_bytes  # the stall
         self.assertFalse(self._write(100))
         self.assertEqual(smp._reanchors, 0)
@@ -946,25 +952,30 @@ class SamplerLateReanchorTest(unittest.TestCase):
     def test_a_bursty_producer_that_stays_late_is_still_reanchored(self):
         # A segmented live stream that fell seconds behind: each segment's
         # frames arrive in a burst the writer drops in no read-head time, then
-        # nothing until the next segment. No audio has landed since the run
-        # began, so the gap continues it rather than restarting it; restarting
-        # it on every gap would leave the scene silent for good.
+        # nothing until the next segment. A burst ends no closer than the one
+        # before it; timing each burst on its own would leave the scene
+        # silent for good. Two whole bursts are what show it.
         smp = self.smp
         self.consumed = 3 * int(smp._actual_rate)
-        for _ in range(10):  # the first burst: a run begins
-            self.assertFalse(self._write(40))
-        self.consumed += 2 * smp._late_reanchor_bytes  # the next segment
+        for _ in range(2):
+            for _ in range(10):  # a segment's burst, dropped whole
+                self.assertFalse(self._write(40))
+            self.consumed += 2 * smp._late_reanchor_bytes  # the next segment
         with self.assertLogs("c64cast.audio.sampler", "WARNING"):
             self.assertTrue(self._write(40))
         self.assertEqual(smp._reanchors, 1)
 
     def test_a_late_window_spans_no_earlier_activation(self):
-        # The gap test reads the latest late write's read-head position, which
+        # The gap test reads the latest attempt's read-head position, which
         # arm() resets with the read head itself.
         smp = self.smp
-        smp._late_last = 10 * smp._late_reanchor_bytes
+        smp._last_try = 10 * smp._late_reanchor_bytes
+        smp._prev_start = smp._burst_start = (5, 5)
         smp.arm()
-        self.assertEqual(smp._late_last, 0)
+        self.assertEqual(
+            (smp._last_try, smp._burst_start, smp._prev_start, smp._late_ref),
+            (None, None, None, None),
+        )
 
     def test_a_splice_restarts_the_late_window(self):
         # The demuxer's re-seek delay makes the first post-splice audio late;
@@ -1036,6 +1047,336 @@ class SamplerLateReanchorTest(unittest.TestCase):
         smp._reanchors = 3
         smp.arm()
         self.assertEqual(smp._reanchors, 0)
+
+
+class _ScenarioLink(_FakeBackend):
+    """The matrix's fake link: counts REU writes and the non-silent bytes
+    they carry, and fails every write inside ``outage`` (sim seconds)."""
+
+    def __init__(self, clock: list[float], outage: tuple[float, float] | None) -> None:
+        super().__init__()
+        self.clock = clock
+        self.outage = outage
+        self.writes = 0
+        self.audible = 0
+
+    def reu_write(self, offset: int, data: bytes) -> None:
+        if self.outage is not None and self.outage[0] <= self.clock[0] < self.outage[1]:
+            raise ConnectionError("link down")
+        self.writes += 1
+        self.audible += len(data) - data.count(0)
+
+
+class _ScenarioQueue:
+    """The sampler's queue without its blocking wait: on the fake clock a
+    20 ms wait is time that does not pass."""
+
+    def __init__(self) -> None:
+        self.items: list[Any] = []
+
+    def put(self, item: Any, *_a: Any, **_kw: Any) -> None:
+        self.items.append(item)
+
+    def get(self, *_a: Any, **_kw: Any) -> Any:
+        if not self.items:
+            raise s.queue.Empty
+        return self.items.pop(0)
+
+    get_nowait = get
+
+    def empty(self) -> bool:
+        return not self.items
+
+    def qsize(self) -> int:
+        return len(self.items)
+
+
+class _NoSleep:
+    """Stands in for the sampler module's ``time``: its sleeps do not pass
+    the fake clock, and the writer's monotonic is that clock."""
+
+    def __init__(self, clock: list[float]) -> None:
+        self.clock = clock
+
+    def sleep(self, _s: float) -> None:
+        pass
+
+    def monotonic(self) -> float:
+        return self.clock[0]
+
+
+def _run_scenario(
+    rate_of: Any,
+    *,
+    seconds: float,
+    sample_rate: int = 8000,
+    bits: int = 16,
+    lead_seconds: float = 1.0,
+    prebuffer_s: float = 0.5,
+    frame_s: float = 0.01,
+    outage: tuple[float, float] | None = None,
+    splice_at: float | None = None,
+    tail_s: float = 4.0,
+) -> dict[str, float]:
+    """Drive the real sampler's writer on a fake clock against a fake link.
+
+    ``rate_of(t, produced_s, lateness_s)`` is the producer's speed (1.0 is
+    real time) given the sim time, the audio it has produced, and how late
+    the audio's anchor is. The writer steps until idle every ``frame_s``,
+    and a step that raises (an outage) is retried on the next tick, as the
+    writer loop's back-off would. Returns the re-anchor count, the lag of
+    the audio behind its anchor (ms), and over the last ``tail_s`` the share
+    of real time the ring got audio for and the REU writes per second."""
+    clock = [0.0]
+    link = _ScenarioLink(clock, outage)
+    smp = _make(link, sample_rate=sample_rate, bits=bits, lead_seconds=lead_seconds)
+    rate = smp._actual_rate
+    bps = smp.bps
+    smp._running = True
+    smp._read_consumed_bytes = lambda: int(clock[0] * rate) * bps  # type: ignore[method-assign]
+    pre = int(prebuffer_s * rate) * bps
+    smp._written = smp._content_pos = pre
+    q = _ScenarioQueue()
+    smp._q = q  # type: ignore[assignment]
+    frame = max(1, int(frame_s * rate))
+    produced = 0
+    pending = 0.0
+    base_shift = 0
+    tail_from = seconds - tail_s
+    tail_writes = tail_audible = None
+    ticks = int(round(seconds / frame_s))
+    with mock.patch.object(s, "time", _NoSleep(clock)):
+        for tick in range(ticks):
+            t = tick * frame_s
+            lateness_s = (
+                (smp._read_consumed_bytes() + smp._flush_margin - smp._content_pos) / bps / rate
+            )
+            pending += rate_of(t, produced / rate, lateness_s) * frame
+            while pending >= frame:
+                pending -= frame
+                q.put((smp._flush_epoch, b"\x01" * (frame * bps)))
+                produced += frame
+            for _ in range(200):
+                try:
+                    wrote = smp._writer_step(smp._writer_gen)
+                except ConnectionError:
+                    break
+                if not wrote and q.empty():
+                    break
+            clock[0] = (tick + 1) * frame_s
+            if splice_at is not None and abs(clock[0] - splice_at) < frame_s / 2:
+                smp.flush()
+                base_shift = smp._content_pos - (pre + produced * bps)
+            if tail_writes is None and clock[0] >= tail_from:
+                tail_writes, tail_audible = link.writes, link.audible
+    assert tail_writes is not None and tail_audible is not None
+    held = sum(len(item[1]) for item in q.items) + (len(smp._carry[1]) if smp._carry else 0)
+    delivered = produced * bps - held
+    return {
+        "reanchors": smp._reanchors,
+        "lag_ms": (smp._content_pos - (pre + delivered) - base_shift) / bps / rate * 1000,
+        "audible": (link.audible - tail_audible) / (tail_s * rate * bps),
+        "writes_s": (link.writes - tail_writes) / tail_s,
+    }
+
+
+def _stall(start: float, length: float, then: Any) -> Any:
+    def rate_of(t: float, prod: float, late: float) -> float:
+        if t < start:
+            return 1.0
+        if t < start + length:
+            return 0.0
+        return then(t, prod, late)
+
+    return rate_of
+
+
+def _until_caught_up(fast: float) -> Any:
+    # A decoder with a backlog: fast until it has produced up to the wall
+    # clock (the prebuffer was produced ahead of it), then real time.
+    return lambda t, prod, late: fast if prod < t else 1.0
+
+
+def _segments(burst: float) -> Any:
+    """A live stream that stalled 3 s and resumed segmented: ``burst``/10 s
+    of audio fetched in a 0.1 s burst every 2 s, so it stays seconds
+    behind (at 20x it never gains; above that it gains slowly)."""
+
+    def rate_of(t: float, prod: float, late: float) -> float:
+        if t < 2.0:
+            return 1.0
+        if t < 5.0:
+            return 0.0
+        return burst if (t - 5.0) % 2.0 < 0.1 else 0.0
+
+    return rate_of
+
+
+def _hiccups(t: float, prod: float, late: float) -> float:
+    # A decoder that stalls 1.2 s every 4 s and catches up at 3x between.
+    if t < 2.0:
+        return 1.0
+    if (t - 2.0) % 4.0 < 1.2:
+        return 0.0
+    return 3.0 if prod < t else 1.0
+
+
+def _chunk_dropped_before_a_stall(t: float, prod: float, late: float) -> float:
+    # A stall long enough to make the audio late, a moment at 0.5x whose
+    # chunks are dropped whole, a 1.2 s stall, then the backlog at 10x.
+    if t < 3.0:
+        return 1.0
+    if t < 4.3:
+        return 0.0
+    if t < 4.4:
+        return 0.5
+    if t < 5.6:
+        return 0.0
+    return 10.0 if prod < t else 1.0
+
+
+def _behind_then(speed: float) -> Any:
+    """Stalls at 3 s until 0.35 s late, then decodes at ``speed`` until
+    caught up, then at real time."""
+    resumed = [False]
+
+    def rate_of(t: float, prod: float, late: float) -> float:
+        if t < 3.0:
+            resumed[0] = False
+            return 1.0
+        if not resumed[0]:
+            if late < 0.35:
+                return 0.0
+            resumed[0] = True
+        return speed if prod < t else 1.0
+
+    return rate_of
+
+
+class SamplerScenarioMatrixTest(unittest.TestCase):
+    """The lateness-trend re-anchor rule, run end to end through the real
+    sampler on a fake clock and a fake link. Each row is a producer the
+    rule has to answer; the outcome is what a listener would get."""
+
+    # name: (rate_of, run kwargs, expectations). Expectations: reanchors as
+    # an exact count or a (min, max) range, lag_ms as a (min, max) range,
+    # audible as a minimum share, writes_s as a (min, max) range.
+    ROWS: dict[str, tuple[Any, dict[str, Any], dict[str, Any]]] = {
+        "0.95x decoder": (
+            lambda t, prod, late: 0.95,
+            {"seconds": 20.0, "tail_s": 8.0},
+            {"reanchors": (1, 99), "lag_ms": (300, 2000), "audible": 0.9},
+        ),
+        "live 1.0x after a 2 s stall": (
+            _stall(3.0, 2.0, lambda t, prod, late: 1.0),
+            {"seconds": 12.0},
+            {"reanchors": 1, "lag_ms": (500, 2500), "audible": 0.95},
+        ),
+        "prebuffer timeout start": (
+            lambda t, prod, late: 0.0 if t < 3.0 else 1.0,
+            {"seconds": 10.0, "prebuffer_s": 0.0},
+            {"reanchors": 1, "lag_ms": (2000, 4500), "audible": 0.95},
+        ),
+        "8x burst after a 2 s stall": (
+            _stall(3.0, 2.0, _until_caught_up(8.0)),
+            {"seconds": 12.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
+        ),
+        "1.5x decoder 0.35 s behind": (
+            _behind_then(1.5),
+            {"seconds": 12.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
+        ),
+        # Catching up, but 50 ms a window: it would drop everything for
+        # 3.5 s before lining up, so it is re-anchored. At 44.1 kHz that gain
+        # is two write quanta, so slicing jitter is not what decides it.
+        "1.1x decoder 0.35 s behind": (
+            _behind_then(1.1),
+            {"seconds": 12.0, "sample_rate": 44100},
+            {"reanchors": 1, "audible": 0.95},
+        ),
+        "chunk before a 1.2 s stall dropped whole, then 10x": (
+            _chunk_dropped_before_a_stall,
+            {"seconds": 12.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
+        ),
+        "segmented bursty stream seconds behind": (
+            _segments(20.0),
+            {"seconds": 24.0, "tail_s": 6.0},
+            {"reanchors": (1, 2), "audible": 0.9},
+        ),
+        # Each burst starts 50 ms closer (two write quanta at 44.1 kHz): at
+        # that pace it would take a minute to line up, so it is re-anchored.
+        "segmented stream gaining 50 ms a burst": (
+            _segments(20.5),
+            {"seconds": 24.0, "tail_s": 6.0, "sample_rate": 44100},
+            {"reanchors": (1, 2), "audible": 0.9},
+        ),
+        # Late after every stall but on time between them: each stall is a
+        # fresh case, not the next burst of a stream that stays behind.
+        "1.2 s stall every 4 s, caught up between": (
+            _hiccups,
+            {"seconds": 24.0, "tail_s": 8.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.6},
+        ),
+        "1.5 s link outage with retries": (
+            lambda t, prod, late: 1.0,
+            {"seconds": 12.0, "outage": (3.0, 4.5)},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
+        ),
+        "shallow lead (0.15 s at 2 kHz/8-bit)": (
+            lambda t, prod, late: 0.0 if t < 1.0 else 1.0,
+            {
+                "seconds": 6.0,
+                "sample_rate": 2000,
+                "bits": 8,
+                "lead_seconds": 0.15,
+                "prebuffer_s": 0.0,
+                "tail_s": 3.0,
+            },
+            # The lead target is the write floor itself, so every write is
+            # late and re-anchored; what the row pins is that audio lands.
+            {"reanchors": (1, 99), "audible": 0.45},
+        ),
+        "2.5 ms frames at real time": (
+            lambda t, prod, late: 1.0,
+            {"seconds": 6.0, "sample_rate": 44100, "frame_s": 0.0025, "tail_s": 3.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95, "writes_s": (30, 50)},
+        ),
+        "2.5 ms frames at real time, after a splice": (
+            lambda t, prod, late: 1.0,
+            {
+                "seconds": 6.0,
+                "sample_rate": 44100,
+                "frame_s": 0.0025,
+                "splice_at": 2.0,
+                "tail_s": 3.0,
+            },
+            {"audible": 0.95, "writes_s": (30, 50)},
+        ),
+    }
+
+    def run_row(self, name: str) -> dict[str, float]:
+        rate_of, kwargs, _ = self.ROWS[name]
+        with quiet_logging():
+            return _run_scenario(rate_of, **kwargs)
+
+    def test_each_producer_gets_the_outcome_it_should(self):
+        for name, (_, _, expect) in self.ROWS.items():
+            with self.subTest(name):
+                got = self.run_row(name)
+                want = expect.get("reanchors")
+                if isinstance(want, tuple):
+                    self.assertTrue(want[0] <= got["reanchors"] <= want[1], got)
+                elif want is not None:
+                    self.assertEqual(got["reanchors"], want, got)
+                if "lag_ms" in expect:
+                    lo, hi = expect["lag_ms"]
+                    self.assertTrue(lo - 1 <= got["lag_ms"] <= hi + 1, got)
+                self.assertGreaterEqual(got["audible"], expect["audible"], got)
+                if "writes_s" in expect:
+                    lo, hi = expect["writes_s"]
+                    self.assertTrue(lo <= got["writes_s"] <= hi, got)
 
 
 class SamplerArmedBeforeProducerTest(unittest.TestCase):

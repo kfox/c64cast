@@ -125,12 +125,18 @@ WRITER_GIVE_UP_S = 10.0
 
 # Audio is anchored to the read-head clock, so a chunk whose slot has passed
 # is dropped. A producer catching up after a stall drops only for a moment; one
-# that keeps dropping for this long of read-head time is not catching up (a
-# decoder slower than real time, a live stream resumed at 1.0x, a start whose
-# prebuffer timed out), and would otherwise stay silent for good. The writer
-# then re-anchors the audio a cushion past the read head and plays on, behind
-# the picture by the shortfall.
+# that is late for this long of read-head time without catching up (a decoder
+# slower than real time, a live stream resumed at 1.0x, a start whose
+# prebuffer timed out) would otherwise stay silent for good. The writer then
+# re-anchors the audio a cushion past the read head and plays on, behind the
+# picture by the shortfall.
 LATE_REANCHOR_S = 0.5
+
+# Catching up means lining up within this long at the pace the lateness
+# shrank: a decoder at 1.05x that is 0.85 s late gains 25 ms a window and
+# would stay silent for 17 s, so it is re-anchored like one that does not
+# gain at all.
+LATE_CATCHUP_S = 2.0
 
 # The writer holds a partial write quantum for the rest of it only while the
 # lead, after waiting for the rest at real time, would still clear the write
@@ -425,16 +431,21 @@ class UltimateAudioSampler:
         self._written = 0
         self._content_pos = 0
         self._late_bytes = 0  # real PCM dropped because its slot had passed
-        # Read-head byte position where the current run of late writes began
-        # (None while writes land on time), and the LATE_REANCHOR_S run length
-        # in read-head bytes. The read head is the wall clock, so the window is
-        # wall time.
-        self._late_since: int | None = None
-        # Read-head byte position of the latest late write, and whether the
-        # latest write landed any audio. A late run ends across a gap of
-        # LATE_REANCHOR_S only when audio landed just before it.
-        self._late_last = 0
-        self._landed = True
+        # The lateness-trend rule (_late_anchor). Lateness is how far the
+        # audio's anchor sits behind the write floor, in bytes, measured at
+        # each write attempt; the read head is the wall clock, so windows are
+        # wall time. _late_ref is (read head, lateness) where the current
+        # window began, None while writes land on time. A burst is a run of
+        # attempts with no LATE_REANCHOR_S gap between them: _burst_start is
+        # (read head, lateness) at the current one's first late attempt, _prev_start
+        # the previous one's. _last_try is the read head at the latest attempt
+        # that reached the link. Whether a gap preceded the first late attempt
+        # of an activation or a splice does not matter: with no burst behind
+        # it, a gap and a fresh window start the same way.
+        self._late_ref: tuple[int, int] | None = None
+        self._burst_start: tuple[int, int] | None = None
+        self._prev_start: tuple[int, int] | None = None
+        self._last_try: int | None = None
         # Set by a re-anchor, cleared by the next splice or arm(): the producer
         # has shown it cannot keep up, so later late audio is re-anchored at
         # once instead of dropped for another window. It then plays late, as
@@ -442,6 +453,7 @@ class UltimateAudioSampler:
         # every cycle (~20% of a 0.95x decoder).
         self._reanchor_sticky = False
         self._late_reanchor_bytes = int(LATE_REANCHOR_S * self._actual_rate) * self.bps
+        self._late_catchup_bytes = int(LATE_CATCHUP_S * self._actual_rate) * self.bps
         # Re-anchors this activation, and how far they put the sound behind
         # the picture since the last splice re-aligned it.
         self._reanchors = 0
@@ -534,9 +546,9 @@ class UltimateAudioSampler:
             self._written = 0
             self._content_pos = 0
             self._cut_epoch = self._flush_epoch
-            self._late_since = None
-            self._late_last = 0
-            self._landed = True
+            self._late_ref = None
+            self._burst_start = self._prev_start = None
+            self._last_try = None
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
         self._output_silenced = False
@@ -790,7 +802,8 @@ class UltimateAudioSampler:
             self._content_pos = anchor
             # The splice re-aligns sound and picture, and its own late drops
             # (the demuxer's re-seek delay) start a fresh window.
-            self._late_since = None
+            self._late_ref = None
+            self._burst_start = self._prev_start = None
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
             self._eof = False
@@ -893,6 +906,7 @@ class UltimateAudioSampler:
                 return False
             consumed = self._read_consumed_bytes()
             before = self._content_pos
+            last_try = self._last_try
             c = self._late_anchor(consumed)
             # _writer_step sized this payload to the room under the lead target
             # at the old _content_pos; a re-anchor moved it forward, so the tail
@@ -918,49 +932,86 @@ class UltimateAudioSampler:
                 except Exception:
                     # Retried at the same anchor on the next pass: rewriting
                     # the slices that did land is idempotent. A link outage says
-                    # nothing about the producer, so the late run restarts once
-                    # writes land again; timed across the retries' back-off, it
+                    # nothing about the producer, so a failed attempt does not
+                    # feed the trend rule: the window restarts once writes land
+                    # again, and the outage counts as a gap with no attempt.
+                    # Timed across the retries' back-off, the lateness grew and
                     # re-anchored a backlog that would have lined up at once.
-                    self._late_since = None
+                    self._late_ref = None
+                    self._burst_start = self._prev_start = None
+                    self._last_try = last_try
                     self._carry_back(epoch, data)
                     raise
                 self._written = max(self._written, end)
-            self._landed = first < end
             self._late_bytes += min(len(data), max(0, first - c))
             self._content_pos = end
             return first < end
 
+    def _gaining(self, then: tuple[int, int], now: tuple[int, int]) -> bool:
+        """Whether lateness went from ``then`` to ``now`` (each (read head,
+        lateness)) fast enough to be catching up: at a pace that, from
+        ``then``, lines up within LATE_CATCHUP_S."""
+        (t0, l0), (t1, l1) = then, now
+        return (l0 - l1) * self._late_catchup_bytes > l0 * (t1 - t0)
+
     def _late_anchor(self, consumed: int) -> int:
         """Under _io_lock: where the next real sample is written. That is
-        _content_pos, unless writes have been late for LATE_REANCHOR_S of
-        read-head time, in which case the producer is not catching up and the
+        _content_pos unless the producer is not keeping up, in which case the
         audio is re-anchored _reanchor_lead past the read head (moving
-        _content_pos). A gap of that long with no late write starts a new
-        run, if the write before the gap landed audio. After one re-anchor,
-        late audio is re-anchored at once until the next splice or arm()."""
+        _content_pos).
+
+        The question is the trend of the lateness L (how far the anchor sits
+        behind the write floor), not how long writes have been late. A
+        producer catching up shrinks L and is left to line up; one that has
+        been late for LATE_REANCHOR_S of read-head time without L shrinking
+        at a pace that lines up within LATE_CATCHUP_S is not catching up
+        (_gaining).
+
+        Within a burst of attempts, L is compared across that window. A gap
+        of the window with no attempt at all says nothing until the producer
+        delivers again (L can only have grown across it), so it starts a new
+        window rather than ending one. Across gaps, the lateness at the start
+        of one burst is compared with the start of the burst before it, once
+        the gap after the later one shows it did not catch up: a producer
+        delivering in bursts seconds behind (a segmented live stream) is no
+        closer (or barely closer) from one burst to the next and is
+        re-anchored, while a decoder that stalls gets the burst after the
+        stall to catch up in, whatever the chunks before the stall did. The comparison waits for that
+        second burst because at the first one after a gap the two cannot be
+        told apart. After one re-anchor, late audio is re-anchored at once
+        until the next splice or arm()."""
         c = self._content_pos
-        floor = consumed + self._flush_margin
-        if c >= floor:
-            self._late_since = None
+        lateness = consumed + self._flush_margin - c
+        last, self._last_try = self._last_try, consumed
+        if lateness <= 0:
+            self._late_ref = None
+            self._burst_start = self._prev_start = None
             return c
-        # A producer seconds behind that delivers in bursts (a segmented live
-        # stream) has every burst dropped whole, with gaps between: that is
-        # one run, or it would never re-anchor and the scene would stay silent.
-        quiet = self._landed and consumed - self._late_last > self._late_reanchor_bytes
-        self._late_last = consumed
+        gap = last is not None and consumed - last >= self._late_reanchor_bytes
+        here = (consumed, lateness)
         if self._reanchor_sticky:
             pass  # already shown slow since the last splice: no window
-        elif self._late_since is None or quiet:
-            # A run is late writes in a row. One late write before a producer
-            # stall and the next after it are not: nothing was dropped in
-            # between, and the producer may be about to burst back on time.
-            self._late_since = consumed
+        elif gap:
+            prev, ended = self._prev_start, self._burst_start
+            self._prev_start, self._burst_start = ended, here
+            self._late_ref = here
+            if prev is None or ended is None or self._gaining(prev, ended):
+                return c
+            # The burst that just ended began too little closer than the one
+            # before it to be catching up.
+        elif self._late_ref is None:
+            self._late_ref = self._burst_start = here
             return c
-        elif consumed - self._late_since < self._late_reanchor_bytes:
-            return c
+        else:
+            if consumed - self._late_ref[0] < self._late_reanchor_bytes:
+                return c
+            if self._gaining(self._late_ref, here):  # a new window
+                self._late_ref = here
+                return c
         anchor = consumed + self._reanchor_lead
         shift = anchor - c
-        self._late_since = None
+        self._late_ref = None
+        self._burst_start = self._prev_start = None
         # A sticky re-anchor did not wait out a window, so its log line does
         # not claim one.
         late_for = "again" if self._reanchor_sticky else f"for {LATE_REANCHOR_S:.1f} s"
