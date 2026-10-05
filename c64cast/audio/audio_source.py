@@ -273,10 +273,12 @@ class AudioFileSource:
     # it covers the sampler's bring-up (the ring prefill, and up to 2 s of
     # prebuffer wait) between the end of decoding and the gate.
     _DRAIN_GRACE_S = 5.0
-    # The most content lag the deadline waits out. A sampler's lag only grows
-    # (each re-anchor adds to it), so a deadline counting all of it could hold
-    # a scene open without end; past this, `finished` ends the scene anyway
-    # and says so.
+    # The most content lag gained after decoding ended that the deadline waits
+    # out. A sampler's lag only grows (each re-anchor adds to it), so a
+    # deadline counting all of it could hold a scene open without end; past
+    # this, `finished` ends the scene anyway and says so. The lag already
+    # there when decoding ended counts whole: it is tail still queued, not
+    # growth, and capped it cut that tail on a long slow stream.
     _MAX_COUNTED_LAG_S = 10.0
 
     def __init__(
@@ -300,12 +302,12 @@ class AudioFileSource:
         self._features: AudioFeatureStream | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        # (seconds of audio pushed, monotonic deadline) once decoding has
-        # ended; None while decoding. The deadline leaves out the sink's
-        # content lag, which `finished` adds as it reads it, up to
-        # `_MAX_COUNTED_LAG_S`. Written once by
-        # the decode thread, read by the playlist thread.
-        self._end: tuple[float, float] | None = None
+        # (seconds of audio pushed, monotonic deadline, the sink's content lag
+        # then) once decoding has ended; None while decoding. The deadline
+        # leaves out the content lag, which `finished` adds as it reads it,
+        # counting at most `_MAX_COUNTED_LAG_S` past the lag recorded here.
+        # Written once by the decode thread, read by the playlist thread.
+        self._end: tuple[float, float, float] | None = None
         # Set once `finished` has logged that the lag cap ended the scene, so
         # the playlist's polling logs it once per decode.
         self._lag_cap_logged = False
@@ -531,8 +533,9 @@ class AudioFileSource:
         rate = float(self._audio.effective_rate or self._audio.sample_rate)
         length = pushed_samples / rate if rate > 0 else 0.0
         played = self._audio.position_seconds() or 0.0
-        played = min(max(played, 0.0), length + self._content_lag())
-        self._end = (length, time.monotonic() + (length - played) + self._DRAIN_GRACE_S)
+        lag = self._content_lag()
+        played = min(max(played, 0.0), length + lag)
+        self._end = (length, time.monotonic() + (length - played) + self._DRAIN_GRACE_S, lag)
 
     def _content_lag(self) -> float:
         """How far the sink plays its audio behind its clock: a sampler's
@@ -552,27 +555,29 @@ class AudioFileSource:
         end = self._end
         if end is None:
             return False
-        length, deadline = end
+        length, deadline, lag_at_end = end
         # A sampler that re-anchored late audio plays it that far behind its
         # clock; ended on the clock alone, the scene cut off the track's tail.
         # The bound waits it out too: re-anchors over a slow stretch add up,
         # and a lag past the grace ended the scene with the tail still queued.
-        # But only up to `_MAX_COUNTED_LAG_S`: the lag only grows, and a
-        # producer that keeps falling behind would otherwise never let the
-        # bound arrive.
+        # But the lag gained after decoding ended counts only up to
+        # `_MAX_COUNTED_LAG_S`: the lag only grows, and a producer that keeps
+        # falling behind would otherwise never let the bound arrive.
         lag = self._content_lag()
         played = self._audio.position_seconds() or 0.0
         if played >= length + lag - 1e-3:
             return True
-        counted = min(lag, self._MAX_COUNTED_LAG_S)
+        counted = min(lag, lag_at_end + self._MAX_COUNTED_LAG_S)
         if time.monotonic() < deadline + counted:
             return False
         if lag > counted and not self._lag_cap_logged:
             self._lag_cap_logged = True
             log.warning(
                 "audio file: ending the scene with the sink's content lag at %.1f s, "
-                "past the %.0f s the end waits for; the re-anchored tail is cut",
+                "%.1f s of it gained after decoding ended, past the %.0f s the end "
+                "waits for; the re-anchored tail may be cut",
                 lag,
+                lag - lag_at_end,
                 self._MAX_COUNTED_LAG_S,
             )
         return True
