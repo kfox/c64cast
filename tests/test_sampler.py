@@ -1143,6 +1143,28 @@ class SamplerLateReanchorTest(unittest.TestCase):
         smp.arm()
         self.assertEqual(smp.content_lag_seconds, 0.0)
 
+    def test_a_splice_or_arm_drops_a_reanchor_whose_write_never_landed(self):
+        # A re-anchor waits for a write to land before it counts. A splice or
+        # arm() anchors the audio afresh, so the first write after it lands at
+        # the new anchor and must not count the old, abandoned one.
+        smp = self.smp
+        for cut in (smp.flush, smp.arm):
+            self._reanchor_once()
+            reanchors = smp._reanchors
+            self.consumed = max(self.consumed, smp._content_pos) + 400
+            with mock.patch.object(self.api, "reu_write", side_effect=OSError("link down")):
+                with self.assertRaises(OSError):
+                    self._write(40)
+            self.assertIsNotNone(smp._unlanded_reanchor)
+            cut()
+            if cut == smp.arm:
+                reanchors = 0
+                smp._written = smp._content_pos = self.consumed + smp._flush_margin
+            with self.assertNoLogs("c64cast.audio.sampler"):
+                self.assertTrue(self._write(40))
+            self.assertEqual(smp._reanchors, reanchors)
+            self.assertEqual(smp.content_lag_seconds, 0.0)
+
     def test_a_splice_or_arm_clears_the_immediate_reanchor(self):
         smp = self.smp
         self._reanchor_once()
