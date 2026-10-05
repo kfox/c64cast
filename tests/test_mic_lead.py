@@ -297,13 +297,16 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
         rig.drift = 32.0
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             leads = []
+            seeded = None
             for _ in range(60):
                 rig.step()
                 leads.append(rig.lead)
-                if rig.servo.reanchors == 1 and len(leads) == 1:
-                    # The overtaking interval's own rate, not the 15 % before it.
-                    self.assertAlmostEqual(rig.servo.drop_frac, 32.0 / RATE, delta=0.015)
+                if seeded is None and rig.servo.reanchors == 1:
+                    seeded = rig.servo.drop_frac
         self.assertEqual(rig.servo.reanchors, 1)
+        # The overtaking interval's own rate, not the 15 % before it.
+        assert seeded is not None
+        self.assertAlmostEqual(seeded, 32.0 / RATE, delta=0.015)
         for lead in leads[-20:]:
             self.assertGreater(lead, 0)
             self.assertLess(abs(lead - REU_MIC_BOOTSTRAP_BYTES), 300)
@@ -321,6 +324,40 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
             rig.servo.tick()
         self.assertEqual(rig.servo.reanchors, 1)
         self.assertAlmostEqual(rig.servo.drop_frac, 1800.0 / RATE, delta=0.01)
+
+    def test_a_stall_that_crosses_a_tick_does_not_set_its_seed_either(self):
+        # The pump halts for the second half of one interval and the first half
+        # of the next. The first tick reads it at half speed and steers; the lap
+        # comes at the second, by which time the rate average has taken in the
+        # first half. Seeded from that average the loop over-drops and overtakes
+        # within the next interval, a second NEUTRAL dropout.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.servo.tick()
+
+        def half_stalled_interval() -> None:
+            rig.t += 1.0
+            rig.pump += (RATE - rig.drift) / 2
+            rig.host += RATE * (1.0 - rig.servo.drop_frac)
+
+        half_stalled_interval()
+        rig.servo.tick()
+        self.assertEqual(rig.servo.reanchors, 0)
+        half_stalled_interval()
+        self.assertGreater(rig.lead, ml.MIC_LEAD_REANCHOR_ABOVE)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual(rig.servo.reanchors, 1)
+        self.assertAlmostEqual(rig.servo.drop_frac, 1800.0 / RATE, delta=0.01)
+        rig.servo.take_reanchor()
+        rig.host = rig.pump + REU_MIC_BOOTSTRAP_BYTES
+        rig.t += 1.0
+        rig.pump += RATE - rig.drift
+        rig.host += RATE * (1.0 - rig.servo.drop_frac)
+        for _ in range(30):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 1)
 
 
 class MicLeadOpenLoopTest(unittest.TestCase):
