@@ -168,7 +168,9 @@ class HardwareProfile:
         if self.write_cost_per_byte_s <= 0:
             return sys.maxsize
         knee = (self.write_cost_floor_s - self.write_cost_intercept_s) / self.write_cost_per_byte_s
-        return max(0, int(knee))
+        # A per-byte cost small enough to divide into infinity is the same
+        # flat link, and `int(inf)` would raise rather than say so.
+        return max(0, int(min(knee, sys.maxsize)))
 
     # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580

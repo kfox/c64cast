@@ -13,6 +13,7 @@ stubs out the socket connect, and the ABC contract is checked structurally.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
+import sys
 import unittest
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, replace
@@ -128,6 +129,11 @@ class ProfileAndRegistryTest(unittest.TestCase):
         # as far as its other bounds allow, not fall back to one write per chunk.
         flat = replace(ULTIMATE_PROFILE, write_cost_per_byte_s=0.0)
         self.assertGreaterEqual(flat.free_payload_bytes(), 1 << 30)
+
+    def test_a_vanishing_per_byte_cost_is_unbounded_too(self):
+        # A subnormal slope divides the floor's headroom into infinity.
+        tiny = replace(ULTIMATE_PROFILE, write_cost_per_byte_s=5e-324)
+        self.assertEqual(tiny.free_payload_bytes(), sys.maxsize)
 
     def test_profile_is_frozen(self):
         with self.assertRaises(FrozenInstanceError):
