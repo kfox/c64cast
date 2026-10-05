@@ -349,7 +349,11 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             rig.servo.tick()
         self.assertEqual(rig.servo.reanchors, 1)
-        self.assertAlmostEqual(rig.servo.drop_frac, 1800.0 / RATE, delta=0.01)
+        # The tick that steered on the first half folded its error into the
+        # integrator: one tick's worth, short of the lap limit, on top of 15 %.
+        one_tick = ml.MIC_LEAD_KI * ml.MIC_LEAD_REANCHOR_ABOVE / RATE
+        self.assertGreater(rig.servo.drop_frac, 1800.0 / RATE - 0.01)
+        self.assertLess(rig.servo.drop_frac, 1800.0 / RATE + one_tick)
         rig.servo.take_reanchor()
         rig.host = rig.pump + REU_MIC_BOOTSTRAP_BYTES
         rig.t += 1.0
@@ -358,6 +362,27 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
         for _ in range(30):
             rig.step()
         self.assertEqual(rig.servo.reanchors, 1)
+
+    def test_a_crawl_that_laps_for_several_ticks_does_not_set_its_seed(self):
+        # The pump crawls at a tenth of its rate for three intervals, lapping
+        # at every tick. Each lapping interval reads the pump as slow; a seed
+        # taken from a rate average, however far back it reaches, is pulled
+        # down by the third, over-drops, and overtakes once the pump resumes.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.drift = RATE - 0.1 * (RATE - 1800.0)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            for _ in range(3):
+                rig.step()
+            rig.drift = 1800.0
+            rig.step()  # its tick laps on the third crawling interval
+        crawled = rig.servo.reanchors
+        self.assertEqual(crawled, 3)
+        self.assertAlmostEqual(rig.servo.drop_frac, 1800.0 / RATE, delta=0.01)
+        for _ in range(30):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, crawled)
 
 
 class MicLeadOpenLoopTest(unittest.TestCase):

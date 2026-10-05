@@ -298,8 +298,6 @@ class MicLeadServo:
         self._open_loop = False
         self._last_pump: tuple[int, float] | None = None
         self._pump_rate = float(sample_rate)
-        # The rate average as it stood before the last interval was folded in.
-        self._prior_rate = float(sample_rate)
         self.lead_min: int | None = None
         self.lead_max: int | None = None
         self.reanchors = 0
@@ -377,16 +375,18 @@ class MicLeadServo:
         lead, pump, at = m
         self._note_success()
         last, self._last_pump = self._last_pump, (pump, at)
-        # A re-anchor reseeds the loop from the fastest of this interval's
-        # rate and the rate average before each of the last two intervals. A
-        # stall reads the pump as slow (and ends in a lap); a speed-up reads it
-        # as fast (and ends in an overtake), where the earlier rates are the
-        # stale ones. The slower reading is the one not to trust: an over-drop
-        # has the ~1.6 KB target to fall through zero, an under-drop ~6.6 KB to
-        # the lap limit. Two intervals back, because a stall that crosses a
-        # tick has already pulled the average toward its first half by the
-        # time the second half laps.
-        seed_rate = max(self._pump_rate, self._prior_rate)
+        # A re-anchor reseeds the loop from the faster of two rates: the one
+        # the integrator already holds the host to, and this interval's own.
+        # A lap or an overtake moves the lead, not the rate mismatch, and the
+        # integrator is the loop's slow estimate of that mismatch. A stall
+        # reads the pump as slow (and ends in a lap), but barely moves the
+        # integrator, and a lap reseeds the integrator to itself, so no stall,
+        # however many ticks it spans, sets the seed. A speed-up reads the pump
+        # as fast (and ends in an overtake), where the integrator is the stale
+        # one. The slower reading is the one not to trust: an over-drop has the
+        # ~1.6 KB target to fall through zero, an under-drop ~6.6 KB to the lap
+        # limit.
+        seed_rate = self._rate - MIC_LEAD_KI * self._integ
         if last is not None:
             advanced = (pump - last[0]) % REU_MIC_SIZE
             if advanced == 0:
@@ -396,7 +396,6 @@ class MicLeadServo:
                 return
             if at > last[1]:
                 measured = advanced / (at - last[1])
-                self._prior_rate = self._pump_rate
                 self._pump_rate += 0.5 * (measured - self._pump_rate)
                 seed_rate = max(seed_rate, measured)
         self.lead_min = lead if self.lead_min is None else min(self.lead_min, lead)
