@@ -400,9 +400,15 @@ class SamplerWriterSurvivorTest(unittest.TestCase):
         api.wedge_next = True
         smp.push_samples(np.full(256, 8000, dtype=np.int16))
         self.assertTrue(api.wedged.wait(2.0), "the writer never reached its REU write")
-        with self.assertLogs(level="WARNING") as logs:
+        # "c64cast", not the poll thread alone: whether the wedged write was an
+        # underrun pad (which this stop() also reports) is timing.
+        with self.assertLogs("c64cast", level="WARNING") as logs:
             smp.stop()
         self.assertTrue(any("did not stop" in m for m in logs.output), logs.output)
+        # Runs first among the cleanups (LIFO): the cleanup stop() joins the
+        # released survivor with a real bound, not the 50 ms that made it a
+        # survivor, so a slow worker cannot log "did not stop" between the dots.
+        self.addCleanup(setattr, smp._writer, "_join_timeout", 2.0)
         return smp, api
 
     def test_a_surviving_writer_stays_fenced(self):
