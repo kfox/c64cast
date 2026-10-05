@@ -12,6 +12,7 @@ from unittest import mock
 
 import numpy as np
 import requests
+from _fakes import quiet_logging
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -323,6 +324,109 @@ class SamplerReuseTest(unittest.TestCase):
         self.assertTrue(smp._q.empty())
         self.assertGreater(smp._flush_epoch, epoch)
         self.assertFalse(np.any(smp.get_recent_samples(s.SAMPLE_TAP_SIZE)))
+
+
+class _WedgingBackend(_FakeBackend):
+    """A backend whose next writer-thread REU write blocks until released,
+    the way a REUWRITE does on a stalled link."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.wedge_next = False
+        self.wedged = threading.Event()
+        self.release = threading.Event()
+
+    def reu_write(self, offset: int, data: bytes) -> None:
+        if self.wedge_next and threading.current_thread().name == "uaudio-writer":
+            self.wedge_next = False
+            self.wedged.set()
+            self.release.wait(5.0)
+        super().reu_write(offset, data)
+
+
+class SamplerWriterSurvivorTest(unittest.TestCase):
+    """A writer that outlives stop()'s bounded join must not run beside the
+    next activation's writer."""
+
+    def _wedged_and_stopped(self) -> tuple[s.UltimateAudioSampler, _WedgingBackend]:
+        api = _WedgingBackend()
+        smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.05)
+        self.addCleanup(smp.stop)
+        self.addCleanup(api.release.set)
+        smp.start(prebuffer_timeout=0.01)
+        assert smp._writer is not None
+        smp._writer._join_timeout = 0.05
+        api.wedge_next = True
+        smp.push_samples(np.full(256, 8000, dtype=np.int16))
+        self.assertTrue(api.wedged.wait(2.0), "the writer never reached its REU write")
+        with self.assertLogs(level="WARNING") as logs:
+            smp.stop()
+        self.assertTrue(any("did not stop" in m for m in logs.output), logs.output)
+        return smp, api
+
+    def test_a_surviving_writer_stays_fenced(self):
+        smp, api = self._wedged_and_stopped()
+        self.assertIsNotNone(smp._writer, "the survivor was forgotten")
+        with self.assertRaisesRegex(RuntimeError, "previous writer"):
+            smp.arm()
+        with self.assertRaisesRegex(RuntimeError, "previous writer"):
+            smp.start(prebuffer_timeout=0.01)
+
+    def test_a_released_survivor_writes_nothing_more_and_frees_the_fence(self):
+        smp, api = self._wedged_and_stopped()
+        writer = smp._writer
+        assert writer is not None
+        api.release.set()
+        deadline = time.monotonic() + 2.0
+        while writer.is_running() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(writer.is_running())
+        smp.arm()  # the fence lifts once the survivor has exited
+        self.assertIsNone(smp._writer)
+
+    def test_a_generation_retired_while_waiting_on_the_queue_writes_nothing(self):
+        # stop() and the next start() both land while the writer sits in
+        # q.get(); the check under _io_lock is what keeps its chunk out.
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=8000, bits=8)
+        smp._running = True
+        gen = smp._writer_gen
+        real_get = smp._q.get
+
+        def get_across_a_restart(*a: Any, **kw: Any) -> Any:
+            smp._writer_gen += 2  # a stop() and a start() happened meanwhile
+            smp._q.get = real_get  # type: ignore[method-assign]
+            return b"\x40" * 64
+
+        smp._q.get = get_across_a_restart  # type: ignore[method-assign]
+        smp._read_consumed_bytes = lambda: 0  # type: ignore[method-assign]
+        smp._writer_loop(gen)
+        self.assertEqual(api.reu_writes, [])
+        self.assertEqual(smp._written, 0)
+
+    def test_start_refuses_a_running_sampler(self):
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=8000, bits=8, prebuffer_seconds=0.01)
+
+        def quiet_stop() -> None:
+            # Whether the idle writer padded first is timing; the report is
+            # asserted by test_stop_reports_underruns_once.
+            with quiet_logging():
+                smp.stop()
+
+        self.addCleanup(quiet_stop)
+        smp.start(prebuffer_timeout=0.01)
+        with self.assertRaisesRegex(RuntimeError, "already started"):
+            smp.start(prebuffer_timeout=0.01)
+
+    def test_stop_reports_underruns_once(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._underrun_pads = 2
+        with self.assertLogs("c64cast.audio.sampler", level="WARNING") as logs:
+            smp.stop()
+        self.assertIn("2 underrun pads", logs.output[0])
+        with self.assertNoLogs("c64cast.audio.sampler", level="WARNING"):
+            smp.stop()
 
 
 class SamplerArmedBeforeProducerTest(unittest.TestCase):

@@ -672,6 +672,8 @@ Channel 0 is programmed as an A↔B loop over `[ring_base, ring_base+ring_size)`
 
 **One sampler, many activations.** `scene_factory` builds a scene's sampler once, and a looping playlist (or `--loop`) runs `setup()` on the same scene again, so the object has to come back from `stop()`. `arm()` clears what an activation leaves behind: the stop latch, the EOF latch, the pushed and written totals, the pause mute, the telemetry and the tap. It also bumps the flush epoch, so a chunk still in flight from the last producer is dropped. Both callers (`VideoScene.setup`, `AudioFileSource.setup`) arm *before* starting their producer. The reset is deliberately not part of `stop()`, because both callers join their producer only after stopping the sampler (the stop is what releases a producer parked on a full queue). Clearing the latch there would let that producer's last chunks into the next activation's prebuffer. `start()` arms a stopped sampler on its own as a backstop, but pushes made before that are dropped.
 
+`stop()` joins the writer with a bounded (1 s) join, and a REUWRITE wedged on a stalled link can outlast it. A writer that survives stays referenced, and `arm()`/`start()` raise `RuntimeError` until it exits, so a second writer never shares the ring and the write head with it. The scene's setup failure path then advances the playlist. Each writer also carries the generation `start()` gave it and re-checks it under `_io_lock` before every write. `start()` refuses a sampler that is already running.
+
 `start()` prefills the ring with NEUTRAL silence plus a prebuffer of real PCM, gates the loop on, and records `gate_time`. A writer thread then REUWRITEs decoded PCM **ahead of a wall-clock-computed read head**:
 
 ```

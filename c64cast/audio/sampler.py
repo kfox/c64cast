@@ -361,6 +361,11 @@ class UltimateAudioSampler:
         self._flush_epoch = 0
         self._io_lock = threading.Lock()
         self._output_silenced = False
+        # Bumped by every start(). A writer carries the generation it was
+        # started with and stops writing once that is no longer current, so one
+        # still waiting on the queue when stop() and the next start() land
+        # cannot write into the new activation's ring.
+        self._writer_gen = 0
 
         self._underrun_pads = 0
         self._lead_min = -1
@@ -403,7 +408,12 @@ class UltimateAudioSampler:
         releases a producer parked on a full queue); clearing the latch in
         stop() would let that producer's last chunks into the next
         activation's prebuffer. `start()` arms by itself when a caller did not,
-        but anything pushed in between is dropped, so call this first."""
+        but anything pushed in between is dropped, so call this first.
+
+        Raises RuntimeError while the last activation's writer is still alive
+        (it outlived stop()'s bounded join), since two writers would share the
+        ring and the write head."""
+        self._refuse_if_writer_survives()
         self._flush_epoch += 1
         while True:
             try:
@@ -413,7 +423,8 @@ class UltimateAudioSampler:
         self._stopped = False
         self._eof = False
         self._pushed_samples = 0
-        self._written = 0
+        with self._io_lock:
+            self._written = 0
         self._output_silenced = False
         self._underrun_pads = 0
         self._lead_min = -1
@@ -421,6 +432,16 @@ class UltimateAudioSampler:
         with self._tap_lock:
             self._tap_buf[:] = 0.0
             self._tap_write = 0
+
+    def _refuse_if_writer_survives(self) -> None:
+        writer = self._writer
+        if writer is None:
+            return
+        if writer.is_running():
+            raise RuntimeError(
+                "sampler: the previous writer thread is still running; refusing to start another"
+            )
+        self._writer = None
 
     def start(self, prebuffer_timeout: float = 2.0) -> None:
         """Prefill the ring with silence, prebuffer ``_prebuffer_target`` bytes
@@ -431,15 +452,22 @@ class UltimateAudioSampler:
         the write-ahead lead so the writer starts already ahead of the reader.
         Only the (smaller) prebuffer target is seeded before gating — the writer
         then ramps the lead up to ``_lead_target`` — so playback starts promptly
-        while the runtime lead stays deep enough to ride out decode stalls."""
+        while the runtime lead stays deep enough to ride out decode stalls.
+
+        Raises RuntimeError on a sampler that is already running, or whose
+        last writer is still alive."""
+        if self._running:
+            raise RuntimeError("sampler is already started")
+        self._refuse_if_writer_survives()
         if self._stopped:
             self.arm()
         self._prefill_neutral()
 
         prebuf = self._collect_prebuffer(self._prebuffer_target, prebuffer_timeout)
-        if prebuf:
-            self._write_wrapped(0, prebuf)
-        self._written = len(prebuf)
+        with self._io_lock:
+            if prebuf:
+                self._write_wrapped(0, prebuf)
+            self._written = len(prebuf)
 
         program_channel(
             self.api,
@@ -457,11 +485,13 @@ class UltimateAudioSampler:
             ref_clock=self._ref_clock,
         )
         self._gate_time = time.monotonic()
+        self._writer_gen += 1
+        gen = self._writer_gen
         self._running = True
-        # The loop stops on self._running, not the PollThread event; the poll
-        # supplies only the daemon-thread start/join lifecycle.
+        # The loop stops on self._running and its generation, not the PollThread
+        # event; the poll supplies only the daemon-thread start/join lifecycle.
         self._writer = PollThread(
-            lambda stop: self._writer_loop(), name="uaudio-writer", manual=True, join_timeout=1.0
+            lambda stop: self._writer_loop(gen), name="uaudio-writer", manual=True, join_timeout=1.0
         )
         self._writer.start()
         ref_note = "" if self._ref_clock == SAMPLER_REF_CLOCK else f", ref {self._ref_clock} Hz"
@@ -608,8 +638,8 @@ class UltimateAudioSampler:
             self._written = new_written
             self._eof = False
 
-    def _writer_loop(self) -> None:
-        while self._running:
+    def _writer_loop(self, gen: int) -> None:
+        while self._running and gen == self._writer_gen:
             # Captured before the blocking get, so a chunk dequeued just before
             # a splice is discarded rather than written past the ring cut-over.
             # NEUTRAL pads are epoch-immune.
@@ -638,7 +668,11 @@ class UltimateAudioSampler:
                 self._underrun_pads += 1
             # Serialized against flush()'s ring cut-over, which also reads
             # _written and rewrites the ring. Held for one chunk (tens of ms).
+            # The generation is re-checked here because a stop() and the next
+            # start() can both land while this thread waits on the queue.
             with self._io_lock:
+                if gen != self._writer_gen:
+                    return
                 self._write_wrapped(self._written % self.ring_size, data)
                 self._written += len(data)
 
@@ -730,12 +764,18 @@ class UltimateAudioSampler:
 
     def stop(self) -> None:
         """Gate the channel off and join the writer thread. Firmware-config
-        restore (Audio Mixer / I/O map) is separate, in doctor at teardown."""
+        restore (Audio Mixer / I/O map) is separate, in doctor at teardown.
+
+        A writer that outlives the bounded join (wedged in a REU write on a
+        stalled link) stays referenced, so the next arm()/start() refuses
+        rather than run a second writer beside it. With `_running` cleared,
+        it writes nothing more once that write returns."""
         self._stopped = True
         self._running = False
         if self._writer is not None:
             self._writer.stop()
-            self._writer = None
+            if not self._writer.is_running():
+                self._writer = None
         try:
             gate_off(self.api, self.channel)
         except Exception as e:  # best-effort; teardown must not raise
@@ -758,3 +798,7 @@ class UltimateAudioSampler:
                 self._lead_target,
                 self.ring_size,
             )
+        # Reported once per activation, however often stop() is called.
+        self._underrun_pads = 0
+        self._lead_min = -1
+        self._lead_max = -1
