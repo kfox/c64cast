@@ -473,10 +473,12 @@ class RateServo:
         self.read_holdoff_until = time.monotonic() + self.read_holdoff_s
         level = logging.DEBUG if self.slow_read_warned else logging.WARNING
         self.slow_read_warned = True
-        # With the servo off only the stall re-anchor reads R, and there is no
-        # pace correction to hold.
+        # With the servo off only the stall re-anchor honors the backoff (the
+        # pause stomp still reads R), and there is no pace correction to hold.
         consequence = (
-            "holding the pace correction" if self._st.host_dma_servo else "not reading it again"
+            "holding the pace correction"
+            if self._st.host_dma_servo
+            else "the stall re-anchor is not reading it again"
         )
         log.log(
             level,
