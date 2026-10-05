@@ -29,7 +29,13 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from c64cast.hw import hw_provision
-from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
+from c64cast.hw.c64 import (
+    CIA_TIMER_LATCH_MAX,
+    cpu_clock,
+    max_safe_sample_rate,
+    nearest_latch,
+    nmi_rate_safety,
+)
 from c64cast.sid import emusid_mixer
 
 from .config import (
@@ -757,18 +763,23 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
-def _sample_rate_hint() -> str:
+def _sample_rate_hint(system: str, rate: int) -> str:
     """Remediation text for an unsafe `[audio].sample_rate`, derived from the
-    shipped default and the per-standard ceilings.
+    shipped default and the per-standard bounds.
 
     Both numbers used to be spelled out here, and both went stale the moment
     the default moved (the hint still recommended 10500 long after 12000
     shipped). Deriving them means the advice cannot contradict the config.
+    A rate refused for being too slow for the 16-bit timer (or not positive)
+    gets told to go up, not down.
     """
     default_rate = AudioCfg().sample_rate
-    ntsc, pal = max_safe_sample_rate("NTSC"), max_safe_sample_rate("PAL")
     clears_both = all(nmi_rate_safety(std, default_rate)[0] == "ok" for std in ("NTSC", "PAL"))
     default_note = f" The shipped default of {default_rate} Hz clears both." if clears_both else ""
+    if rate <= 0 or nearest_latch(rate, system) > CIA_TIMER_LATCH_MAX:
+        floor = -(-cpu_clock(system) // (CIA_TIMER_LATCH_MAX + 1))
+        return f"Raise [audio].sample_rate — min is ~{floor} Hz on {system}.{default_note}"
+    ntsc, pal = max_safe_sample_rate("NTSC"), max_safe_sample_rate("PAL")
     return (
         f"Lower [audio].sample_rate — max safe is ~{ntsc} Hz on NTSC, "
         f"~{pal} Hz on PAL.{default_note}"
@@ -798,7 +809,7 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
                     category="audio",
                     subject=f"{name}/sample_rate",
                     message=message,
-                    hint=_sample_rate_hint(),
+                    hint=_sample_rate_hint(system, rate),
                 )
             )
             continue
@@ -806,7 +817,9 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
         # needs latch headroom above the configured rate; too little and it cannot
         # fully cancel the video slowdown, acutely so on PAL's tighter clock.
         if cfg.audio.nmi_rate_adaptive:
-            headroom = max_safe_sample_rate(system) / rate - 1.0
+            # Floored at zero: the load rule accepts a rate whose nearest latch is
+            # the ceiling itself (up to ~13.7 kHz NTSC), past max_safe_sample_rate.
+            headroom = max(0.0, max_safe_sample_rate(system) / rate - 1.0)
             if headroom < 0.03:
                 out.append(
                     Diagnostic(
