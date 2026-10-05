@@ -274,7 +274,7 @@ class AudioFileSource:
     # prebuffer wait) between the end of decoding and the gate.
     _DRAIN_GRACE_S = 5.0
     # The most content lag gained after decoding ended that the deadline waits
-    # out. A sampler's lag only grows (each re-anchor adds to it), so a
+    # out. A sampler's lag grows with each re-anchor, so a
     # deadline counting all of it could hold a scene open without end; past
     # this, `finished` ends the scene anyway and says so. The lag already
     # there when decoding ended counts whole: it is tail still queued, not
@@ -561,8 +561,9 @@ class AudioFileSource:
         # The bound waits it out too: re-anchors over a slow stretch add up,
         # and a lag past the grace ended the scene with the tail still queued.
         # But the lag gained after decoding ended counts only up to
-        # `_MAX_COUNTED_LAG_S`: the lag only grows, and a producer that keeps
-        # falling behind would otherwise never let the bound arrive.
+        # `_MAX_COUNTED_LAG_S`: the lag grows with each re-anchor, and a
+        # producer that keeps falling behind would otherwise never let the
+        # bound arrive.
         lag = self._content_lag()
         played = self._audio.position_seconds() or 0.0
         if played >= length + lag - 1e-3:
