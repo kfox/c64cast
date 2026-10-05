@@ -148,6 +148,17 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertNotIn("s3cr3t", out)
         self.assertIn("Bearer REDACTED", out)
 
+    def test_a_bearer_token_under_a_secret_name_is_covered(self):
+        """A secret name's unquoted value ends at the space after `Bearer`, so
+        that word alone was masked and the token behind it was not — the same
+        whether the name is raw or found inside an encoded value."""
+        for line, want in (
+            ("access_token: Bearer s3cr3t", "access_token: REDACTED REDACTED"),
+            ("u=%2526token%253D Bearer s3cr3t", "u=%2526token%253D REDACTED REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
     def test_a_bare_key_or_sig_parameter_is_covered(self):
         """The spellings a signed media or feed URL uses. `-vv` releases the
         urllib3 loggers, whose per-request record carries the query string, so a

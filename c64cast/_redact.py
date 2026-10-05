@@ -100,11 +100,16 @@ _SECRET_VALUE = re.compile(
         | (?(pct2) (?: (?!%(?:25)?26) [^\s&"',}] )+
         | (?(pct) (?: (?!%26) [^\s&"',}] )+ | [^\s&"',}]+ ) ) )
     )
-    |
-    (?P<bearer_prefix>\bBearer\s+) (?P<bearer_value>[^\s"',}]+)
     """.replace("{key}", _SECRET_KEY),
     re.IGNORECASE | re.VERBOSE,
 )
+
+#: `Bearer VALUE`, searched for on its own rather than as a third branch of
+#: :data:`_SECRET_VALUE`. One pattern's matches cannot overlap, so there an
+#: unquoted value ending at the space after `Bearer` took the word as the whole
+#: secret and hid the token behind it: `access_token: Bearer eyJ…` kept the
+#: `eyJ…`.
+_BEARER_VALUE = re.compile(r"\bBearer\s+(?P<value>[^\s\"',}]+)", re.IGNORECASE)
 
 _SECRET_KEY_RE = re.compile(_SECRET_KEY, re.IGNORECASE | re.VERBOSE)
 
@@ -168,9 +173,13 @@ def _scheme_start(line: str, separator: int) -> int:
 Span = tuple[int, int]
 
 
-def _value_span(m: re.Match[str]) -> Span:
-    """Where the secret a :data:`_SECRET_VALUE` match found sits in its text."""
-    return m.span("kv_value") if m.group("kv_prefix") is not None else m.span("bearer_value")
+def _value_spans(text: str) -> list[Span]:
+    """Where in `text` the name rule finds a secret value: each value a
+    :data:`_SECRET_VALUE` key names, and each token :data:`_BEARER_VALUE`
+    finds. The two may overlap."""
+    return [m.span("kv_value") for m in _SECRET_VALUE.finditer(text)] + [
+        m.span("value") for m in _BEARER_VALUE.finditer(text)
+    ]
 
 
 def _splice(text: str, spans: Sequence[Span]) -> str:
@@ -263,13 +272,10 @@ def redact_secrets(text: str) -> str:
     run over the userinfo-masked text, since a quote inside the userinfo can
     end a value early that the masked text lets run on."""
     userinfo = [(m.start() + 3, m.end() - 1) for m in _INLINE_URL_USERINFO.finditer(text)]
-    spans = userinfo + [_value_span(m) for m in _SECRET_VALUE.finditer(text)]
+    spans = userinfo + _value_spans(text)
     if userinfo:
         masked, out_starts = _splice(text, userinfo), _spliced_starts(userinfo)
-        spans += [
-            _source_span(_value_span(m), userinfo, out_starts)
-            for m in _SECRET_VALUE.finditer(masked)
-        ]
+        spans += [_source_span(span, userinfo, out_starts) for span in _value_spans(masked)]
     return _splice(text, _merge(spans))
 
 
