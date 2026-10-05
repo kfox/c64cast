@@ -160,6 +160,17 @@ class RedactSecretsTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_a_name_inside_a_bearer_value_does_not_hide_a_later_one(self):
+        """A name inside a Bearer value starts a match once the two rules are
+        searched apart, and its quoted value can close inside a later name's
+        quoted value: `bcdef` came back whole."""
+        for line in (
+            "Bearer token=' x secret=\"a'bcdef\"",
+            "u64://h:p@h Bearer token=' x secret=\"a'bcdef\"",
+        ):
+            with self.subTest(line=line):
+                self.assertNotIn("bcdef", redact_secrets(line))
+
     def test_a_bearer_after_a_percent_escape_is_covered(self):
         """The escape's hex digit leaves no word boundary before `Bearer`, and
         a secret name's value ends at the space after it, so the token behind

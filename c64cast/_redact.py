@@ -132,6 +132,18 @@ _BEARER_VALUE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+#: :data:`_SECRET_VALUE` with `Bearer VALUE` back as a branch of its own, as it
+#: was before the two were searched apart: a Bearer value is stepped over whole,
+#: so no name starts inside it. Apart, a name can, and its quoted value can then
+#: close inside a later name's quoted value and hide that name: in
+#: `Bearer token=' x secret="a'bc"` the `token` value ends at the `'` inside
+#: `"a'bc"` and kept `bc`. What this finds is added to the other spans, never
+#: used in place of them, so it can only mask more.
+_SECRET_VALUE_PAST_BEARER = re.compile(
+    _SECRET_VALUE.pattern + r"""| \bBearer\s+[^\s"',}]+""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 _SECRET_KEY_RE = re.compile(_SECRET_KEY, re.IGNORECASE | re.VERBOSE)
 
 _TRIPLE = ('"""', "'''")
@@ -328,14 +340,22 @@ def _hidden_values(text: str, outer: re.Match[str], reach: list[int]) -> list[Sp
 def _value_spans(text: str) -> list[Span]:
     """Where in `text` the name rule finds a secret value: each value a
     :data:`_SECRET_VALUE` key names, each one a name inside that value names
-    (:func:`_hidden_values`), and each token :data:`_BEARER_VALUE` finds. They
-    may overlap."""
+    (:func:`_hidden_values`), and each token :data:`_BEARER_VALUE` finds — plus,
+    where there is a Bearer, each value :data:`_SECRET_VALUE_PAST_BEARER` finds.
+    They may overlap."""
     spans: list[Span] = []
     reach = [0, _EVERY]
     for m in _SECRET_VALUE.finditer(text):
         spans.append(m.span("kv_value"))
         spans += _hidden_values(text, m, reach)
-    return spans + [m.span("value") for m in _BEARER_VALUE.finditer(text)]
+    bearers = [m.span("value") for m in _BEARER_VALUE.finditer(text)]
+    if bearers:
+        spans += [
+            m.span("kv_value")
+            for m in _SECRET_VALUE_PAST_BEARER.finditer(text)
+            if m.group("kv_prefix") is not None
+        ]
+    return spans + bearers
 
 
 def _splice(text: str, spans: Sequence[Span]) -> str:
