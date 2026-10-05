@@ -115,7 +115,11 @@ _SECRET_VALUE = re.compile(
 #: next search starts where it does: in `Bearer Bearer eyJ…` the second
 #: `Bearer` is the first one's value and the start of a match of its own. A
 #: value holds no whitespace and a match needs some after its `Bearer`, so no
-#: character is read as a value twice.
+#: character is read as a value twice. That holds after a raw space or `+`, not
+#: after an encoded one: the match consumes the `%20`, and its hex digit is what
+#: a `Bearer` with no `\b` before it has to follow, so in `Bearer%20Bearer%20abc`
+#: the second `Bearer` starts no match and `abc` is kept. In a run of them only
+#: every other `Bearer` starts one.
 #:
 #: `Bearer` is also tried right after a percent-escape, as a name is: in
 #: `%22token%22%3ABearer abc` the escape's hex digit leaves no `\b` before it,

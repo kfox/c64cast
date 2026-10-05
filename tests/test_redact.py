@@ -192,9 +192,10 @@ class RedactSecretsTest(unittest.TestCase):
                 self.assertEqual(redact_secrets(line), want)
 
     def test_a_long_run_of_encoded_bearers_is_redacted_in_linear_time(self):
-        """Each `Bearer` is also the previous one's value. A value that ran
-        past an encoded space read the rest of the run once per `Bearer`, which
-        is quadratic: 144 KB of `Bearer%20` took 3.6 s."""
+        """Every other `Bearer` in the run starts a match, and the one between
+        is its value (the `%20` a match consumes leaves that one no escape to
+        follow). A value that ran past an encoded space read the rest of the run
+        once per match, which is quadratic: 144 KB of `Bearer%20` took 3.6 s."""
         line = "Bearer%20" * 16_000
         start = time.perf_counter()
         redact_secrets(line)
