@@ -21,48 +21,6 @@ import numpy as np
 
 from c64cast.hw.c64 import REU
 
-# $D418 DAC NMI routine assembled at $C020 (32 bytes).
-# Saves/restores only A; X and Y are untouched.
-#
-# Disassembly (NTSC NMI period = 127 cycles, fast path = 41 cycles total).
-# Three HI bytes are patched at upload time from RING_BUFFER_HI /
-# RING_BUFFER_END_HI so a future ring relocation is a one-line change:
-#   $C020: 48           PHA                  ; save A
-#   $C021: AD 0D DD     LDA $DD0D            ; ack CIA #2 NMI immediately
-#   $C024: AD 00 ??     LDA $????            ; read sample (HI ← RING_BUFFER_HI)
-#   $C027: 8D 18 D4     STA $D418            ; write to SID master volume
-#   $C02A: EE 25 C0     INC $C025            ; advance read-pointer LO
-#   $C02D: D0 0F        BNE $C03E            ; skip HI bump if no wrap
-#   $C02F: EE 26 C0     INC $C026            ; advance read-pointer HI
-#   $C032: AD 26 C0     LDA $C026            ; load HI for end-of-ring check
-#   $C035: C9 ??        CMP #$??             ; end HI ← RING_BUFFER_END_HI
-#   $C037: D0 05        BNE $C03E            ; not at end → done
-#   $C039: A9 ??        LDA #$??             ; reset value ← RING_BUFFER_HI
-#   $C03B: 8D 26 C0     STA $C026            ; restore pointer HI
-#   $C03E: 68           PLA                  ; restore A
-#   $C03F: 40           RTI
-#
-# With a badline (40 stolen cycles): handler takes 81 cycles total — well
-# within the 127-cycle NTSC NMI period, so no NMI stacking occurs.
-NMI_ROUTINE = bytes.fromhex(
-    "48"  # PHA
-    "AD0DDD"  # LDA $DD0D      ; ack NMI
-    "AD0000"  # LDA $00??      ; read sample (HI patched at offset 6)
-    "8D18D4"  # STA $D418      ; write to volume register
-    "EE25C0"  # INC $C025      ; advance pointer LO
-    "D00F"  # BNE +15        ; → $C03E (done)
-    "EE26C0"  # INC $C026      ; advance pointer HI
-    "AD26C0"  # LDA $C026      ; load HI for wrap check
-    "C900"  # CMP #$??       ; wrap-end HI (patched at offset 22)
-    "D005"  # BNE +5         ; → $C03E (done)
-    "A900"  # LDA #$??       ; reset HI = RING_BUFFER_HI (patched at offset 26)
-    "8D26C0"  # STA $C026      ; restore pointer HI
-    "68"  # PLA
-    "40"  # RTI
-)
-NMI_ROUTINE_PATCH_OFFSET_READ_HI = 6
-NMI_ROUTINE_PATCH_OFFSET_WRAP_HI = 22
-NMI_ROUTINE_PATCH_OFFSET_RESET_HI = 26
 # Where the NMI routine lives in C64 RAM ($C000-$C01F is big_text's).
 NMI_ROUTINE_ADDR = 0xC020
 
@@ -75,6 +33,77 @@ RING_BUFFER_SIZE = 0x2000
 RING_BUFFER_END = RING_BUFFER_ADDR + RING_BUFFER_SIZE
 RING_BUFFER_HI = RING_BUFFER_ADDR >> 8
 RING_BUFFER_END_HI = RING_BUFFER_END >> 8
+
+# The NMI read pointer R is the routine's own LDA operand (offsets 5/6), which
+# the routine increments in place. The host reads it for the servo and both
+# governed pumps read its HI byte on-chip; nothing else writes it.
+READ_PTR_LO_ADDR = NMI_ROUTINE_ADDR + 5  # $C025
+READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
+
+# $D418 DAC NMI routine at NMI_ROUTINE_ADDR (32 bytes), assembled here against
+# the addresses above: the self-modifying operands come from READ_PTR_* and the
+# ring bounds from RING_BUFFER_*, so moving either is a one-line change and the
+# bytes uploaded are exactly these. Saves/restores only A; X and Y are untouched.
+#
+# Disassembly at $C020 (NTSC NMI period = 127 cycles, fast path = 41 cycles):
+#   $C020: 48           PHA                  ; save A
+#   $C021: AD 0D DD     LDA $DD0D            ; ack CIA #2 NMI immediately
+#   $C024: AD 00 40     LDA $4000            ; read sample (operand = R)
+#   $C027: 8D 18 D4     STA $D418            ; write to SID master volume
+#   $C02A: EE 25 C0     INC $C025            ; advance R LO
+#   $C02D: D0 0F        BNE $C03E            ; skip HI bump if no wrap
+#   $C02F: EE 26 C0     INC $C026            ; advance R HI
+#   $C032: AD 26 C0     LDA $C026            ; load HI for end-of-ring check
+#   $C035: C9 60        CMP #$60             ; RING_BUFFER_END_HI
+#   $C037: D0 05        BNE $C03E            ; not at end → done
+#   $C039: A9 40        LDA #$40             ; RING_BUFFER_HI
+#   $C03B: 8D 26 C0     STA $C026            ; restore R HI
+#   $C03E: 68           PLA                  ; restore A
+#   $C03F: 40           RTI
+#
+# With a badline (40 stolen cycles): handler takes 81 cycles total — well
+# within the 127-cycle NTSC NMI period, so no NMI stacking occurs. Its upload
+# and its execution are pinned by tests/test_reu_audio.py's NmiRoutineTest.
+NMI_ROUTINE = bytes(
+    [
+        0x48,  # PHA
+        0xAD,
+        0x0D,
+        0xDD,  # LDA $DD0D     ; ack NMI
+        0xAD,
+        RING_BUFFER_ADDR & 0xFF,
+        RING_BUFFER_HI,  # LDA R         ; read sample
+        0x8D,
+        0x18,
+        0xD4,  # STA $D418
+        0xEE,
+        READ_PTR_LO_ADDR & 0xFF,
+        READ_PTR_LO_ADDR >> 8,  # INC R LO
+        0xD0,
+        0x0F,  # BNE +15 → PLA
+        0xEE,
+        READ_PTR_HI_ADDR & 0xFF,
+        READ_PTR_HI_ADDR >> 8,  # INC R HI
+        0xAD,
+        READ_PTR_HI_ADDR & 0xFF,
+        READ_PTR_HI_ADDR >> 8,  # LDA R HI
+        0xC9,
+        RING_BUFFER_END_HI,  # CMP #end_hi
+        0xD0,
+        0x05,  # BNE +5 → PLA
+        0xA9,
+        RING_BUFFER_HI,  # LDA #start_hi
+        0x8D,
+        READ_PTR_HI_ADDR & 0xFF,
+        READ_PTR_HI_ADDR >> 8,  # STA R HI
+        0x68,  # PLA
+        0x40,  # RTI
+    ]
+)
+assert len(NMI_ROUTINE) == 32, "NMI_ROUTINE length changed — both BNEs must still land on PLA"
+assert NMI_ROUTINE[4] == 0xAD and NMI_ROUTINE_ADDR + 5 == READ_PTR_LO_ADDR, (
+    "READ_PTR_* must name the routine's LDA operand"
+)
 
 # A transport pause NEUTRAL-fills the unplayed span [R + guard, W). The guard
 # leaves a stale tail un-stomped so the fill never races the NMI read head into
@@ -346,9 +375,6 @@ REU_GOVERNOR_MAX_CHUNK = (REU_GOVERNOR_OVERTAKE_GAP_HI - REU_GOVERNOR_GAP_THRESH
 for _chunk in (REU_PUMP_CHUNK_SIZE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS):
     assert _chunk <= REU_GOVERNOR_MAX_CHUNK, f"pump chunk {_chunk} overshoots the skip window"
 del _chunk
-# NMI read pointer HI byte (R_hi): NMI_ROUTINE self-modifying operand at
-# $C026. Both governed pumps read this directly on-chip; the host never writes.
-READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 
 # Host-DMA pacing servo (closed-loop W→R rate match). The worker paces ring
 # writes strictly to wall-clock, so W advances at exactly sample_rate B/s, while
@@ -357,7 +383,6 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 # time.sleep, the loop closes with zero C64 writes: the worker reads R once per
 # chunk and a PI controller stretches or shrinks the per-chunk pace so the ring
 # gap locks near half a ring. See scripts/diags/hostdma_drift_probe.py.
-READ_PTR_LO_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 (R operand low byte)
 HOST_DMA_SERVO_TARGET_GAP = RING_BUFFER_SIZE // 2  # 4096 B (half ring)
 # HW-empirical gains. The drift to cancel is ~310 B/s, i.e. a steady period
 # stretch of ~+5 ms/chunk. KP = 5e-6 s/byte makes a 1000-byte phase error add

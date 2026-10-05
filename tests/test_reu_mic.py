@@ -13,7 +13,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, lose_writes_to, new_streamer, run_irq_handler
+from _fakes import FakeAPI, lose_writes_to, new_streamer, run_irq_handler, written_addresses
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer
@@ -135,6 +135,28 @@ class ReuMicPumpTest(unittest.TestCase):
         src = REU_MIC_BASE + REU_MIC_SIZE - 2 * REU_PUMP_CHUNK_SIZE
         run = self._run(src=src)
         self.assertEqual(self._src(run), src + REU_PUMP_CHUNK_SIZE)
+
+    def test_src_carries_into_its_middle_byte_mid_ring(self):
+        src = REU_MIC_BASE + 0x2FFF - REU_PUMP_CHUNK_SIZE + 1
+        run = self._run(src=src)
+        self.assertEqual(self._src(run), REU_MIC_BASE + 0x3000)
+
+    def test_stores_only_to_the_rec_the_trackers_the_counter_and_the_stack(self):
+        # A store aimed one page off still leaves the trackers looking right
+        # when the src wrap rewrites them, so the footprint is what shows it.
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        allowed = (
+            set(range(0xDF01, 0xDF09))
+            | set(range(t, t + 5))
+            | {REU_PUMP_TICK_COUNTER_ADDR}
+            | set(range(0x0100, 0x0200))
+        )
+        last_chunk_dst = (RING_BUFFER_END_HI << 8) - REU_PUMP_CHUNK_SIZE
+        last_chunk_src = REU_MIC_BASE + REU_MIC_SIZE - REU_PUMP_CHUNK_SIZE
+        for src in (REU_MIC_BASE + 0x2F80, last_chunk_src):
+            for dst in (RING_BUFFER_ADDR, last_chunk_dst):
+                with self.subTest(src=hex(src), dst=hex(dst)):
+                    self.assertLessEqual(written_addresses(self._run(src=src, dst=dst)), allowed)
 
     def test_dst_tracker_wraps_to_the_audio_ring(self):
         last_chunk_dst = (RING_BUFFER_END_HI << 8) - REU_PUMP_CHUNK_SIZE

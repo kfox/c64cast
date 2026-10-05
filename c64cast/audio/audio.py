@@ -55,9 +55,6 @@ from .audio_handlers import (
     NMI_RATE_LOOP_WARMUP_S,
     NMI_ROUTINE,
     NMI_ROUTINE_ADDR,
-    NMI_ROUTINE_PATCH_OFFSET_READ_HI,
-    NMI_ROUTINE_PATCH_OFFSET_RESET_HI,
-    NMI_ROUTINE_PATCH_OFFSET_WRAP_HI,
     PREBUFFER_CHUNKS,
     QUEUE_PUT_TIMEOUT_S,
     READ_PTR_LO_ADDR,
@@ -88,8 +85,6 @@ from .audio_handlers import (
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
-    RING_BUFFER_END_HI,
-    RING_BUFFER_HI,
     RING_BUFFER_SIZE,
     SAMPLE_TAP_SIZE,
     SID_DIGIBOOST_CONTROL,
@@ -414,11 +409,7 @@ class AudioStreamer:
         return self._dac_curve
 
     def _upload_nmi_and_buffers(self) -> None:
-        nmi = bytearray(NMI_ROUTINE)
-        nmi[NMI_ROUTINE_PATCH_OFFSET_READ_HI] = RING_BUFFER_HI
-        nmi[NMI_ROUTINE_PATCH_OFFSET_WRAP_HI] = RING_BUFFER_END_HI
-        nmi[NMI_ROUTINE_PATCH_OFFSET_RESET_HI] = RING_BUFFER_HI
-        self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", bytes(nmi))
+        self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", NMI_ROUTINE)
         self.api.write_memory_file(
             f"{RING_BUFFER_ADDR:04X}", bytes([self._neutral_byte] * RING_BUFFER_SIZE)
         )

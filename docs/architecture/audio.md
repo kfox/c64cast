@@ -199,7 +199,7 @@ The DAC-bias gate release goes behind the mute, for the opposite reason: gate-of
 
 `$4000-$5FFF` is VIC bank 1, chosen over `$8000-$9FFF` so the ring stays out of VIC banks 0 and 2 — the two banks with kernal char-ROM mapped (at `$1000` and `$9000`), which the REU-staged char display modes use as their off-screen swap target. The 6510 NMI handler sees `$4000` as ordinary main RAM regardless of VIC bank.
 
-Three patch offsets in the NMI routine bytes — read address HI, end-compare HI, wrap-reset HI — come from `RING_BUFFER_HI` / `RING_BUFFER_END_HI`, so relocating is a one-line change. Bitmap modes that want VIC bank 1 for themselves would need that relocation; PETSCII never selects bank 1.
+`NMI_ROUTINE` is assembled against the constants rather than patched at upload: the read address and the end-compare and wrap-reset HI bytes come from `RING_BUFFER_*`, and the self-modifying `INC`/`LDA`/`STA` operands come from `READ_PTR_LO_ADDR`/`READ_PTR_HI_ADDR`, which derive from `NMI_ROUTINE_ADDR`. Relocating the ring or the routine is a one-line change. `tests/test_reu_audio.py`'s `NmiRoutineTest` runs the uploaded bytes on py65 across a page carry and the ring wrap. Bitmap modes that want VIC bank 1 for themselves would need that relocation; PETSCII never selects bank 1.
 
 ### `[audio].use_reu_pump` — REU-staged mic streaming
 

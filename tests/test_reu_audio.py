@@ -14,7 +14,16 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import numpy as np
-from _fakes import FakeAPI, lose_writes_to, new_streamer, quiet_logging, run_irq_handler
+from _fakes import (
+    IRQ_ENTRY_A,
+    RTI_RETURN_ADDR,
+    FakeAPI,
+    lose_writes_to,
+    new_streamer,
+    quiet_logging,
+    run_irq_handler,
+    written_addresses,
+)
 
 from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
@@ -25,10 +34,9 @@ from c64cast.audio.audio_handlers import (
     HOST_DMA_SERVO_TARGET_GAP,
     NEUTRAL_SAMPLE,
     NMI_ROUTINE,
-    NMI_ROUTINE_PATCH_OFFSET_READ_HI,
-    NMI_ROUTINE_PATCH_OFFSET_RESET_HI,
-    NMI_ROUTINE_PATCH_OFFSET_WRAP_HI,
+    NMI_ROUTINE_ADDR,
     READ_PTR_HI_ADDR,
+    READ_PTR_LO_ADDR,
     REU_AUDIO_BASE,
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
@@ -81,10 +89,8 @@ def _new_streamer(use_reu_pump: bool = True, **overrides) -> AudioStreamer:
 class RingBufferRelocationTest(unittest.TestCase):
     """The audio ring lives at $4000 (not $8000) so it stays out of VIC
     bank 2, which the REU-staged display modes use as the off-screen swap
-    target. Three hand-written byte locations in the NMI handler embed
-    the ring HI bytes (read addr, end compare, wrap-reset); a fourth in
-    the REU IRQ handler embeds the same. Verify all four agree with the
-    RING_BUFFER_* constants so a single-place address change is enough."""
+    target. The REU IRQ handler embeds the ring bounds as immediates;
+    NmiRoutineTest runs the NMI routine across the same bounds."""
 
     def test_ring_is_in_vic_bank_1(self):
         # VIC banks: 0=$0000-$3FFF, 1=$4000-$7FFF, 2=$8000-$BFFF, 3=$C000-$FFFF.
@@ -101,33 +107,6 @@ class RingBufferRelocationTest(unittest.TestCase):
             "ring must not extend into VIC bank 2 ($8000+)",
         )
 
-    def test_nmi_handler_read_hi_matches_ring_addr(self):
-        # The patch site at offset READ_HI gets RING_BUFFER_HI written into
-        # the LDA $???? operand. Verify the surrounding bytes form a valid
-        # LDA absolute (the opcode is the byte before the patch offset).
-        self.assertEqual(
-            NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_READ_HI - 2], 0xAD, "LDA absolute opcode"
-        )
-
-    def test_nmi_handler_wrap_hi_matches_ring_end(self):
-        # The patch site at offset WRAP_HI is the immediate operand of a
-        # CMP #imm — the opcode at offset WRAP_HI-1 must be $C9. Catches a
-        # future routine edit that shifts byte layouts without updating the
-        # patch offsets (would silently compare against a junk byte).
-        self.assertEqual(
-            NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_WRAP_HI - 1], 0xC9, "CMP immediate opcode"
-        )
-
-    def test_nmi_handler_reset_hi_matches_ring_addr(self):
-        # The wrap-reset literal (LDA #start_hi) at offset RESET_HI gets
-        # RING_BUFFER_HI patched in. Without this third patch the NMI would
-        # wrap back to a stale $80 even after the constant moved, audibly
-        # silent if $8000+ is uninitialized RAM. Opcode at RESET_HI-1 must
-        # be $A9 (LDA immediate).
-        self.assertEqual(
-            NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_RESET_HI - 1], 0xA9, "LDA immediate opcode"
-        )
-
     def test_reu_handler_wrap_check_uses_relocated_end(self):
         # The REU IRQ handler embeds RING_BUFFER_END_HI directly in its
         # CMP #end_hi byte at offset 20 (see REU_IRQ_HANDLER comment).
@@ -138,6 +117,62 @@ class RingBufferRelocationTest(unittest.TestCase):
         self.assertEqual(REU_IRQ_HANDLER[20], RING_BUFFER_END_HI)
         self.assertEqual(REU_IRQ_HANDLER[23], 0xA9, "LDA immediate opcode")
         self.assertEqual(REU_IRQ_HANDLER[24], RING_BUFFER_HI)
+
+
+class NmiRoutineTest(unittest.TestCase):
+    """NMI_ROUTINE, uploaded by the bring-up and EXECUTED on py65 from an
+    interrupt frame until its RTI. It runs once per sample (~12000 times a
+    second), so a branch that misses its PLA leaves the pushed A on the
+    stack and the RTI returns to a garbage address: the C64 crashes on the
+    first sample that does not cross a page."""
+
+    def _run(self, r: int, sample: int = 0x0B):
+        seed = {READ_PTR_LO_ADDR: r & 0xFF, READ_PTR_HI_ADDR: r >> 8, r: sample}
+        return run_irq_handler(NMI_ROUTINE, addr=NMI_ROUTINE_ADDR, seed=seed, rti=True)
+
+    def _r(self, run) -> int:
+        ram = run.memory.ram
+        return ram[READ_PTR_LO_ADDR] | (ram[READ_PTR_HI_ADDR] << 8)
+
+    def _assert_clean_return(self, run) -> None:
+        from c64cast.hw.c64 import CIA2
+
+        self.assertEqual(
+            run.exit_pc, RTI_RETURN_ADDR, "the RTI must return to the interrupted code"
+        )
+        self.assertEqual(run.mpu.sp, 0xFF, "PHA/PLA and the RTI must balance the stack")
+        self.assertEqual(run.mpu.a, IRQ_ENTRY_A, "A must be restored")
+        assert run.memory.access is not None
+        self.assertTrue(run.memory.access[CIA2.ICR], "the NMI must be acked at $DD0D")
+        self.assertLessEqual(
+            written_addresses(run),
+            {0xD418, READ_PTR_LO_ADDR, READ_PTR_HI_ADDR, 0x01FC},
+            "the routine stores only the sample, its own read pointer and its PHA",
+        )
+
+    def test_bring_up_uploads_the_routine_these_tests_run(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertEqual(cast(FakeAPI, s.api).mem_files[f"{NMI_ROUTINE_ADDR:04X}"], NMI_ROUTINE)
+
+    def test_plays_the_sample_at_r_and_advances_r(self):
+        r = RING_BUFFER_ADDR + 0x123
+        run = self._run(r, sample=0x0B)
+        self.assertEqual(run.memory.ram[0xD418], 0x0B)
+        self.assertEqual(self._r(run), r + 1)
+        self._assert_clean_return(run)
+
+    def test_r_carries_into_the_next_page(self):
+        r = RING_BUFFER_ADDR + 0x1FF
+        run = self._run(r)
+        self.assertEqual(self._r(run), r + 1)
+        self._assert_clean_return(run)
+
+    def test_r_wraps_from_the_last_ring_byte_to_the_first(self):
+        run = self._run(RING_BUFFER_END - 1, sample=0x0E)
+        self.assertEqual(run.memory.ram[0xD418], 0x0E)
+        self.assertEqual(self._r(run), RING_BUFFER_ADDR)
+        self._assert_clean_return(run)
 
 
 class ReuIrqHandlerTest(unittest.TestCase):
@@ -563,7 +598,7 @@ class ReuTrackedHandlerTest(unittest.TestCase):
     $C180, and the dst ring wrap. Runs the open-loop body; the governed
     one has its own class below."""
 
-    def _run(self, *, counter: int, dst: int | None = None):
+    def _run(self, *, counter: int, dst: int | None = None, src: int = 0x032211):
         from c64cast.audio.audio_handlers import (
             REU_IRQ_HANDLER_TRACKED,
             REU_PUMP_BODY_SUBROUTINE,
@@ -571,7 +606,6 @@ class ReuTrackedHandlerTest(unittest.TestCase):
             REU_PUMP_TICK_COUNTER_ADDR,
         )
 
-        src = 0x032211  # arbitrary 24-bit REU offset, mid-ring
         dst = RING_BUFFER_ADDR if dst is None else dst
         seed = _tracker_seed(src, dst)
         seed[REU_PUMP_TICK_COUNTER_ADDR] = counter
@@ -630,6 +664,33 @@ class ReuTrackedHandlerTest(unittest.TestCase):
         self.assertEqual(src_after, run.src + REU_PUMP_CHUNK_SIZE)
         dst_after = ram[t + 3] | (ram[t + 4] << 8)
         self.assertEqual(dst_after, run.dst + REU_PUMP_CHUNK_SIZE)
+
+    def test_src_carries_across_a_64k_reu_boundary(self):
+        # A staged track is megabytes long, so its src tracker crosses a 64 KB
+        # bank every ~5.4 s at 12 kHz. A carry that stopped at the MI byte would
+        # replay the first bank forever.
+        src = 0x01FFFF - REU_PUMP_CHUNK_SIZE + 1
+        run = self._run(counter=2, src=src)
+        ram = run.memory.ram
+        self.assertEqual([ram[0xDF04], ram[0xDF05], ram[0xDF06]], [0x80, 0xFF, 0x01])
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        self.assertEqual(ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16), 0x020000)
+
+    def test_stores_only_to_the_rec_the_trackers_the_counter_and_the_stack(self):
+        from c64cast.audio.audio_handlers import REU_PUMP_TICK_COUNTER_ADDR
+
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        allowed = (
+            set(range(0xDF01, 0xDF09))
+            | set(range(t, t + 5))
+            | {REU_PUMP_TICK_COUNTER_ADDR}
+            | set(range(0x0100, 0x0200))
+        )
+        for counter in (1, 2):
+            for dst in (RING_BUFFER_ADDR, RING_BUFFER_END - REU_PUMP_CHUNK_SIZE):
+                with self.subTest(counter=counter, dst=dst):
+                    run = self._run(counter=counter, dst=dst, src=0x01FF80)
+                    self.assertLessEqual(written_addresses(run), allowed)
 
     def test_dst_tracker_wraps_at_ring_end(self):
         # The last chunk before the ring end must wrap the dst tracker back
