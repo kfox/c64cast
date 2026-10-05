@@ -804,6 +804,7 @@ class SamplerLateReanchorTest(unittest.TestCase):
             self.assertEqual(self.api.audible_writes, 0)
             self.assertTrue(self._write(40))
         self.assertIn("re-anchored", logs.output[0])
+        self.assertIn("arrived late for 0.5 s", logs.output[0])
         anchor = self.consumed + smp._reanchor_lead
         self.assertGreaterEqual(smp._reanchor_lead, smp._flush_margin)
         self.assertEqual(self.api.reu_writes[-1], (0x200000 + anchor % smp.ring_size, 40))
@@ -961,9 +962,11 @@ class SamplerLateReanchorTest(unittest.TestCase):
             for _ in range(10):  # a segment's burst, dropped whole
                 self.assertFalse(self._write(40))
             self.consumed += 2 * smp._late_reanchor_bytes  # the next segment
-        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+        with self.assertLogs("c64cast.audio.sampler", "WARNING") as logs:
             self.assertTrue(self._write(40))
         self.assertEqual(smp._reanchors, 1)
+        # Late since the first burst, two segments ago: not one window.
+        self.assertIn("arrived late for 2.0 s", logs.output[0])
 
     def test_a_late_window_spans_no_earlier_activation(self):
         # The gap test reads the latest attempt's read-head position, which
