@@ -623,31 +623,40 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertGreater(writes, 0)
         self.assertLessEqual(writes, -(-6000 // smp._write_quantum), api.reu_writes)
 
-    def test_a_real_time_producer_is_coalesced_above_the_low_watermark(self):
+    def _hold_floor(self, smp: s.UltimateAudioSampler, size: int) -> int:
+        """The lowest lead at which a ``size``-byte partial quantum is held:
+        waiting for the rest at real time still clears the write floor by
+        more than HOLD_GUARD_S."""
+        return smp._flush_margin + smp._hold_guard + (smp._write_quantum - size) + smp.bps
+
+    def test_a_real_time_producer_is_coalesced_below_the_low_watermark(self):
         # A live stream never builds a queue backlog: each pass finds one
-        # frame. Above the watermark the writer waits for a whole quantum.
+        # frame. A splice or a re-anchor leaves it below the low watermark,
+        # and while the lead has the slack the writer still waits for a whole
+        # quantum, without padding meanwhile.
         api = _FakeBackend()
-        smp = self._idle_reader(api, lead_seconds=1.0)
-        self._place(smp, smp._lead_panic + smp.bps)
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        pos = self._hold_floor(smp, 20)
+        self.assertLess(pos, smp._lead_panic)
+        self._place(smp, pos)
         frames = 0
         while (frames + 1) * 20 < smp._write_quantum:
             smp._q.put((smp._flush_epoch, b"\x01" * 20))
             frames += 1
             self.assertFalse(smp._writer_step(smp._writer_gen))
-        self.assertEqual(api.reu_writes, [])
+        self.assertEqual(api.reu_writes, [], "a frame was written, or a pad, while held")
         smp._q.put((smp._flush_epoch, b"\x01" * 20))
         self.assertTrue(smp._writer_step(smp._writer_gen))
-        self.assertEqual(
-            api.reu_writes, [(smp.ring_base + smp._lead_panic + smp.bps, 20 * (frames + 1))]
-        )
+        self.assertEqual(api.reu_writes, [(smp.ring_base + pos, 20 * (frames + 1))])
 
-    def test_at_the_low_watermark_a_partial_quantum_is_written(self):
+    def test_without_the_slack_for_a_whole_quantum_a_partial_one_is_written(self):
         api = _FakeBackend()
-        smp = self._idle_reader(api, lead_seconds=1.0)
-        self._place(smp, smp._lead_panic)
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        pos = self._hold_floor(smp, 20) - smp.bps
+        self._place(smp, pos)
         smp._q.put((smp._flush_epoch, b"\x01" * 20))
         self.assertTrue(smp._writer_step(smp._writer_gen))
-        self.assertEqual(api.reu_writes, [(smp.ring_base + smp._lead_panic, 20)])
+        self.assertEqual(api.reu_writes, [(smp.ring_base + pos, 20)])
 
     def test_an_oversized_chunk_is_split_and_stops_at_the_lead_target(self):
         api = _FakeBackend()
@@ -801,6 +810,30 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.consumed += 100
         self.assertTrue(self._write(400))
         self.assertEqual(smp._reanchors, 0)
+
+    def test_a_reanchored_real_time_producer_is_coalesced(self):
+        # The re-anchor leaves a live stream enough slack over the write floor
+        # to be held to whole quanta, not written one small frame at a time.
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=2000, bits=8, ring_size=0x10000, lead_seconds=4.0)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: self.consumed  # type: ignore[method-assign]
+        self.consumed = 3 * int(smp._actual_rate)
+
+        def frame() -> None:
+            smp._q.put((smp._flush_epoch, b"\x01" * 10))
+            smp._writer_step(smp._writer_gen)
+            self.consumed += 10
+
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while smp._reanchors == 0:
+                frame()
+        before = api.audible_writes
+        quanta = 10
+        for _ in range(quanta * smp._write_quantum // 10):
+            frame()
+        self.assertLessEqual(api.audible_writes - before, quanta + 1)
+        self.assertEqual(smp._reanchors, 1)
 
     def test_repeated_reanchors_are_summarized_at_stop_and_cleared_by_arm(self):
         smp = self.smp

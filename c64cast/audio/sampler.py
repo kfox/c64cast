@@ -132,6 +132,12 @@ WRITER_GIVE_UP_S = 10.0
 # the picture by the shortfall.
 LATE_REANCHOR_S = 0.5
 
+# The writer holds a partial write quantum for the rest of it only while the
+# lead, after waiting for the rest at real time, would still clear the write
+# floor (FLUSH_GUARD_S past the reader) by this much: one bounded queue wait
+# (20 ms) plus a REU write.
+HOLD_GUARD_S = 0.03
+
 
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
     """Sample-rate divider for the sampler reference clock (≥ 1). ``ref_clock``
@@ -382,6 +388,12 @@ class UltimateAudioSampler:
             profile = ULTIMATE_PROFILE
         quantum = min(profile.free_payload_bytes(), self._lead_target // 2, REU_WRITE_SLICE)
         self._write_quantum = max(self.bps, quantum - quantum % self.bps)
+        self._hold_guard = int(HOLD_GUARD_S * self._actual_rate) * self.bps
+        # A real-time producer re-anchored here keeps enough slack over the
+        # write floor to be held to whole quanta, rather than written frame by
+        # frame (a 2.5 ms Opus frame each is 400 writes a second).
+        hold_floor = self._flush_margin + self._write_quantum + self._hold_guard + self.bps
+        self._reanchor_lead = max(self._reanchor_lead, min(hold_floor, self._lead_target))
         # Writer-owned: the unwritten tail of a chunk larger than one write,
         # tagged with its flush epoch like a queue item.
         self._carry: tuple[int, memoryview] | None = None
@@ -831,11 +843,13 @@ class UltimateAudioSampler:
             # producer backpressure, so the lead can't run away.
             time.sleep(0.002)
             return False
-        # Above the low watermark there is time to wait for a whole quantum: a
-        # producer paced at real time (a live stream) never builds a queue
+        # A producer paced at real time (a live stream) never builds a queue
         # backlog, so writing what one pass gathered would write every frame.
-        payload = self._next_payload(room, hold=lead > self._lead_panic)
+        # While the lead has the slack, the writer waits for a whole quantum.
+        payload = self._next_payload(room, slack=lead - self._flush_margin)
         if payload is None:
+            if self._carry is not None:
+                return False  # held for a whole quantum: data is flowing
             return self._pad_underrun(gen)
         return self._write_payload(gen, *payload)
 
@@ -945,13 +959,15 @@ class UltimateAudioSampler:
             data += bytes(carry[1])
         self._carry = (epoch, memoryview(data))
 
-    def _next_payload(self, room: int, *, hold: bool) -> tuple[int, bytes] | None:
+    def _next_payload(self, room: int, *, slack: int) -> tuple[int, bytes] | None:
         """Writer-thread only: the next current-epoch PCM to write, at most
         ``room`` bytes and one slice. Queued chunks are coalesced up to the
         write quantum; a chunk larger than the write is split, its tail
-        carried to the next pass. With ``hold``, less than a quantum is
-        carried rather than written. None when nothing current arrived within
-        the queue timeout, or when it was held."""
+        carried to the next pass. Less than a quantum is carried rather than
+        written while ``slack`` (the lead over the write floor) would still
+        clear HOLD_GUARD_S after the rest of the quantum arrived at real time.
+        None when nothing current arrived within the queue timeout, or when it
+        was held."""
         limit = min(room, REU_WRITE_SLICE)
         limit -= limit % self.bps
         parts: list[bytes | memoryview] = []
@@ -978,7 +994,8 @@ class UltimateAudioSampler:
             size += len(item[1])
         if not parts:
             return None
-        if hold and size < self._write_quantum:
+        short = self._write_quantum - size
+        if short > 0 and slack - short > self._hold_guard:
             self._carry = (epoch, memoryview(b"".join(parts)))
             return None
         whole = memoryview(parts[0]) if len(parts) == 1 else memoryview(b"".join(parts))
