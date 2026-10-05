@@ -1167,6 +1167,24 @@ class SourceSceneTest(unittest.TestCase):
         scene.setup()
         self.assertEqual(scene.duration_s, 30.0)
 
+    def test_a_duration_set_live_outlasts_the_next_setup(self):
+        # The live menu's DURATION sets scene.duration_s between plays. A
+        # follow-the-audio re-size at the next setup() undid it.
+        class _PickedAudio(NullAudioSource):
+            duration_s = 0.0
+
+        audio = _PickedAudio()
+        scene, _mode, _src = self._scene(audio_source=audio)
+        scene.duration_s = 30.0
+        scene.duration_follows_audio = True
+        scene.setup()
+        scene.duration_s = 60.0
+        scene.setup()
+        self.assertEqual(scene.duration_s, 60.0)
+        audio.duration_s = 240.0
+        scene.setup()
+        self.assertEqual(scene.duration_s, 60.0)
+
     def test_competes_for_audio_lock_delegates_to_audio_source(self):
         scene, _mode, _src = self._scene()
         self.assertFalse(scene.competes_for_audio_lock())

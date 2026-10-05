@@ -764,15 +764,23 @@ class SourceScene(Scene):
         self._rolling_fp: RollingForcePalette | None = None
         self.duration_follows_audio = False
         self._unsized_duration_s: float | None = None
+        self._synced_duration_s: float | None = None
 
     def sync_duration_to_audio(self) -> None:
-        """Apply `duration_follows_audio` for the audio source's current pick."""
+        """Apply `duration_follows_audio` for the audio source's current pick.
+
+        A `duration_s` changed since the last sync (the live menu's DURATION)
+        is an explicit duration from then on, as one in the config is."""
         if not self.duration_follows_audio:
+            return
+        if self._synced_duration_s is not None and self.duration_s != self._synced_duration_s:
+            self.duration_follows_audio = False
             return
         if self._unsized_duration_s is None:
             self._unsized_duration_s = self.duration_s
         has_length = float(getattr(self.audio_source, "duration_s", 0.0) or 0.0) > 0.0
         self.duration_s = math.inf if has_length else self._unsized_duration_s
+        self._synced_duration_s = self.duration_s
 
     def competes_for_audio_lock(self) -> bool:
         return self.audio_source.wants_audio_lock
