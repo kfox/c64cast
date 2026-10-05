@@ -88,6 +88,29 @@ class BandTest(unittest.TestCase):
         self.assertGreaterEqual(int(edges[0]), 1)  # DC skipped
         self.assertLessEqual(int(edges[-1]), FFT_SIZE // 2)
 
+    def test_every_band_holds_a_bin_at_any_count(self):
+        # Truncated log spacing repeated the low edges from 10 bands up at
+        # 1024, leaving band 0 empty: it read 0.0 forever and dragged `bass`.
+        # 64 runs the count up to its limit; 1000's log top edge truncates to
+        # 499, one bin short of Nyquist.
+        for fft in (64, 512, 1000, 1024, 2048):
+            for n in range(1, min(40, fft // 2)):
+                edges = band_edges(n, fft)
+                self.assertTrue(np.all(np.diff(edges) >= 1), f"{n} bands at {fft}: {edges}")
+                self.assertEqual(int(edges[0]), 1)
+                self.assertEqual(int(edges[-1]), fft // 2)
+
+    def test_a_many_band_analyzer_reports_no_dead_band(self):
+        a = AudioFeatureAnalyzer(SR, n_bands=12, nominal_dt=DT)
+        _run(a, [_noise(seed=i) for i in range(5)])
+        self.assertTrue(all(b > 0.0 for b in a.snapshot().bands), a.snapshot().bands)
+
+    def test_more_bands_than_bins_is_refused(self):
+        with self.assertRaises(ValueError):
+            band_edges(16, 32)
+        with self.assertRaises(ValueError):
+            AudioFeatureAnalyzer(SR, n_bands=16, fft_size=32)
+
     def test_sweep_moves_the_peak_band_upward(self):
         # A sine sweep must walk the peak band index low→high, monotonically.
         peaks = []

@@ -49,10 +49,28 @@ def band_edges(n_bands: int, fft_size: int) -> np.ndarray:
     rfft yields fft_size//2 + 1 bins. We skip bin 0 (DC) and pick log-spaced
     edges through bin (fft_size//2). Shared with `overlays/spectrum_petscii.py`
     so there is exactly one band-edge definition — the overlay's bars and the
-    analyzer's `bands` describe the same frequency ranges."""
+    analyzer's `bands` describe the same frequency ranges.
+
+    Every band holds at least one bin. Truncated log spacing repeats the low
+    edges once there are more bands than the bottom octaves have bins (10 or
+    more at 1024), which left a band permanently empty, so each edge is
+    pushed at least one bin above the one before; log spacing outgrows that
+    push, so the top edge still lands on Nyquist. That top edge is set
+    outright, because `logspace` can land a hair under an integer (fft_size
+    1000 ends at 499.99…) and truncation then dropped the highest bin. A band
+    count with fewer bins than bands raises rather than reporting a dead
+    band."""
     n_bins = fft_size // 2
-    edges = np.logspace(0, np.log10(n_bins), n_bands + 1)
-    return np.clip(edges.astype(np.int32), 1, n_bins)
+    if not 1 <= n_bands <= n_bins - 1:
+        raise ValueError(
+            f"audio features: {n_bands} bands need at least {n_bands} bins "
+            f"between DC and Nyquist; fft_size {fft_size} has {n_bins - 1}"
+        )
+    edges = np.clip(np.logspace(0, np.log10(n_bins), n_bands + 1).astype(np.int64), 1, n_bins)
+    for i in range(1, n_bands + 1):
+        edges[i] = max(edges[i], edges[i - 1] + 1)
+    edges[n_bands] = n_bins
+    return edges.astype(np.int32)
 
 
 class AnalysisTap:

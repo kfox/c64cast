@@ -292,6 +292,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **`[audio_features].bands` of 10 or more no longer leaves the lowest band
+  dead.** At the default 1024-sample window the lowest band read zero
+  forever, which weakened the bass that drives brightness. Every band now
+  covers at least one frequency bin, and a band count larger than the window
+  can split is refused with an error instead of producing empty bands.
+
 - **Reactive visuals for an audio file now pulse with the beat you hear.**
   The analyzer used to read the newest audio decoded, which runs ahead of
   playback by the audio queued for the C64: about 1.5 seconds on the 4-bit
