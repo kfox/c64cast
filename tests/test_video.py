@@ -973,6 +973,11 @@ class _FakeSamplerAudio(_FakeSceneAudio):
         self.lag_read_at.append(position)
         return self.lag
 
+    def flush(self, *, silence_output: bool = False) -> None:
+        # As the sampler's cut-over does: a splice clears the re-anchor lag.
+        super().flush(silence_output=silence_output)
+        self.lag = 0.0
+
 
 class EmitAudioSeekGuardTest(unittest.TestCase):
     """AVFileSource._emit_audio drops audio while a seek is pending (so stale
@@ -1130,6 +1135,22 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio._position = 9.0
         audio.lag = 0.6  # a re-anchor since the touch
         self.assertAlmostEqual(scene.transport.clock_s(), 8.4)
+
+    def test_a_splice_anchors_on_the_sampler_s_raw_clock(self):
+        # The splice's flush clears the lag, so the heard position is the raw
+        # clock from then on; anchored on the heard position from before the
+        # flush, the picture reached the target that lag ahead of its sound.
+        scene, _, _ = self._resync_scene(position=10.0)
+        audio = _FakeSamplerAudio(position=10.0)
+        scene.audio = audio  # type: ignore[assignment]
+        audio.ring_lead = 0.15
+        audio.lag = 0.3
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        self.assertEqual(audio.lag, 0.0)  # the fake's flush ran
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0 - 0.15)
+        audio._position = 10.15  # the target's first sample is heard
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0)
 
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
