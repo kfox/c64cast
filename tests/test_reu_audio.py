@@ -1560,6 +1560,44 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         self.assertFalse(s._reu_pump_armed)
         self.assertEqual(fake.regs["DD0D"][0], 0x7F)
 
+    def test_a_lost_vector_restore_is_resent(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES + 1)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertEqual(self._vector_writes(fake), [self.KERNAL_IRQ])
+
+    def test_a_vector_restore_that_never_confirms_is_owed_to_stop(self):
+        # Each patch lands but a redial moves the epoch behind it, so the pump
+        # is live on $0314; then every restore is lost. Nothing armed, so only
+        # the owed restore puts the kernal back when the scene stops.
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        real_regs = fake.write_regs
+        vector_writes = [0]
+
+        def write_regs(base, *vals):
+            if base.upper() == f"{VECTORS.IRQ:04X}" and vector_writes[0] < 2 * self.TRIES:
+                vector_writes[0] += 1
+                fake.delivery_epoch += 1
+                if vector_writes[0] > self.TRIES:
+                    return
+            real_regs(base, *vals)
+
+        fake.write_regs = write_regs  # type: ignore[method-assign]
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertEqual(fake.regs["0314"], self.PUMP_IRQ)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+
     def test_a_tracked_install_whose_latch_never_lands_parks_the_body(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
