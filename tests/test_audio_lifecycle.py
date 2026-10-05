@@ -48,6 +48,24 @@ def _make(**kw: Any) -> AudioStreamer:
     return AudioStreamer(api, kw.pop("sample_rate", 8000), kw.pop("system", "NTSC"), **kw)
 
 
+class _SupersedeOnStompRead(AudioStreamer):
+    """An AudioStreamer whose worker is superseded the first time it reads a
+    set pause request: the next scene's start_* landing between a call site's
+    check of the flag and its stomp, deterministically."""
+
+    @property  # type: ignore[override]
+    def _stomp_requested(self) -> bool:
+        requested = bool(self.__dict__.get("_stomp_flag", False))
+        if requested and not self.__dict__.get("_tripped"):
+            self.__dict__["_tripped"] = True
+            self._worker_generation += 1  # the next scene's _start_worker
+        return requested
+
+    @_stomp_requested.setter
+    def _stomp_requested(self, value: bool) -> None:
+        self.__dict__["_stomp_flag"] = value
+
+
 def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> AudioStreamer:
     """A streamer wired for fast, hardware-free worker runs: tiny chunks, a
     high sample rate (a ~2 ms pace period once the NMI latch clamps at the
@@ -713,6 +731,51 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # the pending path, against the chunk about to go out.
         writes = self._superseded_in_a_wrapped_pause_stomp(in_pacing_read=True)
         self.assertEqual(len(writes), 1, f"wrote into the next session's ring: {writes}")
+
+    def _superseded_as_it_reads_the_stomp_request(self, *, steady: bool) -> AudioStreamer:
+        """Run the worker, set the pause request where one call site will see
+        it next (``steady``: the pending path's; else the chunk-in-hand path's,
+        on the first iteration after the arm), and supersede the worker at the
+        moment that site reads the request. Return the streamer afterwards."""
+        s = _make_worker_streamer()
+        s.__class__ = _SupersedeOnStompRead
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+
+        def ask() -> None:
+            if not s.__dict__.get("_asked"):
+                s.__dict__["_asked"] = True
+                s._stomp_requested = True  # the next session's pause
+
+        if steady:
+
+            def pace(*args):  # type: ignore[no-untyped-def]
+                ask()  # after the hand-off, so the pending path sees it
+                return 0.001
+
+            s.servo.next_pace_increment = pace  # type: ignore[method-assign]
+        else:
+            s.nmi.start = lambda **kw: ask()  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertTrue(s.__dict__.get("_tripped"), "no call site read the request")
+        return s
+
+    def test_a_superseded_worker_leaves_the_pending_paths_stomp_request(self):
+        s = self._superseded_as_it_reads_the_stomp_request(steady=True)
+        self.assertTrue(s._stomp_requested, "took the next session's pause request")
+
+    def test_a_superseded_worker_leaves_the_chunk_in_hand_paths_stomp_request(self):
+        s = self._superseded_as_it_reads_the_stomp_request(steady=False)
+        self.assertTrue(s._stomp_requested, "took the next session's pause request")
 
     def test_a_worker_superseded_during_the_arm_leaves_the_next_session_alone(self):
         # The arm reads R and writes the CIA, so it can park as well; past it,
@@ -1604,6 +1667,16 @@ class StallResyncTest(unittest.TestCase):
         s._stomp_ring(audio_mod.RING_BUFFER_ADDR, lambda: not s._superseded(generation))
         self.assertTrue(s._stomp_requested, "took the next session's stomp request")
         self.assertEqual((api.r_reads, api.writes), (0, []))
+
+    def test_a_current_worker_takes_the_pause_stomp_request(self):
+        # The request is cleared only inside _stomp_ring now; a current worker
+        # that left it set would stomp the ring on every chunk after a pause.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s._stomp_requested = True
+        s._stomp_ring(audio_mod.RING_BUFFER_ADDR + 2048, lambda: True)
+        self.assertFalse(s._stomp_requested, "left the pause request set")
+        self.assertEqual(api.r_reads, 1)
 
     def _r_read_returning_after_supersession(self, read_s: float) -> AudioStreamer:
         """A resync whose R read takes ``read_s`` and returns after a stop()
