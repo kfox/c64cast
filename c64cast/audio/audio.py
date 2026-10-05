@@ -60,6 +60,7 @@ from .audio_handlers import (
     QUEUE_PUT_TIMEOUT_S,
     READ_PTR_LO_ADDR,
     REU_AUDIO_BASE,
+    REU_AUDIO_DST_TRACKER_ADDR,
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_GOVERNOR_MAX_CHUNK,
@@ -72,6 +73,7 @@ from .audio_handlers import (
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_PUMP_BODY_SUBROUTINE,
+    REU_MIC_RING_LEAD,
     REU_MIC_SIZE,
     REU_PUMP_BODY_SUBROUTINE,
     REU_PUMP_BODY_SUBROUTINE_ADDR,
@@ -98,6 +100,8 @@ from .audio_handlers import (
     SID_MAHONEY_SR,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
+    mic_ring_lead_ok,
+    mic_ring_seed,
     patch_chunk_size,
     reu_pump_chunk_fits_ring,
     stomp_spans,
@@ -1771,15 +1775,18 @@ class AudioStreamer:
         self._upload_nmi_and_buffers()
 
         # Install the tracked pump with the mic body at $C180: src tracker =
-        # REU_MIC_BASE, dst tracker = RING_BUFFER_ADDR. Every tick reloads all
-        # five REC addresses from the trackers, so a bank-swap REC DMA or a REU
-        # screen push between ticks cannot redirect it (#551). Address control
-        # = 0: both sides auto-increment, no autoload.
+        # REU_MIC_BASE, dst tracker = REU_MIC_RING_LEAD into the ring, where
+        # the NMI reader (still parked at the ring start) is that far behind.
+        # _seed_mic_ring_lead re-measures that lead once both are running.
+        # Every tick reloads all five REC addresses from the trackers, so a
+        # bank-swap REC DMA or a REU screen push between ticks cannot redirect
+        # it (#551). Address control = 0: both sides auto-increment, no
+        # autoload.
         try:
             self._install_tracked_pump(
                 REU_MIC_PUMP_BODY_SUBROUTINE,
                 src=REU_MIC_BASE,
-                dst=RING_BUFFER_ADDR,
+                dst=RING_BUFFER_ADDR + REU_MIC_RING_LEAD,
                 dispatcher_owns_irq=skip_irq_vector_hook,
             )
         except PumpInstallError as e:
@@ -1811,8 +1818,11 @@ class AudioStreamer:
         self.running = True
         self._reu_pump_armed = True
         self._pushed_count = 0
-        # Start the host write head ahead of the pump's read head: steady-state
-        # latency is REU_MIC_BOOTSTRAP_BYTES / sample_rate, ~133 ms at 12 kHz.
+        ring_lead = self._seed_mic_ring_lead()
+        # Start the host write head ahead of the pump's src tracker. Latency is
+        # this lead plus the pump's lead over the NMI in the $4000 ring:
+        # (REU_MIC_BOOTSTRAP_BYTES + REU_MIC_RING_LEAD) / sample_rate, ~0.3 s
+        # at 12 kHz.
         self._mic_reu_write_pos = REU_MIC_BOOTSTRAP_BYTES
 
         # _open_input_stream hardcodes self._mic_callback, so swap in the REU
@@ -1820,16 +1830,89 @@ class AudioStreamer:
         self.mic_stream = self._open_input_stream(device, callback=self._mic_callback_reu)
         self.mic_stream.start()
         self._start_mic_lead_servo()
+        # An unread ring lead is logged as the nominal one it was seeded at.
+        ring_bytes = REU_MIC_RING_LEAD if ring_lead is None else ring_lead
         log.info(
             "audio[reu mic]: device=%d %dHz sensitivity=%.2f noise_gate=%.3f "
-            "bootstrap=%dB (%.0fms latency)",
+            "host lead=%dB + C64 ring lead=%dB%s (%.0fms latency)",
             device,
             self.sample_rate,
             self.sensitivity,
             self.noise_gate,
             REU_MIC_BOOTSTRAP_BYTES,
-            1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate,
+            ring_bytes,
+            "" if ring_lead is not None else " (nominal, unread)",
+            1000 * (REU_MIC_BOOTSTRAP_BYTES + ring_bytes) / self.sample_rate,
         )
+
+    def _read_mic_ring_phase(self) -> tuple[int, int] | None:
+        """``(R, W)`` from one read spanning the NMI read pointer at $C025 and
+        the pump's dst tracker at $C203, so the two come from the same instant
+        and their difference carries no round-trip skew. None when the read
+        fails or either pointer is outside the ring."""
+        span = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
+        try:
+            raw = self.api.read_memory(READ_PTR_LO_ADDR, span)
+        except Exception as e:
+            # A backend that cannot read raises rather than returning None.
+            log.debug("audio[reu mic]: ring pointer read failed: %s", e)
+            return None
+        if raw is None or len(raw) != span:
+            return None
+        w_off = REU_AUDIO_DST_TRACKER_ADDR - READ_PTR_LO_ADDR
+        r = raw[0] | (raw[1] << 8)
+        w = raw[w_off] | (raw[w_off + 1] << 8)
+        if not (
+            RING_BUFFER_ADDR <= r < RING_BUFFER_END and RING_BUFFER_ADDR <= w < RING_BUFFER_END
+        ):
+            return None
+        return r, w
+
+    def _seed_mic_ring_lead(self) -> int | None:
+        """Put the mic pump's write head ``REU_MIC_RING_LEAD`` ahead of the NMI
+        reader in the $4000 ring, once both are running, and return the lead
+        read back (bytes), or None when it could not be read.
+
+        The install seeded the dst tracker that far past the ring start, where
+        R sits until the NMI arms, but the two do not start together: on the
+        solo path the pump starts only at the $0314 patch, after the NMI has
+        already played ~1 KB, and under a dispatcher the pump runs from the
+        moment its body lands, before the NMI arms. So the lead is measured
+        here and, when it is off, the dst tracker is rewritten at a
+        chunk-aligned R + REU_MIC_RING_LEAD and read back. The pump advances
+        the same tracker every tick, and a host write that lands between its
+        load and its store is overwritten, so a read-back that does not show
+        the seed is retried. A backend without reads keeps the install seed."""
+        if not self.api.profile.supports_read:
+            return None
+        phase: int | None = None
+        for attempt in range(TRACKED_PUMP_INSTALL_TRIES + 1):
+            got = self._read_mic_ring_phase()
+            if got is None:
+                log.info(
+                    "audio[reu mic]: could not read the C64 ring pointers; the pump's "
+                    "lead over the NMI stays at its install seed"
+                )
+                return None
+            r, w = got
+            phase = (w - r) % RING_BUFFER_SIZE
+            if mic_ring_lead_ok(phase):
+                return phase
+            if attempt == TRACKED_PUMP_INSTALL_TRIES:
+                break
+            dst = mic_ring_seed(r)
+            self.api.write_memory(
+                f"{REU_AUDIO_DST_TRACKER_ADDR:04X}", f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}"
+            )
+            self.api.flush()
+        log.warning(
+            "audio[reu mic]: the pump's lead over the NMI reads %s B after %d seed(s), "
+            "not ~%d B; mic audio may run late or replay lap-old audio",
+            phase,
+            TRACKED_PUMP_INSTALL_TRIES,
+            REU_MIC_RING_LEAD,
+        )
+        return phase
 
     def _start_mic_lead_servo(self) -> None:
         """Close the loop on the write head's lead over the pump (#560), or

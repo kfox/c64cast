@@ -685,6 +685,8 @@ _TRK_HI_BYTE = (REU_AUDIO_SRC_TRACKER_ADDR >> 8) & 0xFF
 # dst HI byte of the tracker (src LO/MI/HI at +0..+2, dst LO/HI at +3..+4): the
 # tracked governor's write head, since $DF03 holds a video address between pumps.
 _TRK_DST_HI_ADDR = REU_AUDIO_SRC_TRACKER_ADDR + 4
+# dst LO/HI as a pair: the host reseeds the mic pump's write head here.
+REU_AUDIO_DST_TRACKER_ADDR = REU_AUDIO_SRC_TRACKER_ADDR + 3
 
 # Same pattern as api.py SID_PLAYER_MC_TEMPLATE: the handler DECs a counter and
 # chains to the full kernal IRQ tail ($EA31: SCNKEY + UDTIM + cursor blink) only
@@ -1009,6 +1011,45 @@ REU_MIC_END = REU_MIC_BASE + REU_MIC_SIZE
 REU_MIC_BASE_HI = (REU_MIC_BASE >> 16) & 0xFF
 REU_MIC_END_HI = (REU_MIC_END >> 16) & 0xFF
 REU_MIC_BOOTSTRAP_BYTES = 1600  # ~133 ms @ 12 kHz; tunes steady-state latency
+
+# The second stage of the mic's latency: how far the pump's dst tracker (W)
+# runs ahead of the NMI read pointer R in the 8 KB $4000 ring. The host's lead
+# above is only the first stage; a sample waits (W - R) mod ring here before
+# the NMI plays it. Nothing chose this before: the pump started at $4000 after
+# the NMI had already read ~1 KB of the ring on the solo path, so W trailed R
+# and the ring added ~0.6 s; under the mhires dispatcher the pump ran before
+# the NMI armed, W led by a few hundred bytes, and R overtook it into lap-old
+# audio. 2 KB (~171 ms at 12 kHz) covers the bring-up's read-to-write lag and
+# the pump's per-frame burstiness under the bank-swap halts, and leaves 6 KB
+# before W could lap R. The mic pump has no governor, so the phase holds only
+# as well as the matched rates do.
+REU_MIC_RING_LEAD = 2048
+# A seeded phase below this, read back after the write, means the write was
+# lost (the pump's own dst advance can overwrite it mid-tick) or the
+# read-to-write lag ate half the lead: seed again.
+REU_MIC_RING_LEAD_MIN = REU_MIC_RING_LEAD // 2
+assert RING_BUFFER_SIZE % REU_MIC_RING_LEAD == 0 and REU_MIC_RING_LEAD % REU_PUMP_CHUNK_SIZE == 0, (
+    "the mic ring lead must tile the ring in whole chunks, or the dst wrap misses $6000"
+)
+
+
+def mic_ring_seed(r_addr: int, chunk: int = REU_PUMP_CHUNK_SIZE) -> int:
+    """The dst tracker value that puts the mic pump's write head
+    ``REU_MIC_RING_LEAD`` (rounded up to a whole chunk) ahead of the NMI read
+    pointer ``r_addr``. Chunk-aligned from ``RING_BUFFER_ADDR``, so the pump's
+    wrap still lands exactly on ``RING_BUFFER_END``."""
+    ahead = r_addr - RING_BUFFER_ADDR + REU_MIC_RING_LEAD
+    aligned = -(-ahead // chunk) * chunk
+    return RING_BUFFER_ADDR + aligned % RING_BUFFER_SIZE
+
+
+def mic_ring_lead_ok(phase: int, chunk: int = REU_PUMP_CHUNK_SIZE) -> bool:
+    """True when a read-back ``(W - R) mod ring`` is a lead the seed could
+    have produced: at least ``REU_MIC_RING_LEAD_MIN``, and no more than the
+    chunk-rounded lead plus 256 B, the error a read can carry when it lands
+    inside the NMI's or the pump's own lo/hi carry."""
+    return REU_MIC_RING_LEAD_MIN <= phase <= REU_MIC_RING_LEAD + chunk + 256
+
 
 # The mic pump is the tracked pump with one addition: its REU source is a
 # ring too, so after the shared body it wraps the src tracker at
