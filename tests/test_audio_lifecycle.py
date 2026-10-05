@@ -799,6 +799,29 @@ class SlowReadPointerTest(unittest.TestCase):
         self.assertNotEqual(period, self.CHUNK_PERIOD)
         self.assertEqual(s.servo.gap_last, 1000)
 
+    def test_a_new_consumer_start_drops_the_holdoff(self):
+        # The next scene's consumer must not inherit the last one's backoff.
+        s, _, reader = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        s.servo.reset_for_consumer_start(2048)
+        self.read_s = 0.01
+        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(reader.call_count, 2, "the old holdoff skipped the new consumer's read")
+        self.assertEqual(s.servo.read_holdoff_s, 0.0)
+
+    def test_the_slow_read_warning_rearms_after_stop(self):
+        s, _, _ = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        s.servo.reset_after_stop()
+        s.servo.reset_for_consumer_start(2048)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertIn("1 slow so far", cm.output[0])
+
     def test_a_dead_consumer_behind_a_slow_server_still_warns(self):
         # Every reading is slow, so none is paced by, but R frozen across
         # them is still a stalled consumer the watchdog has to report.
