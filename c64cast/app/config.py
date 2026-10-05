@@ -717,7 +717,8 @@ class AudioCfg:
             "firmware property (same across U64 units), not per-unit — so it ships baked "
             "in. If a firmware update fixes the clock (or on hardware that clocks it "
             "correctly), set 6250000. The repository carries a diagnostic script that "
-            "re-measures it and prints the value. Only affects the sampler backend."
+            "re-measures it and prints the value. Accepted range 5000000..7500000. "
+            "Only affects the sampler backend."
         },
     )
     mic_sensitivity: float = field(

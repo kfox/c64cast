@@ -2196,11 +2196,13 @@ class ResolveAudioBackendTest(unittest.TestCase):
 
 
 class ValidateSamplerCfgTest(unittest.TestCase):
-    def _cfg(self, *, bits=16, rate=44100, enabled=True):
+    def _cfg(self, *, bits=16, rate=44100, enabled=True, clock=None):
         cfg = cfgmod.Config()
         cfg.audio.enabled = enabled
         cfg.audio.sampler_bits = bits
         cfg.audio.sampler_sample_rate = rate
+        if clock is not None:
+            cfg.audio.sampler_clock_hz = clock
         return cfg
 
     def test_valid_passes(self):
@@ -2215,6 +2217,15 @@ class ValidateSamplerCfgTest(unittest.TestCase):
             scene_factory.validate_sampler_cfg(self._cfg(rate=96000))
         with self.assertRaises(cfgmod.ConfigError):
             scene_factory.validate_sampler_cfg(self._cfg(rate=10))
+
+    def test_clock_range_edges_pass_and_slips_are_rejected(self):
+        lo, hi = scene_factory.SAMPLER_CLOCK_HZ_RANGE
+        for ok in (lo, 6_160_000, 6_250_000, hi):
+            scene_factory.validate_sampler_cfg(self._cfg(clock=ok))  # no raise
+        # Zero leaves a 0 Hz rate to divide by; the others are unit slips.
+        for bad in (0, -6_160_000, 6160, lo - 1, hi + 1, 61_600_000):
+            with self.subTest(clock=bad), self.assertRaises(cfgmod.ConfigError):
+                scene_factory.validate_sampler_cfg(self._cfg(clock=bad))
 
     def test_skipped_when_audio_disabled(self):
         # Even an invalid value is ignored when audio is off.

@@ -1353,9 +1353,16 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
         log.warning("[audio].sample_rate: %s", message)
 
 
+#: Accepted [audio].sampler_clock_hz: ±20 % around the 6.25 MHz design clock,
+#: so the measured ~6.16 MHz and any plausible firmware fix pass while a unit
+#: slip (6160, 61600000) or a zero, which leaves the sampler a 0 Hz rate to
+#: divide by, is refused at load.
+SAMPLER_CLOCK_HZ_RANGE = (5_000_000, 7_500_000)
+
+
 def validate_sampler_cfg(cfg: Config) -> None:
     """Guard the Ultimate Audio sampler settings ([audio].sampler_bits /
-    sampler_sample_rate). Raises ConfigError on an unusable value. No-op when
+    sampler_sample_rate / sampler_clock_hz). Raises ConfigError on an unusable value. No-op when
     audio is disabled; the rate is only *used* when [audio].backend resolves to
     the sampler, but validating unconditionally keeps a typo from lurking until
     the backend is selected. The ring is length-independent (streaming), so
@@ -1368,6 +1375,13 @@ def validate_sampler_cfg(cfg: Config) -> None:
         raise ConfigError(
             "[audio].sampler_sample_rate must be 1000..48000 Hz, got "
             f"{cfg.audio.sampler_sample_rate}"
+        )
+    lo, hi = SAMPLER_CLOCK_HZ_RANGE
+    if not lo <= cfg.audio.sampler_clock_hz <= hi:
+        raise ConfigError(
+            f"[audio].sampler_clock_hz must be {lo}..{hi} Hz, got "
+            f"{cfg.audio.sampler_clock_hz} (the shipped default is the measured 6160000; "
+            "the design nominal is 6250000)"
         )
 
 

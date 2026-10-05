@@ -307,7 +307,7 @@
         },
         "sampler_clock_hz": {
           "type": "integer",
-          "description": "Ultimate Audio sampler reference clock (Hz), used to derive the rate divider AND the resample target so they stay matched (heard speed = real_clock / this). Default is the MEASURED effective clock of the shipping U64 firmware (~6160000 Hz): the FPGA runs ~1.44% slow vs the 6250000 Hz design nominal, so nominal made sampler audio drift against video. This is a firmware property (same across U64 units), not per-unit \u2014 so it ships baked in. If a firmware update fixes the clock (or on hardware that clocks it correctly), set 6250000. The repository carries a diagnostic script that re-measures it and prints the value. Only affects the sampler backend.",
+          "description": "Ultimate Audio sampler reference clock (Hz), used to derive the rate divider AND the resample target so they stay matched (heard speed = real_clock / this). Default is the MEASURED effective clock of the shipping U64 firmware (~6160000 Hz): the FPGA runs ~1.44% slow vs the 6250000 Hz design nominal, so nominal made sampler audio drift against video. This is a firmware property (same across U64 units), not per-unit \u2014 so it ships baked in. If a firmware update fixes the clock (or on hardware that clocks it correctly), set 6250000. The repository carries a diagnostic script that re-measures it and prints the value. Accepted range 5000000..7500000. Only affects the sampler backend.",
           "default": 6160000
         },
         "mic_sensitivity": {
