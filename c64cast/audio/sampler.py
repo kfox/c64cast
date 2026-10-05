@@ -478,11 +478,15 @@ class UltimateAudioSampler:
         # read head at the first late attempt since writes were last on time
         # (or since the last splice, arm() or re-anchor), so the re-anchor's
         # WARNING says how long the audio was late: across gaps that is
-        # several bursts, not one window.
+        # several bursts, not one window. _last_late is the read head at the
+        # latest late attempt: writes on time by less than the interval do
+        # not end a window, but a whole LATE_REANCHOR_S of them does, so a
+        # window never outlives the lateness that opened it.
         self._late_ref: tuple[int, int] | None = None
         self._burst_start: tuple[int, int] | None = None
         self._prev_start: tuple[int, int] | None = None
         self._last_try: int | None = None
+        self._last_late: int | None = None
         self._late_from: int | None = None
         # Set by a re-anchor, cleared by the next splice or arm(): the producer
         # has shown it cannot keep up, so later late audio is re-anchored at
@@ -587,6 +591,7 @@ class UltimateAudioSampler:
             self._late_ref = None
             self._burst_start = self._prev_start = None
             self._last_try = None
+            self._last_late = None
             self._late_from = None
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
@@ -847,6 +852,7 @@ class UltimateAudioSampler:
             # (the demuxer's re-seek delay) start a fresh window.
             self._late_ref = None
             self._burst_start = self._prev_start = None
+            self._last_late = None
             self._late_from = None
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
@@ -950,7 +956,7 @@ class UltimateAudioSampler:
                 return False
             consumed = self._read_consumed_bytes()
             before = self._content_pos
-            last_try = self._last_try
+            last_try, last_late = self._last_try, self._last_late
             c = self._late_anchor(consumed)
             # _writer_step sized this payload to the room under the lead target
             # at the old _content_pos; a re-anchor moved it forward, so the tail
@@ -990,7 +996,7 @@ class UltimateAudioSampler:
                     # re-anchored a backlog that would have lined up at once.
                     self._late_ref = None
                     self._burst_start = self._prev_start = None
-                    self._last_try = last_try
+                    self._last_try, self._last_late = last_try, last_late
                     self._carry_back(epoch, data)
                     raise
                 self._written = max(self._written, end)
@@ -1045,17 +1051,27 @@ class UltimateAudioSampler:
         delivering at the write floor, as one does after a splice, lands
         some writes just on time and the rest late; each of those on-time
         writes ended the window, and the stream dropped audio for a second
-        window or more before it was re-anchored."""
+        window or more before it was re-anchored. A LATE_REANCHOR_S of such
+        writes with none late does end it, as a write further on time would:
+        a window must not outlive the lateness that opened it, or one late
+        write after 10 s of them re-anchored at once."""
         c = self._content_pos
         lateness = consumed + self._flush_margin - c
         last, self._last_try = self._last_try, consumed
-        if lateness <= -self._write_interval:
-            self._late_ref = None
-            self._burst_start = self._prev_start = None
-            self._late_from = None
-            return c
         if lateness <= 0:
-            return c  # on time, but by less than the floor can hold it
+            # On time by less than the floor can hold a gather ends nothing
+            # until no attempt has been late for a whole window.
+            stale = (
+                self._last_late is not None
+                and consumed - self._last_late >= self._late_reanchor_bytes
+            )
+            if lateness <= -self._write_interval or stale:
+                self._late_ref = None
+                self._burst_start = self._prev_start = None
+                self._last_late = None
+                self._late_from = None
+            return c
+        self._last_late = consumed
         if self._late_from is None:
             self._late_from = consumed
         late_from = self._late_from
@@ -1084,6 +1100,7 @@ class UltimateAudioSampler:
         shift = anchor - c
         self._late_ref = None
         self._burst_start = self._prev_start = None
+        self._last_late = None
         self._late_from = None
         # A sticky re-anchor did not wait out a window, so its log line does
         # not claim one.

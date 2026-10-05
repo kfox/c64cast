@@ -1374,6 +1374,21 @@ def _live_seek(delay: float, jitter_s: float, seed: int) -> Any:
     return rate_of
 
 
+def _late_once_then_near(stall_s: float, stays_late: bool) -> Any:
+    """Real time with its anchor 6-9 ms ahead of the write floor (run it
+    from a 0.16 s prebuffer), one write 11 ms late after a 20 ms stall at
+    2 s, then a ``stall_s`` stall at 12 s, after which it catches straight
+    up or, with ``stays_late``, stays that far behind."""
+
+    def rate_of(t: float, prod: float, late: float) -> float:
+        if 2.0 <= t < 2.02 or 12.0 <= t < 12.0 + stall_s:
+            return 0.0
+        behind = stall_s if stays_late and t >= 12.0 else 0.0
+        return 4.0 if prod < t - behind else 0.0
+
+    return rate_of
+
+
 def _behind_then(speed: float) -> Any:
     """Stalls at 3 s until 0.35 s late, then decodes at ``speed`` until
     caught up, then at real time."""
@@ -1628,6 +1643,14 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
             },
             {"reanchors": 1, "audible": 0.95, "dropped_ms": 550},
         ),
+        # One late write, 10 s of writes 6-9 ms on time, then one 4 ms late:
+        # the window the first opened must not still be open, or the second
+        # re-anchors at once (0.2 s of lag).
+        "one late write, 10 s just on time, then one more": (
+            _late_once_then_near(0.009, stays_late=False),
+            {"seconds": 16.0, "prebuffer_s": 0.16, "tail_s": 2.0},
+            {"reanchors": 0, "lag_ms": (0, 0), "audible": 0.95},
+        ),
         # The end of a stream after a re-anchor: the last partial gather is
         # written where it belongs, not re-anchored past a gap.
         "end of stream after a re-anchor": (
@@ -1636,6 +1659,20 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
             {"reanchors": 1, "lag_ms": (1700, 1900), "audible": 0.0, "held_ms": 0.0},
         ),
     }
+
+    def test_a_window_does_not_outlive_its_lateness_in_the_warning(self):
+        # One late write at 2 s, then 10 s just on time, then late for good
+        # at 12 s: the WARNING times the lateness from 12 s, not from 2 s.
+        with self.assertLogs("c64cast.audio.sampler", "WARNING") as logs:
+            got = _run_scenario(
+                _late_once_then_near(0.3, stays_late=True),
+                seconds=16.0,
+                prebuffer_s=0.16,
+                tail_s=2.0,
+            )
+        self.assertEqual(got["reanchors"], 1, got)
+        self.assertEqual(len(logs.output), 1, logs.output)
+        self.assertIn("arrived late for 0.5 s", logs.output[0])
 
     def run_row(self, name: str) -> dict[str, float]:
         rate_of, kwargs, _ = self.ROWS[name]
