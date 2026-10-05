@@ -254,6 +254,62 @@ class MicLeadReanchorTest(unittest.TestCase):
         self.assertEqual(rig.servo.reanchors, 2)
 
 
+class MicLeadReanchorReseedTest(unittest.TestCase):
+    """AUD-7 A-F1: a re-anchor resets the lead but not the rate mismatch, so it
+    restarts the loop from the pump's measured rate. Left at the pre-jump drop,
+    a pump that sped up mid-scene kept being over-dropped from: the lead fell
+    through zero again within seconds, and the loop re-anchored every couple of
+    seconds, each one a NEUTRAL dropout."""
+
+    def test_the_seed_matches_the_host_to_the_pump_rate(self):
+        drop, integ = ml.mic_lead_rate_seed(RATE * 0.85, sample_rate=RATE)
+        self.assertAlmostEqual(drop, 0.15)
+        # With the lead back on target the proportional term is zero, so the
+        # integrator alone has to carry the drop.
+        held, _ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES, integ, sample_rate=RATE)
+        self.assertAlmostEqual(held, 0.15)
+
+    def test_the_seed_is_clamped_to_the_output_range(self):
+        self.assertEqual(
+            ml.mic_lead_rate_seed(RATE * 2.0, sample_rate=RATE)[0], -ml.MIC_LEAD_RESAMPLE_MAX
+        )
+        self.assertEqual(ml.mic_lead_rate_seed(0.0, sample_rate=RATE)[0], ml.MIC_LEAD_MAX_DROP)
+
+    def test_a_pump_that_speeds_up_mid_scene_does_not_cycle_through_reanchors(self):
+        # Settled under the mhires deficit, then the pump comes up to within
+        # the petscii drift of the host. The lead falls through zero within the
+        # first interval, and while the measured rate catches up a re-anchor or
+        # two follow; unseeded, the stale 15 % drop re-anchored on every tick.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 0)
+        rig.drift = 32.0
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            leads = []
+            for _ in range(60):
+                rig.step()
+                leads.append(rig.lead)
+        self.assertLessEqual(rig.servo.reanchors, 3)
+        for lead in leads[-20:]:
+            self.assertGreater(lead, 0)
+            self.assertLess(abs(lead - REU_MIC_BOOTSTRAP_BYTES), 300)
+
+    def test_a_stall_that_forces_the_reanchor_does_not_set_its_seed(self):
+        # The pump halts for one interval, so the lead jumps past the re-anchor
+        # threshold. That interval reads the pump as stopped; the seed comes
+        # from the rate before it, the ~15 % deficit the pump resumes at.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.t += 1.0
+        rig.host += RATE * (1.0 - rig.servo.drop_frac)  # the pump does not move
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual(rig.servo.reanchors, 1)
+        self.assertAlmostEqual(rig.servo.drop_frac, 1800.0 / RATE, delta=0.01)
+
+
 class MicLeadOpenLoopTest(unittest.TestCase):
     def _closed(self, drift: float = 1800.0) -> _Rig:
         rig = _Rig(drift)
