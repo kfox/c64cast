@@ -343,7 +343,10 @@ class UltimateAudioSampler:
         # as a genuine producer stall rather than a briefly-empty queue.
         self._lead_panic = max(self.bps, self._lead_target // 4)
 
-        self._q: queue.Queue[bytes] = queue.Queue(maxsize=queue_max_chunks)
+        # (flush epoch at push time, packed PCM): the writer drops an item whose
+        # epoch is no longer current, so nothing pushed before a splice is
+        # written after it.
+        self._q: queue.Queue[tuple[int, bytes]] = queue.Queue(maxsize=queue_max_chunks)
         self._writer: PollThread | None = None
         self._running = False
         self._stopped = False
@@ -353,10 +356,11 @@ class UltimateAudioSampler:
         self._written = 0  # absolute bytes written to the ring (monotone)
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
-        # flush() bumps _flush_epoch so a chunk dequeued just before a splice is
-        # discarded instead of written past the cut-over; _io_lock serializes the
-        # {_write_wrapped, _written} read-modify-write between flush() (playlist
-        # thread) and the writer thread. _output_silenced tracks the pause mute
+        # flush() bumps _flush_epoch under _io_lock, and the writer compares a
+        # chunk's tag against it under the same lock, so a chunk pushed before a
+        # splice is discarded instead of written past the cut-over. _io_lock
+        # also serializes the {_write_wrapped, _written} read-modify-write
+        # between flush() (playlist thread) and the writer thread. _output_silenced tracks the pause mute
         # ($DF21 volume 0) so the next flush() restores the channel volume.
         self._flush_epoch = 0
         self._io_lock = threading.Lock()
@@ -529,9 +533,11 @@ class UltimateAudioSampler:
             if remaining <= 0:
                 break
             try:
-                chunk = self._q.get(timeout=remaining)
+                epoch, chunk = self._q.get(timeout=remaining)
             except queue.Empty:
                 break
+            if epoch != self._flush_epoch:
+                continue
             chunks.append(chunk)
             have += len(chunk)
         return b"".join(chunks)
@@ -543,9 +549,10 @@ class UltimateAudioSampler:
         playback rate (same backpressure as the DAC's ``push_samples``)."""
         if self._stopped:
             return
-        # If a splice flushes while this call is blocked on a full queue, the
-        # pre-splice chunk is dropped rather than pushed past the cut-over; the
-        # bounded put timeout is what lets the check re-run.
+        # The chunk carries the epoch it was produced in. A splice that lands
+        # while this call waits on a full queue makes the put pointless, so the
+        # bounded put timeout re-checks; a put that the flush's own drain lets
+        # through is dropped by the writer on its stale tag.
         epoch = self._flush_epoch
         floats = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
         self._tap_push(floats)
@@ -559,15 +566,16 @@ class UltimateAudioSampler:
             if self._flush_epoch != epoch:
                 return
             try:
-                self._q.put(pack, timeout=0.1)
+                self._q.put((epoch, pack), timeout=0.1)
                 break
             except queue.Full:
                 continue
         else:
             return
-        # After a successful put only: a dropped chunk must not inflate
-        # position_seconds's pushed-total EOF ceiling.
-        self._pushed_samples += int(samples_int16.shape[0])
+        # After a successful put of a still-current chunk only: a dropped chunk
+        # must not inflate position_seconds's pushed-total EOF ceiling.
+        if self._flush_epoch == epoch:
+            self._pushed_samples += int(samples_int16.shape[0])
 
     def mark_eof(self) -> None:
         """Source exhausted — clamp ``position_seconds`` to the pushed total so
@@ -609,7 +617,8 @@ class UltimateAudioSampler:
         ``FLUSH_GUARD_S`` regardless."""
         if not self._running:
             return
-        self._flush_epoch += 1
+        with self._io_lock:
+            self._flush_epoch += 1
         if silence_output:
             self._write_volume(0)
             self._output_silenced = True
@@ -640,10 +649,6 @@ class UltimateAudioSampler:
 
     def _writer_loop(self, gen: int) -> None:
         while self._running and gen == self._writer_gen:
-            # Captured before the blocking get, so a chunk dequeued just before
-            # a splice is discarded rather than written past the ring cut-over.
-            # NEUTRAL pads are epoch-immune.
-            epoch = self._flush_epoch
             lead = self._written - self._read_consumed_bytes()
             self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
             self._lead_max = max(self._lead_max, lead)
@@ -653,9 +658,7 @@ class UltimateAudioSampler:
                 time.sleep(0.002)
                 continue
             try:
-                data = self._q.get(timeout=0.02)
-                if epoch != self._flush_epoch:
-                    continue
+                epoch, data = self._q.get(timeout=0.02)
             except queue.Empty:
                 # Queue momentarily empty. A NEUTRAL pad inserts silence, so it
                 # waits for the low watermark — a real underrun, where the
@@ -666,6 +669,9 @@ class UltimateAudioSampler:
                 pad_frames = min(pad_frames, REU_WRITE_SLICE // self.bps)
                 data = self._neutral_unit * pad_frames
                 self._underrun_pads += 1
+                # A pad is current by construction; one a flush overtakes is
+                # dropped, which is harmless since the flush rewrote the lead.
+                epoch = self._flush_epoch
             # Serialized against flush()'s ring cut-over, which also reads
             # _written and rewrites the ring. Held for one chunk (tens of ms).
             # The generation is re-checked here because a stop() and the next
@@ -673,6 +679,8 @@ class UltimateAudioSampler:
             with self._io_lock:
                 if gen != self._writer_gen:
                     return
+                if epoch != self._flush_epoch:
+                    continue
                 self._write_wrapped(self._written % self.ring_size, data)
                 self._written += len(data)
 

@@ -313,7 +313,7 @@ class SamplerReuseTest(unittest.TestCase):
         smp.mark_eof()
         smp._output_silenced = True
         smp._underrun_pads = 3
-        smp._q.put(b"stale")
+        smp._q.put((0, b"stale"))
         epoch = smp._flush_epoch
         smp.arm()
         self.assertFalse(smp._stopped)
@@ -396,7 +396,7 @@ class SamplerWriterSurvivorTest(unittest.TestCase):
         def get_across_a_restart(*a: Any, **kw: Any) -> Any:
             smp._writer_gen += 2  # a stop() and a start() happened meanwhile
             smp._q.get = real_get  # type: ignore[method-assign]
-            return b"\x40" * 64
+            return smp._flush_epoch, b"\x40" * 64
 
         smp._q.get = get_across_a_restart  # type: ignore[method-assign]
         smp._read_consumed_bytes = lambda: 0  # type: ignore[method-assign]
@@ -531,8 +531,8 @@ class SamplerFlushTests(unittest.TestCase):
 
     def test_flush_drains_queue(self):
         smp = self._running(_FakeBackend())
-        smp._q.put(b"\x00" * 32)
-        smp._q.put(b"\x00" * 32)
+        smp._q.put((0, b"\x00" * 32))
+        smp._q.put((0, b"\x00" * 32))
         smp.flush()
         self.assertTrue(smp._q.empty())
 
@@ -568,23 +568,91 @@ class SamplerFlushTests(unittest.TestCase):
         # A push parked in the Full-retry loop when the flush epoch advances must
         # drop its chunk (return before the put) and NOT count it toward
         # _pushed_samples. Keeping the queue full means the put never succeeds, so
-        # the loop re-checks the epoch on each Full timeout and bails. flush() also
-        # drains; that drain-then-put race is an accepted microsecond window the
-        # writer's own epoch check closes.
+        # the loop re-checks the epoch on each Full timeout and bails. A real
+        # flush() also drains, which lets the put through instead; that case is
+        # test_a_put_the_flush_drain_releases_is_dropped_by_the_writer.
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, queue_max_chunks=1)
-        smp._q.put(b"x")  # fill and keep full
+        smp._q.put((0, b"x"))  # fill and keep full
 
         def push():
             smp.push_samples(np.zeros(50, dtype=np.int16))
 
         t = threading.Thread(target=push)
+
+        def release() -> None:
+            # A pusher that never saw the epoch move would otherwise spin in
+            # the Full-retry loop past the end of the test.
+            smp._stopped = True
+            t.join(timeout=1.0)
+
+        self.addCleanup(release)
         t.start()
         time.sleep(0.02)  # let it park in the Full-retry loop
         smp._flush_epoch += 1  # a concurrent flush bumped the epoch
         t.join(timeout=1.0)
         self.assertFalse(t.is_alive())
         self.assertEqual(smp._pushed_samples, 0)  # dropped, not counted
+
+    def _drive_writer(
+        self, smp: s.UltimateAudioSampler, items: list[Any], hook: Any = None
+    ) -> None:
+        """Run the writer loop synchronously over ``items``, then end it.
+        ``hook`` runs inside each get, i.e. after the dequeue and before the
+        write, where a concurrent flush() can land."""
+
+        def get(*_a: Any, **_kw: Any) -> Any:
+            if not items:
+                smp._running = False
+                raise s.queue.Empty
+            if hook is not None:
+                hook()
+            return items.pop(0)
+
+        smp._q.get = get  # type: ignore[method-assign]
+        smp._writer_loop(smp._writer_gen)
+
+    def test_a_put_the_flush_drain_releases_is_dropped_by_the_writer(self):
+        # The producer is parked on a full queue when the splice lands; the
+        # flush's own drain frees the slot and the parked put goes through.
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+        smp._q = s.queue.Queue(maxsize=1)
+        smp._q.put((smp._flush_epoch, b"\x01" * 32))
+        t = threading.Thread(target=smp.push_samples, args=(np.full(50, 8000, dtype=np.int16),))
+        t.start()
+        time.sleep(0.02)  # parked in put(timeout=0.1)
+        smp.flush()
+        t.join(timeout=1.0)
+        self.assertEqual(smp._pushed_samples, 0, "a pre-splice chunk counted toward EOF")
+        item = smp._q.get_nowait()
+        api.reu_writes.clear()
+        api.audible_writes = 0
+        self._drive_writer(smp, [item])
+        self.assertEqual(api.audible_writes, 0, "the pre-splice chunk was written after the cut")
+
+    def test_a_flush_between_dequeue_and_write_drops_the_chunk(self):
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+
+        def flush_lands() -> None:
+            smp._flush_epoch += 1
+
+        self._drive_writer(smp, [(smp._flush_epoch, b"\x01" * 32)], hook=flush_lands)
+        self.assertEqual(api.audible_writes, 0)
+
+    def test_a_current_chunk_is_written(self):
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+        smp._written = 0
+        self._drive_writer(smp, [(smp._flush_epoch, b"\x01" * 32)])
+        self.assertGreater(api.audible_writes, 0)
+
+    def test_the_prebuffer_skips_stale_chunks(self):
+        smp = _make(_FakeBackend(), sample_rate=2000, bits=8)
+        smp._q.put((smp._flush_epoch - 1, b"\x01" * 8))
+        smp._q.put((smp._flush_epoch, b"\x02" * 8))
+        self.assertEqual(smp._collect_prebuffer(16, 0.05), b"\x02" * 8)
 
     def test_silence_output_writes_volume_zero_then_restores(self):
         api = _FakeBackend()
