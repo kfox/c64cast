@@ -145,7 +145,12 @@ def mic_lead_rate_seed(pump_rate: float, *, sample_rate: int) -> tuple[float, fl
     A re-anchor jumps the lead but not the rate mismatch, so the loop restarts
     from what the pump is doing now rather than from what it was steering
     before the jump. Clamped like ``mic_lead_correction``'s output, so the
-    integrator stays inside its anti-windup bounds."""
+    integrator stays inside its anti-windup bounds. A rate that is not a
+    positive finite number says nothing about the pump and seeds the startup
+    state ``(0.0, 0.0)``, as an idle tracker stops steering: NaN would
+    otherwise fall through the clamp to the full drop, the dangerous side."""
+    if not (math.isfinite(pump_rate) and pump_rate > 0.0):
+        return 0.0, 0.0
     rate = float(sample_rate)
     need = max(-MIC_LEAD_RESAMPLE_MAX, min(MIC_LEAD_MAX_DROP, 1.0 - pump_rate / rate))
     return need, need * rate / MIC_LEAD_KI

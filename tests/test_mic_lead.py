@@ -273,7 +273,16 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
         self.assertEqual(
             ml.mic_lead_rate_seed(RATE * 2.0, sample_rate=RATE)[0], -ml.MIC_LEAD_RESAMPLE_MAX
         )
-        self.assertEqual(ml.mic_lead_rate_seed(0.0, sample_rate=RATE)[0], ml.MIC_LEAD_MAX_DROP)
+        self.assertEqual(
+            ml.mic_lead_rate_seed(RATE * 0.25, sample_rate=RATE)[0], ml.MIC_LEAD_MAX_DROP
+        )
+
+    def test_a_rate_that_says_nothing_about_the_pump_seeds_the_startup_state(self):
+        # NaN slipped through the clamp as the full 35 % drop, the side that
+        # overtakes; a stopped or nonsense rate is no basis for a drop at all.
+        for bad in (float("nan"), float("inf"), float("-inf"), 0.0, -RATE):
+            with self.subTest(pump_rate=bad):
+                self.assertEqual(ml.mic_lead_rate_seed(bad, sample_rate=RATE), (0.0, 0.0))
 
     def test_a_pump_that_speeds_up_mid_scene_does_not_cycle_through_reanchors(self):
         # Settled under the mhires deficit, then the pump comes up to within
