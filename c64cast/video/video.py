@@ -14,6 +14,7 @@ See docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfile
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import threading
@@ -311,12 +312,13 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
         a_stream = container.streams.audio[0]
         resampler = av.AudioResampler(format="s16", layout="mono", rate=target_sample_rate)
         chunks: list[np.ndarray] = []
-        for packet in container.demux(a_stream):
-            for frame in packet.decode():
-                for resampled in resampler.resample(frame):
-                    arr = resampled.to_ndarray().reshape(-1)
-                    if arr.size:
-                        chunks.append(arr.astype(np.int16, copy=False))
+        frames = (f for packet in container.demux(a_stream) for f in packet.decode())
+        # The trailing None flushes the filter tail the resampler holds back.
+        for frame in itertools.chain(frames, [None]):
+            for resampled in resampler.resample(frame):
+                arr = resampled.to_ndarray().reshape(-1)
+                if arr.size:
+                    chunks.append(arr.astype(np.int16, copy=False))
     finally:
         container.close()
     if not chunks:
@@ -1015,11 +1017,27 @@ class AVFileSource:
         assert self._resampler is not None  # caller checks (audio-branch gate)
         for frame in packet.decode():
             for resampled in self._resampler.resample(frame):
-                if self._atempo_graph is not None:
-                    self._atempo_graph.push(resampled)
-                    self._drain_atempo()
-                else:
-                    self._emit_audio(resampled.to_ndarray().reshape(-1))
+                self._emit_resampled(resampled)
+
+    def _emit_resampled(self, resampled: Any) -> None:
+        if self._atempo_graph is not None:
+            self._atempo_graph.push(resampled)
+            self._drain_atempo()
+        else:
+            self._emit_audio(resampled.to_ndarray().reshape(-1))
+
+    def _flush_resampler(self) -> None:
+        """At EOF, emit the filter tail the resampler holds back until it is
+        flushed (a few milliseconds per track), ahead of `_flush_atempo` so the
+        tail is time-compressed with the rest. A transport seek rebuilds the
+        resampler, so flushing this one does not strand a later loop pass."""
+        if self._resampler is None or self._audio_push is None or self._closed:
+            return
+        try:
+            for resampled in self._resampler.resample(None):
+                self._emit_resampled(resampled)
+        except (av.error.FFmpegError, ValueError) as e:
+            log.debug("demux: resampler flush failed: %s", e)
 
     def _demux_loop(self):
         # "Container hit EOF" is expected and logs info; a mid-stream decode
@@ -1041,9 +1059,11 @@ class AVFileSource:
                     and self._audio_push is not None
                 ):
                     self._decode_audio_packet(packet)
+            self._flush_resampler()
             self._flush_atempo()
             log.debug("demux %s: EOF", self.path)
         except (EOFError, StopIteration):
+            self._flush_resampler()
             self._flush_atempo()
             log.debug("demux %s: EOF", self.path)
         except Exception:

@@ -255,6 +255,50 @@ class RemoteStallBoundTest(unittest.TestCase):
         self.assertIsInstance(self._bounded(drain), Exception)
 
 
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class ResamplerTailTest(unittest.TestCase):
+    """A resampler holds back its filter's tail until flushed with None, so a
+    decode that stops at the last packet drops the end of every track."""
+
+    #: 0.4 s at 8 kHz, resampled to 44 kHz.
+    EXPECTED = 17600
+
+    def _wav(self) -> str:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "t.wav")
+        Path(path).write_bytes(_wav_bytes(0.4, 8000))
+        return path
+
+    def test_decode_audio_full_keeps_the_tail(self):
+        from c64cast.video.video import decode_audio_full
+
+        self.assertEqual(decode_audio_full(self._wav(), 44000).size, self.EXPECTED)
+
+    def test_the_demux_path_flushes_the_tail_at_eof(self):
+        import av
+
+        src = AVFileSource.__new__(AVFileSource)
+        pushed: list[int] = []
+        src._audio_push = lambda arr: pushed.append(int(arr.size))
+        src._resampler = av.AudioResampler(format="s16", layout="mono", rate=44000)
+        src._atempo_graph = None
+        src._closed = False
+        src._muted = False
+        src._pending_seek = None
+        src.audio_noise_gate = 0
+        src.audio_gain = 1.0
+        container = av.open(self._wav())
+        self.addCleanup(container.close)
+        src.container = container
+        src.path = "t.wav"
+        src._lock = threading.Lock()
+        src._eof = False
+        src._demux_loop()
+        self.assertTrue(src._eof)
+        self.assertEqual(sum(pushed), self.EXPECTED)
+
+
 class ProbeContainerTitleTest(unittest.TestCase):
     """A cheap header-only peek at a local file's own `title` tag — no real
     PyAV container, so av_open/ensure_pyav are faked."""

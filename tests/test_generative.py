@@ -1396,6 +1396,15 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.assertGreater(sink.pushed, 0)
         self.assertTrue(src.finished)
 
+    def test_the_resampler_tail_is_pushed(self):
+        # 0.4 s at 8 kHz resampled to 44 kHz is 17600 samples. The resampler
+        # holds its filter's last few milliseconds until flushed at EOF.
+        sink = _FileSink()
+        sink.effective_rate = 44000.0
+        sink.sample_rate = 44000
+        self._source(sink)._decode_loop()
+        self.assertEqual(sink.pushed, 17600)
+
     def test_waits_for_what_the_sink_has_not_played(self):
         src = self._source(_FileSink(played=0.0))
         src._decode_loop()

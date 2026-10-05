@@ -26,7 +26,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from c64cast._teardown import run_teardown_steps
 
@@ -444,8 +444,6 @@ class AudioFileSource:
         """Demux + resample the file to mono int16 at the DAC rate and feed
         push_samples (which DAC-encodes AND taps the analyzer). Real-time paced by
         push_samples' queue-full block. Ends at EOF or when `_stop` is set."""
-        import numpy as np
-
         from c64cast.video.video import av_open
 
         # effective_rate, not sample_rate: the rate the sink really
@@ -470,10 +468,13 @@ class AudioFileSource:
                     for resampled in resampler.resample(frame):
                         if self._stop.is_set():
                             return
-                        arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
-                        if arr.size:
-                            self._audio.push_samples(arr)
-                            pushed += int(arr.size)
+                        pushed += self._push_frame(resampled)
+            # The resampler holds back its filter's tail until it is flushed;
+            # without this the last few milliseconds of every track are lost.
+            for resampled in resampler.resample(None):
+                if self._stop.is_set():
+                    return
+                pushed += self._push_frame(resampled)
             log.info("audio file: %s reached end of track", os.path.basename(self._path))
         except Exception:
             if not self._stop.is_set():
@@ -482,6 +483,15 @@ class AudioFileSource:
             container.close()
         if not self._stop.is_set():
             self._mark_decode_done(pushed, rate)
+
+    def _push_frame(self, resampled: Any) -> int:
+        """Push one resampled frame to the sink; returns the samples pushed."""
+        import numpy as np
+
+        arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
+        if arr.size:
+            self._audio.push_samples(arr)
+        return int(arr.size)
 
     def _mark_decode_done(self, pushed_samples: int, rate: int) -> None:
         """Schedule `finished` for when the pushed audio has played out: the

@@ -115,7 +115,7 @@ There, when `tempo_scale < 1.0`:
 
 * `__init__` builds a one-stage `atempo` filter graph (`abuffer → atempo=1/s → abuffersink`), fed by the existing s16/mono/`target_sr` resampler output.
 * `_demux_loop` pushes each resampled frame through it and drains the time-compressed result (`_drain_atempo`).
-* At EOF, `_flush_atempo` pushes `None` and drains the buffered tail — without this the last fraction of a second is lost.
+* At EOF, `_flush_resampler` first pushes `None` through the resampler, whose filter holds back a few milliseconds until flushed, and then `_flush_atempo` pushes `None` and drains the graph's buffered tail — without these the last fraction of a second is lost. `decode_audio_full` (the REU-staged preload) and `AudioFileSource` flush their resamplers the same way.
 * Each rebased video PTS is multiplied by `s`.
 
 The existing drain-clock A/V sync, which reads ≈`s`, then lands both compressed streams at real time, in sync, with pitch intact.
