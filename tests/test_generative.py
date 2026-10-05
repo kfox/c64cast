@@ -1556,6 +1556,23 @@ class AudioFileSourceEndTest(unittest.TestCase):
             self.now[0] = gate + 6.55
             self.assertTrue(src.finished)
 
+    def test_the_wait_bound_counts_a_reanchored_sampler_s_unheard_tail(self):
+        # Decoding ends with the sampler's clock at the length but its last
+        # 0.3 s re-anchored past it, so 0.3 s is still unheard; the bound
+        # waits that out on top of the grace even if the clock never moves.
+        class _LaggedSampler(_FileSink):
+            is_sampler = True
+
+            def reanchor_lag_seconds(self) -> float:
+                return 0.3
+
+        src = self._source(_LaggedSampler(played=0.4))
+        src._decode_loop()
+        self.now[0] += 0.3 + src._DRAIN_GRACE_S - 0.01
+        self.assertFalse(src.finished)
+        self.now[0] += 0.02
+        self.assertTrue(src.finished)
+
     def test_a_decode_that_cannot_open_finishes(self):
         import os
 
