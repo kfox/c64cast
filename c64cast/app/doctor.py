@@ -776,8 +776,8 @@ def _sample_rate_hint() -> str:
 
 
 def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
-    """Flag [audio].sample_rate values that overrun (error) or risk overrunning
-    (warn) the $D418 NMI handler on each system's target standard. Offline —
+    """Flag [audio].sample_rate values the $D418 NMI timer will not arm on each
+    system's target standard (handler budget or 16-bit latch). Offline —
     pure cycle-budget math via c64.nmi_rate_safety, no hardware needed.
 
     An unresolved "auto" assumes NTSC here, matching `[ultimate64].system`'s

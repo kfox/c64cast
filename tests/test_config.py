@@ -1460,6 +1460,16 @@ class ChoiceEnforcementTest(unittest.TestCase):
         self.assertEqual(self._load('[ultimate64]\nsystem = "ntsc"\n').ultimate64.system, "NTSC")
         self.assertEqual(self._load('[ultimate64]\nsystem = "Auto"\n').ultimate64.system, "auto")
 
+    def test_a_nonpositive_pitch_multiplier_is_refused(self):
+        # It divides the NMI period: 0 crashed the retune, a negative value
+        # armed an NMI every two cycles.
+        for value in ("0.0", "-1.0"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self._load(f"[audio]\npitch_mult_mhires = {value}\n")
+        self.assertEqual(
+            self._load("[audio]\npitch_mult_blank = 0.9\n").audio.pitch_mult_blank, 0.9
+        )
+
     def test_a_system_typo_is_still_refused(self):
         with self.assertRaises(ValueError):
             self._load('[ultimate64]\nsystem = "ntscc"\n')

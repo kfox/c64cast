@@ -668,8 +668,9 @@ class AudioCfg:
             "themselves halt the 6510 and steal cycles from the NMI handler, so the "
             "overrun onset under the live pipeline was measured at ~12500 Hz (identical "
             "in char and bitmap — the audio feed, not the video, is the driver). 12000 "
-            "keeps margin below that. Rates past the isolated-handler ceiling are "
-            "rejected at load, and --doctor reports them. Sampler-backend playback uses "
+            "keeps margin below that. Rates past the isolated-handler ceiling, and "
+            "rates too slow for the 16-bit NMI timer (under ~16 Hz), are rejected "
+            "at load, and --doctor reports them. Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
     )
@@ -3487,6 +3488,18 @@ def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
         raise ValueError(f"ultimate64.sid_panning: {e}") from e
 
 
+def _validate_pitch_mult(audio: AudioCfg) -> None:
+    """A playback-rate multiplier divides the NMI period, so zero crashed the
+    retune and a negative one armed latch 1 — an NMI every two cycles, which
+    holds the 6510 in the handler. Refuse anything not a positive number."""
+    for f in fields(audio):
+        if not f.name.startswith("pitch_mult_"):
+            continue
+        name, value = f.name, getattr(audio, f.name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise ValueError(f"[audio].{name} = {value!r} — want a positive number")
+
+
 def _validate_sid_volume(u64: Ultimate64Cfg) -> None:
     """Range-check [ultimate64].sid_volume at load/doctor time so a level the
     mixer can't represent surfaces before the playlist runs, not mid-scene when
@@ -3757,6 +3770,7 @@ def validate_sections(cfg: Config) -> None:
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
     _validate_audio_device(cfg.audio)
+    _validate_pitch_mult(cfg.audio)
     _normalize_ultimate_url(cfg.ultimate64)
     _validate_performance(cfg.performance)
     _validate_sid_panning(cfg.ultimate64)

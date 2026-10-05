@@ -47,7 +47,8 @@ def _make(**kw: Any) -> AudioStreamer:
 
 def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> AudioStreamer:
     """A streamer wired for fast, hardware-free worker runs: tiny chunks, a
-    high sample rate (sub-ms pace period), and a stubbed NMI timer so the
+    high sample rate (a ~2 ms pace period once the NMI latch clamps at the
+    handler ceiling), and a stubbed NMI timer so the
     prebuffer→pace handoff runs without touching CIA registers."""
     s = _make(sample_rate=sample_rate)
     s.chunk_size = chunk_size
@@ -484,6 +485,22 @@ class PitchCompensationLatchTest(unittest.TestCase):
         self.assertLess(s.nmi.latch, nominal)  # faster rate ⇒ smaller latch
         self.assertEqual(self._latch_write(s), 110)
 
+    def test_no_multiplier_arms_past_the_handler_budget(self):
+        # 1.2 at 12 kHz NTSC asked for latch 70 (a 71-cycle period), under the
+        # 75-cycle safe minimum the adaptive loop is already held to.
+        s = self._started(sample_rate=12000)
+        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.2})
+        self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())
+        self.assertEqual(self._latch_write(s), s.nmi.ceiling_latch())
+
+    def test_a_nonpositive_multiplier_is_refused(self):
+        # -1.0 used to arm latch 1 (an NMI every 2 cycles); 0.0 divided by zero.
+        for mult in (0.0, -1.0):
+            with self.subTest(mult=mult):
+                s = self._started()
+                with self.assertRaises(ValueError):
+                    s.set_nmi_latch_for_mode("mhires", {"mhires": mult})
+
     def test_slowdown_multiplier_grows_latch(self):
         s = self._started()
         nominal = s.nmi.nominal_latch()
@@ -724,13 +741,60 @@ class NmiRateSafetyTest(unittest.TestCase):
             self.assertEqual(level, "error")
             self.assertIn("queue", msg.lower())
 
-    def test_marginal_rate_warns(self):
+    def test_a_rate_inside_the_margin_is_refused(self):
         from c64cast.hw.c64 import nmi_rate_safety
 
         # 14000 → period ~73 (NTSC) / ~70 (PAL): above the 68-cycle handler
-        # onset but inside the 75-cycle safety margin → warn, not error.
+        # onset but inside the 75-cycle margin. That used to load with a
+        # warning, and the timer then armed the 75-cycle ceiling instead, so
+        # the request could only ever play at a rate nobody asked for.
         for system in ("NTSC", "PAL"):
-            self.assertEqual(nmi_rate_safety(system, 14000)[0], "warn")
+            level, msg = nmi_rate_safety(system, 14000)
+            self.assertEqual(level, "error")
+            self.assertIn("margin", msg)
+
+    def test_the_safety_rule_matches_the_latch_the_timer_arms(self):
+        from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
+
+        # A rate is accepted exactly when its nearest-grid latch is one the
+        # timer arms unclamped, so load and NmiTimer agree at the boundary.
+        for system in ("NTSC", "PAL"):
+            for rate in range(
+                max_safe_sample_rate(system) - 50, max_safe_sample_rate(system) + 150
+            ):
+                with self.subTest(system=system, rate=rate):
+                    s = _make(sample_rate=rate, system=system)
+                    unclamped = s.nmi.requested_latch() == s.nmi.nominal_latch()
+                    self.assertEqual(nmi_rate_safety(system, rate)[0] == "ok", unclamped)
+
+    def test_a_rate_too_slow_for_the_16_bit_latch_is_refused(self):
+        from c64cast.hw.c64 import nmi_rate_safety
+
+        # 15 Hz NTSC wants latch 68181, which the register pair truncated.
+        level, msg = nmi_rate_safety("NTSC", 15)
+        self.assertEqual(level, "error")
+        self.assertIn("16-bit", msg)
+        self.assertEqual(nmi_rate_safety("NTSC", 16)[0], "ok")
+
+    def test_the_armed_latch_stays_inside_the_handler_budget_and_16_bits(self):
+        # nominal_latch is what effective_rate, the REU pump latch and the
+        # adaptive clamp all derive from, so holding it holds all of them.
+        # 14000 NTSC wants latch 72 (under the 74 ceiling); 15 Hz wants 68181,
+        # which the two-register write used to truncate to 2645 (386 Hz).
+        for rate, want in ((14000, 74), (15, 0xFFFF)):
+            with self.subTest(rate=rate):
+                s = _make(sample_rate=rate)
+                self.assertEqual(s.nmi.nominal_latch(), want)
+                self.assertAlmostEqual(s.effective_rate, 1022727 / (want + 1), places=6)
+
+    def test_a_clamped_rate_warns_when_armed(self):
+        s = _make(sample_rate=14000)
+        api = cast(Any, s.api)
+        api.read_memory = lambda *a, **k: None  # unverifiable: arm once, no sleep
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s.nmi.start(adaptive=True)
+        self.assertIn("latch 72", cm.output[0])
+        self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())
 
     def test_pal_ceiling_below_ntsc(self):
         from c64cast.hw.c64 import max_safe_sample_rate

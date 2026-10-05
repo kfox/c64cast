@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from c64cast._transport_log import quiet_transport
 from c64cast.hw.c64 import (
     CIA2,
+    CIA_TIMER_LATCH_MAX,
     NMI_SAFE_MIN_PERIOD_CYCLES,
     VECTORS,
     cpu_clock,
@@ -90,9 +91,22 @@ class NmiTimer:
 
         The rate that latch actually yields is `effective_rate` — read that,
         not `sample_rate`, whenever the number means real time.
+
+        Held to [ceiling_latch, CIA_TIMER_LATCH_MAX]: a rate past the handler budget
+        arms at the ceiling and one too slow for 16 bits at the maximum, so
+        `effective_rate` reports what is armed rather than what was asked. Load
+        rejects both, but an unresolved "auto" is validated as NTSC and a PAL
+        machine's ceiling sits lower; `start` warns when the clamp engages.
         """
-        clock = cpu_clock(self._st.system)
-        return max(1, round(clock / self._st.sample_rate) - 1)
+        return self.clamp_latch(self.requested_latch())
+
+    def requested_latch(self) -> int:
+        """The nearest-grid latch for sample_rate, before any clamp."""
+        return round(cpu_clock(self._st.system) / self._st.sample_rate) - 1
+
+    def clamp_latch(self, latch: int) -> int:
+        """`latch` held to what the handler budget and the 16-bit timer allow."""
+        return max(self.ceiling_latch(), min(CIA_TIMER_LATCH_MAX, latch))
 
     @property
     def effective_rate(self) -> float:
@@ -119,7 +133,8 @@ class NmiTimer:
         near the converged rate (minimal start glide). Uses the in-session learned
         value for `mode` if known; else a per-mode-class default — bitmap modes
         (heavy bus-halt loss) seed at the ceiling, char/light/unknown modes at
-        nominal. Clamped to the safe [ceiling, nominal] range."""
+        nominal. Clamped to the safe [ceiling, nominal] range, which is never
+        empty because nominal_latch is itself held at or above the ceiling."""
         nominal = self.nominal_latch()
         ceiling = self.ceiling_latch()
         if mode is not None and mode in self.learned_latch:
@@ -136,10 +151,13 @@ class NmiTimer:
         Rate and latch are inverse — NMI period = (latch+1) cycles — so a >1.0
         (faster) multiplier shortens the nominal period: period =
         round((nominal+1) / mult), latch = period − 1. Multiplier 1.0 → nominal.
+        Clamped like `nominal_latch`, so no multiplier arms a period shorter
+        than the handler budget — the bound the adaptive loop already had.
         """
-        nominal_latch = self.nominal_latch()
-        adjusted_period = max(2, round((nominal_latch + 1) / self.pitch_multiplier))
-        return max(1, adjusted_period - 1)
+        if not self.pitch_multiplier > 0:
+            raise ValueError(f"pitch multiplier must be positive, got {self.pitch_multiplier!r}")
+        adjusted_period = round((self.nominal_latch() + 1) / self.pitch_multiplier)
+        return self.clamp_latch(adjusted_period - 1)
 
     def write_latch(self, latch: int) -> None:
         """Record + write a new CIA #2 Timer A latch — the one live retune
@@ -182,6 +200,19 @@ class NmiTimer:
         after prebuffer, i.e. AFTER set_nmi_latch_for_mode, so honoring it
         here is what makes the static compensation stick instead of resetting
         to nominal)."""
+        requested = self.requested_latch()
+        if requested != self.nominal_latch():
+            log.warning(
+                "audio: sample_rate %d Hz needs CIA #2 latch %d on %s, outside the "
+                "%d..%d the NMI handler budget and the 16-bit timer allow — playing "
+                "at %.0f Hz instead",
+                self._st.sample_rate,
+                requested,
+                self._st.system,
+                self.ceiling_latch(),
+                CIA_TIMER_LATCH_MAX,
+                self.effective_rate,
+            )
         latch = self.seed_latch_for_mode(self.mode) if adaptive else self.compensated_latch()
         self.latch = latch
         self.started = True

@@ -31,6 +31,7 @@ from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
+    CIA_TIMER_LATCH_MAX,
     KERNAL,
     REU,
     SID,
@@ -47,7 +48,6 @@ from .audio_handlers import (
     CHUNK_SIZE,
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
-    CIA_TIMER_LATCH_MAX,
     HOST_DMA_SERVO_TARGET_GAP,
     INT16_FULL_SCALE,
     MAX_QUEUED_SAMPLES,
@@ -1438,7 +1438,7 @@ class AudioStreamer:
         65536 — a truncated latch can land anywhere, including one that fires
         the pump hundreds of times faster than matched. At the default chunk the
         product passes 16 bits below ≈2 kHz, and ``c64.nmi_rate_safety`` bounds
-        only the fast end of ``sample_rate``.
+        ``sample_rate`` only to what the NMI's own 16-bit latch can hold.
 
         CIA #1 stays in continuous mode (the kernal already set CRA); only the
         latch changes. BASIC's TI$ jiffy clock drifts as a side effect —

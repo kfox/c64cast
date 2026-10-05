@@ -27,7 +27,6 @@ from _fakes import (
 
 from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
-    CIA_TIMER_LATCH_MAX,
     HOST_DMA_SERVO_INTEG_CLAMP,
     HOST_DMA_SERVO_PERIOD_MAX_FRAC,
     HOST_DMA_SERVO_PERIOD_MIN_FRAC,
@@ -61,6 +60,7 @@ from c64cast.audio.audio_handlers import (
     patch_chunk_size,
     servo_period,
 )
+from c64cast.hw.c64 import CIA_TIMER_LATCH_MAX
 from c64cast.scenes.scenes import VideoScene
 
 # The matched pump latch at the fixture's rate, spelled out rather than

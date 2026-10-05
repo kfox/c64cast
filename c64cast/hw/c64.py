@@ -450,13 +450,18 @@ def kernal_cia1_latch(system: str) -> int:
     return KERNAL_CIA1_LATCH_NTSC if _canonical_system(system) == "NTSC" else KERNAL_CIA1_LATCH_PAL
 
 
+# A CIA timer latch is two 8-bit registers, so a derived latch above this is
+# silently truncated modulo 65536 by the register write.
+CIA_TIMER_LATCH_MAX: Final = 0xFFFF
+
+
 def cia1_latch_for_rate(rate_hz: float, system: str) -> int:
     """CIA #1 Timer A latch for a consume rate: ``round(cpu_clock/rate) - 1``,
     clamped to a valid 16-bit timer value (>= 1)."""
     if rate_hz <= 0:
         raise ValueError(f"rate must be positive, got {rate_hz}")
     latch = round(cpu_clock(system) / rate_hz) - 1
-    return max(1, min(latch, 0xFFFF))
+    return max(1, min(latch, CIA_TIMER_LATCH_MAX))
 
 
 def actual_rate_for_latch(latch: int, system: str) -> float:
@@ -510,17 +515,30 @@ def max_safe_sample_rate(system: str) -> int:
     return int(cpu_clock(system) // NMI_SAFE_MIN_PERIOD_CYCLES)
 
 
-def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "warn", "error"], str]:
-    """Classify an audio sample rate against the NMI handler's cycle budget for
-    `system`. Returns ``(level, message)`` where level is "ok" | "warn" |
-    "error" — pure (no I/O), so config validation, --doctor, and tests share
-    one source of truth. "error" = period below the handler worst case (NMIs
-    WILL queue, pitch drops); "warn" = inside entry-latency margin (may glitch
-    under badline-heavy scenes); "ok" = clear."""
+def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "error"], str]:
+    """Classify an audio sample rate against what the NMI DAC consumer can arm
+    on `system`. Returns ``(level, message)`` — pure (no I/O), so config
+    validation, --doctor, and tests share one source of truth.
+
+    The latch is chosen the way ``NmiTimer.nominal_latch`` chooses it (nearest
+    grid point), and "error" is any rate whose latch falls outside what the
+    timer will arm: a period under ``NMI_SAFE_MIN_PERIOD_CYCLES`` (NMIs queue
+    below the handler worst case, and the entry-latency margin above it is the
+    budget the timer clamps to) or a latch past the 16-bit timer. A rate the
+    timer would clamp would otherwise load and play at a rate nobody asked for.
+    """
     if sample_rate <= 0:
         return ("error", f"sample_rate must be positive, got {sample_rate}")
     period = cpu_clock(system) / sample_rate
+    latch = round(period) - 1
     safe_max = max_safe_sample_rate(system)
+    if latch > CIA_TIMER_LATCH_MAX:
+        min_rate = -(-cpu_clock(system) // (CIA_TIMER_LATCH_MAX + 1))
+        return (
+            "error",
+            f"sample_rate {sample_rate} Hz → CIA #2 latch {latch} on {system}, past "
+            f"the 16-bit timer. Min on {system} ≈ {min_rate} Hz.",
+        )
     if period < NMI_HANDLER_WORST_CYCLES:
         return (
             "error",
@@ -528,16 +546,17 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "warn"
             f"{system}, below the {NMI_HANDLER_WORST_CYCLES}-cycle handler worst "
             f"case: NMIs queue and pitch drops. Max safe on {system} ≈ {safe_max} Hz.",
         )
-    if period < NMI_SAFE_MIN_PERIOD_CYCLES:
+    if latch + 1 < NMI_SAFE_MIN_PERIOD_CYCLES:
         return (
-            "warn",
-            f"sample_rate {sample_rate} Hz → NMI period {period:.0f} cycles on "
-            f"{system}, within entry-latency margin of the {NMI_HANDLER_WORST_CYCLES}-"
-            f"cycle handler — may glitch under badline-heavy scenes. Safe max ≈ {safe_max} Hz.",
+            "error",
+            f"sample_rate {sample_rate} Hz → NMI period {latch + 1} cycles on "
+            f"{system}, inside the entry-latency margin of the "
+            f"{NMI_HANDLER_WORST_CYCLES}-cycle handler; the NMI timer arms no period "
+            f"under {NMI_SAFE_MIN_PERIOD_CYCLES}. Max safe on {system} ≈ {safe_max} Hz.",
         )
     return (
         "ok",
-        f"sample_rate {sample_rate} Hz → NMI period {period:.0f} cycles on "
+        f"sample_rate {sample_rate} Hz → NMI period {latch + 1} cycles on "
         f"{system} (safe; handler ≤ {NMI_HANDLER_WORST_CYCLES}).",
     )
 
