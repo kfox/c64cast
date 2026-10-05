@@ -905,7 +905,11 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio._position = 99.0
         self.assertAlmostEqual(scene.transport.clock_s(), 10.0)
 
-    def test_resume_splices_back_then_unmutes(self):
+    def test_resume_requests_the_seek_then_unmutes_then_flushes(self):
+        # Order is load-bearing. The seek request first arms the pending-seek
+        # guard against pre-seek audio; the unmute before the flush lets the
+        # target's first audio through even when the demuxer decodes it while
+        # the flush is still running.
         events: list[tuple[str, object]] = []
         scene, _, _ = self._resync_scene(position=10.0, events=events)
         scene.transport.touch()
@@ -913,12 +917,28 @@ class VideoSceneSpliceTest(unittest.TestCase):
         events.clear()
         scene.transport_resume()
         self.assertFalse(scene.transport.paused)
-        # Order is load-bearing: splice (request_seek then flush) BEFORE unmute.
-        self.assertEqual(
-            [e[0] for e in events],
-            ["seek", "flush", "muted"],
-        )
-        self.assertEqual(events[-1], ("muted", False))
+        self.assertEqual(events, [("seek", 10.0), ("muted", False), ("flush", False)])
+
+    def test_audio_the_demuxer_decodes_during_the_resume_flush_reaches_the_sink(self):
+        # Unmuting only after the flush dropped that audio at the source, so
+        # the stream started past its target at the anchor: on hardware the
+        # sound ran 50-200 ms ahead of the picture after every resume.
+        scene, _, audio = self._resync_scene(position=10.0)
+        sink: list[np.ndarray] = []
+        scene.transport.touch()  # resolves the resync path on the stub source
+        demux = _make_emit_audio_stub(sink)
+        demux._video_buf = []
+        scene.source = demux  # type: ignore[assignment]
+        scene.transport_pause()
+        self.assertTrue(demux._muted)
+
+        def flush_while_the_demuxer_seeks(*, silence_output: bool = False) -> None:
+            demux._pending_seek = None  # the demux thread applied the seek
+            demux._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+
+        audio.flush = flush_while_the_demuxer_seeks  # type: ignore[method-assign]
+        scene.transport_resume()
+        self.assertEqual(len(sink), 1, "the seek target's first audio was dropped")
 
     def test_a_seek_shows_its_target_frame_through_the_ring_lead(self):
         # A held FF re-seeks before each hold ends; frames chosen by the held

@@ -146,14 +146,23 @@ class VideoTransportControls:
             if sc.source is not None:
                 sc.source.set_muted(True)
 
-    def _splice(self, target_s: float) -> None:
+    def _splice(self, target_s: float, *, unmute: bool = False) -> None:
         """Resync-path splice primitive (target_s in content seconds): re-anchor
         the audio clock to the target, arm the demuxer's stale-audio guard, then
         drop everything already queued. Order is load-bearing — request_seek sets
         the _emit_audio pending-seek guard live FIRST, then flush() retires the
         queue (the DAC drains it; the sampler leaves it for its writer to drop
         by epoch tag); the flush epoch handles any pusher already blocked
-        inside push_samples."""
+        inside push_samples.
+
+        ``unmute`` (resume) unlatches the source between the two. The demuxer
+        can apply the seek and decode the target's first audio while flush()
+        runs (the sampler's cut-over waits on the ring writer and blanks the
+        old lead, tens of ms), and a source still muted then drops it: the
+        stream starts that much past the target at the anchor, and the sound
+        plays ahead of the picture. Unmuted there, pre-seek audio is still
+        held back by the pending-seek guard, and anything that slips past it
+        before the flush is retired by the flush epoch, as on a seek."""
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
         self.audio_anchor_clock_s = self.content_to_clock(target_s)
@@ -161,6 +170,8 @@ class VideoTransportControls:
         # first sample is heard one ring lead from now, not at once.
         self.audio_anchor_pos = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
         sc.source.request_seek(target_s)
+        if unmute:
+            sc.source.set_muted(False)
         sc.audio.flush()
 
     def pause(self) -> None:
@@ -188,15 +199,14 @@ class VideoTransportControls:
         if not self.paused:
             return
         if self.resync:
-            # Splice back to the paused position first — re-anchor, flush, and
-            # restore the sampler's volume — THEN unmute; that order closes the
-            # resume audio-leak window. The sampler's wall position kept
-            # advancing through the pause, and the fresh audio_anchor_pos
-            # absorbs it (the DAC's position froze on its own).
+            # Splice back to the paused position, unmuting the source once the
+            # seek is requested and before the flush (see _splice). The
+            # sampler's wall position kept advancing through the pause, and the
+            # fresh audio_anchor_pos absorbs it (the DAC's position froze on
+            # its own).
             assert sc.source is not None
             self.paused = False
-            self._splice(self.clock_to_content(self.audio_anchor_clock_s))
-            sc.source.set_muted(False)
+            self._splice(self.clock_to_content(self.audio_anchor_clock_s), unmute=True)
         else:
             self.paused = False
             self.wall_anchor_time = time.time()

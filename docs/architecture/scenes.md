@@ -112,7 +112,7 @@ It is used by `transport_seek`, the loop wrap, and resume-from-pause.
 **Pause and resume.**
 
 * *Pause* — freeze the anchor, `source.set_muted(True)`, `audio.flush(silence_output=True)` for a fast mute.
-* *Resume* — `_splice()` back to the paused position **then** `set_muted(False)`. Splice-first is what closes the resume leak window; the sampler's plain flush also restores its channel volume.
+* *Resume* — `_splice(..., unmute=True)` back to the paused position: `request_seek`, **then** `set_muted(False)`, **then** the plain flush, which also restores the sampler's channel volume. The seek request comes first so the pending-seek guard holds back pre-seek audio, and whatever slips past it before the flush is retired by the flush epoch. The unmute comes before the flush because the demuxer can apply the seek and decode the target's first audio while the flush is still running. The sampler's cut-over waits on the ring writer and blanks the old lead, which takes tens of ms. A source still muted during that time dropped the audio, so the stream started past its target at the anchor, and on hardware the sound ran 50–200 ms ahead of the picture after a resume. A fake-link repro measured −163 to −256 ms with the old order and 0 ms with this one.
 
 **Loop-wrap re-fire guard.** The wrap adds `not (resync and source.seek_pending)`, so a `source.finished` wrap flushes and seeks A exactly once — not every frame until the demux clears `_eof`.
 
