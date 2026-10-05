@@ -89,8 +89,14 @@ _TRIPLE = ('"""', "'''")
 #: hold no parseable URL at all, and the point is to spot the *shape* of
 #: userinfo without needing the line to be well formed. The netloc ends at the
 #: first `/`, `?` or `#`, so those bound the search and an `@` later in a path
-#: or query is not userinfo. A quote bounds it too, which keeps one TOML
+#: or query is not userinfo. A `"` bounds it too, which keeps one basic
 #: string's `@` from being read as another's userinfo.
+#:
+#: A `'` does not. RFC 3986 allows one unencoded in userinfo, and
+#: `file = 'https://kelly:it's@cdn/a.mp4'` is a literal string that the `'`
+#: ends early, so the parser rejects exactly that line and it comes here. The
+#: cost is `x = ['tr://COM3', 'me@host']` cut at the scheme on a line the
+#: parser refused for some other reason.
 #:
 #: Whitespace deliberately does *not* bound it. A space is illegal in a URL, so
 #: reading one as the end of the netloc is defensible — but a passphrase with a
@@ -104,7 +110,7 @@ _TRIPLE = ('"""', "'''")
 #: quadratic: a 64 KB hex dump on one log line took 11 s to redact, and every
 #: line `--log-file` or the console's log buffer receives goes through it.
 #: :func:`_scheme_start` recovers where the scheme began when a caller needs it.
-_URL_USERINFO = re.compile(r"://(?<=[a-z0-9+.\-]://)[^/?#\"']*@", re.IGNORECASE)
+_URL_USERINFO = re.compile(r"://(?<=[a-z0-9+.\-]://)[^/?#\"]*@", re.IGNORECASE)
 
 #: The characters a URL scheme is spelled with (RFC 3986 §3.1).
 _SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")

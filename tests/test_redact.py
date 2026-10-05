@@ -386,7 +386,7 @@ class RedactSourceLineTest(unittest.TestCase):
     def test_a_space_inside_the_userinfo_does_not_evade_the_rule(self):
         """A space is illegal in a URL, so stopping the netloc at one reads as
         defensible — but a passphrase with a space in it is exactly the shape
-        that fails to parse and lands here, and it came back whole. The quote
+        that fails to parse and lands here, and it came back whole. A `"`
         and `#` still bound the search, so nothing downwind of the value can
         pull the cut earlier."""
         for line in (
@@ -399,6 +399,19 @@ class RedactSourceLineTest(unittest.TestCase):
                 self.assertNotIn("pass", safe)
                 self.assertFalse(verbatim)
                 self.assertTrue(safe.startswith("url = "), safe)
+
+    def test_an_apostrophe_inside_the_userinfo_does_not_evade_the_rule(self):
+        """RFC 3986 allows a raw `'` in userinfo. In a literal string it ends
+        the value early, so the parser rejects that very line and it lands
+        here; a `'` that bounded the search echoed the password whole."""
+        for line in (
+            "file = 'https://kelly:it's@cdn.example/a.mp4'",
+            'file = "https://kelly:it\'s@cdn.example/a.mp4" bogus',
+        ):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertEqual(safe, "file = " + line[7] + "REDACTED")
+                self.assertFalse(verbatim)
 
     def test_an_at_sign_outside_a_netloc_is_not_userinfo(self):
         """The netloc ends at the first `/`, `?` or `#`. A line truncated over
