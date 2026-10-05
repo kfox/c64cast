@@ -668,9 +668,13 @@ class AudioCfg:
             "themselves halt the 6510 and steal cycles from the NMI handler, so the "
             "overrun onset under the live pipeline was measured at ~12500 Hz (identical "
             "in char and bitmap — the audio feed, not the video, is the driver). 12000 "
-            "keeps margin below that. Rates past the isolated-handler ceiling, and "
-            "rates too slow for the 16-bit NMI timer (under ~16 Hz), are rejected "
-            "at load, and --doctor reports them. Sampler-backend playback uses "
+            "keeps margin below that. A rate whose nearest CIA #2 latch gives an NMI "
+            "period under 75 cycles (the 68-cycle handler worst case plus entry "
+            "margin: above ~13.7 kHz NTSC / ~13.2 kHz PAL), or a latch past the "
+            "16-bit timer (under 16 Hz), is rejected at load, and --doctor reports "
+            'it. An unresolved [ultimate64].system = "auto" is checked as NTSC, so '
+            "on a PAL machine a rate between the two ceilings loads and plays "
+            "clamped to ~13.1 kHz, with a warning. Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
     )
