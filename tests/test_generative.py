@@ -1383,7 +1383,7 @@ class _FileSink:
 
     def position_seconds(self):
         if self._played is None:
-            return self.pushed / self.sample_rate
+            return self.pushed / self.effective_rate
         return self._played() if callable(self._played) else self._played
 
 
@@ -1470,6 +1470,17 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # The tail counts toward the length the scene waits out, too.
         assert src._end is not None
         self.assertAlmostEqual(src._end[0], 0.4, places=6)
+
+    def test_the_length_is_on_the_sinks_clock(self):
+        # The DAC's clock divides by the rate its CIA latch achieves, not the
+        # one requested (12 kHz NTSC plays at 12032.1 Hz). A length divided by
+        # the request sits 0.27% past anything that clock reaches, and the
+        # scene ran out the deadline.
+        sink = _FileSink()
+        sink.effective_rate = 8032.5
+        src = self._source(sink)
+        src._decode_loop()
+        self.assertTrue(src.finished)
 
     def test_waits_for_what_the_sink_has_not_played(self):
         start = self.now[0]
