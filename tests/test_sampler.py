@@ -1061,24 +1061,24 @@ class SamplerLateReanchorTest(unittest.TestCase):
             smp.content_lag_seconds, first + shift / smp.bps / smp._actual_rate, places=9
         )
 
-    def test_a_reanchor_whose_write_failed_adds_no_content_lag(self):
+    def _fail_reanchors(self, retries: int) -> None:
         # A link outage under a producer already shown slow: every retry is
-        # late and re-anchors at once. Kept, each failed one's shift added up
-        # to the outage's length of lag for audio that never landed, and an
-        # audio-file scene, which waits out the lag, sat that long on silence
-        # after the writer gave up. Only the re-anchor that lands counts.
-        # Nor does it count or log as a re-anchor until one lands.
+        # late past the anchor the last one moved to, and re-anchors at once.
         smp = self.smp
-        self._reanchor_once()
-        before_lag, before_pos = smp.content_lag_seconds, smp._content_pos
         with mock.patch.object(self.api, "reu_write", side_effect=OSError("link down")):
-            for _ in range(20):
-                # Each retry late past the anchor the last one moved to.
+            for _ in range(retries):
                 self.consumed = max(self.consumed, smp._content_pos) + 400
                 with self.assertNoLogs("c64cast.audio.sampler"), self.assertRaises(OSError):
                     self._write(40)
                 smp._carry = None  # the writer's next pass takes the carry back
-        self.assertEqual(smp.content_lag_seconds, before_lag)
+
+    def test_a_reanchor_whose_write_failed_counts_once_it_lands(self):
+        # An outage's failed re-anchors do not count or log as re-anchors
+        # until one lands, and then they land as one.
+        smp = self.smp
+        self._reanchor_once()
+        before_lag, before_pos = smp.content_lag_seconds, smp._content_pos
+        self._fail_reanchors(20)
         self.assertEqual(smp._reanchors, 1)
         self.consumed = smp._content_pos + 400
         with self.assertLogs("c64cast.audio.sampler", "DEBUG") as logs:
@@ -1090,6 +1090,25 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertAlmostEqual(
             smp.content_lag_seconds, before_lag + shift / smp.bps / smp._actual_rate, places=9
         )
+
+    def test_a_pending_reanchor_counts_in_the_content_lag_until_the_writer_gives_up(self):
+        # The writer retries at the pending anchor, so once the link is back
+        # the sound lags by it. Left out of the lag, an audio-file scene's
+        # end read the clock as caught up and cut the scene mid-outage. Once
+        # the writer gives up nothing more lands, and the scene would sit the
+        # pending shift out on silence, so only what landed counts.
+        smp = self.smp
+        self._reanchor_once()
+        before_lag, before_pos = smp.content_lag_seconds, smp._content_pos
+        self._fail_reanchors(20)
+        assert smp._unlanded_reanchor is not None
+        pending = smp._content_pos - before_pos
+        self.assertEqual(smp._unlanded_reanchor[0], pending)
+        self.assertAlmostEqual(
+            smp.content_lag_seconds, before_lag + pending / smp.bps / smp._actual_rate, places=9
+        )
+        smp._failed = True
+        self.assertEqual(smp.content_lag_seconds, before_lag)
 
     def test_a_retried_reanchor_rewrites_the_slots_its_failed_write_reached(self):
         # The re-anchored write split at the ring's end and only its first

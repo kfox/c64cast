@@ -1172,10 +1172,13 @@ class UltimateAudioSampler:
         unlanded = self._unlanded_reanchor
         if unlanded is None:
             return
-        self._unlanded_reanchor = None
         shift, late_for = unlanded
         self._reanchors += 1
+        # The lag first: content_lag_seconds reads both without the lock, and
+        # in this order it sees the shift once or, for an instant, twice,
+        # never not at all.
         self._reanchor_lag_bytes += shift
+        self._unlanded_reanchor = None
         if self._reanchors == 1:
             level = logging.WARNING
             note = ""
@@ -1335,8 +1338,22 @@ class UltimateAudioSampler:
         `position_seconds()`. Late audio is re-anchored past the read head
         (`_late_anchor`), and the clock does not follow it, so the last sample
         of a track is heard this long after the clock reaches the track's
-        length. Cleared by arm() and by a splice."""
-        return self._reanchor_lag_bytes / self.bps / self._actual_rate
+        length. Cleared by arm() and by a splice.
+
+        A re-anchor whose write has not landed yet counts too: the writer
+        retries at its anchor, so the sound will lag by it once the link is
+        back, and left out, an audio-file scene's end read the clock as
+        caught up and cut the scene during the outage. Once the writer has
+        given up nothing more lands, and only what did counts. Read without
+        _io_lock, which the writer holds for a whole REU write: the pending
+        shift is read first, and _land_reanchor adds it to the lag before
+        clearing it, so a landing between the reads counts it twice for an
+        instant rather than not at all."""
+        unlanded = self._unlanded_reanchor
+        lag = self._reanchor_lag_bytes
+        if unlanded is not None and not self._failed:
+            lag += unlanded[0]
+        return lag / self.bps / self._actual_rate
 
     def ring_lead_seconds(self) -> float:
         """The ``AudioStreamer`` splice hook: how long after a flush() the first
