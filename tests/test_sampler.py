@@ -678,6 +678,31 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual(api.reu_writes, [(smp.ring_base + pos, 20)])
 
+    def test_only_a_held_carry_waits_on_the_queue(self):
+        # Right after a splice the anchor sits on the write floor: a carry
+        # there is written, and waiting on an empty queue first would turn the
+        # wait's worth of it late.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        smp._carry = (smp._flush_epoch, memoryview(b"\x01" * 20))
+        blocking: list[Any] = []
+
+        def empty_get(block: bool = True, timeout: float | None = None) -> Any:
+            if block:
+                blocking.append(timeout)
+            raise s.queue.Empty
+
+        smp._q.get = empty_get  # type: ignore[method-assign]
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(blocking, [], "the writer waited on the queue behind a due carry")
+        self.assertEqual(api.reu_writes, [(smp.ring_base + smp._flush_margin, 20)])
+        # A carry that is held still makes the pass's one bounded wait, so a
+        # writer holding a partial quantum does not spin.
+        self._place(smp, self._hold_floor(smp, 20))
+        smp._carry = (smp._flush_epoch, memoryview(b"\x01" * 20))
+        self.assertFalse(smp._writer_step(smp._writer_gen))
+        self.assertEqual(blocking, [0.02])
+
     def test_an_oversized_chunk_is_split_and_stops_at_the_lead_target(self):
         api = _FakeBackend()
         smp = self._idle_reader(api, ring_size=0x20000, lead_seconds=4.0)

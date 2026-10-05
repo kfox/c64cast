@@ -1004,9 +1004,12 @@ class UltimateAudioSampler:
                 item, self._carry = self._carry, None
             else:
                 # One bounded wait per pass, even behind a held carry, so a
-                # writer holding a partial quantum does not spin.
+                # writer holding a partial quantum does not spin. A carry that
+                # is already due is not held, so it does not wait: the reader
+                # would take up to that wait's 20 ms of it as late.
+                block = not waited and (not parts or self._holds(size))
                 try:
-                    item = self._q.get_nowait() if waited else self._q.get(timeout=0.02)
+                    item = self._q.get(timeout=0.02) if block else self._q.get_nowait()
                 except queue.Empty:
                     break
                 waited = True
@@ -1018,12 +1021,10 @@ class UltimateAudioSampler:
             size += len(item[1])
         if not parts:
             return None
-        short = self._write_quantum - size
         # Read after the queue wait above, not at the start of the pass: the
         # reader moved up to that wait's 20 ms meanwhile, and a hold decided
         # on the older lead wrote its gather late when the producer stalled.
-        slack = self._content_pos - self._read_consumed_bytes() - self._flush_margin
-        if short > 0 and slack - short > self._hold_guard:
+        if self._holds(size):
             self._carry = (epoch, memoryview(b"".join(parts)))
             return None
         whole = memoryview(parts[0]) if len(parts) == 1 else memoryview(b"".join(parts))
@@ -1031,6 +1032,15 @@ class UltimateAudioSampler:
             self._carry = (epoch, whole[limit:])
             whole = whole[:limit]
         return epoch, bytes(whole)
+
+    def _holds(self, size: int) -> bool:
+        """Writer-thread only: whether a ``size``-byte gather is carried to
+        wait for the rest of its quantum, on the read head as of now. It is
+        while waiting for the rest at real time would still clear the write
+        floor by HOLD_GUARD_S."""
+        short = self._write_quantum - size
+        slack = self._content_pos - self._read_consumed_bytes() - self._flush_margin
+        return short > 0 and slack - short > self._hold_guard
 
     def _blank(self, lo: int, hi: int) -> None:
         """NEUTRAL-write the absolute byte span [lo, hi) of the ring."""
