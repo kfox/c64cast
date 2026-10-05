@@ -1920,6 +1920,21 @@ class LifecycleTest(unittest.TestCase):
                 self.assertEqual(at_upload, [])
                 self.assertEqual(at_arm, [(True, armed)])
 
+    def test_a_consumer_that_never_started_is_not_noted(self):
+        # R frozen through every retry means no NMI is consuming, so the link
+        # has nothing to spare and must keep its full-speed writes.
+        s = _make()
+        api = cast(Any, s.api)
+        s._upload_nmi_and_buffers()
+        with (
+            mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0),
+            mock.patch.object(s, "read_consumer_ptr", lambda: 0x4000),
+            self.assertLogs("c64cast.audio.audio_rate", level="WARNING") as cm,
+        ):
+            s.nmi.start(adaptive=False)
+        self.assertTrue(any("never started" in m for m in cm.output))
+        self.assertEqual(api.nmi_consumer_notes, [])
+
     def test_stop_reports_underruns(self):
         s = _make()
         s._total_slots = 1
