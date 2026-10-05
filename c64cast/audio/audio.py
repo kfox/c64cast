@@ -2286,9 +2286,12 @@ class AudioStreamer:
 
         The vector restore is confirmed like the unwind's: this is the last
         write that can take the pump off $0314, and one lost on a lossy link
-        leaves it running for every scene after."""
+        leaves it running for every scene after. One that never confirms stays
+        owed, so the shared streamer's next stop() writes it again."""
         if not (self._reu_pump_armed or self._irq_vector_restore_owed):
             return
+        # Cleared by the confirmed restore only once it held.
+        self._irq_vector_restore_owed = True
         run_teardown_steps(
             log,
             type(self).__name__,
@@ -2299,7 +2302,6 @@ class AudioStreamer:
             ],
         )
         self._reu_pump_armed = False
-        self._irq_vector_restore_owed = False
 
     def _restore_cia1_latch(self) -> None:
         """Put CIA #1 Timer A back to this machine's kernal default, without

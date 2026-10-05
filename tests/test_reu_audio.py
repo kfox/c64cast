@@ -1613,6 +1613,19 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         s.stop()
         self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
 
+    def test_a_stop_restore_that_never_confirms_stays_owed(self):
+        # The streamer is shared across scenes: a restore stop() could not
+        # land is written again by the next stop(), whatever that scene armed.
+        s, fake = self._start(0x0000, 0)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s.stop()
+        self.assertEqual(fake.regs["0314"], self.PUMP_IRQ)
+        self.assertTrue(s._irq_vector_restore_owed)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+        self.assertFalse(s._irq_vector_restore_owed)
+
     def test_a_tracked_install_whose_latch_never_lands_parks_the_body(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
