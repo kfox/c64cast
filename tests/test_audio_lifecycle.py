@@ -1082,7 +1082,7 @@ class StallResyncTest(unittest.TestCase):
         self.assertIsNotNone(anchor)
         self.assertTrue(s.q.empty())
         self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
-        self.assertIn("dropped", cm.output[0])
+        self.assertIn(f"dropped {2048 / s.effective_rate:.2f} s of live input", cm.output[0])
 
     def test_a_decoded_backlog_is_kept_at_the_resync(self):
         s = self._backlogged(_RFakeAPI([100]), live=False)
@@ -1475,7 +1475,7 @@ class StallResyncTest(unittest.TestCase):
         with (
             mock.patch.object(audio_mod, "time", clock),
             mock.patch.object(audio_rate_mod, "time", clock),
-            self.assertNoLogs(audio_mod.log, level="WARNING"),
+            self.assertLogs(audio_mod.log, level="DEBUG") as cm,
         ):
             result = s._resync_after_stall(
                 0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 2100
@@ -1483,6 +1483,8 @@ class StallResyncTest(unittest.TestCase):
         self.assertEqual(result, audio_mod.StallInsideLead(2000))
         self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
         self.assertEqual(s.q.qsize(), 4, "dropped a decoded backlog")
+        self.assertTrue(all(r.levelno < logging.WARNING for r in cm.records), cm.output)
+        self.assertFalse(any("live input" in line for line in cm.output), cm.output)
         # The refill burst is a disturbance the adaptive rate loop sits out.
         self.assertGreater(s.servo.warmup_until, clock.monotonic())
 
@@ -1505,7 +1507,9 @@ class StallResyncTest(unittest.TestCase):
         self.assertTrue(s.q.empty())
         self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
         self.assertTrue(all(r.levelno < logging.WARNING for r in cm.records), cm.output)
-        self.assertTrue(any("of live input" in line for line in cm.output), cm.output)
+        # The four 512-byte blobs _backlogged queued, in seconds of playback.
+        dropped = f"dropped {2048 / s.effective_rate:.2f} s of live input"
+        self.assertTrue(any(dropped in line for line in cm.output), cm.output)
 
     def test_a_w_ahead_by_less_than_r_moves_while_read_counts_as_lapped(self):
         # 0.1 s of read carries R 1200 B on: a W 1400 B ahead when R was
