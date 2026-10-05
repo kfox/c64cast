@@ -327,6 +327,7 @@ class RateServo:
         # subtracts to report what is heard. -1 = no consumer this run.
         self.ring_lead = -1.0
         self.last_r_reading = -1
+        self.last_r_reading_since = 0.0  # monotonic, when R took that value
         self.r_stall_chunks = 0
         self.stall_warned = False
         # Slow-R-read holdoff: no read before `read_holdoff_until` (monotonic),
@@ -460,19 +461,25 @@ class RateServo:
         behind our back) otherwise presents as unexplained silence plus the
         fast playback the servo produces while chasing a dead reader. Warns
         once per session; the pacing behavior is untouched.
+
+        The count is of readings, not chunks: behind a slow server they come
+        a read backoff apart, so the warning reports the time R stood still.
         """
+        now = time.monotonic()
         if r_addr == self.last_r_reading:
             self.r_stall_chunks += 1
         else:
             self.last_r_reading = r_addr
+            self.last_r_reading_since = now
             self.r_stall_chunks = 0
         if self.r_stall_chunks >= NMI_STALL_WARN_CHUNKS and not self.stall_warned:
             self.stall_warned = True
             log.warning(
-                "audio: NMI consumer stalled — R has not moved from $%04X for %d chunks. "
-                "Audio is silent and playback pace is unreliable from here.",
+                "audio: NMI consumer stalled — R has not moved from $%04X for %.1f s "
+                "(%d readings). Audio is silent and playback pace is unreliable from here.",
                 r_addr,
-                self.r_stall_chunks,
+                now - self.last_r_reading_since,
+                self.r_stall_chunks + 1,
             )
 
     def observe_r_rate(self, r_addr: int) -> None:
@@ -641,6 +648,7 @@ class RateServo:
         re-acquires from nominal rather than carrying a stale R-rate
         estimate."""
         self.last_r_reading = -1
+        self.last_r_reading_since = 0.0
         self.r_stall_chunks = 0
         self.stall_warned = False
         self.slow_reads = 0

@@ -827,12 +827,18 @@ class SlowReadPointerTest(unittest.TestCase):
         # them is still a stalled consumer the watchdog has to report.
         s, clock, _ = self._streamer(read_s=0.1)
         write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        read_at = []
         with self.assertLogs(audio_rate_mod.log, level="DEBUG") as cm:
             for _ in range(audio_rate_mod.NMI_STALL_WARN_CHUNKS + 1):
                 s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+                read_at.append(clock.monotonic())
                 clock.sleep(s.servo.read_holdoff_s)
         self.assertTrue(s.servo.stall_warned)
-        self.assertTrue(any("NMI consumer stalled" in line for line in cm.output))
+        stalled = [line for line in cm.output if "NMI consumer stalled" in line]
+        self.assertEqual(len(stalled), 1)
+        # The readings were a backoff apart, so the warning gives the time R
+        # stood still (tens of seconds here), not a count of chunks.
+        self.assertIn(f"for {read_at[-1] - read_at[0]:.1f} s", stalled[0])
 
 
 class _StallingConsumerAPI(FakeAPI):
