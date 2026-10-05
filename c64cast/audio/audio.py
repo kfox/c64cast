@@ -1677,10 +1677,13 @@ class AudioStreamer:
         it. A one-byte write cannot tear an instruction the 6510 is fetching.
 
         Under a dispatcher, an entry that may have gone up (``entry_may_be_up``)
-        also goes back to the JMP $EA31 stub its installer left: the dispatcher keeps JMPing to $C100 for the
-        rest of the scene, and once CIA #1 is back at the kernal latch the
-        entry's tick divider would chain the kernal on only every Nth tick
-        (the jiffy clock, SCNKEY and the cursor blink at a third speed)."""
+        also goes back to the JMP $EA31 stub its installer left: the dispatcher
+        keeps JMPing to $C100 for the rest of the scene, and once CIA #1 is back
+        at the kernal latch the entry's tick divider would chain the kernal on
+        only every Nth tick (the jiffy clock, SCNKEY and the cursor blink at a
+        third speed). That restore is confirmed like an install stage, since
+        the link that lost the entry can lose it too, and one that never
+        confirms is logged rather than dropped."""
         steps: list[tuple[str, Callable[[], object]]] = [
             (
                 "pump body park",
@@ -1691,7 +1694,12 @@ class AudioStreamer:
             steps.append(
                 (
                     "pump entry stub restore",
-                    lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
+                    lambda: self._require_confirmed(
+                        "pump entry stub restore",
+                        lambda: self._write_pump_entry(
+                            REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True
+                        ),
+                    ),
                 )
             )
         if dispatcher_owns_irq:

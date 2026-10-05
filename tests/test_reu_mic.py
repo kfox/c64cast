@@ -671,6 +671,25 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
             _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, times=tries, skip_hook=True)
         self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
 
+    def test_a_lost_entry_stub_restore_is_resent(self):
+        # The link that lost every entry attempt can lose the stub restore
+        # too; one lost restore would leave the tracked entry where the
+        # dispatcher JMPs, with the kernal at a third of its rate.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, times=tries + 1, skip_hook=True)
+        self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
+        restore = self._index(fake, "write_memory_file", "C100")
+        icr = [o for o in fake.ops[:restore] if o[:2] == ("write_memory", "DC0D")]
+        self.assertEqual(icr[-1][2], "7F")
+
+    def test_an_entry_stub_restore_that_never_lands_is_logged(self):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+            _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, skip_hook=True)
+        self.assertTrue(any("pump entry stub restore" in m for m in cm.output), cm.output)
+        icr = [o for o in fake.ops if o[:2] == ("write_memory", "DC0D")]
+        self.assertEqual(icr[-1][2], "81")
+
     @staticmethod
     def _vector_writes(fake: FakeAPI) -> list[tuple]:
         return [o[2] for o in fake.ops if o[:2] == ("write_regs", "0314")]

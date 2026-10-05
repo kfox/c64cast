@@ -1638,7 +1638,7 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
             self.assertLogs("c64cast.audio.audio", level="ERROR"),
             self.assertRaises(PumpInstallError),
         ):
-            s.start_for_reu_staged(b"" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
         stub = max(
             i
