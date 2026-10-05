@@ -38,6 +38,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_HI,
 )
 from c64cast.audio.mic_lead import MIC_LEAD_REANCHOR_GUARD, MicLeadServo, MicLeadShaper
+from c64cast.hw.c64 import CIA1, KERNAL, VECTORS, kernal_cia1_latch
 
 
 def _new_streamer(use_reu_pump: bool = True, **overrides) -> AudioStreamer:
@@ -653,6 +654,39 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         park = max(i for i, o in enumerate(fake.ops) if o == ("write_memory", "C180", "60"))
         body = self._index(fake, "write_memory_file", "C180")
         self.assertLess(body, park)
+
+    @staticmethod
+    def _vector_writes(fake: FakeAPI) -> list[tuple]:
+        return [o[2] for o in fake.ops if o[:2] == ("write_regs", "0314")]
+
+    def test_a_latch_that_never_lands_aborts_before_the_vector_patch(self):
+        # The pump code is in place by then, so the abort parks it and puts the
+        # kernal's CIA #1 rate back, and $0314 is never pointed at $C100.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        for skip_hook in (False, True):
+            with self.subTest(skip_hook=skip_hook):
+                with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+                    s, fake, opened = self._start(
+                        lose=CIA1.TIMER_A_LO, times=tries, skip_hook=skip_hook
+                    )
+                self.assertFalse(s._reu_pump_armed)
+                self.assertFalse(s.running)
+                self.assertEqual(opened, [])
+                self.assertEqual(fake.memories["C180"], "60")
+                self.assertEqual(fake.memories["DC04"], _packed_latch(kernal_cia1_latch("NTSC")))
+                self.assertEqual(self._vector_writes(fake), [])
+
+    def test_a_vector_patch_that_never_confirms_is_restored_to_the_kernal(self):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s, fake, opened = self._start(
+                lose=VECTORS.IRQ, times=audio_mod.TRACKED_PUMP_INSTALL_TRIES, skip_hook=False
+            )
+        self.assertEqual(
+            self._vector_writes(fake)[-1], (KERNAL.IRQ_HANDLER & 0xFF, KERNAL.IRQ_HANDLER >> 8)
+        )
+        self.assertFalse(s._reu_pump_armed)
+        self.assertEqual(opened, [])
+        self.assertEqual(fake.memories["C180"], "60")
 
 
 class _PendingAnchor:

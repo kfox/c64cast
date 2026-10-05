@@ -478,7 +478,7 @@ def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
     ``("flush",)``, beside the writes FakeAPI already logs there."""
     key = f"{addr:04X}"
     remaining = [times]
-    real_memory, real_file = api.write_memory, api.write_memory_file
+    real_memory, real_file, real_regs = api.write_memory, api.write_memory_file, api.write_regs
 
     def lost(address: str) -> bool:
         if str(address).upper() != key or remaining[0] == 0:
@@ -497,11 +497,16 @@ def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
         if not lost(address):
             real_file(address, data)
 
+    def write_regs(base, *vals):
+        if not lost(base):
+            real_regs(base, *vals)
+
     def flush(timeout=5.0):
         api.ops.append(("flush",))
 
     api.write_memory = write_memory  # type: ignore[method-assign]
     api.write_memory_file = write_memory_file  # type: ignore[method-assign]
+    api.write_regs = write_regs  # type: ignore[method-assign]
     api.flush = flush  # type: ignore[method-assign]
 
 

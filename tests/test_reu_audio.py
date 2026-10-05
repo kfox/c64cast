@@ -25,6 +25,7 @@ from _fakes import (
     written_addresses,
 )
 
+from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     CIA_TIMER_LATCH_MAX,
@@ -61,6 +62,7 @@ from c64cast.audio.audio_handlers import (
     patch_chunk_size,
     servo_period,
 )
+from c64cast.hw.c64 import CIA1, KERNAL, REU, VECTORS, kernal_cia1_latch
 from c64cast.scenes.scenes import VideoScene
 
 # The matched pump latch at the fixture's rate, spelled out rather than
@@ -1458,3 +1460,115 @@ class TrackedVideoPumpInstallFailureTest(unittest.TestCase):
         with quiet_logging():
             scene.teardown()
         self.assertIs(scene.audio, s)
+
+
+class StagedPumpInstallDeliveryTest(unittest.TestCase):
+    """Every write the staged pump's bring-up depends on is confirmed before
+    $0314 is pointed at $C100: the plain handler, the REC registers and the
+    CIA #1 latch, and the vector patch itself. A lost handler under a patched
+    vector runs whatever $C100 held; lost REC registers leave the plain pump
+    DMAing from wherever a bank-swap scene left $DF02-$DF06."""
+
+    TRIES = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+    KERNAL_IRQ = (KERNAL.IRQ_HANDLER & 0xFF, KERNAL.IRQ_HANDLER >> 8)
+    PUMP_IRQ = (REU_PUMP_HANDLER_ADDR & 0xFF, REU_PUMP_HANDLER_ADDR >> 8)
+
+    def _start(self, lose: int, times: int | None, *, governor: bool = False, skip_hook=False):
+        s = new_streamer(dither=False, use_reu_pump=True, reu_pump_governor=governor)
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, lose, times)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=skip_hook)
+        return s, fake
+
+    def _start_failing(self, lose: int, times: int | None, **kw):
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR") as cm,
+            self.assertRaises(PumpInstallError),
+        ):
+            self._start(lose, times, **kw)
+        self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+
+    @staticmethod
+    def _vector_writes(fake: FakeAPI) -> list[tuple]:
+        return [o[2] for o in fake.ops if o[:2] == ("write_regs", "0314")]
+
+    def test_each_install_write_is_flushed_before_the_vector_patch(self):
+        for governor in (False, True):
+            with self.subTest(governor=governor):
+                _s, fake = self._start(0x0000, 0, governor=governor)
+                ops = fake.ops
+                handler = next(
+                    i for i, o in enumerate(ops) if o[:2] == ("write_memory_file", "C100")
+                )
+                rec = next(i for i, o in enumerate(ops) if o[:2] == ("write_memory", "DF02"))
+                latch = next(i for i, o in enumerate(ops) if o[:2] == ("write_memory", "DC04"))
+                vector = next(i for i, o in enumerate(ops) if o[:2] == ("write_regs", "0314"))
+                self.assertIn(("flush",), ops[handler:rec])
+                self.assertIn(("flush",), ops[latch:vector])
+                self.assertIn(("flush",), ops[vector:])
+
+    def test_a_lost_handler_is_resent_and_the_pump_arms(self):
+        s, fake = self._start(REU_PUMP_HANDLER_ADDR, 1)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(self._vector_writes(fake), [self.PUMP_IRQ])
+
+    def test_a_handler_that_never_lands_leaves_the_vector_alone(self):
+        for governor in (False, True):
+            with self.subTest(governor=governor):
+                s = new_streamer(dither=False, use_reu_pump=True, reu_pump_governor=governor)
+                fake = cast(FakeAPI, s.api)
+                lose_writes_to(fake, REU_PUMP_HANDLER_ADDR)
+                with (
+                    self.assertLogs("c64cast.audio.audio", level="ERROR"),
+                    self.assertRaises(PumpInstallError),
+                ):
+                    s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+                self.assertNotIn(self.PUMP_IRQ, self._vector_writes(fake))
+                self.assertFalse(s._reu_pump_armed)
+                self.assertFalse(s.running)
+                self.assertEqual(fake.regs["DD0D"][0], 0x7F)
+                self.assertEqual(fake.nmi_consumer_notes[-1], False)
+
+    def test_lost_rec_or_latch_writes_abort_before_the_vector_patch(self):
+        kernal_latch = _packed_latch(kernal_cia1_latch("NTSC"))
+        for lost in (REU.C64_ADDR_LO, REU.LENGTH_LO, CIA1.TIMER_A_LO):
+            with self.subTest(lost=f"${lost:04X}"):
+                s = _new_streamer()
+                fake = cast(FakeAPI, s.api)
+                lose_writes_to(fake, lost, self.TRIES)
+                with (
+                    self.assertLogs("c64cast.audio.audio", level="ERROR"),
+                    self.assertRaises(PumpInstallError),
+                ):
+                    s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+                self.assertNotIn(self.PUMP_IRQ, self._vector_writes(fake))
+                self.assertFalse(s._reu_pump_armed)
+                # The pump rate the install may have landed goes back to the kernal's.
+                self.assertEqual(fake.memories["DC04"], kernal_latch)
+
+    def test_a_vector_patch_that_never_confirms_is_restored_to_the_kernal(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertEqual(self._vector_writes(fake)[-1], self.KERNAL_IRQ)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertEqual(fake.regs["DD0D"][0], 0x7F)
+
+    def test_a_tracked_install_whose_latch_never_lands_parks_the_body(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, CIA1.TIMER_A_LO, self.TRIES)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertEqual(fake.memories["C180"], "60")
+        # The dispatcher owns $0314, so the unwind leaves it alone.
+        self.assertEqual(self._vector_writes(fake), [])
+        self.assertFalse(s._reu_pump_armed)
