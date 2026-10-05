@@ -370,10 +370,13 @@ class MicLeadServo:
         lead, pump, at = m
         self._note_success()
         last, self._last_pump = self._last_pump, (pump, at)
-        # A re-anchor reseeds the loop from the rate measured before this
-        # interval: the interval that ends in a lap or an overtake is the one
-        # most likely to hold a stall, which would read the pump as slow.
-        rate_before = self._pump_rate
+        # A re-anchor reseeds the loop from the faster of the rate before this
+        # interval and this interval's own. A stall inside the interval reads
+        # the pump as slow (and ends in a lap); a speed-up reads it as fast (and
+        # ends in an overtake), where the rate before it is the stale one. The
+        # slower reading is the one not to trust: an over-drop has the ~1.6 KB
+        # target to fall through zero, an under-drop ~6.6 KB to the lap limit.
+        seed_rate = self._pump_rate
         if last is not None:
             advanced = (pump - last[0]) % REU_MIC_SIZE
             if advanced == 0:
@@ -384,6 +387,7 @@ class MicLeadServo:
             if at > last[1]:
                 measured = advanced / (at - last[1])
                 self._pump_rate += 0.5 * (measured - self._pump_rate)
+                seed_rate = max(seed_rate, measured)
         self.lead_min = lead if self.lead_min is None else min(self.lead_min, lead)
         self.lead_max = lead if self.lead_max is None else max(self.lead_max, lead)
         if lead < 0 or lead > MIC_LEAD_REANCHOR_ABOVE:
@@ -392,7 +396,7 @@ class MicLeadServo:
             # toward this jump is stale: a pump that sped up mid-scene would keep
             # being over-dropped from, overtake again, and re-anchor every few
             # seconds, each one a NEUTRAL dropout.
-            self.drop_frac, self._integ = mic_lead_rate_seed(rate_before, sample_rate=self._rate)
+            self.drop_frac, self._integ = mic_lead_rate_seed(seed_rate, sample_rate=self._rate)
             with self._lock:
                 self._reanchor = (pump, at, self._pump_rate)
             (log.warning if self.reanchors == 1 else log.debug)(

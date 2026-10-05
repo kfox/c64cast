@@ -278,8 +278,9 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
     def test_a_pump_that_speeds_up_mid_scene_does_not_cycle_through_reanchors(self):
         # Settled under the mhires deficit, then the pump comes up to within
         # the petscii drift of the host. The lead falls through zero within the
-        # first interval, and while the measured rate catches up a re-anchor or
-        # two follow; unseeded, the stale 15 % drop re-anchored on every tick.
+        # first interval, once; unseeded, the stale 15 % drop re-anchored on
+        # every tick, and seeded from the rate before that interval (the same
+        # 15 %) it overtook twice more while the rate average caught up.
         rig = _Rig(drift=1800.0)
         for _ in range(60):
             rig.step()
@@ -290,7 +291,10 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
             for _ in range(60):
                 rig.step()
                 leads.append(rig.lead)
-        self.assertLessEqual(rig.servo.reanchors, 3)
+                if rig.servo.reanchors == 1 and len(leads) == 1:
+                    # The overtaking interval's own rate, not the 15 % before it.
+                    self.assertAlmostEqual(rig.servo.drop_frac, 32.0 / RATE, delta=0.015)
+        self.assertEqual(rig.servo.reanchors, 1)
         for lead in leads[-20:]:
             self.assertGreater(lead, 0)
             self.assertLess(abs(lead - REU_MIC_BOOTSTRAP_BYTES), 300)
