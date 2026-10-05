@@ -61,6 +61,14 @@ class DownmixToMonoTest(unittest.TestCase):
             downmix_to_mono(np.array([np.nan, 0.5], dtype=np.float32)), [0.0, 0.5]
         )
 
+    def test_a_huge_finite_sample_enters_held_to_the_ceiling(self):
+        # Times the default mic sensitivity of 1.5, 3e38 overflows float32 to
+        # inf ahead of the analyzer tap, which latches its level follower at NaN.
+        block = np.array([[3e38], [-3e38], [0.5]], dtype=np.float32)
+        mono = downmix_to_mono(block) * np.float32(1.5)
+        self.assertTrue(np.all(np.isfinite(mono)))
+        np.testing.assert_allclose(mono, [1.5e6, -1.5e6, 0.75])
+
     def test_single_channel_block_is_flattened(self):
         np.testing.assert_allclose(
             downmix_to_mono(np.array([[0.25], [-0.75]], dtype=np.float32)), [0.25, -0.75]

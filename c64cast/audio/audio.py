@@ -102,7 +102,7 @@ from .audio_handlers import (
 )
 from .audio_rate import NmiTimer, RateServo
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
-from .dsp import AudioDSP, DSPParams
+from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
@@ -202,12 +202,15 @@ def downmix_to_mono(indata: np.ndarray) -> np.ndarray:
     helper, so the three copies cannot drift apart again.
 
     It is also where a device's floats enter, so non-finite samples become
-    0 / ±1 here: a NaN from a misbehaving driver would otherwise latch the
-    analyzer's level follower and the DSP chain's envelopes for the rest of
-    the run, and the DAC encoder casts NaN to the bottom rail.
+    0 / ±1 here and finite ones are held to ±`dsp.INPUT_CEILING`: a NaN from a
+    misbehaving driver would otherwise latch the analyzer's level follower and
+    the DSP chain's envelopes for the rest of the run, and the DAC encoder
+    casts NaN to the bottom rail. A finite sample near float32's limit gets
+    there too, overflowing to inf under the caller's sensitivity gain.
     """
     mono = indata.mean(axis=1) if indata.ndim > 1 else indata
-    return np.asarray(np.nan_to_num(mono, nan=0.0, posinf=1.0, neginf=-1.0))
+    clean = np.asarray(np.nan_to_num(mono, nan=0.0, posinf=1.0, neginf=-1.0))
+    return np.asarray(np.clip(clean, -INPUT_CEILING, INPUT_CEILING))
 
 
 # Attempts per stage of AudioStreamer._install_tracked_pump before it gives up.
