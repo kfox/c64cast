@@ -468,6 +468,9 @@ class UltimateAudioSampler:
         self._stopped = False
         self._failed = False
         self._eof = False
+        # The scene reinstalls its analyzer every activation, so a failure on an
+        # earlier one must not leave this activation's failure unlogged.
+        self._analysis_sink_failed = False
         self._pushed_samples = 0
         self._carry = None
         with self._io_lock:

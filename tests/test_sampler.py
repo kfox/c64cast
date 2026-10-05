@@ -352,6 +352,20 @@ class SamplerReuseTest(unittest.TestCase):
         self.assertGreater(smp._flush_epoch, epoch)
         self.assertFalse(np.any(smp.get_recent_samples(s.SAMPLE_TAP_SIZE)))
 
+    def test_an_analyzer_failing_again_after_arm_is_logged_again(self):
+        def broken(_floats: np.ndarray) -> None:
+            raise ValueError("analyzer broke")
+
+        smp = self._sampler(_FakeBackend())
+        for _lap in range(2):
+            smp.arm()
+            smp.analysis_sink = broken  # the scene reinstalls it every activation
+            with self.assertLogs("c64cast.audio.sampler", "ERROR") as logs:
+                smp.push_samples(self.TONE)
+            self.assertIn("analysis sink failed", logs.output[0])
+            self.assertIsNone(smp.analysis_sink)
+            smp.stop()
+
 
 class _WedgingBackend(_FakeBackend):
     """A backend whose next writer-thread REU write blocks until released,
