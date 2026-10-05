@@ -787,6 +787,18 @@ class AudioStreamer:
         # Stashed for NmiTimer.start: at scene setup the worker is usually still
         # prebuffering, so the timer picks the value up when it first arms.
         self.nmi.pitch_multiplier = multiplier
+        requested = self.nmi.requested_compensated_latch()
+        if requested != self.nmi.clamp_latch(requested):
+            log.warning(
+                "audio: pitch multiplier %g for %s needs CIA #2 latch %d, outside the "
+                "%d..%d the NMI handler budget and the 16-bit timer allow — arming %d",
+                multiplier,
+                display_mode,
+                requested,
+                self.nmi.ceiling_latch(),
+                CIA_TIMER_LATCH_MAX,
+                self.nmi.clamp_latch(requested),
+            )
         if not self.nmi.started:
             return
 

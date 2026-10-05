@@ -489,9 +489,20 @@ class PitchCompensationLatchTest(unittest.TestCase):
         # 1.2 at 12 kHz NTSC asked for latch 70 (a 71-cycle period), under the
         # 75-cycle safe minimum the adaptive loop is already held to.
         s = self._started(sample_rate=12000)
-        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.2})
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            s.set_nmi_latch_for_mode("mhires", {"mhires": 1.2})
+        self.assertIn("latch 70", cm.output[0])
         self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())
         self.assertEqual(self._latch_write(s), s.nmi.ceiling_latch())
+
+    def test_a_vanishing_multiplier_arms_the_slowest_latch(self):
+        # 1e-320 is positive, so it loads, but (nominal+1)/1e-320 overflows to
+        # inf and round() raised OverflowError on the playlist thread.
+        s = self._started(sample_rate=12000)
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
+            s.set_nmi_latch_for_mode("mhires", {"mhires": 1e-320})
+        self.assertEqual(s.nmi.latch, 0xFFFF)
+        self.assertEqual(self._latch_write(s), 0xFFFF)
 
     def test_a_nonpositive_multiplier_is_refused(self):
         # -1.0 used to arm latch 1 (an NMI every 2 cycles); 0.0 divided by zero.

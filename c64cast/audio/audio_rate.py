@@ -24,6 +24,7 @@ See docs/architecture/audio.md#audiopy--audiostreamer.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import TYPE_CHECKING
 
@@ -155,10 +156,20 @@ class NmiTimer:
         Clamped like `nominal_latch`, so no multiplier arms a period shorter
         than the handler budget — the bound the adaptive loop already had.
         """
+        return self.clamp_latch(self.requested_compensated_latch())
+
+    def requested_compensated_latch(self) -> int:
+        """The latch the pitch multiplier asks for, before the clamp.
+
+        A vanishing multiplier (1e-320 loads as positive) overflows the period
+        to inf, which round() cannot convert; that period is past the 16-bit
+        timer, so it is reported as the first latch beyond it."""
         if not self.pitch_multiplier > 0:
             raise ValueError(f"pitch multiplier must be positive, got {self.pitch_multiplier!r}")
-        adjusted_period = round((self.nominal_latch() + 1) / self.pitch_multiplier)
-        return self.clamp_latch(adjusted_period - 1)
+        period = (self.nominal_latch() + 1) / self.pitch_multiplier
+        if not math.isfinite(period):
+            return CIA_TIMER_LATCH_MAX + 1
+        return round(period) - 1
 
     def write_latch(self, latch: int) -> None:
         """Record + write a new CIA #2 Timer A latch — the one live retune
