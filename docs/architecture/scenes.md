@@ -105,7 +105,7 @@ On the resync path it does **not** mute, and seeds an **audio-anchored clock** �
 **The splice primitive.** `_splice(target_s)` re-anchors the clock, then:
 
 1. `source.request_seek(target_s)` — engaging `_emit_audio`'s pending-seek guard **first**.
-2. `audio.flush()` — dropping the queue; the flush epoch handles a pusher already blocked inside `push_samples`.
+2. `audio.flush()` — retiring the queue (the DAC drains it; the sampler's writer drops it by epoch tag); the flush epoch handles a pusher already blocked inside `push_samples`.
 
 It is used by `transport_seek`, the loop wrap, and resume-from-pause.
 

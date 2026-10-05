@@ -150,8 +150,10 @@ class VideoTransportControls:
         """Resync-path splice primitive (target_s in content seconds): re-anchor
         the audio clock to the target, arm the demuxer's stale-audio guard, then
         drop everything already queued. Order is load-bearing — request_seek sets
-        the _emit_audio pending-seek guard live FIRST, then flush() drains; the
-        flush epoch handles any pusher already blocked inside push_samples."""
+        the _emit_audio pending-seek guard live FIRST, then flush() retires the
+        queue (the DAC drains it; the sampler leaves it for its writer to drop
+        by epoch tag); the flush epoch handles any pusher already blocked
+        inside push_samples."""
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
         self.audio_anchor_clock_s = self.content_to_clock(target_s)
