@@ -1549,7 +1549,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
             self.now[0] += 1.0
             smp.start()
             self.addCleanup(smp.stop)
-            smp._reanchor_step = (0, 0, int(0.5 * smp.effective_rate) * smp.bps)
+            smp._reanchor_lag = (int(0.5 * smp.effective_rate) * smp.bps, ())
             gate = self.now[0]
             self.now[0] = gate + 6.4
             self.assertFalse(src.finished, "ended before the re-anchored tail played")
@@ -1666,7 +1666,7 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
             src._decode_loop()  # a 4 s file fits the queue: decoded whole up front
             self.now[0] += 1.0
             smp.start()
-            smp._reanchor_step = (0, 0, int(reanchor_lag_s * smp.effective_rate) * smp.bps)
+            smp._reanchor_lag = (int(reanchor_lag_s * smp.effective_rate) * smp.bps, ())
             gate = self.now[0]
             onsets = []
             assert src._features is not None
