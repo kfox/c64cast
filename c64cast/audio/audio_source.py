@@ -296,8 +296,9 @@ class AudioFileSource:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         # (seconds of audio pushed, monotonic deadline) once decoding has
-        # ended; None while decoding. Written once by the decode thread, read
-        # by the playlist thread.
+        # ended; None while decoding. The deadline leaves out the sink's
+        # content lag, which `finished` adds as it reads it. Written once by
+        # the decode thread, read by the playlist thread.
         self._end: tuple[float, float] | None = None
         # At build time, so a misconfigured single scene raises there
         # (parity with SidFileAudioSource.__init__).
@@ -519,8 +520,15 @@ class AudioFileSource:
         # too; the resampler's rounded integer rate would put it out of reach.
         rate = float(self._audio.effective_rate or self._audio.sample_rate)
         length = pushed_samples / rate if rate > 0 else 0.0
-        played = min(max(self._audio.position_seconds() or 0.0, 0.0), length)
+        played = self._audio.position_seconds() or 0.0
+        played = min(max(played, 0.0), length + self._content_lag())
         self._end = (length, time.monotonic() + (length - played) + self._DRAIN_GRACE_S)
+
+    def _content_lag(self) -> float:
+        """How far the sink plays its audio behind its clock: a sampler's
+        re-anchors (`UltimateAudioSampler.content_lag_seconds`). The DAC's
+        clock counts the samples that landed, so it has none."""
+        return float(getattr(self._audio, "content_lag_seconds", 0.0))
 
     @property
     def finished(self) -> bool:
@@ -535,12 +543,14 @@ class AudioFileSource:
         if end is None:
             return False
         length, deadline = end
-        if time.monotonic() >= deadline:
-            return True
-        played = self._audio.position_seconds() or 0.0
         # A sampler that re-anchored late audio plays it that far behind its
         # clock; ended on the clock alone, the scene cut off the track's tail.
-        lag = float(getattr(self._audio, "content_lag_seconds", 0.0))
+        # The bound waits it out too: re-anchors over a slow stretch add up,
+        # and a lag past the grace ended the scene with the tail still queued.
+        lag = self._content_lag()
+        if time.monotonic() >= deadline + lag:
+            return True
+        played = self._audio.position_seconds() or 0.0
         return played >= length + lag - 1e-3
 
     def teardown(self) -> None:

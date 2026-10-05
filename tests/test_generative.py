@@ -1510,6 +1510,35 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.now[0] += 0.02
         self.assertTrue(src.finished)
 
+    def test_the_bound_waits_out_a_reanchor_too(self):
+        # Re-anchors add up over a slow stretch of a long stream, and the
+        # queue can still hold seconds of audio when decoding ends. A bound
+        # that left the lag out ended the scene with the tail still playing
+        # once the lag passed the grace, including lag gained after the end.
+        start = self.now[0]
+        sink = _FileSink(played=lambda: self.now[0] - start)
+        src = self._source(sink)
+        src._decode_loop()
+        # A writer that re-anchors the queued tail does so after decoding.
+        sink.content_lag_seconds = 6.0
+        self.now[0] += 6.39
+        self.assertFalse(src.finished, "ended before the re-anchored tail played")
+        self.now[0] += 0.02
+        self.assertTrue(src.finished)
+
+    def test_a_lagging_wait_is_bounded_from_the_lagged_end(self):
+        # A clock past the length but short of length + lag still has the
+        # rest of the lag to play, and no more: the bound is the grace past
+        # that, not past the whole lag again.
+        sink = _FileSink(played=3.0)
+        sink.content_lag_seconds = 4.0
+        src = self._source(sink)
+        src._decode_loop()
+        self.now[0] += 1.4 + src._DRAIN_GRACE_S - 0.01
+        self.assertFalse(src.finished)
+        self.now[0] += 0.02
+        self.assertTrue(src.finished)
+
     def test_waits_for_a_sink_that_starts_playing_after_decoding_ends(self):
         # The sampler gates its ring, and starts its clock, only after the
         # prebuffer and ring prefill, by when a short file is decoded whole.
