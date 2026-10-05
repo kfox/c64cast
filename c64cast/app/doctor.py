@@ -31,8 +31,8 @@ from typing import IO, Any, Literal
 from c64cast.hw import hw_provision
 from c64cast.hw.c64 import (
     CIA_TIMER_LATCH_MAX,
-    cpu_clock,
     max_safe_sample_rate,
+    min_sample_rate,
     nearest_latch,
     nmi_rate_safety,
 )
@@ -777,7 +777,7 @@ def _sample_rate_hint(system: str, rate: int) -> str:
     clears_both = all(nmi_rate_safety(std, default_rate)[0] == "ok" for std in ("NTSC", "PAL"))
     default_note = f" The shipped default of {default_rate} Hz clears both." if clears_both else ""
     if rate <= 0 or nearest_latch(rate, system) > CIA_TIMER_LATCH_MAX:
-        floor = -(-cpu_clock(system) // (CIA_TIMER_LATCH_MAX + 1))
+        floor = min_sample_rate(system)
         return f"Raise [audio].sample_rate — min is ~{floor} Hz on {system}.{default_note}"
     ntsc, pal = max_safe_sample_rate("NTSC"), max_safe_sample_rate("PAL")
     return (

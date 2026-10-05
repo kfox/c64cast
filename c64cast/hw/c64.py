@@ -517,6 +517,13 @@ def halt_quantum_bytes(period_cycles: int) -> int:
     return max(16, period_cycles - HALT_QUANTUM_MARGIN_CYCLES)
 
 
+def min_sample_rate(system: str) -> int:
+    """Lowest sample rate whose latch still fits the 16-bit CIA timer on
+    `system` (~16 Hz on both standards) — the floor :func:`nmi_rate_safety`
+    refuses below, and the number its message and --doctor's hint quote."""
+    return -(-cpu_clock(system) // (CIA_TIMER_LATCH_MAX + 1))
+
+
 def max_safe_sample_rate(system: str) -> int:
     """Highest sample rate whose NMI period stays at/above the safe minimum
     (measured handler worst case + margin) for `system`. ~13.6 kHz NTSC / ~13.1
@@ -542,7 +549,7 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "error
     latch = nearest_latch(sample_rate, system)
     safe_max = max_safe_sample_rate(system)
     if latch > CIA_TIMER_LATCH_MAX:
-        min_rate = -(-cpu_clock(system) // (CIA_TIMER_LATCH_MAX + 1))
+        min_rate = min_sample_rate(system)
         return (
             "error",
             f"sample_rate {sample_rate} Hz → CIA #2 latch {latch} on {system}, past "
