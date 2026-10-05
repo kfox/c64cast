@@ -822,7 +822,9 @@ class AudioStreamer:
         stop()'s bounded join: it captures the value at start and exits as soon
         as it no longer matches, so it cannot be resurrected by this method
         setting ``running`` back to True (see :meth:`_worker`)."""
-        self._worker_generation += 1
+        with self._ring_pad_lock:
+            self._worker_generation += 1
+            self._clear_ring_clock_locked()
         thread = threading.Thread(
             target=self._worker,
             args=(self._worker_generation,),
@@ -941,7 +943,7 @@ class AudioStreamer:
                         # promises silence. Filling it also keeps w_head honest,
                         # so the servo isn't handed a W a chunk behind the head.
                         self._neutral_fill_ring(pending_addr, len(pending))
-                        self._note_ring_landed(len(pending), len(pending))
+                        self._note_ring_landed(generation, len(pending), len(pending))
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -957,7 +959,7 @@ class AudioStreamer:
                         n, from_queue, leftover = self._drip_chunk(
                             pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
                         )
-                        self._note_ring_landed(len(pending), pending_pad)
+                        self._note_ring_landed(generation, len(pending), pending_pad)
                         self._consume_queued(pending_from_queue)
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
@@ -1041,7 +1043,7 @@ class AudioStreamer:
                 # Prebuffer fill: the NMI is not consuming yet, so there is no
                 # halt to hide from and one unsplit write primes the ring fastest.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
-                self._note_ring_landed(n, pad)
+                self._note_ring_landed(generation, n, pad)
                 self._consume_queued(from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
@@ -2414,12 +2416,21 @@ class AudioStreamer:
             pad_bytes += end - max(lo, end - pad)
         return pad_bytes
 
-    def _note_ring_landed(self, nbytes: int, pad: int) -> None:
+    def _note_ring_landed(self, generation: int, nbytes: int, pad: int) -> None:
         """Worker-side: ``nbytes`` reached the ring, the last ``pad`` of them
         padding. Pad further back than a whole ring can no longer be inside
         the gap, so it is dropped, which bounds the record at a ring's worth
-        of chunks."""
+        of chunks.
+
+        A worker that outlived stop()'s bounded join records nothing: its
+        write returning late would otherwise land in the next activation's
+        fresh record, and the high-water mark would hold the clock past what
+        that landing moved. :meth:`_start_worker` bumps the generation and
+        clears the record under this lock, so no stale landing slips between
+        the two."""
         with self._ring_pad_lock:
+            if generation != self._worker_generation:
+                return
             self._ring_landed_total += nbytes
             total = self._ring_landed_total
             if pad > 0:
@@ -2431,9 +2442,13 @@ class AudioStreamer:
         """Start the host-DMA clock's pad record and high-water mark afresh,
         for a new activation."""
         with self._ring_pad_lock:
-            self._ring_landed_total = 0
-            self._ring_pads.clear()
-            self._position_floor = 0.0
+            self._clear_ring_clock_locked()
+
+    def _clear_ring_clock_locked(self) -> None:
+        """:meth:`_reset_ring_clock`'s body. Caller holds ``_ring_pad_lock``."""
+        self._ring_landed_total = 0
+        self._ring_pads.clear()
+        self._position_floor = 0.0
 
     def reset_position(self) -> None:
         self._pushed_count = 0

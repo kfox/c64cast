@@ -1670,12 +1670,12 @@ class LifecycleTest(unittest.TestCase):
         for _ in range(gap // chunk):
             ring += [True] * chunk
             s._pushed_count += chunk
-            s._note_ring_landed(chunk, 0)
+            s._note_ring_landed(s._worker_generation, chunk, 0)
         out = []
         for kind in plan:
             content = {"c": chunk, "p": 0, "s": chunk // 3}[kind]
             ring += [True] * content + [False] * (chunk - content)
-            s._note_ring_landed(chunk, chunk - content)
+            s._note_ring_landed(s._worker_generation, chunk, chunk - content)
             s._pushed_count += content
             played, ring = ring[:chunk], ring[chunk:]
             heard += sum(played)
@@ -1755,6 +1755,20 @@ class LifecycleTest(unittest.TestCase):
         s._pushed_count = 100
         self.assertAlmostEqual(s.position_seconds(), 100 / s.effective_rate, places=6)
 
+    def test_a_landing_from_a_superseded_worker_is_not_recorded(self):
+        # A worker that outlived stop()'s join returns from its ring write
+        # after the next start: its chunk is not in the new activation's ring,
+        # so recording it would put pad in the gap that is not there.
+        s = _make()
+        stale = s._worker_generation
+        with mock.patch.object(threading.Thread, "start"):
+            s._start_worker()
+        s._note_ring_landed(stale, 32, 32)
+        self.assertEqual(s._ring_landed_total, 0)
+        self.assertEqual(len(s._ring_pads), 0)
+        s._note_ring_landed(s._worker_generation, 32, 32)
+        self.assertEqual(s._ring_landed_total, 32)
+
     def test_the_worker_records_the_pad_before_it_counts_the_landing(self):
         # Content landing behind a dry tail: a reader between the two steps
         # must not pair the new landed count with the old pad record, which would
@@ -1798,7 +1812,7 @@ class LifecycleTest(unittest.TestCase):
         s._pushed_count = 1032
         s._queued_samples = 32
         for _ in range(10):
-            s._note_ring_landed(32, 32)
+            s._note_ring_landed(s._worker_generation, 32, 32)
         unplayed_pad = s._unplayed_pad
 
         def pad_then_land(lead: float) -> float:
