@@ -436,7 +436,6 @@ class AudioStreamer:
         self.api.write_regs(
             f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
         )
-        self.api.note_nmi_consumer(True)
         if self._dac_curve is not None:
             self._enable_mahoney_env()
         elif self.digi_boost:

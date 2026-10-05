@@ -292,6 +292,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **On a TeensyROM+, the `$D418` DAC prebuffer goes out at full speed.** The
+  link slices writes only while the NMI player runs, but it was told the
+  player was running before the timer was armed, so the whole prebuffer went
+  out in slices with no NMI to spare. It now hears once the arm has taken.
 - **`--calibrate-dac` can read a capture device that records at 12 kHz or
   below.** Each slot's edges were trimmed by a fixed 24 samples, which at
   those rates left nothing to measure, so a clean recording was refused as

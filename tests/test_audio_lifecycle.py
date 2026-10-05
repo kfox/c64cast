@@ -1868,17 +1868,46 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 0)
         self.assertTrue(any("clean run" in m for m in cm.output))
 
-    def test_the_backend_hears_the_nmi_player_start_and_stop(self):
+    def test_the_backend_hears_the_nmi_player_stop(self):
         # A TR+ slices its writes only while this is on, so a stop that skipped
         # the note would leave every later write at a third the throughput.
         s = _make()
         s.start_for_external_source()
         api = cast(Any, s.api)
-        self.assertEqual(api.nmi_consumer_notes, [True])
         s._total_slots = 1
         with self.assertLogs("c64cast.audio.audio", level="INFO"):
             s.stop()
-        self.assertEqual(api.nmi_consumer_notes, [True, False])
+        self.assertEqual(api.nmi_consumer_notes[-1], False)
+
+    def _notes_around_the_arm(self, readable: bool) -> tuple[list[Any], list[Any]]:
+        """Consumer notes taken at upload, then across the arm, each paired
+        with the CIA #2 ICR value the fake held when it fired."""
+        s = _make()
+        api = cast(Any, s.api)
+        seen: list[tuple[bool, Any]] = []
+        api.note_nmi_consumer = lambda active: seen.append(
+            (active, api.regs.get(f"{CIA2.ICR:04X}"))
+        )
+        s._upload_nmi_and_buffers()
+        at_upload = list(seen)
+        reads = iter([0x4000, 0x4010])
+        with (
+            mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0),
+            mock.patch.object(s, "read_consumer_ptr", lambda: next(reads) if readable else None),
+        ):
+            s.nmi.start(adaptive=False)
+        return at_upload, seen[len(at_upload) :]
+
+    def test_the_backend_hears_the_nmi_player_start_only_once_it_is_armed(self):
+        # Noted at upload, a TR+ sliced the whole prebuffer for an NMI that was
+        # not running yet. The note has to land after the CIA #2 arm write,
+        # whether the arm was verified or could not be.
+        armed = (audio_rate_mod.CIA2_ICR_ENABLE_TIMER_A_NMI, audio_rate_mod.CIA2_TIMER_A_CONTINUOUS)
+        for readable in (False, True):
+            with self.subTest(readable=readable):
+                at_upload, at_arm = self._notes_around_the_arm(readable)
+                self.assertEqual(at_upload, [])
+                self.assertEqual(at_arm, [(True, armed)])
 
     def test_stop_reports_underruns(self):
         s = _make()

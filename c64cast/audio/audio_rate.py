@@ -199,7 +199,12 @@ class NmiTimer:
         pitch multiplier chosen for this scene (the timer arms from the worker
         after prebuffer, i.e. AFTER set_nmi_latch_for_mode, so honoring it
         here is what makes the static compensation stick instead of resetting
-        to nominal)."""
+        to nominal).
+
+        The backend hears of the consumer only once the arm has taken (or
+        cannot be checked): a TeensyROM+ slices every write while one runs, and
+        noting it at upload made the whole prebuffer go out in slices with no
+        NMI there to spare."""
         requested = self.requested_latch()
         if requested != self.nominal_latch():
             log.warning(
@@ -221,6 +226,7 @@ class NmiTimer:
             # Unverifiable without R, so retrying would just arm N times blind.
             self.arm_attempts = 1
             self.arm_once(latch)
+            self._st.api.note_nmi_consumer(True)
             return
         for attempt in range(1, NMI_ARM_MAX_ATTEMPTS + 1):
             self.arm_attempts = attempt
@@ -236,6 +242,7 @@ class NmiTimer:
                     )
                 else:
                     log.debug("audio: NMI arm verified first attempt (R was $%04X)", before)
+                self._st.api.note_nmi_consumer(True)
                 return
         log.warning(
             "audio: NMI consumer never started after %d arm attempts — audio will be "
