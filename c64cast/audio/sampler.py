@@ -497,9 +497,11 @@ class UltimateAudioSampler:
         self._late_reanchor_bytes = int(LATE_REANCHOR_S * self._actual_rate) * self.bps
         self._late_catchup_bytes = int(LATE_CATCHUP_S * self._actual_rate) * self.bps
         # Re-anchors this activation, and how far they put the sound behind
-        # the picture since the last splice re-aligned it.
+        # the picture since the last splice re-aligned it: the latest one's
+        # (slot it moved, anchor it moved it to, lag before it), one tuple so
+        # reanchor_lag_seconds() reads it whole without the lock.
         self._reanchors = 0
-        self._reanchor_lag_bytes = 0
+        self._reanchor_step: tuple[int, int, int] = (0, 0, 0)
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
         # flush() bumps _flush_epoch and then rewrites the lead under _io_lock,
@@ -594,7 +596,7 @@ class UltimateAudioSampler:
             self._last_late = None
             self._late_from = None
             self._reanchor_sticky = False
-            self._reanchor_lag_bytes = 0
+            self._reanchor_step = (0, 0, 0)
             # The read head restarts at 0 with the next gate, so a head kept
             # from the last activation would hold every partial gather until
             # the new one passed it, and a clip shorter than a quantum forever.
@@ -733,10 +735,9 @@ class UltimateAudioSampler:
         # bounded put timeout re-checks; a put that lands just before the splice
         # is dropped by the writer on its stale tag.
         epoch = self._flush_epoch
-        floats = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
-        self._tap_push(floats)
-        # Pre-DSP, for parity with AudioStreamer.push_samples.
-        self._push_to_analysis(floats)
+        raw = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
+        self._tap_push(raw)
+        floats = raw
         if self._dsp is not None and self._dsp.active:
             floats = self._dsp.process(floats)
         out_i16 = np.clip(np.rint(floats * 32767.0), -32768, 32767).astype(np.int16)
@@ -752,9 +753,13 @@ class UltimateAudioSampler:
         else:
             return
         # After a successful put of a still-current chunk only: a dropped chunk
-        # must not inflate position_seconds's pushed-total EOF ceiling.
+        # must not inflate position_seconds's pushed-total EOF ceiling, nor
+        # enter the analysis tap, which a file source reads at the slot each
+        # sample was written for (pre-DSP, for parity with
+        # AudioStreamer.push_samples).
         if self._flush_epoch == epoch:
             self._pushed_samples += int(samples_int16.shape[0])
+            self._push_to_analysis(raw)
 
     def mark_eof(self) -> None:
         """Source exhausted — clamp ``position_seconds`` to the pushed total so
@@ -855,7 +860,7 @@ class UltimateAudioSampler:
             self._last_late = None
             self._late_from = None
             self._reanchor_sticky = False
-            self._reanchor_lag_bytes = 0
+            self._reanchor_step = (0, 0, 0)
             self._eof = False
             self._cut_epoch = max(self._cut_epoch, epoch)
 
@@ -1110,7 +1115,8 @@ class UltimateAudioSampler:
             late_for = f"for {(consumed - late_from) / self.bps / self._actual_rate:.1f} s"
         self._reanchor_sticky = True
         self._reanchors += 1
-        self._reanchor_lag_bytes += shift
+        before = self._reanchor_lag_bytes()
+        self._reanchor_step = (c, anchor, before)
         if self._reanchors == 1:
             level = logging.WARNING
             note = ""
@@ -1125,7 +1131,7 @@ class UltimateAudioSampler:
             "re-anchored at the read head%s — sound now lags the picture by %.2f s",
             late_for,
             note,
-            self._reanchor_lag_bytes / self.bps / self._actual_rate,
+            (before + shift) / self.bps / self._actual_rate,
         )
         self._content_pos = anchor
         return anchor
@@ -1270,10 +1276,26 @@ class UltimateAudioSampler:
         """How far re-anchors have put the audio behind `position_seconds()`
         since the last arm() or splice. Each one moves every later sample that
         much past the slot it was pushed for, so the sample heard now is the
-        one pushed for ``position_seconds() - reanchor_lag_seconds()``. An
-        unlocked read: the writer adds a re-anchor's shift before it writes
-        the audio that shift moved."""
-        return self._reanchor_lag_bytes / self.bps / self._actual_rate
+        one pushed for ``position_seconds() - reanchor_lag_seconds()``.
+
+        The latest one's shift comes in only as the read head crosses the
+        span it skipped: audio already in the ring before the moved slot
+        plays on time, and nothing current is heard from there to the anchor,
+        so the heard sample holds at the slot. Taken in whole at the
+        re-anchor, the heard sample stepped back by the shift, and an analyzer
+        reading it replayed audio it had already read, which was dropped late
+        and never heard. An unlocked read of one tuple the writer replaces
+        whole."""
+        lag = self._reanchor_lag_bytes(self._read_consumed_bytes())
+        return lag / self.bps / self._actual_rate
+
+    def _reanchor_lag_bytes(self, head: int | None = None) -> int:
+        """The re-anchor lag in bytes with the read head at ``head``; None
+        means past the latest anchor, where all of its shift applies."""
+        frm, to, before = self._reanchor_step
+        if head is None:
+            head = to
+        return before + max(0, min(head, to) - frm)
 
     def ring_lead_seconds(self) -> float:
         """The ``AudioStreamer`` splice hook: how long after a flush() the first

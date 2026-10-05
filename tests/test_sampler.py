@@ -921,6 +921,32 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertGreater(lag, 3.0)
         self.assertAlmostEqual(smp.reanchor_lag_seconds(), lag)
 
+    def test_the_heard_sample_holds_at_the_moved_slot_until_the_anchor(self):
+        # Between a re-anchor and its anchor the reader plays nothing current,
+        # so the sample heard holds at the slot the audio was moved from;
+        # stepping straight back by the shift replayed audio the analyzer
+        # had already read, which was dropped late and never heard.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            slot = smp._content_pos
+            self.assertTrue(self._write(40))
+        anchor = self.consumed + smp._reanchor_lead
+
+        def heard() -> int:
+            lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
+            return self.consumed - lag
+
+        self.assertEqual(heard(), slot)
+        self.consumed = anchor - smp.bps
+        self.assertEqual(heard(), slot)
+        self.consumed = anchor + 40
+        self.assertEqual(heard(), slot + 40)
+
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped
         # and the rest land at their own slots, so sync is unchanged.
@@ -2075,6 +2101,8 @@ class SamplerFlushTests(unittest.TestCase):
         smp._q = _SignalingQueue(maxsize=1)
         smp._q.put((smp._flush_epoch, b"\x01" * 32))
         parked.clear()
+        tapped: list[np.ndarray] = []
+        smp.analysis_sink = tapped.append
         t = threading.Thread(target=smp.push_samples, args=(np.full(50, 8000, dtype=np.int16),))
 
         def release() -> None:
@@ -2088,6 +2116,9 @@ class SamplerFlushTests(unittest.TestCase):
         t.join(timeout=1.0)
         self.assertFalse(t.is_alive())
         self.assertEqual(smp._pushed_samples, 0, "a pre-splice chunk counted toward EOF")
+        # A file source reads the analysis tap at the slot each sample was
+        # written for, which a dropped chunk never takes.
+        self.assertEqual(tapped, [], "a dropped chunk entered the analysis tap")
         # A drain would free the slot and let the parked put through, which
         # leaves one item queued as well: the item itself tells them apart.
         self.assertEqual(
