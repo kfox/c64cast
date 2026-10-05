@@ -2266,6 +2266,15 @@ class AudioStreamer:
             return 0.0
         return max(0.0, (consumed - lead) / rate)
 
+    @property
+    def content_lag_seconds(self) -> float:
+        """Always 0. The sampler's figure (`UltimateAudioSampler.content_lag_seconds`)
+        is how far its re-anchors put the sound behind a wall clock; this
+        clock counts the samples that landed, so it moves with the sound.
+        Present so `AudioFileSource` reads either sink's lag as a typed
+        attribute, where a rename fails the type check instead of reading 0."""
+        return 0.0
+
     def ring_lead_seconds(self) -> float:
         """Audio landed in the C64 ring but not yet played. A splice anchors
         on ``position_seconds() + ring_lead_seconds()``, where its first

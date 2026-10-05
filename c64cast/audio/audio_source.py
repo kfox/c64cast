@@ -528,7 +528,7 @@ class AudioFileSource:
         """How far the sink plays its audio behind its clock: a sampler's
         re-anchors (`UltimateAudioSampler.content_lag_seconds`). The DAC's
         clock counts the samples that landed, so it has none."""
-        return float(getattr(self._audio, "content_lag_seconds", 0.0))
+        return float(self._audio.content_lag_seconds)
 
     @property
     def finished(self) -> bool:
