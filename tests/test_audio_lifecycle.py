@@ -47,7 +47,8 @@ def _make(**kw: Any) -> AudioStreamer:
 
 def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> AudioStreamer:
     """A streamer wired for fast, hardware-free worker runs: tiny chunks, a
-    high sample rate (sub-ms pace period), and a stubbed NMI timer so the
+    high sample rate (a ~2 ms pace period once the NMI latch clamps at the
+    handler ceiling), and a stubbed NMI timer so the
     prebuffer→pace handoff runs without touching CIA registers."""
     s = _make(sample_rate=sample_rate)
     s.chunk_size = chunk_size
@@ -484,6 +485,33 @@ class PitchCompensationLatchTest(unittest.TestCase):
         self.assertLess(s.nmi.latch, nominal)  # faster rate ⇒ smaller latch
         self.assertEqual(self._latch_write(s), 110)
 
+    def test_no_multiplier_arms_past_the_handler_budget(self):
+        # 1.2 at 12 kHz NTSC asked for latch 70 (a 71-cycle period), under the
+        # 75-cycle safe minimum the adaptive loop is already held to.
+        s = self._started(sample_rate=12000)
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            s.set_nmi_latch_for_mode("mhires", {"mhires": 1.2})
+        self.assertIn("latch 70", cm.output[0])
+        self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())
+        self.assertEqual(self._latch_write(s), s.nmi.ceiling_latch())
+
+    def test_a_vanishing_multiplier_arms_the_slowest_latch(self):
+        # 1e-320 is positive, so it loads, but (nominal+1)/1e-320 overflows to
+        # inf and round() raised OverflowError on the playlist thread.
+        s = self._started(sample_rate=12000)
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
+            s.set_nmi_latch_for_mode("mhires", {"mhires": 1e-320})
+        self.assertEqual(s.nmi.latch, 0xFFFF)
+        self.assertEqual(self._latch_write(s), 0xFFFF)
+
+    def test_a_nonpositive_multiplier_is_refused(self):
+        # -1.0 used to arm latch 1 (an NMI every 2 cycles); 0.0 divided by zero.
+        for mult in (0.0, -1.0):
+            with self.subTest(mult=mult):
+                s = self._started()
+                with self.assertRaises(ValueError):
+                    s.set_nmi_latch_for_mode("mhires", {"mhires": mult})
+
     def test_slowdown_multiplier_grows_latch(self):
         s = self._started()
         nominal = s.nmi.nominal_latch()
@@ -724,13 +752,60 @@ class NmiRateSafetyTest(unittest.TestCase):
             self.assertEqual(level, "error")
             self.assertIn("queue", msg.lower())
 
-    def test_marginal_rate_warns(self):
+    def test_a_rate_inside_the_margin_is_refused(self):
         from c64cast.hw.c64 import nmi_rate_safety
 
         # 14000 → period ~73 (NTSC) / ~70 (PAL): above the 68-cycle handler
-        # onset but inside the 75-cycle safety margin → warn, not error.
+        # onset but inside the 75-cycle margin. That used to load with a
+        # warning, and the timer then armed the 75-cycle ceiling instead, so
+        # the request could only ever play at a rate nobody asked for.
         for system in ("NTSC", "PAL"):
-            self.assertEqual(nmi_rate_safety(system, 14000)[0], "warn")
+            level, msg = nmi_rate_safety(system, 14000)
+            self.assertEqual(level, "error")
+            self.assertIn("margin", msg)
+
+    def test_the_safety_rule_matches_the_latch_the_timer_arms(self):
+        from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
+
+        # A rate is accepted exactly when its nearest-grid latch is one the
+        # timer arms unclamped, so load and NmiTimer agree at the boundary.
+        for system in ("NTSC", "PAL"):
+            for rate in range(
+                max_safe_sample_rate(system) - 50, max_safe_sample_rate(system) + 150
+            ):
+                with self.subTest(system=system, rate=rate):
+                    s = _make(sample_rate=rate, system=system)
+                    unclamped = s.nmi.requested_latch() == s.nmi.nominal_latch()
+                    self.assertEqual(nmi_rate_safety(system, rate)[0] == "ok", unclamped)
+
+    def test_a_rate_too_slow_for_the_16_bit_latch_is_refused(self):
+        from c64cast.hw.c64 import nmi_rate_safety
+
+        # 15 Hz NTSC wants latch 68181, which the register pair truncated.
+        level, msg = nmi_rate_safety("NTSC", 15)
+        self.assertEqual(level, "error")
+        self.assertIn("16-bit", msg)
+        self.assertEqual(nmi_rate_safety("NTSC", 16)[0], "ok")
+
+    def test_the_armed_latch_stays_inside_the_handler_budget_and_16_bits(self):
+        # nominal_latch is what effective_rate, the REU pump latch and the
+        # adaptive clamp all derive from, so holding it holds all of them.
+        # 14000 NTSC wants latch 72 (under the 74 ceiling); 15 Hz wants 68181,
+        # which the two-register write used to truncate to 2645 (386 Hz).
+        for rate, want in ((14000, 74), (15, 0xFFFF)):
+            with self.subTest(rate=rate):
+                s = _make(sample_rate=rate)
+                self.assertEqual(s.nmi.nominal_latch(), want)
+                self.assertAlmostEqual(s.effective_rate, 1022727 / (want + 1), places=6)
+
+    def test_a_clamped_rate_warns_when_armed(self):
+        s = _make(sample_rate=14000)
+        api = cast(Any, s.api)
+        api.read_memory = lambda *a, **k: None  # unverifiable: arm once, no sleep
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s.nmi.start(adaptive=True)
+        self.assertIn("latch 72", cm.output[0])
+        self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())
 
     def test_pal_ceiling_below_ntsc(self):
         from c64cast.hw.c64 import max_safe_sample_rate
@@ -902,6 +977,34 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
         s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
         self.assertEqual(s.nmi.learned_latch["mhires"], 88)
+
+    def _converge(self, s: AudioStreamer) -> None:
+        """One adaptive decision with R at target, so the loop settles."""
+        s.servo.warmup_until = 0.0
+        s.servo.r_rate_ema = s.nmi.effective_rate
+        s.servo.last_r_addr = -1
+        s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+
+    def test_stop_forgets_the_display_mode(self):
+        # A scene with no display_mode never calls set_nmi_latch_for_mode, so a
+        # mode that outlived stop() would seed it from mhires's learned latch and
+        # then overwrite that cache entry with its own converged latch.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._worker_thread = cast(Any, object())
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()
+        s.set_nmi_latch_for_mode("mhires")
+        self._converge(s)
+        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
+        s._worker_thread = None
+        s.stop()
+        # The next scene: no display_mode, adaptive start.
+        s.nmi.start(adaptive=s.nmi_rate_adaptive)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
+        s.nmi.latch = 90  # wherever this scene's load settles
+        self._converge(s)
+        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
 
     def test_loop_discards_torn_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
@@ -1804,17 +1907,61 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 0)
         self.assertTrue(any("clean run" in m for m in cm.output))
 
-    def test_the_backend_hears_the_nmi_player_start_and_stop(self):
+    def test_the_backend_hears_the_nmi_player_stop(self):
         # A TR+ slices its writes only while this is on, so a stop that skipped
         # the note would leave every later write at a third the throughput.
         s = _make()
         s.start_for_external_source()
         api = cast(Any, s.api)
-        self.assertEqual(api.nmi_consumer_notes, [True])
         s._total_slots = 1
         with self.assertLogs("c64cast.audio.audio", level="INFO"):
             s.stop()
-        self.assertEqual(api.nmi_consumer_notes, [True, False])
+        self.assertEqual(api.nmi_consumer_notes[-1], False)
+
+    def _notes_around_the_arm(self, readable: bool) -> tuple[list[Any], list[Any]]:
+        """Consumer notes taken at upload, then across the arm, each paired
+        with the CIA #2 ICR value the fake held when it fired."""
+        s = _make()
+        api = cast(Any, s.api)
+        seen: list[tuple[bool, Any]] = []
+        api.note_nmi_consumer = lambda active: seen.append(
+            (active, api.regs.get(f"{CIA2.ICR:04X}"))
+        )
+        s._upload_nmi_and_buffers()
+        at_upload = list(seen)
+        reads = iter([0x4000, 0x4010])
+        with (
+            mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0),
+            mock.patch.object(s, "read_consumer_ptr", lambda: next(reads) if readable else None),
+        ):
+            s.nmi.start(adaptive=False)
+        return at_upload, seen[len(at_upload) :]
+
+    def test_the_backend_hears_the_nmi_player_start_only_once_it_is_armed(self):
+        # Noted at upload, a TR+ sliced the whole prebuffer for an NMI that was
+        # not running yet. The note has to land after the CIA #2 arm write,
+        # whether the arm was verified or could not be.
+        armed = (audio_rate_mod.CIA2_ICR_ENABLE_TIMER_A_NMI, audio_rate_mod.CIA2_TIMER_A_CONTINUOUS)
+        for readable in (False, True):
+            with self.subTest(readable=readable):
+                at_upload, at_arm = self._notes_around_the_arm(readable)
+                self.assertEqual(at_upload, [])
+                self.assertEqual(at_arm, [(True, armed)])
+
+    def test_a_consumer_that_never_started_is_not_noted(self):
+        # R frozen through every retry means no NMI is consuming, so the link
+        # has nothing to spare and must keep its full-speed writes.
+        s = _make()
+        api = cast(Any, s.api)
+        s._upload_nmi_and_buffers()
+        with (
+            mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0),
+            mock.patch.object(s, "read_consumer_ptr", lambda: 0x4000),
+            self.assertLogs("c64cast.audio.audio_rate", level="WARNING") as cm,
+        ):
+            s.nmi.start(adaptive=False)
+        self.assertTrue(any("never started" in m for m in cm.output))
+        self.assertEqual(api.nmi_consumer_notes, [])
 
     def test_stop_reports_underruns(self):
         s = _make()

@@ -871,9 +871,9 @@ def resolve_system(cfg: Config, api: object) -> None:
     from .backend import resolve_host_sid_model
 
     profile = getattr(api, "profile", None)
-    # Normalize once: nothing at config load enforces SYSTEM_CHOICES'
-    # canonical spelling, and make_backend's own fold normalizes the same
-    # way — see the comment there for why a bare comparison is a trap.
+    # Normalize once: load canonicalizes the spelling, but a Config built in
+    # code skips load, and make_backend's own fold normalizes the same way —
+    # see the comment there for why a bare comparison is a trap.
     configured = cfg.ultimate64.system.upper()
     live = (
         read_system_timing(api)

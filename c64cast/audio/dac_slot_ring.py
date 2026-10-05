@@ -377,12 +377,14 @@ _STEP_MAG_REF_PERCENTILE = 99.5
 #: and can never swallow a genuine neighbor.
 _STEP_PEAK_MIN_SEP_FRAC = 0.5
 
-#: Capture samples trimmed from each end of a slot before its plateau is
-#: averaged, keeping the boundary transition and its settling out of the mean.
-#: At 48 kHz a slot is ≈192 samples, so 24 (≈0.5 ms) each side leaves a
-#: ≈144-sample core; a pass whose tracked pitch leaves less than an 8-sample
-#: core after trimming is dropped instead.
-_SLOT_EDGE_GUARD_SAMPLES = 24
+#: Time trimmed from each end of a slot before its plateau is averaged, keeping
+#: the boundary transition and its settling out of the mean. It is a time, not a
+#: sample count, because the settling is: at 48 kHz it is 24 samples of a
+#: ≈192-sample slot, leaving a ≈144-sample core. As a fixed 24 samples it left
+#: no core at all at 12 kHz or below (a 48-sample slot), so every pass of a
+#: perfectly readable capture was dropped. A pass whose tracked pitch leaves
+#: less than an 8-sample core after trimming is still dropped.
+_SLOT_EDGE_GUARD_S = 0.0005
 
 
 def extract_slot_levels(
@@ -392,7 +394,7 @@ def extract_slot_levels(
     *,
     sr: int = CAP_SR,
     nmi_rate: float = NMI_RATE,
-    guard: int = _SLOT_EDGE_GUARD_SAMPLES,
+    guard: int | None = None,
 ) -> SlotLevels:
     """Recover each code's *signed* output level, relative to the reference
     slots, from a capture of the ring :func:`build_slot_ring` built.
@@ -413,6 +415,8 @@ def extract_slot_levels(
        reference slots, so ``level = mean(code) − mean(both neighbors)/2``
        cancels any residual slow drift locally.
     """
+    if guard is None:
+        guard = max(1, round(_SLOT_EDGE_GUARD_S * sr))
     x = np.asarray(cap, dtype=np.float64)
     x = x - x.mean()
     ring_slots = ring_size // SLOT_SAMPLES

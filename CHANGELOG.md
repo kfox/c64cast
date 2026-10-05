@@ -301,6 +301,40 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a quarter short and the anchor came out about 18 ms late; it now uses the
   true ratio.
 
+- **With `nmi_rate_adaptive`, a scene with no display mode starts at the
+  nominal rate.** The previous scene's display mode outlived its stop, so such
+  a scene after an `mhires` one began at `mhires`'s faster learned rate (sharp
+  until the loop walked it back) and then filed its own settled rate under
+  `mhires`, mis-seeding the next `mhires` scene.
+- **On a TeensyROM+, the `$D418` DAC prebuffer goes out at full speed.** The
+  link slices writes only while the NMI player runs, but it was told the
+  player was running before the timer was armed, so the whole prebuffer went
+  out in slices with no NMI to spare. It now hears once the arm has taken.
+- **`--calibrate-dac` can read a capture device that records at 12 kHz or
+  below.** Each slot's edges were trimmed by a fixed 24 samples, which at
+  those rates left nothing to measure, so a clean recording was refused as
+  holding no ring pass. The trim is now a settling time (0.5 ms) that scales
+  with the capture rate.
+- **No `$D418` DAC latch is armed outside what the NMI handler and the CIA
+  timer allow.** A `pitch_mult_*` above about 1.13 at 12 kHz used to arm an NMI
+  period shorter than the handler's safe budget, a zero multiplier crashed and
+  a negative one locked the CPU in the handler; every latch is now held to the
+  budget and a non-positive multiplier is an error. With `nmi_rate_adaptive`
+  on, a rate past the safe ceiling played at the ceiling while the video clock
+  assumed the rate asked for (2.7 % flat at 14 kHz NTSC). **A `sample_rate`
+  inside the handler's entry-latency margin (about 13.7–15 kHz NTSC, 13.2–14.5
+  kHz PAL) is now refused at load instead of warned about**, as is one below
+  about 16 Hz, which the 16-bit timer truncated; where load cannot see the
+  machine (`system = "auto"` on a PAL unit), the timer arms the nearest safe
+  latch, reports that rate, and logs a WARNING.
+- **`[ultimate64] system = "ntsc"` no longer plays `$D418` DAC audio 3.9%
+  fast.** The lowercase spelling was accepted, but the NMI timer compared it
+  against `"NTSC"` exactly and fell through to the PAL clock, so an NTSC
+  machine ran the 12 kHz default at 12472 Hz — at the live-pipeline overrun
+  onset — while pacing and the video clock assumed 12015 Hz. The value is now
+  stored in its declared spelling when it loads, and the timer takes its clock
+  from the shared `cpu_clock()`.
+
 - **A remote video or audio URL whose server stops answering no longer
   freezes the show.** Opening a stream now gives up after 20 seconds, and a
   stream that goes silent mid-play gives up after 30 seconds without data, so

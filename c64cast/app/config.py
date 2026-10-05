@@ -668,8 +668,13 @@ class AudioCfg:
             "themselves halt the 6510 and steal cycles from the NMI handler, so the "
             "overrun onset under the live pipeline was measured at ~12500 Hz (identical "
             "in char and bitmap — the audio feed, not the video, is the driver). 12000 "
-            "keeps margin below that. Rates past the isolated-handler ceiling are "
-            "rejected at load, and --doctor reports them. Sampler-backend playback uses "
+            "keeps margin below that. A rate whose nearest CIA #2 latch gives an NMI "
+            "period under 75 cycles (the 68-cycle handler worst case plus entry "
+            "margin: above ~13.7 kHz NTSC / ~13.2 kHz PAL), or a latch past the "
+            "16-bit timer (under 16 Hz), is rejected at load, and --doctor reports "
+            'it. An unresolved [ultimate64].system = "auto" is checked as NTSC, so '
+            "on a PAL machine a rate between the two ceilings loads and plays "
+            "clamped to ~13.1 kHz, with a warning. Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
     )
@@ -3487,6 +3492,18 @@ def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
         raise ValueError(f"ultimate64.sid_panning: {e}") from e
 
 
+def _validate_pitch_mult(audio: AudioCfg) -> None:
+    """A playback-rate multiplier divides the NMI period, so zero crashed the
+    retune and a negative one armed latch 1 — an NMI every two cycles, which
+    holds the 6510 in the handler. Refuse anything not a positive number."""
+    for f in fields(audio):
+        if not f.name.startswith("pitch_mult_"):
+            continue
+        name, value = f.name, getattr(audio, f.name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise ValueError(f"[audio].{name} = {value!r} — want a positive number")
+
+
 def _validate_sid_volume(u64: Ultimate64Cfg) -> None:
     """Range-check [ultimate64].sid_volume at load/doctor time so a level the
     mixer can't represent surfaces before the playlist runs, not mid-scene when
@@ -3594,11 +3611,9 @@ _CHOICES_OPEN: dict[str, str] = {
     # "auto"/"off" plus any positive float (Hz) — see the field's own help.
     "ultimate64.sid_play_rate": "also accepts a rate in Hz",
 }
-# Fields matched case-insensitively rather than exactly, because the value is
-# case-normalized downstream (hw/backend.py and hw/hw_provision.py both
-# `.upper()` it, each with a comment saying nothing at load enforces the
-# canonical spelling) — so `system = "ntsc"` works today and has to keep
-# working, while `system = "ntscc"` should not.
+# Fields matched case-insensitively rather than exactly, and rewritten to the
+# declared spelling when they match — so `system = "ntsc"` keeps working and
+# reaches every consumer as "NTSC", while `system = "ntscc"` is refused.
 _CHOICES_CASE_INSENSITIVE: frozenset[str] = frozenset({"ultimate64.system"})
 
 
@@ -3634,7 +3649,11 @@ def _validate_choice_fields(cfg: Config) -> None:
             if not isinstance(value, str):
                 continue
             if key in _CHOICES_CASE_INSENSITIVE:
-                if value.casefold() in {str(c).casefold() for c in choices}:
+                canonical = {str(c).casefold(): c for c in choices}.get(value.casefold())
+                if canonical is not None:
+                    # Store the declared spelling: a consumer that compares
+                    # it bare must not see "ntsc" and fall through to PAL.
+                    setattr(section, f.name, canonical)
                     continue
             elif value in choices:
                 continue
@@ -3755,6 +3774,7 @@ def validate_sections(cfg: Config) -> None:
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
     _validate_audio_device(cfg.audio)
+    _validate_pitch_mult(cfg.audio)
     _normalize_ultimate_url(cfg.ultimate64)
     _validate_performance(cfg.performance)
     _validate_sid_panning(cfg.ultimate64)

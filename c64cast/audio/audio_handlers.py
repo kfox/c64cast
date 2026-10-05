@@ -324,10 +324,6 @@ del _chunk
 # it live instead (AudioStreamer._program_reu_pump_rate).
 REU_PUMP_CIA1_LATCH_8KHZ = 0x3FFF
 
-# A CIA Timer A latch is two 8-bit registers, so a derived latch above this
-# is silently truncated modulo 65536 by the register write.
-CIA_TIMER_LATCH_MAX = 0xFFFF
-
 # Between arming the NMI consumer and arming the C64-side pump, so the NMI is
 # already firing when the first pump DMA lands — otherwise that DMA overwrites
 # ring positions the NMI has not read yet. Both pump bring-ups wait it out.

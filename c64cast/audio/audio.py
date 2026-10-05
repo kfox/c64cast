@@ -32,6 +32,7 @@ from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
+    CIA_TIMER_LATCH_MAX,
     KERNAL,
     REU,
     SID,
@@ -48,7 +49,6 @@ from .audio_handlers import (
     CHUNK_SIZE,
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
-    CIA_TIMER_LATCH_MAX,
     HOST_DMA_SERVO_TARGET_GAP,
     INT16_FULL_SCALE,
     MAX_QUEUED_SAMPLES,
@@ -442,7 +442,6 @@ class AudioStreamer:
         self.api.write_regs(
             f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
         )
-        self.api.note_nmi_consumer(True)
         if self._dac_curve is not None:
             self._enable_mahoney_env()
         elif self.digi_boost:
@@ -801,6 +800,18 @@ class AudioStreamer:
         # Stashed for NmiTimer.start: at scene setup the worker is usually still
         # prebuffering, so the timer picks the value up when it first arms.
         self.nmi.pitch_multiplier = multiplier
+        requested = self.nmi.requested_compensated_latch()
+        if requested != self.nmi.clamp_latch(requested):
+            log.warning(
+                "audio: pitch multiplier %g for %s needs CIA #2 latch %d, outside the "
+                "%d..%d the NMI handler budget and the 16-bit timer allow — arming %d",
+                multiplier,
+                display_mode,
+                requested,
+                self.nmi.ceiling_latch(),
+                CIA_TIMER_LATCH_MAX,
+                self.nmi.clamp_latch(requested),
+            )
         if not self.nmi.started:
             return
 
@@ -1468,7 +1479,7 @@ class AudioStreamer:
         65536 — a truncated latch can land anywhere, including one that fires
         the pump hundreds of times faster than matched. At the default chunk the
         product passes 16 bits below ≈2 kHz, and ``c64.nmi_rate_safety`` bounds
-        only the fast end of ``sample_rate``.
+        ``sample_rate`` only to what the NMI's own 16-bit latch can hold.
 
         CIA #1 stays in continuous mode (the kernal already set CRA); only the
         latch changes. BASIC's TI$ jiffy clock drifts as a side effect —
@@ -2477,7 +2488,7 @@ class AudioStreamer:
                 self._mic_reu_write_errors,
             )
         self._mic_reu_write_errors = 0
-        # Clear the timer's pitch-comp/arm state and the servo's watchdog +
+        # Clear the timer's pitch-comp/mode/arm state and the servo's watchdog +
         # adaptive-rate state so the next scene re-acquires from nominal; the
         # per-mode learned-latch cache survives (NmiTimer.reset_after_stop).
         self.nmi.reset_after_stop()

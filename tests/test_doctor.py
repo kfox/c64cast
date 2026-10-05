@@ -2133,13 +2133,46 @@ class SampleRateHintTest(unittest.TestCase):
     recommending 10500 for two releases after 12000 became the default."""
 
     def test_hint_quotes_the_shipped_default(self):
-        hint = doctor._sample_rate_hint()
+        hint = doctor._sample_rate_hint("NTSC", 20000)
         self.assertIn(str(cfgmod.AudioCfg().sample_rate), hint)
 
     def test_hint_quotes_both_standard_ceilings(self):
-        hint = doctor._sample_rate_hint()
+        hint = doctor._sample_rate_hint("NTSC", 20000)
         for system in ("NTSC", "PAL"):
             self.assertIn(str(max_safe_sample_rate(system)), hint)
+
+    def test_a_rate_too_slow_for_the_timer_is_told_to_go_up(self):
+        # 10 Hz is refused for the 16-bit latch, not the handler budget, so
+        # "Lower [audio].sample_rate" would send the user the wrong way.
+        loaded = _load(
+            """
+            [audio]
+            enabled = true
+            sample_rate = 10
+            """
+        )
+        found = doctor._validate_audio_nmi_rate(loaded)
+        self.assertEqual([d.level for d in found], ["error"])
+        hint = found[0].hint or ""
+        self.assertTrue(hint.startswith("Raise [audio].sample_rate"), hint)
+        self.assertIn("16 Hz", hint)
+
+    def test_a_rate_on_the_ceiling_latch_reports_no_negative_headroom(self):
+        # 13700 Hz NTSC rounds onto the ceiling latch, so load accepts it, but it
+        # sits above max_safe_sample_rate; the adaptive loop has 0 % left, not -0.5 %.
+        loaded = _load(
+            """
+            [audio]
+            enabled = true
+            sample_rate = 13700
+            nmi_rate_adaptive = true
+            [ultimate64]
+            system = "NTSC"
+            """
+        )
+        found = doctor._validate_audio_nmi_rate(loaded)
+        self.assertEqual([d.level for d in found], ["warn"])
+        self.assertIn("only 0.0% NMI headroom", found[0].message)
 
     def test_unsafe_rate_carries_the_hint(self):
         loaded = _load(
@@ -2152,7 +2185,7 @@ class SampleRateHintTest(unittest.TestCase):
         found = doctor._validate_audio_nmi_rate(loaded)
         self.assertTrue(found)
         self.assertEqual(found[0].level, "error")
-        self.assertEqual(found[0].hint, doctor._sample_rate_hint())
+        self.assertEqual(found[0].hint, doctor._sample_rate_hint("NTSC", 20000))
 
 
 if __name__ == "__main__":

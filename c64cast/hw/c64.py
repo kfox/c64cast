@@ -383,8 +383,8 @@ CLOCK_PAL: Final = 985248
 
 def _canonical_system(system: str) -> Literal["NTSC", "PAL"]:
     """Normalize `system` to "NTSC" or "PAL" (case-insensitive, surrounding
-    whitespace tolerated — nothing at config load enforces
-    `config.SYSTEM_CHOICES`' canonical spelling).
+    whitespace tolerated — config load canonicalizes the spelling, but a
+    caller handed a string from anywhere else gets no such guarantee).
 
     Raises ValueError for anything else, "auto" included: every derived
     timing constant (CPU clock, frame rate, CIA latch, NMI budget) is wrong
@@ -450,13 +450,27 @@ def kernal_cia1_latch(system: str) -> int:
     return KERNAL_CIA1_LATCH_NTSC if _canonical_system(system) == "NTSC" else KERNAL_CIA1_LATCH_PAL
 
 
+# A CIA timer latch is two 8-bit registers, so a derived latch above this is
+# silently truncated modulo 65536 by the register write.
+CIA_TIMER_LATCH_MAX: Final = 0xFFFF
+
+
+def nearest_latch(rate_hz: float, system: str) -> int:
+    """The CIA timer latch whose period (``latch + 1`` cycles) brings a timer
+    closest to `rate_hz`: ``round(cpu_clock/rate) - 1``, unclamped.
+
+    The one rounding the NMI timer, the load-time rate rule and
+    :func:`cia1_latch_for_rate` share, so load cannot accept a rate the timer
+    then arms on a different latch."""
+    return round(cpu_clock(system) / rate_hz) - 1
+
+
 def cia1_latch_for_rate(rate_hz: float, system: str) -> int:
-    """CIA #1 Timer A latch for a consume rate: ``round(cpu_clock/rate) - 1``,
+    """CIA #1 Timer A latch for a consume rate: :func:`nearest_latch`,
     clamped to a valid 16-bit timer value (>= 1)."""
     if rate_hz <= 0:
         raise ValueError(f"rate must be positive, got {rate_hz}")
-    latch = round(cpu_clock(system) / rate_hz) - 1
-    return max(1, min(latch, 0xFFFF))
+    return max(1, min(nearest_latch(rate_hz, system), CIA_TIMER_LATCH_MAX))
 
 
 def actual_rate_for_latch(latch: int, system: str) -> float:
@@ -503,6 +517,13 @@ def halt_quantum_bytes(period_cycles: int) -> int:
     return max(16, period_cycles - HALT_QUANTUM_MARGIN_CYCLES)
 
 
+def min_sample_rate(system: str) -> int:
+    """Lowest sample rate whose latch still fits the 16-bit CIA timer on
+    `system` (~16 Hz on both standards) — the floor :func:`nmi_rate_safety`
+    refuses below, and the number its message and --doctor's hint quote."""
+    return -(-cpu_clock(system) // (CIA_TIMER_LATCH_MAX + 1))
+
+
 def max_safe_sample_rate(system: str) -> int:
     """Highest sample rate whose NMI period stays at/above the safe minimum
     (measured handler worst case + margin) for `system`. ~13.6 kHz NTSC / ~13.1
@@ -510,17 +531,30 @@ def max_safe_sample_rate(system: str) -> int:
     return int(cpu_clock(system) // NMI_SAFE_MIN_PERIOD_CYCLES)
 
 
-def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "warn", "error"], str]:
-    """Classify an audio sample rate against the NMI handler's cycle budget for
-    `system`. Returns ``(level, message)`` where level is "ok" | "warn" |
-    "error" — pure (no I/O), so config validation, --doctor, and tests share
-    one source of truth. "error" = period below the handler worst case (NMIs
-    WILL queue, pitch drops); "warn" = inside entry-latency margin (may glitch
-    under badline-heavy scenes); "ok" = clear."""
+def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "error"], str]:
+    """Classify an audio sample rate against what the NMI DAC consumer can arm
+    on `system`. Returns ``(level, message)`` — pure (no I/O), so config
+    validation, --doctor, and tests share one source of truth.
+
+    The latch is :func:`nearest_latch`, the one ``NmiTimer.nominal_latch``
+    clamps, and "error" is any rate whose latch falls outside what the
+    timer will arm: a period under ``NMI_SAFE_MIN_PERIOD_CYCLES`` (NMIs queue
+    below the handler worst case, and the entry-latency margin above it is the
+    budget the timer clamps to) or a latch past the 16-bit timer. A rate the
+    timer would clamp would otherwise load and play at a rate nobody asked for.
+    """
     if sample_rate <= 0:
         return ("error", f"sample_rate must be positive, got {sample_rate}")
     period = cpu_clock(system) / sample_rate
+    latch = nearest_latch(sample_rate, system)
     safe_max = max_safe_sample_rate(system)
+    if latch > CIA_TIMER_LATCH_MAX:
+        min_rate = min_sample_rate(system)
+        return (
+            "error",
+            f"sample_rate {sample_rate} Hz → CIA #2 latch {latch} on {system}, past "
+            f"the 16-bit timer. Min on {system} ≈ {min_rate} Hz.",
+        )
     if period < NMI_HANDLER_WORST_CYCLES:
         return (
             "error",
@@ -528,16 +562,17 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "warn"
             f"{system}, below the {NMI_HANDLER_WORST_CYCLES}-cycle handler worst "
             f"case: NMIs queue and pitch drops. Max safe on {system} ≈ {safe_max} Hz.",
         )
-    if period < NMI_SAFE_MIN_PERIOD_CYCLES:
+    if latch + 1 < NMI_SAFE_MIN_PERIOD_CYCLES:
         return (
-            "warn",
-            f"sample_rate {sample_rate} Hz → NMI period {period:.0f} cycles on "
-            f"{system}, within entry-latency margin of the {NMI_HANDLER_WORST_CYCLES}-"
-            f"cycle handler — may glitch under badline-heavy scenes. Safe max ≈ {safe_max} Hz.",
+            "error",
+            f"sample_rate {sample_rate} Hz → NMI period {latch + 1} cycles on "
+            f"{system}, inside the entry-latency margin of the "
+            f"{NMI_HANDLER_WORST_CYCLES}-cycle handler; the NMI timer arms no period "
+            f"under {NMI_SAFE_MIN_PERIOD_CYCLES}. Max safe on {system} ≈ {safe_max} Hz.",
         )
     return (
         "ok",
-        f"sample_rate {sample_rate} Hz → NMI period {period:.0f} cycles on "
+        f"sample_rate {sample_rate} Hz → NMI period {latch + 1} cycles on "
         f"{system} (safe; handler ≤ {NMI_HANDLER_WORST_CYCLES}).",
     )
 

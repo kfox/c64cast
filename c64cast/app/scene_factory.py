@@ -1332,9 +1332,9 @@ def _validate_launcher(s: SceneCfg, cfg: Config) -> None:
 def validate_nmi_sample_rate(cfg: Config) -> None:
     """Guard [audio].sample_rate against the NMI handler's cycle budget.
 
-    Raises ConfigError when the configured rate would overrun the $D418 DAC NMI
-    handler on the target system (NMIs queue → pitch drop); logs a warning for
-    rates inside the entry-latency margin. Thin pass-through to
+    Raises ConfigError for a rate the $D418 DAC NMI timer will not arm on the
+    target system: one that overruns the handler or its entry-latency margin,
+    or is too slow for the 16-bit timer. Thin pass-through to
     `c64.nmi_rate_safety` so the rule lives in one place (shared with --doctor).
     No-op when audio is disabled.
 
@@ -1349,8 +1349,6 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
     level, message = nmi_rate_safety(system, cfg.audio.sample_rate)
     if level == "error":
         raise ConfigError(f"[audio].sample_rate: {message}")
-    if level == "warn":
-        log.warning("[audio].sample_rate: %s", message)
 
 
 #: Accepted [audio].sampler_clock_hz: ±20 % around the 6.25 MHz design clock,
