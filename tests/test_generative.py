@@ -1747,6 +1747,18 @@ class AudioFileShortClipTest(unittest.TestCase):
         self.assertEqual(n, 0)
         self.assertLess(time.monotonic() - t0, 1.0, "the collect waited out its deadline")
 
+    def test_a_stale_end_input_blob_does_not_cut_the_next_producers_collect(self):
+        # An end_input() that raced its teardown's drain leaves its wake-up in
+        # the queue for the next producer, whose worker cleared _input_ended.
+        from _fakes import FakeAPI
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac.running = True
+        dac.q.put_nowait(b"")
+        dac.q.put_nowait(b"\x01" * 16)
+        n, _, _ = dac._collect_until(bytearray(16), 0, b"", time.monotonic() + 1.0)
+        self.assertEqual(n, 16, "a stale wake-up ended the next producer's collect")
+
     def test_a_dac_worker_idles_after_a_producer_that_pushed_nothing(self):
         # A decode that failed before its first push still ends the input. With
         # nothing landed there is no prebuffer to pad out, and a priming collect

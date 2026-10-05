@@ -560,7 +560,11 @@ class AudioStreamer:
                 break
             if not piece:
                 # end_input()'s wake-up: nothing more is coming to wait for.
-                break
+                # One left over from an earlier producer, whose end_input()
+                # raced its teardown's drain, is not this producer's end.
+                if self._input_ended:
+                    break
+                continue
             take = min(len(piece), size - n)
             chunk_buf[n : n + take] = piece[:take]
             n += take
