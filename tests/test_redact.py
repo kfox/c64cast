@@ -316,6 +316,24 @@ class RedactUrlUserinfoTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_userinfo_reaching_into_the_next_string_does_not_strand_a_secret(self):
+        """No quote bounds the userinfo, so on a run with no whitespace it
+        reaches from a path-less URL into the next string. Masked first, it
+        swallowed that string's key name and left whatever followed the
+        secret's own `@` with nothing to name it."""
+        for line, want in (
+            ('{"url":"u64://192.168.2.64","dma_password":"hunt@er2"}', '{"url":"u64://REDACTED"}'),
+            ('["tr://COM3","token=abc@def"]', '["tr://REDACTED"]'),
+            ("{'url':'u64://h','viewer_token':'ab@cd'}", "{'url':'u64://REDACTED'}"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_value_the_userinfo_cut_short_is_masked_to_its_real_end(self):
+        """Read as given, the `'` in the password closes the token's value;
+        once the userinfo is masked the value runs on to its real quote."""
+        self.assertEqual(redact_secrets("token='https://u:it's@h/a.mp4'"), "token='REDACTED'")
+
     def test_a_long_run_of_scheme_characters_is_redacted_in_linear_time(self):
         """Every line `--log-file` and the console's log tail receive goes
         through here. A scheme pattern retried from every offset of a run of

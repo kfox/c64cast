@@ -19,6 +19,7 @@ possible.
 
 from __future__ import annotations
 
+import bisect
 import re
 from collections.abc import Sequence
 
@@ -164,9 +165,65 @@ def _scheme_start(line: str, separator: int) -> int:
     return i
 
 
-def _mask(m: re.Match[str]) -> str:
-    prefix = m.group("kv_prefix")
-    return f"{prefix if prefix is not None else m.group('bearer_prefix')}{REDACTED}"
+Span = tuple[int, int]
+
+
+def _value_span(m: re.Match[str]) -> Span:
+    """Where the secret a :data:`_SECRET_VALUE` match found sits in its text."""
+    return m.span("kv_value") if m.group("kv_prefix") is not None else m.span("bearer_value")
+
+
+def _splice(text: str, spans: Sequence[Span]) -> str:
+    """`text` with each of `spans` — sorted, none overlapping — replaced by
+    ``REDACTED``. An empty span still gets one: `://@` is userinfo too."""
+    out: list[str] = []
+    done = 0
+    for start, end in spans:
+        out += (text[done:start], REDACTED)
+        done = end
+    out.append(text[done:])
+    return "".join(out)
+
+
+def _merge(spans: list[Span]) -> list[Span]:
+    """`spans` sorted, with every pair that overlaps or touches made one."""
+    merged: list[Span] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _spliced_starts(userinfo: Sequence[Span]) -> list[int]:
+    """Where each of `userinfo`'s ``REDACTED`` begins once :func:`_splice` has
+    put it in."""
+    out_starts: list[int] = []
+    shift = 0
+    for start, end in userinfo:
+        out_starts.append(start + shift)
+        shift += len(REDACTED) - (end - start)
+    return out_starts
+
+
+def _source_span(span: Span, userinfo: Sequence[Span], out_starts: Sequence[int]) -> Span:
+    """`span`, found in the text `userinfo` was spliced out of, as a span of
+    the text before the splice; `out_starts` is :func:`_spliced_starts` of
+    `userinfo`. An end inside a ``REDACTED`` widens to the whole of the
+    userinfo it replaced."""
+
+    def back(p: int, *, is_end: bool) -> int:
+        i = (bisect.bisect_left if is_end else bisect.bisect_right)(out_starts, p) - 1
+        if i < 0:
+            return p
+        start, end = userinfo[i]
+        inside_end = out_starts[i] + len(REDACTED)
+        if (p <= inside_end) if is_end else (p < inside_end):
+            return end if is_end else start
+        return p - inside_end + end
+
+    return back(span[0], is_end=False), back(span[1], is_end=True)
 
 
 def redact_secrets(text: str) -> str:
@@ -195,9 +252,25 @@ def redact_secrets(text: str) -> str:
 
     Masking a value means finding where it starts and ends, which a malformed
     line does not offer — :func:`redact_source_line` is for the caller quoting
-    one of those."""
-    text = _INLINE_URL_USERINFO.sub(f"://{REDACTED}@", text)
-    return _SECRET_VALUE.sub(_mask, text)
+    one of those.
+
+    The userinfo rule and the name rule are each applied to `text` as given,
+    and a character either one would mask is masked. Running one over the
+    other's output leaks: no quote bounds the userinfo, so on a whitespace-free
+    run such as `{"url":"u64://host","dma_password":"hunt@er2"}` it reaches
+    from one string into the next, swallows the key name, and the `er2` past
+    its `@` was left with nothing to name it a secret. The name rule is also
+    run over the userinfo-masked text, since a quote inside the userinfo can
+    end a value early that the masked text lets run on."""
+    userinfo = [(m.start() + 3, m.end() - 1) for m in _INLINE_URL_USERINFO.finditer(text)]
+    spans = userinfo + [_value_span(m) for m in _SECRET_VALUE.finditer(text)]
+    if userinfo:
+        masked, out_starts = _splice(text, userinfo), _spliced_starts(userinfo)
+        spans += [
+            _source_span(_value_span(m), userinfo, out_starts)
+            for m in _SECRET_VALUE.finditer(masked)
+        ]
+    return _splice(text, _merge(spans))
 
 
 def _skip_quoted(line: str, start: int) -> int:
