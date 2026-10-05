@@ -209,6 +209,21 @@ class RedactSecretsTest(unittest.TestCase):
         line = "u=%252Fmonkey%253D1%2526sortkey%253Ddate"
         self.assertEqual(redact_secrets(line), line)
 
+    def test_an_encoded_colon_and_quote_read_as_their_raw_spellings(self):
+        """A JSON document carried in a query parameter spells `"token":"v"`
+        as `%22token%22%3A%22v%22`; with no encoded quote to end at, the value
+        runs on to the `%26`."""
+        self.assertEqual(
+            redact_secrets("state=%7B%22token%22%3A%22abc%22%7D%26n%3D1"),
+            "state=%7B%22token%22%3AREDACTED%26n%3D1",
+        )
+        self.assertEqual(
+            redact_secrets("s=%257B%2527sig%2527%253A%2527abc%2527%257D"),
+            "s=%257B%2527sig%2527%253AREDACTED",
+        )
+        line = "state=%7B%22monkey%22%3A%22abc%22%7D"
+        self.assertEqual(redact_secrets(line), line)
+
     def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
         """The short names are why `\\w*` cannot front them: `sortkey` would be
         masked with the rest, and a masked diagnostic value reads as coverage

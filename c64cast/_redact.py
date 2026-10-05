@@ -67,6 +67,12 @@ REDACTED = "REDACTED"
 #: ends. A once-encoded value does not end at `%2526`: that is a `%26` inside
 #: the secret itself.
 #:
+#: `%3A` counts as a separator too, and an encoded quote may close the name, as
+#: their raw spellings do: a JSON document carried in a query parameter spells
+#: `"token":"v"` as `%22token%22%3A%22v%22`. Such a value has no encoded quote
+#: to end at, so it runs on to the `%26` or `&` and takes the closing quote and
+#: whatever follows with it.
+#:
 #: The open form appears in both branches, spliced from one spelling so a name
 #: added to it is found at a run's start and partway through it alike.
 _OPEN_SECRET_NAME = r"\w* (?: token | password | secret | api[_-]?key )"
@@ -85,7 +91,7 @@ _SECRET_KEY = r"""
 _SECRET_VALUE = re.compile(
     r"""
     (?P<kv_prefix>
-        {key} ["']? \s* (?: [=:] | (?P<pct> % (?P<pct2> 25 )? 3d ) ) \s*
+        {key} (?: ["'] | %(?:25)?2[27] )? \s* (?: [=:] | (?P<pct> % (?P<pct2> 25 )? 3[ad] ) ) \s*
         (?P<quote> ["]{3} | [']{3} | ["'] )?
     )
     (?P<kv_value>
@@ -179,7 +185,8 @@ def redact_secrets(text: str) -> str:
     brace. A name inside a URL-encoded value (`%26sig%3DVALUE`,
     `%7Ehmac%3DVALUE`) is matched too, and its value also ends at `%26`; so
     is one encoded twice (`%2526sig%253DVALUE`), whose value also ends at
-    `%2526` or `%26`. A
+    `%2526` or `%26`. `%3A` and an encoded quote are read as their raw
+    spellings are, so `%22token%22%3AVALUE` is covered. A
     quoted one — `'`, `"`, `'''` or `\"\"\"` — runs to the matching
     quote that no backslash escapes, or to the end of the line, whichever comes
     first: a value written across several lines is masked only as far as its
