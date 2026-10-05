@@ -398,8 +398,21 @@ class AudioStreamer:
         # reactive source at setup() and cleared at teardown(). Distinct from
         # the tap above and fed before the gate and _apply_dsp, because AGC +
         # compressor + limiter flatten the transients an onset detector reads.
-        self.analysis_sink: Callable[[np.ndarray], None] | None = None
+        self._analysis_sink: Callable[[np.ndarray], None] | None = None
         self._analysis_sink_failed = False
+
+    @property
+    def analysis_sink(self) -> Callable[[np.ndarray], None] | None:
+        return self._analysis_sink
+
+    @analysis_sink.setter
+    def analysis_sink(self, sink: Callable[[np.ndarray], None] | None) -> None:
+        # The session builds one streamer and every reactive source installs
+        # its own analyzer on it at setup(), so a newly installed sink gets its
+        # first failure logged even if an earlier one already failed.
+        if sink is not None:
+            self._analysis_sink_failed = False
+        self._analysis_sink = sink
 
     @property
     def dac_curve(self) -> np.ndarray | None:
@@ -1058,8 +1071,8 @@ class AudioStreamer:
 
         Called from realtime callbacks, so a failing analyzer must never take
         the audio path down with it: the first exception is logged and the sink
-        is dropped for the rest of the run (visuals stop reacting, sound keeps
-        playing)."""
+        is dropped until a source installs another (visuals stop reacting,
+        sound keeps playing)."""
         sink = self.analysis_sink
         if sink is None:
             return

@@ -1174,6 +1174,24 @@ class MicCallbackTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 32)
 
 
+class AnalysisSinkFailureTest(unittest.TestCase):
+    """The session shares one streamer across scenes, and each reactive source
+    installs its own analyzer on it, so each installed sink's first failure
+    is logged."""
+
+    def test_a_reinstalled_analyzer_failing_again_is_logged_again(self):
+        def broken(_floats: np.ndarray) -> None:
+            raise ValueError("analyzer broke")
+
+        s = _make()
+        for _lap in range(2):
+            s.analysis_sink = broken  # the source installs it every setup()
+            with self.assertLogs("c64cast.audio.audio", "ERROR") as logs:
+                s._push_to_analysis(np.zeros(8, dtype=np.float32))
+            self.assertIn("analysis sink failed", logs.output[0])
+            self.assertIsNone(s.analysis_sink)
+
+
 class ListenOnlyCaptureTest(unittest.TestCase):
     """start_listen: analysis-only capture — no NMI, no worker, no DAC/SID
     writes. The samples reach the analysis sink and stop there."""
