@@ -341,6 +341,8 @@ class AudioFeatureStream:
         )
         # `_lock` guards only the snapshot `features()` reads; `_analyze_lock`
         # guards the analyzer, so a render-thread read never waits on an FFT.
+        # Where both are needed, `_analyze_lock` is taken first and `_lock` is
+        # held only for the swap, so an analysis and its publish stay one step.
         self._lock = threading.Lock()
         self._analyze_lock = threading.Lock()
         self._snapshot: MusicModulation | None = None
@@ -352,8 +354,8 @@ class AudioFeatureStream:
             return
         with self._analyze_lock:
             self._analyzer.reset()
-        with self._lock:
-            self._snapshot = None
+            with self._lock:
+                self._snapshot = None
         self._poll = PollThread(
             self._process_tick, period=self._poll_dt, name="audio-features", run_first=True
         )
@@ -369,14 +371,18 @@ class AudioFeatureStream:
         """Analyze the most recent window. The FFT runs outside the lock; only
         the snapshot swap takes it, so `features()` on the render thread never
         waits out an analysis. The analyzer has a lock of its own, against a
-        `start()` reset racing a tick from a poll thread whose stop timed out."""
-        window = self._window()
-        now = time.monotonic()
+        `start()` reset racing a tick from a poll thread whose stop timed out.
+        The swap happens while that lock is still held, so the old thread's
+        tick cannot publish a pre-reset snapshot over `start()`'s None, nor two
+        overlapping ticks publish out of order; and the window and timestamp
+        are taken under it, so a tick that waited on it analyzes the present."""
         with self._analyze_lock:
+            window = self._window()
+            now = time.monotonic()
             self._analyzer.update(window, now)
             snapshot = self._analyzer.snapshot()
-        with self._lock:
-            self._snapshot = snapshot
+            with self._lock:
+                self._snapshot = snapshot
 
     def _window(self) -> np.ndarray:
         """The window to analyze: the newest one, or the one the listener is

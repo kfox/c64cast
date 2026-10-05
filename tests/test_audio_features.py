@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -379,6 +380,32 @@ class StreamTest(unittest.TestCase):
         stream._process_tick()
         self.assertEqual(held, [False])
         self.assertIsNotNone(stream.features())
+
+    def test_a_reset_cannot_land_between_an_analysis_and_its_publish(self):
+        # A tick from a poll thread whose stop timed out can overlap start().
+        # If the snapshot swap ran after the analyzer lock was released,
+        # start()'s reset could land in between and the tick would publish a
+        # pre-reset snapshot over start()'s None. So every swap, the tick's
+        # and start()'s, must happen with the analyzer lock still held.
+        tap = AnalysisTap()
+        tap.push(_sine(440.0))
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ)
+        order: list[str] = []
+        real_lock = stream._lock
+
+        class _Swap:
+            def __enter__(self):
+                order.append("swap" if stream._analyze_lock.locked() else "swap-unguarded")
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                return real_lock.__exit__(*exc)
+
+        stream._lock = _Swap()  # type: ignore[assignment]
+        stream._process_tick()
+        with patch("c64cast.audio.audio_features.PollThread"):
+            stream.start()
+        self.assertEqual(order, ["swap", "swap"])
 
     def test_start_stop_smoke(self):
         tap = AnalysisTap()
