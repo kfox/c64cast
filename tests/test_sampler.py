@@ -649,6 +649,26 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual(api.reu_writes, [(smp.ring_base + pos, 20 * (frames + 1))])
 
+    def test_the_hold_is_decided_on_the_read_head_after_the_queue_wait(self):
+        # The producer stalled with a partial quantum held. The pass waits on
+        # the empty queue while the reader moves on; held again on the lead
+        # from before that wait, the gather would be written late.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)
+        consumed = [0]
+        smp._read_consumed_bytes = lambda: consumed[0]  # type: ignore[method-assign]
+        pos = self._hold_floor(smp, 20)
+        self._place(smp, pos)
+        smp._carry = (smp._flush_epoch, memoryview(b"\x01" * 20))
+
+        def stalled_get(*_a: Any, **_kw: Any) -> Any:
+            consumed[0] += 2 * smp._hold_guard
+            raise s.queue.Empty
+
+        smp._q.get = stalled_get  # type: ignore[method-assign]
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(api.reu_writes, [(smp.ring_base + pos, 20)])
+
     def test_without_the_slack_for_a_whole_quantum_a_partial_one_is_written(self):
         api = _FakeBackend()
         smp = self._idle_reader(api, lead_seconds=4.0, ring_size=0x10000)

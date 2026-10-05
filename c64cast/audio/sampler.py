@@ -852,7 +852,7 @@ class UltimateAudioSampler:
         # A producer paced at real time (a live stream) never builds a queue
         # backlog, so writing what one pass gathered would write every frame.
         # While the lead has the slack, the writer waits for a whole quantum.
-        payload = self._next_payload(room, slack=lead - self._flush_margin)
+        payload = self._next_payload(room)
         if payload is None:
             if self._carry is not None:
                 return False  # held for a whole quantum: data is flowing
@@ -971,13 +971,13 @@ class UltimateAudioSampler:
             data += bytes(carry[1])
         self._carry = (epoch, memoryview(data))
 
-    def _next_payload(self, room: int, *, slack: int) -> tuple[int, bytes] | None:
+    def _next_payload(self, room: int) -> tuple[int, bytes] | None:
         """Writer-thread only: the next current-epoch PCM to write, at most
         ``room`` bytes and one slice. Queued chunks are coalesced up to the
         write quantum; a chunk larger than the write is split, its tail
         carried to the next pass. Less than a quantum is carried rather than
-        written while ``slack`` (the lead over the write floor) would still
-        clear HOLD_GUARD_S after the rest of the quantum arrived at real time.
+        written while the lead over the write floor would still clear
+        HOLD_GUARD_S after the rest of the quantum arrived at real time.
         None when nothing current arrived within the queue timeout, or when it
         was held."""
         limit = min(room, REU_WRITE_SLICE)
@@ -1007,6 +1007,10 @@ class UltimateAudioSampler:
         if not parts:
             return None
         short = self._write_quantum - size
+        # Read after the queue wait above, not at the start of the pass: the
+        # reader moved up to that wait's 20 ms meanwhile, and a hold decided
+        # on the older lead wrote its gather late when the producer stalled.
+        slack = self._content_pos - self._read_consumed_bytes() - self._flush_margin
         if short > 0 and slack - short > self._hold_guard:
             self._carry = (epoch, memoryview(b"".join(parts)))
             return None
