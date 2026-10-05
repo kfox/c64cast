@@ -1145,6 +1145,15 @@ def servo_period(
     return chunk_period + correction, integ
 
 
+def stall_reanchor(r_addr: int, chunk: int, lead: int = HOST_DMA_SERVO_TARGET_GAP) -> int:
+    """Where the host-DMA write head restarts after a stall: the first
+    chunk-grid address at least ``lead`` bytes ahead of R. The grid matters —
+    every ring write is a whole chunk at a chunk-aligned address, which is what
+    keeps a write from straddling ``RING_BUFFER_END`` (see the worker)."""
+    ahead = r_addr - RING_BUFFER_ADDR + lead
+    return RING_BUFFER_ADDR + (-(-ahead // chunk) * chunk) % RING_BUFFER_SIZE
+
+
 def servo_hold_period(integ: float, *, chunk_period: float, ki: float = HOST_DMA_SERVO_KI) -> float:
     """The pace period with no gap reading to act on: only the integral term,
     which carries the standing rate correction (the consumer's bus-halt

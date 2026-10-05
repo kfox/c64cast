@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from c64cast._teardown import run_teardown_steps
+from c64cast._wire_log import LogThrottle
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
@@ -98,6 +99,7 @@ from .audio_handlers import (
     encode_floats_to_dac,
     patch_chunk_size,
     reu_pump_chunk_fits_ring,
+    stall_reanchor,
     stomp_spans,
 )
 from .audio_rate import NmiTimer, RateServo
@@ -389,6 +391,8 @@ class AudioStreamer:
         # stop a whole ring short of the last sample.
         self._ring_tail_pad = 0
         self._ring_short_pad = 0
+        # One record per interval however often the link stalls.
+        self._stall_log = LogThrottle(log)
 
         # Sample tap for FFT overlays. Lockless write from input threads,
         # locked read from the render thread — readers tolerate a torn frame
@@ -886,11 +890,14 @@ class AudioStreamer:
         pace point, and writes.
 
         The schedule is strict absolute — `next_write_time + chunk_period`,
-        never snapped forward on an overrun. With `host_dma_servo` on
+        never snapped forward on an ordinary overrun. With `host_dma_servo` on
         (default) the increment is `servo.next_pace_increment(...)` instead of
         the bare `chunk_period`, still added to the absolute time, and clamped
         to [0.5, 1.5]·chunk_period so one bad reading cannot stall or sprint
-        the schedule.
+        the schedule. The one exception is a stall longer than the ring lead
+        (a DMA link that blocked or redialed): catching that up would sprint
+        writes until W lapped R, so the worker re-anchors instead — see
+        :meth:`_resync_after_stall`.
 
         See docs/architecture/audio.md#the-worker-thread-and-its-pacing."""
         try:
@@ -907,6 +914,9 @@ class AudioStreamer:
             # servo a standing offset to absorb before it could correct anything.
             chunk_period = self.chunk_size / self.effective_rate
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
+            # Behind schedule by more than this, the consumer has played the
+            # whole lead and is replaying the ring's previous lap.
+            stall_resync_s = HOST_DMA_SERVO_TARGET_GAP / self.effective_rate
             # Pace + collect deadlines. Zero until NMI starts.
             next_write_time = 0.0
             # Last iteration's chunk, dripped out over this one: one chunk_period
@@ -1034,6 +1044,15 @@ class AudioStreamer:
                     if write_addr >= RING_BUFFER_END:
                         write_addr = RING_BUFFER_ADDR
                     next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
+                    lag = time.monotonic() - next_write_time
+                    if lag > stall_resync_s:
+                        anchor = self._resync_after_stall(lag)
+                        if anchor is not None:
+                            pending_addr = anchor
+                            write_addr = anchor + n
+                            if write_addr >= RING_BUFFER_END:
+                                write_addr = RING_BUFFER_ADDR
+                        next_write_time = time.monotonic()
                     self._maybe_log_health(time.monotonic())
                     continue
 
@@ -1067,6 +1086,57 @@ class AudioStreamer:
             # from silence.
             log.exception("audio worker crashed")
             self.running = False
+
+    def _resync_after_stall(self, lag: float) -> int | None:
+        """Recover from a worker stall longer than the ring lead; returns the
+        chunk-grid address the next chunk lands at, or None when R cannot be
+        read (the schedule is then only snapped forward).
+
+        By now the consumer has played all of the lead and some of the ring's
+        previous lap, and nothing written meanwhile can change that. What the
+        old schedule would do next is worse: write back-to-back at the link's
+        limit until it caught up, more than the audio share of the write
+        budget, while W overtook R and overwrote what had not yet played. So
+        the write head restarts ``HOST_DMA_SERVO_TARGET_GAP`` ahead of R, with
+        the span between them NEUTRAL-filled (it holds a lap-old ring), and
+        the schedule restarts from now.
+
+        A live input's backlog is the stall's: played late it would only add
+        that much latency for the rest of the session, so it is dropped. A
+        decoded source's is kept, and plays late — the picture is slaved to
+        the audio clock, which did not advance for what was not played."""
+        r_addr = self.read_consumer_ptr()
+        dropped = 0
+        if self.mic_stream is not None:
+            dropped = self._drain_queue_samples()
+            self._discard_unpushed(dropped)
+        if r_addr is None:
+            self._stall_log.warn(
+                "audio: DAC worker stalled %.2f s behind the C64's playback "
+                "(a blocked or redialed link); the read pointer is unreadable, so "
+                "the write head could not be re-anchored",
+                lag,
+            )
+            self.servo.note_disturbance()
+            return None
+        anchor = stall_reanchor(r_addr, self.chunk_size)
+        for addr, ln in stomp_spans(r_addr, anchor):
+            self.api.write_memory_file(f"{addr:04X}", bytes([self._neutral_byte]) * ln)
+        lead = (anchor - r_addr) % RING_BUFFER_SIZE
+        self.servo.resync(lead)
+        # The new lead is all pad: the clock subtracts none of it until content
+        # lands behind it.
+        self._ring_tail_pad = lead
+        self._ring_short_pad = 0
+        self._stall_log.warn(
+            "audio: DAC worker stalled %.2f s behind the C64's playback (a blocked "
+            "or redialed link); it replayed its ring meanwhile. Re-anchored the "
+            "write head %d bytes ahead of it%s",
+            lag,
+            lead,
+            f" and dropped {dropped / self.effective_rate:.2f} s of live input" if dropped else "",
+        )
+        return anchor
 
     def note_playback_disturbance(self) -> None:
         """Re-arm the adaptive NMI-rate loop's warm-up gate after a large playback

@@ -11,6 +11,7 @@ No real U64 and no real sound device — FakeAPI plus a fake `sd` module.
 
 from __future__ import annotations
 
+import dataclasses
 import queue
 import threading
 import time
@@ -797,6 +798,179 @@ class SlowReadPointerTest(unittest.TestCase):
             period = s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
         self.assertNotEqual(period, self.CHUNK_PERIOD)
         self.assertEqual(s.servo.gap_last, 1000)
+
+
+class _StallingConsumerAPI(FakeAPI):
+    """A FakeAPI with an NMI consumer behind it, on the test's virtual clock.
+
+    R advances at the streamer's effective rate from the moment the consumer
+    starts, and every ring byte remembers whether it has been played since it
+    was written, so a write over one that has not is counted. Each DMA write
+    costs a few ms of virtual time and one of them, past ``stall_at``, blocks
+    for ``stall_s`` (a link that blocked or redialed)."""
+
+    WRITE_S = 0.0052
+    READ_S = 0.008
+
+    def __init__(self, clock: SleepDrivenClock, stall_at: float, stall_s: float) -> None:
+        super().__init__()
+        self.profile = dataclasses.replace(self.profile, max_write_rate_hz=200.0)
+        self.clock = clock
+        self.stall_at = stall_at
+        self.stall_s = stall_s
+        self.streamer: AudioStreamer | None = None
+        self.t0: float | None = None
+        self.consumed = 0
+        self.unplayed = bytearray(audio_mod.RING_BUFFER_SIZE)
+        self.overwritten = 0
+        self.write_times: list[float] = []
+        self.stalled_until: float | None = None
+
+    def _consume(self) -> None:
+        if self.t0 is None or self.streamer is None:
+            return
+        target = int((self.clock.monotonic() - self.t0) * self.streamer.effective_rate)
+        while self.consumed < target:
+            self.unplayed[self.consumed % audio_mod.RING_BUFFER_SIZE] = 0
+            self.consumed += 1
+
+    def _spend(self, seconds: float) -> None:
+        self._consume()
+        self.clock.sleep(seconds)
+        self._consume()
+
+    def write_memory_file(self, addr, data):  # type: ignore[no-untyped-def]
+        cost = self.WRITE_S
+        due = self.t0 is not None and self.clock.monotonic() - self.t0 >= self.stall_at
+        if due and self.stalled_until is None:
+            cost = self.stall_s
+            self.stalled_until = self.clock.monotonic() + cost
+        self._spend(cost)
+        base = int(addr, 16) - audio_mod.RING_BUFFER_ADDR
+        for i in range(len(data)):
+            a = (base + i) % audio_mod.RING_BUFFER_SIZE
+            self.overwritten += self.unplayed[a]
+            self.unplayed[a] = 1
+        self.write_times.append(self.clock.monotonic())
+        super().write_memory_file(addr, data)
+
+    def write_regs(self, base, *vals):  # type: ignore[no-untyped-def]
+        self._spend(self.WRITE_S)
+        super().write_regs(base, *vals)
+
+    def read_memory(self, address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+        self._spend(self.READ_S)
+        if address == audio_mod.READ_PTR_LO_ADDR and length == 2 and self.t0 is not None:
+            r = audio_mod.RING_BUFFER_ADDR + self.consumed % audio_mod.RING_BUFFER_SIZE
+            return bytes([r & 0xFF, r >> 8])
+        return super().read_memory(address, length, timeout)
+
+
+class _AlwaysFullQueue:
+    """A decoder that is always ahead: every get returns a blob at once."""
+
+    def get(self, timeout=None):  # type: ignore[no-untyped-def]
+        return bytes([3] * 512)
+
+    get_nowait = get
+
+
+class StallResyncTest(unittest.TestCase):
+    """A DMA link that blocks for longer than the ring lead leaves the worker
+    far behind its absolute schedule. Catching that up sprinted writes at the
+    link's limit until W lapped R and overwrote audio not yet played; the
+    worker now re-anchors W ahead of R and restarts the schedule instead."""
+
+    RUN_S = 4.0
+
+    def _run(self, stall_s: float) -> tuple[AudioStreamer, _StallingConsumerAPI]:
+        clock = SleepDrivenClock()
+        api = _StallingConsumerAPI(clock, stall_at=1.0, stall_s=stall_s)
+        s = AudioStreamer(cast(Ultimate64API, api), 12000, "NTSC")
+        api.streamer = s
+        s.q = cast(Any, _AlwaysFullQueue())
+
+        def start(**_kw: Any) -> None:
+            s.nmi.latch = s.nmi.nominal_latch()
+            s.nmi.started = True
+            api.t0 = clock.monotonic()
+
+        s.nmi.start = start  # type: ignore[method-assign]
+        real_write = api.write_memory_file
+
+        def write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            if api.t0 is not None and clock.monotonic() - api.t0 > self.RUN_S:
+                s.running = False
+
+        api.write_memory_file = write  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+        ):
+            s.running = True
+            s._worker(s._worker_generation)
+        return s, api
+
+    def test_a_long_stall_resyncs_instead_of_lapping(self):
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            s, api = self._run(stall_s=1.5)
+        self.assertTrue(s.running is False and api.stalled_until is not None)
+        self.assertIn("stalled", cm.output[0])
+        self.assertIn("Re-anchored", cm.output[0])
+        # The splice drops at most the rest of the chunk that was in the air,
+        # not seconds of audio the consumer had yet to play.
+        self.assertLessEqual(api.overwritten, s.chunk_size)
+        # And no sprint: the second after the stall writes at the steady rate,
+        # not the link's limit (~94/s steady here; it was ~160/s).
+        assert api.stalled_until is not None
+        after = [t for t in api.write_times if 0 < t - api.stalled_until <= 1.0]
+        self.assertLess(len(after), 110)
+
+    def test_reanchor_is_on_the_chunk_grid_at_least_the_lead_ahead(self):
+        size, base = audio_mod.RING_BUFFER_SIZE, audio_mod.RING_BUFFER_ADDR
+        lead = audio_mod.HOST_DMA_SERVO_TARGET_GAP
+        for r in (0, 1, 1023, 1024, 4095, 4096, 7000, size - 1):
+            anchor = audio_mod.stall_reanchor(base + r, 1024)
+            self.assertEqual((anchor - base) % 1024, 0, r)
+            self.assertTrue(base <= anchor < base + size, r)
+            self.assertTrue(lead <= (anchor - base - r) % size < lead + 1024, r)
+
+    def _backlogged(self, api: FakeAPI, *, live: bool) -> AudioStreamer:
+        s = AudioStreamer(cast(Ultimate64API, api), 12000, "NTSC")
+        if live:
+            s.mic_stream = object()
+        for _ in range(4):
+            s.q.put(bytes([3] * 512))
+        s._pushed_count = s._queued_samples = 2048
+        return s
+
+    def test_a_live_backlog_is_dropped_at_the_resync(self):
+        s = self._backlogged(_RFakeAPI([100]), live=True)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            anchor = s._resync_after_stall(1.5)
+        self.assertIsNotNone(anchor)
+        self.assertTrue(s.q.empty())
+        self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
+        self.assertIn("dropped", cm.output[0])
+
+    def test_a_decoded_backlog_is_kept_at_the_resync(self):
+        s = self._backlogged(_RFakeAPI([100]), live=False)
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            s._resync_after_stall(1.5)
+        self.assertEqual(s.q.qsize(), 4)
+        self.assertEqual(s._queued_samples, 2048)
+
+    def test_an_unreadable_r_still_warns_and_does_not_reanchor(self):
+        s = self._backlogged(FakeAPI(), live=False)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            self.assertIsNone(s._resync_after_stall(1.5))
+        self.assertIn("could not be re-anchored", cm.output[0])
+
+    def test_a_short_stall_is_caught_up_without_a_resync(self):
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            _, api = self._run(stall_s=0.2)
+        self.assertEqual(api.overwritten, 0)
 
 
 class NmiRateSafetyTest(unittest.TestCase):

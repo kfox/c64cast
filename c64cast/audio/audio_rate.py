@@ -545,6 +545,18 @@ class RateServo:
         self.loop_acquiring = True
         self.warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
 
+    def resync(self, ring_lead: int) -> None:
+        """The worker re-anchored W ``ring_lead`` bytes ahead of R after a
+        stall. The integrator is kept: it is the standing bus-halt correction,
+        which a stall does not change. The R-rate baseline is dropped (an
+        interval spanning the stall says nothing about the consumer), and the
+        adaptive loop's warm-up gate re-arms so it does not steer on the
+        post-stall transient."""
+        self.ring_lead = float(ring_lead)
+        self.last_r_addr = -1
+        self.last_r_time = 0.0
+        self.note_disturbance()
+
     def reset_health_window(self) -> None:
         """Clear the per-window excursion trackers the streamer's health line
         reports. Called once per emitted line, and at consumer start where the

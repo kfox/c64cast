@@ -83,7 +83,7 @@ The `device` argument to the `start_*` methods is an `int | str`: an int index, 
 
 ### The worker thread and its pacing
 
-The worker drains the queue at `chunk_size / sample_rate` — the NMI consumption rate — so it can never lap the NMI read pointer and overwrite real audio with neutral padding. Each iteration:
+The worker drains the queue at `chunk_size / sample_rate` — the NMI consumption rate — so in steady state it does not lap the NMI read pointer and overwrite real audio with neutral padding (a stall is the exception; see below). Each iteration:
 
 1. Collects up to `chunk_size` bytes by the pace deadline. There is no grace period: the pace deadline *is* the collect deadline.
 2. Pads any short chunk out to `chunk_size` with the ring's rest value (`NEUTRAL_SAMPLE=7`, or the companding table's mid-scale byte — see `dac_curve`).
@@ -92,6 +92,8 @@ The worker drains the queue at `chunk_size / sample_rate` — the NMI consumptio
 The pad in step 2 is *not* only for a real underrun, and gating it on the consuming phase was a bug: `RING_BUFFER_SIZE` is an exact multiple of `chunk_size`, so a chunk written at its raw length takes `write_addr` off that grid permanently, and both wrap guards test the address only *after* the increment. The next chunk to reach `$5C00`+delta then straddles `RING_BUFFER_END` and its tail is DMA'd into `$6000`+ — outside the ring, never played, and not dead RAM either (`waveform.py` uses `$6000` as a bitmap). A short collect during the *prebuffer* fill is ordinary against a real-time mic callback, which is exactly where that used to happen. The `partial_underruns` counter stays consumption-phase-only: with no NMI reading yet, a slow prebuffer collect is not an underrun.
 
 After `PREBUFFER_CHUNKS * chunk_size` bytes of prebuffer it starts the CIA #2 timer (`$DD04/05`). The BASIC clear-loop is kicked once at session startup, not per scene.
+
+**A stall longer than the ring lead re-anchors the write head.** The schedule is absolute, so a worker blocked in a write (a DMA link that stalled for up to `io_timeout`, or redialed) comes back seconds behind it. Catching that up wrote back-to-back at the link's limit, about 160 writes/s from audio alone against its 100/s share, and W overtook R and overwrote audio not yet played: on a virtual clock, a 3 s stall cost 2.7 s of fresh audio after the stall, on top of the lap-old ring the C64 replays during it, which nothing can prevent. Only an INFO health line recorded it. Once the worker is behind by more than `HOST_DMA_SERVO_TARGET_GAP / effective_rate` (≈0.34 s at 12 kHz), `_resync_after_stall` reads R instead and acts on it. It restarts W at the first chunk-grid address at least the target gap ahead of R (`stall_reanchor`), NEUTRAL-fills the lap-old span between them, and restarts the schedule from now, with one WARNING. A mic's backlog is dropped, since playing it late would only add that much latency for the rest of the session. A decoded source's backlog plays late, because the picture follows the audio clock, which did not advance for what was not played. The splice drops at most the rest of the chunk that was being written. If R cannot be read, the schedule is only snapped forward. The servo keeps its integral term through a resync and restarts its R-rate baseline, and the adaptive loop's warm-up gate re-arms (`RateServo.resync`).
 
 #### The ring write is split and spread
 
