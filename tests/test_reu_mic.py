@@ -406,12 +406,17 @@ class _RingPointers:
     reader R (fixed per test) and the pump's dst tracker W, taken from the last
     tracker write that landed plus ``pump_ran`` bytes (a pump that ran before
     the NMI armed). The first ``lose`` writes to the dst pair are overwritten
-    by the pump's own tick, as a write between its load and store would be."""
+    by the pump's own tick, as a write between its load and store would be.
+    The first ``glitch`` span reads after a dst write catch R in its ring-end
+    carry, at $6000, outside the ring."""
 
-    def __init__(self, fake: FakeAPI, *, r: int, pump_ran: int = 0, lose: int = 0) -> None:
+    def __init__(
+        self, fake: FakeAPI, *, r: int, pump_ran: int = 0, lose: int = 0, glitch: int = 0
+    ) -> None:
         self.r = r
         self.pump_ran = pump_ran
         self.lose = lose
+        self.glitch = glitch
         self.dst_writes: list[int] = []
         self.reads = 0
         self._real_write = fake.write_memory
@@ -446,7 +451,11 @@ class _RingPointers:
         raw = bytearray(length)
         w = self._w()
         off = REU_AUDIO_DST_TRACKER_ADDR - READ_PTR_LO_ADDR
-        raw[0:2] = self.r.to_bytes(2, "little")
+        r = self.r
+        if length > 2 and self.dst_writes and self.glitch:
+            self.glitch -= 1
+            r = RING_BUFFER_END
+        raw[0:2] = r.to_bytes(2, "little")
         raw[off : off + 2] = w.to_bytes(2, "little")
         return bytes(raw)
 
@@ -501,6 +510,15 @@ class MicRingLeadSeedTest(unittest.TestCase):
     def test_a_seed_the_pump_overwrote_is_written_again(self):
         r = RING_BUFFER_ADDR + 1500
         s, ptrs = self._start(r=r, lose=1)
+        self.assertEqual(ptrs.dst_writes, [mic_ring_seed(r)] * 2)
+        self.assertTrue(mic_ring_lead_ok(ptrs.lead()))
+
+    def test_a_read_that_fails_after_a_seed_is_retried(self):
+        # Once a seed has gone out the tracker no longer holds the install
+        # seed, so one torn read must not end the bring-up's measurement.
+        r = RING_BUFFER_ADDR + 1500
+        s, ptrs = self._start(r=r, lose=1, glitch=1)
+        self.assertEqual(ptrs.reads, 4)
         self.assertEqual(ptrs.dst_writes, [mic_ring_seed(r)] * 2)
         self.assertTrue(mic_ring_lead_ok(ptrs.lead()))
 

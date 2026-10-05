@@ -1882,18 +1882,26 @@ class AudioStreamer:
         chunk-aligned R + REU_MIC_RING_LEAD and read back. The pump advances
         the same tracker every tick, and a host write that lands between its
         load and its store is overwritten, so a read-back that does not show
-        the seed is retried. A backend without reads keeps the install seed."""
+        the seed is retried. A backend without reads keeps the install seed.
+
+        A read that fails once a seed has gone out is retried within the same
+        bound: the tracker no longer holds the install seed, and one read can
+        land in the instant either pointer's HI byte sits at the ring end."""
         if not self.api.profile.supports_read:
             return None
         phase: int | None = None
+        seeds = 0
         for attempt in range(TRACKED_PUMP_INSTALL_TRIES + 1):
             got = self._read_mic_ring_phase()
-            if got is None:
+            if got is None and seeds == 0:
                 log.info(
                     "audio[reu mic]: could not read the C64 ring pointers; the pump's "
                     "lead over the NMI stays at its install seed"
                 )
                 return None
+            if got is None:
+                phase = None
+                continue
             r, w = got
             phase = (w - r) % RING_BUFFER_SIZE
             if mic_ring_lead_ok(phase):
@@ -1905,11 +1913,12 @@ class AudioStreamer:
                 f"{REU_AUDIO_DST_TRACKER_ADDR:04X}", f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}"
             )
             self.api.flush()
+            seeds += 1
         log.warning(
             "audio[reu mic]: the pump's lead over the NMI reads %s B after %d seed(s), "
             "not ~%d B; mic audio may run late or replay lap-old audio",
             phase,
-            TRACKED_PUMP_INSTALL_TRIES,
+            seeds,
             REU_MIC_RING_LEAD,
         )
         return phase
