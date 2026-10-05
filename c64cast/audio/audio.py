@@ -1134,8 +1134,7 @@ class AudioStreamer:
             self.servo.note_disturbance()
             return None
         anchor = stall_reanchor(r_addr, self.chunk_size)
-        for addr, ln in stomp_spans(r_addr, anchor):
-            self.api.write_memory_file(f"{addr:04X}", bytes([self._neutral_byte]) * ln)
+        self._stomp_from(r_addr, anchor)
         if self._superseded(generation):
             return None
         lead = (anchor - r_addr) % RING_BUFFER_SIZE
@@ -2418,9 +2417,13 @@ class AudioStreamer:
         r_addr = self.read_consumer_ptr()
         if r_addr is None:
             return
-        neutral = bytes([self._neutral_byte])
+        self._stomp_from(r_addr, write_addr)
+
+    def _stomp_from(self, r_addr: int, write_addr: int) -> None:
+        """NEUTRAL-fill ``(r_addr + guard .. write_addr)`` — the pause stomp's
+        span, and the stall re-anchor's — split at ``RING_BUFFER_END``."""
         for addr, ln in stomp_spans(r_addr, write_addr):
-            self.api.write_memory_file(f"{addr:04X}", neutral * ln)
+            self._neutral_fill_ring(addr, ln)
 
     def _hardware_teardown_steps(self) -> list[tuple[str, Callable[[], object]]]:
         """The C64-side teardown of a DAC session, in `stop()`'s cutoff order."""
