@@ -978,7 +978,7 @@ class AudioStreamer:
                         # chunk about to be written at the front of the span.
                         if self._stomp_requested:
                             self._stomp_requested = False
-                            self._stomp_ring(pending_addr)
+                            self._stomp_ring(pending_addr, current)
                         n, from_queue, leftover = self._drip_chunk(
                             pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
                         )
@@ -1042,7 +1042,7 @@ class AudioStreamer:
                 # about to go out rather than this one.
                 if self._stomp_requested and prebuffered:
                     self._stomp_requested = False
-                    self._stomp_ring(write_addr)
+                    self._stomp_ring(write_addr, current)
 
                 if prebuffered:
                     # Hand off to the next iteration, which drips this into the
@@ -2485,19 +2485,21 @@ class AudioStreamer:
         if silence_output:
             self._stomp_requested = True
 
-    def _stomp_ring(self, write_addr: int) -> None:
+    def _stomp_ring(self, write_addr: int, current: Callable[[], bool]) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the
         pause fast mute. On a bad R read it just returns (the drained queue pads
         the ring to silence within ~1 s regardless). Called only from the worker
-        thread, so write_addr is the live worker-local W."""
+        thread, so write_addr is the live worker-local W.
+
+        ``current`` is the worker's fence: the R read and each stomp write can
+        park past stop()'s join, as the stall re-anchor's can, and a worker
+        superseded meanwhile writes nothing more (see :meth:`_stomp_from`)."""
         r_addr = self.read_consumer_ptr()
         if r_addr is None:
             return
-        self._stomp_from(r_addr, write_addr)
+        self._stomp_from(r_addr, write_addr, current)
 
-    def _stomp_from(
-        self, r_addr: int, write_addr: int, current: Callable[[], bool] | None = None
-    ) -> None:
+    def _stomp_from(self, r_addr: int, write_addr: int, current: Callable[[], bool]) -> None:
         """NEUTRAL-fill ``(r_addr + guard .. write_addr)`` — the pause stomp's
         span, and the stall re-anchor's — split at ``RING_BUFFER_END``.
 
@@ -2506,7 +2508,7 @@ class AudioStreamer:
         next session's prebuffer starts, so a worker superseded during the
         first must not make it."""
         for addr, ln in stomp_spans(r_addr, write_addr):
-            if current is not None and not current():
+            if not current():
                 return
             self._neutral_fill_ring(addr, ln)
 

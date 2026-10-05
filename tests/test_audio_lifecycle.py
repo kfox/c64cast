@@ -1276,6 +1276,26 @@ class StallResyncTest(unittest.TestCase):
         )
         self.assertEqual(len(api.writes), 1, "stomped the next session's prebuffer")
 
+    def test_a_worker_superseded_during_a_wrapped_pause_stomp_skips_its_second_write(self):
+        # The pause fast mute stomps the same span shape from the same worker,
+        # and its first write can park past stop()'s join just the same.
+        r_offset = audio_mod.RING_BUFFER_SIZE - 1000
+        api = _RFakeAPI([r_offset])
+        s = self._backlogged(api, live=False)
+        generation = s._worker_generation
+        real_write = api.write_memory_file
+
+        def superseding_write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            s._worker_generation += 1  # the next scene's _start_worker
+
+        api.write_memory_file = superseding_write  # type: ignore[method-assign]
+        write_addr = audio_mod.RING_BUFFER_ADDR + 2 * s.chunk_size
+        r_addr = audio_mod.RING_BUFFER_ADDR + r_offset
+        self.assertEqual(len(audio_mod.stomp_spans(r_addr, write_addr)), 2)
+        s._stomp_ring(write_addr, lambda: not s._superseded(generation))
+        self.assertEqual(len(api.writes), 1, "stomped the next session's prebuffer")
+
     def _r_read_returning_after_supersession(self, read_s: float) -> AudioStreamer:
         """A resync whose R read takes ``read_s`` and returns after a stop()
         and the next start_* have replaced its worker, with the servo state
