@@ -1890,7 +1890,9 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac.running = True
         dac.end_input()
         t0 = time.monotonic()
-        n, _, _ = dac._collect_until(bytearray(dac.chunk_size), 0, b"", t0 + 5.0)
+        n, _, _ = dac._collect_until(
+            bytearray(dac.chunk_size), 0, b"", t0 + 5.0, generation=dac._worker_generation
+        )
         self.assertEqual(n, 0)
         self.assertLess(time.monotonic() - t0, 1.0, "the collect waited out its deadline")
 
@@ -1903,7 +1905,9 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac.running = True
         dac.q.put_nowait(b"")
         dac.q.put_nowait(b"\x01" * 16)
-        n, _, _ = dac._collect_until(bytearray(16), 0, b"", time.monotonic() + 1.0)
+        n, _, _ = dac._collect_until(
+            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+        )
         self.assertEqual(n, 16, "a stale wake-up ended the next producer's collect")
 
     def test_a_dac_worker_idles_after_a_producer_that_pushed_nothing(self):

@@ -1760,27 +1760,289 @@ class LifecycleTest(unittest.TestCase):
         self.assertGreaterEqual(underruns, 12)
         self.assertAlmostEqual(position, total / s.effective_rate, places=6)
 
-    def test_a_producer_late_by_less_than_a_chunk_does_not_step_the_clock(self):
-        # A short chunk's pad sits behind content the producer has merely not
-        # sent yet; only a whole pad chunk after it says the producer ran dry.
-        s = _make()
-        s.servo.ring_lead = 200.0
-        s._note_ring_landed(32, 0)
-        s._note_ring_landed(32, 12)
-        self.assertEqual(s._content_lead(), 200.0)
-        s._note_ring_landed(32, 0)
-        self.assertEqual(s._content_lead(), 200.0)
-        s._note_ring_landed(32, 12)
-        s._note_ring_landed(32, 32)
-        self.assertEqual(s._content_lead(), 200.0 - 12 - 32)
-        s._note_ring_landed(32, 32)
-        self.assertEqual(s._content_lead(), 200.0 - 12 - 64)
-        s._note_ring_landed(32, 0)
-        self.assertEqual(s._content_lead(), 200.0)
+    def _drive_ring(
+        self, s: AudioStreamer, plan: str, chunk: int, gap: int
+    ) -> list[tuple[float, int]]:
+        """Land one ``chunk`` per plan letter and play ``chunk`` bytes after
+        it, holding the ring gap at ``gap`` the way the servo does: ``c``
+        lands content, ``p`` a whole pad chunk, ``s`` content with a short pad
+        tail. Returns (clock in bytes, content bytes heard) after each step,
+        with the smoothed gap taken as exact."""
+        ring: list[bool] = []
+        heard = 0
+        for _ in range(gap // chunk):
+            ring += [True] * chunk
+            s._pushed_count += chunk
+            s._note_ring_landed(s._worker_generation, chunk, 0)
+        out = []
+        for kind in plan:
+            content = {"c": chunk, "p": 0, "s": chunk // 3}[kind]
+            ring += [True] * content + [False] * (chunk - content)
+            s._note_ring_landed(s._worker_generation, chunk, chunk - content)
+            s._pushed_count += content
+            played, ring = ring[:chunk], ring[chunk:]
+            heard += sum(played)
+            s.servo.ring_lead = float(len(ring))
+            out.append((s.position_seconds() * s.effective_rate, heard))
+        return out
 
-    def test_the_worker_clears_the_tail_pad_before_it_counts_the_landing(self):
+    def test_content_after_a_pad_stretch_does_not_step_the_clock_back(self):
+        # A producer that runs dry and resumes leaves pad in the ring ahead of
+        # the resumed content. Nothing past the pad is heard until the pad has
+        # played, so the clock holds and then moves on; counting that pad as
+        # content once content landed behind it stepped the clock back by it.
+        s = _make(sample_rate=12000)
+        steps = self._drive_ring(s, "cccccc" + "pppppp" + "ccccccc", chunk=1024, gap=4096)
+        for clock, heard in steps:
+            self.assertAlmostEqual(clock, heard, places=6)
+        clocks = [clock for clock, _ in steps]
+        self.assertEqual(clocks, sorted(clocks))
+
+    def test_a_short_pad_is_taken_out_where_it_sits(self):
+        # A producer late by less than a chunk leaves a short pad between two
+        # stretches of content: it is in the gap until it plays, wherever more
+        # content lands behind it.
+        s = _make(sample_rate=12000)
+        steps = self._drive_ring(s, "ccscsccspcccccc", chunk=32, gap=128)
+        for clock, heard in steps:
+            self.assertAlmostEqual(clock, heard, places=6)
+
+    def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
+        # The gap is an EMA, so it can grow by more than what landed between
+        # two reads; the clock holds rather than reporting less than it did.
+        s = _make()
+        s._pushed_count = 8000
+        s.servo.ring_lead = 2000.0
+        self.assertAlmostEqual(s.position_seconds(), 6000 / s.effective_rate, places=6)
+        s.servo.ring_lead = 3000.0
+        self.assertAlmostEqual(s.position_seconds(), 6000 / s.effective_rate, places=6)
+
+    def test_a_new_activation_starts_its_clock_from_zero(self):
+        # The high-water mark belongs to one activation: a reused streamer
+        # would otherwise hold the next one's clock at the last one's end.
+        s = _make()
+        s._pushed_count = 8000
+        s.servo.ring_lead = 0.0
+        self.assertAlmostEqual(s.position_seconds(), 8000 / s.effective_rate, places=6)
+        s.reset_position()
+        s._pushed_count = 100
+        self.assertAlmostEqual(s.position_seconds(), 100 / s.effective_rate, places=6)
+
+    def test_a_reset_during_a_clock_read_still_starts_the_clock_from_zero(self):
+        # A reset landing between the read of the landed count and the floor
+        # update must not leave the old activation's position as the new
+        # one's floor.
+        s = _make()
+        s._pushed_count = 8000
+        s.servo.ring_lead = 0.0
+        count_lock = s._count_lock
+        resetter = threading.Thread(target=s.reset_position)
+
+        class ResetOnRelease:
+            def __enter__(self) -> None:
+                count_lock.acquire()
+
+            def __exit__(self, *exc: object) -> None:
+                count_lock.release()
+                if resetter.ident is None:
+                    resetter.start()
+                    # Long enough for an unfenced reset to finish here; a
+                    # fenced one waits on the clock read instead.
+                    resetter.join(0.2)
+
+        s._count_lock = ResetOnRelease()  # type: ignore[assignment]
+        s.position_seconds()
+        resetter.join(5.0)
+        self.assertFalse(resetter.is_alive())
+        s._count_lock = count_lock
+        s._pushed_count = 100
+        self.assertAlmostEqual(s.position_seconds(), 100 / s.effective_rate, places=6)
+
+    def test_a_landing_from_a_superseded_worker_is_not_recorded(self):
+        # A worker that outlived stop()'s join returns from its ring write
+        # after the next start: its chunk is not in the new activation's ring,
+        # so recording it would put pad in the gap that is not there.
+        s = _make()
+        stale = s._worker_generation
+        with mock.patch.object(threading.Thread, "start"):
+            s._start_worker()
+        s._note_ring_landed(stale, 32, 32)
+        self.assertEqual(s._ring_landed_total, 0)
+        self.assertEqual(len(s._ring_pads), 0)
+        s._note_ring_landed(s._worker_generation, 32, 32)
+        self.assertEqual(s._ring_landed_total, 32)
+
+    def test_a_superseded_worker_does_not_move_the_counts(self):
+        # The landing is only half the clock: consumed = pushed - queued, and a
+        # late return that still subtracted its chunk from the next
+        # activation's queued count would put the clock that chunk early.
+        s = _make()
+        stale = s._worker_generation
+        with mock.patch.object(threading.Thread, "start"):
+            s._start_worker()
+        s._pushed_count, s._queued_samples = 100, 40
+        s._consume_queued(32, generation=stale)
+        s._discard_unpushed(32, generation=stale)
+        self.assertEqual((s._pushed_count, s._queued_samples), (100, 40))
+        s._consume_queued(32, generation=s._worker_generation)
+        self.assertEqual((s._pushed_count, s._queued_samples), (100, 8))
+
+    def test_stop_retires_the_worker_it_gave_up_on(self):
+        # start_listen and the REU starts set running back to True without
+        # starting a worker, so no _start_worker bump fences an orphan that
+        # outlived stop()'s join: stop() itself has to.
+        s = _make_worker_streamer()
+        orphan = s._worker_generation
+        s.stop()
+        s.running = True  # what start_listen / start_for_reu_staged do
+        t = threading.Thread(target=s._worker, args=(orphan,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "the orphan resumed under the next start")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+
+    def test_a_retired_worker_takes_nothing_from_the_next_activations_queue(self):
+        # Its discard is fenced out of the counts, so a blob it pulled off the
+        # queue after its stalled write returned would stay counted as queued
+        # for the rest of the next activation, holding the clock back.
+        s = _make_worker_streamer()
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        parked, release = threading.Event(), threading.Event()
+        arm = [False]
+
+        def stalling_write(addr: str, data: bytes) -> None:
+            if arm[0]:
+                arm[0] = False
+                parked.set()
+                release.wait(2.0)
+            real_write(addr, data)
+
+        api.write_memory_file = stalling_write
+
+        def push(blob: bytes) -> None:
+            s.q.put(blob)
+            with s._count_lock:
+                s._queued_samples += len(blob)
+                s._pushed_count += len(blob)
+
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            push(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            # Arm only after an underrun: with everything pushed up front, that
+            # proves every later collect comes back empty, so the parked write's
+            # iteration holds no full chunk and has to collect again after the
+            # release. Arming on an empty queue alone could park the write of an
+            # iteration already holding a full chunk, which skips the collect
+            # and lets an unguarded _collect_until pass.
+            deadline = time.monotonic() + 2.0
+            while s._full_underruns < 1 and time.monotonic() < deadline:
+                time.sleep(0.002)
+            self.assertGreaterEqual(s._full_underruns, 1, "the worker never ran dry")
+            arm[0] = True
+            self.assertTrue(parked.wait(2.0), "the worker never reached a ring write")
+            # stop() minus its join: retire, splice, clear the counts.
+            with s._ring_pad_lock:
+                s._worker_generation += 1
+            s._flush_epoch += 1
+            s._drain_queue_samples()
+            s._pushed_count = s._queued_samples = 0
+            s.running = True  # the next activation
+            for _ in range(4):
+                push(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+            release.set()
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive())
+            in_queue = sum(len(b) for b in list(s.q.queue))
+            self.assertEqual(s._queued_samples, in_queue)
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+
+    def _park_in_ring_write(self, s: AudioStreamer, park_on: int, fail: bool = False):
+        """Stall the worker's ``park_on``-th ring write (1-based) until released;
+        ``fail`` makes that write raise once released. Returns (parked, release)."""
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        parked, release = threading.Event(), threading.Event()
+        count = [0]
+
+        def stalling_write(addr: str, data: bytes) -> None:
+            count[0] += 1
+            if count[0] == park_on:
+                parked.set()
+                release.wait(2.0)
+                if fail:
+                    raise RuntimeError("late write failed")
+            real_write(addr, data)
+
+        api.write_memory_file = stalling_write
+        return parked, release
+
+    def test_a_retired_worker_does_not_start_the_nmi_after_its_prebuffer(self):
+        # The write completing the prebuffer returns after a stop(): starting
+        # the NMI and resetting the servo there would reprogram the timer and
+        # wipe the servo under whatever activation came next.
+        s = _make_worker_streamer()
+        nmi_starts: list[dict[str, Any]] = []
+        servo_resets: list[int] = []
+        s.nmi.start = lambda **kw: nmi_starts.append(kw)  # type: ignore[method-assign]
+        s.servo.reset_for_consumer_start = servo_resets.append  # type: ignore[method-assign]
+        parked, release = self._park_in_ring_write(s, park_on=PREBUFFER_CHUNKS)
+        for _ in range(PREBUFFER_CHUNKS):
+            s.q.put(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            self.assertTrue(parked.wait(2.0), "the worker never reached its last prebuffer write")
+            with s._ring_pad_lock:
+                s._worker_generation += 1  # stop() retired it
+            release.set()
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive())
+            self.assertEqual(nmi_starts, [])
+            self.assertEqual(servo_resets, [])
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+
+    def test_a_retired_workers_late_crash_leaves_the_next_activation_running(self):
+        # Its write fails only after a stop() and the next start_*: clearing
+        # `running` then would stop the activation that owns the ring now.
+        s = _make_worker_streamer()
+        parked, release = self._park_in_ring_write(s, park_on=1, fail=True)
+        s.q.put(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            self.assertTrue(parked.wait(2.0), "the worker never reached a ring write")
+            with s._ring_pad_lock:
+                s._worker_generation += 1  # stop() retired it
+            s.running = True  # the next activation
+            with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+                release.set()
+                t.join(timeout=2.0)
+            self.assertFalse(t.is_alive())
+            self.assertTrue(any("audio worker crashed" in m for m in cm.output))
+            self.assertTrue(s.running, "a retired worker's crash stopped the next activation")
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+
+    def test_the_worker_records_the_pad_before_it_counts_the_landing(self):
         # Content landing behind a dry tail: a reader between the two steps
-        # must not pair the new landed count with the old tail pad, which would
+        # must not pair the new landed count with the old pad record, which would
         # put the clock a ring of pad past anything heard.
         s = _make_worker_streamer(chunk_size=32)
         s.host_dma_servo = False
@@ -1788,8 +2050,8 @@ class LifecycleTest(unittest.TestCase):
         seen: list[float] = []
         consume = s._consume_queued
 
-        def consume_then_read(n: int) -> None:
-            consume(n)
+        def consume_then_read(n: int, *, generation: int) -> None:
+            consume(n, generation=generation)
             if n:
                 seen.append(s.position_seconds())
 
@@ -1812,27 +2074,28 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(seen)
         self.assertLessEqual(seen[0], total / s.effective_rate)
 
-    def test_position_seconds_reads_the_landed_count_before_the_tail_pad(self):
-        # The worker lands content after clearing the tail pad, so a reader
-        # that took the pad first and the count after could pair them.
+    def test_position_seconds_reads_the_landed_count_before_the_pad_record(self):
+        # The worker records a landing's pad before it counts the landing, so
+        # a reader that took the pad record first and the count after could
+        # pair a window of pad with content landed behind it.
         s = _make()
         s.servo.ring_lead = 192.0
         s._pushed_count = 1032
         s._queued_samples = 32
         for _ in range(10):
-            s._note_ring_landed(32, 32)
-        content_lead = s._content_lead
+            s._note_ring_landed(s._worker_generation, 32, 32)
+        unplayed_pad = s._unplayed_pad
 
-        def lead_then_land() -> float | None:
-            lead = content_lead()
-            s._note_ring_landed(32, 0)
-            # Not _consume_queued: it takes _count_lock, and a position_seconds()
-            # that read the lead inside that lock would deadlock here, where the
-            # per-test cap cannot interrupt a blocked acquire.
+        def pad_then_land(lead: float) -> float:
+            pad = unplayed_pad(lead)
+            # Not _note_ring_landed or _consume_queued: the caller holds
+            # _ring_pad_lock, and either lock taken here would block where the
+            # per-test cap cannot interrupt it.
+            s._ring_landed_total += 32
             s._queued_samples -= 32
-            return lead
+            return pad
 
-        s._content_lead = lead_then_land  # type: ignore[method-assign]
+        s._unplayed_pad = pad_then_land  # type: ignore[method-assign]
         self.assertLessEqual(s.position_seconds(), 1000 / s.effective_rate)
 
     def test_position_seconds_is_not_torn_by_a_worker_discard(self):
@@ -1872,7 +2135,10 @@ class LifecycleTest(unittest.TestCase):
         self.assertAlmostEqual(s.position_seconds(), 8000 / s.effective_rate, places=6)
         self.assertAlmostEqual(s.position_seconds(), 1.00124, places=5)
         # Still-queued samples are not yet "consumed".
+        s = _make()
+        s._pushed_count = 8000
         s._queued_samples = 4000
+        s.servo.ring_lead = 0.0
         self.assertAlmostEqual(s.position_seconds(), 4000 / s.effective_rate, places=6)
 
     def test_position_seconds_zero_rate(self):
