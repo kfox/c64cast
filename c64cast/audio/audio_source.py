@@ -240,15 +240,17 @@ class AudioFileSource:
     for the C64 and (pre-DSP) forwards them to `analysis_sink`, so the *same*
     analyzer the mic path uses drives the visuals off the decoded audio. Playback
     is real-time paced by push_samples' backpressure (queue-full block), so the
-    decode thread naturally tracks the consumption rate.
+    decode thread tracks the consumption rate once the sink's queue is full. The
+    sampler's queue holds 256 decoded chunks, about 23 s of a 44 kHz WAV, so a
+    shorter file is decoded whole before anything plays.
 
     `wants_audio_lock=False`: like the mic/video paths, a file is not the
     ensemble's SID spotlight (`config.build_scene` also suppresses its DAC audio
     in ensemble mode). `resets_display=False`: the DAC path never touches the VIC.
 
     **End of track.** `finished` turns True once the decoder has reached the
-    end of the file (or failed) and the audio it pushed has had time to play
-    out, so the scene ends when the sound does rather than when the container
+    end of the file (or failed) and the sink's clock has played out the audio
+    it pushed, so the scene ends when the sound does rather than when the container
     header says it should. `duration_s` is the header's figure for the file the
     last `setup()` picked; it only decides whether there is an end to wait for
     (see `SourceScene.duration_follows_audio`). A startup failure degrades to
@@ -262,11 +264,15 @@ class AudioFileSource:
     # Mirrors SidFileAudioSource: a file that won't open is skipped.
     _MAX_PICK_ATTEMPTS = 8
 
-    # Upper bound on the wait between the decoder's end and `finished`: what
-    # the sink still holds is at most its write-ahead lead plus queue, about a
-    # second on the sampler, and a sink clock that reads wrong must not stretch
-    # the wait into the silence this replaces.
-    _DRAIN_CAP_S = 5.0
+    # `finished` waits for the sink's clock to reach the length of the audio
+    # pushed, so it cannot be scheduled once at the decoder's end: the
+    # sampler's queue is counted in chunks, and 256 decoded chunks hold about
+    # 23 s of a 44 kHz WAV, so a short file is decoded whole before the ring is
+    # gated and its clock reads 0. This grace bounds the wait for a sink clock
+    # that never gets there, past the audio still unplayed when decode ended;
+    # it covers the sampler's bring-up (the ring prefill, and up to 2 s of
+    # prebuffer wait) between the end of decoding and the gate.
+    _DRAIN_GRACE_S = 5.0
 
     def __init__(
         self,
@@ -289,9 +295,10 @@ class AudioFileSource:
         self._features: AudioFeatureStream | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        # Monotonic time at which `finished` turns True; None while decoding.
-        # Written once by the decode thread, read by the playlist thread.
-        self._finished_at: float | None = None
+        # (seconds of audio pushed, monotonic deadline) once decoding has
+        # ended; None while decoding. Written once by the decode thread, read
+        # by the playlist thread.
+        self._end: tuple[float, float] | None = None
         # At build time, so a misconfigured single scene raises there
         # (parity with SidFileAudioSource.__init__).
         self._pick_and_probe()
@@ -370,7 +377,7 @@ class AudioFileSource:
             self._thread = None
         self._pick_and_probe()
         self._stop.clear()
-        self._finished_at = None
+        self._end = None
         self._start_features()
         if self._is_sampler:
             # The sampler is reused by every activation of this scene, so it is
@@ -454,7 +461,7 @@ class AudioFileSource:
             container = av_open(self._path)
         except Exception:
             log.exception("audio file: could not open %s for decode", self._path)
-            self._mark_decode_done(0, rate)
+            self._mark_decode_done(0)
             return
         try:
             import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
@@ -482,7 +489,7 @@ class AudioFileSource:
         finally:
             container.close()
         if not self._stop.is_set():
-            self._mark_decode_done(pushed, rate)
+            self._mark_decode_done(pushed)
 
     def _push_frame(self, resampled: Any) -> int:
         """Push one resampled frame to the sink; returns the samples pushed."""
@@ -493,20 +500,34 @@ class AudioFileSource:
             self._audio.push_samples(arr)
         return int(arr.size)
 
-    def _mark_decode_done(self, pushed_samples: int, rate: int) -> None:
-        """Schedule `finished` for when the pushed audio has played out: the
-        pushed length less what the sink reports played, capped at
-        `_DRAIN_CAP_S`."""
-        played = self._audio.position_seconds() or 0.0
-        pending = pushed_samples / rate - played if rate > 0 else 0.0
-        self._finished_at = time.monotonic() + min(max(pending, 0.0), self._DRAIN_CAP_S)
+    def _mark_decode_done(self, pushed_samples: int) -> None:
+        """Record the end of decoding: the length of the audio pushed, on the
+        sink's clock, and the deadline past which `finished` stops waiting for
+        that clock (the audio unplayed now, plus `_DRAIN_GRACE_S`)."""
+        # The sink's clock divides by its effective rate, so the length does
+        # too; the resampler's rounded integer rate would put it out of reach.
+        rate = float(self._audio.effective_rate or self._audio.sample_rate)
+        length = pushed_samples / rate if rate > 0 else 0.0
+        played = min(max(self._audio.position_seconds() or 0.0, 0.0), length)
+        self._end = (length, time.monotonic() + (length - played) + self._DRAIN_GRACE_S)
 
     @property
     def finished(self) -> bool:
-        """True once the decoder has ended (EOF or failure) and its audio has
-        drained. False while decoding and before the first `setup()`."""
-        finished_at = self._finished_at
-        return finished_at is not None and time.monotonic() >= finished_at
+        """True once the decoder has ended (EOF or failure) and the sink's
+        clock has reached the end of what it pushed, or the deadline has
+        passed. False while decoding and before the first `setup()`.
+
+        Read off the sink's clock at each call rather than scheduled when
+        decoding ends: the sampler only starts its clock once its ring is
+        gated, after the decoder may already have finished."""
+        end = self._end
+        if end is None:
+            return False
+        length, deadline = end
+        if time.monotonic() >= deadline:
+            return True
+        played = self._audio.position_seconds() or 0.0
+        return played >= length - 1e-3
 
     def teardown(self) -> None:
         # The sink is unhooked before the streamer stops, so no callback can

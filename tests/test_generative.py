@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
 from unittest import mock
@@ -1339,15 +1340,15 @@ class _DummyAPI:
 
 class _FileSink:
     """The scene-facing slice of a sink that `AudioFileSource._decode_loop`
-    touches. `played` pins `position_seconds`; None reports everything pushed
-    as already played."""
+    touches. `played` is `position_seconds`: a figure, or a callable for a
+    clock that moves; None reports everything pushed as already played."""
 
     is_sampler = False
     sample_rate = 8000
     effective_rate = 8000.0
     analysis_sink = None
 
-    def __init__(self, played: float | None = None):
+    def __init__(self, played: float | Callable[[], float] | None = None):
         self.pushed = 0
         self._played = played
 
@@ -1355,7 +1356,42 @@ class _FileSink:
         self.pushed += int(arr.size)
 
     def position_seconds(self):
-        return self.pushed / self.sample_rate if self._played is None else self._played
+        if self._played is None:
+            return self.pushed / self.sample_rate
+        return self._played() if callable(self._played) else self._played
+
+
+class _SamplerLink:
+    """The write surface `UltimateAudioSampler` drives, recording nothing."""
+
+    def reu_write(self, offset: int, data: bytes) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
+
+    def write_regs(self, base_addr: str, *values: int) -> None:
+        pass
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        pass
+
+
+class _NoWriter:
+    """Stands in for the sampler's writer thread: the clock is the subject,
+    not the ring writes."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def is_running(self) -> bool:
+        return False
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
@@ -1406,7 +1442,8 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.assertEqual(sink.pushed, 17600)
 
     def test_waits_for_what_the_sink_has_not_played(self):
-        src = self._source(_FileSink(played=0.0))
+        start = self.now[0]
+        src = self._source(_FileSink(played=lambda: self.now[0] - start))
         src._decode_loop()
         self.assertFalse(src.finished)
         self.now[0] += 0.39
@@ -1414,12 +1451,62 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.now[0] += 0.02
         self.assertTrue(src.finished)
 
-    def test_the_wait_is_capped(self):
-        # A sink clock that reads wrong must not hold the scene open.
+    def test_waits_for_a_sink_that_starts_playing_after_decoding_ends(self):
+        # The sampler gates its ring, and starts its clock, only after the
+        # prebuffer and ring prefill, by when a short file is decoded whole.
+        # The wait runs on the sink's clock, not from the end of decoding.
+        gate: list[float | None] = [None]
+
+        def played():
+            return 0.0 if gate[0] is None else self.now[0] - gate[0]
+
+        src = self._source(_FileSink(played=played))
+        src._decode_loop()
+        self.now[0] += 2.0
+        gate[0] = self.now[0]
+        self.now[0] += 0.39
+        self.assertFalse(src.finished)
+        self.now[0] += 0.02
+        self.assertTrue(src.finished)
+
+    def test_the_wait_is_bounded(self):
+        # A sink clock that never reaches the end must not hold the scene
+        # open past the audio's length and the grace.
         src = self._source(_FileSink(played=-1e9))
         src._decode_loop()
-        self.now[0] += src._DRAIN_CAP_S + 0.01
+        self.now[0] += 0.4 + src._DRAIN_GRACE_S - 0.01
+        self.assertFalse(src.finished)
+        self.now[0] += 0.02
         self.assertTrue(src.finished)
+
+    def test_a_sampler_ends_with_the_last_sample_it_plays(self):
+        # Measured on hardware: a 6 s WAV on the sampler ended its scene
+        # after 2.7-3.7 s while ring writes were still going. The whole file
+        # fits the sampler's chunk-counted queue, so the decoder reached EOF
+        # before the ring was gated, read its clock as 0, and scheduled the
+        # end from the decode, capped at 5 s.
+        from c64cast.audio import sampler
+        from c64cast.audio.audio_source import AudioFileSource
+
+        ConfigGenerativeTest._make_wav(self.wav, seconds=6.0, rate=44100)
+        clock = SimpleNamespace(monotonic=lambda: self.now[0])
+        with (
+            mock.patch.object(sampler, "time", clock),
+            mock.patch.object(sampler, "PollThread", _NoWriter),
+        ):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+            src = AudioFileSource(smp, self.wav, reactive=False)
+            smp.arm()
+            src._decode_loop()
+            self.assertGreater(smp._q.qsize(), 0, "the decoder did not run ahead of the ring")
+            self.now[0] += 1.0  # the ring prefill and prebuffer
+            smp.start()
+            self.addCleanup(smp.stop)
+            gate = self.now[0]
+            self.now[0] = gate + 5.9
+            self.assertFalse(src.finished, "ended before the last sample played")
+            self.now[0] = gate + 6.05
+            self.assertTrue(src.finished)
 
     def test_a_decode_that_cannot_open_finishes(self):
         import os
