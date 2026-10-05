@@ -1435,6 +1435,9 @@ class VideoScene(MediaFileMixin, Scene):
             # a prebuffer, and push_samples accepts data before the ring is
             # gated, so starting the sampler first waits out the whole prebuffer
             # timeout on silence. AudioFileSource.setup keeps the same order.
+            # Armed before the demuxer pushes: the sampler is reused by every
+            # activation of this scene.
+            self.audio.arm()
             self.source.start(audio_push=self.audio.push_samples)
             self.audio.start()
             progress.complete("audio-start")

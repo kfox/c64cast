@@ -25,7 +25,7 @@ import random
 import threading
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from c64cast._teardown import run_teardown_steps
 
@@ -350,6 +350,9 @@ class AudioFileSource:
         self._stop.clear()
         self._start_features()
         if self._is_sampler:
+            # The sampler is reused by every activation of this scene, so it is
+            # armed before the decoder can push into it.
+            cast("UltimateAudioSampler", self._audio).arm()
             self._start_decode_thread()
             self._audio.start_for_external_source()
         else:

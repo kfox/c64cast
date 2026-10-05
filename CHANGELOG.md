@@ -283,6 +283,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A video or audio-file scene on the Ultimate Audio sampler plays sound
+  every time it comes round, not just the first time.** A scene keeps its
+  sampler between plays, and stopping it latched the sampler shut. So when a
+  playlist looped, or `--loop` repeated a single clip, every later play
+  waited two seconds for audio that never came and then played silence.
+  Audio-file scenes also stopped reacting to the music. The scene now resets
+  the sampler before it starts feeding it.
+
 - **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms at 12 kHz
   (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
   pump that plays it. Under REU-staged `mhires` the delay grew by about

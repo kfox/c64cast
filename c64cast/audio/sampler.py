@@ -389,6 +389,39 @@ class UltimateAudioSampler:
         """
         return self._actual_rate
 
+    def arm(self) -> None:
+        """Ready this sampler for a new activation, before its producer starts.
+
+        A scene builds its sampler once and a looping playlist re-runs setup()
+        on it, so everything one activation leaves behind is cleared here: the
+        stop latch, the EOF latch, the pushed and written totals, the pause
+        mute, the telemetry and the tap. The epoch bump disowns anything a
+        previous producer still had in flight.
+
+        It is a separate call rather than part of stop() because both callers
+        join their producer *after* stopping the sampler (the stop is what
+        releases a producer parked on a full queue); clearing the latch in
+        stop() would let that producer's last chunks into the next
+        activation's prebuffer. `start()` arms by itself when a caller did not,
+        but anything pushed in between is dropped, so call this first."""
+        self._flush_epoch += 1
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+        self._stopped = False
+        self._eof = False
+        self._pushed_samples = 0
+        self._written = 0
+        self._output_silenced = False
+        self._underrun_pads = 0
+        self._lead_min = -1
+        self._lead_max = -1
+        with self._tap_lock:
+            self._tap_buf[:] = 0.0
+            self._tap_write = 0
+
     def start(self, prebuffer_timeout: float = 2.0) -> None:
         """Prefill the ring with silence, prebuffer ``_prebuffer_target`` bytes
         of real PCM, then gate the looping channel on.
@@ -399,6 +432,8 @@ class UltimateAudioSampler:
         Only the (smaller) prebuffer target is seeded before gating — the writer
         then ramps the lead up to ``_lead_target`` — so playback starts promptly
         while the runtime lead stays deep enough to ride out decode stalls."""
+        if self._stopped:
+            self.arm()
         self._prefill_neutral()
 
         prebuf = self._collect_prebuffer(self._prebuffer_target, prebuffer_timeout)

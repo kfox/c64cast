@@ -139,9 +139,12 @@ class _FakeBackend:
         self.reg_writes: list[tuple[str, tuple[int, ...]]] = []
         self.mem_writes: list[tuple[str, str]] = []
         self.flushes = 0
+        self.audible_writes = 0  # REU writes carrying anything but silence
 
     def reu_write(self, offset: int, data: bytes) -> None:
         self.reu_writes.append((offset, len(data)))
+        if any(data):
+            self.audible_writes += 1
 
     def write_regs(self, base_addr: str, *values: int) -> None:
         self.reg_writes.append((base_addr.upper(), values))
@@ -258,6 +261,124 @@ class StreamerTest(unittest.TestCase):
         self.assertEqual(
             (api.reu_writes, api.reg_writes, api.mem_writes, api.flushes), ([], [], [], 0)
         )
+
+
+class SamplerReuseTest(unittest.TestCase):
+    """A scene builds its sampler once and a looping playlist sets the scene up
+    again, so a second activation of the same object has to play."""
+
+    TONE = np.full(1024, 8000, dtype=np.int16)
+
+    def _sampler(self, api: _FakeBackend) -> s.UltimateAudioSampler:
+        smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.05)
+        self.addCleanup(smp.stop)
+        return smp
+
+    def _lap(self, smp: s.UltimateAudioSampler, api: _FakeBackend, *, arm: bool = True) -> int:
+        """One activation the way the scenes drive it: arm, let the producer
+        push, start, play a moment, stop. Returns the audible REU writes."""
+        if arm:
+            smp.arm()
+        for _ in range(4):
+            smp.push_samples(self.TONE)
+        api.audible_writes = 0
+        smp.start(prebuffer_timeout=0.1)
+        time.sleep(0.1)
+        smp.stop()
+        return api.audible_writes
+
+    def test_a_second_activation_plays(self):
+        api = _FakeBackend()
+        smp = self._sampler(api)
+        self.assertGreater(self._lap(smp, api), 0)
+        self.assertGreater(self._lap(smp, api), 0, "the second activation streamed only silence")
+
+    def test_start_arms_a_stopped_sampler_its_caller_did_not_arm(self):
+        api = _FakeBackend()
+        smp = self._sampler(api)
+        self._lap(smp, api)
+        api.audible_writes = 0
+        smp.start(prebuffer_timeout=0.01)
+        smp.push_samples(self.TONE)
+        deadline = time.monotonic() + 2.0
+        while api.audible_writes == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertGreater(api.audible_writes, 0, "start() left the stop latch set")
+
+    def test_arm_clears_what_the_last_activation_left(self):
+        api = _FakeBackend()
+        smp = self._sampler(api)
+        self._lap(smp, api)
+        smp.mark_eof()
+        smp._output_silenced = True
+        smp._underrun_pads = 3
+        smp._q.put(b"stale")
+        epoch = smp._flush_epoch
+        smp.arm()
+        self.assertFalse(smp._stopped)
+        self.assertFalse(smp._eof)
+        self.assertFalse(smp._output_silenced)
+        self.assertEqual((smp._pushed_samples, smp._written, smp._underrun_pads), (0, 0, 0))
+        self.assertEqual((smp._lead_min, smp._lead_max), (-1, -1))
+        self.assertTrue(smp._q.empty())
+        self.assertGreater(smp._flush_epoch, epoch)
+        self.assertFalse(np.any(smp.get_recent_samples(s.SAMPLE_TAP_SIZE)))
+
+
+class SamplerArmedBeforeProducerTest(unittest.TestCase):
+    """Both scene setups arm the sampler before their producer can push into
+    it; a push into a still-stopped sampler is dropped."""
+
+    def test_video_scene_arms_before_the_demuxer_starts(self):
+        from c64cast.scenes.scenes import VideoScene
+
+        audio = mock.MagicMock(spec=s.UltimateAudioSampler)
+        audio.sample_rate = 44000
+        order = mock.MagicMock()
+        order.attach_mock(audio.arm, "arm")
+        order.attach_mock(audio.start, "start")
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+        ):
+            order.attach_mock(source_cls.return_value.start, "source_start")
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=audio,
+                display_mode=mock.MagicMock(),
+                file="https://stub.invalid/clip.mp4",
+                setup_progress=False,
+            )
+            scene.setup()
+        names = [c[0] for c in order.mock_calls if c[0] in ("arm", "source_start", "start")]
+        self.assertEqual(names, ["arm", "source_start", "start"])
+
+    @unittest.skipUnless(
+        __import__("c64cast.video.video", fromlist=["ensure_pyav"]).ensure_pyav(),
+        "PyAV (video extra) not installed",
+    )
+    def test_file_source_arms_before_the_decoder_starts(self):
+        import os
+        import tempfile
+        import wave
+
+        from c64cast.audio.audio_source import AudioFileSource
+
+        tune = os.path.join(tempfile.mkdtemp(), "tune.wav")
+        with wave.open(tune, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\x00\x00" * 800)
+        audio = mock.MagicMock(is_sampler=True)
+        order: list[str] = []
+        audio.arm.side_effect = lambda: order.append("arm")
+        source = AudioFileSource(audio, tune, reactive=False)
+        with mock.patch.object(
+            AudioFileSource, "_start_decode_thread", side_effect=lambda: order.append("decode")
+        ):
+            source.setup()
+        self.assertEqual(order, ["arm", "decode"])
 
 
 class SamplerFlushTests(unittest.TestCase):
