@@ -943,6 +943,57 @@ class SamplerFlushTests(unittest.TestCase):
         t.join(timeout=1.0)
         self.assertTrue(bumped, "flush() waited on the writer before retiring the queue")
 
+    def test_audio_pushed_before_the_cut_over_is_written_at_the_anchor(self):
+        # The demuxer pushes the seek target while flush() is still writing the
+        # volume, and the writer reaches the lock first. Written then, the chunk
+        # would land in the old lead and be blanked by the cut-over.
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+        margin = self._margin(smp)
+        smp._written = smp._content_pos = margin + 300
+        smp._output_silenced = True  # resume: flush() restores the volume first
+
+        left_queued: list[int] = []
+
+        def writer_runs_during_the_volume_write(_value: int) -> None:
+            smp._q.put((smp._flush_epoch, b"\x01" * 1024))
+            smp._writer_step(smp._writer_gen)
+            left_queued.append(smp._q.qsize())
+
+        smp._write_volume = writer_runs_during_the_volume_write  # type: ignore[method-assign]
+        smp.flush()
+        api.reu_writes.clear()
+        api.audible_writes = 0
+        for _ in range(3):  # the chunk fills the lead, so the writer then idles
+            smp._writer_step(smp._writer_gen)
+        self.assertGreater(api.audible_writes, 0, "the seek target's first audio was lost")
+        self.assertEqual(api.reu_writes[0][0], 0x200000 + margin)
+        self.assertEqual(left_queued, [1], "the writer dequeued with a cut-over pending")
+
+    def test_current_audio_waits_for_a_pending_cut_over(self):
+        # flush() bumped after the writer's pass began, and its cut-over has
+        # not run: the chunk is carried, not written into the doomed lead.
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+        smp._flush_epoch += 1
+        data = b"\x01" * 64
+        self.assertFalse(smp._write_payload(smp._writer_gen, smp._flush_epoch, data))
+        self.assertEqual(api.audible_writes, 0)
+        assert smp._carry is not None
+        self.assertEqual((smp._carry[0], bytes(smp._carry[1])), (smp._flush_epoch, data))
+
+    def test_a_flush_that_fails_releases_the_writer(self):
+        smp = self._running(_FakeBackend(), consumed=0)
+        smp._output_silenced = True
+
+        def link_down(_value: int) -> None:
+            raise OSError("link down")
+
+        smp._write_volume = link_down  # type: ignore[method-assign]
+        with self.assertRaises(OSError):
+            smp.flush()
+        self.assertEqual(smp._cut_epoch, smp._flush_epoch)
+
     def test_flush_noop_when_not_running(self):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8)
@@ -1058,7 +1109,7 @@ class SamplerFlushTests(unittest.TestCase):
         smp = self._running(api, consumed=0)
 
         def flush_lands() -> None:
-            smp._flush_epoch += 1
+            smp.flush()
 
         self._drive_writer(smp, [(smp._flush_epoch, b"\x01" * 32)], hook=flush_lands)
         self.assertEqual(api.audible_writes, 0)

@@ -405,6 +405,11 @@ class UltimateAudioSampler:
         # between flush() (playlist thread) and the writer thread. _output_silenced tracks the pause mute
         # ($DF21 volume 0) so the next flush() restores the channel volume.
         self._flush_epoch = 0
+        # The epoch whose ring cut-over flush() has finished. Between the bump
+        # and the cut-over the old lead is still in the ring and about to be
+        # blanked, so current audio waits for this to catch up rather than be
+        # written into it.
+        self._cut_epoch = 0
         self._io_lock = threading.Lock()
         self._output_silenced = False
         # Bumped by every start(). A writer carries the generation it was
@@ -477,6 +482,7 @@ class UltimateAudioSampler:
         with self._io_lock:
             self._written = 0
             self._content_pos = 0
+            self._cut_epoch = self._flush_epoch
         self._output_silenced = False
         self._underrun_pads = 0
         self._late_bytes = 0
@@ -687,7 +693,18 @@ class UltimateAudioSampler:
         # an epoch bumped late would tag stale and drop. A stale chunk the
         # writer has already passed its check for is written under the lock
         # before the cut-over below takes it, and that cut-over rewrites it.
-        self._flush_epoch += 1
+        epoch = self._flush_epoch + 1
+        self._flush_epoch = epoch
+        try:
+            self._cut_over(anchor, epoch, silence_output=silence_output)
+        except BaseException:
+            # No cut-over is coming: let the writer go on from where it was.
+            self._cut_epoch = max(self._cut_epoch, epoch)
+            raise
+
+    def _cut_over(self, anchor: int, epoch: int, *, silence_output: bool) -> None:
+        """flush() after its epoch bump: the volume write, then the ring
+        rewrite, which releases audio of ``epoch`` to the writer."""
         if silence_output:
             self._write_volume(0)
             self._output_silenced = True
@@ -715,6 +732,7 @@ class UltimateAudioSampler:
             self._written = new_written
             self._content_pos = anchor
             self._eof = False
+            self._cut_epoch = max(self._cut_epoch, epoch)
 
     def _writer_loop(self, gen: int) -> None:
         """Run writer steps until stopped, superseded, or the link is given up.
@@ -764,6 +782,11 @@ class UltimateAudioSampler:
         """One writer pass: sleep while far enough ahead, else write the next
         chunk at its anchored position, or an underrun pad. Returns whether it
         wrote to the ring."""
+        if self._cut_epoch != self._flush_epoch:
+            # A flush() is between its bump and its cut-over; anything written
+            # now lands in the lead that cut-over blanks.
+            time.sleep(0.002)
+            return False
         consumed = self._read_consumed_bytes()
         # The real-audio cushion: pads ahead of _content_pos do not count, so
         # the writer keeps pulling data to overwrite them.
@@ -793,6 +816,11 @@ class UltimateAudioSampler:
         the queue."""
         with self._io_lock:
             if gen != self._writer_gen or epoch != self._flush_epoch:
+                return False
+            if epoch != self._cut_epoch:
+                # Current audio whose cut-over has not run yet (the flush bumped
+                # after this pass's check above): held for the new anchor.
+                self._carry_back(epoch, data)
                 return False
             c = self._content_pos
             end = c + len(data)
