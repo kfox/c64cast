@@ -799,6 +799,18 @@ class SlowReadPointerTest(unittest.TestCase):
         self.assertNotEqual(period, self.CHUNK_PERIOD)
         self.assertEqual(s.servo.gap_last, 1000)
 
+    def test_a_dead_consumer_behind_a_slow_server_still_warns(self):
+        # Every reading is slow, so none is paced by, but R frozen across
+        # them is still a stalled consumer the watchdog has to report.
+        s, clock, _ = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG") as cm:
+            for _ in range(audio_rate_mod.NMI_STALL_WARN_CHUNKS + 1):
+                s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+                clock.sleep(s.servo.read_holdoff_s)
+        self.assertTrue(s.servo.stall_warned)
+        self.assertTrue(any("NMI consumer stalled" in line for line in cm.output))
+
 
 class _StallingConsumerAPI(FakeAPI):
     """A FakeAPI with an NMI consumer behind it, on the test's virtual clock.

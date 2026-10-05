@@ -379,6 +379,11 @@ class RateServo:
         took = time.monotonic() - started
         if took > HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period:
             self._hold_off_slow_read(took, chunk_period)
+            # Too late to pace by, but still evidence of whether the consumer
+            # is alive: a server that stays slow sends every reading here, and
+            # the stall watchdog would otherwise never see one.
+            if r_addr is not None:
+                self.note_r_reading(r_addr)
             return servo_hold_period(self.integ, chunk_period=chunk_period)
         self.read_holdoff_s = 0.0
         if r_addr is None:
