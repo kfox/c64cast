@@ -38,6 +38,7 @@ from c64cast.audio.audio_handlers import (
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_HANDLER_STUB,
     REU_PUMP_TICK_COUNTER_ADDR,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
@@ -662,6 +663,14 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         body = self._index(fake, "write_memory_file", "C180")
         self.assertLess(body, park)
 
+    def test_an_unconfirmed_dispatcher_entry_is_put_back_to_the_stub(self):
+        # Every attempt's entry may have landed with only the epoch moving, so
+        # the park puts the installer's stub back where the dispatcher JMPs.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, times=tries, skip_hook=True)
+        self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
+
     @staticmethod
     def _vector_writes(fake: FakeAPI) -> list[tuple]:
         return [o[2] for o in fake.ops if o[:2] == ("write_regs", "0314")]
@@ -682,6 +691,10 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
                 self.assertEqual(fake.memories["C180"], "60")
                 self.assertEqual(fake.memories["DC04"], _packed_latch(kernal_cia1_latch("NTSC")))
                 self.assertEqual(self._vector_writes(fake), [])
+                # Under a dispatcher, which keeps JMPing to $C100, the tracked
+                # entry goes back to the installer's JMP $EA31 stub.
+                expected = REU_PUMP_HANDLER_STUB if skip_hook else REU_IRQ_HANDLER_TRACKED
+                self.assertEqual(fake.mem_files["C100"], expected)
 
     def test_a_vector_patch_that_never_confirms_is_restored_to_the_kernal(self):
         with self.assertLogs("c64cast.audio.audio", level="ERROR"):

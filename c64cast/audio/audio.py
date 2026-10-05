@@ -79,6 +79,7 @@ from .audio_handlers import (
     REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_HANDLER_STUB,
     REU_PUMP_INITIAL_MARGIN,
     REU_PUMP_SETTLE_S,
     REU_PUMP_TICK_COUNTER_ADDR,
@@ -1522,26 +1523,31 @@ class AudioStreamer:
             self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
 
         def upload_entry() -> None:
-            # Every attempt masks afresh: a retry follows an attempt whose
-            # unmask may have landed even though its entry did not.
-            if dispatcher_owns_irq:
-                epoch = self.api.delivery_epoch
-                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
-                self.api.flush()
-                if self.api.delivery_epoch != epoch:
-                    return
-                time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_IRQ_HANDLER_TRACKED)
-            if dispatcher_owns_irq:
-                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+            self._write_pump_entry(REU_IRQ_HANDLER_TRACKED, dispatcher_owns_irq=dispatcher_owns_irq)
 
         stages = (("trackers", seed_trackers), ("body", upload_body), ("entry", upload_entry))
         for stage, write in stages:
             try:
                 self._require_confirmed(stage, write)
             except PumpInstallError:
-                self._park_tracked_pump(dispatcher_owns_irq)
+                self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=stage == "entry")
                 raise
+
+    def _write_pump_entry(self, code: bytes, *, dispatcher_owns_irq: bool) -> None:
+        """Write ``code`` at the $C100 pump entry. Under a dispatcher, CIA #1 is
+        masked around it (see _install_tracked_pump), and nothing is written
+        when the mask did not confirm. Every call masks afresh: a retry follows
+        an attempt whose unmask may have landed even though its entry did not."""
+        if dispatcher_owns_irq:
+            epoch = self.api.delivery_epoch
+            self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
+            self.api.flush()
+            if self.api.delivery_epoch != epoch:
+                return
+            time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
+        self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", code)
+        if dispatcher_owns_irq:
+            self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
 
     def _require_confirmed(self, stage: str, write: Callable[[], None]) -> None:
         """``_write_confirmed``, raising PumpInstallError naming ``stage`` when
@@ -1625,7 +1631,7 @@ class AudioStreamer:
                 [("IRQ vector restore", self._restore_irq_vector_confirmed)],
             )
         if tracked:
-            self._park_tracked_pump(dispatcher_owns_irq)
+            self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=True)
         run_teardown_steps(
             log,
             type(self).__name__,
@@ -1654,17 +1660,30 @@ class AudioStreamer:
                 return True
         return False
 
-    def _park_tracked_pump(self, dispatcher_owns_irq: bool) -> None:
+    def _park_tracked_pump(self, dispatcher_owns_irq: bool, *, entry_may_be_up: bool) -> None:
         """Best-effort safe state after a failed tracked-pump install: an RTS at
         $C180 so neither the $C100 entry nor a dispatcher's inline JSR runs a
         body on unconfirmed trackers, and CIA #1 unmasked if the install masked
-        it. A one-byte write cannot tear an instruction the 6510 is fetching."""
+        it. A one-byte write cannot tear an instruction the 6510 is fetching.
+
+        Under a dispatcher, an entry that may have gone up (``entry_may_be_up``)
+        also goes back to the JMP $EA31 stub its installer left: the dispatcher keeps JMPing to $C100 for the
+        rest of the scene, and once CIA #1 is back at the kernal latch the
+        entry's tick divider would chain the kernal on only every Nth tick
+        (the jiffy clock, SCNKEY and the cursor blink at a third speed)."""
         steps: list[tuple[str, Callable[[], object]]] = [
             (
                 "pump body park",
                 lambda: self.api.write_memory(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", "60"),
             )
         ]
+        if dispatcher_owns_irq and entry_may_be_up:
+            steps.append(
+                (
+                    "pump entry stub restore",
+                    lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
+                )
+            )
         if dispatcher_owns_irq:
             steps.append(
                 (

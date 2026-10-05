@@ -264,6 +264,9 @@ SAMPLE_TAP_SIZE = 2048
 # See docs/architecture/audio.md#audiouse_reu_pump--reu-staged-mic-streaming.
 
 REU_PUMP_HANDLER_ADDR = 0xC100  # IRQ handler lives here; $C020 NMI handler stays
+# What a bank-swap dispatcher's installer leaves at $C100 until the pump entry
+# goes up, and what a failed tracked install puts back (JMP $EA31).
+REU_PUMP_HANDLER_STUB = bytes([0x4C, 0x31, 0xEA])
 REU_AUDIO_BASE = 0x000000  # REU offset where preloaded audio starts
 REU_PUMP_CHUNK_SIZE = 128  # bytes per IRQ-triggered REU DMA (default)
 REU_UPLOAD_SLICE = 32 * 1024  # bytes per socket REUWRITE (one per slice)

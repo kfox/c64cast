@@ -52,6 +52,7 @@ from c64cast.audio.audio_handlers import (
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_HANDLER_STUB,
     REU_PUMP_INITIAL_MARGIN,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
@@ -1611,6 +1612,30 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         # The dispatcher owns $0314, so the unwind leaves it alone.
         self.assertEqual(self._vector_writes(fake), [])
         self.assertFalse(s._reu_pump_armed)
+
+    def test_a_failed_dispatcher_arm_puts_the_entry_stub_back_before_the_latch(self):
+        # The dispatcher keeps JMPing to $C100 after the abort. Left in place,
+        # the tracked entry's tick divider would chain the kernal on every
+        # third tick once CIA #1 is back at the kernal latch.
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, CIA1.TIMER_A_LO, self.TRIES)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
+        stub = max(
+            i
+            for i, o in enumerate(fake.ops)
+            if o == ("write_memory_file", "C100", REU_PUMP_HANDLER_STUB)
+        )
+        icr = [o[2] for o in fake.ops[:stub] if o[:2] == ("write_memory", "DC0D")]
+        self.assertEqual(icr[-1], "7F")
+        latch = max(i for i, o in enumerate(fake.ops) if o[:2] == ("write_memory", "DC04"))
+        self.assertLess(stub, latch)
+        self.assertEqual(fake.memories["DC0D"], "81")
 
 
 class StagedUploadDeliveryTest(unittest.TestCase):
