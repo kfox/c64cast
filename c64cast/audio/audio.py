@@ -971,11 +971,15 @@ class AudioStreamer:
                     # Priming, or the drip's interleaved slots did not fill the
                     # chunk: fall back to a blocking collect on the same deadline.
                     # A priming collect after the producer ended takes only what
-                    # is queued: nothing more is coming to wait for.
+                    # is queued: nothing more is coming to wait for. Not before
+                    # anything landed, though: a producer that ended having
+                    # pushed nothing leaves the idle branch below to `continue`
+                    # every pass, and a zero deadline made that a busy spin.
                     collect_deadline = (
                         pace_deadline
                         if prebuffered
-                        else time.monotonic() + (0.0 if input_ended else chunk_period)
+                        else time.monotonic()
+                        + (0.0 if input_ended and bytes_prebuffered else chunk_period)
                     )
                     n, taken, leftover = self._collect_until(
                         chunk_buf, n, leftover, collect_deadline

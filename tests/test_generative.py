@@ -1747,6 +1747,32 @@ class AudioFileShortClipTest(unittest.TestCase):
         self.assertEqual(n, 0)
         self.assertLess(time.monotonic() - t0, 1.0, "the collect waited out its deadline")
 
+    def test_a_dac_worker_idles_after_a_producer_that_pushed_nothing(self):
+        # A decode that failed before its first push still ends the input. With
+        # nothing landed there is no prebuffer to pad out, and a priming collect
+        # on a zero deadline turned the idle branch into a busy spin.
+        from _fakes import FakeAPI, quiet_logging
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        collects = 0
+        collect = dac._collect_until
+
+        def counted(*args, **kwargs):
+            nonlocal collects
+            collects += 1
+            return collect(*args, **kwargs)
+
+        with quiet_logging(), mock.patch.object(dac, "_collect_until", side_effect=counted):
+            dac.start_for_external_source()
+            try:
+                dac.end_input()
+                time.sleep(0.3)
+            finally:
+                dac.stop()
+        # An idle collect blocks a chunk period (128 ms at 8 kHz): a few
+        # passes, not hundreds of thousands.
+        self.assertLess(collects, 20, "the worker spun on an ended, empty input")
+
     def test_a_sampler_plays_a_clip_shorter_than_its_prebuffer(self):
         from _fakes import quiet_logging
 
