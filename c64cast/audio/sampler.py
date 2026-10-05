@@ -158,9 +158,11 @@ HOLD_GUARD_S = 0.03
 # writer's back-off (WRITER_BACKOFF_MIN_S, at least this long). It must not
 # exceed the writer's bounded queue wait (20 ms): the floor's wait then runs
 # inside the one HOLD_GUARD_S already budgets past the hold's deadline, so it
-# never holds an on-time gather into lateness, and the re-anchor rule sees
-# none of it. At 25 ms a gather released at the deadline was held 10 ms past
-# the write floor and dropped (8 kHz/8-bit, fake clock).
+# never holds an on-time gather into lateness. At 25 ms a gather released at
+# the deadline was held 10 ms past the write floor and dropped (8 kHz/8-bit,
+# fake clock). Audio already at the write floor it does hold late, by up to
+# the interval, and the re-anchor rule allows for that (_late_anchor,
+# _gaining).
 MIN_WRITE_INTERVAL_S = 0.02
 
 
@@ -993,9 +995,12 @@ class UltimateAudioSampler:
     def _gaining(self, then: tuple[int, int], now: tuple[int, int]) -> bool:
         """Whether lateness went from ``then`` to ``now`` (each (read head,
         lateness)) fast enough to be catching up: at a pace that, from
-        ``then``, lines up within LATE_CATCHUP_S."""
+        ``then``, lines up within LATE_CATCHUP_S. The first
+        MIN_WRITE_INTERVAL_S of the shrinkage does not count: the floor holds
+        a gather's head up to that long, so lateness measured at the write
+        swings by as much with no change in the producer."""
         (t0, l0), (t1, l1) = then, now
-        return (l0 - l1) * self._late_catchup_bytes > l0 * (t1 - t0)
+        return (l0 - l1 - self._write_interval) * self._late_catchup_bytes > l0 * (t1 - t0)
 
     def _late_anchor(self, consumed: int) -> int:
         """Under _io_lock: where the next real sample is written. That is
@@ -1022,15 +1027,24 @@ class UltimateAudioSampler:
         stall to catch up in, whatever the chunks before the stall did. The comparison waits for that
         second burst because at the first one after a gap the two cannot be
         told apart. After one re-anchor, late audio is re-anchored at once
-        until the next splice or arm()."""
+        until the next splice or arm().
+
+        Only a write more than MIN_WRITE_INTERVAL_S on time ends a window.
+        The floor holds a gather's head up to that long, so a live stream
+        delivering at the write floor, as one does after a splice, lands
+        some writes just on time and the rest late; each of those on-time
+        writes ended the window, and the stream dropped audio for a second
+        window or more before it was re-anchored."""
         c = self._content_pos
         lateness = consumed + self._flush_margin - c
         last, self._last_try = self._last_try, consumed
-        if lateness <= 0:
+        if lateness <= -self._write_interval:
             self._late_ref = None
             self._burst_start = self._prev_start = None
             self._late_from = None
             return c
+        if lateness <= 0:
+            return c  # on time, but by less than the floor can hold it
         if self._late_from is None:
             self._late_from = consumed
         late_from = self._late_from

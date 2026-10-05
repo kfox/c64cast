@@ -4,6 +4,7 @@ stands in for the U64, and the hw_provision REST queries are mocked."""
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 import unittest
@@ -1218,7 +1219,8 @@ def _run_scenario(
     the audio behind its anchor (ms), and over the last ``tail_s`` the share
     of real time the ring got audio for and the REU writes per second; the
     most REU writes in any whole second of the run; and the audio still
-    queued or carried, unwritten, at the end (ms)."""
+    queued or carried, unwritten, at the end (ms); and the audio dropped as
+    late over the whole run (ms)."""
     clock = [0.0]
     link = _ScenarioLink(clock, outage)
     smp = _make(link, sample_rate=sample_rate, bits=bits, lead_seconds=lead_seconds)
@@ -1274,6 +1276,7 @@ def _run_scenario(
             default=0,
         ),
         "held_ms": held / bps / rate * 1000,
+        "dropped_ms": smp._late_bytes / bps / rate * 1000,
     }
 
 
@@ -1332,6 +1335,21 @@ def _chunk_dropped_before_a_stall(t: float, prod: float, late: float) -> float:
     return 10.0 if prod < t else 1.0
 
 
+def _live_seek(delay: float, jitter_s: float, seed: int) -> Any:
+    """A live stream on the wall clock, each frame up to ``jitter_s`` late
+    (seeded, so a row replays the same jitter), seeked at 2 s: it resumes
+    ``delay`` later, behind the anchor by that delay for good."""
+
+    def rate_of(t: float, prod: float, late: float) -> float:
+        if 2.0 <= t < 2.0 + delay:
+            return 0.0
+        behind = delay if t >= 2.0 else 0.0
+        jitter = random.Random(seed * 1_000_003 + round(t * 1e4)).uniform(0.0, jitter_s)
+        return 4.0 if prod < t - behind - jitter else 0.0
+
+    return rate_of
+
+
 def _behind_then(speed: float) -> Any:
     """Stalls at 3 s until 0.35 s late, then decodes at ``speed`` until
     caught up, then at real time."""
@@ -1358,7 +1376,7 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
     # name: (rate_of, run kwargs, expectations). Expectations: reanchors as
     # an exact count or a (min, max) range, lag_ms as a (min, max) range,
     # audible as a minimum share, writes_s as a (min, max) range, held_ms as
-    # a maximum. Every row also holds its busiest whole second, splices and
+    # a maximum, dropped_ms as a maximum. Every row also holds its busiest whole second, splices and
     # first late windows included, to PEAK_WRITES_S: the link carries about
     # 200 writes/s, shared with the picture.
     PEAK_WRITES_S = 60
@@ -1514,6 +1532,55 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
             {"seconds": 16.0, "sample_rate": 44100, "frame_s": 0.0025},
             {"reanchors": 1, "audible": 0.95},
         ),
+        # A jittered live stream seeked: its writes at the write floor swing
+        # by up to the floor's interval. Read as catching up, or as on time,
+        # that swing restarted the window, and the stream dropped about 1 s
+        # before it was re-anchored.
+        "seeked live, 20 ms jitter, resumed 30 ms late": (
+            _live_seek(0.03, 0.02, 0),
+            {
+                "seconds": 4.5,
+                "frame_s": 0.0025,
+                "splice_at": 2.0,
+                "tail_s": 1.0,
+                "sample_rate": 44100,
+            },
+            {"reanchors": 1, "audible": 0.95, "dropped_ms": 550},
+        ),
+        "seeked live, 50 ms jitter, resumed at once": (
+            _live_seek(0.0, 0.05, 2),
+            {
+                "seconds": 4.5,
+                "frame_s": 0.0025,
+                "splice_at": 2.0,
+                "tail_s": 1.0,
+                "sample_rate": 44100,
+            },
+            {"reanchors": 1, "audible": 0.95, "dropped_ms": 550},
+        ),
+        "seeked live, 50 ms jitter, resumed 30 ms late": (
+            _live_seek(0.03, 0.05, 1),
+            {
+                "seconds": 4.5,
+                "frame_s": 0.0025,
+                "splice_at": 2.0,
+                "tail_s": 1.0,
+                "sample_rate": 44100,
+            },
+            {"reanchors": 1, "audible": 0.95, "dropped_ms": 550},
+        ),
+        "seeked live, 50 ms jitter, resumed at once (8 kHz/8-bit)": (
+            _live_seek(0.0, 0.05, 1),
+            {
+                "seconds": 4.5,
+                "frame_s": 0.0025,
+                "splice_at": 2.0,
+                "tail_s": 1.0,
+                "sample_rate": 8000,
+                "bits": 8,
+            },
+            {"reanchors": 1, "audible": 0.95, "dropped_ms": 550},
+        ),
         # The end of a stream after a re-anchor: the last partial gather is
         # written where it belongs, not re-anchored past a gap.
         "end of stream after a re-anchor": (
@@ -1546,6 +1613,8 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
                     self.assertTrue(lo <= got["writes_s"] <= hi, got)
                 if "held_ms" in expect:
                     self.assertLessEqual(got["held_ms"], expect["held_ms"], got)
+                if "dropped_ms" in expect:
+                    self.assertLessEqual(got["dropped_ms"], expect["dropped_ms"], got)
                 self.assertLessEqual(got["peak_writes_s"], self.PEAK_WRITES_S, got)
 
 
