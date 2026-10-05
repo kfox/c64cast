@@ -1657,23 +1657,73 @@ class LifecycleTest(unittest.TestCase):
         self.assertGreaterEqual(underruns, 12)
         self.assertAlmostEqual(position, total / s.effective_rate, places=6)
 
-    def test_a_producer_late_by_less_than_a_chunk_does_not_step_the_clock(self):
-        # A short chunk's pad sits behind content the producer has merely not
-        # sent yet; only a whole pad chunk after it says the producer ran dry.
+    def _drive_ring(
+        self, s: AudioStreamer, plan: str, chunk: int, gap: int
+    ) -> list[tuple[float, int]]:
+        """Land one ``chunk`` per plan letter and play ``chunk`` bytes after
+        it, holding the ring gap at ``gap`` the way the servo does: ``c``
+        lands content, ``p`` a whole pad chunk, ``s`` content with a short pad
+        tail. Returns (clock in bytes, content bytes heard) after each step,
+        with the smoothed gap taken as exact."""
+        ring: list[bool] = []
+        heard = 0
+        for _ in range(gap // chunk):
+            ring += [True] * chunk
+            s._pushed_count += chunk
+            s._note_ring_landed(chunk, 0)
+        out = []
+        for kind in plan:
+            content = {"c": chunk, "p": 0, "s": chunk // 3}[kind]
+            ring += [True] * content + [False] * (chunk - content)
+            s._note_ring_landed(chunk, chunk - content)
+            s._pushed_count += content
+            played, ring = ring[:chunk], ring[chunk:]
+            heard += sum(played)
+            s.servo.ring_lead = float(len(ring))
+            out.append((s.position_seconds() * s.effective_rate, heard))
+        return out
+
+    def test_content_after_a_pad_stretch_does_not_step_the_clock_back(self):
+        # A producer that runs dry and resumes leaves pad in the ring ahead of
+        # the resumed content. Nothing past the pad is heard until the pad has
+        # played, so the clock holds and then moves on; counting that pad as
+        # content once content landed behind it stepped the clock back by it.
+        s = _make(sample_rate=12000)
+        steps = self._drive_ring(s, "cccccc" + "pppppp" + "ccccccc", chunk=1024, gap=4096)
+        for clock, heard in steps:
+            self.assertAlmostEqual(clock, heard, places=6)
+        clocks = [clock for clock, _ in steps]
+        self.assertEqual(clocks, sorted(clocks))
+
+    def test_a_short_pad_is_taken_out_where_it_sits(self):
+        # A producer late by less than a chunk leaves a short pad between two
+        # stretches of content: it is in the gap until it plays, wherever more
+        # content lands behind it.
+        s = _make(sample_rate=12000)
+        steps = self._drive_ring(s, "ccscsccspcccccc", chunk=32, gap=128)
+        for clock, heard in steps:
+            self.assertAlmostEqual(clock, heard, places=6)
+
+    def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
+        # The gap is an EMA, so it can grow by more than what landed between
+        # two reads; the clock holds rather than reporting less than it did.
         s = _make()
-        s.servo.ring_lead = 200.0
-        s._note_ring_landed(32, 0)
-        s._note_ring_landed(32, 12)
-        self.assertEqual(s._content_lead(), 200.0)
-        s._note_ring_landed(32, 0)
-        self.assertEqual(s._content_lead(), 200.0)
-        s._note_ring_landed(32, 12)
-        s._note_ring_landed(32, 32)
-        self.assertEqual(s._content_lead(), 200.0 - 12 - 32)
-        s._note_ring_landed(32, 32)
-        self.assertEqual(s._content_lead(), 200.0 - 12 - 64)
-        s._note_ring_landed(32, 0)
-        self.assertEqual(s._content_lead(), 200.0)
+        s._pushed_count = 8000
+        s.servo.ring_lead = 2000.0
+        self.assertAlmostEqual(s.position_seconds(), 6000 / s.effective_rate, places=6)
+        s.servo.ring_lead = 3000.0
+        self.assertAlmostEqual(s.position_seconds(), 6000 / s.effective_rate, places=6)
+
+    def test_a_new_activation_starts_its_clock_from_zero(self):
+        # The high-water mark belongs to one activation: a reused streamer
+        # would otherwise hold the next one's clock at the last one's end.
+        s = _make()
+        s._pushed_count = 8000
+        s.servo.ring_lead = 0.0
+        self.assertAlmostEqual(s.position_seconds(), 8000 / s.effective_rate, places=6)
+        s.reset_position()
+        s._pushed_count = 100
+        self.assertAlmostEqual(s.position_seconds(), 100 / s.effective_rate, places=6)
 
     def test_the_worker_clears_the_tail_pad_before_it_counts_the_landing(self):
         # Content landing behind a dry tail: a reader between the two steps
@@ -1709,27 +1759,28 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(seen)
         self.assertLessEqual(seen[0], total / s.effective_rate)
 
-    def test_position_seconds_reads_the_landed_count_before_the_tail_pad(self):
-        # The worker lands content after clearing the tail pad, so a reader
-        # that took the pad first and the count after could pair them.
+    def test_position_seconds_reads_the_landed_count_before_the_pad_record(self):
+        # The worker records a landing's pad before it counts the landing, so
+        # a reader that took the pad record first and the count after could
+        # pair a window of pad with content landed behind it.
         s = _make()
         s.servo.ring_lead = 192.0
         s._pushed_count = 1032
         s._queued_samples = 32
         for _ in range(10):
             s._note_ring_landed(32, 32)
-        content_lead = s._content_lead
+        unplayed_pad = s._unplayed_pad
 
-        def lead_then_land() -> float | None:
-            lead = content_lead()
-            s._note_ring_landed(32, 0)
-            # Not _consume_queued: it takes _count_lock, and a position_seconds()
-            # that read the lead inside that lock would deadlock here, where the
-            # per-test cap cannot interrupt a blocked acquire.
+        def pad_then_land(lead: float) -> float:
+            pad = unplayed_pad(lead)
+            # Not _note_ring_landed or _consume_queued: the caller holds
+            # _ring_pad_lock, and either lock taken here would block where the
+            # per-test cap cannot interrupt it.
+            s._ring_landed_total += 32
             s._queued_samples -= 32
-            return lead
+            return pad
 
-        s._content_lead = lead_then_land  # type: ignore[method-assign]
+        s._unplayed_pad = pad_then_land  # type: ignore[method-assign]
         self.assertLessEqual(s.position_seconds(), 1000 / s.effective_rate)
 
     def test_position_seconds_is_not_torn_by_a_worker_discard(self):
@@ -1769,7 +1820,10 @@ class LifecycleTest(unittest.TestCase):
         self.assertAlmostEqual(s.position_seconds(), 8000 / s.effective_rate, places=6)
         self.assertAlmostEqual(s.position_seconds(), 1.00124, places=5)
         # Still-queued samples are not yet "consumed".
+        s = _make()
+        s._pushed_count = 8000
         s._queued_samples = 4000
+        s.servo.ring_lead = 0.0
         self.assertAlmostEqual(s.position_seconds(), 4000 / s.effective_rate, places=6)
 
     def test_position_seconds_zero_rate(self):

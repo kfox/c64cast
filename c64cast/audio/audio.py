@@ -21,6 +21,7 @@ import queue
 import secrets
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
@@ -388,12 +389,18 @@ class AudioStreamer:
 
         # Audio-master clock bookkeeping (used by PyAV-driven scenes).
         self._pushed_count = 0
-        # Pad bytes landed in the ring behind the last content byte. They hold
-        # the servo's gap open once the producer runs dry, so position_seconds()
-        # takes them out of the lead it subtracts; otherwise the clock would
-        # stop a whole ring short of the last sample.
-        self._ring_tail_pad = 0
-        self._ring_short_pad = 0
+        # Where the pad the worker landed sits in the ring's byte stream. The
+        # servo's gap counts pad and content alike, and position_seconds() takes
+        # out the pad still inside it wherever it sits: a dry tail would
+        # otherwise stop the clock a ring short of the last sample, and pad
+        # followed by content would step it backward once the content landed.
+        # The worker writes them and readers take them, both under the lock,
+        # which also makes the high-water mark position_seconds() never drops
+        # below a single read-modify-write.
+        self._ring_pad_lock = threading.Lock()
+        self._ring_landed_total = 0
+        self._ring_pads: deque[tuple[int, int]] = deque()
+        self._position_floor = 0.0
 
         # Sample tap for FFT overlays. Lockless write from input threads,
         # locked read from the render thread — readers tolerate a torn frame
@@ -1362,6 +1369,7 @@ class AudioStreamer:
             return
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
+        self._reset_ring_clock()
         self.running = True
         self._worker_thread = self._start_worker()
         assert sd is not None
@@ -1987,6 +1995,7 @@ class AudioStreamer:
         self._listen_mode = False
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
+        self._reset_ring_clock()
         self.running = True
         self._worker_thread = self._start_worker()
         # Report the achieved rate too: CIA latch quantization separates them
@@ -2327,8 +2336,10 @@ class AudioStreamer:
         Host-DMA mode counts a sample once it lands in the C64 ring, which the
         NMI plays a ring gap later: about a third of a second at the servo's
         target. Video slaved to the landed count ran that far ahead of the
-        sound, so the clock subtracts the servo's smoothed gap, and reads 0
-        until the consumer starts.
+        sound, so the clock subtracts the servo's smoothed gap, less the pad
+        still inside it, and reads 0 until the consumer starts. It never
+        decreases within an activation: an audio-file scene ends when it
+        reaches the pushed length.
 
         The divisor is `effective_rate` because this is a real-time clock —
         video is slaved to it, and the `clock/wall` gauge that calibrates
@@ -2343,63 +2354,83 @@ class AudioStreamer:
             if not self._reu_pump_total_samples:
                 return elapsed
             return min(elapsed, self._reu_pump_total_samples / rate)
-        # q.qsize() now counts bytes-blobs, not samples — read the explicit
-        # sample-count counter instead.
-        # Consumed before the lead: the worker clears the tail pad before it
-        # lands the content behind it, so a read torn across a landing lags by
-        # that chunk rather than leading by a ring of pad. Locked: the worker's
-        # discard of a pre-splice chunk drops both counts, and an unlocked read
-        # pairing the old pushed with the new queued leads by that chunk.
-        with self._count_lock:
-            consumed = self._pushed_count - self._queued_samples
-        lead = self._content_lead()
-        if lead is None:
-            return 0.0
-        return max(0.0, (consumed - lead) / rate)
+        _, heard = self._host_clock_bytes()
+        return heard / rate
 
     def ring_lead_seconds(self) -> float:
         """Audio landed in the C64 ring but not yet played. A splice anchors
         on ``position_seconds() + ring_lead_seconds()``, where its first
         sample lands, so the video waits until that sample is heard.
 
-        Before the consumer starts, nothing landed has played, so the lead is
-        the whole landed count: a splice during the prebuffer is heard only
-        after the pre-splice prebuffer it lands behind. After it starts, the
-        lead is capped at the landed count: the smoothed gap counts prebuffer
-        pad, and while it exceeds the landed content position_seconds() reads
-        0, so an uncapped lead would anchor the splice that pad past its first
-        sample."""
+        It is the landed content less what position_seconds() reports as
+        heard, from one read of both, so the anchor is exactly the landed
+        count however the clock got there: before the consumer starts nothing
+        landed has played, and after it the clock has already taken out the
+        pad the smoothed gap counts."""
         rate = self.effective_rate
         if not rate or self._reu_pump_armed:
             return 0.0
-        with self._count_lock:
-            landed = max(0, self._pushed_count - self._queued_samples)
-        lead = self._content_lead()
-        if lead is None:
-            return landed / rate
-        return min(lead, landed) / rate
+        consumed, heard = self._host_clock_bytes()
+        return max(0.0, consumed - heard) / rate
 
-    def _content_lead(self) -> float | None:
-        """The servo's smoothed ring gap less the pad landed behind the last
-        content byte, or None before the consumer starts."""
+    def _host_clock_bytes(self) -> tuple[int, float]:
+        """``(landed content, heard content)`` in bytes on the host-DMA path.
+
+        Heard is the landed content less the servo's smoothed ring gap, with
+        the pad still inside that gap taken back out (``_unplayed_pad``), and
+        never below what an earlier read of this activation reported: the gap
+        is smoothed, so a widening gap would otherwise walk the clock back.
+        Zero before the consumer starts.
+
+        Consumed is read first: the worker records a landing's pad before it
+        counts the landing, so a read torn across one lags by that chunk
+        rather than leading by it. Locked: the worker's discard of a
+        pre-splice chunk drops both counts, and an unlocked read pairing the
+        old pushed with the new queued leads by that chunk."""
+        with self._count_lock:
+            consumed = max(0, self._pushed_count - self._queued_samples)
         lead = self.servo.ring_lead
         if lead < 0:
-            return None
-        return max(0.0, lead - self._ring_tail_pad)
+            return consumed, 0.0
+        with self._ring_pad_lock:
+            content_lead = max(0.0, lead - self._unplayed_pad(lead))
+            heard = max(self._position_floor, consumed - content_lead)
+            self._position_floor = heard
+        return consumed, heard
+
+    def _unplayed_pad(self, lead: float) -> float:
+        """The pad bytes among the last ``lead`` bytes landed in the ring.
+        Caller holds ``_ring_pad_lock``."""
+        lo = self._ring_landed_total - lead
+        pad_bytes = 0.0
+        for end, pad in self._ring_pads:
+            pad_bytes += max(0.0, end - max(lo, end - pad))
+        return pad_bytes
 
     def _note_ring_landed(self, nbytes: int, pad: int) -> None:
         """Worker-side: ``nbytes`` reached the ring, the last ``pad`` of them
-        padding. A short chunk's pad counts only once a whole chunk of pad
-        follows it: a producer merely late for one chunk resumes behind it, and
-        counting it would step the clock forward and back by that pad."""
-        if pad >= nbytes:
-            self._ring_tail_pad += self._ring_short_pad + nbytes
-        else:
-            self._ring_tail_pad = 0
-        self._ring_short_pad = pad if pad < nbytes else 0
+        padding. Pad further back than a whole ring can no longer be inside
+        the gap, so it is dropped, which bounds the record at a ring's worth
+        of chunks."""
+        with self._ring_pad_lock:
+            self._ring_landed_total += nbytes
+            total = self._ring_landed_total
+            if pad > 0:
+                self._ring_pads.append((total, pad))
+            while self._ring_pads and self._ring_pads[0][0] <= total - RING_BUFFER_SIZE:
+                self._ring_pads.popleft()
+
+    def _reset_ring_clock(self) -> None:
+        """Start the host-DMA clock's pad record and high-water mark afresh,
+        for a new activation."""
+        with self._ring_pad_lock:
+            self._ring_landed_total = 0
+            self._ring_pads.clear()
+            self._position_floor = 0.0
 
     def reset_position(self) -> None:
         self._pushed_count = 0
+        self._reset_ring_clock()
 
     def _drain_queue_samples(self) -> int:
         """get_nowait-drain self.q; return the total samples dropped (each blob
@@ -2539,8 +2570,7 @@ class AudioStreamer:
         self._drain_queue_samples()
         self._pushed_count = 0
         self._queued_samples = 0
-        self._ring_tail_pad = 0
-        self._ring_short_pad = 0
+        self._reset_ring_clock()
         self._stomp_requested = False
         # The streamer is reused across scenes: a total outliving its own scene
         # would clamp the next scene's position_seconds clock.
