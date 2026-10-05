@@ -291,6 +291,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Audio-file scenes also stopped reacting to the music. The scene now resets
   the sampler before it starts feeding it.
 
+- **A sampler scene that comes round again after the link to the Ultimate
+  stalled mid-write no longer plays scrambled audio.** The stalled write could
+  outlast the scene's stop, and the next play then ran a second writer beside
+  it, so the two fed the same ring out of order. While the stalled write is
+  still stuck, a video scene now plays that lap silent and an audio-file scene
+  is skipped.
+
 - **On the Ultimate Audio sampler, sound stays in sync with the picture after
   a seek, an A/B loop wrap, a resume from pause, or a decoding hiccup.** After
   every seek, loop wrap or resume, the sound had been running behind the
