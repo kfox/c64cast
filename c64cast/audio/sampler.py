@@ -1309,7 +1309,13 @@ class UltimateAudioSampler:
         read was worked out at a later head, and taken at the earlier one it
         stepped the heard sample back, so it is taken at its own head; and a
         lag still in flight is waited out (there is no I/O inside it) rather
-        than read stale against a head past the writer's."""
+        than read stale against a head past the writer's.
+
+        0 on a stopped sampler, whose `position_seconds()` is 0: its lag was
+        worked out at heads of a clock that has stopped, and taken at the
+        last one it put the heard sample there, not at 0."""
+        if not self._running:
+            return 0.0
         if position is None:
             head = self._read_consumed_bytes()
         else:

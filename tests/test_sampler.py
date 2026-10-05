@@ -1106,7 +1106,9 @@ class SamplerLateReanchorTest(unittest.TestCase):
             lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
             heard.append(self.consumed - lag)
 
-        reader = threading.Thread(target=read)
+        # A daemon: a reader left spinning by a window that never closes fails
+        # this test rather than holding the test process open at exit.
+        reader = threading.Thread(target=read, daemon=True)
         compute = smp._lag_after_reanchor
 
         def reanchor_with_a_read_in_flight(consumed: int, c: int, shift: int) -> Any:
@@ -1135,6 +1137,44 @@ class SamplerLateReanchorTest(unittest.TestCase):
         sample = 1 / smp._actual_rate
         self.assertAlmostEqual(position - lag, held * sample, delta=1.5 * sample)
         self.assertAlmostEqual(lag, smp.reanchor_lag_seconds() - 25 * sample, delta=1.5 * sample)
+
+    def test_the_lag_window_covers_the_writer_s_head_and_not_its_log_line(self):
+        # A reader whose head was read past the writer's head must find the
+        # window open, so the head read is inside it; and a reader must not
+        # wait out the log line, which may block on a handler's I/O.
+        smp = self.smp
+        at_head: list[int] = []
+
+        def head() -> int:
+            at_head.append(smp._lag_seq & 1)
+            return self.consumed
+
+        smp._read_consumed_bytes = head  # type: ignore[method-assign]
+        at_log: list[int] = []
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with mock.patch.object(
+            s.log, "log", side_effect=lambda *a: at_log.append(smp._lag_seq & 1)
+        ):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 1)
+        self.assertEqual(at_log, [0], "the re-anchor's log line ran inside the window")
+        self.assertEqual(set(at_head), {1}, "a writer head read fell outside the window")
+        self.assertEqual(smp._lag_seq & 1, 0)
+
+    def test_a_stopped_sampler_has_no_reanchor_lag(self):
+        # Its position_seconds() is 0, and the lag taken at the last
+        # re-anchor's head put the heard sample there instead.
+        smp = self.smp
+        self._reanchor_late()
+        self.consumed += 2 * smp._reanchor_lead
+        self.assertGreater(smp.reanchor_lag_seconds(), 0.0)
+        smp._running = False
+        self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
+        self.assertEqual(smp.reanchor_lag_seconds(0.0), 0.0)
 
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped
