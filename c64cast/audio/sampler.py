@@ -504,13 +504,24 @@ class UltimateAudioSampler:
         self._late_reanchor_bytes = int(LATE_REANCHOR_S * self._actual_rate) * self.bps
         self._late_catchup_bytes = int(LATE_CATCHUP_S * self._actual_rate) * self.bps
         # Re-anchors this activation, and how far they put the sound behind
-        # the picture since the last splice re-aligned it. Both count a
-        # re-anchor once a ring write lands at it: until then it is
-        # _unlanded_reanchor, (shift in bytes, the log line's span), and the
-        # writer's retries of a failed write go back to its anchor.
+        # the picture since the last splice re-aligned it: (every shift's
+        # total, the holds the read head has not crossed yet as (from, to)
+        # spans, the read head it was worked out at), one tuple so
+        # reanchor_lag_seconds() reads it whole without the lock. The lag
+        # takes a re-anchor in when it is made, since the heard sample holds
+        # from then on whether or not the write lands; the count and the log
+        # line wait for a ring write to land at it. Until then it is also
+        # _unlanded_reanchor, (shift in bytes, the log line's span), which the
+        # lag leaves out again once the writer has given up (_failed_lag_bytes),
+        # and the writer's retries of a failed write go back to its anchor.
         self._reanchors = 0
-        self._reanchor_lag_bytes = 0
+        self._reanchor_lag: tuple[int, tuple[tuple[int, int], ...], int] = (0, (), 0)
         self._unlanded_reanchor: tuple[int, str] | None = None
+        # Odd while the writer is between the read head it re-anchors at and
+        # the lag it publishes (_write_payload), so reanchor_lag_seconds() can
+        # tell a lag about to be replaced from the current one. Bumped only
+        # under _io_lock; there is no ring I/O inside that span.
+        self._lag_seq = 0
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
         # flush() bumps _flush_epoch and then rewrites the lead under _io_lock,
@@ -606,7 +617,7 @@ class UltimateAudioSampler:
             self._last_late = None
             self._late_from = None
             self._reanchor_sticky = False
-            self._reanchor_lag_bytes = 0
+            self._reanchor_lag = (0, (), 0)
             self._unlanded_reanchor = None
             # The read head restarts at 0 with the next gate, so a head kept
             # from the last activation would hold every partial gather until
@@ -756,10 +767,9 @@ class UltimateAudioSampler:
         # bounded put timeout re-checks; a put that lands just before the splice
         # is dropped by the writer on its stale tag.
         epoch = self._flush_epoch
-        floats = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
-        self._tap_push(floats)
-        # Pre-DSP, for parity with AudioStreamer.push_samples.
-        self._push_to_analysis(floats)
+        raw = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
+        self._tap_push(raw)
+        floats = raw
         if self._dsp is not None and self._dsp.active:
             floats = self._dsp.process(floats)
         out_i16 = np.clip(np.rint(floats * 32767.0), -32768, 32767).astype(np.int16)
@@ -775,11 +785,15 @@ class UltimateAudioSampler:
         else:
             return 0
         # After a successful put of a still-current chunk only: a dropped chunk
-        # must not inflate position_seconds's pushed-total EOF ceiling.
+        # must not inflate position_seconds's pushed-total EOF ceiling, nor
+        # enter the analysis tap, which a file source reads at the slot each
+        # sample was written for (pre-DSP, for parity with
+        # AudioStreamer.push_samples).
         if self._flush_epoch != epoch:
             return 0
         accepted = int(samples_int16.shape[0])
         self._pushed_samples += accepted
+        self._push_to_analysis(raw)
         return accepted
 
     def end_input(self) -> None:
@@ -888,7 +902,7 @@ class UltimateAudioSampler:
             self._last_late = None
             self._late_from = None
             self._reanchor_sticky = False
-            self._reanchor_lag_bytes = 0
+            self._reanchor_lag = (0, (), 0)
             self._unlanded_reanchor = None
             self._eof = False
             self._cut_epoch = max(self._cut_epoch, epoch)
@@ -988,10 +1002,14 @@ class UltimateAudioSampler:
                 # after this pass's check above): held for the new anchor.
                 self._carry_back(epoch, data)
                 return False
-            consumed = self._read_consumed_bytes()
             before = self._content_pos
             last_try, last_late = self._last_try, self._last_late
-            c = self._late_anchor(consumed)
+            self._lag_seq += 1  # odd: a re-anchor's head and lag are in flight
+            try:
+                consumed = self._read_consumed_bytes()
+                c = self._late_anchor(consumed)
+            finally:
+                self._end_lag_window()
             # _writer_step sized this payload to the room under the lead target
             # at the old _content_pos; a re-anchor moved it forward, so the tail
             # past the target waits for the next pass. A lead too shallow to
@@ -1068,8 +1086,8 @@ class UltimateAudioSampler:
         """Under _io_lock: where the next real sample is written. That is
         _content_pos unless the producer is not keeping up, in which case the
         audio is re-anchored _reanchor_lead past the read head (moving
-        _content_pos). The re-anchor's count, lag and log line wait for a ring
-        write to land at it (_land_reanchor).
+        _content_pos). The re-anchor's lag is published here; its count and
+        log line wait for a ring write to land at it (_land_reanchor).
 
         The question is the trend of the lateness L (how far the anchor sits
         behind the write floor), not how long writes have been late. A
@@ -1155,6 +1173,11 @@ class UltimateAudioSampler:
         else:
             late_for = f"for {(consumed - late_from) / self.bps / self._actual_rate:.1f} s"
         self._reanchor_sticky = True
+        # The lag takes this shift in now (the heard sample holds from here
+        # whether the write lands or not), and only this one's: an unlanded
+        # one before it is in already.
+        self._reanchor_lag = self._lag_after_reanchor(consumed, c, shift)
+        self._end_lag_window()
         # A re-anchor still waiting on a failed write moved the anchor this one
         # moves on from: they land as one, logged with the first one's span.
         unlanded = self._unlanded_reanchor
@@ -1167,17 +1190,13 @@ class UltimateAudioSampler:
 
     def _land_reanchor(self) -> None:
         """Under _io_lock, once a ring write has landed: count the re-anchor
-        it landed at, if any, into the activation's count and the content lag,
-        and log it."""
+        it landed at, if any, into the activation's count, and log it. The lag
+        took it in when it was made (_late_anchor)."""
         unlanded = self._unlanded_reanchor
         if unlanded is None:
             return
-        shift, late_for = unlanded
+        _, late_for = unlanded
         self._reanchors += 1
-        # The lag first: content_lag_seconds reads both without the lock, and
-        # in this order it sees the shift once or, for an instant, twice,
-        # never not at all.
-        self._reanchor_lag_bytes += shift
         self._unlanded_reanchor = None
         if self._reanchors == 1:
             level = logging.WARNING
@@ -1193,7 +1212,7 @@ class UltimateAudioSampler:
             "re-anchored at the read head%s — sound now lags the picture by %.2f s",
             late_for,
             note,
-            self._reanchor_lag_bytes / self.bps / self._actual_rate,
+            self._reanchor_lag[0] / self.bps / self._actual_rate,
         )
 
     def _pad_underrun(self, gen: int) -> bool:
@@ -1335,25 +1354,128 @@ class UltimateAudioSampler:
     @property
     def content_lag_seconds(self) -> float:
         """How far this activation's re-anchors have put the sound behind
-        `position_seconds()`. Late audio is re-anchored past the read head
-        (`_late_anchor`), and the clock does not follow it, so the last sample
-        of a track is heard this long after the clock reaches the track's
-        length. Cleared by arm() and by a splice.
+        `position_seconds()`, once the read head has crossed them: every
+        shift `reanchor_lag_seconds()` counts, without its holds. Late audio
+        is re-anchored past the read head (`_late_anchor`), and the clock
+        does not follow it, so the last sample of a track is heard this long
+        after the clock reaches the track's length. Cleared by arm() and by a
+        splice.
 
         A re-anchor whose write has not landed yet counts too: the writer
         retries at its anchor, so the sound will lag by it once the link is
         back, and left out, an audio-file scene's end read the clock as
         caught up and cut the scene during the outage. Once the writer has
-        given up nothing more lands, and only what did counts. Read without
-        _io_lock, which the writer holds for a whole REU write: the pending
-        shift is read first, and _land_reanchor adds it to the lag before
-        clearing it, so a landing between the reads counts it twice for an
-        instant rather than not at all."""
+        given up nothing more lands, and only what did counts
+        (`_failed_lag_bytes`). Read without _io_lock, which the writer holds
+        for a whole REU write."""
+        lag = self._reanchor_lag[0] - self._failed_lag_bytes()
+        return max(0, lag) / self.bps / self._actual_rate
+
+    def _failed_lag_bytes(self) -> int:
+        """The shift of a re-anchor that never landed because the writer gave
+        up on the link: nothing more lands, so the sound lags by none of it,
+        and both lag figures leave it out. 0 while the writer is still
+        retrying, or once the re-anchor landed."""
         unlanded = self._unlanded_reanchor
-        lag = self._reanchor_lag_bytes
-        if unlanded is not None and not self._failed:
-            lag += unlanded[0]
-        return lag / self.bps / self._actual_rate
+        if unlanded is None or not self._failed:
+            return 0
+        return unlanded[0]
+
+    def reanchor_lag_seconds(self, position: float | None = None) -> float:
+        """How far re-anchors have put the audio behind `position_seconds()`
+        since the last arm() or splice. Each one moves every later sample that
+        much past the slot it was pushed for, so the sample heard now is the
+        one pushed for ``position - reanchor_lag_seconds(position)``.
+
+        ``position`` is the `position_seconds()` the caller subtracts this
+        from, and the lag is taken at the read head it stands for; omitted,
+        the head is read here. Read apart, the head moved between the two,
+        and inside a hold (below) the heard sample stepped back by as much.
+
+        The latest one's shift comes in only as the read head crosses the
+        span it skipped, so the heard sample holds until the moved audio
+        reaches it: audio already in the ring before the moved slot plays on
+        time, and nothing current is heard from there to the anchor. Taken in
+        whole at the re-anchor, the heard sample stepped back by the shift,
+        and an analyzer reading it replayed audio it had already read, which
+        was dropped late and never heard.
+
+        Unlocked: the writer holds _io_lock across ring writes. The lag is
+        one tuple the writer replaces whole, read where no re-anchor is in
+        flight (_lag_seq even and unchanged across the read), so the head
+        and the lag cannot straddle one: a lag published after the head was
+        read was worked out at a later head, and taken at the earlier one it
+        stepped the heard sample back, so it is taken at its own head; and a
+        lag still in flight is waited out (there is no I/O inside it) rather
+        than read stale against a head past the writer's.
+
+        A re-anchor the writer gave up on comes off again (`_failed_lag_bytes`),
+        as in `content_lag_seconds`, which is this lag with every hold crossed.
+
+        0 on a stopped sampler, whose `position_seconds()` is 0: its lag was
+        worked out at heads of a clock that has stopped, and taken at the
+        last one it put the heard sample there, not at 0."""
+        if not self._running:
+            return 0.0
+        if position is None:
+            head = self._read_consumed_bytes()
+        else:
+            head = int(position * self._actual_rate) * self.bps
+        while True:
+            seq = self._lag_seq
+            if seq & 1:
+                time.sleep(0)  # yield to the writer finishing its re-anchor
+                continue
+            lag = self._reanchor_lag
+            if self._lag_seq == seq:
+                break
+        at = max(head, lag[2])
+        lag_bytes = self._lag_bytes(lag, at) - (at - head)
+        failed = self._failed_lag_bytes()
+        if failed:
+            lag_bytes = max(0, lag_bytes - failed)
+        return lag_bytes / self.bps / self._actual_rate
+
+    def _end_lag_window(self) -> None:
+        """Under _io_lock: close the span _write_payload opened at its head
+        read (_lag_seq back to even), once whatever lag it decided is in."""
+        if self._lag_seq & 1:
+            self._lag_seq += 1
+
+    def _reanchor_lag_bytes(self, head: int) -> int:
+        """The current re-anchor lag in bytes with the read head at ``head``."""
+        return self._lag_bytes(self._reanchor_lag, head)
+
+    @staticmethod
+    def _lag_bytes(lag: tuple[int, tuple[tuple[int, int], ...], int], head: int) -> int:
+        """``lag``'s bytes with the read head at ``head``: every shift, less
+        what of each hold the head has not crossed yet."""
+        total, holds, _ = lag
+        return total - sum(max(0, to - max(head, frm)) for frm, to in holds)
+
+    def _lag_after_reanchor(
+        self, consumed: int, c: int, shift: int
+    ) -> tuple[int, tuple[tuple[int, int], ...], int]:
+        """Under _io_lock: the lag once the audio due at ``c`` is moved
+        ``shift`` later, with the read head at ``consumed``.
+
+        The heard sample holds at the later of the next unwritten one and the
+        one already reported heard (no further than what was pushed, where an
+        analysis tap's read stops), until the moved audio passes it. Held at
+        the unwritten one alone, a re-anchor with the head past ``c`` stepped
+        back over audio a tap had already handed the analyzer. A hold the head
+        has not finished crossing is kept rather than taken in whole, since a
+        sticky re-anchor can land up to a flush margin before the last one's
+        anchor."""
+        total, holds, _ = self._reanchor_lag
+        heard = consumed - self._reanchor_lag_bytes(consumed)
+        held = max(c - total, min(heard, self._pushed_samples * self.bps))
+        start = max(c, consumed)
+        # An older hold ends where this one starts: `held` already counts the
+        # rest of it, and the two overlapping took the head's progress off
+        # twice, so the heard sample jumped ahead and then ran backward.
+        kept = tuple((frm, min(to, start)) for frm, to in holds if min(to, start) > consumed)
+        return total + shift, (*kept, (start, held + total + shift)), consumed
 
     def ring_lead_seconds(self) -> float:
         """The ``AudioStreamer`` splice hook: how long after a flush() the first

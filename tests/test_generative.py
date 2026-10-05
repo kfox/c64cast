@@ -1391,6 +1391,18 @@ class _FileSink:
         return self._played() if callable(self._played) else self._played
 
 
+class _SamplerSink(_FileSink):
+    """A `_FileSink` that plays as a sampler: its re-anchors put the sound
+    `content_lag_seconds` behind its clock, and `reanchor_lag_seconds()`
+    reports the same lag, as a real sampler's does once the read head has
+    crossed every re-anchor's hold."""
+
+    is_sampler = True
+
+    def reanchor_lag_seconds(self, position: float | None = None) -> float:
+        return self.content_lag_seconds
+
+
 class _SamplerLink:
     """The write surface `UltimateAudioSampler` drives, recording nothing."""
 
@@ -1501,7 +1513,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # does not follow, so the last sample is heard that long after the
         # clock reaches the length.
         start = self.now[0]
-        sink = _FileSink(played=lambda: self.now[0] - start)
+        sink = _SamplerSink(played=lambda: self.now[0] - start)
         sink.content_lag_seconds = 0.2
         src = self._source(sink)
         src._decode_loop()
@@ -1516,7 +1528,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # that left the lag out ended the scene with the tail still playing
         # once the lag passed the grace, including lag gained after the end.
         start = self.now[0]
-        sink = _FileSink(played=lambda: self.now[0] - start)
+        sink = _SamplerSink(played=lambda: self.now[0] - start)
         src = self._source(sink)
         src._decode_loop()
         # A writer that re-anchors the queued tail does so after decoding.
@@ -1530,7 +1542,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # A clock past the length but short of length + lag still has the
         # rest of the lag to play, and no more: the bound is the grace past
         # that, not past the whole lag again.
-        sink = _FileSink(played=3.0)
+        sink = _SamplerSink(played=3.0)
         sink.content_lag_seconds = 4.0
         src = self._source(sink)
         src._decode_loop()
@@ -1547,7 +1559,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # and each re-anchor adds to the lag. A bound that counted the whole
         # lag moved away as fast as the clock approached it, so the scene
         # never ended; the lag counts up to a cap, and passing it is logged.
-        sink = _FileSink(played=-1e9)
+        sink = _SamplerSink(played=-1e9)
         src = self._source(sink)
         src._decode_loop()
         start = self.now[0]
@@ -1572,7 +1584,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # at once with 2 s of the track still to play. Here the lag is 25 s
         # at decoding's end and the clock reaches length + lag 2 s later.
         start = self.now[0]
-        sink = _FileSink(played=lambda: 23.4 + (self.now[0] - start))
+        sink = _SamplerSink(played=lambda: 23.4 + (self.now[0] - start))
         sink.content_lag_seconds = 25.0
         src = self._source(sink)
         src._decode_loop()
@@ -1587,7 +1599,7 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # still gets the full cap on top: a cap that overlapped the lag
         # already there ended the scene 10 s early, and a warning that named
         # the whole lag as growth overstated what the cap cut.
-        sink = _FileSink(played=-1e9)
+        sink = _SamplerSink(played=-1e9)
         sink.content_lag_seconds = 25.0
         src = self._source(sink)
         src._decode_loop()
@@ -1699,6 +1711,75 @@ class AudioFileSourceEndTest(unittest.TestCase):
             self.assertFalse(src.finished, "ended before the last sample played")
             self.now[0] = gate + 6.05
             self.assertTrue(src.finished)
+
+    def test_a_reanchored_sampler_ends_with_the_last_sample_it_plays(self):
+        # A re-anchor plays every later sample that much past its slot, so
+        # the last one is heard that much after the clock reaches the length.
+        from c64cast.audio import sampler
+        from c64cast.audio.audio_source import AudioFileSource
+
+        ConfigGenerativeTest._make_wav(self.wav, seconds=6.0, rate=44100)
+        clock = SimpleNamespace(monotonic=lambda: self.now[0])
+        with (
+            mock.patch.object(sampler, "time", clock),
+            mock.patch.object(sampler, "PollThread", _NoWriter),
+        ):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+            src = AudioFileSource(smp, self.wav, reactive=False)
+            smp.arm()
+            src._decode_loop()
+            self.now[0] += 1.0
+            smp.start()
+            self.addCleanup(smp.stop)
+            smp._reanchor_lag = (int(0.5 * smp.effective_rate) * smp.bps, (), 0)
+            gate = self.now[0]
+            self.now[0] = gate + 6.4
+            self.assertFalse(src.finished, "ended before the re-anchored tail played")
+            self.now[0] = gate + 6.55
+            self.assertTrue(src.finished)
+
+    def test_a_reanchor_hold_reads_the_lag_at_the_position_it_comes_off(self):
+        # Inside a re-anchor's hold the heard sample stands still while the
+        # clock runs. With the lag read at the head as of a later clock read
+        # than the position, the heard sample stepped back by the time between.
+        from c64cast.audio import sampler
+        from c64cast.audio.audio_source import AudioFileSource
+
+        ConfigGenerativeTest._make_wav(self.wav, seconds=6.0, rate=44100)
+        ticks = [self.now[0]]
+
+        def monotonic() -> float:
+            ticks[0] += 0.005  # every clock read is 5 ms after the last
+            return ticks[0]
+
+        with (
+            mock.patch.object(sampler, "time", SimpleNamespace(monotonic=monotonic)),
+            mock.patch.object(sampler, "PollThread", _NoWriter),
+        ):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+            src = AudioFileSource(smp, self.wav, reactive=False)
+            smp.arm()
+            src._decode_loop()
+            smp.start()
+            self.addCleanup(smp.stop)
+            held = 1000  # samples: the hold below runs far past the head
+            smp._reanchor_lag = (10**9 - held * smp.bps, ((0, 10**9),), 0)
+            rate = smp.effective_rate
+            for _ in range(3):
+                self.assertAlmostEqual(src._heard_seconds(), held / rate, delta=1.5 / rate)
+
+    def test_the_wait_bound_counts_a_reanchored_sampler_s_unheard_tail(self):
+        # Decoding ends with the sampler's clock at the length but its last
+        # 0.3 s re-anchored past it, so 0.3 s is still unheard; the bound
+        # waits that out on top of the grace even if the clock never moves.
+        sink = _SamplerSink(played=0.4)
+        sink.content_lag_seconds = 0.3
+        src = self._source(sink)
+        src._decode_loop()
+        self.now[0] += 0.3 + src._DRAIN_GRACE_S - 0.01
+        self.assertFalse(src.finished)
+        self.now[0] += 0.02
+        self.assertTrue(src.finished)
 
     def test_a_decode_that_cannot_open_finishes(self):
         import os
@@ -1861,6 +1942,178 @@ class AudioFileShortClipTest(unittest.TestCase):
             with quiet_logging():
                 took = self._run_scene(smp)
         self.assertLess(took, self.CLIP_S + self.SLACK_S, "setup sat out the prebuffer timeout")
+
+
+def _make_click_wav(path: str, *, seconds: float, period: float, rate: int = 44100) -> list[float]:
+    """A click track: a 30 ms noise burst every `period` seconds, silence
+    between. Returns the click times in seconds."""
+    import wave
+
+    rng = np.random.default_rng(7)
+    n = int(rate * seconds)
+    x = np.zeros(n, dtype=np.float64)
+    clicks = [period * (k + 1) for k in range(int(seconds / period) - 1)]
+    burst = int(0.03 * rate)
+    for t in clicks:
+        i = int(t * rate)
+        x[i : i + burst] = rng.uniform(-0.8, 0.8, burst)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes((x * 32767).astype("<i2").tobytes())
+    return clicks
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class AudioFileSourceFeatureSyncTest(unittest.TestCase):
+    """A reactive file scene pulses with the click the listener hears, not the
+    one the decoder has just reached. Both sinks keep a queue and a ring of
+    decoded audio ahead of playback (≈1.4 s + the ring on the DAC, the whole
+    of a short file on the sampler), and analyzing the newest pushed window
+    put every onset that far ahead of its sound."""
+
+    PERIOD = 0.5
+    TOLERANCE_S = 0.12  # the 1024-sample window plus a few 60 Hz ticks
+
+    def setUp(self):
+        import tempfile
+
+        from c64cast.audio import audio_features, audio_source
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.wav = f"{tmp.name}/clicks.wav"
+        self.clicks = _make_click_wav(self.wav, seconds=4.0, period=self.PERIOD)
+        self.now = [1000.0]
+        clock = SimpleNamespace(monotonic=lambda: self.now[0])
+        for patcher in (
+            mock.patch.object(audio_source, "time", clock),
+            mock.patch.object(audio_features, "time", clock),
+            mock.patch.object(audio_features, "PollThread", _NoWriter),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _source(self, sink):
+        from c64cast.app.config import AudioFeaturesCfg
+        from c64cast.audio.audio_source import AudioFileSource
+
+        src = AudioFileSource(sink, self.wav, reactive=True, features_cfg=AudioFeaturesCfg())
+        src._start_features()
+        self.addCleanup(src.teardown)
+        assert src._features is not None
+        return src
+
+    def _assert_onsets_on_the_clicks(self, onsets: list[float]) -> None:
+        heard = [c for c in self.clicks if c < 3.0]
+        self.assertGreaterEqual(len(onsets), len(heard), f"onsets at {onsets}")
+        for t in onsets:
+            self.assertTrue(
+                any(0.0 <= t - c <= self.TOLERANCE_S for c in self.clicks),
+                f"onset at played {t:.3f} s is on no click {self.clicks}",
+            )
+
+    def _sampler_onsets(self, *, reanchor_lag_s: float = 0.0) -> list[float]:
+        """Onset times, as heard, over a real sampler on the fake clock. A
+        nonzero `reanchor_lag_s` stands for re-anchors the writer made before
+        the gate: every sample then plays that much past its slot."""
+        from c64cast.audio import sampler
+
+        with (
+            mock.patch.object(sampler, "time", SimpleNamespace(monotonic=lambda: self.now[0])),
+            mock.patch.object(sampler, "PollThread", _NoWriter),
+        ):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+            src = self._source(smp)
+            smp.arm()
+            src._decode_loop()  # a 4 s file fits the queue: decoded whole up front
+            self.now[0] += 1.0
+            smp.start()
+            smp._reanchor_lag = (int(reanchor_lag_s * smp.effective_rate) * smp.bps, (), 0)
+            gate = self.now[0]
+            onsets = []
+            assert src._features is not None
+            for k in range(int((3.0 + reanchor_lag_s) * 60)):
+                self.now[0] = gate + k / 60.0
+                src._features._process_tick()
+                m = src._features.features()
+                if m is not None and m.onset == 1.0:
+                    onsets.append(smp.position_seconds() - reanchor_lag_s)
+        return onsets
+
+    def test_sampler_onsets_land_on_the_heard_clicks(self):
+        self._assert_onsets_on_the_clicks(self._sampler_onsets())
+
+    def test_sampler_onsets_follow_the_sound_a_reanchor_delayed(self):
+        # A producer that fell behind is re-anchored past the read head, and
+        # the sound then lags the sampler's wall clock by the shift: the
+        # analyzer has to read that much behind the clock too.
+        self._assert_onsets_on_the_clicks(self._sampler_onsets(reanchor_lag_s=0.25))
+
+    def test_dac_a_blob_dropped_on_backpressure_never_reaches_the_tap(self):
+        # The tap is read at the streamer's played count, which a blob the
+        # queue refused never enters; tapped anyway, it would put every later
+        # window that far behind the sound.
+        from _fakes import new_streamer
+
+        from c64cast.audio import audio as audio_mod
+        from c64cast.audio.audio_features import AnalysisTap
+
+        streamer = new_streamer(sample_rate=12000)
+        tap = AnalysisTap(size=1 << 16)
+        streamer.analysis_sink = tap.push
+        streamer.running = True
+        streamer.push_samples(np.full(streamer._max_queued_samples, 1000, dtype=np.int16))
+        with mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 0.0):
+            streamer.push_samples(np.full(512, 2000, dtype=np.int16))
+        self.assertEqual(streamer._pushed_count, streamer._max_queued_samples)
+        self.assertEqual(tap.pushed, streamer._pushed_count)
+
+    def test_dac_onsets_land_on_the_heard_clicks(self):
+        # The real streamer's push and clock; its worker is modeled: the ring
+        # holds `ring` samples ahead of the read head and the queue refills to
+        # its cap after every tick, the steady state of a file decoder.
+        import av
+        from _fakes import new_streamer
+
+        streamer = new_streamer(sample_rate=12000)
+        src = self._source(streamer)
+        rate = streamer.effective_rate
+        ring = 4096
+        streamer.running = True
+        streamer.servo.ring_lead = float(ring)
+        container = av.open(self.wav)
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=int(round(rate)))
+        pcm = np.concatenate(
+            [
+                r.to_ndarray().reshape(-1)
+                for f in container.decode(audio=0)
+                for r in resampler.resample(f)
+            ]
+        ).astype(np.int16)
+        container.close()
+        fed = 0
+        deepest = 0
+        onsets = []
+        assert src._features is not None
+        for k in range(int(3.0 * 60)):
+            played = k / 60.0 * rate
+            with streamer._count_lock:
+                streamer._queued_samples = max(0, streamer._pushed_count - int(played) - ring)
+            while not streamer.q.empty():
+                streamer.q.get_nowait()
+            while fed < pcm.size and streamer._queued_samples + 512 <= streamer._max_queued_samples:
+                streamer.push_samples(pcm[fed : fed + 512])
+                fed += 512
+            deepest = max(deepest, streamer._queued_samples)
+            self.now[0] += 1.0 / 60.0
+            src._features._process_tick()
+            m = src._features.features()
+            if m is not None and m.onset == 1.0:
+                onsets.append(streamer.position_seconds())
+        self.assertGreater(deepest, 15000, "the model never ran the queue up")
+        self._assert_onsets_on_the_clicks(onsets)
 
 
 class ConfigGenerativeTest(unittest.TestCase):

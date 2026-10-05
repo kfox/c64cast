@@ -912,6 +912,7 @@ class SamplerLateReanchorTest(unittest.TestCase):
                 self.assertFalse(self._write(40))
                 self.consumed += 40
             self.assertEqual(self.api.audible_writes, 0)
+            slot = smp._content_pos  # where the dropped audio left the next sample
             self.assertTrue(self._write(40))
         self.assertIn("re-anchored", logs.output[0])
         self.assertIn("arrived late for 0.5 s", logs.output[0])
@@ -933,6 +934,266 @@ class SamplerLateReanchorTest(unittest.TestCase):
             (smp._content_pos - delivered) / smp.bps / smp._actual_rate,
             places=9,
         )
+        # Every sample from here plays that far past its slot: the sound's lag
+        # behind position_seconds(), which a file source's analyzer subtracts.
+        lag = (anchor - slot) / smp.bps / smp._actual_rate
+        self.assertGreater(lag, 3.0)
+        self.assertAlmostEqual(smp.reanchor_lag_seconds(), lag)
+
+    def test_the_heard_sample_holds_at_the_moved_slot_until_the_anchor(self):
+        # Between a re-anchor and its anchor the reader plays nothing current,
+        # so the sample heard holds at the slot the audio was moved from;
+        # stepping straight back by the shift replayed audio the analyzer
+        # had already read, which was dropped late and never heard.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            slot = smp._content_pos
+            self.assertTrue(self._write(40))
+        anchor = self.consumed + smp._reanchor_lead
+
+        def heard() -> int:
+            lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
+            return self.consumed - lag
+
+        self.assertEqual(heard(), slot)
+        self.consumed = anchor - smp.bps
+        self.assertEqual(heard(), slot)
+        self.consumed = anchor + 40
+        self.assertEqual(heard(), slot + 40)
+
+    def _heard(self, pushed: int) -> int:
+        # What a file source's analysis tap hands the analyzer: the heard
+        # sample, clamped to what was pushed (8-bit, so bytes are samples).
+        smp = self.smp
+        lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
+        return min(self.consumed - lag, pushed)
+
+    def _reanchor_late(self) -> None:
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            self.assertTrue(self._write(40))
+
+    def test_a_reanchor_past_the_moved_slot_holds_what_was_already_heard(self):
+        # The head is past the moved slot and the producer has audio queued
+        # behind the writer: the tap already handed the analyzer samples past
+        # the slot, so holding at the slot replayed them.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            smp._pushed_samples = smp._content_pos + 3000
+            pushed = smp._pushed_samples
+            before = self._heard(pushed)
+            self.assertTrue(self._write(40))
+        # The producer keeps pushing from here, so the tap no longer clamps.
+        seen = [self._heard(10**9)]
+        anchor = self.consumed + smp._reanchor_lead
+        while self.consumed < anchor + 4000:
+            self.consumed += 37
+            seen.append(self._heard(10**9))
+        self.assertEqual(seen[0], before)
+        self.assertEqual(seen, sorted(seen), "the heard sample stepped back")
+        self.assertGreater(seen[-1], before)
+
+    def test_a_sticky_reanchor_before_the_last_anchor_keeps_its_hold(self):
+        # A producer too slow to fill even the flush margin re-anchors again
+        # while the head is still short of the last anchor; that hold's
+        # uncrossed part must not come in at once.
+        smp = self.smp
+        self._reanchor_late()
+        first_anchor = self.consumed + smp._reanchor_lead
+        self.consumed = first_anchor - 10
+        before = self._heard(10**9)
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 2)
+        seen = [self._heard(10**9)]
+        while self.consumed < smp._content_pos + 1000:
+            self.consumed += 7
+            seen.append(self._heard(10**9))
+        self.assertEqual(seen[0], before)
+        self.assertEqual(seen, sorted(seen), "the heard sample stepped back")
+
+    def test_a_sticky_reanchor_inside_a_hold_past_its_anchor_keeps_it_flat(self):
+        # A re-anchor with the head past the moved slot holds the heard
+        # sample past its anchor. A sticky one landing inside that hold
+        # overlapped it, so the head's progress came off twice: the heard
+        # sample jumped ahead, then ran backward.
+        self._reanchor_inside_a_hold_past_its_anchor(head_past_slot=10)
+
+    def test_a_sticky_reanchor_short_of_its_slot_ends_the_older_hold_there(self):
+        # The same, with the head still short of the slot the second
+        # re-anchor moves: the older hold is cut where the new one starts
+        # rather than dropped, and kept whole it overlapped the new hold.
+        self._reanchor_inside_a_hold_past_its_anchor(head_past_slot=-10)
+
+    def _reanchor_inside_a_hold_past_its_anchor(self, head_past_slot: int) -> None:
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            smp._pushed_samples = 10**9  # far ahead: the tap never clamps
+            before = self._heard(10**9)
+            self.assertTrue(self._write(40))
+        # The producer stalls until the head is near or past what it wrote.
+        self.assertLess(-head_past_slot, smp._flush_margin)  # still late
+        self.consumed = smp._content_pos + head_past_slot
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 2)
+        seen = []
+        end = smp._content_pos + 10000
+        while self.consumed < end:
+            seen.append(self._heard(10**9))
+            self.consumed += 20
+        self.assertEqual(seen[0], before)
+        self.assertEqual(seen, sorted(seen), "the heard sample stepped back")
+        self.assertGreater(seen[-1], before)
+
+    def test_a_splice_clears_the_reanchor_lag(self):
+        smp = self.smp
+        self._reanchor_late()
+        self.consumed += 2 * smp._reanchor_lead
+        self.assertGreater(smp.reanchor_lag_seconds(), 0.0)
+        smp.flush()
+        self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
+
+    def test_arm_clears_the_reanchor_lag(self):
+        smp = self.smp
+        self._reanchor_late()
+        self.consumed += 2 * smp._reanchor_lead
+        self.assertGreater(smp.reanchor_lag_seconds(), 0.0)
+        smp.arm()
+        self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
+
+    def test_a_reanchor_published_after_the_lag_read_s_head_does_not_step_back(self):
+        # The reader reads the head, then a re-anchor further on lands before
+        # it reads the lag. Inside a hold, that lag taken at the earlier head
+        # stepped the heard sample back by the distance between the two.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            smp._pushed_samples = 10**9  # far ahead: the tap never clamps
+            self.assertTrue(self._write(40))
+        self.consumed = smp._content_pos + 10  # inside the hold, still late
+        head = self.consumed
+        held = self._heard(10**9)
+
+        def head_then_reanchor() -> int:
+            smp._read_consumed_bytes = lambda: self.consumed  # type: ignore[method-assign]
+            self.consumed += 30
+            with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+                self.assertTrue(self._write(40))
+            self.assertEqual(smp._reanchors, 2)
+            return head
+
+        smp._read_consumed_bytes = head_then_reanchor  # type: ignore[method-assign]
+        lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
+        self.assertEqual(head - lag, held, "the heard sample stepped back")
+
+    def test_a_lag_read_while_a_reanchor_is_in_flight_waits_for_it(self):
+        # The writer has read the head it re-anchors at and not yet published
+        # the lag; a reader whose head is past the writer's took the old lag,
+        # heard audio the new one then held it short of, and stepped back.
+        smp = self.smp
+        self._reanchor_late()
+        smp._pushed_samples = 10**9  # far ahead: the tap never clamps
+        self.consumed = smp._content_pos + 10  # past the hold, still late
+        heard: list[int] = []
+
+        def read() -> None:
+            lag = round(smp.reanchor_lag_seconds() * smp._actual_rate) * smp.bps
+            heard.append(self.consumed - lag)
+
+        # A daemon: a reader left spinning by a window that never closes fails
+        # this test rather than holding the test process open at exit.
+        reader = threading.Thread(target=read, daemon=True)
+        compute = smp._lag_after_reanchor
+
+        def reanchor_with_a_read_in_flight(consumed: int, c: int, shift: int) -> Any:
+            self.consumed = consumed + 20  # the reader's head, past the writer's
+            reader.start()
+            reader.join(0.2)  # a reader that does not wait has read by now
+            return compute(consumed, c, shift)
+
+        smp._lag_after_reanchor = reanchor_with_a_read_in_flight  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(self._write(40))
+        reader.join(5.0)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(heard, [self._heard(10**9)], "the heard sample stepped back")
+
+    def test_a_lag_read_at_a_given_position_takes_that_position_s_head(self):
+        # AudioFileSource subtracts the lag from a position_seconds() it read
+        # first; inside a hold, a lag read at the head as of later stepped the
+        # heard sample back by however far the head had moved in between.
+        smp = self.smp
+        self._reanchor_late()
+        position = self.consumed / smp._actual_rate
+        held = self.consumed - round(smp.reanchor_lag_seconds() * smp._actual_rate)
+        self.consumed += 25  # still inside the hold
+        lag = smp.reanchor_lag_seconds(position)
+        sample = 1 / smp._actual_rate
+        self.assertAlmostEqual(position - lag, held * sample, delta=1.5 * sample)
+        self.assertAlmostEqual(lag, smp.reanchor_lag_seconds() - 25 * sample, delta=1.5 * sample)
+
+    def test_the_lag_window_covers_the_writer_s_head_and_not_its_log_line(self):
+        # A reader whose head was read past the writer's head must find the
+        # window open, so the head read is inside it; and a reader must not
+        # wait out the log line, which may block on a handler's I/O.
+        smp = self.smp
+        at_head: list[int] = []
+
+        def head() -> int:
+            at_head.append(smp._lag_seq & 1)
+            return self.consumed
+
+        smp._read_consumed_bytes = head  # type: ignore[method-assign]
+        at_log: list[int] = []
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with mock.patch.object(
+            s.log, "log", side_effect=lambda *a: at_log.append(smp._lag_seq & 1)
+        ):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 1)
+        self.assertEqual(at_log, [0], "the re-anchor's log line ran inside the window")
+        self.assertEqual(set(at_head), {1}, "a writer head read fell outside the window")
+        self.assertEqual(smp._lag_seq & 1, 0)
+
+    def test_a_stopped_sampler_has_no_reanchor_lag(self):
+        # Its position_seconds() is 0, and the lag taken at the last
+        # re-anchor's head put the heard sample there instead.
+        smp = self.smp
+        self._reanchor_late()
+        self.consumed += 2 * smp._reanchor_lead
+        self.assertGreater(smp.reanchor_lag_seconds(), 0.0)
+        smp._running = False
+        self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
+        self.assertEqual(smp.reanchor_lag_seconds(0.0), 0.0)
 
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped
@@ -1111,10 +1372,11 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertEqual(smp.content_lag_seconds, before_lag)
 
     def _hook_lag_fields(self, on_get: Any = None, on_set: Any = None) -> None:
-        # content_lag_seconds reads the two fields without _io_lock, so the
-        # writer can land a re-anchor between its reads, or the reader can
-        # read between the writer's two stores. A subclass whose fields run a
-        # hook on each access puts the other thread there deterministically.
+        # content_lag_seconds reads the lag and the pending re-anchor without
+        # _io_lock, so the writer can land a re-anchor between its reads, or
+        # the reader can read between the writer's stores. A subclass whose
+        # fields run a hook on each access puts the other thread there
+        # deterministically.
         smp = self.smp
 
         def field(name: str) -> property:
@@ -1132,7 +1394,7 @@ class SamplerLateReanchorTest(unittest.TestCase):
             return property(get, put)
 
         cls = type(smp)
-        fields = ("_reanchor_lag_bytes", "_unlanded_reanchor")
+        fields = ("_reanchor_lag", "_unlanded_reanchor")
         smp.__class__ = type("Hooked", (cls,), {name: field(name) for name in fields})
         self.addCleanup(setattr, smp, "__class__", cls)
 
@@ -1154,7 +1416,9 @@ class SamplerLateReanchorTest(unittest.TestCase):
         with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
             self.assertTrue(self._write(40))
         self.assertIsNone(smp._unlanded_reanchor)
-        self.assertEqual(len(seen), 2)  # one read after each store
+        # The lag took the shift in when the re-anchor was made, so landing
+        # stores only the pending re-anchor's clearing: one read after it.
+        self.assertEqual(len(seen), 1)
         self.assertGreaterEqual(min(seen), lands_at)
         self.assertAlmostEqual(smp.content_lag_seconds, lands_at, places=9)
 
@@ -2293,6 +2557,8 @@ class SamplerFlushTests(unittest.TestCase):
         smp._q = _SignalingQueue(maxsize=1)
         smp._q.put((smp._flush_epoch, b"\x01" * 32))
         parked.clear()
+        tapped: list[np.ndarray] = []
+        smp.analysis_sink = tapped.append
         t = threading.Thread(target=smp.push_samples, args=(np.full(50, 8000, dtype=np.int16),))
 
         def release() -> None:
@@ -2306,6 +2572,9 @@ class SamplerFlushTests(unittest.TestCase):
         t.join(timeout=1.0)
         self.assertFalse(t.is_alive())
         self.assertEqual(smp._pushed_samples, 0, "a pre-splice chunk counted toward EOF")
+        # A file source reads the analysis tap at the slot each sample was
+        # written for, which a dropped chunk never takes.
+        self.assertEqual(tapped, [], "a dropped chunk entered the analysis tap")
         # A drain would free the slot and let the parked put through, which
         # leaves one item queued as well: the item itself tells them apart.
         self.assertEqual(

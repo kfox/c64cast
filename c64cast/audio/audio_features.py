@@ -14,6 +14,7 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 
 import numpy as np
 
@@ -48,18 +49,53 @@ def band_edges(n_bands: int, fft_size: int) -> np.ndarray:
     rfft yields fft_size//2 + 1 bins. We skip bin 0 (DC) and pick log-spaced
     edges through bin (fft_size//2). Shared with `overlays/spectrum_petscii.py`
     so there is exactly one band-edge definition — the overlay's bars and the
-    analyzer's `bands` describe the same frequency ranges."""
+    analyzer's `bands` describe the same frequency ranges.
+
+    Every band holds at least one bin. Truncated log spacing repeats the low
+    edges once there are more bands than the bottom octaves have bins (10 or
+    more at 1024), which left a band permanently empty, so each edge is
+    pushed at least one bin above the one before; log spacing outgrows that
+    push, so the top edge still lands on Nyquist. That top edge is set
+    outright, because `logspace` can land a hair under an integer (fft_size
+    1000 ends at 499.99…) and truncation then dropped the highest bin. A band
+    count with fewer bins than bands raises rather than reporting a dead
+    band."""
     n_bins = fft_size // 2
-    edges = np.logspace(0, np.log10(n_bins), n_bands + 1)
-    return np.clip(edges.astype(np.int32), 1, n_bins)
+    if not 1 <= n_bands <= n_bins - 1:
+        raise ValueError(
+            f"audio features: {n_bands} bands need at least {n_bands} bins "
+            f"between DC and Nyquist; fft_size {fft_size} has {n_bins - 1}"
+        )
+    edges = np.clip(np.logspace(0, np.log10(n_bins), n_bands + 1).astype(np.int64), 1, n_bins)
+    for i in range(1, n_bands + 1):
+        edges[i] = max(edges[i], edges[i - 1] + 1)
+    edges[n_bands] = n_bins
+    return edges.astype(np.int32)
+
+
+def check_layout(n_bands: int, fft_size: int) -> None:
+    """Raise ValueError unless an analyzer can run `n_bands` bands over an
+    `fft_size`-sample window. `config.validate_sections` calls this too, so a
+    band count the window cannot split is refused when the config loads rather
+    than when a reactive scene starts, where the audio source swallows the
+    error and plays on without reacting."""
+    if fft_size < 32:
+        raise ValueError("audio features: fft_size must be >= 32")
+    if n_bands < 1:
+        raise ValueError("audio features: bands must be >= 1")
+    band_edges(n_bands, fft_size)
 
 
 class AnalysisTap:
     """A small lock-protected mono float ring the audio path pushes into and the
     feature thread reads windows out of.
 
-    Same wrap arithmetic as `AudioStreamer._push_to_tap` / `get_recent_samples`;
-    the tap outlives any single `start_mic`.
+    Every sample has an absolute index, its position in everything pushed
+    since construction, and lives in slot ``index % size``. `recent()` reads
+    the window ending at the newest sample; `window_ending_at()` reads one
+    ending anywhere still retained, which is how a source whose sink plays
+    well behind the producer analyzes what is heard rather than what was
+    decoded. The tap outlives any single `start_mic`.
     """
 
     def __init__(self, size: int = FFT_SIZE * 4):
@@ -67,44 +103,59 @@ class AnalysisTap:
             raise ValueError("AnalysisTap: size must be positive")
         self.size = int(size)
         self._buf = np.zeros(self.size, dtype=np.float32)
-        self._write = 0
+        self._total = 0
         self._lock = threading.Lock()
+
+    @property
+    def pushed(self) -> int:
+        """Samples pushed since construction: one past the newest index."""
+        with self._lock:
+            return self._total
 
     def push(self, mono: np.ndarray) -> None:
         """Append mono float samples (nominally [-1, 1]). Called from the audio
         callback — keep it to slice assignments."""
-        n = mono.size
+        n = int(mono.size)
         if n == 0:
             return
-        if n >= self.size:
-            with self._lock:
-                self._buf[:] = mono[-self.size :]
-                self._write = 0
-            return
+        keep = mono[-self.size :] if n > self.size else mono
+        k = int(keep.size)
         with self._lock:
-            end = self._write + n
-            if end <= self.size:
-                self._buf[self._write : end] = mono
-            else:
-                split = self.size - self._write
-                self._buf[self._write :] = mono[:split]
-                self._buf[: end - self.size] = mono[split:]
-            self._write = end % self.size
+            start = (self._total + n - k) % self.size
+            first = min(k, self.size - start)
+            self._buf[start : start + first] = keep[:first]
+            if first < k:
+                self._buf[: k - first] = keep[first:]
+            self._total += n
 
     def recent(self, n: int) -> np.ndarray:
         """Return the most recent `n` samples, oldest first, as a fresh copy
         (so the caller can't race the writer). `n` is clamped to the ring size;
         before enough audio has arrived the head reads as zeros."""
-        n = min(int(n), self.size)
-        out = np.empty(n, dtype=np.float32)
         with self._lock:
-            start = (self._write - n) % self.size
-            tail = self.size - start
-            if n <= tail:
-                out[:] = self._buf[start : start + n]
-            else:
-                out[:tail] = self._buf[start:]
-                out[tail:] = self._buf[: n - tail]
+            return self._window(self._total, n)
+
+    def window_ending_at(self, end: int, n: int) -> np.ndarray:
+        """Return the `n` samples with absolute indices ``[end - n, end)``,
+        oldest first, as a fresh copy. `end` is clamped to what has been
+        pushed; indices before the first sample or no longer retained read
+        as zeros, so a window the ring has overwritten is silence rather than
+        audio from a different moment."""
+        with self._lock:
+            return self._window(min(int(end), self._total), n)
+
+    def _window(self, end: int, n: int) -> np.ndarray:
+        n = max(0, min(int(n), self.size))
+        out = np.zeros(n, dtype=np.float32)
+        lo = max(end - n, self._total - self.size, 0)
+        if lo >= end:
+            return out
+        dst = out[n - (end - lo) :]
+        start = lo % self.size
+        first = min(end - lo, self.size - start)
+        dst[:first] = self._buf[start : start + first]
+        if first < end - lo:
+            dst[first:] = self._buf[: end - lo - first]
         return out
 
 
@@ -141,10 +192,7 @@ class AudioFeatureAnalyzer:
         onset_sensitivity: float = 1.0,
         nominal_dt: float = 1.0 / 60.0,
     ):
-        if n_bands < 1:
-            raise ValueError("audio features: bands must be >= 1")
-        if fft_size < 32:
-            raise ValueError("audio features: fft_size must be >= 32")
+        check_layout(int(n_bands), int(fft_size))
         self.sample_rate = float(sample_rate)
         self.n_bands = int(n_bands)
         self.fft_size = int(fft_size)
@@ -268,6 +316,13 @@ class AudioFeatureStream:
     render thread, `stop()` at teardown — the same lifecycle as
     `SidFeatureStream`, so `AudioSource` implementations treat the two alike.
     `features()` returns None before `start()`.
+
+    `play_position`, when given, returns the absolute tap index of the sample
+    the listener is hearing now, and each tick analyzes the window ending
+    there instead of at the newest sample pushed. A live input leaves it None:
+    its samples are pushed as they are heard. A decoded file must set it,
+    because its producer runs a full sink queue and ring ahead of playback,
+    and the newest window is audio that has not been heard yet.
     """
 
     def __init__(
@@ -279,8 +334,11 @@ class AudioFeatureStream:
         fft_size: int = FFT_SIZE,
         poll_hz: float = 60.0,
         onset_sensitivity: float = 1.0,
+        play_position: Callable[[], float] | None = None,
     ):
         self._tap = tap
+        self._play_position = play_position
+        self._warned_behind = False
         self._poll_hz = max(5.0, float(poll_hz))
         self._poll_dt = 1.0 / self._poll_hz
         self._fft_size = int(fft_size)
@@ -291,7 +349,12 @@ class AudioFeatureStream:
             onset_sensitivity=onset_sensitivity,
             nominal_dt=self._poll_dt,
         )
+        # `_lock` guards only the snapshot `features()` reads; `_analyze_lock`
+        # guards the analyzer, so a render-thread read never waits on an FFT.
+        # Where both are needed, `_analyze_lock` is taken first and `_lock` is
+        # held only for the swap, so an analysis and its publish stay one step.
         self._lock = threading.Lock()
+        self._analyze_lock = threading.Lock()
         self._snapshot: MusicModulation | None = None
         self._poll: PollThread | None = None
 
@@ -299,9 +362,10 @@ class AudioFeatureStream:
         """Start the poll thread. A second call while running is a no-op."""
         if self._poll is not None and self._poll.is_running():
             return
-        with self._lock:
+        with self._analyze_lock:
             self._analyzer.reset()
-            self._snapshot = None
+            with self._lock:
+                self._snapshot = None
         self._poll = PollThread(
             self._process_tick, period=self._poll_dt, name="audio-features", run_first=True
         )
@@ -315,12 +379,36 @@ class AudioFeatureStream:
 
     def _process_tick(self) -> None:
         """Analyze the most recent window. The FFT runs outside the lock; only
-        the snapshot swap takes it."""
-        window = self._tap.recent(self._fft_size)
-        now = time.monotonic()
-        with self._lock:
+        the snapshot swap takes it, so `features()` on the render thread never
+        waits out an analysis. The analyzer has a lock of its own, against a
+        `start()` reset racing a tick from a poll thread whose stop timed out.
+        The swap happens while that lock is still held, so the old thread's
+        tick cannot publish a pre-reset snapshot over `start()`'s None, nor two
+        overlapping ticks publish out of order; and the window and timestamp
+        are taken under it, so a tick that waited on it analyzes the present."""
+        with self._analyze_lock:
+            window = self._window()
+            now = time.monotonic()
             self._analyzer.update(window, now)
-            self._snapshot = self._analyzer.snapshot()
+            snapshot = self._analyzer.snapshot()
+            with self._lock:
+                self._snapshot = snapshot
+
+    def _window(self) -> np.ndarray:
+        """The window to analyze: the newest one, or the one the listener is
+        hearing when `play_position` is set."""
+        if self._play_position is None:
+            return self._tap.recent(self._fft_size)
+        end = int(self._play_position())
+        if end < self._tap.pushed - self._tap.size and not self._warned_behind:
+            self._warned_behind = True
+            log.warning(
+                "audio features: playback is more than %d samples behind the "
+                "decoder, past what the analysis tap retains; the visuals read "
+                "silence until it catches up",
+                self._tap.size,
+            )
+        return self._tap.window_ending_at(end, self._fft_size)
 
     def features(self) -> MusicModulation | None:
         """Return the current snapshot, or None before the first tick."""

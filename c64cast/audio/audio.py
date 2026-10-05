@@ -103,7 +103,7 @@ from .audio_handlers import (
 )
 from .audio_rate import NmiTimer, RateServo
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
-from .dsp import AudioDSP, DSPParams
+from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
@@ -201,8 +201,17 @@ def downmix_to_mono(indata: np.ndarray) -> np.ndarray:
     all three capture callbacks used to spell that fallback ``indata[:, 0]``,
     which can only raise IndexError on the 1-D input it exists for. One
     helper, so the three copies cannot drift apart again.
+
+    It is also where a device's floats enter, so non-finite samples become
+    0 / ±1 here and finite ones are held to ±`dsp.INPUT_CEILING`: a NaN from a
+    misbehaving driver would otherwise latch the analyzer's level follower and
+    the DSP chain's envelopes for the rest of the run, and the DAC encoder
+    casts NaN to the bottom rail. A finite sample near float32's limit gets
+    there too, overflowing to inf under the caller's sensitivity gain.
     """
-    return indata.mean(axis=1) if indata.ndim > 1 else indata
+    mono = indata.mean(axis=1) if indata.ndim > 1 else indata
+    clean = np.asarray(np.nan_to_num(mono, nan=0.0, posinf=1.0, neginf=-1.0))
+    return np.asarray(np.clip(clean, -INPUT_CEILING, INPUT_CEILING))
 
 
 # Attempts per stage of AudioStreamer._install_tracked_pump before it gives up.
@@ -2224,9 +2233,15 @@ class AudioStreamer:
             return 0
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
         # Pre-DSP analysis tap, as in the mic callbacks, so a decoded file
-        # drives reactive visuals through the same analyzer.
-        self._push_to_analysis(floats)
-        return self._encode_and_enqueue(floats, block_on_full=True)
+        # drives reactive visuals through the same analyzer. Only audio the
+        # queue took: the file source reads the tap at this streamer's played
+        # count, which a blob dropped on a backpressure timeout never enters,
+        # so tapping it too would leave every later window that far behind
+        # the sound.
+        accepted = self._encode_and_enqueue(floats, block_on_full=True)
+        if accepted:
+            self._push_to_analysis(floats)
+        return accepted
 
     def end_input(self) -> None:
         """The ``push_samples`` producer has ended: start the consumer on what

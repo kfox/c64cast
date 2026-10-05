@@ -281,6 +281,12 @@ class AudioFileSource:
     # growth, and capped it cut that tail on a long slow stream.
     _MAX_COUNTED_LAG_S = 10.0
 
+    # How far behind the decoder the analyzer can read. The sampler's queue
+    # alone holds about 23 s of a 44 kHz WAV (above) plus its 1 s ring lead;
+    # the DAC's holds about 1.4 s plus its ring. Past this the analyzer reads
+    # silence and says so once, rather than audio from the wrong moment.
+    _FEATURE_HISTORY_S = 30.0
+
     def __init__(
         self,
         audio: AudioStreamer | UltimateAudioSampler,
@@ -431,7 +437,12 @@ class AudioFileSource:
 
     def _start_features(self) -> None:
         """Install the pre-DSP analyzer at the streamer's DAC rate (what the DAC
-        actually plays, like the mic path). A failure must not cost playback."""
+        actually plays, like the mic path). A failure must not cost playback.
+
+        The decoder runs the sink's whole queue and ring ahead of what is
+        heard, so the analyzer reads the window ending at the sink's played
+        position rather than the newest one; the tap keeps enough history to
+        reach back that far."""
         if not self._reactive:
             return
         from c64cast.app.config import AudioFeaturesCfg
@@ -439,8 +450,17 @@ class AudioFileSource:
         from .audio_features import AnalysisTap, AudioFeatureStream
 
         cfg = self._features_cfg or AudioFeaturesCfg()
+        audio = self._audio
+        # The tap is indexed in pushed samples, which the decoder resamples to
+        # this rate, and the sink's clock divides by the same one.
+        rate = float(audio.effective_rate or audio.sample_rate)
+
+        def played_index() -> float:
+            return max(self._heard_seconds(), 0.0) * rate
+
         try:
-            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096))
+            history = int(rate * self._FEATURE_HISTORY_S)
+            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096, history))
             stream = AudioFeatureStream(
                 tap,
                 self._audio.sample_rate,
@@ -448,6 +468,7 @@ class AudioFileSource:
                 fft_size=cfg.fft_size,
                 poll_hz=cfg.poll_hz,
                 onset_sensitivity=cfg.onset_sensitivity,
+                play_position=played_index,
             )
             self._audio.analysis_sink = tap.push
             stream.start()
@@ -565,8 +586,7 @@ class AudioFileSource:
         # producer that keeps falling behind would otherwise never let the
         # bound arrive.
         lag = self._content_lag()
-        played = self._audio.position_seconds() or 0.0
-        if played >= length + lag - 1e-3:
+        if self._heard_seconds() >= length - 1e-3:
             return True
         counted = min(lag, lag_at_end + self._MAX_COUNTED_LAG_S)
         if time.monotonic() < deadline + counted:
@@ -582,6 +602,20 @@ class AudioFileSource:
                 self._MAX_COUNTED_LAG_S,
             )
         return True
+
+    def _heard_seconds(self) -> float:
+        """How much of the pushed audio has been heard, on the sink's clock.
+        The sampler's clock is the wall since its gate, and a re-anchor plays
+        every later sample that much past its slot, so its lag comes off; the
+        DAC's clock counts the samples played and needs no correction. The
+        analyzer's index and the end of track both read this, so the last
+        lag's worth of a re-anchored track is not cut off."""
+        played = self._audio.position_seconds() or 0.0
+        if self._is_sampler:
+            # At this position's read head: the clock moves between the two
+            # reads, and inside a re-anchor's hold that stepped the sample back.
+            played -= cast("UltimateAudioSampler", self._audio).reanchor_lag_seconds(played)
+        return played
 
     def teardown(self) -> None:
         # The sink is unhooked before the streamer stops, so no callback can

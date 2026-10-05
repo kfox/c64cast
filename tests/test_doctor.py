@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from _fakes import FakeAPI, MachineSettingsIsolation, tmp_cwd
+from _fakes import FakeAPI, MachineSettingsIsolation, quiet_logging, tmp_cwd
 
 import c64cast
 from c64cast.app import config as cfgmod
@@ -50,7 +50,13 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
     c64cast.hw.api is patched so validate_load_result receives this
     instance. Yields it so the test can shape `session.get` / `probe`
     before driving the probe — one builder instead of the same seven-line
-    block in every connectivity test."""
+    block in every connectivity test.
+
+    Logging is quieted for the block. The fake's SID socket map reads back
+    empty, so a live doctor pass resolves an "auto" dac_curve with an unknown
+    $D400 owner and warns that it is falling back to linear — incidental here,
+    and asserted by test_dac_calibration.AutoCurveD400OwnershipTest. A test
+    that asserts a log line must not use this builder inside `assertLogs`."""
     from c64cast.hw.api import Ultimate64API
     from c64cast.hw.backend import ULTIMATE_PROFILE
     from c64cast.hw.c64 import U64_API
@@ -66,7 +72,10 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
         api_instance.profile = ULTIMATE_PROFILE
         # Old firmware by default, so no route probe reaches `session`.
         api_instance._route_answers = {U64_API.MENU_SCREEN: "absent", U64_API.INPUT: "absent"}
-        with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
+        with (
+            mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance),
+            quiet_logging(),
+        ):
             yield api_instance
 
 
@@ -1431,6 +1440,10 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         api.profile = HardwareProfile(
             name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
         )
+        # The socket map reads back with an UltiSID core at $D400, the one
+        # owner the baked table is right for.
+        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D420"}
+        api.config_store["SID Sockets Configuration"] = {"SID Socket 1": "Enabled"}
         diags = doctor._probe_dac_calibration_status("sys", cfg, api)
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "ok")

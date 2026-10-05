@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 import time
 import unittest
+from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 
@@ -87,6 +89,45 @@ class BandTest(unittest.TestCase):
         self.assertTrue(np.all(np.diff(edges) >= 0))
         self.assertGreaterEqual(int(edges[0]), 1)  # DC skipped
         self.assertLessEqual(int(edges[-1]), FFT_SIZE // 2)
+
+    def test_every_band_holds_a_bin_at_any_count(self):
+        # Truncated log spacing repeated the low edges from 10 bands up at
+        # 1024, leaving band 0 empty: it read 0.0 forever and dragged `bass`.
+        # 64 runs the count up to its limit; 1000's log top edge truncates to
+        # 499, one bin short of Nyquist.
+        for fft in (64, 512, 1000, 1024, 2048):
+            for n in range(1, min(40, fft // 2)):
+                edges = band_edges(n, fft)
+                self.assertTrue(np.all(np.diff(edges) >= 1), f"{n} bands at {fft}: {edges}")
+                self.assertEqual(int(edges[0]), 1)
+                self.assertEqual(int(edges[-1]), fft // 2)
+
+    def test_a_many_band_analyzer_reports_no_dead_band(self):
+        a = AudioFeatureAnalyzer(SR, n_bands=12, nominal_dt=DT)
+        _run(a, [_noise(seed=i) for i in range(5)])
+        self.assertTrue(all(b > 0.0 for b in a.snapshot().bands), a.snapshot().bands)
+
+    def test_more_bands_than_bins_is_refused(self):
+        with self.assertRaises(ValueError):
+            band_edges(16, 32)
+        with self.assertRaises(ValueError):
+            AudioFeatureAnalyzer(SR, n_bands=16, fft_size=32)
+
+    def test_config_refuses_a_band_layout_the_analyzer_cannot_run(self):
+        # At load, not when a reactive scene starts: there the audio source
+        # logs the error and plays on without reacting.
+        from c64cast.app import config as cfgmod
+
+        bad: list[tuple[Any, int]] = [(512, 1024), (0, 1024), (8, 16), (8.5, 1024), (True, 1024)]
+        for bands, fft in bad:
+            cfg = cfgmod.Config()
+            cfg.audio_features.bands = bands
+            cfg.audio_features.fft_size = fft
+            with self.assertRaises(ValueError, msg=f"{bands} bands at {fft}"):
+                cfgmod.validate_sections(cfg)
+        cfg = cfgmod.Config()
+        cfg.audio_features.bands = 511
+        cfgmod.validate_sections(cfg)
 
     def test_sweep_moves_the_peak_band_upward(self):
         # A sine sweep must walk the peak band index low→high, monotonically.
@@ -281,6 +322,48 @@ class AnalysisTapTest(unittest.TestCase):
         np.testing.assert_array_equal(tap.recent(4), np.zeros(4, dtype=np.float32))
 
 
+class TapWindowTest(unittest.TestCase):
+    """`window_ending_at` reads by absolute sample index: what a file source's
+    analyzer uses to read the audio being heard, behind the decoder."""
+
+    def _ramp_tap(self, size: int, total: int, block: int) -> AnalysisTap:
+        tap = AnalysisTap(size=size)
+        for i in range(0, total, block):
+            tap.push(np.arange(i, min(i + block, total), dtype=np.float32))
+        return tap
+
+    def test_window_reads_the_samples_at_those_indices(self):
+        tap = self._ramp_tap(64, 200, 7)
+        np.testing.assert_array_equal(tap.window_ending_at(180, 10), np.arange(170, 180))
+        self.assertEqual(tap.pushed, 200)
+
+    def test_index_survives_a_push_larger_than_the_ring(self):
+        tap = self._ramp_tap(64, 30, 30)
+        tap.push(np.arange(30, 130, dtype=np.float32))
+        np.testing.assert_array_equal(tap.window_ending_at(120, 8), np.arange(112, 120))
+
+    def test_an_end_past_what_was_pushed_reads_the_newest(self):
+        # Slots past the write head still hold a previous lap's audio.
+        tap = self._ramp_tap(64, 200, 7)
+        np.testing.assert_array_equal(tap.window_ending_at(230, 10), np.arange(190, 200))
+
+    def test_overwritten_and_never_pushed_samples_read_as_silence(self):
+        tap = self._ramp_tap(64, 200, 7)  # retains 136..199
+        w = tap.window_ending_at(140, 10)
+        np.testing.assert_array_equal(w[:6], np.zeros(6))
+        np.testing.assert_array_equal(w[6:], np.arange(136, 140))
+        np.testing.assert_array_equal(AnalysisTap(64).window_ending_at(5, 4), np.zeros(4))
+
+    def test_a_play_position_past_the_history_says_so_once(self):
+        tap = self._ramp_tap(FFT_SIZE * 4, FFT_SIZE * 10, FFT_SIZE)
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ, play_position=lambda: FFT_SIZE)
+        with self.assertLogs("c64cast.audio.audio_features", level="WARNING") as cm:
+            stream._process_tick()
+            stream._process_tick()
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("behind the decoder", cm.output[0])
+
+
 class StreamTest(unittest.TestCase):
     def test_features_none_before_first_tick(self):
         stream = AudioFeatureStream(AnalysisTap(), SR, poll_hz=POLL_HZ)
@@ -296,6 +379,74 @@ class StreamTest(unittest.TestCase):
         assert m is not None
         self.assertGreater(m.level, 0.0)
         self.assertEqual(len(m.bands), 8)
+
+    def test_features_is_not_held_up_by_the_analysis(self):
+        # The render thread reads features() every frame; the snapshot lock
+        # must not be held across the FFT, or each read waits out an analysis.
+        tap = AnalysisTap()
+        tap.push(_sine(440.0))
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ)
+        held: list[bool] = []
+        real_update = stream._analyzer.update
+
+        def update(window, now):
+            held.append(stream._lock.locked())
+            real_update(window, now)
+
+        stream._analyzer.update = update  # type: ignore[method-assign]
+        stream._process_tick()
+        self.assertEqual(held, [False])
+        self.assertIsNotNone(stream.features())
+
+    def test_a_tick_reads_its_window_and_clock_under_the_analyzer_lock(self):
+        # A tick that waited out another's analysis, or start()'s reset, must
+        # analyze the present: a window or timestamp read before the wait would
+        # fold a stale window into the analyzer, or a `now` older than the
+        # one the analyzer last saw.
+        tap = AnalysisTap()
+        tap.push(_sine(440.0))
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ)
+        held: list[tuple[str, bool]] = []
+
+        def play_position() -> float:
+            held.append(("window", stream._analyze_lock.locked()))
+            return float(FFT_SIZE)
+
+        def clock() -> float:
+            held.append(("clock", stream._analyze_lock.locked()))
+            return 1.0
+
+        stream._play_position = play_position
+        with patch("c64cast.audio.audio_features.time") as fake_time:
+            fake_time.monotonic.side_effect = clock
+            stream._process_tick()
+        self.assertEqual(held, [("window", True), ("clock", True)])
+
+    def test_a_reset_cannot_land_between_an_analysis_and_its_publish(self):
+        # A tick from a poll thread whose stop timed out can overlap start().
+        # If the snapshot swap ran after the analyzer lock was released,
+        # start()'s reset could land in between and the tick would publish a
+        # pre-reset snapshot over start()'s None. So every swap, the tick's
+        # and start()'s, must happen with the analyzer lock still held.
+        tap = AnalysisTap()
+        tap.push(_sine(440.0))
+        stream = AudioFeatureStream(tap, SR, poll_hz=POLL_HZ)
+        order: list[str] = []
+        real_lock = stream._lock
+
+        class _Swap:
+            def __enter__(self):
+                order.append("swap" if stream._analyze_lock.locked() else "swap-unguarded")
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                return real_lock.__exit__(*exc)
+
+        stream._lock = _Swap()  # type: ignore[assignment]
+        stream._process_tick()
+        with patch("c64cast.audio.audio_features.PollThread"):
+            stream.start()
+        self.assertEqual(order, ["swap", "swap"])
 
     def test_start_stop_smoke(self):
         tap = AnalysisTap()

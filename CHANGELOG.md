@@ -335,6 +335,32 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   stored in its declared spelling when it loads, and the timer takes its clock
   from the shared `cpu_clock()`.
 
+- **`[audio].dac_curve = "auto"` no longer applies the built-in UltiSID table
+  to a real SID chip it couldn't identify.** On an Ultimate II+, and on an
+  Ultimate 64 whose SID socket settings couldn't be read, `auto` assumed the
+  emulated UltiSID was playing and picked its table. On a real 6581/8580 that
+  table plays as heavy distortion. `auto` now uses the 4-bit linear DAC and
+  warns, unless a `--calibrate-dac` calibration applies.
+
+- **A single bad sample from an audio input no longer silences the rest of
+  the scene.** If a capture driver delivered one invalid (NaN or infinite)
+  sample, or one so large it overflowed, the DSP stages held on to it and the 4-bit DAC output stayed stuck
+  until the next scene. Invalid samples are now treated as silence (or full
+  scale, for an infinite one) when they arrive.
+
+- **`[audio_features].bands` of 10 or more no longer leaves the lowest band
+  dead.** At the default 1024-sample window the lowest band read zero
+  forever, which weakened the bass that drives brightness. Every band now
+  covers at least one frequency bin, and a band count larger than the window
+  can split is refused with an error instead of producing empty bands.
+
+- **Reactive visuals for an audio file now pulse with the beat you hear.**
+  The analyzer used to read the newest audio decoded, which runs ahead of
+  playback by the audio queued for the C64: about 1.5 seconds on the 4-bit
+  DAC, and on the Ultimate Audio sampler up to the whole of a short file.
+  Flashes, onsets and an `audio`-driven tempo arrived that far before the
+  sound. They now follow the audio's played position.
+
 - **A remote video or audio URL whose server stops answering no longer
   freezes the show.** Opening a stream now gives up after 20 seconds, and a
   stream that goes silent mid-play gives up after 30 seconds without data, so
