@@ -717,7 +717,14 @@ class SourceScene(Scene):
     chain (inside _render_with_overlays), quantize via the display mode, push —
     overlays compose on top. The source decides the scene's lifetime: infinite
     sources (generative art) run until `duration_s`; a finite source ends the
-    scene when it reports `finished`.
+    scene when it reports `finished`, and so does a finite audio source (an
+    audio file at its end).
+
+    `duration_follows_audio` (set by `build_scene` for an audio-file scene with
+    no explicit `duration_s`) re-sizes the scene at every `setup()` from the
+    file that setup picked: unbounded when the file has a length, so the scene
+    runs until the audio source reports `finished`, and the scene-type default
+    when it has none (a live stream, which has no end to wait for).
 
     Audio is delegated to the AudioSource building block, chosen independently
     of the video source. The base `audio` reference is still passed so the
@@ -742,6 +749,17 @@ class SourceScene(Scene):
         self._frame_count = 0
         self._color = color
         self._rolling_fp: RollingForcePalette | None = None
+        self.duration_follows_audio = False
+        self._unsized_duration_s: float | None = None
+
+    def sync_duration_to_audio(self) -> None:
+        """Apply `duration_follows_audio` for the audio source's current pick."""
+        if not self.duration_follows_audio:
+            return
+        if self._unsized_duration_s is None:
+            self._unsized_duration_s = self.duration_s
+        has_length = float(getattr(self.audio_source, "duration_s", 0.0) or 0.0) > 0.0
+        self.duration_s = math.inf if has_length else self._unsized_duration_s
 
     def competes_for_audio_lock(self) -> bool:
         return self.audio_source.wants_audio_lock
@@ -765,6 +783,8 @@ class SourceScene(Scene):
                 type(self.audio_source).__name__,
             )
             self.is_done = True
+        if not self.is_done:
+            self.sync_duration_to_audio()
         # A SID audio source kicks its player through run_prg, which re-inits
         # the machine to text mode and clobbers the VIC registers super().setup()
         # just wrote; re-assert the display after it, against invalidated cache.
@@ -785,7 +805,7 @@ class SourceScene(Scene):
         # full duration.
         if self.is_done:
             return False
-        if self.source.finished:
+        if self.source.finished or self.audio_source.finished:
             return False
         if (current_time - self.start_time) >= self.duration_s:
             return False

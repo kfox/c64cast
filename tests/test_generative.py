@@ -8,6 +8,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from typing import cast
+from unittest import mock
 
 import numpy as np
 
@@ -1134,6 +1135,37 @@ class SourceSceneTest(unittest.TestCase):
         src._finished = True
         self.assertFalse(scene.process_frame(0.1))
 
+    def test_finished_audio_source_ends_scene(self):
+        # An audio file at its end ends the scene even when duration_s is
+        # unbounded, which is what a file-sized scene now is.
+        class _EndedAudio(NullAudioSource):
+            finished = True
+
+        scene, _mode, _src = self._scene(audio_source=_EndedAudio())
+        scene.duration_s = float("inf")
+        scene.setup()
+        scene.start_time = 0.0
+        self.assertFalse(scene.process_frame(0.1))
+
+    def test_duration_follows_each_setups_pick(self):
+        # A pool re-picks at every setup(), so the scene's size has to come
+        # from that pick rather than the one made at build time.
+        class _PickedAudio(NullAudioSource):
+            duration_s = 0.0
+
+        audio = _PickedAudio()
+        scene, _mode, _src = self._scene(audio_source=audio)
+        scene.duration_s = 30.0
+        scene.duration_follows_audio = True
+        audio.duration_s = 240.0
+        scene.setup()
+        self.assertEqual(scene.duration_s, float("inf"))
+        # A pick with no length (a live stream) has no end to wait for, so it
+        # gets the scene-type default back.
+        audio.duration_s = 0.0
+        scene.setup()
+        self.assertEqual(scene.duration_s, 30.0)
+
     def test_competes_for_audio_lock_delegates_to_audio_source(self):
         scene, _mode, _src = self._scene()
         self.assertFalse(scene.competes_for_audio_lock())
@@ -1305,6 +1337,105 @@ class _DummyAPI:
         raise AssertionError(f"api.{name} should not be called at build time")
 
 
+class _FileSink:
+    """The scene-facing slice of a sink that `AudioFileSource._decode_loop`
+    touches. `played` pins `position_seconds`; None reports everything pushed
+    as already played."""
+
+    is_sampler = False
+    sample_rate = 8000
+    effective_rate = 8000.0
+    analysis_sink = None
+
+    def __init__(self, played: float | None = None):
+        self.pushed = 0
+        self._played = played
+
+    def push_samples(self, arr):
+        self.pushed += int(arr.size)
+
+    def position_seconds(self):
+        return self.pushed / self.sample_rate if self._played is None else self._played
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class AudioFileSourceEndTest(unittest.TestCase):
+    """The scene ends when the audio does. The container header's duration is
+    a claim the file makes about itself: a truncated download or a doctored
+    Xing frame count says minutes or years while the decoder runs dry in
+    seconds, and a scene sized by it played silence for the difference."""
+
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.wav = f"{tmp.name}/tune.wav"
+        ConfigGenerativeTest._make_wav(self.wav, seconds=0.4)
+        self.now = [1000.0]
+        from c64cast.audio import audio_source
+
+        patcher = mock.patch.object(
+            audio_source, "time", SimpleNamespace(monotonic=lambda: self.now[0])
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _source(self, sink):
+        from c64cast.audio.audio_source import AudioFileSource
+
+        return AudioFileSource(cast(AudioStreamer, sink), self.wav, reactive=False)
+
+    def test_not_finished_before_decoding_ends(self):
+        self.assertFalse(self._source(_FileSink()).finished)
+
+    def test_finishes_at_end_of_track_once_played_out(self):
+        sink = _FileSink()
+        src = self._source(sink)
+        src._decode_loop()
+        self.assertGreater(sink.pushed, 0)
+        self.assertTrue(src.finished)
+
+    def test_waits_for_what_the_sink_has_not_played(self):
+        src = self._source(_FileSink(played=0.0))
+        src._decode_loop()
+        self.assertFalse(src.finished)
+        self.now[0] += 0.39
+        self.assertFalse(src.finished)
+        self.now[0] += 0.02
+        self.assertTrue(src.finished)
+
+    def test_the_wait_is_capped(self):
+        # A sink clock that reads wrong must not hold the scene open.
+        src = self._source(_FileSink(played=-1e9))
+        src._decode_loop()
+        self.now[0] += src._DRAIN_CAP_S + 0.01
+        self.assertTrue(src.finished)
+
+    def test_a_decode_that_cannot_open_finishes(self):
+        import os
+
+        src = self._source(_FileSink())
+        os.remove(self.wav)
+        with self.assertLogs("c64cast.audio.audio_source", level="ERROR"):
+            src._decode_loop()
+        self.assertTrue(src.finished)
+
+    def test_a_stopped_decode_does_not_finish(self):
+        # Teardown stops the decoder, and the sink it stops can raise into the
+        # push in flight; neither is the track ending.
+        sink = _FileSink()
+        src = self._source(sink)
+
+        def torn_down(arr):
+            src._stop.set()
+            raise RuntimeError("sink stopped")
+
+        sink.push_samples = torn_down
+        src._decode_loop()
+        self.assertFalse(src.finished)
+
+
 class ConfigGenerativeTest(unittest.TestCase):
     def setUp(self):
         self.cfg = Config()
@@ -1405,9 +1536,11 @@ class ConfigGenerativeTest(unittest.TestCase):
             assert isinstance(scene, SourceScene)
             self.assertIsInstance(scene.audio_source, AudioFileSource)
             self.assertIs(scene.audio, streamer)
-            # duration_s (unset on the cfg) is sized to the track (~0.4 s).
-            self.assertGreater(scene.duration_s, 0.2)
-            self.assertLess(scene.duration_s, 1.0)
+            # duration_s (unset on the cfg) follows the audio: a file with a
+            # length runs until the source reports `finished`, not until the
+            # header's figure, which a truncated or doctored file gets wrong.
+            self.assertTrue(scene.duration_follows_audio)
+            self.assertEqual(scene.duration_s, float("inf"))
 
     @staticmethod
     def _sampler_api() -> _DummyAPI:

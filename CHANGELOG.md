@@ -289,6 +289,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   the scene ends and the playlist moves on. Before, a server that accepted the
   connection and then sent nothing held the playlist on that scene forever.
 
+- **An audio-file scene ends when its audio does.** The scene used to last
+  as long as the file's header said, so a truncated download, a file that
+  stopped decoding, or a header claiming a wrong length played silence for
+  the difference. One test file claimed almost five years. With a folder or
+  glob of tracks, the scene also used to take the length of the first track
+  picked rather than the one playing. An explicit `duration_s` or `-t` still
+  cuts the scene short.
+
 - **A video or audio-file scene on the Ultimate Audio sampler plays sound
   every time it comes round, not just the first time.** A scene keeps its
   sampler between plays, and stopping it latched the sampler shut. So when a

@@ -23,6 +23,7 @@ import logging
 import os
 import random
 import threading
+import time
 from collections.abc import Callable, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
@@ -54,10 +55,16 @@ class AudioSource(Protocol):
     `resets_display` is True when `setup()` disturbs the VIC display state — a
     SID source kicks its player via the firmware's run_prg, which re-inits the
     machine back to text mode. SourceScene re-asserts the display mode AFTER
-    such a source starts so a bitmap display isn't left rendering text."""
+    such a source starts so a bitmap display isn't left rendering text.
+
+    `finished` is True once a finite source has played everything it had, and
+    SourceScene ends the scene on it. Sources with no end report False."""
 
     wants_audio_lock: bool
     resets_display: bool
+
+    @property
+    def finished(self) -> bool: ...
 
     def setup(self) -> None: ...
     def teardown(self) -> None: ...
@@ -70,6 +77,7 @@ class NullAudioSource:
 
     wants_audio_lock = False
     resets_display = False
+    finished = False
 
     def setup(self) -> None:
         return None
@@ -111,6 +119,7 @@ class MicAudioSource:
     # Uncorrelated input, not the ensemble's SID spotlight (as WebcamScene).
     wants_audio_lock = False
     resets_display = False  # the mic path doesn't touch the VIC
+    finished = False  # live input has no end
 
     def __init__(
         self,
@@ -237,10 +246,14 @@ class AudioFileSource:
     ensemble's SID spotlight (`config.build_scene` also suppresses its DAC audio
     in ensemble mode). `resets_display=False`: the DAC path never touches the VIC.
 
-    `duration_s` (read from the container at construction) lets `build_scene` size
-    the scene to the track so `c64cast tune.mp3` plays the whole song then
-    advances/loops. A startup failure degrades to non-reactive silence with the
-    scene intact, the same contract as `MicAudioSource`/`SidFileAudioSource`.
+    **End of track.** `finished` turns True once the decoder has reached the
+    end of the file (or failed) and the audio it pushed has had time to play
+    out, so the scene ends when the sound does rather than when the container
+    header says it should. `duration_s` is the header's figure for the file the
+    last `setup()` picked; it only decides whether there is an end to wait for
+    (see `SourceScene.duration_follows_audio`). A startup failure degrades to
+    non-reactive silence with the scene intact, the same contract as
+    `MicAudioSource`/`SidFileAudioSource`.
     """
 
     wants_audio_lock = False
@@ -248,6 +261,12 @@ class AudioFileSource:
 
     # Mirrors SidFileAudioSource: a file that won't open is skipped.
     _MAX_PICK_ATTEMPTS = 8
+
+    # Upper bound on the wait between the decoder's end and `finished`: what
+    # the sink still holds is at most its write-ahead lead plus queue, about a
+    # second on the sampler, and a sink clock that reads wrong must not stretch
+    # the wait into the silence this replaces.
+    _DRAIN_CAP_S = 5.0
 
     def __init__(
         self,
@@ -270,6 +289,9 @@ class AudioFileSource:
         self._features: AudioFeatureStream | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # Monotonic time at which `finished` turns True; None while decoding.
+        # Written once by the decode thread, read by the playlist thread.
+        self._finished_at: float | None = None
         # At build time, so a misconfigured single scene raises there
         # (parity with SidFileAudioSource.__init__).
         self._pick_and_probe()
@@ -348,6 +370,7 @@ class AudioFileSource:
             self._thread = None
         self._pick_and_probe()
         self._stop.clear()
+        self._finished_at = None
         self._start_features()
         if self._is_sampler:
             # The sampler is reused by every activation of this scene, so it is
@@ -425,17 +448,19 @@ class AudioFileSource:
 
         from c64cast.video.video import av_open
 
+        # effective_rate, not sample_rate: the rate the sink really
+        # consumes at, so the servo starts from zero standing error.
+        rate = int(round(self._audio.effective_rate)) or self._audio.sample_rate
+        pushed = 0
         try:
             container = av_open(self._path)
         except Exception:
             log.exception("audio file: could not open %s for decode", self._path)
+            self._mark_decode_done(0, rate)
             return
         try:
             import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
 
-            # effective_rate, not sample_rate: the rate the sink really
-            # consumes at, so the servo starts from zero standing error.
-            rate = int(round(self._audio.effective_rate)) or self._audio.sample_rate
             resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
             a_stream = container.streams.audio[0]
             for packet in container.demux(a_stream):
@@ -448,12 +473,30 @@ class AudioFileSource:
                         arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
                         if arr.size:
                             self._audio.push_samples(arr)
+                            pushed += int(arr.size)
             log.info("audio file: %s reached end of track", os.path.basename(self._path))
         except Exception:
             if not self._stop.is_set():
                 log.exception("audio file: decode of %s failed", os.path.basename(self._path))
         finally:
             container.close()
+        if not self._stop.is_set():
+            self._mark_decode_done(pushed, rate)
+
+    def _mark_decode_done(self, pushed_samples: int, rate: int) -> None:
+        """Schedule `finished` for when the pushed audio has played out: the
+        pushed length less what the sink reports played, capped at
+        `_DRAIN_CAP_S`."""
+        played = self._audio.position_seconds() or 0.0
+        pending = pushed_samples / rate - played if rate > 0 else 0.0
+        self._finished_at = time.monotonic() + min(max(pending, 0.0), self._DRAIN_CAP_S)
+
+    @property
+    def finished(self) -> bool:
+        """True once the decoder has ended (EOF or failure) and its audio has
+        drained. False while decoding and before the first `setup()`."""
+        finished_at = self._finished_at
+        return finished_at is not None and time.monotonic() >= finished_at
 
     def teardown(self) -> None:
         # The sink is unhooked before the streamer stops, so no callback can
@@ -478,7 +521,7 @@ class AudioFileSource:
             self._thread = None
 
     def position_seconds(self) -> float | None:
-        # The consumer clock, for the protocol. The scene ends on duration_s.
+        # The consumer clock, for the protocol. The scene ends on `finished`.
         return self._audio.position_seconds()
 
     def features(self) -> MusicModulation | None:
@@ -526,6 +569,7 @@ class SidFileAudioSource:
     # run_sid_player goes through run_prg, which re-inits the machine to text
     # mode, so SourceScene.setup must re-assert the display mode afterwards.
     resets_display = True
+    finished = False  # the chip plays on until teardown; duration_s ends it
 
     # Mirrors WaveformScene._pick_and_load_sid: a rejected SID is skipped.
     _MAX_PICK_ATTEMPTS = 8

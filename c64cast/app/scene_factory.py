@@ -2624,8 +2624,9 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
     else:
         audio_src = NullAudioSource()
     scene = SourceScene(ctx.api, scene_base_audio, mode, gen, audio_src, name, color=ctx.color)
-    if file_audio_src is not None and s.duration_s is None and file_audio_src.duration_s:
-        scene.duration_s = file_audio_src.duration_s
+    if file_audio_src is not None and s.duration_s is None:
+        scene.duration_follows_audio = True
+        scene.sync_duration_to_audio()
     # A mic/file-source generative scene is digitized-audio-capable like webcam/video,
     # so a bitmap display caps its frame push: 20 fps while the 4-bit DAC streams, half
     # the system rate (30/25) otherwise. A sampler-routed file scene keeps the muted
