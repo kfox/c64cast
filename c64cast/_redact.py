@@ -59,15 +59,19 @@ REDACTED = "REDACTED"
 #: `%7Ehmac%3D`, and the escape's last hex digit is a word character, so no
 #: `\b` falls before the name. That start costs one scan per escape, and an
 #: escape ends the run before it, so the scan stays linear.
+#:
+#: The open form appears in both branches, spliced from one spelling so a name
+#: added to it is found at a run's start and partway through it alike.
+_OPEN_SECRET_NAME = r"\w* (?: token | password | secret | api[_-]?key )"
 _SECRET_KEY = r"""
     (?:
         (?: (?<![\w-]) -* \b | (?<= %[0-9a-f]{2} ) ) (?:
-            \w* (?: token | password | secret | api[_-]?key )
+            {open}
           | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
         )
-      | \b \w* (?: token | password | secret | api[_-]?key )
+      | \b {open}
     ) \b
-"""
+""".replace("{open}", _OPEN_SECRET_NAME)
 
 # Spliced by `.replace` rather than by an f-string: the pattern's own `{3}`
 # repetition counts would have to be doubled to survive one.
