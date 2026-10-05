@@ -284,17 +284,22 @@ def _hidden_values(text: str, outer: re.Match[str], reach: list[int]) -> list[Sp
     """The values of names inside `outer`'s value that run on past its end.
 
     `finditer` resumes where a match ends, so a name inside a value never
-    starts a match of its own, and two shapes let that name's value outlast
+    starts a match of its own, and three shapes let that name's value outlast
     the one it hides in. In `token%3Apassword =S3CR` the space ends the
     `token` value and is also where `password`'s separator begins: the
     prefix of the hidden match runs through the outer value's end. In
     `token%3Apassword=a%26b` the `%26` ends the encoded `token` value but
     not `password`'s, whose raw `=` makes a value that only whitespace, a
-    quote or a raw `&` ends.
+    quote or a raw `&` ends. In `sig="x token:'a" S3CR'` the hidden value is
+    quoted with a kind the outer one is not, and runs to its own `'`.
 
     Each is looked for only where it can be, so the search stays linear. A
     prefix running through the end is found by stepping back from the end
-    over a space, a separator, a space and a closing quote. A shallower
+    over a space, a separator, a space and a closing quote, and a quoted
+    hidden value by the same steps back from each quote inside a quoted outer
+    one. No backslash precedes an opening quote, so a hidden value ends no
+    later than the next opening quote of its own kind and the values of one
+    kind are read without overlap. A shallower
     separator matters only when an encoded `&` ended the outer value, and
     only the shallowest one that names a secret, since its value ends no
     earlier than any deeper one's. `reach` is the furthest such value found
@@ -308,14 +313,22 @@ def _hidden_values(text: str, outer: re.Match[str], reach: list[int]) -> list[Sp
     # Of the characters that end a value, only a space or a quote can also
     # be part of a prefix.
     crossable = end < len(text) and (text[end].isspace() or text[end] in "\"'")
-    after_sep = _back_over_space(text, value_start, end)
-    for before_sep in (after_sep, _back_over(text, value_start, after_sep, "=:", ("3a", "3d"))):
-        if before_sep is None or not crossable:
-            continue
-        k = _back_over_space(text, value_start, before_sep)
-        for name_end in (k, _back_over(text, value_start, k, "\"'", ("22", "27"))):
-            if name_end is not None and (m := _match_past(text, lo, name_end, end)) is not None:
-                found.append(m.span("kv_value"))
+    prefix_ends = [end] if crossable else []
+    if outer.group("quote") is not None:
+        # A quoted value may hold a quote of another kind, and a name's value
+        # that one opens runs on to its own closing quote: in
+        # `sig="x token:'a" S3CR'` it outlasts the `"` ending `sig`'s. Only
+        # a prefix ending just before such a quote can open one.
+        prefix_ends += [j for j in range(value_start, end) if text[j] in "\"'"]
+    for prefix_end in prefix_ends:
+        after_sep = _back_over_space(text, value_start, prefix_end)
+        for before_sep in (after_sep, _back_over(text, value_start, after_sep, "=:", ("3a", "3d"))):
+            if before_sep is None:
+                continue
+            k = _back_over_space(text, value_start, before_sep)
+            for name_end in (k, _back_over(text, value_start, k, "\"'", ("22", "27"))):
+                if name_end is not None and (m := _match_past(text, lo, name_end, end)) is not None:
+                    found.append(m.span("kv_value"))
     amp = _ENCODED_AMP.match(text, end)
     if outer.group("pct") is None or amp is None:
         return found

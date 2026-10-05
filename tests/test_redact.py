@@ -300,8 +300,13 @@ class RedactSecretsTest(unittest.TestCase):
         starts no match of its own. Its value still outlasted the one it hid
         in when its separator began where that value ended — at a space or a
         quote — or when an encoded `&` ended the outer value and the hidden
-        name's separator was shallower than that `&`."""
+        name's separator was shallower than that `&` — or when the outer
+        value was quoted and the hidden one was quoted with another kind."""
         for line, want in (
+            ("sig=\"x token:'a\" S3CR'", "sig=\"REDACTED'"),
+            ("sig=\"x 'token': 'a\" S3CR'", "sig=\"REDACTED'"),
+            ("sig%25253D'''x token:\"a''' S3CR\"", "sig%25253D'''REDACTED\""),
+            ('-sig%2525253d"""a-sig:\'\'\'"""" S3CR', '-sig%2525253d"""REDACTED'),
             ("token%3Apassword =S3CR", "token%3AREDACTED =REDACTED"),
             ("sig%253atoken%253d %2FS3CR[", "sig%253aREDACTED REDACTED"),
             ("token%3Apassword'=S3CR", "token%3AREDACTED'=REDACTED"),
@@ -327,6 +332,8 @@ class RedactSecretsTest(unittest.TestCase):
             "token%3A" * 16_000 + "%26",
             "token%253Apassword=x%2526" * 6_000 + " ",
             "token%3Apassword " * 8_000,
+            'sig="' + "token:'" * 8_000 + '"',
+            ('sig="x token:\'"' + "sig='y token:\"'") * 4_000,
         ):
             with self.subTest(line=line[:24]):
                 start = time.perf_counter()
