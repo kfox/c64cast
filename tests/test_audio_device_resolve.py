@@ -3,8 +3,10 @@
 a device list, so these run without the 'mic' extra).
 
 PortAudio exposes no USB VID:PID, so — unlike the camera resolver — the only
-string form is a name substring, and the never-raises contract falls back to the
-system default (index -1) with a warning on miss / no sounddevice."""
+string form is a name substring. A name that cannot be honored raises rather than
+falling back to the system default input, which on a laptop is its own
+microphone: the room it hears would play through the C64 with nothing on screen
+to say so."""
 
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ import unittest
 from typing import Any
 
 from c64cast.audio import audio as audio_mod
-from c64cast.audio.audio import resolve_audio_input_device
+from c64cast.audio.audio import AudioInputDeviceError, resolve_audio_input_device
 
 
 class _FakeSD:
@@ -64,13 +66,15 @@ class ResolveAudioInputDeviceTest(unittest.TestCase):
 
     def test_output_only_device_never_matches(self):
         self._patch(DEVICES)
-        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
-            self.assertEqual(resolve_audio_input_device("Speakers"), -1)
+        with self.assertRaises(AudioInputDeviceError):
+            resolve_audio_input_device("Speakers")
 
-    def test_no_match_warns_and_defaults(self):
+    def test_no_match_refuses_rather_than_using_the_default(self):
         self._patch(DEVICES)
-        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
-            self.assertEqual(resolve_audio_input_device("Scarlett"), -1)
+        with self.assertRaises(AudioInputDeviceError) as cm:
+            resolve_audio_input_device("Scarlett")
+        self.assertIn("Scarlett", str(cm.exception))
+        self.assertIn("--list-devices", str(cm.exception))
 
     def test_multiple_matches_warns_and_picks_first(self):
         devices = [
@@ -81,10 +85,10 @@ class ResolveAudioInputDeviceTest(unittest.TestCase):
         with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             self.assertEqual(resolve_audio_input_device("Cam Link"), 0)
 
-    def test_name_without_sounddevice_warns_and_defaults(self):
+    def test_name_without_sounddevice_refuses(self):
         self._patch(DEVICES, available=False)
-        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
-            self.assertEqual(resolve_audio_input_device("Cam Link"), -1)
+        with self.assertRaises(AudioInputDeviceError):
+            resolve_audio_input_device("Cam Link")
 
 
 if __name__ == "__main__":

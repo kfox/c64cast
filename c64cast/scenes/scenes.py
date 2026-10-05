@@ -25,7 +25,7 @@ from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
 from c64cast._transport_log import quiet_transport
 from c64cast.app.profiler import get_profiler
-from c64cast.audio.audio import AudioStreamer, PumpInstallError
+from c64cast.audio.audio import AudioInputDeviceError, AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     INT16_FULL_SCALE,
     REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
@@ -517,6 +517,30 @@ def _apply_rolling_palette(
         log.debug("rolling force_palette → %d colors %s", len(cmap.indices), list(cmap.indices))
 
 
+def _start_scene_mic(scene: Scene, audio_cfg: AudioCfg) -> None:
+    """Start the live mic for a webcam or blank scene. The mic path is always
+    the 4-bit DAC streamer; the sampler is a video-only backend.
+
+    A configured input that cannot be honored leaves the scene silent with an
+    error rather than ending the show: the picture is still worth having, and
+    the alternative the streamer used to take, the system default input, is a
+    laptop's own microphone."""
+    if not isinstance(scene.audio, AudioStreamer):
+        return
+    # A mode that installs the bank-swap merged dispatcher at $0314 owns that
+    # vector, so the mic REU pump must skip its own hook.
+    skip_hook = scene.audio.use_reu_pump and reu_pump_skips_irq_hook(scene.display_mode)
+    try:
+        scene.audio.start_mic(
+            audio_cfg.device,
+            audio_cfg.mic_sensitivity,
+            audio_cfg.noise_gate,
+            skip_irq_vector_hook=skip_hook,
+        )
+    except AudioInputDeviceError as e:
+        log.error("scene %r: no mic audio — %s", scene.name, e)
+
+
 class WebcamScene(Scene):
     """Live webcam scene optimized for low latency.
 
@@ -551,18 +575,7 @@ class WebcamScene(Scene):
         super().setup()
         self.start_time = time.time()
         self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
-        # The mic path is always the 4-bit DAC streamer; the sampler is a
-        # video-only backend.
-        if isinstance(self.audio, AudioStreamer):
-            # A mode that installs the bank-swap merged dispatcher at $0314
-            # owns that vector, so the mic REU pump must skip its own hook.
-            skip_hook = self.audio.use_reu_pump and reu_pump_skips_irq_hook(self.display_mode)
-            self.audio.start_mic(
-                self.audio_cfg.device,
-                self.audio_cfg.mic_sensitivity,
-                self.audio_cfg.noise_gate,
-                skip_irq_vector_hook=skip_hook,
-            )
+        _start_scene_mic(self, self.audio_cfg)
 
     def _read_frame(self) -> np.ndarray | None:
         img = self.source.read()
@@ -859,14 +872,7 @@ class BlankScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
-        if isinstance(self.audio, AudioStreamer):
-            skip_hook = self.audio.use_reu_pump and reu_pump_skips_irq_hook(self.display_mode)
-            self.audio.start_mic(
-                self.audio_cfg.device,
-                self.audio_cfg.mic_sensitivity,
-                self.audio_cfg.noise_gate,
-                skip_irq_vector_hook=skip_hook,
-            )
+        _start_scene_mic(self, self.audio_cfg)
 
     def process_frame(self, current_time: float) -> bool:
         # Paints past duration_s too: the Playlist's overlay busy-defer flips

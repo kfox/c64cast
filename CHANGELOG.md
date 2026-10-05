@@ -35,6 +35,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   C64's audio arrives on a line-in rather than a capture stick, pass that input
   with `--audio-device`.
 
+- **If a mic scene goes silent with "no audio input device matched", fix
+  `[audio].device` or `--audio-device`.** A device name that matches no
+  input, or an index that is not an input, used to fall back to the system
+  default input without saying much. On a laptop that is the built-in
+  microphone, which then played the room through the C64. Now the scene logs
+  an error and plays without sound. `-1` still asks for the default input.
+
 ### Added
 
 - **`scripts/diags/hw_lock.py` runs a command while holding a per-user lock on

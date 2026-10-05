@@ -402,6 +402,8 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         s = _new_streamer(use_reu_pump=True)
         called: list[int] = []
         s._start_mic_for_reu_pump = lambda device, **_kwargs: called.append(device)  # type: ignore[method-assign]
+        # Device validation is not under test, and must not query the host's.
+        s._resolve_input_device = lambda device: (device, "fake")  # type: ignore[method-assign]
         # AUDIO_AVAILABLE is a module global; without sounddevice installed
         # the function early-returns and the branch cannot be observed.
         from c64cast.audio import audio as audio_mod
@@ -418,6 +420,7 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")
         s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()  # type: ignore[method-assign]
+        s._resolve_input_device = lambda device: (device, "fake")  # type: ignore[method-assign]
         called_reu: list[int] = []
         s._start_mic_for_reu_pump = lambda device: called_reu.append(device)  # type: ignore[method-assign]
         s.start_mic(device=5, sensitivity=1.0, noise_gate=0.0)

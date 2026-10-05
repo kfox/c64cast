@@ -120,19 +120,27 @@ except ImportError:
     AUDIO_AVAILABLE = False
 
 
+class AudioInputDeviceError(RuntimeError):
+    """A configured audio input that cannot be honored. Raised instead of
+    opening the system default input in its place: on a laptop that is the
+    built-in microphone, and the room it hears would go out through the C64."""
+
+
 def resolve_audio_input_device(device: int | str) -> int:
     """Map a ``[audio].device`` value (int index, int-in-string, or a device
     *name substring*) to a sounddevice input index.
 
-    Returns ``-1`` ("use the system default input") for a negative/empty value,
-    when sounddevice is unavailable, or when a name matches nothing. Unlike the
-    camera resolver (:func:`c64cast.control.camera.resolve_camera_index`) this never
-    raises: audio degrades to the default input with a warning, matching
-    :meth:`AudioStreamer._resolve_input_device`'s forgiving fallback. PortAudio
-    exposes no USB VID:PID, so the only string form is a name substring, matched
-    case-insensitively against *input-capable* devices (first match on a tie,
-    with a warning). Names come from ``sd.query_devices()`` — the same listing
-    ``c64cast --list-devices`` prints."""
+    Returns ``-1`` ("use the system default input") only for a negative or
+    empty value — the one spelling that asks for the default. A name that
+    matches no input-capable device, a name given without sounddevice, or a
+    device list that cannot be read raises :class:`AudioInputDeviceError`
+    rather than falling back to the default, the same fail-closed rule as the
+    camera resolver (:func:`c64cast.control.camera.resolve_camera_index`).
+    PortAudio exposes no USB VID:PID, so the only string form is a name
+    substring, matched case-insensitively against *input-capable* devices
+    (first match on a tie, with a warning). Names come from
+    ``sd.query_devices()`` — the same listing ``c64cast --list-devices``
+    prints."""
     if isinstance(device, int):
         return device
     token = device.strip()
@@ -144,12 +152,9 @@ def resolve_audio_input_device(device: int | str) -> int:
         pass
 
     if not AUDIO_AVAILABLE or sd is None:
-        log.warning(
-            "selecting an audio device by name (%r) needs sounddevice (the 'mic' "
-            "extra); using the system default input",
-            token,
+        raise AudioInputDeviceError(
+            f"selecting an audio device by name ({token!r}) needs sounddevice (the 'mic' extra)"
         )
-        return -1
 
     low = token.lower()
     matches: list[tuple[int, str]] = []
@@ -161,16 +166,14 @@ def resolve_audio_input_device(device: int | str) -> int:
             if low in name.lower():
                 matches.append((idx, name))
     except Exception as e:  # pragma: no cover - defensive; enumerates the OS
-        log.warning("audio device enumeration failed (%s); using system default input", e)
-        return -1
+        raise AudioInputDeviceError(f"could not list audio devices to find {token!r}: {e}") from e
 
     if not matches:
-        log.warning(
-            "no audio input device matched %r; using the system default input "
-            "(run `c64cast --list-devices` to see names + indices)",
-            token,
+        raise AudioInputDeviceError(
+            f"no audio input device matched {token!r}; not using the system default "
+            "input in its place. Run `c64cast --list-devices` to see names and "
+            "indices, or set [audio].device = -1 to ask for the default."
         )
-        return -1
     if len(matches) > 1:
         # Device names come from USB/driver descriptors, so repr-quote them:
         # a name carrying CR/LF can otherwise forge --log-file lines.
@@ -1337,8 +1340,10 @@ class AudioStreamer:
             log.warning("sounddevice not installed; mic capture disabled")
             return
         # Resolve a name substring / int-in-string up front so the log line and
-        # the REU delegation both see a plain int.
+        # the REU delegation both see a plain int. A configured device that
+        # cannot be honored raises here, before any capture state is touched.
         device = resolve_audio_input_device(device)
+        self._resolve_input_device(device)
         self.sensitivity = sensitivity
         self.noise_gate = noise_gate
         # Rebuild for a mic source so the AGC stage activates; line sources keep
@@ -1396,6 +1401,7 @@ class AudioStreamer:
             log.warning("sounddevice not installed; listen capture disabled")
             return
         device = resolve_audio_input_device(device)
+        self._resolve_input_device(device)
         self.sensitivity = sensitivity
         self._listen_mode = True
         rate = int(sample_rate) if sample_rate else self.sample_rate
@@ -1733,15 +1739,17 @@ class AudioStreamer:
         - `device < 0`: use the system default input device (PortAudio
           accepts `None` for that).
         - The configured device exists and has input channels: use it.
-        - Otherwise (output-only or unknown): fall back to the system
-          default and warn the user that the configured device is unusable.
+        - Otherwise (output-only or unknown): raise `AudioInputDeviceError`.
+          The default input is never substituted for a device the user
+          named — on a laptop it is the built-in microphone.
 
         Returns (device_or_None, friendly_name).
         """
         assert sd is not None
 
-        # Coerce a name substring / int-in-string to an index first (returns -1
-        # for default / no-match), so the rest of this method is plain int logic.
+        # Coerce a name substring / int-in-string to an index first (-1 only
+        # for an explicit default; a name that matches nothing raises), so the
+        # rest of this method is plain int logic.
         device = resolve_audio_input_device(device)
 
         def _default_input() -> tuple[int | None, str]:
@@ -1762,18 +1770,16 @@ class AudioStreamer:
             if int(info.get("max_input_channels", 0)) > 0:
                 return device, str(info.get("name", f"device {device}"))
         except Exception as e:
-            # The "falling back" warning below already says what happened.
-            log.debug("could not query input device %r: %s", device, e)
-
-        fallback, name = _default_input()
-        log.warning(
-            "audio device %d has no input channels; falling back to "
-            "%s. Pass --audio-device N (see -L) or set audio.device = -1 "
-            "in your config to silence this warning.",
-            device,
-            name,
+            raise AudioInputDeviceError(
+                f"audio device {device} is not an input device ({e}); not using the "
+                "system default input in its place. Pass --audio-device N (see -L), "
+                "or set [audio].device = -1 to ask for the default."
+            ) from e
+        raise AudioInputDeviceError(
+            f"audio device {device} has no input channels; not using the system "
+            "default input in its place. Pass --audio-device N (see -L), or set "
+            "[audio].device = -1 to ask for the default."
         )
-        return fallback, name
 
     def _open_input_stream(
         self, device: int | str, callback: Any = None, *, sample_rate: int | None = None

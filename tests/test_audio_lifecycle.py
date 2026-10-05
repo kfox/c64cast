@@ -1387,7 +1387,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
         self.assertEqual(dev, 1)
         self.assertEqual(name, "usb mic")
 
-    def test_output_only_device_falls_back(self):
+    def test_output_only_device_is_refused(self):
         fake = _FakeSD(
             [
                 {"name": "default mic", "max_input_channels": 1},
@@ -1397,10 +1397,10 @@ class InputDeviceResolutionTest(unittest.TestCase):
         )
         self._patch_sd(fake)
         s = _make()
-        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
-            dev, name = s._resolve_input_device(1)
-        self.assertEqual(dev, 0)  # fell back to default input
-        self.assertEqual(name, "default mic")
+        # Never the default input in its place: on a laptop that is the
+        # built-in microphone.
+        with self.assertRaises(audio_mod.AudioInputDeviceError):
+            s._resolve_input_device(1)
 
     def test_open_stream_channel_fallback(self):
         # channels=1 rejected, native channels=2 accepted.
@@ -1422,8 +1422,8 @@ class InputDeviceResolutionTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 s._open_input_stream(0)
 
-    def test_resolve_query_failure_falls_back(self):
-        # query_devices raising for the requested device → fall back to default.
+    def test_resolve_query_failure_is_refused(self):
+        # query_devices raising for the requested device → refused, not the default.
         class _RaisingSD(_FakeSD):
             def query_devices(self, idx=None, kind=None):
                 if idx == 5:
@@ -1433,19 +1433,67 @@ class InputDeviceResolutionTest(unittest.TestCase):
         fake = _RaisingSD([{"name": "default mic", "max_input_channels": 1}], 0)
         self._patch_sd(fake)
         s = _make()
-        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
-            dev, name = s._resolve_input_device(5)
-        self.assertEqual(dev, 0)
+        with self.assertRaises(audio_mod.AudioInputDeviceError):
+            s._resolve_input_device(5)
 
     def test_open_stream_no_usable_device_raises(self):
         fake = _FakeSD([{"name": "dead", "max_input_channels": 0}], 0)
         self._patch_sd(fake)
         s = _make()
-        # Resolution warns about the unusable device before the open raises;
-        # capture the warning so it doesn't leak to the test console.
-        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
-            with self.assertRaises(RuntimeError):
-                s._open_input_stream(0)
+        with self.assertRaises(RuntimeError):
+            s._open_input_stream(0)
+
+    def test_start_mic_refuses_an_unmatched_name_before_starting_anything(self):
+        fake = _FakeSD([{"name": "MacBook Pro Microphone", "max_input_channels": 1}], 0)
+        self._patch_sd(fake)
+        s = _make()
+        with self.assertRaises(audio_mod.AudioInputDeviceError):
+            s.start_mic("Scarlett", 1.0, 0.05)
+        self.assertFalse(s.running)
+        self.assertEqual(fake.created, [])
+
+    def test_a_mic_scene_with_an_unmatched_name_plays_silent_not_the_laptop_mic(self):
+        # Webcam and blank scenes keep their picture, log why there is no
+        # sound, and open no input at all.
+        from types import SimpleNamespace
+
+        from c64cast.scenes import scenes
+
+        fake = _FakeSD([{"name": "MacBook Pro Microphone", "max_input_channels": 1}], 0)
+        self._patch_sd(fake)
+        s = _make()
+        scene = SimpleNamespace(audio=s, display_mode=None, name="cam")
+        cfg = SimpleNamespace(device="Scarlett", mic_sensitivity=1.0, noise_gate=0.05)
+        with self.assertLogs("c64cast.scenes.scenes", level="ERROR") as logs:
+            scenes._start_scene_mic(cast(Any, scene), cast(Any, cfg))
+        self.assertIn("Scarlett", logs.output[0])
+        self.assertFalse(s.running)
+        self.assertEqual(fake.created, [])
+
+    def test_start_mic_refuses_an_output_only_index_before_starting_anything(self):
+        fake = _FakeSD(
+            [
+                {"name": "MacBook Pro Microphone", "max_input_channels": 1},
+                {"name": "MacBook Pro Speakers", "max_input_channels": 0},
+            ],
+            0,
+        )
+        self._patch_sd(fake)
+        s = _make()
+        with self.assertRaises(audio_mod.AudioInputDeviceError):
+            s.start_mic(1, 1.0, 0.05)
+        self.assertFalse(s.running)
+        self.assertIsNone(s._worker_thread)
+        self.assertEqual(fake.created, [])
+
+    def test_start_listen_refuses_an_unmatched_name(self):
+        fake = _FakeSD([{"name": "MacBook Pro Microphone", "max_input_channels": 1}], 0)
+        self._patch_sd(fake)
+        s = _make()
+        with self.assertRaises(audio_mod.AudioInputDeviceError):
+            s.start_listen("Scarlett", 1.0)
+        self.assertFalse(s.running)
+        self.assertEqual(fake.created, [])
 
     def test_start_mic_without_sounddevice_warns(self):
         self._orig_avail = audio_mod.AUDIO_AVAILABLE
