@@ -1313,9 +1313,12 @@ class UltimateAudioSampler:
         total, holds = self._reanchor_lag
         heard = consumed - self._reanchor_lag_bytes(consumed)
         held = max(c - total, min(heard, self._pushed_samples * self.bps))
-        hold = (max(c, consumed), held + total + shift)
-        kept = tuple(span for span in holds if span[1] > consumed)
-        return total + shift, (*kept, hold)
+        start = max(c, consumed)
+        # An older hold ends where this one starts: `held` already counts the
+        # rest of it, and the two overlapping took the head's progress off
+        # twice, so the heard sample jumped ahead and then ran backward.
+        kept = tuple((frm, min(to, start)) for frm, to in holds if min(to, start) > consumed)
+        return total + shift, (*kept, (start, held + total + shift))
 
     def ring_lead_seconds(self) -> float:
         """The ``AudioStreamer`` splice hook: how long after a flush() the first

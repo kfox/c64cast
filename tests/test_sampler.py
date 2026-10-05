@@ -1008,6 +1008,35 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertEqual(seen[0], before)
         self.assertEqual(seen, sorted(seen), "the heard sample stepped back")
 
+    def test_a_sticky_reanchor_inside_a_hold_past_its_anchor_keeps_it_flat(self):
+        # A re-anchor with the head past the moved slot holds the heard
+        # sample past its anchor. A sticky one landing inside that hold
+        # overlapped it, so the head's progress came off twice: the heard
+        # sample jumped ahead, then ran backward.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        started = self.consumed
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            while self.consumed - started < smp._late_reanchor_bytes:
+                self._write(40)
+                self.consumed += 40
+            smp._pushed_samples = 10**9  # far ahead: the tap never clamps
+            before = self._heard(10**9)
+            self.assertTrue(self._write(40))
+        # The producer stalls until the head is past what it wrote.
+        self.consumed = smp._content_pos + 10
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 2)
+        seen = []
+        end = smp._content_pos + 10000
+        while self.consumed < end:
+            seen.append(self._heard(10**9))
+            self.consumed += 20
+        self.assertEqual(seen[0], before)
+        self.assertEqual(seen, sorted(seen), "the heard sample stepped back")
+        self.assertGreater(seen[-1], before)
+
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped
         # and the rest land at their own slots, so sync is unchanged.
