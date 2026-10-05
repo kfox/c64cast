@@ -1037,6 +1037,22 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertEqual(seen, sorted(seen), "the heard sample stepped back")
         self.assertGreater(seen[-1], before)
 
+    def test_a_splice_clears_the_reanchor_lag(self):
+        smp = self.smp
+        self._reanchor_late()
+        self.consumed += 2 * smp._reanchor_lead
+        self.assertGreater(smp.reanchor_lag_seconds(), 0.0)
+        smp.flush()
+        self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
+
+    def test_arm_clears_the_reanchor_lag(self):
+        smp = self.smp
+        self._reanchor_late()
+        self.consumed += 2 * smp._reanchor_lead
+        self.assertGreater(smp.reanchor_lag_seconds(), 0.0)
+        smp.arm()
+        self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
+
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped
         # and the rest land at their own slots, so sync is unchanged.
