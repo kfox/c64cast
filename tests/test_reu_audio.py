@@ -1401,6 +1401,49 @@ class ReuPreencodeDitherTest(unittest.TestCase):
         self.assertNotEqual(self._staged(4242), self._staged(9001))
 
 
+class ReuPreencodeMarkerTest(unittest.TestCase):
+    """``source_alignment_marker`` prepends a chirp to the staged bytes; the
+    flag, the order, the length and the active DAC curve all had no test."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clip = os.path.join(self.tmp.name, "clip.mp4")
+        open(self.clip, "wb").close()
+        self.pcm = (np.sin(np.arange(4096) / 8.0) * 12000).astype(np.int16)
+
+    def _staged(self, *, marker: bool, curve=None) -> tuple[bytes, AudioStreamer]:
+        s = new_streamer(dither=False)
+        s._dac_curve = curve
+        scene = VideoScene(MagicMock(), s, MagicMock(), self.clip, prepend_alignment_marker=marker)
+        with (
+            mock.patch("c64cast.scenes.scenes.decode_audio_full", return_value=self.pcm),
+            self.assertLogs("c64cast.scenes.scenes", level="INFO"),
+        ):
+            return scene._preencode_audio_for_reu(), s
+
+    def test_flag_off_adds_nothing(self):
+        plain, _ = self._staged(marker=False)
+        self.assertEqual(len(plain), len(self.pcm))
+
+    def test_marker_leads_the_track_at_the_effective_rate(self):
+        from c64cast.audio.audio_marker import marker_duration_samples, synthesize_marker
+
+        plain, _ = self._staged(marker=False)
+        marked, s = self._staged(marker=True)
+        sr = int(round(s.effective_rate))
+        n = marker_duration_samples(sr)
+        self.assertEqual(len(marked), len(plain) + n)
+        self.assertEqual(marked[:n], synthesize_marker(sr))
+        self.assertEqual(marked[n:], plain)
+
+    def test_marker_uses_the_active_dac_curve(self):
+        curve = np.arange(256, dtype=np.uint8)[::-1].copy()
+        marked, s = self._staged(marker=True, curve=curve)
+        n = len(marked) - len(self.pcm)
+        self.assertGreater(max(marked[:n]), 200)
+
+
 class TrackedVideoPumpInstallFailureTest(unittest.TestCase):
     """The tracked video pump shares _install_tracked_pump with the mic pump
     (tested in test_reu_mic.TrackedPumpDeliveryTest). When a stage never

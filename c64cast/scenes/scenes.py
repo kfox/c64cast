@@ -1588,9 +1588,9 @@ class VideoScene(MediaFileMixin, Scene):
         # ndarray.tobytes() is typed Any by the stubs; the wrap is for mypy.
         encoded = bytes(vol.tobytes())
         if getattr(self, "prepend_alignment_marker", False):
-            from c64cast.audio.audio_marker import MARKER_DURATION_S, synthesize_marker_4bit
+            from c64cast.audio.audio_marker import MARKER_DURATION_S, synthesize_marker
 
-            marker = synthesize_marker_4bit(sr)
+            marker = synthesize_marker(sr, self.audio.dac_curve)
             log.info(
                 "video: prepending %d-byte alignment marker "
                 "(%.0f ms chirp) — source content shifts to %.0fms",
