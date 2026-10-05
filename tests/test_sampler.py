@@ -138,6 +138,7 @@ class _FakeBackend:
 
     def __init__(self) -> None:
         self.reu_writes: list[tuple[int, int]] = []  # (offset, length)
+        self.reu_data: list[tuple[int, bytes]] = []  # (offset, payload)
         self.reg_writes: list[tuple[str, tuple[int, ...]]] = []
         self.mem_writes: list[tuple[str, str]] = []
         self.flushes = 0
@@ -145,8 +146,20 @@ class _FakeBackend:
 
     def reu_write(self, offset: int, data: bytes) -> None:
         self.reu_writes.append((offset, len(data)))
+        self.reu_data.append((offset, bytes(data)))
         if any(data):
             self.audible_writes += 1
+
+    def reu_bytes(self, offset: int, length: int) -> bytes:
+        """What the REU holds at ``offset`` after every write so far, with
+        bytes no write reached reading 0xFF, so a test reads where audio landed rather
+        than which write carried it."""
+        out = bytearray(b"\xff" * length)
+        for at, data in self.reu_data:
+            lo, hi = max(at, offset), min(at + len(data), offset + length)
+            if lo < hi:
+                out[lo - offset : hi - offset] = data[lo - at : hi - at]
+        return bytes(out)
 
     def write_regs(self, base_addr: str, *values: int) -> None:
         self.reg_writes.append((base_addr.upper(), values))
@@ -571,11 +584,13 @@ class SamplerWriterFailureTest(unittest.TestCase):
 
         smp._q.get = get  # type: ignore[method-assign]
         _run_steps(self, smp)
-        audible = [w for w in api.reu_writes if w == (0x200000 + consumed + margin, 16)]
-        self.assertEqual(len(audible), 1, api.reu_writes)
+        self.assertEqual(api.reu_bytes(0x200000 + consumed + margin, 16), b"\x01" * 16)
+        self.assertEqual(api.audible_writes, 1, api.reu_writes)
         self.assertEqual(smp._late_bytes, 16)
-        self.assertIn(
-            (0x200000 + consumed, margin), api.reu_writes, "the skipped span was not blanked"
+        self.assertEqual(
+            api.reu_bytes(0x200000 + consumed, margin),
+            bytes(margin),
+            "the skipped span was not blanked",
         )
 
 
@@ -891,7 +906,9 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertIn("arrived late for 0.5 s", logs.output[0])
         anchor = self.consumed + smp._reanchor_lead
         self.assertGreaterEqual(smp._reanchor_lead, smp._flush_margin)
-        self.assertEqual(self.api.reu_writes[-1], (0x200000 + anchor % smp.ring_size, 40))
+        at = 0x200000 + anchor % smp.ring_size
+        self.assertEqual(sum(self.api.reu_writes[-1]), at + 40)
+        self.assertEqual(self.api.reu_bytes(at, 40), b"\x01" * 40)
         for _ in range(50):  # real time from here: nothing more is dropped
             self.consumed += 40
             self.assertTrue(self._write(40))
@@ -1208,6 +1225,7 @@ def _run_scenario(
     outage: tuple[float, float] | None = None,
     splice_at: float | None = None,
     tail_s: float = 4.0,
+    waits_for_frames: bool = False,
 ) -> dict[str, float]:
     """Drive the real sampler's writer on a fake clock against a fake link.
 
@@ -1215,7 +1233,11 @@ def _run_scenario(
     real time) given the sim time, the audio it has produced, and how late
     the audio's anchor is. The writer steps until idle every ``frame_s``,
     and a step that raises (an outage) is retried on the next tick, as the
-    writer loop's back-off would. Returns the re-anchor count, the lag of
+    writer loop's back-off would. With ``waits_for_frames`` it does not step
+    on an empty queue with nothing carried, as on hardware, where the
+    queue's 20 ms wait outlasts a real-time producer's next frame; stepped,
+    it pads, and a pad ahead of the write floor hides what a late write
+    blanks. Returns the re-anchor count, the lag of
     the audio behind its anchor (ms), and over the last ``tail_s`` the share
     of real time the ring got audio for and the REU writes per second; the
     most REU writes in any whole second of the run; and the audio still
@@ -1251,6 +1273,8 @@ def _run_scenario(
                 q.put((smp._flush_epoch, b"\x01" * (frame * bps)))
                 produced += frame
             for _ in range(200):
+                if waits_for_frames and q.empty() and smp._carry is None:
+                    break
                 try:
                     wrote = smp._writer_step(smp._writer_gen)
                 except ConnectionError:
@@ -1577,6 +1601,21 @@ class SamplerScenarioMatrixTest(unittest.TestCase):
             },
             {"reanchors": 1, "audible": 0.95, "dropped_ms": 550},
         ),
+        # The same seek with the writer waiting on its queue, as on hardware:
+        # each late gather's dropped head was blanked in a write of its own,
+        # 72 REU writes in the second of the seek.
+        "seeked live, 20 ms jitter, the writer waiting for frames": (
+            _live_seek(0.0, 0.02, 0),
+            {
+                "seconds": 4.5,
+                "frame_s": 0.0025,
+                "splice_at": 2.0,
+                "tail_s": 1.0,
+                "sample_rate": 44100,
+                "waits_for_frames": True,
+            },
+            {"reanchors": 1, "audible": 0.95, "dropped_ms": 550},
+        ),
         "seeked live, 50 ms jitter, resumed at once (8 kHz/8-bit)": (
             _live_seek(0.0, 0.05, 1),
             {
@@ -1780,7 +1819,8 @@ class SamplerFlushTests(unittest.TestCase):
         api.reu_writes.clear()
         self._drive_writer(smp, [(smp._flush_epoch, bytes(range(1, 201)))])
         # Sample k of the new stream sits at anchor + k: the first 100 were late.
-        self.assertIn((0x200000 + anchor + 100, 100), api.reu_writes, api.reu_writes)
+        self.assertEqual(api.reu_bytes(0x200000 + anchor + 100, 100), bytes(range(101, 201)))
+        self.assertEqual(api.audible_writes, 1, api.reu_writes)
         self.assertEqual(smp._content_pos, anchor + 200)
 
     def test_the_splice_anchor_is_the_read_head_when_flush_is_called(self):

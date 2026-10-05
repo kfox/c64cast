@@ -969,10 +969,17 @@ class UltimateAudioSampler:
                     # A write head the reader passed (a link stall longer than
                     # the lead) leaves stale ring bytes just ahead of it; blank
                     # them rather than let the reader replay a lap-old span.
+                    # The blank rides in the same write as the audio after
+                    # it: a late gather's dropped head leaves that span, and
+                    # a write of its own for each one took the second after
+                    # a seek to 72 REU writes (fake clock, 44.1 kHz, 2.5 ms
+                    # frames), and 65-67 on hardware.
                     gap = max(self._written, consumed)
+                    pos, payload = first, data[first - c :]
                     if gap < first:
-                        self._blank(gap, first)
-                    self._write_wrapped(first % self.ring_size, data[first - c :])
+                        blank = self._neutral_unit * ((first - gap) // self.bps)
+                        pos, payload = gap, blank + payload
+                    self._write_wrapped(pos % self.ring_size, payload)
                 except Exception:
                     # Retried at the same anchor on the next pass: rewriting
                     # the slices that did land is idempotent. A link outage says
