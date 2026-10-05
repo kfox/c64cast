@@ -320,11 +320,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 - **The Ultimate Audio sampler sends its audio to the Ultimate in about 40
   writes a second, whatever the source's frame size.** It had sent one write
   per decoded frame, so audio decoded in 2.5 ms Opus frames took about 400
-  writes a second, twice what the link can carry. In the other direction, a
-  very large decoded block, such as a low-rate FLAC block, was written whole:
-  past the audio buffer and around the ring, holding up a seek until it was
-  done. And a write the link failed to deliver lost its audio; it is now
-  retried.
+  writes a second, twice what the link can carry. A source slightly slower
+  than real time, such as a live stream, also fell back to one write per
+  frame for seconds at a time whenever its audio buffer ran low. In the
+  other direction, a very large decoded block, such as a low-rate FLAC
+  block, was written whole: past the audio buffer and around the ring,
+  holding up a seek until it was done. And a write the link failed to
+  deliver lost its audio; it is now retried.
 
 - **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms at 12 kHz
   (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
