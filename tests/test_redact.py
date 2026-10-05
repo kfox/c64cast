@@ -244,12 +244,14 @@ class RedactSecretsTest(unittest.TestCase):
 
     def test_an_open_name_partway_through_a_dashed_run_is_still_found(self):
         """Only the short names are confined to the start of a run. `token`,
-        `password` and `secret` are still tried at every word boundary, which
-        is what reaches the one after a `-` or a `.`."""
+        `password`, `secret` and `apikey` are still tried at every word
+        boundary, which is what reaches the one after a `-`. A `.` needs no
+        such help: it ends the run, so the name after it starts a new one."""
         for line, want in (
             ("X-Auth-Token=zzz x", "X-Auth-Token=REDACTED x"),
             ("dma-password: zzz", "dma-password: REDACTED"),
             ("a.b-secret=zzz", "a.b-secret=REDACTED"),
+            ("X-apikey=zzz", "X-apikey=REDACTED"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
