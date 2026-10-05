@@ -169,8 +169,11 @@ class HardwareProfile:
             return sys.maxsize
         knee = (self.write_cost_floor_s - self.write_cost_intercept_s) / self.write_cost_per_byte_s
         # A per-byte cost small enough to divide into infinity is the same
-        # flat link, and `int(inf)` would raise rather than say so.
-        return max(0, int(min(knee, sys.maxsize)))
+        # flat link, and `int(inf)` would raise rather than say so. That holds
+        # on both sides: a floor below the intercept divides into -inf. Both
+        # clamps come before `int()`, and `knee` leads each comparison so a NaN
+        # survives them and raises there instead of reading as a size.
+        return int(min(max(knee, 0.0), sys.maxsize))
 
     # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580

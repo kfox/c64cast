@@ -135,6 +135,22 @@ class ProfileAndRegistryTest(unittest.TestCase):
         tiny = replace(ULTIMATE_PROFILE, write_cost_per_byte_s=5e-324)
         self.assertEqual(tiny.free_payload_bytes(), sys.maxsize)
 
+    def test_a_floor_below_the_intercept_has_no_free_payload(self):
+        # The floor never binds, so no payload rides for it alone — and with a
+        # subnormal slope the headroom divides into -inf, not just below zero.
+        for per_byte in (ULTIMATE_PROFILE.write_cost_per_byte_s, 5e-324):
+            low = replace(
+                ULTIMATE_PROFILE,
+                write_cost_floor_s=ULTIMATE_PROFILE.write_cost_intercept_s / 2,
+                write_cost_per_byte_s=per_byte,
+            )
+            self.assertEqual(low.free_payload_bytes(), 0, per_byte)
+
+    def test_a_nan_cost_raises_rather_than_reading_as_a_size(self):
+        nan = replace(ULTIMATE_PROFILE, write_cost_floor_s=float("nan"))
+        with self.assertRaises(ValueError):
+            nan.free_payload_bytes()
+
     def test_profile_is_frozen(self):
         with self.assertRaises(FrozenInstanceError):
             ULTIMATE_PROFILE.default_fps = 30.0  # type: ignore[misc]
