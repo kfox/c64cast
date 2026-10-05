@@ -170,6 +170,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
             name="SID: old #0",
             header=header,
             _sid_file="b.sid",
+            _explicit_duration_s=None,
             load_calls=0,
         )
 

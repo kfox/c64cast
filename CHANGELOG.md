@@ -319,6 +319,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   picked rather than the one playing. An explicit `duration_s` or `-t` still
   cuts the scene short.
 
+- **A DURATION set from the on-C64 menu now holds in a waveform scene.** The
+  next tune picked from a folder of SIDs, or the next subtune SHIFT cycled
+  to, used to take its song length (or the 180 s fallback) instead. The
+  menu's value now holds for every tune and subtune, as a `duration_s` in
+  the config does.
+
 - **A video or audio-file scene on the Ultimate Audio sampler plays sound
   every time it comes round, not just the first time.** A scene keeps its
   sampler between plays, and stopping it latched the sampler shut. So when a

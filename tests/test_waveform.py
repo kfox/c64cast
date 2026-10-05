@@ -2063,6 +2063,28 @@ class WaveformSceneTest(unittest.TestCase):
         finally:
             scene.teardown()
 
+    def test_cycle_style_keeps_a_duration_set_live(self):
+        # The live menu's DURATION sets scene.duration_s mid-play. A cycle's
+        # per-song re-lookup overwrote it with the DB length, though the same
+        # value saved to the config would have held for every subtune.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 99.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(
+                api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db
+            )
+        self.assertAlmostEqual(scene.duration_s, 99.0)
+        scene.setup()
+        try:
+            scene.duration_s = 42.0
+            scene.cycle_style(api)
+            self.assertAlmostEqual(scene.duration_s, 42.0)
+        finally:
+            scene.teardown()
+
     def test_cycle_style_skips_short_subtune(self):
         # Header num_songs=4. From song=1, song 2 is a 2s SFX (skip),
         # song 3 is a 60s tune (take). Cycle should land on song 3.
@@ -2705,6 +2727,24 @@ class WaveformPoolPickTest(unittest.TestCase):
             ],
             ["match.sid", "junk.sid"],
         )
+
+    def test_a_duration_set_live_outlasts_the_next_pool_pick(self):
+        # The live menu's DURATION sets scene.duration_s between plays. The
+        # next pick's song-length lookup overwrote it, though the same value
+        # saved to the config would have held for every pick.
+        from c64cast.sid.waveform import WaveformScene
+
+        self._write_sid("one.sid", name=b"ONE")
+        self._write_sid("two.sid", name=b"TWO")
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 99.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(FakeAPI(), audio=None, file=self.tmpdir, songlengths_db=fake_db)
+        self.assertAlmostEqual(scene.duration_s, 99.0)
+        scene.duration_s = 42.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene.prepare_next()
+        self.assertAlmostEqual(scene.duration_s, 42.0)
 
     def test_single_file_pool_skips_repick_at_setup(self):
         """Single-file specs stay deterministic AND keep cycle_style

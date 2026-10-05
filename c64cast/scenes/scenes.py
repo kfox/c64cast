@@ -289,6 +289,10 @@ class Scene:
     # Consulted by the Playlist's ensemble audio lock before setup; ignored
     # entirely in single-system mode.
     WANTS_AUDIO_LOCK: bool = False
+    # The `duration_s` this scene last derived from its content (an audio pick,
+    # a SID's song length), or None while it has derived none. A class
+    # attribute so a scene built without __init__ (tests) still has one.
+    _derived_duration_s: float | None = None
 
     def __init__(
         self,
@@ -383,6 +387,18 @@ class Scene:
         happened to be loaded when it was saved (recall re-picks a different
         one)."""
         return self.name
+
+    def _set_derived_duration(self, duration_s: float) -> None:
+        """Set `duration_s` from the content, not from the user, so that
+        `_duration_set_live` can tell the two apart."""
+        self.duration_s = duration_s
+        self._derived_duration_s = duration_s
+
+    def _duration_set_live(self) -> bool:
+        """True when `duration_s` differs from what `_set_derived_duration`
+        last set: the live menu's DURATION changed it, and that is an explicit
+        duration from then on, as one in the config is."""
+        return self._derived_duration_s is not None and self.duration_s != self._derived_duration_s
 
     def prepare_next(self) -> None:
         """Called by the Playlist right before the interstitial that
@@ -764,7 +780,6 @@ class SourceScene(Scene):
         self._rolling_fp: RollingForcePalette | None = None
         self.duration_follows_audio = False
         self._unsized_duration_s: float | None = None
-        self._synced_duration_s: float | None = None
 
     def sync_duration_to_audio(self) -> None:
         """Apply `duration_follows_audio` for the audio source's current pick.
@@ -773,14 +788,13 @@ class SourceScene(Scene):
         is an explicit duration from then on, as one in the config is."""
         if not self.duration_follows_audio:
             return
-        if self._synced_duration_s is not None and self.duration_s != self._synced_duration_s:
+        if self._duration_set_live():
             self.duration_follows_audio = False
             return
         if self._unsized_duration_s is None:
             self._unsized_duration_s = self.duration_s
         has_length = float(getattr(self.audio_source, "duration_s", 0.0) or 0.0) > 0.0
-        self.duration_s = math.inf if has_length else self._unsized_duration_s
-        self._synced_duration_s = self.duration_s
+        self._set_derived_duration(math.inf if has_length else self._unsized_duration_s)
 
     def competes_for_audio_lock(self) -> bool:
         return self.audio_source.wants_audio_lock
