@@ -44,10 +44,22 @@ REDACTED = "REDACTED"
 #: ``cache_key=`` loses its value. That direction is the cheap one — a
 #: diagnostic value goes missing from two destinations — and the reverse is a
 #: credential in a file that outlives the run.
+#:
+#: The prefixed form is tried only at the first word character of a run of name
+#: characters (`(?<![\w-]) -* \b`), not at every `\b`. A `-` puts a word
+#: boundary at every letter of `a-a-a-…`, and each of those used to scan
+#: `[\w-]*` to the end of the run — quadratic, so 10 KB of one took 1.5 s and
+#: 100 KB took 139 s on a log line. A prefixed match from later in the run is
+#: also one from that first character, since `[\w-]*` takes anything in
+#: between, so the same name is found and it ends in the same place. The open
+#: form is still tried at every `\b`, which costs one word each.
 _SECRET_KEY = r"""
-    \b (?:
-        \w* (?: token | password | secret | api[_-]?key )
-      | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
+    (?:
+        (?<![\w-]) -* \b (?:
+            \w* (?: token | password | secret | api[_-]?key )
+          | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
+        )
+      | \b \w* (?: token | password | secret | api[_-]?key )
     ) \b
 """
 

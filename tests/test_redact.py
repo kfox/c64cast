@@ -176,6 +176,29 @@ class RedactSecretsTest(unittest.TestCase):
         line = "?sortkey=date&hotkey=F1 monkey=1 sig_level=3 sigma=2 keys=3 keyboard=on hmacs=1"
         self.assertEqual(redact_secrets(line), line)
 
+    def test_a_prefix_led_by_dashes_is_still_kept_and_its_value_masked(self):
+        """The prefixed names are tried from the start of a run of name
+        characters, which may be a `-` rather than a word character."""
+        for line, want in (
+            ("--signing-key=zzz", "--signing-key=REDACTED"),
+            ("-key=zzz x", "-key=REDACTED x"),
+            ("a-b-c-x_sig=zzz", "a-b-c-x_sig=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_dash_joined_run_is_redacted_in_linear_time(self):
+        """A `-` puts a word boundary at every letter of `a-a-a-…`. A prefixed
+        name tried from each of them scanned the rest of the run every time,
+        which is quadratic: 10 KB of one took 1.5 s on a log line, and 100 KB
+        took 139 s."""
+        for line in ("a-" * 32_000, "key-" * 16_000, "x-" * 32_000 + "=1"):
+            with self.subTest(line=line[:16]):
+                start = time.perf_counter()
+                redact_secrets(line)
+                redact_source_line([line], 1)
+                self.assertLess(time.perf_counter() - start, 2.0)
+
 
 class RedactUrlUserinfoTest(unittest.TestCase):
     """A private media file is reached as `https://user:token@host/...`, and
