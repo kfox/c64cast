@@ -61,6 +61,8 @@ from .audio_handlers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .audio import AudioStreamer
 
 log = logging.getLogger(__name__)
@@ -410,20 +412,31 @@ class RateServo:
         R, and the stall re-anchor reads it only as ``read_r_promptly`` says."""
         return time.monotonic() < self.read_holdoff_until
 
-    def _timed_read(self, budget_s: float) -> tuple[int | None, bool, float]:
+    def _timed_read(
+        self, budget_s: float, current: Callable[[], bool] | None = None
+    ) -> tuple[int | None, bool, float]:
         """Read R once against ``budget_s``; returns ``(r_addr, prompt,
         took)``. A read over budget arms the backoff and comes back with
-        ``prompt`` False; a prompt one resets the backoff."""
+        ``prompt`` False; a prompt one resets the backoff.
+
+        ``current`` says whether the caller still owns this session. A read
+        that returns after it stopped doing so comes back ``(None, False,
+        took)`` and leaves the backoff, its counters and its warning alone:
+        they belong to the next session by then."""
         started = time.monotonic()
         r_addr = self._st.read_consumer_ptr()
         took = time.monotonic() - started
+        if current is not None and not current():
+            return None, False, took
         if took > budget_s:
             self._hold_off_slow_read(took, budget_s)
             return r_addr, False, took
         self.read_holdoff_s = 0.0
         return r_addr, True, took
 
-    def read_r_promptly(self, chunk_period: float, budget_s: float) -> int | None:
+    def read_r_promptly(
+        self, chunk_period: float, budget_s: float, current: Callable[[], bool]
+    ) -> int | None:
         """R for a one-off decision that acts on where R is *now* (the stall
         re-anchor), or None. ``budget_s`` is how stale that decision can
         stand R: R moves on while the read is in flight, by up to the read's
@@ -434,13 +447,18 @@ class RateServo:
         it is a single read, and the reading is still good enough to act on.
         The read counts toward the servo's backoff like any other. With the
         servo off there is no pacing budget, and this read is the only one,
-        so it is judged against ``budget_s`` alone."""
+        so it is judged against ``budget_s`` alone.
+
+        ``current`` is the caller's fence: a worker parked in this read can
+        outlive stop() and the next start_*, and a read it gets back after
+        ``current()`` turns False is None, without touching the backoff the
+        next session reads by (see ``_timed_read``)."""
         if self.reads_held_off() and self.last_slow_read_s > budget_s:
             return None
         backoff_budget_s = (
             HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period if self._st.host_dma_servo else budget_s
         )
-        r_addr, _, took = self._timed_read(backoff_budget_s)
+        r_addr, _, took = self._timed_read(backoff_budget_s, current)
         return r_addr if took <= budget_s else None
 
     def _hold_off_slow_read(self, took: float, budget_s: float) -> None:

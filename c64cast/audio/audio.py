@@ -1117,11 +1117,17 @@ class AudioStreamer:
         join, and the stall that parked it is the one that brings it here, so
         it would otherwise stomp the next session's ring, drain its mic queue
         and reset its clock state. Each step that blocks is followed by a
-        fence check, and a superseded worker returns None and touches nothing
-        more."""
+        fence check — the R read's own backoff bookkeeping and each stomp
+        write included — and a superseded worker returns None and touches
+        nothing more."""
+
+        def current() -> bool:
+            return not self._superseded(generation)
+
         r_addr = self.servo.read_r_promptly(
             self.chunk_size / self.effective_rate,
             STALL_REANCHOR_READ_BUDGET_FRAC * HOST_DMA_SERVO_TARGET_GAP / self.effective_rate,
+            current,
         )
         if self._superseded(generation):
             return None
@@ -1139,7 +1145,7 @@ class AudioStreamer:
             self.servo.note_disturbance()
             return None
         anchor = stall_reanchor(r_addr, self.chunk_size)
-        self._stomp_from(r_addr, anchor)
+        self._stomp_from(r_addr, anchor, current)
         if self._superseded(generation):
             return None
         lead = (anchor - r_addr) % RING_BUFFER_SIZE
@@ -2424,10 +2430,19 @@ class AudioStreamer:
             return
         self._stomp_from(r_addr, write_addr)
 
-    def _stomp_from(self, r_addr: int, write_addr: int) -> None:
+    def _stomp_from(
+        self, r_addr: int, write_addr: int, current: Callable[[], bool] | None = None
+    ) -> None:
         """NEUTRAL-fill ``(r_addr + guard .. write_addr)`` — the pause stomp's
-        span, and the stall re-anchor's — split at ``RING_BUFFER_END``."""
+        span, and the stall re-anchor's — split at ``RING_BUFFER_END``.
+
+        ``current`` fences the writes: once it is False, the rest are skipped.
+        A wrapped span's second write lands at ``RING_BUFFER_ADDR``, where the
+        next session's prebuffer starts, so a worker superseded during the
+        first must not make it."""
         for addr, ln in stomp_spans(r_addr, write_addr):
+            if current is not None and not current():
+                return
             self._neutral_fill_ring(addr, ln)
 
     def _hardware_teardown_steps(self) -> list[tuple[str, Callable[[], object]]]:

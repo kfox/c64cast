@@ -1128,11 +1128,11 @@ class StallResyncTest(unittest.TestCase):
         )
         self.assertFalse(any("over the" in line for line in cm.output), cm.output)
 
-    def _superseded_during(self, op: str) -> tuple[AudioStreamer, _RFakeAPI]:
+    def _superseded_during(self, op: str, r_offset: int = 100) -> tuple[AudioStreamer, _RFakeAPI]:
         """A live backlogged streamer whose worker is replaced by a stop() and
         a restart while it is parked in ``op`` (the R read, or a stomp write),
         as when that call outlives stop()'s bounded join."""
-        api = _RFakeAPI([100])
+        api = _RFakeAPI([r_offset])
         s = self._backlogged(api, live=True)
         generation = s._worker_generation
         real = getattr(api, op)
@@ -1157,6 +1157,57 @@ class StallResyncTest(unittest.TestCase):
     def test_a_worker_superseded_during_the_stomp_leaves_the_clock_state_alone(self):
         s, _ = self._superseded_during("write_memory_file")
         self.assertEqual((s._ring_tail_pad, s.servo.ring_lead), (77, 1234.0))
+
+    def test_a_worker_superseded_during_a_wrapped_stomp_skips_its_second_write(self):
+        # R this far into the ring puts the stomp span across RING_BUFFER_END,
+        # so its second write lands at RING_BUFFER_ADDR — where the next
+        # session's prebuffer starts.
+        r_offset = audio_mod.RING_BUFFER_SIZE - 1000
+        s, api = self._superseded_during("write_memory_file", r_offset)
+        anchor = audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + r_offset, s.chunk_size)
+        self.assertEqual(
+            len(audio_mod.stomp_spans(audio_mod.RING_BUFFER_ADDR + r_offset, anchor)), 2
+        )
+        self.assertEqual(len(api.writes), 1, "stomped the next session's prebuffer")
+
+    def _r_read_returning_after_supersession(self, read_s: float) -> AudioStreamer:
+        """A resync whose R read takes ``read_s`` and returns after a stop()
+        and the next start_* have replaced its worker, with the servo state
+        that next session set up."""
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        generation = s._worker_generation
+        s.servo.read_holdoff_s = 4.0
+        real_read = api.read_memory
+
+        def superseding_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(read_s)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return real_read(address, length, timeout)
+
+        api.read_memory = superseding_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertNoLogs("c64cast.audio", level="DEBUG"),
+        ):
+            self.assertIsNone(s._resync_after_stall(1.5, generation))
+        self.assertEqual(api.r_reads, 1)
+        return s
+
+    def test_a_slow_r_read_returning_to_the_next_session_leaves_its_backoff_alone(self):
+        # No warning in the next scene, no holdoff it never asked for, and its
+        # own first slow read still warns.
+        servo = self._r_read_returning_after_supersession(0.4).servo
+        self.assertFalse(servo.reads_held_off())
+        self.assertEqual(
+            (servo.slow_reads, servo.slow_read_warned, servo.last_slow_read_s), (0, False, 0.0)
+        )
+        self.assertEqual(servo.read_holdoff_s, 4.0)
+
+    def test_a_prompt_r_read_returning_to_the_next_session_leaves_its_backoff_alone(self):
+        servo = self._r_read_returning_after_supersession(0.0).servo
+        self.assertEqual(servo.read_holdoff_s, 4.0, "reset the next session's backoff")
 
     def test_a_stopped_worker_does_not_resync(self):
         api = _RFakeAPI([100])
