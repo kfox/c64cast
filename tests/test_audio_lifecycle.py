@@ -978,12 +978,15 @@ class StallResyncTest(unittest.TestCase):
         for _ in range(4):
             s.q.put(bytes([3] * 512))
         s._pushed_count = s._queued_samples = 2048
+        # As the worker that calls it sees the streamer: running, and its own
+        # generation current.
+        s.running = True
         return s
 
     def test_a_live_backlog_is_dropped_at_the_resync(self):
         s = self._backlogged(_RFakeAPI([100]), live=True)
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            anchor = s._resync_after_stall(1.5)
+            anchor = s._resync_after_stall(1.5, s._worker_generation)
         self.assertIsNotNone(anchor)
         self.assertTrue(s.q.empty())
         self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
@@ -992,7 +995,7 @@ class StallResyncTest(unittest.TestCase):
     def test_a_decoded_backlog_is_kept_at_the_resync(self):
         s = self._backlogged(_RFakeAPI([100]), live=False)
         with self.assertLogs(audio_mod.log, level="WARNING"):
-            s._resync_after_stall(1.5)
+            s._resync_after_stall(1.5, s._worker_generation)
         self.assertEqual(s.q.qsize(), 4)
         self.assertEqual(s._queued_samples, 2048)
 
@@ -1003,7 +1006,7 @@ class StallResyncTest(unittest.TestCase):
         s = self._backlogged(api, live=False)
         s.servo.read_holdoff_until = audio_rate_mod.time.monotonic() + 60.0
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            self.assertIsNone(s._resync_after_stall(1.5))
+            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
         self.assertEqual(api.r_reads, 0)
         self.assertEqual(api.writes, [], "re-anchored without a read of R")
         self.assertIn("could not be re-anchored", cm.output[0])
@@ -1026,16 +1029,53 @@ class StallResyncTest(unittest.TestCase):
             mock.patch.object(audio_rate_mod, "time", clock),
             self.assertLogs("c64cast.audio", level="WARNING") as cm,
         ):
-            self.assertIsNone(s._resync_after_stall(1.5))
+            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
             self.assertTrue(s.servo.reads_held_off(), "a slow read did not arm the backoff")
         self.assertEqual(api.r_reads, 1)
         self.assertEqual(api.writes, [], "re-anchored on a slow read of R")
         self.assertTrue(any("could not be re-anchored" in line for line in cm.output))
 
+    def _superseded_during(self, op: str) -> tuple[AudioStreamer, _RFakeAPI]:
+        """A live backlogged streamer whose worker is replaced by a stop() and
+        a restart while it is parked in ``op`` (the R read, or a stomp write),
+        as when that call outlives stop()'s bounded join."""
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=True)
+        generation = s._worker_generation
+        real = getattr(api, op)
+
+        def superseding(*args, **kwargs):  # type: ignore[no-untyped-def]
+            out = real(*args, **kwargs)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return out
+
+        setattr(api, op, superseding)
+        s._ring_tail_pad = 77
+        s.servo.ring_lead = 1234.0
+        self.assertIsNone(s._resync_after_stall(1.5, generation))
+        return s, api
+
+    def test_a_worker_superseded_during_the_r_read_leaves_the_next_session_alone(self):
+        s, api = self._superseded_during("read_memory")
+        self.assertEqual(api.writes, [], "stomped the next session's ring")
+        self.assertEqual(s.q.qsize(), 4, "drained the next session's mic queue")
+        self.assertEqual((s._ring_tail_pad, s.servo.ring_lead), (77, 1234.0))
+
+    def test_a_worker_superseded_during_the_stomp_leaves_the_clock_state_alone(self):
+        s, _ = self._superseded_during("write_memory_file")
+        self.assertEqual((s._ring_tail_pad, s.servo.ring_lead), (77, 1234.0))
+
+    def test_a_stopped_worker_does_not_resync(self):
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.running = False
+        self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
+        self.assertEqual(api.writes, [])
+
     def test_an_unreadable_r_still_warns_and_does_not_reanchor(self):
         s = self._backlogged(FakeAPI(), live=False)
         with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            self.assertIsNone(s._resync_after_stall(1.5))
+            self.assertIsNone(s._resync_after_stall(1.5, s._worker_generation))
         self.assertIn("could not be re-anchored", cm.output[0])
 
     def test_a_short_stall_is_caught_up_without_a_resync(self):

@@ -1046,7 +1046,7 @@ class AudioStreamer:
                     next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
                     lag = time.monotonic() - next_write_time
                     if lag > stall_resync_s:
-                        anchor = self._resync_after_stall(lag)
+                        anchor = self._resync_after_stall(lag, generation)
                         if anchor is not None:
                             pending_addr = anchor
                             write_addr = anchor + n
@@ -1087,7 +1087,7 @@ class AudioStreamer:
             log.exception("audio worker crashed")
             self.running = False
 
-    def _resync_after_stall(self, lag: float) -> int | None:
+    def _resync_after_stall(self, lag: float, generation: int) -> int | None:
         """Recover from a worker stall longer than the ring lead; returns the
         chunk-grid address the next chunk lands at, or None when R cannot be
         read promptly (the schedule is then only snapped forward).
@@ -1108,8 +1108,18 @@ class AudioStreamer:
 
         R comes from ``RateServo.read_r_promptly``: a stall is often a slow
         server, and a read as slow as the one that tripped this would leave R
-        stale by more than the lead the anchor puts between them."""
+        stale by more than the lead the anchor puts between them.
+
+        ``generation`` is the worker's own, as in :meth:`_worker`. A worker
+        parked in that read, or in a stomp write, can outlive stop()'s bounded
+        join, and the stall that parked it is the one that brings it here, so
+        it would otherwise stomp the next session's ring, drain its mic queue
+        and reset its clock state. Each step that blocks is followed by a
+        fence check, and a superseded worker returns None and touches nothing
+        more."""
         r_addr = self.servo.read_r_promptly(self.chunk_size / self.effective_rate)
+        if self._superseded(generation):
+            return None
         dropped = 0
         if self.mic_stream is not None:
             dropped = self._drain_queue_samples()
@@ -1126,6 +1136,8 @@ class AudioStreamer:
         anchor = stall_reanchor(r_addr, self.chunk_size)
         for addr, ln in stomp_spans(r_addr, anchor):
             self.api.write_memory_file(f"{addr:04X}", bytes([self._neutral_byte]) * ln)
+        if self._superseded(generation):
+            return None
         lead = (anchor - r_addr) % RING_BUFFER_SIZE
         self.servo.resync(lead)
         # The new lead is all pad: the clock subtracts none of it until content
@@ -1141,6 +1153,11 @@ class AudioStreamer:
             f" and dropped {dropped / self.effective_rate:.2f} s of live input" if dropped else "",
         )
         return anchor
+
+    def _superseded(self, generation: int) -> bool:
+        """True once the worker started as ``generation`` should stop acting:
+        stop() cleared ``running``, or a later start_* replaced it."""
+        return not self.running or generation != self._worker_generation
 
     def note_playback_disturbance(self) -> None:
         """Re-arm the adaptive NMI-rate loop's warm-up gate after a large playback
