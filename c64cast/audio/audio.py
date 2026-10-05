@@ -38,6 +38,7 @@ from c64cast.hw.c64 import (
     halt_quantum_bytes,
     kernal_cia1_latch,
 )
+from c64cast.hw.socket_dma import SocketDMAError
 
 from .audio_handlers import (
     AUDIO_HEALTH_LOG_INTERVAL_S,
@@ -1651,10 +1652,19 @@ class AudioStreamer:
 
     def _write_confirmed(self, write: Callable[[], None]) -> bool:
         """Run ``write`` and flush until a run leaves ``delivery_epoch``
-        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did."""
+        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did.
+
+        A run whose ``write`` raises a transport error counts as unconfirmed:
+        ``reu_write`` is not routed through ``_emit`` and raises when a redial
+        fails or is refused under backoff, which leaves ``delivery_epoch``
+        unmoved although nothing was sent."""
         for _ in range(TRACKED_PUMP_INSTALL_TRIES):
             epoch = self.api.delivery_epoch
-            write()
+            try:
+                write()
+            except (OSError, SocketDMAError) as e:
+                log.debug("audio: pump install write raised: %s", e)
+                continue
             self.api.flush()
             if self.api.delivery_epoch == epoch:
                 return True

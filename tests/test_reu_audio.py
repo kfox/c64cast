@@ -65,6 +65,7 @@ from c64cast.audio.audio_handlers import (
     servo_period,
 )
 from c64cast.hw.c64 import CIA1, KERNAL, REU, VECTORS, kernal_cia1_latch
+from c64cast.hw.socket_dma import SocketDMAError
 from c64cast.scenes.scenes import VideoScene
 
 # The matched pump latch at the fixture's rate, spelled out rather than
@@ -1687,3 +1688,44 @@ class StagedUploadDeliveryTest(unittest.TestCase):
                 self.assertFalse(s.running)
                 self.assertNotIn(f"{NMI_ROUTINE_ADDR:04X}", fake.mem_files)
                 self.assertNotIn("0314", fake.regs)
+
+    def _refuse_reu_writes_to(self, fake: FakeAPI, reu_offset: int, times: int | None) -> None:
+        """Each of the first ``times`` REU writes at ``reu_offset`` raises, as
+        socket DMA's reuwrite does when a redial fails or is refused under
+        backoff. Unlike a lossy redial it leaves ``delivery_epoch`` alone."""
+        real = fake.reu_write
+        remaining = [times]
+
+        def reu_write(offset, data):
+            if offset == reu_offset and remaining[0] != 0:
+                if remaining[0] is not None:
+                    remaining[0] -= 1
+                raise SocketDMAError("socket dma: did not answer the last redial")
+            real(offset, data)
+
+        fake.reu_write = reu_write  # type: ignore[method-assign]
+
+    def test_a_slice_whose_write_raises_is_resent(self):
+        s, fake = self._start(-1, 0)
+        lost = REU_AUDIO_BASE + REU_UPLOAD_SLICE
+        self._refuse_reu_writes_to(fake, lost, 1)
+        s.start_for_reu_staged(self.PAYLOAD)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(
+            dict(fake.socket_dma.reuwrites)[lost],
+            self.PAYLOAD[REU_UPLOAD_SLICE : 2 * REU_UPLOAD_SLICE],
+        )
+
+    def test_a_slice_whose_write_always_raises_aborts_like_a_lost_one(self):
+        s, fake = self._start(-1, 0)
+        lost = REU_AUDIO_BASE + REU_UPLOAD_SLICE
+        self._refuse_reu_writes_to(fake, lost, None)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR") as cm,
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(self.PAYLOAD)
+        self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+        self.assertNotIn(lost, dict(fake.socket_dma.reuwrites))
+        self.assertFalse(s._reu_pump_armed)
+        self.assertNotIn(f"{NMI_ROUTINE_ADDR:04X}", fake.mem_files)
