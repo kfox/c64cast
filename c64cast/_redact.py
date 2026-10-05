@@ -53,9 +53,15 @@ REDACTED = "REDACTED"
 #: also one from that first character, since `[\w-]*` takes anything in
 #: between, so the same name is found and it ends in the same place. The open
 #: form is still tried at every `\b`, which costs one word each.
+#:
+#: It is also tried just after a percent-escape. A query value that is itself
+#: URL-encoded spells `&sig=` as `%26sig%3D` and Akamai's `~hmac=` as
+#: `%7Ehmac%3D`, and the escape's last hex digit is a word character, so no
+#: `\b` falls before the name. That start costs one scan per escape, and an
+#: escape ends the run before it, so the scan stays linear.
 _SECRET_KEY = r"""
     (?:
-        (?<![\w-]) -* \b (?:
+        (?: (?<![\w-]) -* \b | (?<= %[0-9a-f]{2} ) ) (?:
             \w* (?: token | password | secret | api[_-]?key )
           | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
         )
@@ -68,11 +74,12 @@ _SECRET_KEY = r"""
 _SECRET_VALUE = re.compile(
     r"""
     (?P<kv_prefix>
-        {key} ["']? \s* [=:] \s*
+        {key} ["']? \s* (?: [=:] | (?P<pct> %3d ) ) \s*
         (?P<quote> ["]{3} | [']{3} | ["'] )?
     )
     (?P<kv_value>
-        (?(quote) (?: \\[^\r\n] | (?!(?P=quote)) [^\r\n] )+ | [^\s&"',}]+ )
+        (?(quote) (?: \\[^\r\n] | (?!(?P=quote)) [^\r\n] )+
+        | (?(pct) (?: (?!%26) [^\s&"',}] )+ | [^\s&"',}]+ ) )
     )
     |
     (?P<bearer_prefix>\bBearer\s+) (?P<bearer_value>[^\s"',}]+)
@@ -153,7 +160,9 @@ def redact_secrets(text: str) -> str:
     `signing_key=` is covered and `sortkey=` is left alone.
 
     An unquoted value ends at whitespace, `&`, a comma, a quote, or a closing
-    brace. A quoted one — `'`, `"`, `'''` or `\"\"\"` — runs to the matching
+    brace. A name inside a URL-encoded value (`%26sig%3DVALUE`,
+    `%7Ehmac%3DVALUE`) is matched too, and its value also ends at `%26`. A
+    quoted one — `'`, `"`, `'''` or `\"\"\"` — runs to the matching
     quote that no backslash escapes, or to the end of the line, whichever comes
     first: a value written across several lines is masked only as far as its
     first newline, and one whose opening delimiter ends the line has nothing on

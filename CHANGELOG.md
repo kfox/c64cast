@@ -303,7 +303,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `https://user:token@…` audio or video file failed to open, the error
   quoted the whole URL, and only `token=`/`sig=`-style values were masked.
   The `user:token@` part is masked now as well, and so is the `hmac=`
-  signature in an Akamai `__token__=` or `hdnts=` parameter. The terminal
+  signature in an Akamai `__token__=` or `hdnts=` parameter, URL-encoded
+  (`hmac%3D…`, `%26sig%3D…`) or not. The terminal
   still shows the URL as it was.
 
 - **`[audio].sampler_clock_hz` outside 5000000..7500000 is refused when the

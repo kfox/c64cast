@@ -169,6 +169,26 @@ class RedactSecretsTest(unittest.TestCase):
                     f"https://cdn/a.mp3?{name}=exp=1~acl=/a/*~hmac=REDACTED&x=1",
                 )
 
+    def test_a_secret_inside_a_url_encoded_value_is_covered(self):
+        """`urlencode` turns the token's `=` into `%3D`, a Java-style encoder
+        turns its `~` into `%7E` too, and a redirect URL carried in a query
+        parameter spells `&sig=` as `%26sig%3D`. The escape's hex digit leaves
+        no word boundary before the name, and the value ends at `%26`."""
+        self.assertEqual(
+            redact_secrets("hdnts=exp%3D1~acl%3D%2Fa%2F%2A~hmac%3Dabc123&x=1"),
+            "hdnts=exp%3D1~acl%3D%2Fa%2F%2A~hmac%3DREDACTED&x=1",
+        )
+        self.assertEqual(
+            redact_secrets("__token__=exp%3D1%7Eacl%3D%2F%7Ehmac%3Dabc123"),
+            "__token__=exp%3D1%7Eacl%3D%2F%7Ehmac%3DREDACTED",
+        )
+        self.assertEqual(
+            redact_secrets("u=https%3A%2F%2Fh%2F%3Fsig%3Ddeadbeef%26next%3D2"),
+            "u=https%3A%2F%2Fh%2F%3Fsig%3DREDACTED%26next%3D2",
+        )
+        line = "u=%2Fmonkey%3D1%26sortkey%3Ddate"
+        self.assertEqual(redact_secrets(line), line)
+
     def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
         """The short names are why `\\w*` cannot front them: `sortkey` would be
         masked with the rest, and a masked diagnostic value reads as coverage
