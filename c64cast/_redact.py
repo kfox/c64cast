@@ -194,13 +194,148 @@ def _scheme_start(line: str, separator: int) -> int:
 Span = tuple[int, int]
 
 
+#: A separator as :data:`_SECRET_VALUE` reads one. `enc` is the run of `25`
+#: giving an encoded one's depth, and is None for a raw `=` or `:`.
+_SEPARATOR = re.compile(r"[=:] | % (?P<enc> (?:25)*+ ) 3[ad]", re.IGNORECASE | re.VERBOSE)
+
+#: An `&` at some depth of encoding — `%26`, `%2526`, … — which ends an
+#: encoded value whose separator is at least that deep.
+_ENCODED_AMP = re.compile(r"% (?P<enc> (?:25)*+ ) 26", re.IGNORECASE | re.VERBOSE)
+
+#: The depth :func:`_hidden_values` gives a raw separator, which no encoded
+#: `&` ends, and the rank it gives a value that ended where every value does.
+_RAW, _EVERY = -1, -2
+
+
+def _depth(m: re.Match[str]) -> int:
+    enc = m.group("enc")
+    return _RAW if enc is None else len(enc) // 2
+
+
+def _is_name_char(c: str, *, dash: bool) -> bool:
+    return c.isalnum() or c == "_" or (dash and c == "-")
+
+
+def _back_over(text: str, lo: int, j: int, raw: str, hexes: tuple[str, ...]) -> int | None:
+    """Where a character of `raw`, or a percent-escape of one of `hexes` at
+    any depth, that ends at `j` begins — no earlier than `lo`; None if none
+    ends there."""
+    if j > lo and text[j - 1] in raw:
+        return j - 1
+    if j - 3 < lo or text[j - 2 : j].lower() not in hexes:
+        return None
+    i = j - 2
+    while i > lo:
+        if text[i - 1] == "%":
+            return i - 1
+        if i - 2 < lo or text[i - 2 : i] != "25":
+            break
+        i -= 2
+    return None
+
+
+def _back_over_space(text: str, lo: int, j: int) -> int:
+    while j > lo and text[j - 1].isspace():
+        j -= 1
+    return j
+
+
+def _name_starts(text: str, lo: int, k: int) -> list[int]:
+    """Where a name ending at `k` may begin, no earlier than `lo`: its run of
+    name characters, the percent-escape just before that run, and the last
+    word of the run, which is where an open name past a `-` starts."""
+    word = k
+    while word > lo and _is_name_char(text[word - 1], dash=False):
+        word -= 1
+    run = word
+    while run > lo and _is_name_char(text[run - 1], dash=True):
+        run -= 1
+    starts = [run, word]
+    if run > lo and text[run - 1] == "%":
+        starts.append(run - 1)
+    return starts
+
+
+def _match_past(text: str, lo: int, k: int, end: int) -> re.Match[str] | None:
+    """A :data:`_SECRET_VALUE` match for a name ending at `k` whose value runs
+    past `end`."""
+    if k <= lo or not _is_name_char(text[k - 1], dash=False):
+        return None
+    for start in _name_starts(text, lo, k):
+        m = _SECRET_VALUE.match(text, start)
+        if m is not None and m.end("kv_value") > end:
+            return m
+    return None
+
+
+def _hidden_values(text: str, outer: re.Match[str], reach: list[int]) -> list[Span]:
+    """The values of names inside `outer`'s value that run on past its end.
+
+    `finditer` resumes where a match ends, so a name inside a value never
+    starts a match of its own, and two shapes let that name's value outlast
+    the one it hides in. In `token%3Apassword =S3CR` the space ends the
+    `token` value and is also where `password`'s separator begins: the
+    prefix of the hidden match runs through the outer value's end. In
+    `token%3Apassword=a%26b` the `%26` ends the encoded `token` value but
+    not `password`'s, whose raw `=` makes a value that only whitespace, a
+    quote or a raw `&` ends.
+
+    Each is looked for only where it can be, so the search stays linear. A
+    prefix running through the end is found by stepping back from the end
+    over a space, a separator, a space and a closing quote. A shallower
+    separator matters only when an encoded `&` ended the outer value, and
+    only the shallowest one that names a secret, since its value ends no
+    earlier than any deeper one's. `reach` is the furthest such value found
+    so far and the depth of what ended it; a value inside it that the same
+    `&` would end is already masked, and is not read a second time. A value
+    an `&` ended is masked whole; what is lost is only the run of names past
+    it, which the rule cannot tell from more of the value."""
+    value_start, end = outer.span("kv_value")
+    lo = outer.start()
+    found: list[Span] = []
+    # Of the characters that end a value, only a space or a quote can also
+    # be part of a prefix.
+    crossable = end < len(text) and (text[end].isspace() or text[end] in "\"'")
+    after_sep = _back_over_space(text, value_start, end)
+    for before_sep in (after_sep, _back_over(text, value_start, after_sep, "=:", ("3a", "3d"))):
+        if before_sep is None or not crossable:
+            continue
+        k = _back_over_space(text, value_start, before_sep)
+        for name_end in (k, _back_over(text, value_start, k, "\"'", ("22", "27"))):
+            if name_end is not None and (m := _match_past(text, lo, name_end, end)) is not None:
+                found.append(m.span("kv_value"))
+    amp = _ENCODED_AMP.match(text, end)
+    if outer.group("pct") is None or amp is None:
+        return found
+    shallower = sorted(
+        (_depth(sep), sep.start())
+        for sep in _SEPARATOR.finditer(text, value_start, end)
+        if _depth(sep) < _depth(amp)
+    )
+    for depth, sep_start in shallower:
+        if end < reach[0] and reach[1] <= depth:
+            break
+        quote = _back_over(text, value_start, sep_start, "\"'", ("22", "27"))
+        for name_end in (sep_start, quote):
+            if name_end is not None and (m := _match_past(text, lo, name_end, end)) is not None:
+                found.append(m.span("kv_value"))
+                stop = _ENCODED_AMP.match(text, m.end("kv_value"))
+                reach[:] = [m.end("kv_value"), _depth(stop) if stop is not None else _EVERY]
+                return found
+    return found
+
+
 def _value_spans(text: str) -> list[Span]:
     """Where in `text` the name rule finds a secret value: each value a
-    :data:`_SECRET_VALUE` key names, and each token :data:`_BEARER_VALUE`
-    finds. The two may overlap."""
-    return [m.span("kv_value") for m in _SECRET_VALUE.finditer(text)] + [
-        m.span("value") for m in _BEARER_VALUE.finditer(text)
-    ]
+    :data:`_SECRET_VALUE` key names, each one a name inside that value names
+    (:func:`_hidden_values`), and each token :data:`_BEARER_VALUE` finds. They
+    may overlap."""
+    spans: list[Span] = []
+    reach = [0, _EVERY]
+    for m in _SECRET_VALUE.finditer(text):
+        spans.append(m.span("kv_value"))
+        spans += _hidden_values(text, m, reach)
+    return spans + [m.span("value") for m in _BEARER_VALUE.finditer(text)]
 
 
 def _splice(text: str, spans: Sequence[Span]) -> str:

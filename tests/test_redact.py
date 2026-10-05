@@ -284,6 +284,44 @@ class RedactSecretsTest(unittest.TestCase):
         line = "state=%7B%22monkey%22%3A%22abc%22%7D"
         self.assertEqual(redact_secrets(line), line)
 
+    def test_a_name_inside_another_names_value_keeps_its_value_masked(self):
+        """A search resumes where a match ends, so a name inside a value
+        starts no match of its own. Its value still outlasted the one it hid
+        in when its separator began where that value ended — at a space or a
+        quote — or when an encoded `&` ended the outer value and the hidden
+        name's separator was shallower than that `&`."""
+        for line, want in (
+            ("token%3Apassword =S3CR", "token%3AREDACTED =REDACTED"),
+            ("sig%253atoken%253d %2FS3CR[", "sig%253aREDACTED REDACTED"),
+            ("token%3Apassword'=S3CR", "token%3AREDACTED'=REDACTED"),
+            ("token%3AX-Auth-Token =S3CR", "token%3AREDACTED =REDACTED"),
+            ("token%3A%22key%22 =S3CR", "token%3AREDACTED =REDACTED"),
+            ("%22token%22%3Apassword%22%3A S3CR", "%22token%22%3AREDACTED REDACTED"),
+            ("token=password =S3CR", "token=REDACTED =REDACTED"),
+            ("token%3Apassword=a%26S3CR", "token%3AREDACTED"),
+            ("token%253Apassword%3Da%2526S3CR x", "token%253AREDACTED x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        for line in ("token%3Ax%26n%3D1 y=2", "token%3Amonkey=1%26n%3D1", "token%3Ax y"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line).count("REDACTED"), 1)
+
+    def test_names_hidden_in_values_are_redacted_in_linear_time(self):
+        """Each value a hidden name could outlast is looked for only next to
+        the end it outlasts, and a value an earlier one already reaches past
+        is not read again."""
+        for line in (
+            "token%3A" + "token=" * 16_000 + "%26" + "a" * 96_000 + " ",
+            "token%3A" * 16_000 + "%26",
+            "token%253Apassword=x%2526" * 6_000 + " ",
+            "token%3Apassword " * 8_000,
+        ):
+            with self.subTest(line=line[:24]):
+                start = time.perf_counter()
+                redact_secrets(line)
+                self.assertLess(time.perf_counter() - start, 2.0)
+
     def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
         """The short names are why `\\w*` cannot front them: `sortkey` would be
         masked with the rest, and a masked diagnostic value reads as coverage
