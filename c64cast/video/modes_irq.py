@@ -534,8 +534,8 @@ _CHUNK_COUNTER_ZP = 0xFB  # zero-page chunk counter
 #   offset 118 BPL -9 → 111    (color copy loop body)
 #   offset 141 BNE -19 → 124   (color chunk loop body)
 #   offset 148 BEQ +3 → 153    (color end-of-family pump check)
-_PUMP_BODY_LO = 0x80  # REU_PUMP_BODY_SUBROUTINE_ADDR low byte ($C180 & $FF)
-_PUMP_BODY_HI = 0xC1  # REU_PUMP_BODY_SUBROUTINE_ADDR high byte ($C180 >> 8)
+_PUMP_BODY_LO = REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF
+_PUMP_BODY_HI = (REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF
 MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = bytes(
     [
         # --- Header: dispatch raster vs audio ---
@@ -737,14 +737,6 @@ assert len(MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER) == 176, (
     "be recomputed before changing. See the offset comments in the byte "
     "column."
 )
-# Sanity-check the cross-module address coupling between the chunked
-# dispatcher (constructed here from raw bytes) and the pump body
-# subroutine address (imported from audio_handlers.py at the top of the
-# module). If audio_handlers.py ever relocates REU_PUMP_BODY_SUBROUTINE_ADDR away from
-# $C180, the JSR operands inside the dispatcher above must move with it.
-assert REU_PUMP_BODY_SUBROUTINE_ADDR == 0xC180
-assert _PUMP_BODY_LO == (REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF)
-assert _PUMP_BODY_HI == ((REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF)
 
 
 # Host-DMA double-buffer swap IRQ handler (no-REU backends, e.g. TeensyROM).
