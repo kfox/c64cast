@@ -24,6 +24,11 @@ from c64cast.scenes.modulation import MusicModulation, TempoEstimator
 log = logging.getLogger(__name__)
 
 FFT_SIZE = 1024
+# The largest analysis window accepted: about 0.7 s at 44.1 kHz, far past any
+# useful transient timing. Unbounded, a typo such as 2**34 passed the load and
+# the reactive scene's tap (four windows of float32) and per-tick FFT then
+# asked for hundreds of GB (256 GiB for the tap alone).
+FFT_SIZE_MAX = 32768
 N_BANDS = 8
 
 _WINDOWS: dict[int, np.ndarray] = {}
@@ -79,8 +84,8 @@ def check_layout(n_bands: int, fft_size: int) -> None:
     band count the window cannot split is refused when the config loads rather
     than when a reactive scene starts, where the audio source swallows the
     error and plays on without reacting."""
-    if fft_size < 32:
-        raise ValueError("audio features: fft_size must be >= 32")
+    if not 32 <= fft_size <= FFT_SIZE_MAX:
+        raise ValueError(f"audio features: fft_size must be 32-{FFT_SIZE_MAX}, got {fft_size}")
     if n_bands < 1:
         raise ValueError("audio features: bands must be >= 1")
     band_edges(n_bands, fft_size)

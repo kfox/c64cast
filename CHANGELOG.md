@@ -354,6 +354,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   covers at least one frequency bin, and a band count larger than the window
   can split is refused with an error instead of producing empty bands.
 
+- **An `[audio_features].fft_size` above 32768 is refused when the config
+  loads.** Any size passed, and a mistyped one such as `17179869184` made the
+  first reactive scene try to allocate hundreds of gigabytes.
+
 - **A video whose audio fell behind on the Ultimate Audio sampler stays in
   sync with its sound.** When the decoder could not keep up, the sampler moved
   the audio later to keep it playing, but the picture kept following the

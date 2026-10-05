@@ -67,7 +67,7 @@ fft_size = 1024
 | **`bands`**<br>*Type:* `int`<br>*Default:* `8` | Number of log-spaced frequency bands the analyzer reports (low→high). Generators fold these into bass/mid/treble thirds, so multiples of 3 are not required; 8 matches the spectrum_petscii overlay's bands. More bands = finer spectral detail, no meaningful cost. |
 | **`onset_sensitivity`**<br>*Type:* `float`<br>*Default:* `1.0` | Transient-detection sensitivity. The spectral-flux threshold is divided by this, so >1 fires onsets more readily (sparse/soft material, a quiet feed) and <1 fires less (dense or heavily compressed material where everything reads as a transient). 1.0 is the tuned default. |
 | **`poll_hz`**<br>*Type:* `float`<br>*Default:* `60.0` | Analysis rate in Hz. 60 matches a full-rate display, so every rendered frame sees fresh features. Lower it only to save host CPU; below ~30 transients start to smear. |
-| **`fft_size`**<br>*Type:* `int`<br>*Default:* `1024` | Analysis window in samples. Larger = finer frequency resolution but blurrier transient timing; 1024 is the balance point at the DAC's sample rates. |
+| **`fft_size`**<br>*Type:* `int`<br>*Default:* `1024` | Analysis window in samples, 32-32768. Larger = finer frequency resolution but blurrier transient timing; 1024 is the balance point at the DAC's sample rates. |
 | **`listen_sample_rate`**<br>*Type:* `int`<br>*Default:* `44100` | Capture rate in Hz for audio_source = 'listen' (the listen-only path, which never feeds the DAC and so isn't bound to its ~12 kHz rate). 44100 gives the analyzer full-bandwidth audio — real hi-hat energy above the DAC's 6 kHz Nyquist and cleaner transients. Ignored by audio_source = 'mic' (that path analyzes at the DAC rate, matching what the C64 actually plays). |
 
 ## `[color]`

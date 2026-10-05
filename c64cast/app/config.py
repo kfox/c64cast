@@ -2134,9 +2134,9 @@ class AudioFeaturesCfg:
     fft_size: int = field(
         default=1024,
         metadata={
-            "help": "Analysis window in samples. Larger = finer frequency "
-            "resolution but blurrier transient timing; 1024 is the balance point "
-            "at the DAC's sample rates."
+            "help": "Analysis window in samples, 32-32768. Larger = finer "
+            "frequency resolution but blurrier transient timing; 1024 is the "
+            "balance point at the DAC's sample rates."
         },
     )
     listen_sample_rate: int = field(

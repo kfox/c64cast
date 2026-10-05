@@ -118,7 +118,15 @@ class BandTest(unittest.TestCase):
         # logs the error and plays on without reacting.
         from c64cast.app import config as cfgmod
 
-        bad: list[tuple[Any, int]] = [(512, 1024), (0, 1024), (8, 16), (8.5, 1024), (True, 1024)]
+        bad: list[tuple[Any, int]] = [
+            (512, 1024),
+            (0, 1024),
+            (8, 16),
+            (8.5, 1024),
+            (True, 1024),
+            (8, 32769),
+            (8, 2**34),
+        ]
         for bands, fft in bad:
             cfg = cfgmod.Config()
             cfg.audio_features.bands = bands
@@ -127,6 +135,8 @@ class BandTest(unittest.TestCase):
                 cfgmod.validate_sections(cfg)
         cfg = cfgmod.Config()
         cfg.audio_features.bands = 511
+        cfgmod.validate_sections(cfg)
+        cfg.audio_features.fft_size = 32768  # the largest window accepted
         cfgmod.validate_sections(cfg)
 
     def test_sweep_moves_the_peak_band_upward(self):

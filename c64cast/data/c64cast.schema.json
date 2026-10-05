@@ -947,7 +947,7 @@
         },
         "fft_size": {
           "type": "integer",
-          "description": "Analysis window in samples. Larger = finer frequency resolution but blurrier transient timing; 1024 is the balance point at the DAC's sample rates.",
+          "description": "Analysis window in samples, 32-32768. Larger = finer frequency resolution but blurrier transient timing; 1024 is the balance point at the DAC's sample rates.",
           "default": 1024
         },
         "listen_sample_rate": {
