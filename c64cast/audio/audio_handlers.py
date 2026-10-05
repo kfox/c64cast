@@ -389,6 +389,16 @@ HOST_DMA_SERVO_KI = 5e-7  # s/(byte*chunk)    (HW-TUNABLE)
 HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
+# The R read sits inside the paced loop, after the chunk's drip writes, which
+# take about half the chunk period; a read slower than the rest of the period
+# makes the worker late. Such a reading is not used, and the servo stops
+# reading for a holdoff (holding its integral correction, servo_hold_period),
+# so a slow server is not charged once per chunk. The
+# holdoff doubles on each consecutive slow read, up to the max, and resets on
+# a prompt one.
+HOST_DMA_SERVO_READ_BUDGET_FRAC = 0.5  # of chunk_period
+HOST_DMA_SERVO_READ_HOLDOFF_MIN_S = 1.0
+HOST_DMA_SERVO_READ_HOLDOFF_MAX_S = 8.0
 # Per-reading weight of the ring-lead EMA the A/V clock subtracts: about a
 # second at one R read per 1 KiB chunk, so one torn R read moves the clock by
 # a few ms rather than jumping it by up to a whole ring.
@@ -1133,6 +1143,18 @@ def servo_period(
         out_max=(HOST_DMA_SERVO_PERIOD_MAX_FRAC - 1.0) * chunk_period,
     )
     return chunk_period + correction, integ
+
+
+def servo_hold_period(integ: float, *, chunk_period: float, ki: float = HOST_DMA_SERVO_KI) -> float:
+    """The pace period with no gap reading to act on: only the integral term,
+    which carries the standing rate correction (the consumer's bus-halt
+    deficit), held where it was. Dropping to the bare ``chunk_period`` instead
+    would hand that drift back, and the ring laps in about 26 s of it."""
+    correction = max(
+        (HOST_DMA_SERVO_PERIOD_MIN_FRAC - 1.0) * chunk_period,
+        min((HOST_DMA_SERVO_PERIOD_MAX_FRAC - 1.0) * chunk_period, ki * integ),
+    )
+    return chunk_period + correction
 
 
 def pi_step(

@@ -41,6 +41,9 @@ from c64cast.hw.c64 import (
 from .audio_handlers import (
     CIA2_ICR_ENABLE_TIMER_A_NMI,
     CIA2_TIMER_A_CONTINUOUS,
+    HOST_DMA_SERVO_READ_BUDGET_FRAC,
+    HOST_DMA_SERVO_READ_HOLDOFF_MAX_S,
+    HOST_DMA_SERVO_READ_HOLDOFF_MIN_S,
     NMI_ARM_MAX_ATTEMPTS,
     NMI_ARM_VERIFY_DELAY_S,
     NMI_BITMAP_SEED_MODES,
@@ -53,6 +56,7 @@ from .audio_handlers import (
     RING_BUFFER_SIZE,
     RING_LEAD_EMA_ALPHA,
     nmi_rate_step,
+    servo_hold_period,
     servo_period,
 )
 
@@ -304,6 +308,12 @@ class RateServo:
         self.last_r_reading = -1
         self.r_stall_chunks = 0
         self.stall_warned = False
+        # Slow-R-read holdoff: no read before `read_holdoff_until` (monotonic),
+        # and the next slow read holds off for `read_holdoff_s` (0 = none yet).
+        self.read_holdoff_until = 0.0
+        self.read_holdoff_s = 0.0
+        self.slow_reads = 0
+        self.slow_read_warned = False
         # Per-window excursions, read and reset by _maybe_log_health.
         self.health_gap_min = -1
         self.health_gap_max = -1
@@ -324,18 +334,32 @@ class RateServo:
         to the *absolute* ``next_write_time`` by the caller, so REST read latency
         only shortens the next sleep — it does not snap the schedule forward.
 
+        A read slower than ``HOST_DMA_SERVO_READ_BUDGET_FRAC`` of the chunk
+        period is not used, and the servo stops reading for a backoff, holding
+        its integral correction (``servo_hold_period``) meanwhile. A slow
+        server charged once per chunk otherwise makes the worker fall steadily
+        behind the consumer, which then plays the ring's previous lap.
+
         Also the only place a consumer that dies *mid*-session becomes visible —
         see ``note_r_reading``.
         """
         st = self._st
         if not st.host_dma_servo:
             return chunk_period
+        started = time.monotonic()
+        if started < self.read_holdoff_until:
+            return servo_hold_period(self.integ, chunk_period=chunk_period)
         # The one read this class repeats — held out of `-vv` so a chunk-rate
         # transport record doesn't bury the requests an operator came for. The
         # arm verification and the pause stomp call `read_consumer_ptr` too,
         # and those are one-shot, so they stay visible.
         with quiet_transport():
             r_addr = st.read_consumer_ptr()
+        took = time.monotonic() - started
+        if took > HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period:
+            self._hold_off_slow_read(took, chunk_period)
+            return servo_hold_period(self.integ, chunk_period=chunk_period)
+        self.read_holdoff_s = 0.0
         if r_addr is None:
             return chunk_period
         self.note_r_reading(r_addr)
@@ -356,6 +380,27 @@ class RateServo:
             self.observe_r_rate(r_addr)
         period, self.integ = servo_period(gap, self.integ, chunk_period=chunk_period)
         return period
+
+    def _hold_off_slow_read(self, took: float, chunk_period: float) -> None:
+        """Drop a reading that came back too late to pace by, and stop reading
+        for a backoff that doubles while reads stay slow."""
+        self.slow_reads += 1
+        self.read_holdoff_s = min(
+            HOST_DMA_SERVO_READ_HOLDOFF_MAX_S,
+            max(HOST_DMA_SERVO_READ_HOLDOFF_MIN_S, self.read_holdoff_s * 2),
+        )
+        self.read_holdoff_until = time.monotonic() + self.read_holdoff_s
+        level = logging.DEBUG if self.slow_read_warned else logging.WARNING
+        self.slow_read_warned = True
+        log.log(
+            level,
+            "audio: read-pointer read took %.0f ms, over the %.0f ms the pacing loop "
+            "can spare — holding the pace correction for %.0f s (%d slow so far)",
+            took * 1000.0,
+            HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period * 1000.0,
+            self.read_holdoff_s,
+            self.slow_reads,
+        )
 
     def note_r_reading(self, r_addr: int) -> None:
         """Watch for an NMI consumer that stopped after a verified start.
@@ -490,6 +535,8 @@ class RateServo:
         servo off it stays the lead estimate, the gap holding near it."""
         self.ring_lead = float(ring_lead)
         self.integ = 0.0
+        self.read_holdoff_until = 0.0
+        self.read_holdoff_s = 0.0
         self.r_rate_ema = -1.0
         self.last_r_addr = -1
         self.last_r_time = 0.0
@@ -525,6 +572,8 @@ class RateServo:
         self.last_r_reading = -1
         self.r_stall_chunks = 0
         self.stall_warned = False
+        self.slow_reads = 0
+        self.slow_read_warned = False
         self.ring_lead = -1.0
         self.r_rate_ema = -1.0
         self.last_r_addr = -1

@@ -292,6 +292,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A slow U64 web server no longer makes `$D418` DAC audio replay itself.**
+  The audio worker reads the C64's playback position over REST once per chunk,
+  and a read slower than about 40 ms made it fall behind the player, which
+  then replayed a lap-old ring. A slow read is now skipped, with a warning,
+  and reading backs off until it is prompt again.
 - **With `[audio].nmi_rate_adaptive` on, a link stall no longer speeds the
   `$D418` DAC up.** After a stall of about a second, the consumer-rate
   estimate saw only the part of the read pointer's advance past a whole ring

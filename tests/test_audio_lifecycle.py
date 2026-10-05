@@ -722,6 +722,83 @@ class NmiStallWatchdogTest(unittest.TestCase):
         self.assertEqual(s.servo.r_stall_chunks, 0)
 
 
+class SlowReadPointerTest(unittest.TestCase):
+    """The R read sits inside the paced loop. One slower than the time the
+    loop can spare is not paced by, and stops the servo reading for a backoff
+    instead of being paid for again every chunk."""
+
+    CHUNK_PERIOD = 0.085
+
+    def _streamer(self, read_s: float) -> tuple[AudioStreamer, SleepDrivenClock, mock.MagicMock]:
+        clock = SleepDrivenClock()
+        s = AudioStreamer(cast(Ultimate64API, FakeAPI()), 12000, "NTSC", host_dma_servo=True)
+        self.read_s = read_s
+
+        def read() -> int:
+            clock.sleep(self.read_s)
+            return audio_mod.RING_BUFFER_ADDR
+
+        reader = mock.MagicMock(side_effect=read)
+        patcher = mock.patch.object(audio_rate_mod, "time", clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        reader_patch = mock.patch.object(s, "read_consumer_ptr", reader)
+        reader_patch.start()
+        self.addCleanup(reader_patch.stop)
+        return s, clock, reader
+
+    def test_slow_read_is_not_paced_by_and_holds_off(self):
+        s, clock, reader = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 1000  # far off target: servo would act
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            period = s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(period, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.gap_last, -1, "a late R reached the gap servo")
+        self.assertIn("holding the pace correction", cm.output[0])
+        # Inside the holdoff the servo does not read at all.
+        clock.sleep(0.5)
+        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(reader.call_count, 1)
+
+    def test_holdoff_doubles_while_reads_stay_slow_and_resets_on_a_prompt_one(self):
+        s, clock, _ = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        holdoffs = []
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG"):
+            for _ in range(5):
+                s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+                holdoffs.append(s.servo.read_holdoff_s)
+                clock.sleep(s.servo.read_holdoff_s)
+        self.assertEqual(holdoffs, [1.0, 2.0, 4.0, 8.0, 8.0])
+        self.assertEqual(s.servo.slow_reads, 5)
+        self.read_s = 0.01
+        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.read_s = 0.1
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.read_holdoff_s, 1.0, "a prompt read did not reset the backoff")
+
+    def test_slow_read_holds_the_standing_correction(self):
+        # The integral term is the bus-halt drift the servo has learned; a
+        # bare chunk_period would drop it and let W walk off R again.
+        s, clock, _ = self._streamer(read_s=0.1)
+        s.servo.integ = 20000.0
+        held = audio_rate_mod.servo_hold_period(20000.0, chunk_period=self.CHUNK_PERIOD)
+        self.assertGreater(held, self.CHUNK_PERIOD)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            self.assertEqual(s.servo.next_pace_increment(0x4000, self.CHUNK_PERIOD), held)
+        clock.sleep(0.2)
+        self.assertEqual(s.servo.next_pace_increment(0x4000, self.CHUNK_PERIOD), held)
+
+    def test_prompt_read_paces(self):
+        s, _, _ = self._streamer(read_s=0.01)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 1000
+        with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
+            period = s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertNotEqual(period, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.gap_last, 1000)
+
+
 class NmiRateSafetyTest(unittest.TestCase):
     """The NMI sample-rate guard (c64.nmi_rate_safety) + its config wiring.
 
