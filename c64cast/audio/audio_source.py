@@ -534,7 +534,10 @@ class AudioFileSource:
         if time.monotonic() >= deadline:
             return True
         played = self._audio.position_seconds() or 0.0
-        return played >= length - 1e-3
+        # A sampler that re-anchored late audio plays it that far behind its
+        # clock; ended on the clock alone, the scene cut off the track's tail.
+        lag = float(getattr(self._audio, "content_lag_seconds", 0.0))
+        return played >= length + lag - 1e-3
 
     def teardown(self) -> None:
         # The sink is unhooked before the streamer stops, so no callback can

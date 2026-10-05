@@ -1271,6 +1271,15 @@ class UltimateAudioSampler:
             return max(0.0, min(elapsed, total_s))
         return max(0.0, elapsed)
 
+    @property
+    def content_lag_seconds(self) -> float:
+        """How far this activation's re-anchors have put the sound behind
+        `position_seconds()`. Late audio is re-anchored past the read head
+        (`_late_anchor`), and the clock does not follow it, so the last sample
+        of a track is heard this long after the clock reaches the track's
+        length. Cleared by arm() and by a splice."""
+        return self._reanchor_lag_bytes / self.bps / self._actual_rate
+
     def ring_lead_seconds(self) -> float:
         """The ``AudioStreamer`` splice hook: how long after a flush() the first
         post-splice sample is heard. flush() keeps FLUSH_GUARD_S of old audio

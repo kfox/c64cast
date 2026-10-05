@@ -925,6 +925,14 @@ class SamplerLateReanchorTest(unittest.TestCase):
             self.assertTrue(self._write(40))
         self.assertEqual(smp._content_pos, anchor + 51 * 40)
         self.assertEqual(smp._reanchors, 1)
+        # The sound now ends this far past the length the producer delivered.
+        dropped_writes = -(-smp._late_reanchor_bytes // 40)
+        delivered = (dropped_writes + 51) * 40
+        self.assertAlmostEqual(
+            smp.content_lag_seconds,
+            (smp._content_pos - delivered) / smp.bps / smp._actual_rate,
+            places=9,
+        )
 
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped

@@ -1365,6 +1365,7 @@ class _FileSink:
     sample_rate = 8000
     effective_rate = 8000.0
     analysis_sink = None
+    content_lag_seconds = 0.0
 
     def __init__(self, played: float | Callable[[], float] | None = None):
         self.pushed = 0
@@ -1489,6 +1490,20 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.assertFalse(src.finished)
         self.now[0] += 0.39
         self.assertFalse(src.finished)
+        self.now[0] += 0.02
+        self.assertTrue(src.finished)
+
+    def test_waits_out_a_sampler_reanchor(self):
+        # A sampler re-anchors late audio past its read head, and its clock
+        # does not follow, so the last sample is heard that long after the
+        # clock reaches the length.
+        start = self.now[0]
+        sink = _FileSink(played=lambda: self.now[0] - start)
+        sink.content_lag_seconds = 0.2
+        src = self._source(sink)
+        src._decode_loop()
+        self.now[0] += 0.59
+        self.assertFalse(src.finished, "ended before the re-anchored tail played")
         self.now[0] += 0.02
         self.assertTrue(src.finished)
 
