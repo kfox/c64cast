@@ -384,6 +384,30 @@ class MicLeadReanchorReseedTest(unittest.TestCase):
             rig.step()
         self.assertEqual(rig.servo.reanchors, crawled)
 
+    def test_a_stall_soon_after_an_absorbed_speed_up_does_not_seed_the_old_drop(self):
+        # Settled under the mhires deficit, the pump speeds up to a 6.7 %
+        # deficit: too little to overtake, so the loop steers through it while
+        # the integrator still holds most of the old 15 %. A stall laps a tick
+        # later. Seeded from the integrator alone, the loop puts the stale
+        # 15 % back and overtakes once the pump resumes, a second dropout.
+        rig = _Rig(drift=1800.0)
+        for _ in range(60):
+            rig.step()
+        rig.drift = 800.0
+        rig.step()
+        self.assertEqual(rig.servo.reanchors, 0)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+            rig.t += 1.0
+            rig.pump += 0.1 * (RATE - rig.drift)
+            rig.host += RATE * (1.0 - rig.servo.drop_frac)
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 1)
+        self.assertLess(rig.servo.drop_frac, 1800.0 / RATE - 0.02)
+        for _ in range(30):
+            rig.step()
+        self.assertEqual(rig.servo.reanchors, 1)
+
 
 class MicLeadOpenLoopTest(unittest.TestCase):
     def _closed(self, drift: float = 1800.0) -> _Rig:
