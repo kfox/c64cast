@@ -1013,6 +1013,15 @@ class SamplerLateReanchorTest(unittest.TestCase):
         # sample past its anchor. A sticky one landing inside that hold
         # overlapped it, so the head's progress came off twice: the heard
         # sample jumped ahead, then ran backward.
+        self._reanchor_inside_a_hold_past_its_anchor(head_past_slot=10)
+
+    def test_a_sticky_reanchor_short_of_its_slot_ends_the_older_hold_there(self):
+        # The same, with the head still short of the slot the second
+        # re-anchor moves: the older hold is cut where the new one starts
+        # rather than dropped, and kept whole it overlapped the new hold.
+        self._reanchor_inside_a_hold_past_its_anchor(head_past_slot=-10)
+
+    def _reanchor_inside_a_hold_past_its_anchor(self, head_past_slot: int) -> None:
         smp = self.smp
         self.consumed = 3 * int(smp._actual_rate)
         started = self.consumed
@@ -1023,8 +1032,9 @@ class SamplerLateReanchorTest(unittest.TestCase):
             smp._pushed_samples = 10**9  # far ahead: the tap never clamps
             before = self._heard(10**9)
             self.assertTrue(self._write(40))
-        # The producer stalls until the head is past what it wrote.
-        self.consumed = smp._content_pos + 10
+        # The producer stalls until the head is near or past what it wrote.
+        self.assertLess(-head_past_slot, smp._flush_margin)  # still late
+        self.consumed = smp._content_pos + head_past_slot
         with self.assertLogs("c64cast.audio.sampler", "DEBUG"):
             self.assertTrue(self._write(40))
         self.assertEqual(smp._reanchors, 2)
