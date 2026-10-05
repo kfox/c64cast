@@ -917,6 +917,29 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertFalse(self._write(100))
         self.assertEqual(smp._reanchors, 0)
 
+    def test_a_bursty_producer_that_stays_late_is_still_reanchored(self):
+        # A segmented live stream that fell seconds behind: each segment's
+        # frames arrive in a burst the writer drops in no read-head time, then
+        # nothing until the next segment. No audio has landed since the run
+        # began, so the gap continues it rather than restarting it; restarting
+        # it on every gap would leave the scene silent for good.
+        smp = self.smp
+        self.consumed = 3 * int(smp._actual_rate)
+        for _ in range(10):  # the first burst: a run begins
+            self.assertFalse(self._write(40))
+        self.consumed += 2 * smp._late_reanchor_bytes  # the next segment
+        with self.assertLogs("c64cast.audio.sampler", "WARNING"):
+            self.assertTrue(self._write(40))
+        self.assertEqual(smp._reanchors, 1)
+
+    def test_a_late_window_spans_no_earlier_activation(self):
+        # The gap test reads the latest late write's read-head position, which
+        # arm() resets with the read head itself.
+        smp = self.smp
+        smp._late_last = 10 * smp._late_reanchor_bytes
+        smp.arm()
+        self.assertEqual(smp._late_last, 0)
+
     def test_a_splice_restarts_the_late_window(self):
         # The demuxer's re-seek delay makes the first post-splice audio late;
         # that is a fresh run, not a continuation of the one before the splice.

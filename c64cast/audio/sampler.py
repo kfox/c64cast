@@ -430,7 +430,11 @@ class UltimateAudioSampler:
         # in read-head bytes. The read head is the wall clock, so the window is
         # wall time.
         self._late_since: int | None = None
-        self._late_last = 0  # read-head byte position of the latest late write
+        # Read-head byte position of the latest late write, and whether the
+        # latest write landed any audio. A late run ends across a gap of
+        # LATE_REANCHOR_S only when audio landed just before it.
+        self._late_last = 0
+        self._landed = True
         # Set by a re-anchor, cleared by the next splice or arm(): the producer
         # has shown it cannot keep up, so later late audio is re-anchored at
         # once instead of dropped for another window. It then plays late, as
@@ -531,6 +535,8 @@ class UltimateAudioSampler:
             self._content_pos = 0
             self._cut_epoch = self._flush_epoch
             self._late_since = None
+            self._late_last = 0
+            self._landed = True
             self._reanchor_sticky = False
             self._reanchor_lag_bytes = 0
         self._output_silenced = False
@@ -916,6 +922,7 @@ class UltimateAudioSampler:
                     self._carry_back(epoch, data)
                     raise
                 self._written = max(self._written, end)
+            self._landed = first < end
             self._late_bytes += min(len(data), max(0, first - c))
             self._content_pos = end
             return first < end
@@ -926,14 +933,17 @@ class UltimateAudioSampler:
         read-head time, in which case the producer is not catching up and the
         audio is re-anchored _reanchor_lead past the read head (moving
         _content_pos). A gap of that long with no late write starts a new
-        run. After one re-anchor, late audio is re-anchored at once until the
-        next splice or arm()."""
+        run, if the write before the gap landed audio. After one re-anchor,
+        late audio is re-anchored at once until the next splice or arm()."""
         c = self._content_pos
         floor = consumed + self._flush_margin
         if c >= floor:
             self._late_since = None
             return c
-        quiet = consumed - self._late_last > self._late_reanchor_bytes
+        # A producer seconds behind that delivers in bursts (a segmented live
+        # stream) has every burst dropped whole, with gaps between: that is
+        # one run, or it would never re-anchor and the scene would stay silent.
+        quiet = self._landed and consumed - self._late_last > self._late_reanchor_bytes
         self._late_last = consumed
         if self._reanchor_sticky:
             pass  # already shown slow since the last splice: no window
