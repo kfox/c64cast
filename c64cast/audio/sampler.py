@@ -958,6 +958,9 @@ class UltimateAudioSampler:
         anchor = consumed + self._reanchor_lead
         shift = anchor - c
         self._late_since = None
+        # A sticky re-anchor did not wait out a window, so its log line does
+        # not claim one.
+        late_for = "again" if self._reanchor_sticky else f"for {LATE_REANCHOR_S:.1f} s"
         self._reanchor_sticky = True
         self._reanchors += 1
         self._reanchor_lag_bytes += shift
@@ -971,9 +974,9 @@ class UltimateAudioSampler:
             note = f" (re-anchor {self._reanchors})"
         log.log(
             level,
-            "sampler: audio arrived late for %.1f s and is not catching up; "
+            "sampler: audio arrived late %s and is not catching up; "
             "re-anchored at the read head%s — sound now lags the picture by %.2f s",
-            LATE_REANCHOR_S,
+            late_for,
             note,
             self._reanchor_lag_bytes / self.bps / self._actual_rate,
         )

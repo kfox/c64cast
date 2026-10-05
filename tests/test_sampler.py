@@ -888,7 +888,10 @@ class SamplerLateReanchorTest(unittest.TestCase):
         smp = self.smp
         self._reanchor_once()
         self.consumed = smp._content_pos  # the cushion used up
-        self.assertTrue(self._write(40))
+        with self.assertLogs("c64cast.audio.sampler", "DEBUG") as logs:
+            self.assertTrue(self._write(40))
+        # No window was waited out, so the log line does not claim one.
+        self.assertIn("arrived late again", logs.output[0])
         self.assertEqual(smp._reanchors, 2)
         self.assertEqual(smp._content_pos, self.consumed + smp._reanchor_lead + 40)
 
