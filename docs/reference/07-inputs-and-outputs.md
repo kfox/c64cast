@@ -152,9 +152,10 @@ missed one is simply skipped.
 
 `-D/--audio-device`, or `[audio].device`, takes an index or a name substring —
 no identifier, since the audio layer exposes none. A name matching no input, or
-an index that is not an input, is an error: the scene logs it and plays without
-sound rather than opening the system default input, which on a laptop is its
-built-in microphone. Only `-1` (or leaving the setting empty) asks for the
+an index that is not an input, is an error rather than opening the system
+default input, which on a laptop is its built-in microphone. A webcam or blank
+scene logs it and plays without sound; a scene with `audio_source = "mic"` or
+`"listen"` logs it and is skipped. Only `-1` (or leaving the setting empty) asks for the
 default. Several matches use the first and warn.
 
 DAC calibration is stricter still, because a calibration measured off room
