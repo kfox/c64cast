@@ -142,6 +142,119 @@ class RemoteRefusalMessageTest(unittest.TestCase):
         opened.assert_called_once_with("/tmp/clip.mp4")
 
 
+class _StallingHttpServer:
+    """A loopback server that accepts, sends `preamble`, then never writes
+    again and never closes — the shape of a wedged CDN. `close()` releases
+    every socket and joins the accept thread."""
+
+    def __init__(self, preamble: bytes = b""):
+        import socket
+
+        self._preamble = preamble
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(4)
+        self._srv.settimeout(0.05)
+        self.port = self._srv.getsockname()[1]
+        self._held: list = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                continue
+            self._held.append(conn)
+            if self._preamble:
+                conn.recv(4096)
+                conn.sendall(self._preamble)
+
+    def close(self):
+        self._stop.set()
+        self._thread.join(2.0)
+        for conn in self._held:
+            conn.close()
+        self._srv.close()
+
+
+def _wav_bytes(seconds: float = 2.0, rate: int = 8000) -> bytes:
+    import struct
+
+    data = b"\x00\x00" * int(seconds * rate)
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + fmt
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
+    )
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemoteStallBoundTest(unittest.TestCase):
+    """A server that accepts and then goes silent must not hang the thread
+    opening or reading it — that thread is the playlist's, for an audio-file
+    scene's setup, and nothing else can unstick it."""
+
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch("c64cast.video.video._REMOTE_OPEN_TIMEOUT_S", 0.5))
+        stack.enter_context(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 0.5))
+
+    def _bounded(self, fn, limit_s: float = 10.0):
+        """Run `fn` on a worker and return what it raised (or its result). A
+        worker still blocked after `limit_s` fails the test here rather than
+        hanging the run; closing the server in cleanup then releases it."""
+        box: list = []
+
+        def run():
+            try:
+                box.append(fn())
+            except Exception as e:  # noqa: BLE001 — the raise is the result
+                box.append(e)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(limit_s)
+        self.assertFalse(worker.is_alive(), f"still blocked after {limit_s}s")
+        return box[0]
+
+    def _server(self, preamble: bytes = b"") -> _StallingHttpServer:
+        server = _StallingHttpServer(preamble)
+        self.addCleanup(server.close)
+        return server
+
+    def test_a_silent_server_fails_the_open(self):
+        server = self._server()
+        outcome = self._bounded(lambda: av_open(f"http://127.0.0.1:{server.port}/tune.wav"))
+        self.assertIsInstance(outcome, Exception)
+
+    def test_a_stream_that_stalls_mid_body_fails_the_read(self):
+        # Enough body that probing finishes and the open returns: the stall
+        # has to land in demux, past the open bound, for this to test reads.
+        body = _wav_bytes(30.0)
+        head = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n"
+        )
+        server = self._server(head + body[:200_000])
+        container = av_open(f"http://127.0.0.1:{server.port}/tune.wav")
+        self.addCleanup(container.close)
+
+        def drain():
+            for _ in container.demux(container.streams.audio[0]):
+                pass
+
+        self.assertIsInstance(self._bounded(drain), Exception)
+
+
 class ProbeContainerTitleTest(unittest.TestCase):
     """A cheap header-only peek at a local file's own `title` tag — no real
     PyAV container, so av_open/ensure_pyav are faked."""

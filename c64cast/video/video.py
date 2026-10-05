@@ -59,6 +59,15 @@ _HTTP_RECONNECT_OPTIONS = {
     "reconnect_delay_max": "5",
 }
 
+# Remote inputs only, passed as PyAV's `timeout=(open, read)`. Without them a
+# server that accepts the connection and then stops answering blocks the
+# opening thread forever: FFmpeg's own socket timeouts default to none, and
+# the reconnect options above fire on an error or EOF, never on silence. The
+# read bound applies per blocking read, so a slow-but-flowing stream is fine,
+# and it sits well above the reconnect backoff cap so a reconnect completes.
+_REMOTE_OPEN_TIMEOUT_S = 20.0
+_REMOTE_READ_TIMEOUT_S = 30.0
+
 
 def _is_remote_url(path: str) -> bool:
     """True for http(s) inputs, which get the FFmpeg reconnect options."""
@@ -93,7 +102,9 @@ def _remote_refusal_message(e: Any) -> str:
 def av_open(path: str):
     """`av.open` wrapper that injects the HTTP reconnect options for remote
     URLs so a transient CDN drop mid-stream resumes instead of crashing the
-    demuxer. Local paths open unchanged.
+    demuxer, and bounds the open and every later read
+    (`_REMOTE_OPEN_TIMEOUT_S` / `_REMOTE_READ_TIMEOUT_S`) so a stalled server
+    raises instead of hanging the playlist. Local paths open unchanged.
 
     A remote 4xx is re-raised naming the likeliest cause, because the raw
     ``HTTPForbiddenError`` is unreadable on the one shape it usually means.
@@ -110,7 +121,11 @@ def av_open(path: str):
     if not _is_remote_url(path):
         return av.open(path)
     try:
-        return av.open(path, options=_HTTP_RECONNECT_OPTIONS)
+        return av.open(
+            path,
+            options=_HTTP_RECONNECT_OPTIONS,
+            timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S),
+        )
     except av.error.HTTPClientError as e:
         raise RuntimeError(_remote_refusal_message(e)) from e
 
