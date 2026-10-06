@@ -273,8 +273,9 @@ def plan_model_config_for_header(
     required = header.sid_models if sid_model == "auto" else tuple(sid_model for _ in range(n))
     chips = tuple(zip(header.sid_addresses, required, strict=True))
 
-    current_addr_map = _current_addr_map(api)
+    # Detection first: the address map reads the ARM2SID labels it caches.
     socket_models = detect_socket_models(api)
+    current_addr_map = _current_addr_map(api)
     plan = plan_sid_model_config(chips, current_addr_map, socket_models, ultisid_allowed=True)
     if not plan:
         log.info(

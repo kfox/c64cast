@@ -8,9 +8,10 @@ same plan / snapshot / restore as the REST items."""
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, quiet_logging
 
 from c64cast.sid import armsid
 from c64cast.sid import sid_autoconfig as sa
@@ -365,6 +366,16 @@ class PlannerTest(unittest.TestCase):
         assert plan is not None
         self.assertNotIn((CAT_ADDRESSING, ITEM_SOCKET2_ADDR), plan)
         self.assertNotIn((armsid.CAT_SOCKET_MODEL, "socket2"), plan)
+
+    def test_first_model_pass_maps_the_right_channel_by_the_split(self):
+        # Socket 2's own items say Enabled at $D420, but with the split off the
+        # right channel answers nowhere: the $D420 chip must not be left there.
+        api = ArmsidAPI()
+        api.config_store[CAT_ADDRESSING][armsid.ITEM_EXT_SPLIT] = "Off"
+        header = SimpleNamespace(sid_addresses=(0xD400, 0xD420), sid_models=("8580", "8580"))
+        with mock.patch.object(armsid, "_SETTLE_S", 0.0), quiet_logging():
+            plan = sa.plan_model_config_for_header(api, header, "auto")
+        self.assertIn("$D420", (plan or {}).values())
 
     def test_two_sid_tune_lands_on_both_channels_with_their_models(self):
         sm = plan_sid_map_for_addresses(
