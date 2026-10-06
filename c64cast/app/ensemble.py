@@ -79,6 +79,10 @@ class SystemStack:
     # Resolution): field name -> the original label to restore at teardown, None
     # when nothing changed. Volatile, so a missed restore clears on power-cycle.
     video_output_restore: dict[str, str] | None = None
+    # dac_curve_resolve.provision_calibrated_chip_model: the ARMSID model the
+    # run switched away from so the calibrated table applies, None when nothing
+    # changed.
+    dac_model_restore: dict[tuple[str, str], str] | None = None
     # hardware_palette.provision_hardware_palette: the run's palette pusher,
     # None when no scene pushes one. Teardown puts the machine's palette back.
     hardware_palette: HardwarePalette | None = None

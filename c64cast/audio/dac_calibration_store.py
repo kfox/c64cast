@@ -282,17 +282,12 @@ def d400_owner(be: C64Backend) -> D400Owner:
     return D400_NO_SOCKET
 
 
-def load_calibrated_table(
-    cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
-) -> bytes | None:
-    """Return the 256-byte calibrated sidtable applicable to this system right
-    now, or None if no (valid/applicable) calibration exists. Malformed files
-    and schema mismatches return None rather than raising, so a stale or
-    corrupt cache degrades to the baked/linear default.
-
-    ``path`` lets a caller that has already resolved the file (resolving the
-    key can cost a live device round-trip on the Ultimate) skip the internal
-    resolution; see ``dac_curve_resolve``."""
+def _applicable_entry(
+    cfg: Config, be: C64Backend | None, path: Path | None
+) -> tuple[str, dict[str, Any]] | None:
+    """The ``sids`` entry that applies to this system right now, with its key
+    (``"1"``/``"2"``/``"default"``), or None for a missing, malformed or
+    inapplicable file."""
     if path is None:
         path = calibration_path(cfg, be)
     try:
@@ -309,7 +304,41 @@ def load_calibrated_table(
     if entry_key is None:
         return None
     entry = sids.get(entry_key)
-    table = entry.get("sidtable") if isinstance(entry, dict) else None
+    return (entry_key, entry) if isinstance(entry, dict) else None
+
+
+def calibrated_chip(
+    cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
+) -> tuple[int, str] | None:
+    """The socket the applicable table was measured on and the chip label the
+    calibrating run recorded for it (``"6581"``, ``"ARMSID 8580"``), or None
+    when the entry names no socket or no chip."""
+    applicable = _applicable_entry(cfg, be, path)
+    if applicable is None:
+        return None
+    entry_key, entry = applicable
+    detected = entry.get("detected")
+    if entry_key not in ("1", "2") or not isinstance(detected, str):
+        return None
+    return (int(entry_key), detected)
+
+
+def load_calibrated_table(
+    cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
+) -> bytes | None:
+    """Return the 256-byte calibrated sidtable applicable to this system right
+    now, or None if no (valid/applicable) calibration exists. Malformed files
+    and schema mismatches return None rather than raising, so a stale or
+    corrupt cache degrades to the baked/linear default.
+
+    ``path`` lets a caller that has already resolved the file (resolving the
+    key can cost a live device round-trip on the Ultimate) skip the internal
+    resolution; see ``dac_curve_resolve``."""
+    applicable = _applicable_entry(cfg, be, path)
+    if applicable is None:
+        return None
+    entry_key, entry = applicable
+    table = entry.get("sidtable")
     if not isinstance(table, list) or len(table) != 256:
         return None
     if (
@@ -340,7 +369,9 @@ class CalibrationResult:
     # failed its self-test; playback then falls back to the baked/linear curve.
     sidtable: list[int] | None
     metrics: dict[str, Any]
-    detected: str | None = None  # e.g. "6581" (SID Detected Socket N), or None
+    # The chip measured, e.g. "6581" (SID Detected Socket N) or "ARMSID 6581" —
+    # an ARMSID's label carries the model it was in, which playback restores.
+    detected: str | None = None
     # Per-code signed output levels in capture-amplitude units relative to
     # L($00) = 0 — the 256 numbers the ladder is folded from, kept so a
     # finished calibration stays diagnosable offline. None on older files.
