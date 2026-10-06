@@ -89,7 +89,7 @@ SAMPLER_PAN_CENTER = 7
 DEFAULT_RING_BASE = 0x200000
 
 # A jitter buffer, NOT the playback latency (that is the lead below). 1 MiB is
-# ~5.9 s at 16-bit/44.1k, with a one-time NEUTRAL prefill of ~1.3 s at
+# ~11.9 s of mono 16-bit/44.1k, with a one-time NEUTRAL prefill of ~1.3 s at
 # REUWRITE's ~820 KB/s.
 DEFAULT_RING_SIZE = 0x100000  # 1 MiB
 
@@ -346,7 +346,8 @@ class UltimateAudioSampler:
 
     #: Marker so scenes can duck-type the sampler apart from AudioStreamer
     #: (parallel to the streamer's ``use_reu_pump`` attribute) without importing
-    #: this module — VideoScene.setup branches on ``getattr(audio, "is_sampler")``.
+    #: this module — AudioFileSource branches on ``getattr(audio, "is_sampler")``
+    #: (VideoScene.setup imports the class and uses ``isinstance`` instead).
     is_sampler = True
 
     def __init__(

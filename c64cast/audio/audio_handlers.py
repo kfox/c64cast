@@ -45,7 +45,9 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 # ring bounds from RING_BUFFER_*, so moving either is a one-line change and the
 # bytes uploaded are exactly these. Saves/restores only A; X and Y are untouched.
 #
-# Disassembly at $C020 (NTSC NMI period = 127 cycles, fast path = 41 cycles):
+# Disassembly at $C020 (fast path = 41 cycles; the NMI period is latch+1 cycles,
+# 128 at NTSC 8 kHz, 85 at NTSC 12 kHz (the default), 75 at the handler-budget
+# floor):
 #   $C020: 48           PHA                  ; save A
 #   $C021: AD 0D DD     LDA $DD0D            ; ack CIA #2 NMI immediately
 #   $C024: AD 00 40     LDA $4000            ; read sample (operand = R)
@@ -61,8 +63,10 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 #   $C03E: 68           PLA                  ; restore A
 #   $C03F: 40           RTI
 #
-# With a badline (40 stolen cycles): handler takes 81 cycles total — well
-# within the 127-cycle NTSC NMI period, so no NMI stacking occurs. Its upload
+# With a badline (40 stolen cycles) the handler can take 81 cycles: 4 cycles
+# short of the NTSC 12 kHz period, and 6 past the 75-cycle floor the timer may
+# still arm. That floor rests on the measured overrun
+# onset (c64.NMI_HANDLER_WORST_CYCLES), not on this worst-case sum. Its upload
 # and its execution are pinned by tests/test_reu_audio.py's NmiRoutineTest.
 NMI_ROUTINE = bytes(
     [
@@ -434,14 +438,18 @@ AUDIO_HEALTH_LOG_INTERVAL_S = 5.0
 # budget (c64.NMI_SAFE_MIN_PERIOD_CYCLES). Off by default; see
 # docs/architecture/audio.md#host-dma-pitch-compensation--why-two-of-the-three-knobs-default-off.
 #
-# The deadband MUST stay >= one latch quantum (~1% rate/step): the latch is an
-# integer, so a narrower one limit-cycles ±1 step, an audible ~1% pitch wobble.
+# The deadband MUST stay above half a latch quantum. The latch is an integer and
+# one step moves the rate by 1/latch (~0.8% at 8 kHz, ~1.35% at the ceiling latch
+# 74); a target between two grid rates lies within half a step of one of them,
+# so a deadband wider than half the widest step always leaves a latch to park
+# on. Narrower, the loop limit-cycles ±1 step, an audible ~1% pitch wobble.
+# 0.013 is about one full step, which leaves headroom for estimator noise.
 # The EMA alpha sets the estimator time constant (~chunk_period/alpha ≈ 2.1 s at
 # 12 kHz / 1024-byte chunks) — long enough to reject torn-16-bit-read noise,
 # short enough to re-acquire after a scene cut. The coarse zone converges a cold
 # start in ~2-3 s instead of ~9 s; the fine zone moves ±1 so steady-state pitch
 # steps are inaudible.
-NMI_RATE_LOOP_DEADBAND_FRAC = 0.013  # > one latch step (~1%); avoids limit cycle
+NMI_RATE_LOOP_DEADBAND_FRAC = 0.013  # > half the widest latch step; avoids limit cycle
 NMI_RATE_LOOP_COARSE_ZONE_FRAC = 0.03  # above this error, take a proportional step
 NMI_RATE_LOOP_MAX_COARSE_STEP = 4  # cap acquisition step (latch units)
 NMI_RATE_LOOP_EMA_ALPHA = 0.04  # per-chunk EMA weight for the R-rate estimate (fine)
@@ -1292,7 +1300,7 @@ def nmi_rate_step(
     can therefore only SPEED UP from nominal toward the ceiling to overcome
     halt-induced tick loss; it can never push past the overrun guard.
 
-    Deadband (≥ one latch quantum) parks the integer latch instead of
+    Deadband (> half a latch quantum) parks the integer latch instead of
     limit-cycling. Outside ``coarse_zone_frac`` a proportional step (capped)
     acquires fast; inside it moves ±1 so steady-state pitch steps are inaudible.
     Pure (no I/O) for unit testing — mirrors ``servo_period``."""

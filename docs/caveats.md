@@ -70,11 +70,13 @@ webcam audio always use the 4-bit DAC.
 Implementation (`c64cast/audio/sampler.py`): a **streaming REU ring**. Channel 0 is
 programmed as an A↔B loop over a region of REU; a host writer thread REUWRITEs
 decoded PCM ahead of a *wall-clock-computed* read head and wraps. The FPGA
-sample clock is crystal-exact, so the read position is computed (never read
-back) and the whole thing is open-loop and drift-free — no servo, no governor,
-no NMI. The sample rate is the FPGA's exact `6.25 MHz / divider`, a constant
-<0.5 % offset from the nominal request (inaudible, and drift-free because A/V
-both ride the same clock). The ring lives in REU SDRAM, so a sampler run also
+sample clock is fixed, so the read position is computed (never read back) and
+the whole thing is open-loop — no servo, no governor, no NMI. The sample rate
+is `[audio].sampler_clock_hz / divider`: the FPGA divides a 6.25 MHz design
+clock that the shipping firmware actually runs at ≈6.16 MHz, which is that
+setting's default. The rate lands a constant <0.5 % from the nominal request
+(inaudible, and drift-free as long as `sampler_clock_hz` matches the real
+clock, because A/V both ride it). The ring lives in REU SDRAM, so a sampler run also
 provisions the REU (16 MB) — which makes overlay-free bitmap video resolve to
 the tear-free REU bank-swap path; the sampler installs no `$0314` IRQ, so the
 two coexist with no contention.
