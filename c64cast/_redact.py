@@ -31,9 +31,12 @@ REDACTED = "REDACTED"
 #: by the value pattern and :func:`redact_source_line` — one spelling, so a
 #: name one of them recognizes the other does too.
 #:
-#: ``token``, ``password``, ``passwd``, ``pwd``, ``jwt``, ``secret`` and
-#: ``credential(s)`` take any prefix, glued or not, so ``viewer_token``,
-#: ``client_secret`` and ``dbpasswd`` match. ``key``, ``sig``, ``signature``, ``hmac``, ``pass`` and ``auth`` are too
+#: ``token``, ``password``, ``passwd``, ``passphrase``, ``passcode``,
+#: ``loginpas(s)``, ``pwd``, ``jwt``, ``secret`` and ``credential(s)`` take any
+#: prefix, glued or not, so ``viewer_token``, ``client_secret`` and
+#: ``dbpasswd`` match. ``loginpas`` is a generic IP camera's spelling of the
+#: same login a Foscam takes as ``pwd``:
+#: ``videostream.cgi?loginuse=admin&loginpas=…``. ``key``, ``sig``, ``signature``, ``hmac``, ``pass`` and ``auth`` are too
 #: short for that: a prefix has to end in ``_`` or ``-``,
 #: which is what makes the word its own component of the name rather than the
 #: tail of another one. So ``?key=``, ``api_key=``, ``signing-key=``, ``?sig=``
@@ -90,7 +93,8 @@ REDACTED = "REDACTED"
 #: The open form appears in both branches, spliced from one spelling so a name
 #: added to it is found at a run's start and partway through it alike.
 _OPEN_SECRET_NAME = r"""\w* (?:
-    token | passw (?:or)? d | pwd | jwt | secret | credentials? | api[_-]?key
+    token | passw (?:or)? d | pass (?:phrase|code) | loginpass? | pwd | jwt | secret
+  | credentials? | api[_-]?key
 )"""
 _SECRET_KEY = r"""
     (?:
@@ -467,9 +471,10 @@ def _source_span(span: Span, userinfo: Sequence[Span], out_starts: Sequence[int]
 def redact_secrets(text: str) -> str:
     """`text` with every recognized secret value reduced to ``REDACTED`` —
     `token=VALUE`, `password: VALUE`, `secret=VALUE`, `api_key=VALUE`,
-    `passwd=VALUE`, `pwd=VALUE`, `jwt=VALUE`, `credential(s)=VALUE`,
+    `passwd=VALUE`, `passphrase=VALUE`, `passcode=VALUE`, `loginpas(s)=VALUE`,
+    `pwd=VALUE`, `jwt=VALUE`, `credential(s)=VALUE`,
     `key=VALUE`, `sig=VALUE`, `signature=VALUE`, `hmac=VALUE`, `pass=VALUE`,
-    `auth=VALUE` (`=` or `:`, and the first eight
+    `auth=VALUE` (`=` or `:`, and the first eleven
     with any prefix, so `viewer_token` and `client_secret` match),
     `Bearer VALUE`, and the userinfo of a URL (`https://user:pass@host` comes
     back as `https://REDACTED@host`) — a private media file is legitimately

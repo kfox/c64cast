@@ -166,6 +166,10 @@ class RedactSecretsTest(unittest.TestCase):
             redact_secrets("http://cam/videostream.cgi?user=admin&pwd=hunter2&res=0"),
             "http://cam/videostream.cgi?user=admin&pwd=REDACTED&res=0",
         )
+        self.assertEqual(
+            redact_secrets("http://cam/videostream.cgi?loginuse=admin&loginpas=hunter2"),
+            "http://cam/videostream.cgi?loginuse=admin&loginpas=REDACTED",
+        )
 
     def test_each_password_and_credential_name_masks_its_value(self):
         forms = (
@@ -181,6 +185,10 @@ class RedactSecretsTest(unittest.TestCase):
             "pwd",
             "passwd",
             "password",
+            "passphrase",
+            "passcode",
+            "loginpas",
+            "loginpass",
             "pass",
             "auth",
             "jwt",
@@ -202,6 +210,8 @@ class RedactSecretsTest(unittest.TestCase):
         glued prefix makes them `bypass` and `oauth`."""
         for line, want in (
             ("dbpasswd=x", "dbpasswd=REDACTED"),
+            ("wifipassphrase=x", "wifipassphrase=REDACTED"),
+            ("adminpasscode=x", "adminpasscode=REDACTED"),
             ("userpwd=x", "userpwd=REDACTED"),
             ("idjwt=x", "idjwt=REDACTED"),
             ("awscredentials=x", "awscredentials=REDACTED"),
@@ -212,14 +222,15 @@ class RedactSecretsTest(unittest.TestCase):
                 self.assertEqual(redact_secrets(line), want)
 
     def test_a_word_that_merely_contains_a_credential_name_is_left_alone(self):
-        """A name masks only when it is the whole last component of the key,
-        so ordinary diagnostic text keeps its values. `oauth_state` is kept on
+        """A name masks only when the key ends where the name does, so
+        ordinary diagnostic text keeps its values. `oauth_state` is kept on
         purpose: it ends in `state`, and an OAuth credential travels as
         `oauth_token`, which `token` covers."""
         line = (
             "passes=3 bypass=on compass: north author=Kelly authority: x "
             "oauth_state=abc pass_count=2 jwt_expiry_s=30 passing: yes "
-            "authed=1 pwdx=1 jwts=1 credentialed=1 passwords=4"
+            "authed=1 pwdx=1 jwts=1 credentialed=1 passwords=4 "
+            "passphrases=2 passcodes=2 loginpassed=1"
         )
         self.assertEqual(redact_secrets(line), line)
 
