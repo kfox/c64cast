@@ -45,7 +45,9 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 # ring bounds from RING_BUFFER_*, so moving either is a one-line change and the
 # bytes uploaded are exactly these. Saves/restores only A; X and Y are untouched.
 #
-# Disassembly at $C020 (NTSC NMI period = 127 cycles, fast path = 41 cycles):
+# Disassembly at $C020 (fast path = 41 cycles; the NMI period is latch+1 cycles,
+# 127 at NTSC 8 kHz, 85 at NTSC 12 kHz (the default), 75 at the handler-budget
+# floor):
 #   $C020: 48           PHA                  ; save A
 #   $C021: AD 0D DD     LDA $DD0D            ; ack CIA #2 NMI immediately
 #   $C024: AD 00 40     LDA $4000            ; read sample (operand = R)
@@ -61,8 +63,10 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 #   $C03E: 68           PLA                  ; restore A
 #   $C03F: 40           RTI
 #
-# With a badline (40 stolen cycles): handler takes 81 cycles total — well
-# within the 127-cycle NTSC NMI period, so no NMI stacking occurs. Its upload
+# With a badline (40 stolen cycles) the handler can take 81 cycles: 4 cycles
+# short of the NTSC 12 kHz period, and 6 past the 75-cycle floor the timer may
+# still arm. That floor rests on the measured overrun
+# onset (c64.NMI_HANDLER_WORST_CYCLES), not on this worst-case sum. Its upload
 # and its execution are pinned by tests/test_reu_audio.py's NmiRoutineTest.
 NMI_ROUTINE = bytes(
     [
