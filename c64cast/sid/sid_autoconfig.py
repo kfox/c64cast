@@ -254,13 +254,15 @@ def plan_model_config_for_header(
 ) -> dict[tuple[str, str], str] | None:
     """Resolve `sid_model`, read the *current* live SID hardware state, and
     decide the REST plan (if any) that makes the header's chip-model
-    requirements match reality — but does not touch the hardware. Split out
+    requirements match reality — but does not apply it. Split out
     from :func:`apply_sid_autoconfig` so a caller that also plans multi-SID
     *address* routing (:class:`~c64cast.sid.waveform.WaveformScene`) can apply
     that first, then call this against the now-current addressing (so a
     model swap doesn't fight an address remap decided moments earlier), all
-    under one outer snapshot/apply/restore. Read-only; a REST read failure
-    degrades to "nothing to change" (best-effort, like the rest of this
+    under one outer snapshot/apply/restore. Not read-only on an ARMSID:
+    detection asks the chip over its registers and may move the Ext DualSID
+    split for the length of the probe, so call it before a tune starts, never
+    during one. A REST read failure degrades to "nothing to change" (best-effort, like the rest of this
     module) rather than raising."""
     if sid_model == "off":
         log.info("sid autoconfig: off — leaving SID hardware config untouched")
