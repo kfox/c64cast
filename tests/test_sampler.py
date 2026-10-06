@@ -3234,5 +3234,158 @@ class WantsReuCouplingTest(unittest.TestCase):
         self.assertFalse(hw_provision.wants_reu(_video_cfg(backend="dac"))[0])
 
 
+class _OrderedBackend(_FakeBackend):
+    """A `_FakeBackend` that also keeps every call in one ordered list, so a
+    test can check what was flushed before what."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ops: list[tuple[Any, ...]] = []
+
+    def reu_write(self, offset: int, data: bytes) -> None:
+        super().reu_write(offset, data)
+        self.ops.append(("reu", offset))
+
+    def write_regs(self, base_addr: str, *values: int) -> None:
+        super().write_regs(base_addr, *values)
+        self.ops.append(("regs", base_addr.upper(), values))
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        super().write_memory(address, data_hex)
+        self.ops.append(("mem", address.upper(), data_hex.upper()))
+
+    def flush(self) -> None:
+        super().flush()
+        self.ops.append(("flush",))
+
+
+class SamplerStartProgramTest(unittest.TestCase):
+    def test_start_programs_the_whole_channel_before_its_gate(self):
+        api = _OrderedBackend()
+        ring = 8192
+        smp = _make(
+            api, sample_rate=8000, bits=8, volume=40, pan=3, ring_base=0x200000, ring_size=ring
+        )
+        smp.start(prebuffer_timeout=0.01)
+        with quiet_logging():  # the idle writer's pads are not the subject
+            smp.stop()
+        base = s.SAMPLER_IO_BASE
+        regs = {o[1]: o[2] for o in api.ops if o[0] == "regs"}
+        self.assertEqual(regs[f"{base + s.REG_VOLUME:04X}"], (40,))
+        self.assertEqual(regs[f"{base + s.REG_PAN:04X}"], (3,))
+        self.assertEqual(regs[f"{base + s.REG_REPEAT_B:04X}"], (0x00, 0x20, 0x00))  # 8192 BE
+        ctrl = f"{s.control_byte(gate=True, repeat=True, bits=8):02X}"
+        gate = api.ops.index(("mem", f"{base:04X}", ctrl))
+        last_reg = max(i for i, o in enumerate(api.ops) if o[0] == "regs")
+        first_reg = min(i for i, o in enumerate(api.ops) if o[0] == "regs")
+        last_prefill = max(i for i, o in enumerate(api.ops[:first_reg]) if o[0] == "reu")
+        # The prefill lands before any register goes out, and every register
+        # before the gate starts the FPGA reading.
+        self.assertIn(("flush",), api.ops[last_prefill:first_reg])
+        self.assertIn(("flush",), api.ops[last_reg:gate])
+
+
+class SamplerPushTest(unittest.TestCase):
+    TONE = np.full(256, 8000, dtype=np.int16)
+
+    def test_the_dsp_shapes_what_is_queued(self):
+        class _Mute:
+            active = True
+
+            def process(self, x: np.ndarray) -> np.ndarray:
+                return x * 0.0
+
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8, dsp=cast(Any, _Mute()))
+        smp.push_samples(self.TONE)
+        _, pack = smp._q.get_nowait()
+        self.assertEqual(pack, bytes(len(self.TONE)))
+
+    def test_the_eof_clamp_counts_what_was_pushed(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        for _ in range(4):
+            smp.push_samples(self.TONE)
+        smp._running = True
+        smp._gate_time = time.monotonic() - 100.0
+        smp.mark_eof()
+        self.assertAlmostEqual(smp.position_seconds(), 1024 / smp._actual_rate, places=6)
+
+    def test_a_stopped_sampler_feeds_nothing_to_the_tap(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp.stop()
+        smp.push_samples(self.TONE)
+        self.assertFalse(np.any(smp.get_recent_samples(256)))
+
+    def test_stop_releases_the_queued_audio(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp.push_samples(self.TONE)
+        smp.stop()
+        self.assertTrue(smp._q.empty())
+
+    def test_stop_does_not_raise_when_the_gate_off_write_fails(self):
+        api = _FakeBackend()
+
+        def boom(address: str, data_hex: str) -> None:
+            raise ConnectionError("link down")
+
+        api.write_memory = boom  # type: ignore[method-assign]
+        smp = _make(api, sample_rate=8000, bits=8)
+        smp.stop()
+        self.assertFalse(smp._running)
+
+    def test_the_tap_reads_back_across_its_wrap(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp.push_samples(np.full(s.SAMPLE_TAP_SIZE - 10, -16384, dtype=np.int16))
+        smp.push_samples(np.full(30, 16384, dtype=np.int16))
+        np.testing.assert_allclose(smp.get_recent_samples(30), 0.5, rtol=1e-3)
+
+    def test_the_read_head_counts_bytes_not_samples(self):
+        smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
+        smp._running = True
+        smp._gate_time = 100.0
+        # A pinned clock: one second after the gate, however long a loaded
+        # host takes between these lines.
+        with mock.patch.object(s.time, "monotonic", return_value=101.0):
+            consumed = smp._read_consumed_bytes()
+        self.assertAlmostEqual(consumed / smp.bps / smp._actual_rate, 1.0, delta=0.01)
+
+
+class SamplerWriterTelemetryTest(unittest.TestCase):
+    def test_lead_min_and_max_span_every_step(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._running = True
+        smp._written = 1000
+        smp._content_pos = smp._lead_target + 1000  # no room: each step only measures
+        heads = iter([900, 950, 800])
+        smp._read_consumed_bytes = lambda: next(heads)  # type: ignore[method-assign]
+        with mock.patch.object(s.time, "sleep"):
+            for _ in range(3):
+                smp._writer_step(smp._writer_gen)
+        self.assertEqual((smp._lead_min, smp._lead_max), (50, 200))
+
+
+class SamplerWriterBackoffTest(unittest.TestCase):
+    def test_the_backoff_doubles_while_failing_and_restarts_after_a_recovery(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._running = True
+        script = iter(["fail", "fail", "fail", "ok", "fail", "end"])
+
+        def step(gen: int) -> bool:
+            what = next(script)
+            if what == "fail":
+                raise ConnectionError("link down")
+            if what == "end":
+                smp._running = False
+            return what == "ok"
+
+        smp._writer_step = step  # type: ignore[method-assign]
+        with (
+            mock.patch.object(s.time, "sleep") as sleep,
+            self.assertLogs("c64cast.audio.sampler", level="INFO"),
+        ):
+            smp._writer_loop(smp._writer_gen)
+        lo = s.WRITER_BACKOFF_MIN_S
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [lo, 2 * lo, 4 * lo, lo])
+
+
 if __name__ == "__main__":
     unittest.main()

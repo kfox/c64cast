@@ -35,6 +35,7 @@ class _Rig:
         self.raise_reads = False
         self.torn = False
         self.reads = 0
+        self.timeouts: list[float] = []
         self.servo = ml.MicLeadServo(
             read_memory=self.read,
             write_pos=lambda: int(self.host) % REU_MIC_SIZE,
@@ -45,6 +46,7 @@ class _Rig:
     def read(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         assert (address, length) == (REU_AUDIO_SRC_TRACKER_ADDR, 3)
         self.reads += 1
+        self.timeouts.append(timeout)
         if self.raise_reads:
             raise RuntimeError("no read capability")
         if self.fail_reads:
@@ -666,6 +668,182 @@ class BestSpliceCutTest(unittest.TestCase):
 
     def test_silence_takes_the_middle_of_the_range(self):
         self.assertEqual(ml.best_splice_cut(np.zeros(400, np.float32), 32, 100, 200), 150)
+
+
+class MicLeadRingWrapTest(unittest.TestCase):
+    """Offsets near either end of the 64 KB mic ring. Every other test runs
+    mid-ring, where a lost ``% REU_MIC_SIZE`` changes nothing."""
+
+    def test_a_fill_short_of_the_ring_start_wraps_to_its_end(self):
+        # Unwrapped, the fill starts below REU_MIC_BASE: an REUWRITE outside
+        # the ring, and the pump plays the stale bytes the fill was for.
+        self.assertEqual(
+            ml.reanchor_fill(100),
+            (
+                REU_MIC_SIZE + 100 - ml.MIC_LEAD_REANCHOR_GUARD,
+                REU_MIC_BOOTSTRAP_BYTES + ml.MIC_LEAD_REANCHOR_GUARD,
+            ),
+        )
+
+    def test_an_anchor_extrapolated_past_the_ring_end_wraps(self):
+        rig = _Rig(drift=0.0)
+        rig.pump = REU_MIC_SIZE - 1024
+        rig.host = rig.pump - 500
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        rig.t = 0.5
+        self.assertEqual(rig.servo.take_reanchor(), REU_MIC_SIZE - 1024 + RATE // 2 - REU_MIC_SIZE)
+
+    def test_the_host_midpoint_across_the_ring_end_is_at_the_end(self):
+        servo = _Rig(drift=0.0).servo
+        self.assertEqual(servo._host_between(REU_MIC_SIZE - 100, 100), 0)
+
+
+class MicLeadReadGuardTest(unittest.TestCase):
+    """A tracker read that comes back unusable is a failed measurement; it
+    never raises out of tick(), which would end the servo thread for good."""
+
+    def _servo(self, replies: list[bytes | None]) -> ml.MicLeadServo:
+        it = iter(replies)
+        return ml.MicLeadServo(
+            read_memory=lambda a, n, timeout=1.0: next(it),
+            write_pos=lambda: REU_MIC_BOOTSTRAP_BYTES,
+            sample_rate=RATE,
+        )
+
+    @staticmethod
+    def _src(offset: int) -> bytes:
+        src = REU_MIC_BASE + offset
+        return bytes([src & 0xFF, (src >> 8) & 0xFF, (src >> 16) & 0xFF])
+
+    def test_a_failed_second_read_is_a_failed_measurement(self):
+        servo = self._servo([self._src(0), None])
+        servo.tick()
+        self.assertEqual(servo._fails, 1)
+
+    def test_a_short_read_is_a_failed_measurement(self):
+        servo = self._servo([self._src(0)[:2]])
+        servo.tick()
+        self.assertEqual(servo._fails, 1)
+
+    def test_a_tracker_below_the_mic_ring_is_a_failed_read(self):
+        servo = self._servo([self._src(-1)] * 2)
+        servo.tick()
+        self.assertEqual(servo._fails, 1)
+
+    def test_each_read_carries_the_servo_timeout(self):
+        # The join waits about two reads' worth; a backend left at its own
+        # default timeout can hold stop() past it.
+        rig = _Rig(drift=0.0)
+        rig.servo.tick()
+        self.assertEqual(rig.timeouts, [ml.MIC_LEAD_READ_TIMEOUT_S] * 2)
+
+
+class MicLeadRateScalingTest(unittest.TestCase):
+    def test_the_same_lead_in_seconds_asks_for_the_same_drop_at_any_rate(self):
+        # Gains are per second of lead, so a rate other than the 12 kHz every
+        # closed-loop test uses must not change how hard the loop pulls.
+        at_12k = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES + 1200, 0.0, sample_rate=12000)
+        at_24k = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES + 2400, 0.0, sample_rate=24000)
+        self.assertAlmostEqual(at_12k[0], at_24k[0])
+        self.assertGreater(at_12k[0], 0.0)
+
+    def test_a_pinned_drop_does_not_wind_the_integrator_past_it(self):
+        # The mirror of the pinned-repeat test: far past target for a minute,
+        # the output sits at the drop ceiling. Once the lead falls short of
+        # target the drop has to come off that ceiling at once.
+        integ = 0.0
+        for _ in range(60):
+            _, integ = ml.mic_lead_correction(
+                REU_MIC_BOOTSTRAP_BYTES + 5000, integ, sample_rate=RATE
+            )
+        drop, _ = ml.mic_lead_correction(REU_MIC_BOOTSTRAP_BYTES - 2000, integ, sample_rate=RATE)
+        self.assertLess(drop, ml.MIC_LEAD_MAX_DROP)
+
+    def test_a_reanchor_extrapolates_at_the_averaged_pump_rate(self):
+        # The pump's rate is an average of what it starts at (sample_rate) and
+        # each measured interval, half and half; the anchor moves on at it.
+        rig = _Rig(drift=0.0)
+        rig.servo.tick()
+        rig.t = 1.0
+        rig.pump = 10240.0
+        rig.host = rig.pump - 500
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        rig.t = 1.5
+        averaged = RATE + 0.5 * (10240 - RATE)
+        self.assertEqual(rig.servo.take_reanchor(), 10240 + round(0.5 * averaged))
+
+
+class MicLeadTelemetryTest(unittest.TestCase):
+    def test_lead_min_and_max_span_every_measurement(self):
+        servo = _Rig(drift=0.0).servo
+        script = iter([(1600, 0, 0.0), (1200, 12000, 1.0), (2000, 24000, 2.0), (1500, 36000, 3.0)])
+        servo._measure = lambda: next(script)  # type: ignore[method-assign]
+        for _ in range(4):
+            servo.tick()
+        self.assertEqual((servo.lead_min, servo.lead_max), (1200, 2000))
+
+    def test_skipped_samples_count_what_the_splices_cut(self):
+        shaper = ml.MicLeadShaper(RATE)
+        x = _tone(RATE * 2)
+        y = _run_shaper(shaper, x, 0.15)
+        self.assertGreater(shaper.splices, 0)
+        # Splice mode resamples nothing, so every input sample is out, held,
+        # or cut.
+        self.assertEqual(shaper.skipped_samples, len(x) - len(y) - len(shaper._held))
+
+
+class MicLeadCrossfadeTest(unittest.TestCase):
+    def test_a_splice_fades_linearly_from_the_head_into_the_landing(self):
+        shaper = ml.MicLeadShaper(RATE)
+        buf = np.random.default_rng(7).uniform(-0.5, 0.5, 2000).astype(np.float32)
+        shaper._splice_debt = float(shaper.splice_len)
+        out = shaper._splice(buf)
+        fade = shaper.fade
+        cut = ml.best_splice_cut(buf, fade, shaper.cut_min, shaper.cut_max)
+        ramp = np.linspace(0.0, 1.0, fade)
+        expected = buf[:fade] * (1.0 - ramp) + buf[cut : cut + fade] * ramp
+        self.assertEqual(shaper.splices, 1)
+        np.testing.assert_allclose(out[:fade], expected, atol=1e-6)
+        np.testing.assert_array_equal(out[fade:], buf[cut + fade :])
+
+
+class MicLeadThreadExitTest(unittest.TestCase):
+    def _waits_until_stopped(self, servo: ml.MicLeadServo) -> list[float]:
+        waits: list[float] = []
+
+        class _Stop:
+            def wait(self, timeout: float) -> bool:
+                waits.append(timeout)
+                return len(waits) > 10
+
+            def is_set(self) -> bool:
+                return False
+
+        servo._stop = _Stop()  # type: ignore[assignment]
+        servo._run()
+        return waits
+
+    def test_a_failing_step_ends_the_loop_after_one_report(self):
+        def boom() -> int:
+            raise ValueError("bug")
+
+        servo = ml.MicLeadServo(
+            read_memory=lambda a, n, timeout=1.0: None, write_pos=boom, sample_rate=RATE
+        )
+        with self.assertLogs("c64cast.audio.mic_lead", "ERROR") as cm:
+            waits = self._waits_until_stopped(servo)
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(len(cm.records), 1)
+
+    def test_an_open_loop_held_for_hours_still_waits_the_ceiling(self):
+        # Without the doubling cap, 2.0 ** fails overflows a float after ~1000
+        # failed measurements, raising out of _next_wait in the thread.
+        servo = _Rig(drift=0.0).servo
+        servo._open_loop = True
+        servo._fails = 5000
+        self.assertEqual(servo._next_wait(), ml.MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
 
 
 if __name__ == "__main__":

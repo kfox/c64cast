@@ -39,7 +39,7 @@ from c64cast.audio.audio_handlers import (
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS, cpu_clock
+from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS, cpu_clock, kernal_cia1_latch
 
 
 def _make(**kw: Any) -> AudioStreamer:
@@ -2439,6 +2439,55 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
         self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())  # held by the re-arm
 
+    def test_a_timer_not_yet_started_is_not_stepped(self):
+        # The worker can read R before the NMI arms (a prebuffer that has not
+        # filled yet); stepping then would write a latch over a timer start()
+        # is about to arm at its own seed.
+        s = self._slow_r_primed()
+        s.nmi.started = False
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
+        self.assertNotIn(f"{CIA2.TIMER_A_LO:04X}", cast(Any, s.api).regs)
+
+    def test_the_loop_targets_the_armed_rate_not_the_requested_one(self):
+        # PAL at 11 kHz arms latch 89, 0.48% under the request. An R 1.2% under
+        # that armed rate is inside the deadband and converged; judged against
+        # sample_rate it is 1.67% slow, and the loop would walk the latch off
+        # nominal by the quantization error alone.
+        s = _make(sample_rate=11000, system="PAL", nmi_rate_adaptive=True)
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()
+        self.assertLess(s.nmi.effective_rate, 0.996 * s.sample_rate)
+        s.servo.warmup_until = 0.0
+        s.servo.r_rate_ema = s.nmi.effective_rate * (1 - 0.012)
+        s.servo.last_r_addr = -1
+        s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
+        self.assertFalse(s.servo.loop_acquiring)
+
+    def test_the_seed_holds_a_learned_latch_past_nominal_to_nominal(self):
+        # A learned latch slower than nominal would arm the scene below
+        # sample_rate and hold it there through the whole warm-up; the seed
+        # keeps to the [ceiling, nominal] range the loop itself steps in.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s.nmi.learned_latch["petscii"] = s.nmi.nominal_latch() + 20
+        self.assertEqual(s.nmi.seed_latch_for_mode("petscii"), s.nmi.nominal_latch())
+
+    def test_the_rate_reads_across_the_ring_end_as_a_forward_advance(self):
+        # R wrapped past the ring's last byte between two readings: 500 bytes
+        # before the end, then 500 after the start, is 1000 bytes forward.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s.nmi.latch = s.nmi.nominal_latch()
+        ring_end = audio_mod.RING_BUFFER_ADDR + audio_mod.RING_BUFFER_SIZE
+        s.servo.last_r_addr = ring_end - 500
+        s.servo.last_r_time = time.monotonic() - 0.1
+        s.servo.r_rate_ema = -1.0
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + 500)
+        # 1000 B over at least the 0.1 s set above, and well under a second.
+        self.assertGreater(s.servo.r_rate_ema, 1000 / 1.0)
+        self.assertLessEqual(s.servo.r_rate_ema, 1000 / 0.1)
+
 
 class DigiBoostTest(unittest.TestCase):
     def test_enable_writes_all_voices(self):
@@ -3711,10 +3760,6 @@ class LifecycleTest(unittest.TestCase):
             self.assertEqual(api.memories.get(ctrl), "40")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class _StuckThread:
     """A worker thread that survives a bounded join (the stalled-link case)."""
 
@@ -3796,3 +3841,120 @@ class StopWorkerJoinTest(unittest.TestCase):
         with mock.patch.object(audio_mod.log, "warning") as warn:
             s.stop()
         warn.assert_not_called()
+
+
+class DacBiasTeardownTest(unittest.TestCase):
+    """stop() releases the SID gates whichever DAC bias set them: digi-boost,
+    or the Mahoney environment a dac_curve installs (the default "auto"
+    resolves to one), and only after the $D418 mute."""
+
+    @staticmethod
+    def _controls() -> list[str]:
+        return [f"{SID.voice_base(v) + SID.OFF_CONTROL:04X}" for v in range(SID.N_VOICES)]
+
+    def test_a_curve_only_stop_releases_every_gate_after_the_mute(self):
+        s = _make(dac_table=bytes(range(256)))
+        s.stop()
+        ops = cast(Any, s.api).ops
+        mute = ops.index(("write_memory", "D418", "00"))
+        for ctrl in self._controls():
+            self.assertGreater(ops.index(("write_memory", ctrl, "40")), mute)  # SID_GATE_OFF
+
+    def test_a_linear_stop_leaves_the_voices_alone(self):
+        s = _make()
+        s.stop()
+        controls = set(self._controls())
+        written = [o for o in cast(Any, s.api).ops if o[0] == "write_memory" and o[1] in controls]
+        self.assertEqual(written, [])
+
+
+class ReuPumpDisarmTest(unittest.TestCase):
+    def test_disarm_puts_back_the_kernal_cia1_latch_and_flushes_after_it(self):
+        s = _make(system="NTSC")
+        s._reu_pump_armed = True
+        api = cast(Any, s.api)
+        api.flush = lambda timeout=5.0: api.ops.append(("flush",))
+        s._disarm_reu_pump()
+        latch = kernal_cia1_latch("NTSC")
+        self.assertEqual(api.memories["DC04"], f"{latch & 0xFF:02X}{latch >> 8:02X}")
+        latch_write = max(i for i, o in enumerate(api.ops) if o[:2] == ("write_memory", "DC04"))
+        self.assertIn(("flush",), api.ops[latch_write:])
+
+
+class RingLeadArmedPumpTest(unittest.TestCase):
+    def test_an_armed_reu_pump_reports_no_host_ring_lead(self):
+        # The C64 pump fills the ring itself; the host-DMA landed count says
+        # nothing about what is ahead of R there.
+        s = _make()
+        s._pushed_count = 8000
+        s._queued_samples = 0
+        self.assertGreater(s.ring_lead_seconds(), 0.0)
+        s._reu_pump_armed = True
+        self.assertEqual(s.ring_lead_seconds(), 0.0)
+
+
+class SpliceFillLandedTest(unittest.TestCase):
+    def test_a_splice_fill_lands_as_pad(self):
+        # The NEUTRAL fill a splice writes over the chunk it discarded is in
+        # the ring like any chunk: counted landed, all of it pad, or the DAC
+        # clock and the next splice's anchor fall a chunk behind.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        spliced: list[bool] = []
+
+        def splicing_pace(*args):  # type: ignore[no-untyped-def]
+            if not spliced:
+                spliced.append(True)
+                s._flush_epoch += 1  # a flush() lands after the hand-off
+            return 0.001
+
+        s.servo.next_pace_increment = splicing_pace  # type: ignore[method-assign]
+        real_fill = s._neutral_fill_ring
+        real_landed = s._note_ring_landed
+        fills: list[tuple[int, int]] = []
+        landed: list[tuple[int, int]] = []
+
+        def spying_fill(addr: int, n: int) -> None:
+            real_fill(addr, n)
+            fills.append((len(landed), n))
+
+        def spying_landed(generation: int, n: int, pad: int) -> None:
+            landed.append((n, pad))
+            real_landed(generation, n, pad)
+            if fills:
+                s.running = False
+
+        s._neutral_fill_ring = spying_fill  # type: ignore[method-assign]
+        s._note_ring_landed = spying_landed  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(fills), 1, "never reached the splice fill")
+        at, n = fills[0]
+        self.assertEqual(landed[at : at + 1], [(n, n)])
+
+
+class DacEncodeLockTest(unittest.TestCase):
+    def test_the_dither_generator_is_drawn_from_under_its_lock(self):
+        s = _make()
+        held: list[bool] = []
+
+        def spying_encode(*args, **kwargs):  # type: ignore[no-untyped-def]
+            held.append(s._dither_lock.locked())
+            return encode_floats_to_dac(*args, **kwargs)
+
+        with mock.patch.object(audio_mod, "encode_floats_to_dac", spying_encode):
+            s._encode_dac(np.zeros(16, dtype=np.float32))
+        self.assertEqual(held, [True])
+
+
+if __name__ == "__main__":
+    unittest.main()

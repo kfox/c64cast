@@ -820,6 +820,35 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         # The mask is confirmed delivered before the entry goes up.
         self.assertIn(("flush",), fake.ops[mask:entry])
 
+    def test_the_entry_waits_out_an_in_flight_pump_after_the_mask(self):
+        # A pump the dispatcher entered just before the mask landed is still
+        # running $C100; the drain lets it leave before its code is replaced.
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, 0x0000, 0)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        with mock.patch.object(
+            audio_mod.time, "sleep", side_effect=lambda dt: fake.ops.append(("sleep", dt))
+        ):
+            s._start_mic_for_reu_pump(device=-1, skip_irq_vector_hook=True)
+        self.addCleanup(s._stop_mic_lead_servo)
+        mask = self._index(fake, "write_memory", "DC0D", "7F")
+        entry = self._index(fake, "write_memory_file", "C100")
+        drain = fake.ops.index(("sleep", audio_mod.TRACKED_PUMP_ENTRY_DRAIN_S))
+        self.assertIn(("flush",), fake.ops[mask:drain])
+        self.assertLess(drain, entry)
+
+    def test_a_lost_mask_holds_the_entry_back_until_a_mask_lands(self):
+        # With the mask lost the dispatcher still JMPs to $C100, so writing
+        # the entry then would replace code a pump may be running.
+        s, fake, _ = self._start(lose=0xDC0D, times=1, skip_hook=True)
+        self.assertTrue(s._reu_pump_armed)
+        lost = fake.ops.index(("lost", "DC0D"))
+        remask = next(
+            i for i, o in enumerate(fake.ops) if i > lost and o == ("write_memory", "DC0D", "7F")
+        )
+        self.assertFalse(any(o[:2] == ("write_memory_file", "C100") for o in fake.ops[lost:remask]))
+
     def test_solo_path_leaves_cia1_alone(self):
         # $0314 is hooked last on the solo path, so $C100 is unreachable while
         # the entry goes up and masking would only cost keyboard ticks.
@@ -1037,6 +1066,17 @@ class MicLeadServoWiringTest(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertIsNone(s._mic_lead)
         self.assertIsNone(s._mic_shaper)
+
+    def test_the_servo_reads_the_live_write_head_at_the_streamer_rate(self):
+        s = _new_streamer(sample_rate=10000)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        s._start_mic_for_reu_pump(device=-1)
+        self.addCleanup(s.stop)
+        lead = s._mic_lead
+        assert lead is not None
+        s._mic_reu_write_pos = 4321
+        self.assertEqual(lead._write_pos(), 4321)
+        self.assertEqual(lead._rate, 10000)
 
     def test_a_backend_without_reads_runs_open_loop_and_says_so(self):
         s = _new_streamer()

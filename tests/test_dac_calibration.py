@@ -577,6 +577,18 @@ class ResolveCurveTest(DataDirIsolated):
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
 
+    def test_auto_names_a_profile_that_holds_no_calibration(self):
+        # The user pointed at a calibration on purpose; falling back silently
+        # would leave them hearing the baked table and believing it theirs.
+        cfg = _u64_cfg()
+        cfg.audio.dac_calibration_profile = "breadbin"
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as cm:
+            label, _ = dcr.resolve_dac_curve_for_backend(cfg)
+        self.assertEqual(label, "mahoney_ultisid")
+        self.assertTrue(
+            any("'breadbin'" in m and "no usable calibration" in m for m in cm.output), cm.output
+        )
+
     def test_auto_yields_to_digi_boost(self):
         cfg = _u64_cfg()
         cfg.audio.digi_boost = True

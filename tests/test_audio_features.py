@@ -24,6 +24,7 @@ from c64cast.audio.audio_features import (
     AudioFeatureAnalyzer,
     AudioFeatureStream,
     band_edges,
+    check_layout,
 )
 from c64cast.scenes.modulation import MusicModulation, TempoEstimator
 
@@ -106,6 +107,17 @@ class BandTest(unittest.TestCase):
         a = AudioFeatureAnalyzer(SR, n_bands=12, nominal_dt=DT)
         _run(a, [_noise(seed=i) for i in range(5)])
         self.assertTrue(all(b > 0.0 for b in a.snapshot().bands), a.snapshot().bands)
+
+    def test_a_window_under_32_samples_is_refused(self):
+        # 16 samples still split into one band, so only the window bound
+        # refuses it.
+        band_edges(1, 16)
+        with self.assertRaises(ValueError):
+            check_layout(1, 16)
+
+    def test_an_empty_tap_is_refused(self):
+        with self.assertRaises(ValueError):
+            AnalysisTap(size=0)
 
     def test_more_bands_than_bins_is_refused(self):
         with self.assertRaises(ValueError):
@@ -481,15 +493,25 @@ class StreamTest(unittest.TestCase):
             tap.push(_sine(440.0, phase=i * FFT_SIZE / SR))
             stream._process_tick()
         self.assertIsNotNone(stream.features())
+        # The poll thread's ticks would publish a fresh snapshot at once, so
+        # they are stubbed out: what is left is what start() itself did.
+        stream._process_tick = lambda: None  # type: ignore[method-assign]
+        analyzer = stream._analyzer
+        with patch.object(analyzer, "reset", wraps=analyzer.reset) as reset:
+            stream.start()
+            try:
+                reset.assert_called_once_with()
+                self.assertIsNone(stream.features())
+            finally:
+                stream.stop()
+
+    def test_a_second_start_while_running_keeps_the_one_poll_thread(self):
+        stream = AudioFeatureStream(AnalysisTap(), SR, poll_hz=POLL_HZ)
         stream.start()
         try:
-            # start() resets the snapshot to None; poll for the thread's first tick
-            # rather than asserting immediately, which races it on a loaded runner.
-            for _ in range(200):
-                if stream.features() is not None:
-                    break
-                time.sleep(0.01)
-            self.assertIsNotNone(stream.features())
+            poll = stream._poll
+            stream.start()
+            self.assertIs(stream._poll, poll)
         finally:
             stream.stop()
 

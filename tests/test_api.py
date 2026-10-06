@@ -1751,10 +1751,6 @@ class DumpCharRomTest(unittest.TestCase):
         self.assertEqual(self.posts, [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class OpenVideoStreamTest(unittest.TestCase):
     """open_video_stream's two refusal branches: a device profile without
     the capability, and a base_url pyright can't extract a host from."""
@@ -2176,3 +2172,7 @@ class PasswordHeaderValueTest(unittest.TestCase):
             with self.assertRaises(api.InvalidPasswordError):
                 Ultimate64API("http://example.invalid", dma_password="pw\n")
         connect.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
