@@ -2439,6 +2439,55 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
         self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())  # held by the re-arm
 
+    def test_a_timer_not_yet_started_is_not_stepped(self):
+        # The worker can read R before the NMI arms (a prebuffer that has not
+        # filled yet); stepping then would write a latch over a timer start()
+        # is about to arm at its own seed.
+        s = self._slow_r_primed()
+        s.nmi.started = False
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
+        self.assertNotIn(f"{CIA2.TIMER_A_LO:04X}", cast(Any, s.api).regs)
+
+    def test_the_loop_targets_the_armed_rate_not_the_requested_one(self):
+        # PAL at 11 kHz arms latch 89, 0.48% under the request. An R 1.2% under
+        # that armed rate is inside the deadband and converged; judged against
+        # sample_rate it is 1.67% slow, and the loop would walk the latch off
+        # nominal by the quantization error alone.
+        s = _make(sample_rate=11000, system="PAL", nmi_rate_adaptive=True)
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()
+        self.assertLess(s.nmi.effective_rate, 0.996 * s.sample_rate)
+        s.servo.warmup_until = 0.0
+        s.servo.r_rate_ema = s.nmi.effective_rate * (1 - 0.012)
+        s.servo.last_r_addr = -1
+        s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
+        self.assertFalse(s.servo.loop_acquiring)
+
+    def test_the_seed_holds_a_learned_latch_past_nominal_to_nominal(self):
+        # A learned latch slower than nominal would arm the scene below
+        # sample_rate and hold it there through the whole warm-up; the seed
+        # keeps to the [ceiling, nominal] range the loop itself steps in.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s.nmi.learned_latch["petscii"] = s.nmi.nominal_latch() + 20
+        self.assertEqual(s.nmi.seed_latch_for_mode("petscii"), s.nmi.nominal_latch())
+
+    def test_the_rate_reads_across_the_ring_end_as_a_forward_advance(self):
+        # R wrapped past the ring's last byte between two readings: 500 bytes
+        # before the end, then 500 after the start, is 1000 bytes forward.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s.nmi.latch = s.nmi.nominal_latch()
+        ring_end = audio_mod.RING_BUFFER_ADDR + audio_mod.RING_BUFFER_SIZE
+        s.servo.last_r_addr = ring_end - 500
+        s.servo.last_r_time = time.monotonic() - 0.1
+        s.servo.r_rate_ema = -1.0
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + 500)
+        # 1000 B over at least the 0.1 s set above, and well under a second.
+        self.assertGreater(s.servo.r_rate_ema, 1000 / 1.0)
+        self.assertLessEqual(s.servo.r_rate_ema, 1000 / 0.1)
+
 
 class DigiBoostTest(unittest.TestCase):
     def test_enable_writes_all_voices(self):

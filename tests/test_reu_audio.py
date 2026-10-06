@@ -1245,6 +1245,24 @@ class HostDmaServoTest(unittest.TestCase):
         self.assertGreater(period, self.CHUNK_PERIOD)
         self.assertEqual(s.servo.gap_last, (ahead_addr - 0x4200) % RING_BUFFER_SIZE)
 
+    def test_the_integral_term_carries_from_one_chunk_to_the_next(self):
+        # The integrator is the standing bus-halt correction: each chunk's
+        # controller output has to start from the last one's, or the servo is
+        # proportional-only and parks the gap off target by the steady drift.
+        s = _new_streamer(use_reu_pump=False)
+        s.host_dma_servo = True
+        s.servo.integ = 0.0
+        s.api.read_memory = lambda a, n, timeout=1.0: bytes([0x00, 0x42])  # type: ignore[method-assign]
+        write_addr = RING_BUFFER_ADDR + 6000
+        gap = (write_addr - 0x4200) % RING_BUFFER_SIZE
+        _, after_one = servo_period(gap, 0.0, chunk_period=self.CHUNK_PERIOD)
+        _, after_two = servo_period(gap, after_one, chunk_period=self.CHUNK_PERIOD)
+        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertNotEqual(after_one, 0.0)
+        self.assertEqual(s.servo.integ, after_one)
+        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.integ, after_two)
+
     def test_ring_lead_smooths_the_gap(self):
         # One reading moves the lead a step toward the gap, never onto it, so
         # a torn R read cannot jump the A/V clock by a whole ring.
