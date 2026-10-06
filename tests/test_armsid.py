@@ -391,6 +391,30 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(plan[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)], armsid.EXT_SPLIT_OFF)
         self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET2_EN), plan)
 
+    def test_socket1_is_not_displaced_under_a_playing_right_channel(self):
+        # The right channel is decoded through socket 1's enable: disabling
+        # socket 1 for a core would silence the $D420 chip it plays.
+        with self.assertLogs("c64cast.sid.sid_autoconfig", "INFO") as logs:
+            plan = sa.plan_sid_model_config(
+                chips=((0xD400, "6581"), (0xD420, "8580")),
+                current_addr_map={0xD400: "socket1", 0xD420: "socket2"},
+                socket_models=("ARM2SID ?", "ARM2SID R 8580"),
+                ultisid_allowed=True,
+            )
+        self.assertIsNone(plan)
+        self.assertTrue(any("cannot be displaced" in line for line in logs.output))
+
+    def test_socket1_is_displaced_when_the_right_channel_plays_nothing(self):
+        with self.assertLogs("c64cast.sid.sid_autoconfig", "INFO"):
+            plan = sa.plan_sid_model_config(
+                chips=((0xD400, "6581"),),
+                current_addr_map={0xD400: "socket1", 0xD420: "socket2"},
+                socket_models=("ARM2SID ?", "ARM2SID R 8580"),
+                ultisid_allowed=True,
+            )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_SOCKETS, ITEM_SOCKET1_EN)], "Disabled")
+
     def test_two_sid_tune_lands_on_both_channels_with_their_models(self):
         sm = plan_sid_map_for_addresses(
             (0xD400, 0xD420),

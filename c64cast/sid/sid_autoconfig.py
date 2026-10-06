@@ -115,6 +115,8 @@ def plan_sid_model_config(
          address: `Auto Address Mirroring` off, plus the socket sitting there
          disabled. Without that last part the route is silent-by-design — the
          real chip keeps answering and the core never reaches the mixer.
+         Socket 1 is not displaced while an ARM2SID's right channel plays
+         one of the tune's chips, since disabling it silences that channel.
       4. Otherwise: log a warning (best-effort — never raises) and leave the
          chip unchanged.
 
@@ -123,6 +125,11 @@ def plan_sid_model_config(
     :func:`apply_sid_autoconfig` can skip the snapshot/apply dance entirely."""
     plan: dict[tuple[str, str], str] = {}
     reserved: set[str] = set()
+    # An ARM2SID's right channel is decoded through socket 1's enable, so
+    # disabling socket 1 would silence a chip the right channel plays.
+    right_channel_plays = armsid.is_right_channel(socket_models[1]) and any(
+        current_addr_map.get(address) == "socket2" for address, _ in chips
+    )
 
     for address, required in chips:
         if required in _NO_REQUIREMENT:
@@ -177,6 +184,16 @@ def plan_sid_model_config(
                 address,
                 required,
                 matched_idx + 1,
+            )
+            continue
+
+        if current_source == "socket1" and right_channel_plays:
+            log.warning(
+                "sid autoconfig: chip at $%04X wants %s but socket 1 cannot be "
+                "displaced without silencing the ARM2SID right channel — leaving "
+                "it on socket 1",
+                address,
+                required,
             )
             continue
 
