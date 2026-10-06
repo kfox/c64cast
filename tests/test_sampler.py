@@ -3341,10 +3341,12 @@ class SamplerPushTest(unittest.TestCase):
     def test_the_read_head_counts_bytes_not_samples(self):
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
         smp._running = True
-        smp._gate_time = time.monotonic() - 1.0
-        self.assertAlmostEqual(
-            smp._read_consumed_bytes() / smp.bps / smp._actual_rate, 1.0, delta=0.1
-        )
+        smp._gate_time = 100.0
+        # A pinned clock: one second after the gate, however long a loaded
+        # host takes between these lines.
+        with mock.patch.object(s.time, "monotonic", return_value=101.0):
+            consumed = smp._read_consumed_bytes()
+        self.assertAlmostEqual(consumed / smp.bps / smp._actual_rate, 1.0, delta=0.01)
 
 
 class SamplerWriterTelemetryTest(unittest.TestCase):
