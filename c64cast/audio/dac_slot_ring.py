@@ -62,7 +62,7 @@ SELFTEST_TOLERANCE = 0.10
 #: re-recording is pointless and only the rig can be at fault.
 SILENT_CAPTURE_PEAK = 0.002
 
-#: Above this ``pass_spread_frac``, the capture is not the ring at all. A
+#: Above this ``pass_spread_p95_frac``, the capture is not the ring at all. A
 #: recording of something else (a laptop microphone picking up room noise is the
 #: one seen in the field) still yields *numbers*: the peak finder locks onto
 #: noise, a couple of "sync markers" turn up, and the levels come back near zero
@@ -71,7 +71,7 @@ SILENT_CAPTURE_PEAK = 0.002
 #: fewer than two markers, with a traceback and 30 s of measuring already spent.
 RING_SPREAD_NOT_THE_RING = 0.10
 
-#: Above this ``pass_spread_frac``, the capture *is* the ring but the ring is not
+#: Above this ``pass_spread_p95_frac``, the capture *is* the ring but the ring is not
 #: replaying the same levels each pass, so a ladder fitted to them is wrong.
 #:
 #: Every pass of one capture drives the SID through identical codes, so a healthy
@@ -98,13 +98,13 @@ RING_SPREAD_NOT_THE_RING = 0.10
 #: absorbs a transient.
 RING_TRUST_MAX_SPREAD = 0.005
 
-#: Top of the healthy ``pass_spread_frac`` band, for the per-ring progress line.
+#: Top of the healthy ``pass_spread_p95_frac`` band, for the per-ring progress line.
 #: A ring between this and :data:`RING_TRUST_MAX_SPREAD` is measured and kept,
 #: but is worth saying out loud — a whole run sitting in that band is how a
 #: quietly poor table gets built out of individually-passing rings.
 RING_SPREAD_HEALTHY = 0.002
 
-#: Fraction of ``pass_spread_frac`` that can survive :func:`_pass_gain_decomposition`
+#: Fraction of ``pass_spread_p95_frac`` that can survive :func:`_pass_gain_decomposition`
 #: and still count as "only the level was moving". Below it the disagreement is a
 #: per-pass gain — the ring replayed faithfully and was measured through something
 #: that changed level; above it the laps genuinely differ and rescaling won't fix
@@ -342,7 +342,7 @@ def _pass_gain_decomposition(
     Fitting one scalar per pass separates them: ``g_p`` is the level the whole ring
     came back at on lap ``p``, and the residual ``passes − g_p·levels`` is the part
     no single gain explains. It is deliberately reported in the same units as
-    ``pass_spread_frac`` (max per-code std over ``scale_ref``) so the two compare
+    ``pass_spread_p95_frac`` (95th-percentile per-code std over ``scale_ref``) so the two compare
     directly — a residual well under the spread means a gain change accounts for
     it. Both failure modes reach the same spread otherwise: on synthetic captures
     a 10 % drift across the window and 1 % random per-block gain jitter each read
@@ -485,7 +485,7 @@ def extract_slot_levels(
             float(np.percentile(passes.std(axis=0), _SPREAD_TRUST_PERCENTILE)) / scale_ref, 5
         ),
         "pass_outlier_codes": int((passes.std(axis=0) / scale_ref > RING_SPREAD_HEALTHY).sum()),
-        # What that spread is made of: a residual well under pass_spread_frac
+        # What that spread is made of: a residual well under pass_spread_p95_frac
         # means the ring replayed fine and only the measured level moved.
         "pass_gains": [round(float(g), 5) for g in gains],
         "pass_gain_span_frac": round(float(np.max(gains) - np.min(gains)), 5),

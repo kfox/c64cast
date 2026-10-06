@@ -353,7 +353,7 @@ Every code is then measured against the **same baseline inside one capture**, so
 4. `_dc_restore_gain` — undoes the AC coupling so a plateau mean is a level and not a level plus the sag of whatever preceded it. For a one-pole high-pass the inverse is exactly `v = y + cumsum(y)/(τ·fs)`, one unknown scalar, and the restored signal is affine in it — so the total within-plateau variance is a quadratic with a closed-form minimum. τ is fitted from the data rather than assumed; a 2- and 3-pole basis was tried on real captures and did not improve on it.
 5. Each code slot is differenced against the reference slots bracketing it, canceling residual slow drift locally.
 
-`pass_spread_frac` is the trust metric: every pass measures the same 256 levels, so disagreement between them is the one symptom that separates a mistracked capture from a real curve. On hardware it is 0.01–0.2%.
+`pass_spread_p95_frac` is the trust metric: every pass measures the same 256 levels, so disagreement between them is the one symptom that separates a mistracked capture from a real curve. On hardware it is 0.01–0.2%.
 
 #### Refusing a capture that isn't of the ring
 
@@ -362,8 +362,8 @@ Every code is then measured against the **same baseline inside one capture**, so
 So `read_ring_capture` wraps the extraction in the two judgments that belong to whoever chose the recording, and every ring goes through it:
 
 * **peak < `SILENT_CAPTURE_PEAK`** (0.002 of full scale) — the ring swings the SID between full-scale codes and silence, so any correctly routed input sees far more than this.
-* **`pass_spread_frac` > `RING_SPREAD_NOT_THE_RING`** (10%) — two orders of magnitude above what hardware reads, so this only fires on levels that are noise.
-* **`pass_spread_frac` > `RING_TRUST_MAX_SPREAD`** (0.5%) — the capture *is* of the ring, but the ring is not replaying the same levels each pass, so a ladder fitted to them is wrong.
+* **`pass_spread_p95_frac` > `RING_SPREAD_NOT_THE_RING`** (10%) — two orders of magnitude above what hardware reads, so this only fires on levels that are noise.
+* **`pass_spread_p95_frac` > `RING_TRUST_MAX_SPREAD`** (0.5%) — the capture *is* of the ring, but the ring is not replaying the same levels each pass, so a ladder fitted to them is wrong.
 
 That second gate is the one this file used to be missing, and the band between the two is where a plausible-looking wrong table comes from. Every pass of a capture drives the SID through identical codes, so a healthy rig reads 0.01–0.2%; one run measured **0.6–2.5%** against a chip that had read 0.01–0.08% sixteen minutes earlier. Only the 10% gate existed, so those rings passed, and the table fitted to them agreed with the earlier one on 95 of 256 entries — correlation **0.565**, a worse mismatch than handing a chip a *different chip's* table (corr 0.738, ≈29% RMS level error; see `dac_curves.py`). `auto` then preferred that file over the baked table on every subsequent run. What it sounds like is the tell for any wrong ladder: signal-correlated distortion, inaudible over a quiet passage and gross hiss once the material gets loud, which reads as "it broke 45 seconds in" rather than as a bad calibration.
 
