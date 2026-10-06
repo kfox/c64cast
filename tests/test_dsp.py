@@ -376,9 +376,12 @@ class CompressorCurveTest(unittest.TestCase):
         # Threshold -18, ratio 4, a 6 dB knee: no reduction 3 dB under the
         # threshold, the full slope 3 dB over it, and the quadratic's
         # slope * (knee / 2)^2 / (2 * knee) = -0.5625 dB at the threshold.
+        # The quadratic meets both lines at the edges, so the points half a dB
+        # outside them are what pin where each edge sits.
         comp = Compressor(sample_rate=SR, threshold_db=-18.0, ratio=4.0, knee_db=6.0)
-        gain = comp._gain_db(np.array([-21.0, -18.0, -15.0], dtype=np.float32))
-        np.testing.assert_allclose(gain, [0.0, -0.5625, -2.25], atol=1e-6)
+        levels = np.array([-21.5, -21.0, -18.0, -15.0, -14.5], dtype=np.float32)
+        gain = comp._gain_db(levels)
+        np.testing.assert_allclose(gain, [0.0, 0.0, -0.5625, -2.25, -2.625], atol=1e-6)
 
 
 class LimiterReleaseTest(unittest.TestCase):
