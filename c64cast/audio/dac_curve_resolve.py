@@ -174,16 +174,7 @@ def provision_calibrated_chip_model(
         )
         return None
     current = armsid.label_model(live)
-    if current == wanted:
-        return None
-    if current is None:
-        log.warning(
-            "audio: the %s in socket %d did not report its model, so it cannot be put "
-            "back after the run; leaving it unchanged for the %s DAC calibration",
-            (live or "").rsplit(" ", 1)[0],
-            socket,
-            wanted,
-        )
+    if current is None or current == wanted:
         return None
     source = f"socket{socket}"
     # Returned even when the switch fails: a write that took before its reply

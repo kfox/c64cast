@@ -182,7 +182,7 @@ class LabelTest(unittest.TestCase):
     def test_model_and_change(self):
         self.assertEqual(armsid.label_model("ARM2SID R 6581"), "6581")
         self.assertEqual(armsid.label_model("8580"), "8580")
-        self.assertIsNone(armsid.label_model("ARMSID ?"))
+        self.assertEqual(armsid.label_model("ARMSID ?"), "ARMSID ?")
         self.assertTrue(armsid.needs_model_change("ARMSID 8580", "6581"))
         self.assertFalse(armsid.needs_model_change("ARMSID 6581", "6581"))
         self.assertFalse(armsid.needs_model_change("6581", "8580"))
@@ -193,6 +193,13 @@ class LabelTest(unittest.TestCase):
         self.assertFalse(armsid.is_reconfigurable("ARMSID"))
         self.assertFalse(armsid.socket_serves("ARMSID", "6581"))
         self.assertFalse(armsid.needs_model_change("ARMSID", "6581"))
+
+    def test_an_unreadable_model_is_a_fixed_chip(self):
+        # A switch there would leave no model for teardown to put back.
+        for unread in ("ARMSID ?", "ARM2SID R ?"):
+            self.assertFalse(armsid.is_reconfigurable(unread))
+            self.assertFalse(armsid.socket_serves(unread, "6581"))
+            self.assertFalse(armsid.needs_model_change(unread, "6581"))
 
     def test_right_channel(self):
         self.assertTrue(armsid.is_right_channel("ARM2SID R 8580"))

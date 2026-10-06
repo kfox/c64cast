@@ -171,12 +171,14 @@ def label(kind: str, model: str | None, *, right: bool = False) -> str:
 
 def is_reconfigurable(socket_label: str | None) -> bool:
     """Whether the chip behind `socket_label` can be switched to either model.
-    Only a label :func:`label` built counts: the firmware's bare ``"ARMSID"``
-    is what a socket keeps when the chip did not answer its probe."""
+    Only a label :func:`label` built with a model the chip reported counts: the
+    firmware's bare ``"ARMSID"`` is what a socket keeps when the chip did not
+    answer its probe, and ``"ARMSID ?"`` one whose model reply was unreadable —
+    a switch there would leave nothing to put back."""
     if socket_label is None:
         return False
-    kind, _, rest = socket_label.partition(" ")
-    return kind in DETECTED_TYPES and bool(rest)
+    kind = socket_label.partition(" ")[0]
+    return kind in DETECTED_TYPES and socket_label.rsplit(" ", 1)[-1] in MODELS
 
 
 def is_right_channel(socket_label: str | None) -> bool:
@@ -190,8 +192,7 @@ def label_model(socket_label: str | None) -> str | None:
     chip this module does not know (a real chip's label already is its model)."""
     if socket_label is None or not is_reconfigurable(socket_label):
         return socket_label
-    model = socket_label.rsplit(" ", 1)[-1]
-    return model if model in MODELS else None
+    return socket_label.rsplit(" ", 1)[-1]
 
 
 def socket_serves(socket_label: str | None, required: str | None) -> bool:
