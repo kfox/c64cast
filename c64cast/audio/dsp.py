@@ -114,8 +114,10 @@ class Compressor:
     Detector: an attack/release-smoothed peak envelope. Gain: a static dB curve
     (with optional soft knee) applied to the smoothed level, so above
     ``threshold_db`` the signal is reduced by ``(1 - 1/ratio)`` of its excess.
-    ``makeup_db=None`` auto-computes makeup so a signal at the threshold exits
-    near unity, restoring perceived loudness after the reduction.
+    ``makeup_db=None`` auto-computes makeup as ``-threshold_db * (1 - 1/ratio)``,
+    the reduction a full-scale (0 dBFS) signal receives, so full scale exits at
+    unity and quieter signals are lifted: one at the threshold comes out
+    ``+|threshold_db| * (1 - 1/ratio)`` dB hot (+13.5 dB at -18 dB, 4:1).
     """
 
     def __init__(

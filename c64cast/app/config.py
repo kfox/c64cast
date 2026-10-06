@@ -2236,8 +2236,9 @@ class DSPCfg:
     comp_makeup_auto: bool = field(
         default=True,
         metadata={
-            "help": "Auto-compute makeup gain so threshold-level signal exits near "
-            "unity. Set false to use comp_makeup_db explicitly."
+            "help": "Auto-compute makeup gain so a full-scale signal exits at unity "
+            "(a signal at the threshold is lifted by the same amount). "
+            "Set false to use comp_makeup_db explicitly."
         },
     )
     comp_makeup_db: float = field(

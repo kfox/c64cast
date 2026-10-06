@@ -990,7 +990,7 @@ comp_ratio = 3.0                    # e.g. 3 = 3:1 above threshold
 comp_knee_db = 6.0                  # soft-knee width (0 = hard knee)
 comp_attack_ms = 5.0                # compressor attack (ms)
 comp_release_ms = 120.0             # compressor release (ms)
-comp_makeup_auto = true             # auto makeup so threshold-level → ~unity
+comp_makeup_auto = true             # auto makeup so full scale → unity
 comp_makeup_db = 0.0                # explicit makeup (dB) when auto = false
 # Limiter — fast peak / brickwall ceiling, final safety stage.
 limiter = true

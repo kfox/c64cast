@@ -178,7 +178,7 @@ expander_ratio = 2
 | **`comp_knee_db`**<br>*Type:* `float`<br>*Default:* `6.0` | Soft-knee width in dB around the threshold (0 = hard knee). |
 | **`comp_attack_ms`**<br>*Type:* `float`<br>*Default:* `5.0` | Compressor attack time constant in ms. |
 | **`comp_release_ms`**<br>*Type:* `float`<br>*Default:* `120.0` | Compressor release time constant in ms. |
-| **`comp_makeup_auto`**<br>*Type:* `bool`<br>*Default:* `True` | Auto-compute makeup gain so threshold-level signal exits near unity. Set false to use comp_makeup_db explicitly. |
+| **`comp_makeup_auto`**<br>*Type:* `bool`<br>*Default:* `True` | Auto-compute makeup gain so a full-scale signal exits at unity (a signal at the threshold is lifted by the same amount). Set false to use comp_makeup_db explicitly. |
 | **`comp_makeup_db`**<br>*Type:* `float`<br>*Default:* `0.0` | Explicit makeup gain (dB) when comp_makeup_auto is false. |
 | **`limiter`**<br>*Type:* `bool`<br>*Default:* `True` | Fast peak limiter / brickwall ceiling — final safety stage. |
 | **`limiter_ceiling`**<br>*Type:* `float`<br>*Default:* `0.95` | Limiter output ceiling, linear 0..1 (just under full scale). |
