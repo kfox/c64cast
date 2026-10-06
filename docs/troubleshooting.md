@@ -84,7 +84,8 @@ picture and the knobs that actually help:
   modestly — 12 kHz already carries the fricatives/sibilants 8 kHz lost. But
   the NMI handler has a fixed cycle budget, so there's little headroom above
   the default: the live pipeline starts underrunning around ≈12.5 kHz, and
-  rates past the isolated-handler ceiling (≈13.6 kHz NTSC) are *rejected at
+  rates whose nearest CIA latch falls under the handler's safe period (past
+  ≈13.7 kHz NTSC, ≈13.2 kHz PAL) are *rejected at
   load* (`c64.nmi_rate_safety`).
 - **Bit depth is `[audio] dac_curve`, not the rate.** The default `"auto"`
   already lifts the U64's (deterministic emulated) SID to the Mahoney 8-bit
@@ -175,8 +176,8 @@ late-write share. Possible causes:
   network or U64 is congested.
 - `[audio] sample_rate` pushed near the ceiling. The default 12 kHz already
   sits just below the ≈12.5 kHz streaming-underrun onset, so if you raised
-  it, nudge it back toward the default. (Rates past ≈13.6 kHz NTSC are
-  rejected at load outright, so this only bites in the 12.5–13.6 kHz band.)
+  it, nudge it back toward the default. (Rates past ≈13.7 kHz NTSC are
+  rejected at load outright, so this only bites in the 12.5–13.7 kHz band.)
 - For a `video` scene stuck at `writes=4/s bytes=4KiB/s` for
   minutes after the clip should have ended, the demuxer hit EOF but the
   video buffer never cleared — `AVFileSource.current_frame` handles that
