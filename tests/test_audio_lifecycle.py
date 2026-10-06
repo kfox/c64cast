@@ -2524,9 +2524,12 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.last_r_time = time.monotonic() - 0.1
         s.servo.r_rate_ema = -1.0
         s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + 500)
-        # 1000 B over at least the 0.1 s set above, and well under a second.
+        # 1000 B over at least the 0.1 s set above, and well under a second. The
+        # ceiling carries 0.1 % for float noise (dt is a hair over 0.1 s, so the
+        # exact 10000 bound is met only to the last ulp); an unwrapped read is
+        # negative, far outside both bounds.
         self.assertGreater(s.servo.r_rate_ema, 1000 / 1.0)
-        self.assertLessEqual(s.servo.r_rate_ema, 1000 / 0.1)
+        self.assertLess(s.servo.r_rate_ema, 1000 / 0.1 * 1.001)
 
 
 class DigiBoostTest(unittest.TestCase):
