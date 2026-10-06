@@ -306,6 +306,26 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a scene after an `mhires` one began at `mhires`'s faster learned rate (sharp
   until the loop walked it back) and then filed its own settled rate under
   `mhires`, mis-seeding the next `mhires` scene.
+- **After a network stall, `$D418` DAC audio picks up where it should instead
+  of overwriting itself.** If the link to the C64 stalled for more than about
+  a third of a second, the audio worker came back far behind its schedule and
+  wrote as fast as the link allowed to catch up. That overran the audio it had
+  just written before the C64 could play it, garbling up to as long as the
+  stall itself, and squeezed the video's writes. The worker now restarts a
+  safe distance ahead of the C64's playback and logs a warning. Live mic input
+  that piled up during the stall is dropped rather than played late, and a
+  warning says how many seconds of it went, whether or not the worker had to
+  restart.
+- **A slow U64 web server no longer makes `$D418` DAC audio replay itself.**
+  The audio worker reads the C64's playback position over REST once per chunk,
+  and a read slower than about 40 ms made it fall behind the player, which
+  then replayed a lap-old ring. A slow read is now skipped, with a warning,
+  and reading backs off until it is prompt again.
+- **With `[audio].nmi_rate_adaptive` on, a link stall no longer speeds the
+  `$D418` DAC up.** After a stall of about a second, the consumer-rate
+  estimate saw only the part of the read pointer's advance past a whole ring
+  lap, read the consumer as several times too slow, and stepped the NMI up by
+  as much as 5%. A reading across an interval that long is now dropped.
 - **On a TeensyROM+, the `$D418` DAC prebuffer goes out at full speed.** The
   link slices writes only while the NMI player runs, but it was told the
   player was running before the timer was armed, so the whole prebuffer went

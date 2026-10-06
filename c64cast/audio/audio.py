@@ -24,11 +24,12 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from c64cast._teardown import run_teardown_steps
+from c64cast._wire_log import LogThrottle
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
@@ -100,12 +101,16 @@ from .audio_handlers import (
     SID_MAHONEY_CONTROL,
     SID_MAHONEY_RES_FILT,
     SID_MAHONEY_SR,
+    STALL_INSIDE_LEAD_SLACK,
+    STALL_REANCHOR_READ_BUDGET_FRAC,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
     mic_ring_lead_ok,
     mic_ring_seed,
     patch_chunk_size,
     reu_pump_chunk_fits_ring,
+    stall_lapped,
+    stall_reanchor,
     stomp_spans,
 )
 from .audio_rate import NmiTimer, RateServo
@@ -114,6 +119,15 @@ from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
+
+
+class StallInsideLead(NamedTuple):
+    """What ``AudioStreamer._resync_after_stall`` returns when R never
+    reached the write head: ``gap`` is how far W is still ahead of R, less
+    R's travel during the read."""
+
+    gap: int
+
 
 # Any so Pyright doesn't flag every sd.XXX as an attribute of None; the
 # intermediate name gives both branches one annotation, which mypy --strict
@@ -421,6 +435,8 @@ class AudioStreamer:
         self._ring_landed_total = 0
         self._ring_pads: deque[tuple[int, int]] = deque()
         self._position_floor = 0.0
+        # One record per interval however often the link stalls.
+        self._stall_log = LogThrottle(log)
 
         # Sample tap for FFT overlays. Lockless write from input threads,
         # locked read from the render thread — readers tolerate a torn frame
@@ -618,6 +634,7 @@ class AudioStreamer:
         leftover: bytes,
         base_time: float,
         chunk_period: float,
+        current: Callable[[], bool],
         *,
         generation: int,
     ) -> tuple[int, int, bytes]:
@@ -637,6 +654,12 @@ class AudioStreamer:
         Collecting between the writes rather than before them is what keeps the
         producer's full period of collect time — the writes now occupy the
         period that used to be spent asleep waiting for the pace deadline.
+
+        ``current`` is the worker's fence: each piece write can park past
+        stop()'s join, and a worker superseded meanwhile neither collects from
+        the next session's queue nor writes the rest of the chunk into the
+        ring that session is priming. ``generation`` is the value that fence
+        tests, handed on to :meth:`_collect_until`.
         """
         quantum = self._halt_quantum() or len(payload)
         slots = max(1, (len(payload) + quantum - 1) // quantum)
@@ -644,6 +667,8 @@ class AudioStreamer:
         n = 0
         taken_total = 0
         for i in range(slots):
+            if not current():
+                break
             slot_deadline = base_time + i * slot_period
             n, taken, leftover = self._collect_until(
                 chunk_buf, n, leftover, slot_deadline, generation=generation
@@ -651,7 +676,7 @@ class AudioStreamer:
             taken_total += taken
             # Retired between slots: the rest of the payload is not this
             # worker's to write into a ring the next activation owns.
-            if not self.running or generation != self._worker_generation:
+            if not current():
                 break
             sleep_s = slot_deadline - time.monotonic()
             self._total_slots += 1
@@ -956,13 +981,20 @@ class AudioStreamer:
         pace point, and writes.
 
         The schedule is strict absolute — `next_write_time + chunk_period`,
-        never snapped forward on an overrun. With `host_dma_servo` on
+        never snapped forward on an ordinary overrun. With `host_dma_servo` on
         (default) the increment is `servo.next_pace_increment(...)` instead of
         the bare `chunk_period`, still added to the absolute time, and clamped
         to [0.5, 1.5]·chunk_period so one bad reading cannot stall or sprint
-        the schedule.
+        the schedule. The one exception is a stall longer than the ring lead
+        (a DMA link that blocked or redialed): catching that up would sprint
+        writes until W lapped R, so the worker re-anchors instead — see
+        :meth:`_resync_after_stall`.
 
         See docs/architecture/audio.md#the-worker-thread-and-its-pacing."""
+
+        def current() -> bool:
+            return not self._superseded(generation)
+
         try:
             write_addr = RING_BUFFER_ADDR
             # Just past the last byte actually written — what the servo needs as
@@ -977,6 +1009,9 @@ class AudioStreamer:
             # servo a standing offset to absorb before it could correct anything.
             chunk_period = self.chunk_size / self.effective_rate
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
+            # Behind schedule by more than this, the consumer has played the
+            # whole lead and is replaying the ring's previous lap.
+            stall_resync_s = HOST_DMA_SERVO_TARGET_GAP / self.effective_rate
             # Pace + collect deadlines. Zero until NMI starts.
             next_write_time = 0.0
             # Last iteration's chunk, dripped out over this one: one chunk_period
@@ -988,7 +1023,7 @@ class AudioStreamer:
             pending_pad = 0
             pending_epoch = 0
 
-            while self.running and generation == self._worker_generation:
+            while current():
                 # Captured before the collect: if flush() bumps it while this
                 # iteration holds data, that data is pre-splice and is dropped
                 # before the ring write below.
@@ -1010,6 +1045,8 @@ class AudioStreamer:
                         # promises silence. Filling it also keeps w_head honest,
                         # so the servo isn't handed a W a chunk behind the head.
                         self._neutral_fill_ring(pending_addr, len(pending))
+                        if not current():
+                            break
                         self._note_ring_landed(generation, len(pending), len(pending))
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
@@ -1021,8 +1058,7 @@ class AudioStreamer:
                         # the read head. Stomping from pending_addr keeps the
                         # chunk about to be written at the front of the span.
                         if self._stomp_requested:
-                            self._stomp_requested = False
-                            self._stomp_ring(pending_addr)
+                            self._stomp_ring(pending_addr, current)
                         n, from_queue, leftover = self._drip_chunk(
                             pending,
                             pending_addr,
@@ -1030,8 +1066,13 @@ class AudioStreamer:
                             leftover,
                             pace_deadline,
                             chunk_period,
+                            current,
                             generation=generation,
                         )
+                        # Every ring write can park past stop()'s join; past
+                        # it, the counters below are the next session's.
+                        if not current():
+                            break
                         self._note_ring_landed(generation, len(pending), pending_pad)
                         self._consume_queued(pending_from_queue, generation=generation)
                         w_head = pending_addr + len(pending)
@@ -1063,7 +1104,7 @@ class AudioStreamer:
                     )
                     from_queue += taken
 
-                if not self.running or generation != self._worker_generation:
+                if not current():
                     break
 
                 pad = 0
@@ -1103,12 +1144,13 @@ class AudioStreamer:
                     leftover = b""
                     continue
 
-                # Pause fast mute, priming iteration only; steady state goes
-                # through the pending path above, which stomps against the chunk
-                # about to go out rather than this one.
+                # Pause fast mute, for a request the pending path above did not
+                # take: no chunk was pending (the first iteration after the arm,
+                # or one after a splice dropped it), or the request arrived
+                # during that path's drip and collect. That path stomps from
+                # the chunk about to go out; this one from the chunk in hand.
                 if self._stomp_requested and prebuffered:
-                    self._stomp_requested = False
-                    self._stomp_ring(write_addr)
+                    self._stomp_ring(write_addr, current)
 
                 if prebuffered:
                     # Hand off to the next iteration, which drips this into the
@@ -1125,19 +1167,45 @@ class AudioStreamer:
                     write_addr += n
                     if write_addr >= RING_BUFFER_END:
                         write_addr = RING_BUFFER_ADDR
-                    next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
+                    next_write_time += self.servo.next_pace_increment(w_head, chunk_period, current)
+                    # The pacing read can park past stop()'s join like a ring
+                    # write: past it, the resync and the health line below
+                    # would act on the next session's ring and counters.
+                    if not current():
+                        break
+                    lag = time.monotonic() - next_write_time
+                    if lag > stall_resync_s:
+                        outcome = self._resync_after_stall(lag, generation, w_head)
+                        # A superseded resync returns None, as an unreadable R
+                        # does; past it, the health line is the next session's.
+                        if not current():
+                            break
+                        next_write_time = time.monotonic()
+                        if isinstance(outcome, StallInsideLead):
+                            # Owe only what refills the target lead, not the
+                            # whole stall: catching all of it up from a lead
+                            # longer than the target (a slow consumer's)
+                            # drove W more than a ring ahead of R.
+                            short = max(0, HOST_DMA_SERVO_TARGET_GAP - outcome.gap)
+                            next_write_time -= short / self.effective_rate
+                        elif outcome is not None:
+                            pending_addr = outcome
+                            write_addr = outcome + n
+                            if write_addr >= RING_BUFFER_END:
+                                write_addr = RING_BUFFER_ADDR
                     self._maybe_log_health(time.monotonic())
                     continue
 
                 # Prebuffer fill: the NMI is not consuming yet, so there is no
                 # halt to hide from and one unsplit write primes the ring fastest.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
+                # Retired while parked in that write: the counts below are the
+                # next activation's, and the NMI start would reprogram the timer
+                # under it.
+                if not current():
+                    break
                 self._note_ring_landed(generation, n, pad)
                 self._consume_queued(from_queue, generation=generation)
-                # Retired while parked in that write: the NMI start below would
-                # reprogram the timer under whatever activation came next.
-                if generation != self._worker_generation:
-                    break
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1146,6 +1214,9 @@ class AudioStreamer:
                 bytes_prebuffered += n
                 if bytes_prebuffered >= prebuffer_bytes:
                     self.nmi.start(adaptive=self.nmi_rate_adaptive)
+                    # The arm reads R and writes the CIA, and can park too.
+                    if not current():
+                        break
                     prebuffered = True
                     # R only becomes meaningful now that the NMI consumes: start
                     # the servo integrator and rate loop clean (the warm-up gate
@@ -1160,12 +1231,144 @@ class AudioStreamer:
         except Exception:
             # Clearing `running` is what stats()["running"] reports, so a caller
             # can tell a dead worker from a live one rather than inferring it
-            # from silence.
+            # from silence. A superseded worker's write most often ends this
+            # way — a parked write on a stalled link raises rather than
+            # returns — and by then `running` is the next session's.
             log.exception("audio worker crashed")
             # A retired worker's late write failing is not the next
             # activation's crash: clearing `running` would stop that one.
-            if generation == self._worker_generation:
+            if current():
                 self.running = False
+
+    def _resync_after_stall(
+        self, lag: float, generation: int, w_head: int
+    ) -> int | StallInsideLead | None:
+        """Recover from a worker stall longer than the ring lead; returns the
+        chunk-grid address the next chunk lands at, None when R cannot be
+        read promptly (the schedule is then only snapped forward), or a
+        ``StallInsideLead`` when R turns out not to have reached ``w_head``
+        (the live write head) after all.
+
+        The trigger is ``HOST_DMA_SERVO_TARGET_GAP`` of lag, but the lead the
+        stall ate can be longer: the ≈5 KiB the consumer starts behind before
+        the servo pulls it in, or an open-loop lead grown by the consumer's
+        bus-halt deficit. With W still ahead, the span from R to the anchor
+        holds audio not yet played, and NEUTRAL-filling it cut a hole in the
+        scene. R read here says which case this is (``stall_lapped``), and
+        when W is still ahead the ring is not touched; the worker restarts
+        its schedule from now, owing only what tops the lead back up to the
+        target. The whole stall is not caught up: from a lead grown longer
+        than the target, that drove W more than a ring ahead of R, and each
+        catch-up iteration still over the trigger read R and judged again,
+        until a lag that no longer measured what R ate passed for a lap.
+
+        By now the consumer has played all of the lead and some of the ring's
+        previous lap, and nothing written meanwhile can change that. What the
+        old schedule would do next is worse: write back-to-back at the link's
+        limit until it caught up, more than the audio share of the write
+        budget, while W overtook R and overwrote what had not yet played. So
+        the write head restarts ``HOST_DMA_SERVO_TARGET_GAP`` ahead of R, with
+        the span between them NEUTRAL-filled (it holds a lap-old ring), and
+        the schedule restarts from now.
+
+        A live input's backlog is the stall's: played late it would only add
+        that much latency for the rest of the session, so it is dropped. A
+        decoded source's is kept, and plays late — the picture is slaved to
+        the audio clock, which did not advance for what was not played.
+
+        R comes from ``RateServo.read_r_promptly``, against a budget of
+        ``STALL_REANCHOR_READ_BUDGET_FRAC`` of the lead: a stall is often a
+        slow server, and a read as slow as the one that tripped this would
+        leave R stale by more than the lead the anchor puts between them.
+
+        ``generation`` is the worker's own, as in :meth:`_worker`. A worker
+        parked in that read, or in a stomp write, can outlive stop()'s bounded
+        join, and the stall that parked it is the one that brings it here, so
+        it would otherwise stomp the next session's ring, drain its mic queue
+        and reset its clock state. Each step that blocks is followed by a
+        fence check — the R read's own backoff bookkeeping and each stomp
+        write included — and a superseded worker returns None and touches
+        nothing more."""
+
+        def current() -> bool:
+            return not self._superseded(generation)
+
+        read_started = time.monotonic()
+        r_addr = self.servo.read_r_promptly(
+            self.chunk_size / self.effective_rate,
+            STALL_REANCHOR_READ_BUDGET_FRAC * HOST_DMA_SERVO_TARGET_GAP / self.effective_rate,
+            current,
+        )
+        read_travel = int((time.monotonic() - read_started) * self.effective_rate)
+        if self._superseded(generation):
+            return None
+        dropped = 0
+        if self.mic_stream is not None:
+            dropped = self._drain_queue_samples()
+            self._discard_unpushed(dropped, generation=generation)
+        # R's consumption since the missed slot, counting the read: R may be
+        # sampled at the read's end, and a read that outlasts the old lead
+        # otherwise leaves a lap judged as W a ring's worth ahead.
+        behind = int(lag * self.effective_rate) + read_travel
+        if r_addr is not None and not stall_lapped(
+            r_addr, w_head, behind, read_travel + STALL_INSIDE_LEAD_SLACK
+        ):
+            gap = (w_head - r_addr) % RING_BUFFER_SIZE - read_travel
+            inside_lead = (
+                "audio: DAC worker stalled %.2f s, inside its %d-byte lead; "
+                "%d bytes still ahead of the C64's playback"
+            )
+            if dropped:
+                # Lost live input is audible, so it is reported at default
+                # verbosity, through the re-anchor's throttle.
+                self._stall_log.warn(
+                    inside_lead + "; dropped %.2f s of live input",
+                    lag,
+                    gap + behind,
+                    gap,
+                    dropped / self.effective_rate,
+                )
+            else:
+                log.debug(inside_lead, lag, gap + behind, gap)
+            # The refill is a short burst the adaptive loop should not steer on.
+            self.servo.note_disturbance()
+            return StallInsideLead(gap)
+        if r_addr is None:
+            self._stall_log.warn(
+                "audio: DAC worker stalled %.2f s behind the C64's playback "
+                "(a blocked or redialed link); the read pointer could not be read, "
+                "or not in time, so the write head could not be re-anchored",
+                lag,
+            )
+            self.servo.note_disturbance()
+            return None
+        anchor = stall_reanchor(r_addr, self.chunk_size)
+        self._stomp_from(r_addr, anchor, current)
+        if self._superseded(generation):
+            return None
+        lead = (anchor - r_addr) % RING_BUFFER_SIZE
+        # The new lead is all pad: recorded as a landing of NEUTRAL, the clock
+        # subtracts none of it until content lands behind it. Through the
+        # landing record, not the clock: everything landed before the stall
+        # has played, so the clock reaches the landed count here, and the
+        # high-water mark holds it there while the content behind the pad
+        # lands and is played.
+        self._note_ring_landed(generation, lead, lead)
+        self.servo.resync(lead)
+        self._stall_log.warn(
+            "audio: DAC worker stalled %.2f s behind the C64's playback (a blocked "
+            "or redialed link); it replayed its ring meanwhile. Re-anchored the "
+            "write head %d bytes ahead of it%s",
+            lag,
+            lead,
+            f" and dropped {dropped / self.effective_rate:.2f} s of live input" if dropped else "",
+        )
+        return anchor
+
+    def _superseded(self, generation: int) -> bool:
+        """True once the worker started as ``generation`` should stop acting:
+        stop() cleared ``running``, or a later start_* replaced it."""
+        return not self.running or generation != self._worker_generation
 
     def note_playback_disturbance(self) -> None:
         """Re-arm the adaptive NMI-rate loop's warm-up gate after a large playback
@@ -2719,17 +2922,38 @@ class AudioStreamer:
         if silence_output:
             self._stomp_requested = True
 
-    def _stomp_ring(self, write_addr: int) -> None:
+    def _stomp_ring(self, write_addr: int, current: Callable[[], bool]) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the
         pause fast mute. On a bad R read it just returns (the drained queue pads
         the ring to silence within ~1 s regardless). Called only from the worker
-        thread, so write_addr is the live worker-local W."""
+        thread, so write_addr is the live worker-local W.
+
+        ``current`` is the worker's fence: the R read and each stomp write can
+        park past stop()'s join, as the stall re-anchor's can, and a worker
+        superseded meanwhile writes nothing more (see :meth:`_stomp_from`).
+        It is checked before the request is taken, too: a worker already
+        superseded leaves ``_stomp_requested`` alone, because once a later
+        start_* has run, a pause that set it is the next session's."""
+        if not current():
+            return
+        self._stomp_requested = False
         r_addr = self.read_consumer_ptr()
         if r_addr is None:
             return
-        neutral = bytes([self._neutral_byte])
+        self._stomp_from(r_addr, write_addr, current)
+
+    def _stomp_from(self, r_addr: int, write_addr: int, current: Callable[[], bool]) -> None:
+        """NEUTRAL-fill ``(r_addr + guard .. write_addr)`` — the pause stomp's
+        span, and the stall re-anchor's — split at ``RING_BUFFER_END``.
+
+        ``current`` fences the writes: once it is False, the rest are skipped.
+        A wrapped span's second write lands at ``RING_BUFFER_ADDR``, where the
+        next session's prebuffer starts, so a worker superseded during the
+        first must not make it."""
         for addr, ln in stomp_spans(r_addr, write_addr):
-            self.api.write_memory_file(f"{addr:04X}", neutral * ln)
+            if not current():
+                return
+            self._neutral_fill_ring(addr, ln)
 
     def _hardware_teardown_steps(self) -> list[tuple[str, Callable[[], object]]]:
         """The C64-side teardown of a DAC session, in `stop()`'s cutoff order."""
@@ -2762,6 +2986,15 @@ class AudioStreamer:
             )
 
     def stop(self) -> None:
+        # Retire the worker's generation first, and here, not only in the next
+        # _start_worker: the REU-pump and listen-only starts set running back
+        # to True without starting a worker, and start_mic sets it before its
+        # _start_worker bumps. Either way an orphan that outlived the join
+        # below would otherwise read its fence as current again, and drip into
+        # a ring it no longer owns. Under the pad lock, so a landing the orphan
+        # records is either counted before the bump or refused after it.
+        with self._ring_pad_lock:
+            self._worker_generation += 1
         # A listen-only session never touched the NMI/DAC/SID, so writing $D418
         # or the NMI vectors here would be spurious U64 traffic.
         if self._listen_mode:
@@ -2782,12 +3015,6 @@ class AudioStreamer:
         #  - The DAC-bias gate release goes last, so the bias collapse it
         #    starts (release=0 under digi-boost) happens at volume 0.
         self.running = False
-        # Retire the worker here, not only at the next _start_worker:
-        # start_listen and the REU starts set running back to True without
-        # starting one, and a worker still parked in a ring write would read
-        # that as "keep going" and drip into a ring it no longer owns.
-        with self._ring_pad_lock:
-            self._worker_generation += 1
         # The callback stops claiming re-anchors at running=False; the servo
         # must stop posting them before the teardown below can stall.
         if self._mic_lead is not None:
@@ -2815,8 +3042,9 @@ class AudioStreamer:
                 # A ring write on a stalled link can outlast the bounded join,
                 # and the counters cleared just below are still being mutated.
                 # Dropping the reference is safe: the surviving worker is
-                # generation-fenced (see _worker), so the next start_* cannot
-                # resurrect it into a second live writer.
+                # generation-fenced (see _worker, and the bump at the top of
+                # this method), so no later start_* can resurrect it into a
+                # second live writer.
                 log.warning(
                     "audio: worker did not exit within %.1fs; ring writes may still "
                     "be in flight (it will exit when its write returns)",

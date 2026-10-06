@@ -11,6 +11,8 @@ No real U64 and no real sound device — FakeAPI plus a fake `sd` module.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import queue
 import threading
 import time
@@ -31,18 +33,37 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
     SAMPLE_TAP_SIZE,
+    STOMP_GUARD_BYTES,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS
+from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS, cpu_clock
 
 
 def _make(**kw: Any) -> AudioStreamer:
     """Construct a real AudioStreamer (exercising __init__) over a FakeAPI."""
     api = cast(Ultimate64API, FakeAPI())
     return AudioStreamer(api, kw.pop("sample_rate", 8000), kw.pop("system", "NTSC"), **kw)
+
+
+class _SupersedeOnStompRead(AudioStreamer):
+    """An AudioStreamer whose worker is superseded the first time it reads a
+    set pause request: the next scene's start_* landing between a call site's
+    check of the flag and its stomp, deterministically."""
+
+    @property  # type: ignore[override]
+    def _stomp_requested(self) -> bool:
+        requested = bool(self.__dict__.get("_stomp_flag", False))
+        if requested and not self.__dict__.get("_tripped"):
+            self.__dict__["_tripped"] = True
+            self._worker_generation += 1  # the next scene's _start_worker
+        return requested
+
+    @_stomp_requested.setter
+    def _stomp_requested(self, value: bool) -> None:
+        self.__dict__["_stomp_flag"] = value
 
 
 def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> AudioStreamer:
@@ -432,6 +453,357 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             s.running = False
             t.join(timeout=1.0)
 
+    def test_a_worker_superseded_during_its_pacing_read_acts_on_nothing_after_it(self):
+        """The pacing read can park past stop()'s join like a ring write. A
+        worker that gets its reading back after the next start_* must leave
+        straight away: the stall resync and the health line after the read
+        would otherwise act on the next session's ring and counters."""
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        real_read = api.read_memory
+        landed: list[int] = []
+
+        def superseding_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            if address == audio_mod.READ_PTR_LO_ADDR and length == 2:
+                landed.append(len(api.writes))
+                s._worker_generation += 1  # the next scene's _start_worker
+                addr = RING_BUFFER_ADDR + 100
+                return bytes([addr & 0xFF, addr >> 8])
+            return real_read(address, length, timeout)
+
+        api.read_memory = superseding_read
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(landed), 1)
+        self.assertEqual(len(api.writes), landed[0], "wrote after its pacing read")
+        self.assertEqual(s.servo.last_r_reading, -1, "noted the next session's R")
+        self.assertEqual(s._health_last_log, 0.0, "opened the next session's health window")
+
+    def _superseded_at_write(
+        self, s: AudioStreamer, at: int
+    ) -> tuple[list[tuple[int, int]], threading.Thread]:
+        """Run the worker until its ``at``-th ring write (0-based), bumping the
+        generation inside that write as the next scene's _start_worker would,
+        and return ``(queue size, queued samples)`` as they stood then."""
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        seen: list[tuple[int, int]] = []
+
+        def superseding_write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            if len(api.writes) == at + 1:
+                s._worker_generation += 1  # the next scene's _start_worker
+                seen.append((s.q.qsize(), s._queued_samples))
+
+        api.write_memory_file = superseding_write
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        t.join(timeout=2.0)
+        return seen, t
+
+    def test_a_worker_superseded_during_its_collect_does_not_write_the_prebuffer(self):
+        # The collect is the last step before the unsplit prebuffer write; a
+        # worker superseded inside it while running is True again must not
+        # land that chunk in the ring the next session is priming.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        real_collect = s._collect_until
+
+        def superseding_collect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            out = real_collect(*args, **kwargs)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return out
+
+        s._collect_until = superseding_collect  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(cast(Any, s.api).writes, [], "wrote into the next session's ring")
+
+    def test_a_worker_superseded_during_its_stall_resync_skips_the_health_line(self):
+        # A resync superseded in its R read returns None, as an unreadable R
+        # does; the health line after it would reset the next session's window.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        # A pace increment far in the past reads as a stall past the lead.
+        s.servo.next_pace_increment = lambda *a: -10.0  # type: ignore[method-assign]
+        resyncs: list[float] = []
+
+        def superseded_resync(lag, generation, w_head):  # type: ignore[no-untyped-def]
+            resyncs.append(lag)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return None
+
+        health: list[float] = []
+        s._resync_after_stall = superseded_resync  # type: ignore[method-assign]
+        s._maybe_log_health = health.append  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(resyncs), 1)
+        self.assertEqual(health, [], "touched the next session's health window")
+
+    def test_a_worker_superseded_during_a_drip_write_leaves_the_next_session_alone(self):
+        # The steady state splits a chunk into several piece writes, any of
+        # which can park past stop()'s join. The rest of the chunk would land
+        # in the ring the next session is priming, and the collects between
+        # pieces would take that session's audio from its queue.
+        s = _make_worker_streamer()
+        s._halt_quantum = lambda: 8  # type: ignore[method-assign]  # 4 pieces per chunk
+        seen, t = self._superseded_at_write(s, PREBUFFER_CHUNKS)
+        try:
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(cast(Any, s.api).writes), PREBUFFER_CHUNKS + 1)
+        self.assertEqual((s.q.qsize(), s._queued_samples), seen[0])
+
+    def test_a_worker_superseded_during_a_drip_write_collects_no_more(self):
+        # The collect between drip pieces takes from the queue, which by then
+        # is the next session's.
+        s = _make_worker_streamer()
+        s._halt_quantum = lambda: 8  # type: ignore[method-assign]  # 4 pieces per chunk
+        real_collect = s._collect_until
+        stale_collects: list[int] = []
+        start_generation = s._worker_generation
+
+        def spying_collect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if s._worker_generation != start_generation:
+                stale_collects.append(s._worker_generation)
+            return real_collect(*args, **kwargs)
+
+        s._collect_until = spying_collect  # type: ignore[method-assign]
+        seen, t = self._superseded_at_write(s, PREBUFFER_CHUNKS)
+        try:
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(stale_collects, [], "collected from the next session's queue")
+
+    def test_a_worker_superseded_during_a_splice_fill_counts_nothing_landed(self):
+        # The splice's NEUTRAL fill can park like any ring write; past it, the
+        # landed-bytes accounting is the next session's.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+
+        def splicing_pace(*args):  # type: ignore[no-untyped-def]
+            s._flush_epoch += 1  # a flush() lands after the hand-off
+            return 0.001
+
+        s.servo.next_pace_increment = splicing_pace  # type: ignore[method-assign]
+        real_fill = s._neutral_fill_ring
+        real_landed = s._note_ring_landed
+        landed: list[tuple[int, int]] = []
+        landed_at_fill: list[int] = []
+
+        def superseding_fill(addr: int, n: int) -> None:
+            real_fill(addr, n)
+            s._worker_generation += 1  # the next scene's _start_worker
+            landed_at_fill.append(len(landed))
+
+        def spying_landed(generation: int, n: int, pad: int) -> None:
+            landed.append((n, pad))
+            real_landed(generation, n, pad)
+
+        s._neutral_fill_ring = superseding_fill  # type: ignore[method-assign]
+        s._note_ring_landed = spying_landed  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(landed_at_fill), 1, "never reached the splice fill")
+        self.assertEqual(len(landed), landed_at_fill[0], "counted the fill as landed")
+
+    def test_a_worker_superseded_during_its_last_prebuffer_write_does_not_arm(self):
+        # Arming after a parked prebuffer write would start the NMI on a ring
+        # the next session has not primed, and reset its servo and health.
+        s = _make_worker_streamer()
+        armed: list[bool] = []
+        s.nmi.start = lambda **kw: armed.append(True)  # type: ignore[method-assign]
+        s._health_last_log = 123.0
+        seen, t = self._superseded_at_write(s, PREBUFFER_CHUNKS - 1)
+        try:
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(armed, [], "armed the NMI for the next session")
+        self.assertEqual(s._health_last_log, 123.0)
+        self.assertEqual((s.q.qsize(), s._queued_samples), seen[0])
+
+    def _superseded_in_a_wrapped_pause_stomp(self, *, in_pacing_read: bool) -> list[str]:
+        """Run the worker with R near the ring's end, ask for the pause stomp
+        inside its last prebuffer write or inside its first pacing read, and
+        bump the generation inside the stomp's first write. Return every
+        write's address from that one on."""
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        r_offset = audio_mod.RING_BUFFER_SIZE - 1000
+        r_addr = RING_BUFFER_ADDR + r_offset
+        real_read = api.read_memory
+        real_write = api.write_memory_file
+
+        def read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            if address == audio_mod.READ_PTR_LO_ADDR and length == 2:
+                if in_pacing_read and len(api.writes) == PREBUFFER_CHUNKS:
+                    s._stomp_requested = True  # the playlist's pause
+                return bytes([r_addr & 0xFF, r_addr >> 8])
+            return real_read(address, length, timeout)
+
+        first_span = f"{r_addr + STOMP_GUARD_BYTES:04X}"
+        superseded_at: list[int] = []
+
+        def write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            if not in_pacing_read and len(api.writes) == PREBUFFER_CHUNKS:
+                s._stomp_requested = True  # the playlist's pause
+            if addr == first_span and not superseded_at:
+                superseded_at.append(len(api.writes) - 1)
+                s._worker_generation += 1  # the next scene's _start_worker
+
+        api.read_memory = read
+        api.write_memory_file = write
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(len(superseded_at), 1, "the pause stomp never ran")
+        return [key for key, _ in api.writes[superseded_at[0] :]]
+
+    def test_a_worker_superseded_in_its_priming_pause_stomp_skips_the_wrapped_write(self):
+        # Asked during the last prebuffer write, the stomp runs on the next
+        # iteration's own check, against the chunk in hand.
+        writes = self._superseded_in_a_wrapped_pause_stomp(in_pacing_read=False)
+        self.assertEqual(len(writes), 1, f"wrote into the next session's ring: {writes}")
+
+    def test_a_worker_superseded_in_its_steady_pause_stomp_skips_the_wrapped_write(self):
+        # Asked during the pacing read after a hand-off, the stomp runs from
+        # the pending path, against the chunk about to go out.
+        writes = self._superseded_in_a_wrapped_pause_stomp(in_pacing_read=True)
+        self.assertEqual(len(writes), 1, f"wrote into the next session's ring: {writes}")
+
+    def _superseded_as_it_reads_the_stomp_request(self, *, steady: bool) -> AudioStreamer:
+        """Run the worker, set the pause request where one call site will see
+        it next (``steady``: the pending path's; else the chunk-in-hand path's,
+        on the first iteration after the arm), and supersede the worker at the
+        moment that site reads the request. Return the streamer afterwards."""
+        s = _make_worker_streamer()
+        s.__class__ = _SupersedeOnStompRead
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+
+        def ask() -> None:
+            if not s.__dict__.get("_asked"):
+                s.__dict__["_asked"] = True
+                s._stomp_requested = True  # the next session's pause
+
+        if steady:
+
+            def pace(*args):  # type: ignore[no-untyped-def]
+                ask()  # after the hand-off, so the pending path sees it
+                return 0.001
+
+            s.servo.next_pace_increment = pace  # type: ignore[method-assign]
+        else:
+            s.nmi.start = lambda **kw: ask()  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertTrue(s.__dict__.get("_tripped"), "no call site read the request")
+        return s
+
+    def test_a_superseded_worker_leaves_the_pending_paths_stomp_request(self):
+        s = self._superseded_as_it_reads_the_stomp_request(steady=True)
+        self.assertTrue(s._stomp_requested, "took the next session's pause request")
+
+    def test_a_superseded_worker_leaves_the_chunk_in_hand_paths_stomp_request(self):
+        s = self._superseded_as_it_reads_the_stomp_request(steady=False)
+        self.assertTrue(s._stomp_requested, "took the next session's pause request")
+
+    def test_a_worker_superseded_during_the_arm_leaves_the_next_session_alone(self):
+        # The arm reads R and writes the CIA, so it can park as well; past it,
+        # the servo reset and the health window are the next session's.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+
+        def superseding_start(**kw):  # type: ignore[no-untyped-def]
+            s._worker_generation += 1  # the next scene's _start_worker
+
+        s.nmi.start = superseding_start  # type: ignore[method-assign]
+        s._health_last_log = 123.0
+        resets: list[int] = []
+        s.servo.reset_for_consumer_start = resets.append  # type: ignore[method-assign]
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(resets, [], "reset the next session's servo")
+        self.assertEqual(s._health_last_log, 123.0)
+
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.
@@ -449,6 +821,31 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             t.start()
             t.join(timeout=1.0)
         self.assertFalse(s.running)
+        self.assertTrue(any("audio worker crashed" in m for m in cm.output))
+
+    def test_a_superseded_worker_crashing_leaves_the_next_session_running(self):
+        # A write parked on a stalled link usually raises when it gives up;
+        # by then the next start_* owns `running`, and clearing it would
+        # fence that session's worker out.
+        s = _make_worker_streamer(chunk_size=8)
+        s.q.put(bytes([7] * 8))
+        s._queued_samples += 8
+
+        def superseded_then_boom(addr: str, data: bytes) -> None:
+            s._worker_generation += 1  # the next scene's _start_worker
+            raise RuntimeError("dma exploded")
+
+        cast(Any, s).api.write_memory_file = superseded_then_boom
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+            s.running = True
+            t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+            t.start()
+            t.join(timeout=1.0)
+        try:
+            self.assertFalse(t.is_alive())
+            self.assertTrue(s.running, "an orphan's crash stopped the next session")
+        finally:
+            s.running = False
         self.assertTrue(any("audio worker crashed" in m for m in cm.output))
 
 
@@ -720,6 +1117,937 @@ class NmiStallWatchdogTest(unittest.TestCase):
         s.stop()
         self.assertFalse(s.servo.stall_warned)
         self.assertEqual(s.servo.r_stall_chunks, 0)
+
+
+class SlowReadPointerTest(unittest.TestCase):
+    """The R read sits inside the paced loop. One slower than the time the
+    loop can spare is not paced by, and stops the servo reading for a backoff
+    instead of being paid for again every chunk."""
+
+    CHUNK_PERIOD = 0.085
+
+    def _streamer(self, read_s: float) -> tuple[AudioStreamer, SleepDrivenClock, mock.MagicMock]:
+        clock = SleepDrivenClock()
+        s = AudioStreamer(cast(Ultimate64API, FakeAPI()), 12000, "NTSC", host_dma_servo=True)
+        self.read_s = read_s
+
+        def read() -> int:
+            clock.sleep(self.read_s)
+            return audio_mod.RING_BUFFER_ADDR
+
+        reader = mock.MagicMock(side_effect=read)
+        patcher = mock.patch.object(audio_rate_mod, "time", clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        reader_patch = mock.patch.object(s, "read_consumer_ptr", reader)
+        reader_patch.start()
+        self.addCleanup(reader_patch.stop)
+        return s, clock, reader
+
+    def test_slow_read_is_not_paced_by_and_holds_off(self):
+        s, clock, reader = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 1000  # far off target: servo would act
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            period = s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(period, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.gap_last, -1, "a late R reached the gap servo")
+        self.assertIn("holding the pace correction", cm.output[0])
+        # Inside the holdoff the servo does not read at all.
+        clock.sleep(0.5)
+        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(reader.call_count, 1)
+
+    def test_holdoff_doubles_while_reads_stay_slow_and_resets_on_a_prompt_one(self):
+        s, clock, _ = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        holdoffs = []
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG"):
+            for _ in range(5):
+                s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+                holdoffs.append(s.servo.read_holdoff_s)
+                clock.sleep(s.servo.read_holdoff_s)
+        self.assertEqual(holdoffs, [1.0, 2.0, 4.0, 8.0, 8.0])
+        self.assertEqual(s.servo.slow_reads, 5)
+        self.read_s = 0.01
+        s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.read_s = 0.1
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.read_holdoff_s, 1.0, "a prompt read did not reset the backoff")
+
+    def test_slow_read_holds_the_standing_correction(self):
+        # The integral term is the bus-halt drift the servo has learned; a
+        # bare chunk_period would drop it and let W walk off R again.
+        s, clock, _ = self._streamer(read_s=0.1)
+        s.servo.integ = 20000.0
+        held = audio_rate_mod.servo_hold_period(20000.0, chunk_period=self.CHUNK_PERIOD)
+        self.assertGreater(held, self.CHUNK_PERIOD)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            self.assertEqual(s.servo.next_pace_increment(0x4000, self.CHUNK_PERIOD), held)
+        clock.sleep(0.2)
+        self.assertEqual(s.servo.next_pace_increment(0x4000, self.CHUNK_PERIOD), held)
+
+    def test_prompt_read_paces(self):
+        s, _, _ = self._streamer(read_s=0.01)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 1000
+        with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
+            period = s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertNotEqual(period, self.CHUNK_PERIOD)
+        self.assertEqual(s.servo.gap_last, 1000)
+
+    def test_a_new_consumer_start_drops_the_holdoff(self):
+        # The next scene's consumer must not inherit the last one's backoff.
+        s, _, reader = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        s.servo.reset_for_consumer_start(2048)
+        # Still slow, so the backoff it arms shows what it doubled from: a
+        # prompt read would zero read_holdoff_s itself and hide a stale one.
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertEqual(reader.call_count, 2, "the old holdoff skipped the new consumer's read")
+        self.assertEqual(
+            s.servo.read_holdoff_s, 1.0, "the new consumer's backoff doubled the old one"
+        )
+
+    def test_the_slow_read_warning_rearms_after_stop(self):
+        s, _, _ = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        s.servo.reset_after_stop()
+        s.servo.reset_for_consumer_start(2048)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+        self.assertIn("1 slow so far", cm.output[0])
+
+    def test_a_pacing_read_returning_to_the_next_session_leaves_its_servo_alone(self):
+        # A worker parked in this read can outlive stop() and the next
+        # start_*. Its reading, slow or prompt, then belongs to nobody: it
+        # must not warn into the next scene, spend that scene's warning, arm
+        # or end its backoff, or reach the gap servo and the watchdog.
+        for read_s in (0.1, 0.01):
+            with self.subTest(read_s=read_s):
+                s, _, _ = self._streamer(read_s)
+                s.servo.read_holdoff_s = 4.0
+                s.servo.integ = 20000.0
+                held = audio_rate_mod.servo_hold_period(20000.0, chunk_period=self.CHUNK_PERIOD)
+                with self.assertNoLogs("c64cast.audio", level="DEBUG"):
+                    period = s.servo.next_pace_increment(
+                        audio_mod.RING_BUFFER_ADDR + 1000, self.CHUNK_PERIOD, lambda: False
+                    )
+                self.assertEqual(period, held)
+                servo = s.servo
+                self.assertEqual(
+                    (servo.slow_reads, servo.slow_read_warned, servo.read_holdoff_s),
+                    (0, False, 4.0),
+                )
+                self.assertEqual((servo.gap_last, servo.last_r_reading), (-1, -1))
+                self.assertEqual(servo.integ, 20000.0)
+
+    def test_a_dead_consumer_behind_a_slow_server_still_warns(self):
+        # Every reading is slow, so none is paced by, but R frozen across
+        # them is still a stalled consumer the watchdog has to report.
+        s, clock, _ = self._streamer(read_s=0.1)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        read_at = []
+        with self.assertLogs(audio_rate_mod.log, level="DEBUG") as cm:
+            for _ in range(audio_rate_mod.NMI_STALL_WARN_CHUNKS + 1):
+                s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD)
+                read_at.append(clock.monotonic())
+                clock.sleep(s.servo.read_holdoff_s)
+        self.assertTrue(s.servo.stall_warned)
+        stalled = [line for line in cm.output if "NMI consumer stalled" in line]
+        self.assertEqual(len(stalled), 1)
+        # The readings were a backoff apart, so the warning gives the time R
+        # stood still (tens of seconds here), not a count of chunks.
+        self.assertIn(f"for {read_at[-1] - read_at[0]:.1f} s", stalled[0])
+
+
+class _StallingConsumerAPI(FakeAPI):
+    """A FakeAPI with an NMI consumer behind it, on the test's virtual clock.
+
+    R advances at the streamer's effective rate from the moment the consumer
+    starts, and every ring byte remembers whether it has been played since it
+    was written, so a write over one that has not is counted. Each DMA write
+    costs a few ms of virtual time and one of them, past ``stall_at``, blocks
+    for ``stall_s`` (a link that blocked or redialed)."""
+
+    WRITE_S = 0.0052
+    READ_S = 0.008
+
+    def __init__(
+        self,
+        clock: SleepDrivenClock,
+        stall_at: float,
+        stall_s: float,
+        consumer_scale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        # The consumer's rate as a fraction of effective_rate: bus halts make
+        # a real one run slow, which an open-loop worker never corrects.
+        self.consumer_scale = consumer_scale
+        self.profile = dataclasses.replace(self.profile, max_write_rate_hz=200.0)
+        self.clock = clock
+        self.stall_at = stall_at
+        self.stall_s = stall_s
+        self.streamer: AudioStreamer | None = None
+        self.t0: float | None = None
+        self.consumed = 0
+        self.unplayed = bytearray(audio_mod.RING_BUFFER_SIZE)
+        self.overwritten = 0
+        # (when, bytes) for each write that landed on audio not yet played.
+        self.overwrites: list[tuple[float, int]] = []
+        self.write_times: list[float] = []
+        self.stalled_until: float | None = None
+
+    def _consume(self) -> None:
+        if self.t0 is None or self.streamer is None:
+            return
+        rate = self.streamer.effective_rate * self.consumer_scale
+        target = int((self.clock.monotonic() - self.t0) * rate)
+        while self.consumed < target:
+            self.unplayed[self.consumed % audio_mod.RING_BUFFER_SIZE] = 0
+            self.consumed += 1
+
+    def _spend(self, seconds: float) -> None:
+        self._consume()
+        self.clock.sleep(seconds)
+        self._consume()
+
+    def write_memory_file(self, addr, data):  # type: ignore[no-untyped-def]
+        cost = self.WRITE_S
+        due = self.t0 is not None and self.clock.monotonic() - self.t0 >= self.stall_at
+        if due and self.stalled_until is None:
+            cost = self.stall_s
+            self.stalled_until = self.clock.monotonic() + cost
+        self._spend(cost)
+        base = int(addr, 16) - audio_mod.RING_BUFFER_ADDR
+        hit = 0
+        for i in range(len(data)):
+            a = (base + i) % audio_mod.RING_BUFFER_SIZE
+            hit += self.unplayed[a]
+            self.unplayed[a] = 1
+        self.overwritten += hit
+        if hit:
+            self.overwrites.append((self.clock.monotonic(), hit))
+        self.write_times.append(self.clock.monotonic())
+        super().write_memory_file(addr, data)
+
+    def write_regs(self, base, *vals):  # type: ignore[no-untyped-def]
+        self._spend(self.WRITE_S)
+        super().write_regs(base, *vals)
+
+    def read_memory(self, address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+        self._spend(self.READ_S)
+        if address == audio_mod.READ_PTR_LO_ADDR and length == 2 and self.t0 is not None:
+            r = audio_mod.RING_BUFFER_ADDR + self.consumed % audio_mod.RING_BUFFER_SIZE
+            return bytes([r & 0xFF, r >> 8])
+        return super().read_memory(address, length, timeout)
+
+
+class _AlwaysFullQueue:
+    """A decoder that is always ahead: every get returns a blob at once."""
+
+    def get(self, timeout=None):  # type: ignore[no-untyped-def]
+        return bytes([3] * 512)
+
+    get_nowait = get
+
+
+class StallResyncTest(unittest.TestCase):
+    """A DMA link that blocks for longer than the ring lead leaves the worker
+    far behind its absolute schedule. Catching that up sprinted writes at the
+    link's limit until W lapped R and overwrote audio not yet played; the
+    worker now re-anchors W ahead of R and restarts the schedule instead."""
+
+    RUN_S = 4.0
+
+    def _run(
+        self, stall_s: float, *, servo: bool = True, consumer_scale: float = 1.0
+    ) -> tuple[AudioStreamer, _StallingConsumerAPI]:
+        clock = SleepDrivenClock()
+        api = _StallingConsumerAPI(
+            clock, stall_at=1.0, stall_s=stall_s, consumer_scale=consumer_scale
+        )
+        s = AudioStreamer(cast(Ultimate64API, api), 12000, "NTSC")
+        s.host_dma_servo = servo
+        api.streamer = s
+        s.q = cast(Any, _AlwaysFullQueue())
+
+        def start(**_kw: Any) -> None:
+            s.nmi.latch = s.nmi.nominal_latch()
+            s.nmi.started = True
+            api.t0 = clock.monotonic()
+
+        s.nmi.start = start  # type: ignore[method-assign]
+        real_write = api.write_memory_file
+
+        def write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            if api.t0 is not None and clock.monotonic() - api.t0 > self.RUN_S:
+                s.running = False
+
+        api.write_memory_file = write  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+        ):
+            s.running = True
+            s._worker(s._worker_generation)
+        return s, api
+
+    def test_a_long_stall_resyncs_instead_of_lapping(self):
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            s, api = self._run(stall_s=1.5)
+        self.assertTrue(s.running is False and api.stalled_until is not None)
+        self.assertIn("stalled", cm.output[0])
+        self.assertIn("Re-anchored", cm.output[0])
+        # The splice drops at most the rest of the chunk that was in the air,
+        # not seconds of audio the consumer had yet to play.
+        self.assertLessEqual(api.overwritten, s.chunk_size)
+        # And no sprint: the second after the stall writes at the steady rate,
+        # not the link's limit (~94/s steady here; it was ~160/s).
+        assert api.stalled_until is not None
+        after = [t for t in api.write_times if 0 < t - api.stalled_until <= 1.0]
+        self.assertLess(len(after), 110)
+
+    def test_reanchor_is_on_the_chunk_grid_at_least_the_lead_ahead(self):
+        size, base = audio_mod.RING_BUFFER_SIZE, audio_mod.RING_BUFFER_ADDR
+        lead = audio_mod.HOST_DMA_SERVO_TARGET_GAP
+        for r in (0, 1, 1023, 1024, 4095, 4096, 7000, size - 1):
+            anchor = audio_mod.stall_reanchor(base + r, 1024)
+            self.assertEqual((anchor - base) % 1024, 0, r)
+            self.assertTrue(base <= anchor < base + size, r)
+            self.assertTrue(lead <= (anchor - base - r) % size < lead + 1024, r)
+
+    def _backlogged(self, api: FakeAPI, *, live: bool) -> AudioStreamer:
+        s = AudioStreamer(cast(Ultimate64API, api), 12000, "NTSC")
+        if live:
+            s.mic_stream = object()
+        for _ in range(4):
+            s.q.put(bytes([3] * 512))
+        s._pushed_count = s._queued_samples = 2048
+        # As the worker that calls it sees the streamer: running, and its own
+        # generation current.
+        s.running = True
+        return s
+
+    def test_a_live_backlog_is_dropped_at_the_resync(self):
+        s = self._backlogged(_RFakeAPI([100]), live=True)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            anchor = s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertIsNotNone(anchor)
+        self.assertTrue(s.q.empty())
+        self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
+        self.assertIn(f"dropped {2048 / s.effective_rate:.2f} s of live input", cm.output[0])
+
+    def test_a_decoded_backlog_is_kept_at_the_resync(self):
+        s = self._backlogged(_RFakeAPI([100]), live=False)
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.q.qsize(), 4)
+        self.assertEqual(s._queued_samples, 2048)
+
+    def test_the_clock_never_steps_back_across_a_resync(self):
+        # The re-anchor NEUTRAL-fills a fresh lead. Everything landed before
+        # the stall has played, so the clock reaches the landed count, and it
+        # holds there while the content behind the pad lands and is played.
+        # Writing the lead as a bare tail pad stepped the clock ≈0.31 s
+        # forward and then back once content landed behind it.
+        s = self._backlogged(_RFakeAPI([100]), live=False)
+        generation = s._worker_generation
+        chunk = s.chunk_size
+        rate = s.effective_rate
+
+        def land(n: int) -> None:
+            s._pushed_count += n
+            s._note_ring_landed(generation, n, 0)
+
+        for _ in range(8):
+            land(chunk)
+        s.servo.ring_lead = float(chunk)  # a gap shorter than the new lead
+        positions = [s.position_seconds()]
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            anchor = s._resync_after_stall(1.5, generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertIsNotNone(anchor)
+        landed = s._pushed_count - s._queued_samples
+        at_resync = s.position_seconds()
+        positions.append(at_resync)
+        for _ in range(int(s.servo.ring_lead) // chunk + 3):
+            land(chunk)
+            positions.append(s.position_seconds())
+        self.assertEqual(positions, sorted(positions), "the clock stepped back")
+        self.assertAlmostEqual(at_resync, landed / rate)
+        self.assertGreater(positions[-1], at_resync, "the clock stalled past the pad")
+
+    def test_no_r_read_inside_a_holdoff_armed_by_a_read_too_slow_to_anchor_on(self):
+        # The holdoff says reads are slower than the anchor can stand right
+        # now; another one would block the worker that long again and come
+        # back with an R that moved on.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.servo.read_holdoff_until = audio_rate_mod.time.monotonic() + 60.0
+        s.servo.last_slow_read_s = 0.4
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
+        self.assertEqual(api.r_reads, 0)
+        self.assertEqual(api.writes, [], "re-anchored without a read of R")
+        self.assertIn("could not be re-anchored", cm.output[0])
+
+    def test_a_read_too_slow_to_pace_by_is_still_anchored_on(self):
+        # 0.1 s is over the servo's ≈43 ms pacing budget, so its backoff is
+        # running, but R moves ≈1.2 KB in that time against a 4 KB lead: the
+        # anchor is still ahead of the live R. Falling back to snap-only here
+        # left W a near-lap behind R, and the ring lapped later in the scene.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.servo.read_holdoff_until = clock.monotonic() + 60.0
+        s.servo.last_slow_read_s = 0.1
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.1)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            anchor = s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(api.r_reads, 1)
+        self.assertEqual(
+            anchor, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, s.chunk_size)
+        )
+        self.assertTrue(any("Re-anchored" in line for line in cm.output))
+
+    def test_a_prompt_read_inside_a_backoff_ends_it(self):
+        # The re-anchor reads through a backoff armed by a read it can still
+        # anchor on. When that read comes back prompt, the server is fast
+        # again, and the servo must not sit out the rest of a hold of up to
+        # 8 s with its pace correction frozen.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.servo.read_holdoff_until = audio_rate_mod.time.monotonic() + 60.0
+        s.servo.read_holdoff_s = 8.0
+        s.servo.last_slow_read_s = 0.1
+        with self.assertLogs("c64cast.audio", level="WARNING"):
+            s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(api.r_reads, 1)
+        self.assertFalse(s.servo.reads_held_off(), "a prompt read left the servo held off")
+        self.assertEqual(s.servo.read_holdoff_s, 0.0)
+
+    def test_a_slow_r_read_is_not_anchored_on(self):
+        # R read over budget: by the time it returns the consumer has moved
+        # on by up to the read's duration, and at 0.4 s that is more than the
+        # lead the anchor would put between them.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.4)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
+            self.assertTrue(s.servo.reads_held_off(), "a slow read did not arm the backoff")
+            # The backoff that read armed is one the next stall must not read
+            # through: it would block the worker another 0.4 s for nothing.
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
+        self.assertEqual(api.r_reads, 1)
+        self.assertEqual(api.writes, [], "re-anchored on a slow read of R")
+        self.assertTrue(any("could not be re-anchored" in line for line in cm.output))
+        self.assertTrue(any("holding the pace correction" in line for line in cm.output))
+
+    def test_a_slow_r_read_with_the_servo_off_claims_no_pace_correction(self):
+        # Servo off, the re-anchor is the only reader of R: the slow-read
+        # warning must not say a pace correction is being held.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.host_dma_servo = False
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.4)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs(audio_rate_mod.log, level="WARNING") as cm,
+            self.assertLogs(audio_mod.log, level="WARNING"),
+        ):
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
+        self.assertIn("not reading it again", cm.output[0])
+        self.assertNotIn("pace correction", cm.output[0])
+
+    def test_with_the_servo_off_a_read_within_the_anchor_budget_is_not_slow(self):
+        # Servo off, there is no pacing budget: a 0.1 s read is anchored on, so
+        # it must neither warn that it was over a budget nor arm a backoff that
+        # claims R is not read again.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.host_dma_servo = False
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.1)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            anchor = s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            self.assertFalse(s.servo.reads_held_off(), "an anchored-on read armed the backoff")
+        self.assertEqual(
+            anchor, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, s.chunk_size)
+        )
+        self.assertFalse(any("over the" in line for line in cm.output), cm.output)
+
+    def _superseded_during(self, op: str, r_offset: int = 100) -> tuple[AudioStreamer, _RFakeAPI]:
+        """A live backlogged streamer whose worker is replaced by a stop() and
+        a restart while it is parked in ``op`` (the R read, or a stomp write),
+        as when that call outlives stop()'s bounded join."""
+        api = _RFakeAPI([r_offset])
+        s = self._backlogged(api, live=True)
+        generation = s._worker_generation
+        real = getattr(api, op)
+
+        def superseding(*args, **kwargs):  # type: ignore[no-untyped-def]
+            out = real(*args, **kwargs)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return out
+
+        setattr(api, op, superseding)
+        s._note_ring_landed(generation, 512, 77)
+        s.servo.ring_lead = 1234.0
+        self.assertIsNone(s._resync_after_stall(1.5, generation, audio_mod.RING_BUFFER_ADDR))
+        return s, api
+
+    def test_a_worker_superseded_during_the_r_read_leaves_the_next_session_alone(self):
+        s, api = self._superseded_during("read_memory")
+        self.assertEqual(api.writes, [], "stomped the next session's ring")
+        self.assertEqual(s.q.qsize(), 4, "drained the next session's mic queue")
+        self.assertEqual(
+            (s._ring_landed_total, list(s._ring_pads), s.servo.ring_lead),
+            (512, [(512, 77)], 1234.0),
+        )
+
+    def test_a_worker_superseded_during_the_stomp_leaves_the_clock_state_alone(self):
+        s, _ = self._superseded_during("write_memory_file")
+        self.assertEqual(
+            (s._ring_landed_total, list(s._ring_pads), s.servo.ring_lead),
+            (512, [(512, 77)], 1234.0),
+        )
+
+    def test_a_worker_superseded_during_a_wrapped_stomp_skips_its_second_write(self):
+        # R this far into the ring puts the stomp span across RING_BUFFER_END,
+        # so its second write lands at RING_BUFFER_ADDR — where the next
+        # session's prebuffer starts.
+        r_offset = audio_mod.RING_BUFFER_SIZE - 1000
+        s, api = self._superseded_during("write_memory_file", r_offset)
+        anchor = audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + r_offset, s.chunk_size)
+        self.assertEqual(
+            len(audio_mod.stomp_spans(audio_mod.RING_BUFFER_ADDR + r_offset, anchor)), 2
+        )
+        self.assertEqual(len(api.writes), 1, "stomped the next session's prebuffer")
+
+    def test_a_worker_superseded_during_a_wrapped_pause_stomp_skips_its_second_write(self):
+        # The pause fast mute stomps the same span shape from the same worker,
+        # and its first write can park past stop()'s join just the same.
+        r_offset = audio_mod.RING_BUFFER_SIZE - 1000
+        api = _RFakeAPI([r_offset])
+        s = self._backlogged(api, live=False)
+        generation = s._worker_generation
+        real_write = api.write_memory_file
+
+        def superseding_write(addr, data):  # type: ignore[no-untyped-def]
+            real_write(addr, data)
+            s._worker_generation += 1  # the next scene's _start_worker
+
+        api.write_memory_file = superseding_write  # type: ignore[method-assign]
+        write_addr = audio_mod.RING_BUFFER_ADDR + 2 * s.chunk_size
+        r_addr = audio_mod.RING_BUFFER_ADDR + r_offset
+        self.assertEqual(len(audio_mod.stomp_spans(r_addr, write_addr)), 2)
+        s._stomp_ring(write_addr, lambda: not s._superseded(generation))
+        self.assertEqual(len(api.writes), 1, "stomped the next session's prebuffer")
+
+    def test_a_superseded_worker_leaves_the_pause_stomp_request_alone(self):
+        # Once a later start_* has run, a pause that set the flag is the next
+        # session's: an orphan that took it would read R, write nothing, and
+        # leave that pause un-muted.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        generation = s._worker_generation
+        s._worker_generation += 1  # the next scene's _start_worker
+        s._stomp_requested = True  # the next scene's pause
+        s._stomp_ring(audio_mod.RING_BUFFER_ADDR, lambda: not s._superseded(generation))
+        self.assertTrue(s._stomp_requested, "took the next session's stomp request")
+        self.assertEqual((api.r_reads, api.writes), (0, []))
+
+    def test_a_current_worker_takes_the_pause_stomp_request(self):
+        # The request is cleared only inside _stomp_ring now; a current worker
+        # that left it set would stomp the ring on every chunk after a pause.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s._stomp_requested = True
+        s._stomp_ring(audio_mod.RING_BUFFER_ADDR + 2048, lambda: True)
+        self.assertFalse(s._stomp_requested, "left the pause request set")
+        self.assertEqual(api.r_reads, 1)
+
+    def _r_read_returning_after_supersession(self, read_s: float) -> AudioStreamer:
+        """A resync whose R read takes ``read_s`` and returns after a stop()
+        and the next start_* have replaced its worker, with the servo state
+        that next session set up."""
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        generation = s._worker_generation
+        s.servo.read_holdoff_s = 4.0
+        real_read = api.read_memory
+
+        def superseding_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(read_s)
+            s._worker_generation += 1  # the next scene's _start_worker
+            return real_read(address, length, timeout)
+
+        api.read_memory = superseding_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertNoLogs("c64cast.audio", level="DEBUG"),
+        ):
+            self.assertIsNone(s._resync_after_stall(1.5, generation, audio_mod.RING_BUFFER_ADDR))
+        self.assertEqual(api.r_reads, 1)
+        return s
+
+    def test_a_slow_r_read_returning_to_the_next_session_leaves_its_backoff_alone(self):
+        # No warning in the next scene, no holdoff it never asked for, and its
+        # own first slow read still warns.
+        servo = self._r_read_returning_after_supersession(0.4).servo
+        self.assertFalse(servo.reads_held_off())
+        self.assertEqual(
+            (servo.slow_reads, servo.slow_read_warned, servo.last_slow_read_s), (0, False, 0.0)
+        )
+        self.assertEqual(servo.read_holdoff_s, 4.0)
+
+    def test_a_prompt_r_read_returning_to_the_next_session_leaves_its_backoff_alone(self):
+        servo = self._r_read_returning_after_supersession(0.0).servo
+        self.assertEqual(servo.read_holdoff_s, 4.0, "reset the next session's backoff")
+
+    def test_a_stopped_worker_does_not_resync(self):
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        s.running = False
+        self.assertIsNone(
+            s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        )
+        self.assertEqual(api.writes, [])
+
+    def test_an_unreadable_r_still_warns_and_does_not_reanchor(self):
+        s = self._backlogged(FakeAPI(), live=False)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            self.assertIsNone(
+                s._resync_after_stall(1.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
+        self.assertIn("could not be re-anchored", cm.output[0])
+
+    def test_a_short_stall_is_caught_up_without_a_resync(self):
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            _, api = self._run(stall_s=0.2)
+        self.assertEqual(api.overwritten, 0)
+
+    def test_a_stall_inside_a_lead_grown_past_the_target_is_ridden_out(self):
+        # Servo off, a consumer 15 % slow: the open-loop lead grows from the
+        # ≈4 KiB it starts at to ≈5.9 KiB by the stall. 0.42 s of stall is
+        # past the 4096 B trigger but R is still ≈1.5 KiB short of W, so a
+        # re-anchor would NEUTRAL-fill that unplayed span. The ring is left
+        # alone instead. (Later the drift laps the ring, as open loop always does;
+        # only the half second after the stall is this test's business.)
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            _, api = self._run(stall_s=0.42, servo=False, consumer_scale=0.85)
+        assert api.stalled_until is not None
+        after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+        self.assertEqual(after, 0)
+        # Topped back up to the target lead, no more and no less: the half
+        # second after writes ≈66, against ≈46 for a bare snap (W left
+        # ≈1.5 KiB ahead) and ≈84 for catching up the whole stall, which
+        # from a lead grown past the target drives W toward a lap.
+        catch_up = [t for t in api.write_times if 0 < t - api.stalled_until <= 0.5]
+        self.assertTrue(56 <= len(catch_up) <= 76, len(catch_up))
+
+    def test_a_stall_inside_the_lead_refills_all_of_the_gap_to_the_target(self):
+        # Same open-loop run: R is ≈1.6 KiB short of W when the stall ends.
+        # The refill owes TARGET_GAP - gap, all of it: 0.3 s on, W−R is
+        # ≈4.8 KiB (the target plus the slow consumer's drift), where owing
+        # half the shortfall left it ≈3.5 KiB, under the target for good.
+        # W and R both start at RING_BUFFER_ADDR, so bytes landed less bytes
+        # played is W−R after each write.
+        leads: list[tuple[float, int]] = []
+        written = [0]
+        real_write = _StallingConsumerAPI.write_memory_file
+
+        def tracking(api: _StallingConsumerAPI, addr: str, data: bytes) -> None:
+            real_write(api, addr, data)
+            written[0] += len(data)
+            leads.append((api.clock.monotonic(), written[0] - api.consumed))
+
+        with mock.patch.object(_StallingConsumerAPI, "write_memory_file", tracking):
+            api, outcomes = self._judged_run(0.42, servo=False, consumer_scale=0.85)
+        self.assertEqual(len(outcomes), 1, outcomes)
+        self.assertIsInstance(outcomes[0], audio_mod.StallInsideLead)
+        assert api.stalled_until is not None
+        lead = [g for t, g in leads if t <= api.stalled_until + 0.3][-1]
+        target = audio_mod.HOST_DMA_SERVO_TARGET_GAP
+        self.assertTrue(target <= lead <= target + 1024, lead)
+
+    def _judged_run(
+        self, stall_s: float, *, servo: bool, consumer_scale: float
+    ) -> tuple[_StallingConsumerAPI, list[object]]:
+        """``_run``, also returning what each stall resync answered."""
+        real = AudioStreamer._resync_after_stall
+        outcomes: list[object] = []
+
+        def judged(s: AudioStreamer, *args: Any) -> object:
+            outcome = real(s, *args)
+            outcomes.append(outcome)
+            return outcome
+
+        with mock.patch.object(AudioStreamer, "_resync_after_stall", judged), quiet_logging():
+            _, api = self._run(stall_s=stall_s, servo=servo, consumer_scale=consumer_scale)
+        return api, outcomes
+
+    def test_a_stall_inside_the_lead_is_judged_once_not_every_catch_up_iteration(self):
+        # Consumer 20 % slow, W still ahead after the stall. Keeping the old
+        # schedule left every catch-up iteration over the trigger, each judged
+        # again with a lag that no longer measured what R ate: servo on, a
+        # 0.5 s stall was judged six times; servo off, a 0.55 s one five
+        # times, the last passing for a lap and re-anchoring with W still
+        # ahead (3344 B of unplayed audio NEUTRAL-filled).
+        for servo, stall_s in ((True, 0.5), (False, 0.55)):
+            with self.subTest(servo=servo, stall_s=stall_s):
+                api, outcomes = self._judged_run(stall_s, servo=servo, consumer_scale=0.8)
+                self.assertEqual(len(outcomes), 1, outcomes)
+                self.assertIsInstance(outcomes[0], audio_mod.StallInsideLead)
+                assert api.stalled_until is not None
+                after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+                self.assertEqual(after, 0)
+
+    def test_a_w_a_few_hundred_bytes_ahead_of_r_is_left_alone(self):
+        # Servo on, consumer 20 % slow, 0.55 s stall: W is ≈690 B ahead of R
+        # when R is read. A whole-chunk slack counted that as lapped and
+        # NEUTRAL-filled the 656 B of it R had not yet played; past a
+        # quarter-chunk slack it is inside the lead, and nothing is lost.
+        api, outcomes = self._judged_run(0.55, servo=True, consumer_scale=0.8)
+        self.assertEqual(len(outcomes), 1, outcomes)
+        self.assertIsInstance(outcomes[0], audio_mod.StallInsideLead)
+        assert api.stalled_until is not None
+        after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+        self.assertEqual(after, 0)
+
+    def test_a_stall_that_lapped_is_still_reanchored_with_a_slow_consumer(self):
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            _, api = self._run(stall_s=1.5, servo=False, consumer_scale=0.85)
+        self.assertIn("Re-anchored", cm.output[0])
+        assert api.stalled_until is not None
+        after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+        self.assertLessEqual(after, 1024)
+
+    def test_a_stall_just_past_the_lead_is_judged_against_the_landed_head(self):
+        # Servo off: 0.4 s of stall carries R a few hundred bytes past the
+        # ≈4.1 KiB open-loop lead. Judged against write_addr, a chunk past the
+        # last byte that landed, R reads as still short of W, the worker
+        # catches up instead of re-anchoring, and the catch-up overwrites
+        # ≈1.7 KiB of audio not yet played.
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            s, api = self._run(stall_s=0.4, servo=False)
+        self.assertIn("Re-anchored", cm.output[0])
+        assert api.stalled_until is not None
+        after = sum(n for t, n in api.overwrites if t <= api.stalled_until + 0.5)
+        self.assertLessEqual(after, s.chunk_size // 4)
+
+    def test_the_resync_leaves_a_ring_r_has_not_reached_alone(self):
+        # R at offset 100 with W 2000 B ahead of it after 0.4 s (4800 B) of
+        # stall: the lead was 6800 B, and W is still ahead.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        clock = SleepDrivenClock()
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs(audio_mod.log, level="DEBUG") as cm,
+        ):
+            result = s._resync_after_stall(
+                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 2100
+            )
+        self.assertEqual(result, audio_mod.StallInsideLead(2000))
+        self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
+        self.assertEqual(s.q.qsize(), 4, "dropped a decoded backlog")
+        self.assertTrue(all(r.levelno < logging.WARNING for r in cm.records), cm.output)
+        self.assertFalse(any("live input" in line for line in cm.output), cm.output)
+        # The refill burst is a disturbance the adaptive rate loop sits out.
+        self.assertGreater(s.servo.warmup_until, clock.monotonic())
+
+    def test_a_live_backlog_is_dropped_when_r_has_not_reached_w_too(self):
+        # Same stall inside the lead, from a mic: played late, its backlog
+        # would add that much latency for the rest of the session.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=True)
+        clock = SleepDrivenClock()
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs(audio_mod.log, level="DEBUG") as cm,
+        ):
+            result = s._resync_after_stall(
+                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 2100
+            )
+        self.assertEqual(result, audio_mod.StallInsideLead(2000))
+        self.assertEqual(api.writes, [], "NEUTRAL-filled audio R has not played")
+        self.assertTrue(s.q.empty())
+        self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
+        # The four 512-byte blobs _backlogged queued, in seconds of playback.
+        # Lost mic audio is audible, so the line is a WARNING, as on the
+        # re-anchor path, and the only record the stall logs.
+        dropped = f"dropped {2048 / s.effective_rate:.2f} s of live input"
+        self.assertEqual(len(cm.records), 1, cm.output)
+        self.assertEqual(cm.records[0].levelno, logging.WARNING, cm.output)
+        self.assertIn(dropped, cm.output[0])
+
+    def test_a_second_live_drop_inside_the_lead_is_throttled(self):
+        # The drop shares the re-anchor's throttle: a stall that recurs
+        # within its interval adds no second WARNING.
+        api = _RFakeAPI([100, 100])
+        s = self._backlogged(api, live=True)
+        clock = SleepDrivenClock()
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs(audio_mod.log, level="DEBUG") as cm,
+        ):
+            for _ in range(2):
+                s.q.put(b"\x80" * 512)
+                s._queued_samples += 512
+                s._pushed_count += 1
+                s._resync_after_stall(0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 2100)
+        warnings = [r for r in cm.records if r.levelno >= logging.WARNING]
+        self.assertEqual(len(warnings), 1, cm.output)
+
+    def test_a_w_ahead_by_less_than_r_moves_while_read_counts_as_lapped(self):
+        # 0.1 s of read carries R 1200 B on: a W 1400 B ahead when R was
+        # sampled is within the slack of it by the time the answer is used.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.1)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            result = s._resync_after_stall(
+                0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 1500
+            )
+        self.assertEqual(result, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, 1024))
+        self.assertTrue(any("Re-anchored" in line for line in cm.output))
+
+    def test_the_gap_left_inside_the_lead_is_net_of_r_travel_during_the_read(self):
+        # W 3000 B ahead when R was sampled, 0.1 s of read, 0.2 s of stall
+        # (an old lead of ≈6.6 KiB): what the worker tops up to the target
+        # lead is measured from where R is now.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.1)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING"),  # the slow read's
+        ):
+            result = s._resync_after_stall(
+                0.2, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 3100
+            )
+        assert isinstance(result, audio_mod.StallInsideLead)
+        self.assertAlmostEqual(result.gap, 3000 - 0.1 * s.effective_rate, delta=2)
+
+    def test_the_resync_reanchors_once_r_has_passed_w(self):
+        # Same R, but W 100 B *behind* it: R passed W, and the ring it plays
+        # until W gets back ahead is a lap old.
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            result = s._resync_after_stall(0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(result, audio_mod.stall_reanchor(audio_mod.RING_BUFFER_ADDR + 100, 1024))
+
+    def test_stall_lapped_splits_at_a_ring_of_gap_plus_stall(self):
+        base, size = audio_mod.RING_BUFFER_ADDR, audio_mod.RING_BUFFER_SIZE
+        r = base + 100
+        self.assertFalse(audio_mod.stall_lapped(r, r + 1000, 4800, 0))
+        self.assertFalse(audio_mod.stall_lapped(r, r + 1000, size - 1001, 0))
+        self.assertTrue(audio_mod.stall_lapped(r, r + 1000, size - 1000, 0))
+        self.assertTrue(audio_mod.stall_lapped(r, r - 100, 4800, 0))
+        # Several laps: any gap, W is long behind.
+        self.assertTrue(audio_mod.stall_lapped(r, r + 1000, 3 * size, 0))
+        # A gap under the slack R covers while being read counts as lapped.
+        self.assertFalse(audio_mod.stall_lapped(r, r + 1000, 4800, 1000))
+        self.assertTrue(audio_mod.stall_lapped(r, r + 1000, 4800, 1001))
+
+    def test_a_read_that_outlasts_the_old_lead_is_still_a_lap(self):
+        # A live lead of ≈2.2 KiB, then a 0.05 s stall and a 0.25 s read
+        # (≈3.6 KiB of consumption): R passed W during the read. Counting
+        # only the stall as consumption, the ≈6.8 KiB gap read as W still
+        # ahead, by ≈3.8 KiB once the read's travel came off.
+        clock = SleepDrivenClock()
+        api = _RFakeAPI([100])
+        s = self._backlogged(api, live=False)
+        real_read = api.read_memory
+
+        def slow_read(address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+            clock.sleep(0.25)
+            return real_read(address, length, timeout)
+
+        api.read_memory = slow_read  # type: ignore[method-assign]
+        w_head = audio_mod.RING_BUFFER_ADDR + (100 + 1024 + 600 - 3000) % audio_mod.RING_BUFFER_SIZE
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+            self.assertLogs("c64cast.audio", level="WARNING") as cm,
+        ):
+            result = s._resync_after_stall(0.05, s._worker_generation, w_head)
+        self.assertNotIsInstance(result, audio_mod.StallInsideLead)
+        self.assertTrue(any("Re-anchored" in line for line in cm.output))
 
 
 class NmiRateSafetyTest(unittest.TestCase):
@@ -1015,6 +2343,39 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         torn = audio_mod.RING_BUFFER_ADDR + audio_mod.RING_BUFFER_SIZE // 2 + 16
         s.servo.update_rate_loop(torn)
         self.assertEqual(s.servo.r_rate_ema, -1.0)  # estimate left unseeded
+
+    def test_loop_discards_a_reading_across_a_ring_wrap(self):
+        # A 1.5 s link stall: R really advanced 1.5 s of samples, a lap and a
+        # bit, and the bit is all the modulo shows. Accepted, it reads as a
+        # consumer at a seventh of its rate and the loop speeds the NMI up.
+        s = _make(sample_rate=12000, nmi_rate_adaptive=True)
+        s.nmi.latch = s.nmi.nominal_latch()
+        s.servo.last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s.servo.last_r_time = time.monotonic() - 1.5
+        s.servo.r_rate_ema = -1.0
+        advanced = round(1.5 * s.effective_rate) % audio_mod.RING_BUFFER_SIZE
+        self.assertLess(advanced, audio_mod.RING_BUFFER_SIZE // 2)  # passes the torn guard
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + advanced)
+        self.assertEqual(s.servo.r_rate_ema, -1.0)
+        self.assertEqual(s.servo.r_rate_min, -1.0)
+
+    def test_wrap_bound_uses_the_fastest_latch_armed_since_the_last_reading(self):
+        # A bitmap -> char mode change at 6 kHz reseeds the latch from the
+        # ceiling to nominal mid-interval. R ran at the ceiling's rate for the
+        # whole 0.65 s, a lap and a bit, but half a ring at nominal takes 0.68 s:
+        # judged by the latch armed now, the bit passed as a 1 kHz consumer.
+        s = _make(sample_rate=6000, nmi_rate_adaptive=True)
+        s.nmi.write_latch(s.nmi.ceiling_latch())
+        fast_rate = cpu_clock(s.system) / (s.nmi.ceiling_latch() + 1)
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR)  # baseline, at the ceiling
+        s.servo.last_r_time = time.monotonic() - 0.65
+        s.nmi.write_latch(s.nmi.nominal_latch())
+        self.assertGreater(s.servo.max_unambiguous_dt(s.nmi.latch), 0.65)  # the old bound
+        advanced = round(0.65 * fast_rate) % audio_mod.RING_BUFFER_SIZE
+        self.assertLess(advanced, audio_mod.RING_BUFFER_SIZE // 2)
+        s.servo.observe_r_rate(audio_mod.RING_BUFFER_ADDR + advanced)
+        self.assertEqual(s.servo.r_rate_ema, -1.0)
+        self.assertEqual(s.servo.r_rate_min, -1.0)
 
     def test_loop_seeds_rate_on_valid_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
@@ -2381,6 +3742,50 @@ class StopWorkerJoinTest(unittest.TestCase):
         self.assertTrue(any("did not exit within" in m for m in cm.output), cm.output)
         self.assertGreater(WORKER_JOIN_TIMEOUT_S, 0.0)
         self.assertIsNone(s._worker_thread)
+
+    def test_an_orphan_stays_fenced_out_by_a_start_that_starts_no_worker(self):
+        # The REU-pump and listen-only starts set running back to True without
+        # a _start_worker, so only stop() can retire the orphan's generation.
+        s = _make_worker_streamer()
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        parked = threading.Event()
+        release = threading.Event()
+        after_release: list[str] = []
+
+        def parking_write(addr, data):  # type: ignore[no-untyped-def]
+            if not parked.is_set():
+                parked.set()
+                release.wait(2.0)
+                return
+            after_release.append(addr)
+            real_write(addr, data)
+
+        api.write_memory_file = parking_write
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        s._worker_thread = t
+        t.start()
+        try:
+            self.assertTrue(parked.wait(2.0), "worker never reached its first write")
+            with (
+                mock.patch.object(audio_mod, "WORKER_JOIN_TIMEOUT_S", 0.05),
+                self.assertLogs("c64cast.audio.audio", level="WARNING") as cm,
+            ):
+                s.stop()
+            self.assertTrue(any("did not exit within" in m for m in cm.output), cm.output)
+            s.running = True  # what start_for_reu_staged and start_listen do
+            release.set()
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "orphan kept running under the next start")
+        finally:
+            release.set()
+            s.running = False
+            t.join(timeout=1.0)
+        self.assertEqual(after_release, [], "orphan wrote into the next session's ring")
 
     def test_silent_when_the_worker_exited(self):
         s = _make()

@@ -41,6 +41,9 @@ from c64cast.hw.c64 import (
 from .audio_handlers import (
     CIA2_ICR_ENABLE_TIMER_A_NMI,
     CIA2_TIMER_A_CONTINUOUS,
+    HOST_DMA_SERVO_READ_BUDGET_FRAC,
+    HOST_DMA_SERVO_READ_HOLDOFF_MAX_S,
+    HOST_DMA_SERVO_READ_HOLDOFF_MIN_S,
     NMI_ARM_MAX_ATTEMPTS,
     NMI_ARM_VERIFY_DELAY_S,
     NMI_BITMAP_SEED_MODES,
@@ -53,10 +56,13 @@ from .audio_handlers import (
     RING_BUFFER_SIZE,
     RING_LEAD_EMA_ALPHA,
     nmi_rate_step,
+    servo_hold_period,
     servo_period,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .audio import AudioStreamer
 
 log = logging.getLogger(__name__)
@@ -70,6 +76,9 @@ class NmiTimer:
         # Set by start(); the REU pump's nominal CIA #1 latch derives from
         # this, so the producer/consumer period ratio stays exact.
         self.latch = 0
+        # The fastest (smallest) latch armed since the servo last took it —
+        # see take_fastest_latch. 0 = none armed yet.
+        self.fastest_latch = 0
         # Sticky per-display-mode playback-rate multiplier (>1.0 = faster),
         # applied by start(); `started` gates a mid-stream update.
         self.pitch_multiplier = 1.0
@@ -176,7 +185,24 @@ class NmiTimer:
         """Record + write a new CIA #2 Timer A latch — the one live retune
         primitive both the adaptive loop and the static retune use."""
         self.latch = latch
+        self._note_armed(latch)
         self._st.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+
+    def _note_armed(self, latch: int) -> None:
+        self.fastest_latch = latch if self.fastest_latch <= 0 else min(self.fastest_latch, latch)
+
+    def take_fastest_latch(self) -> int:
+        """The fastest latch armed since the previous call, the one armed now
+        included, and restart the tracking at the one armed now. A retune
+        between two R readings (the adaptive loop, a mode change's seed or
+        pitch multiplier) leaves the latch slower than the consumer ran for
+        part of that interval; the servo's wrap bound has to use the fastest.
+        0 when nothing has been armed."""
+        fastest = self.fastest_latch
+        self.fastest_latch = self.latch
+        if fastest <= 0:
+            return self.latch
+        return min(fastest, self.latch) if self.latch > 0 else fastest
 
     def arm_once(self, latch: int) -> None:
         """One full arm of the NMI audio consumer, idempotent so a retry is just
@@ -233,6 +259,7 @@ class NmiTimer:
             )
         latch = self.seed_latch_for_mode(self.mode) if adaptive else self.compensated_latch()
         self.latch = latch
+        self._note_armed(latch)
         self.started = True
         before = self._st.read_consumer_ptr()
         if before is None:
@@ -307,43 +334,75 @@ class RateServo:
         # subtracts to report what is heard. -1 = no consumer this run.
         self.ring_lead = -1.0
         self.last_r_reading = -1
+        self.last_r_reading_since = 0.0  # monotonic, when R took that value
         self.r_stall_chunks = 0
         self.stall_warned = False
+        # Slow-R-read holdoff: no read before `read_holdoff_until` (monotonic),
+        # and the next slow read holds off for `read_holdoff_s` (0 = none yet).
+        self.read_holdoff_until = 0.0
+        self.read_holdoff_s = 0.0
+        self.slow_reads = 0
+        self.slow_read_warned = False
+        # How long the read that armed the current backoff took.
+        self.last_slow_read_s = 0.0
         # Per-window excursions, read and reset by _maybe_log_health.
         self.health_gap_min = -1
         self.health_gap_max = -1
         self.r_rate_min = -1.0
         self.r_rate_max = -1.0
 
-    def next_pace_increment(self, write_addr: int, chunk_period: float) -> float:
+    def next_pace_increment(
+        self, write_addr: int, chunk_period: float, current: Callable[[], bool] | None = None
+    ) -> float:
         """Per-chunk pace increment for the prebuffered worker.
 
-        Open-loop (host_dma_servo off, or a failed/insane R read) returns the
-        bare ``chunk_period`` — the original strict wall-clock schedule. With the
+        Open-loop (host_dma_servo off) returns the bare ``chunk_period`` — the
+        original strict wall-clock schedule. With the
         servo on, reads the NMI read pointer R over REST, computes the ring gap
         ``(write_addr - R) % RING_BUFFER_SIZE`` (write_addr is the live W head —
         already advanced past the byte just written), and runs the PI controller
         (``servo_period``) so W's pace tracks R and the gap locks near half a
-        ring instead of lapping. A flaky read degrades to open-loop for that one
-        chunk; it never crashes or freezes the schedule. The increment is added
+        ring instead of lapping. A failed or out-of-ring read holds the integral
+        correction for that one chunk (``servo_hold_period``), as a slow one
+        does; it never crashes or freezes the schedule. The increment is added
         to the *absolute* ``next_write_time`` by the caller, so REST read latency
         only shortens the next sleep — it does not snap the schedule forward.
 
+        A read slower than ``HOST_DMA_SERVO_READ_BUDGET_FRAC`` of the chunk
+        period is not paced by (only the stall watchdog sees it), and the
+        servo stops reading for a backoff, holding its integral correction
+        (``servo_hold_period``) meanwhile. A slow server charged once per chunk
+        otherwise makes the worker fall steadily behind the consumer, which
+        then plays the ring's previous lap.
+
         Also the only place a consumer that dies *mid*-session becomes visible —
         see ``note_r_reading``.
+
+        ``current`` is the worker's fence, as for ``read_r_promptly``: a worker
+        parked in this read can outlive stop() and the next start_*, and a
+        reading it gets back after that is not paced by, noted, or counted
+        toward the backoff — the servo belongs to the next session by then.
         """
         st = self._st
         if not st.host_dma_servo:
             return chunk_period
+        if self.reads_held_off():
+            return servo_hold_period(self.integ, chunk_period=chunk_period)
         # The one read this class repeats — held out of `-vv` so a chunk-rate
         # transport record doesn't bury the requests an operator came for. The
         # arm verification and the pause stomp call `read_consumer_ptr` too,
         # and those are one-shot, so they stay visible.
         with quiet_transport():
-            r_addr = st.read_consumer_ptr()
-        if r_addr is None:
-            return chunk_period
-        self.note_r_reading(r_addr)
+            r_addr, prompt, _ = self._timed_read(
+                HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period, current
+            )
+        if r_addr is not None:
+            # A late reading is too late to pace by but still says whether the
+            # consumer is alive: a server that stays slow sends every reading
+            # past the gap servo, and the watchdog would otherwise see none.
+            self.note_r_reading(r_addr)
+        if r_addr is None or not prompt:
+            return servo_hold_period(self.integ, chunk_period=chunk_period)
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
         self.gap_last = gap
         self.gap_min = gap if self.gap_min < 0 else min(self.gap_min, gap)
@@ -362,6 +421,91 @@ class RateServo:
         period, self.integ = servo_period(gap, self.integ, chunk_period=chunk_period)
         return period
 
+    def reads_held_off(self) -> bool:
+        """True while a slow read's backoff is running: the servo does not read
+        R, and the stall re-anchor reads it only as ``read_r_promptly`` says."""
+        return time.monotonic() < self.read_holdoff_until
+
+    def _timed_read(
+        self, budget_s: float, current: Callable[[], bool] | None = None
+    ) -> tuple[int | None, bool, float]:
+        """Read R once against ``budget_s``; returns ``(r_addr, prompt,
+        took)``. A read over budget arms the backoff and comes back with
+        ``prompt`` False; a prompt one resets the backoff.
+
+        ``current`` says whether the caller still owns this session. A read
+        that returns after it stopped doing so comes back ``(None, False,
+        took)`` and leaves the backoff, its counters and its warning alone:
+        they belong to the next session by then."""
+        started = time.monotonic()
+        r_addr = self._st.read_consumer_ptr()
+        took = time.monotonic() - started
+        if current is not None and not current():
+            return None, False, took
+        if took > budget_s:
+            self._hold_off_slow_read(took, budget_s)
+            return r_addr, False, took
+        # The stall re-anchor can read inside a backoff, so a prompt read ends
+        # the running hold as well as restarting the doubling.
+        self.read_holdoff_s = 0.0
+        self.read_holdoff_until = 0.0
+        return r_addr, True, took
+
+    def read_r_promptly(
+        self, chunk_period: float, budget_s: float, current: Callable[[], bool]
+    ) -> int | None:
+        """R for a one-off decision that acts on where R is *now* (the stall
+        re-anchor), or None. ``budget_s`` is how stale that decision can
+        stand R: R moves on while the read is in flight, by up to the read's
+        whole duration, so a read slower than that comes back None. So does
+        a call inside a backoff armed by a read already slower than
+        ``budget_s``, without reading. A backoff armed by a read the servo
+        could not pace by but that beats ``budget_s`` does not stop this one:
+        it is a single read, and the reading is still good enough to act on.
+        The read counts toward the servo's backoff like any other. With the
+        servo off there is no pacing budget, and this read is the only one,
+        so it is judged against ``budget_s`` alone.
+
+        ``current`` is the caller's fence: a worker parked in this read can
+        outlive stop() and the next start_*, and a read it gets back after
+        ``current()`` turns False is None, without touching the backoff the
+        next session reads by (see ``_timed_read``)."""
+        if self.reads_held_off() and self.last_slow_read_s > budget_s:
+            return None
+        backoff_budget_s = (
+            HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period if self._st.host_dma_servo else budget_s
+        )
+        r_addr, _, took = self._timed_read(backoff_budget_s, current)
+        return r_addr if took <= budget_s else None
+
+    def _hold_off_slow_read(self, took: float, budget_s: float) -> None:
+        """Drop a reading that came back too late to pace by, and stop reading
+        for a backoff that doubles while reads stay slow."""
+        self.slow_reads += 1
+        self.last_slow_read_s = took
+        self.read_holdoff_s = min(
+            HOST_DMA_SERVO_READ_HOLDOFF_MAX_S,
+            max(HOST_DMA_SERVO_READ_HOLDOFF_MIN_S, self.read_holdoff_s * 2),
+        )
+        self.read_holdoff_until = time.monotonic() + self.read_holdoff_s
+        level = logging.DEBUG if self.slow_read_warned else logging.WARNING
+        self.slow_read_warned = True
+        # With the servo off only the stall re-anchor reads R, and there is no
+        # pace correction to hold.
+        consequence = (
+            "holding the pace correction" if self._st.host_dma_servo else "not reading it again"
+        )
+        log.log(
+            level,
+            "audio: read-pointer read took %.0f ms, over the %.0f ms budget — %s "
+            "for %.0f s (%d slow so far)",
+            took * 1000.0,
+            budget_s * 1000.0,
+            consequence,
+            self.read_holdoff_s,
+            self.slow_reads,
+        )
+
     def note_r_reading(self, r_addr: int) -> None:
         """Watch for an NMI consumer that stopped after a verified start.
 
@@ -369,19 +513,25 @@ class RateServo:
         behind our back) otherwise presents as unexplained silence plus the
         fast playback the servo produces while chasing a dead reader. Warns
         once per session; the pacing behavior is untouched.
+
+        The count is of readings, not chunks: behind a slow server they come
+        a read backoff apart, so the warning reports the time R stood still.
         """
+        now = time.monotonic()
         if r_addr == self.last_r_reading:
             self.r_stall_chunks += 1
         else:
             self.last_r_reading = r_addr
+            self.last_r_reading_since = now
             self.r_stall_chunks = 0
         if self.r_stall_chunks >= NMI_STALL_WARN_CHUNKS and not self.stall_warned:
             self.stall_warned = True
             log.warning(
-                "audio: NMI consumer stalled — R has not moved from $%04X for %d chunks. "
-                "Audio is silent and playback pace is unreliable from here.",
+                "audio: NMI consumer stalled — R has not moved from $%04X for %.1f s "
+                "(%d readings). Audio is silent and playback pace is unreliable from here.",
                 r_addr,
-                self.r_stall_chunks,
+                now - self.last_r_reading_since,
+                self.r_stall_chunks + 1,
             )
 
     def observe_r_rate(self, r_addr: int) -> None:
@@ -394,12 +544,21 @@ class RateServo:
         """
         alpha = NMI_RATE_LOOP_ACQUIRE_ALPHA if self.loop_acquiring else NMI_RATE_LOOP_EMA_ALPHA
         now = time.monotonic()
+        # Taken on every reading, so it covers exactly the interval since the last.
+        fastest_latch = self._timer.take_fastest_latch()
         if self.last_r_addr >= 0 and self.last_r_time > 0.0:
             dt = now - self.last_r_time
             dr = (r_addr - self.last_r_addr) % RING_BUFFER_SIZE
             # Discard a torn/backward read (half-ring jump = a read tear mid
             # self-modify, not real advance) — same guard as hostdma_drift_probe.
-            if dt > 0 and dr < RING_BUFFER_SIZE // 2:
+            # And discard any interval long enough for R to have wrapped: dr is
+            # only known modulo the ring, so after a link stall a whole lap
+            # plus a little reads as "a little" and seeds a rate far too low.
+            if (
+                dt > 0
+                and dr < RING_BUFFER_SIZE // 2
+                and dt < self.max_unambiguous_dt(fastest_latch)
+            ):
                 inst = dr / dt
                 if self.r_rate_ema < 0:
                     self.r_rate_ema = inst
@@ -409,6 +568,16 @@ class RateServo:
                 self.r_rate_max = max(self.r_rate_max, inst)
         self.last_r_addr = r_addr
         self.last_r_time = now
+
+    def max_unambiguous_dt(self, latch: int) -> float:
+        """Longest interval between two R readings whose modular advance still
+        has one reading: the time the consumer, at ``latch`` (the fastest armed
+        over that interval, from ``NmiTimer.take_fastest_latch``), takes to
+        cover half a ring (the torn-read guard's bound). Bus halts only slow R,
+        so the fastest armed latch is the fastest it can have run. 0 (nothing
+        armed) falls back to nominal."""
+        latch = latch or self._timer.nominal_latch()
+        return (RING_BUFFER_SIZE // 2) * (latch + 1) / cpu_clock(self._st.system)
 
     def update_rate_loop(self, r_addr: int) -> None:
         """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2
@@ -484,6 +653,8 @@ class RateServo:
         servo off it stays the lead estimate, the gap holding near it."""
         self.ring_lead = float(ring_lead)
         self.integ = 0.0
+        self.read_holdoff_until = 0.0
+        self.read_holdoff_s = 0.0
         self.r_rate_ema = -1.0
         self.last_r_addr = -1
         self.last_r_time = 0.0
@@ -491,6 +662,18 @@ class RateServo:
         self.loop_chunk_count = 0
         self.loop_acquiring = True
         self.warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
+
+    def resync(self, ring_lead: int) -> None:
+        """The worker re-anchored W ``ring_lead`` bytes ahead of R after a
+        stall. The integrator is kept: it is the standing bus-halt correction,
+        which a stall does not change. The R-rate baseline is dropped (an
+        interval spanning the stall says nothing about the consumer), and the
+        adaptive loop's warm-up gate re-arms so it does not steer on the
+        post-stall transient."""
+        self.ring_lead = float(ring_lead)
+        self.last_r_addr = -1
+        self.last_r_time = 0.0
+        self.note_disturbance()
 
     def reset_health_window(self) -> None:
         """Clear the per-window excursion trackers the streamer's health line
@@ -517,8 +700,11 @@ class RateServo:
         re-acquires from nominal rather than carrying a stale R-rate
         estimate."""
         self.last_r_reading = -1
+        self.last_r_reading_since = 0.0
         self.r_stall_chunks = 0
         self.stall_warned = False
+        self.slow_reads = 0
+        self.slow_read_warned = False
         self.ring_lead = -1.0
         self.r_rate_ema = -1.0
         self.last_r_addr = -1

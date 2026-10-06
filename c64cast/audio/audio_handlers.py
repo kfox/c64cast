@@ -392,6 +392,30 @@ HOST_DMA_SERVO_KI = 5e-7  # s/(byte*chunk)    (HW-TUNABLE)
 HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
+# The R read sits inside the paced loop, after the chunk's drip writes, which
+# take about half the chunk period; a read slower than the rest of the period
+# makes the worker late. Such a reading is not used, and the servo stops
+# reading for a holdoff (holding its integral correction, servo_hold_period),
+# so a slow server is not charged once per chunk. The
+# holdoff doubles on each consecutive slow read, up to the max, and resets on
+# a prompt one.
+HOST_DMA_SERVO_READ_BUDGET_FRAC = 0.5  # of chunk_period
+HOST_DMA_SERVO_READ_HOLDOFF_MIN_S = 1.0
+HOST_DMA_SERVO_READ_HOLDOFF_MAX_S = 8.0
+# The stall re-anchor's own R-read budget, as a fraction of the lead it puts
+# W ahead of R in seconds. R moves on while the read is in flight, so the
+# anchor is only ahead of the live R if the read beats the lead, and the
+# quarter kept back (≈85 ms at 12 kHz) covers the NEUTRAL stomp before W's
+# first write. The servo's
+# per-chunk budget is far tighter (it is a pacing deadline, not a safety
+# bound), and borrowing it threw away readings this one can safely use.
+STALL_REANCHOR_READ_BUDGET_FRAC = 0.75  # of the re-anchor lead, in seconds
+# A W still ahead of R by less than this past R's travel during the read
+# counts as lapped: the refill's first write has to land before R gets there,
+# and a quarter chunk is ≈21 ms at 12 kHz, several DMA writes. A whole chunk
+# NEUTRAL-filled unplayed audio (656 B in one virtual-clock case) without
+# saving a single lap-old replay over a 48-case sweep.
+STALL_INSIDE_LEAD_SLACK = CHUNK_SIZE // 4  # bytes
 # Per-reading weight of the ring-lead EMA the A/V clock subtracts: about a
 # second at one R read per 1 KiB chunk, so one torn R read moves the clock by
 # a few ms rather than jumping it by up to a whole ring.
@@ -1177,6 +1201,49 @@ def servo_period(
         out_max=(HOST_DMA_SERVO_PERIOD_MAX_FRAC - 1.0) * chunk_period,
     )
     return chunk_period + correction, integ
+
+
+def stall_reanchor(r_addr: int, chunk: int, lead: int = HOST_DMA_SERVO_TARGET_GAP) -> int:
+    """Where the host-DMA write head restarts after a stall: the first
+    chunk-grid address at least ``lead`` bytes ahead of R. The grid matters —
+    every ring write is a whole chunk at a chunk-aligned address, which is what
+    keeps a write from straddling ``RING_BUFFER_END`` (see the worker)."""
+    ahead = r_addr - RING_BUFFER_ADDR + lead
+    return RING_BUFFER_ADDR + (-(-ahead // chunk) * chunk) % RING_BUFFER_SIZE
+
+
+def stall_lapped(r_addr: int, w_head: int, behind: int, slack: int) -> bool:
+    """Whether R has reached the write head ``w_head`` (the end of what has
+    landed) during a stall the worker came back ``behind`` bytes of
+    consumption late; R is read after the stall.
+
+    The ring gap alone cannot say: R known modulo the ring reads the same a
+    few bytes short of W as a lap and a few bytes past it. The stall's length
+    settles it. If W is still ahead, the gap is the lead W had less what R
+    ate meanwhile, so gap + behind is that lead, under a ring. If R passed W
+    by x, the gap is a ring less x and gap + behind is a ring plus the old
+    lead, over one. The margin either side is the old lead's distance from a
+    ring (≈4 KiB at the target gap, less as an open-loop lead grows) and the
+    old lead itself, less what R moved during the read.
+
+    A gap under ``slack`` counts as lapped too: R kept moving while it was
+    read and while the caller acts on it, so a W only that far ahead may
+    already be behind it. The caller passes R's travel over the read plus
+    ``STALL_INSIDE_LEAD_SLACK``."""
+    gap = (w_head - r_addr) % RING_BUFFER_SIZE
+    return gap < slack or gap + behind >= RING_BUFFER_SIZE
+
+
+def servo_hold_period(integ: float, *, chunk_period: float, ki: float = HOST_DMA_SERVO_KI) -> float:
+    """The pace period with no gap reading to act on: only the integral term,
+    which carries the standing rate correction (the consumer's bus-halt
+    deficit), held where it was. Dropping to the bare ``chunk_period`` instead
+    would hand that drift back, and the ring laps in about 26 s of it."""
+    correction = max(
+        (HOST_DMA_SERVO_PERIOD_MIN_FRAC - 1.0) * chunk_period,
+        min((HOST_DMA_SERVO_PERIOD_MAX_FRAC - 1.0) * chunk_period, ki * integ),
+    )
+    return chunk_period + correction
 
 
 def pi_step(
