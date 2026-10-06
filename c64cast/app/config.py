@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from c64cast._redact import redact_source_line
+from c64cast.audio.audio_features import check_layout
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
@@ -668,8 +669,13 @@ class AudioCfg:
             "themselves halt the 6510 and steal cycles from the NMI handler, so the "
             "overrun onset under the live pipeline was measured at ~12500 Hz (identical "
             "in char and bitmap — the audio feed, not the video, is the driver). 12000 "
-            "keeps margin below that. Rates past the isolated-handler ceiling are "
-            "rejected at load, and --doctor reports them. Sampler-backend playback uses "
+            "keeps margin below that. A rate whose nearest CIA #2 latch gives an NMI "
+            "period under 75 cycles (the 68-cycle handler worst case plus entry "
+            "margin: above ~13.7 kHz NTSC / ~13.2 kHz PAL), or a latch past the "
+            "16-bit timer (under 16 Hz), is rejected at load, and --doctor reports "
+            'it. An unresolved [ultimate64].system = "auto" is checked as NTSC, so '
+            "on a PAL machine a rate between the two ceilings loads and plays "
+            "clamped to ~13.1 kHz, with a warning. Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
     )
@@ -717,7 +723,8 @@ class AudioCfg:
             "firmware property (same across U64 units), not per-unit — so it ships baked "
             "in. If a firmware update fixes the clock (or on hardware that clocks it "
             "correctly), set 6250000. The repository carries a diagnostic script that "
-            "re-measures it and prints the value. Only affects the sampler backend."
+            "re-measures it and prints the value. Accepted range 5000000..7500000. "
+            "Only affects the sampler backend."
         },
     )
     mic_sensitivity: float = field(
@@ -2127,9 +2134,9 @@ class AudioFeaturesCfg:
     fft_size: int = field(
         default=1024,
         metadata={
-            "help": "Analysis window in samples. Larger = finer frequency "
-            "resolution but blurrier transient timing; 1024 is the balance point "
-            "at the DAC's sample rates."
+            "help": "Analysis window in samples, 32-32768. Larger = finer "
+            "frequency resolution but blurrier transient timing; 1024 is the "
+            "balance point at the DAC's sample rates."
         },
     )
     listen_sample_rate: int = field(
@@ -2229,8 +2236,9 @@ class DSPCfg:
     comp_makeup_auto: bool = field(
         default=True,
         metadata={
-            "help": "Auto-compute makeup gain so threshold-level signal exits near "
-            "unity. Set false to use comp_makeup_db explicitly."
+            "help": "Auto-compute makeup gain so a full-scale signal exits at unity "
+            "(a signal at the threshold is lifted by the same amount). "
+            "Set false to use comp_makeup_db explicitly."
         },
     )
     comp_makeup_db: float = field(
@@ -3486,6 +3494,18 @@ def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
         raise ValueError(f"ultimate64.sid_panning: {e}") from e
 
 
+def _validate_pitch_mult(audio: AudioCfg) -> None:
+    """A playback-rate multiplier divides the NMI period, so zero crashed the
+    retune and a negative one armed latch 1 — an NMI every two cycles, which
+    holds the 6510 in the handler. Refuse anything not a positive number."""
+    for f in fields(audio):
+        if not f.name.startswith("pitch_mult_"):
+            continue
+        name, value = f.name, getattr(audio, f.name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise ValueError(f"[audio].{name} = {value!r} — want a positive number")
+
+
 def _validate_sid_volume(u64: Ultimate64Cfg) -> None:
     """Range-check [ultimate64].sid_volume at load/doctor time so a level the
     mixer can't represent surfaces before the playlist runs, not mid-scene when
@@ -3593,11 +3613,9 @@ _CHOICES_OPEN: dict[str, str] = {
     # "auto"/"off" plus any positive float (Hz) — see the field's own help.
     "ultimate64.sid_play_rate": "also accepts a rate in Hz",
 }
-# Fields matched case-insensitively rather than exactly, because the value is
-# case-normalized downstream (hw/backend.py and hw/hw_provision.py both
-# `.upper()` it, each with a comment saying nothing at load enforces the
-# canonical spelling) — so `system = "ntsc"` works today and has to keep
-# working, while `system = "ntscc"` should not.
+# Fields matched case-insensitively rather than exactly, and rewritten to the
+# declared spelling when they match — so `system = "ntsc"` keeps working and
+# reaches every consumer as "NTSC", while `system = "ntscc"` is refused.
 _CHOICES_CASE_INSENSITIVE: frozenset[str] = frozenset({"ultimate64.system"})
 
 
@@ -3608,6 +3626,17 @@ def _validate_tr_dma_slicing(tr: TeensyromCfg) -> None:
         value = getattr(tr, name)
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 255:
             raise ValueError(f"[teensyrom].{name} = {value!r} — want an integer 0-255")
+
+
+def _validate_audio_features(af: AudioFeaturesCfg) -> None:
+    """A band count the analysis window cannot split fails here, at load,
+    instead of when a reactive scene starts its analyzer, where the error is
+    logged and the scene plays on without reacting."""
+    for name in ("bands", "fft_size"):
+        value = getattr(af, name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"[audio_features].{name} = {value!r} — want an integer")
+    check_layout(af.bands, af.fft_size)
 
 
 def _validate_choice_fields(cfg: Config) -> None:
@@ -3633,7 +3662,11 @@ def _validate_choice_fields(cfg: Config) -> None:
             if not isinstance(value, str):
                 continue
             if key in _CHOICES_CASE_INSENSITIVE:
-                if value.casefold() in {str(c).casefold() for c in choices}:
+                canonical = {str(c).casefold(): c for c in choices}.get(value.casefold())
+                if canonical is not None:
+                    # Store the declared spelling: a consumer that compares
+                    # it bare must not see "ntsc" and fall through to PAL.
+                    setattr(section, f.name, canonical)
                     continue
             elif value in choices:
                 continue
@@ -3754,6 +3787,7 @@ def validate_sections(cfg: Config) -> None:
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
     _validate_audio_device(cfg.audio)
+    _validate_pitch_mult(cfg.audio)
     _normalize_ultimate_url(cfg.ultimate64)
     _validate_performance(cfg.performance)
     _validate_sid_panning(cfg.ultimate64)
@@ -3761,6 +3795,7 @@ def validate_sections(cfg: Config) -> None:
     _validate_host_sid_chips(cfg.hardware)
     _validate_host_sid_tune_match(cfg.hardware)
     _validate_tr_dma_slicing(cfg.teensyrom)
+    _validate_audio_features(cfg.audio_features)
     _validate_choice_fields(cfg)
     _validate_force_palette(cfg.color)
 

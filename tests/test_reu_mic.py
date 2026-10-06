@@ -13,12 +13,21 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, lose_writes_to, new_streamer, run_irq_handler
+from _fakes import (
+    FakeAPI,
+    lose_reu_writes_to,
+    lose_writes_to,
+    new_streamer,
+    run_irq_handler,
+    written_addresses,
+)
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
+    READ_PTR_LO_ADDR,
+    REU_AUDIO_DST_TRACKER_ADDR,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_CMD_FETCH_EXEC,
     REU_IRQ_HANDLER_TRACKED,
@@ -26,18 +35,26 @@ from c64cast.audio.audio_handlers import (
     REU_MIC_BASE_HI,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_PUMP_BODY_SUBROUTINE,
+    REU_MIC_RING_LEAD,
+    REU_MIC_RING_LEAD_MIN,
     REU_MIC_SIZE,
     REU_PUMP_BODY_SUBROUTINE_ADDR,
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_HANDLER_STUB,
     REU_PUMP_TICK_COUNTER_ADDR,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
+    RING_BUFFER_END,
     RING_BUFFER_END_HI,
     RING_BUFFER_HI,
+    RING_BUFFER_SIZE,
+    mic_ring_lead_ok,
+    mic_ring_seed,
 )
 from c64cast.audio.mic_lead import MIC_LEAD_REANCHOR_GUARD, MicLeadServo, MicLeadShaper
+from c64cast.hw.c64 import CIA1, KERNAL, VECTORS, kernal_cia1_latch
 
 
 def _new_streamer(use_reu_pump: bool = True, **overrides) -> AudioStreamer:
@@ -135,6 +152,28 @@ class ReuMicPumpTest(unittest.TestCase):
         src = REU_MIC_BASE + REU_MIC_SIZE - 2 * REU_PUMP_CHUNK_SIZE
         run = self._run(src=src)
         self.assertEqual(self._src(run), src + REU_PUMP_CHUNK_SIZE)
+
+    def test_src_carries_into_its_middle_byte_mid_ring(self):
+        src = REU_MIC_BASE + 0x2FFF - REU_PUMP_CHUNK_SIZE + 1
+        run = self._run(src=src)
+        self.assertEqual(self._src(run), REU_MIC_BASE + 0x3000)
+
+    def test_stores_only_to_the_rec_the_trackers_the_counter_and_the_stack(self):
+        # A store aimed one page off still leaves the trackers looking right
+        # when the src wrap rewrites them, so the footprint is what shows it.
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        allowed = (
+            set(range(0xDF01, 0xDF09))
+            | set(range(t, t + 5))
+            | {REU_PUMP_TICK_COUNTER_ADDR}
+            | set(range(0x0100, 0x0200))
+        )
+        last_chunk_dst = (RING_BUFFER_END_HI << 8) - REU_PUMP_CHUNK_SIZE
+        last_chunk_src = REU_MIC_BASE + REU_MIC_SIZE - REU_PUMP_CHUNK_SIZE
+        for src in (REU_MIC_BASE + 0x2F80, last_chunk_src):
+            for dst in (RING_BUFFER_ADDR, last_chunk_dst):
+                with self.subTest(src=hex(src), dst=hex(dst)):
+                    self.assertLessEqual(written_addresses(self._run(src=src, dst=dst)), allowed)
 
     def test_dst_tracker_wraps_to_the_audio_ring(self):
         last_chunk_dst = (RING_BUFFER_END_HI << 8) - REU_PUMP_CHUNK_SIZE
@@ -297,18 +336,21 @@ class StartMicForReuPumpTest(unittest.TestCase):
         self.assertLess(tracker, body)
         self.assertLess(body, entry)
 
-    def test_trackers_seeded_to_mic_base_and_ring_start(self):
-        # src LO/MI/HI = REU_MIC_BASE, dst LO/HI = RING_BUFFER_ADDR. The pump
-        # reads only these, so a wrong seed makes the first transfer read a
-        # bogus REU offset or land outside the ring.
+    def test_trackers_seeded_to_mic_base_and_the_ring_lead(self):
+        # src LO/MI/HI = REU_MIC_BASE, dst LO/HI = REU_MIC_RING_LEAD into the
+        # ring, ahead of the NMI reader parked at its start. The pump reads
+        # only these, so a wrong seed makes the first transfer read a bogus REU
+        # offset or land outside the ring; a dst at the ring start itself put
+        # the write head behind a reader that had already started (A-F3).
         s = self._start()
         fake = cast(FakeAPI, s.api)
+        dst = RING_BUFFER_ADDR + REU_MIC_RING_LEAD
         expected = (
             f"{REU_MIC_BASE & 0xFF:02X}"
             f"{(REU_MIC_BASE >> 8) & 0xFF:02X}"
             f"{(REU_MIC_BASE >> 16) & 0xFF:02X}"
-            f"{RING_BUFFER_ADDR & 0xFF:02X}"
-            f"{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}"
+            f"{dst & 0xFF:02X}"
+            f"{(dst >> 8) & 0xFF:02X}"
         )
         self.assertEqual(fake.memories[f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}"], expected)
 
@@ -359,6 +401,191 @@ class StartMicForReuPumpTest(unittest.TestCase):
         self.assertGreater(REU_MIC_BOOTSTRAP_BYTES, 0)
 
 
+class _RingPointers:
+    """A FakeAPI's view of the two pointers the ring-lead seed reads: the NMI
+    reader R (fixed per test) and the pump's dst tracker W, taken from the last
+    tracker write that landed plus ``pump_ran`` bytes (a pump that ran before
+    the NMI armed). The first ``lose`` writes to the dst pair are overwritten
+    by the pump's own tick, as a write between its load and store would be.
+    The first ``glitch`` span reads after a dst write catch R in its ring-end
+    carry, at $6000, outside the ring."""
+
+    def __init__(
+        self, fake: FakeAPI, *, r: int, pump_ran: int = 0, lose: int = 0, glitch: int = 0
+    ) -> None:
+        self.r = r
+        self.pump_ran = pump_ran
+        self.lose = lose
+        self.glitch = glitch
+        self.dst_writes: list[int] = []
+        self.reads = 0
+        self._real_write = fake.write_memory
+        fake.write_memory = self._write  # type: ignore[method-assign]
+        fake.read_memory = self._read  # type: ignore[method-assign]
+        self._fake = fake
+
+    def _w(self) -> int:
+        mem = self._fake.memories
+        seed = mem[f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}"]  # src LO MI HI, dst LO HI
+        w = int(seed[8:10] + seed[6:8], 16)
+        pair = mem.get(f"{REU_AUDIO_DST_TRACKER_ADDR:04X}")
+        if pair is not None:
+            w = int(pair[2:4] + pair[0:2], 16)
+        off = (w - RING_BUFFER_ADDR + self.pump_ran) % RING_BUFFER_SIZE
+        return RING_BUFFER_ADDR + off
+
+    def _write(self, addr, data_hex) -> None:
+        if str(addr).upper() == f"{REU_AUDIO_DST_TRACKER_ADDR:04X}":
+            self.dst_writes.append(int(data_hex[2:4] + data_hex[0:2], 16))
+            self.pump_ran = 0
+            if self.lose:
+                self.lose -= 1
+                return
+        self._real_write(addr, data_hex)
+
+    def _read(self, address, length, timeout=1.0):
+        if address != READ_PTR_LO_ADDR:
+            return None
+        if length > 2:  # the seed's span read, not the NMI arm check's R read
+            self.reads += 1
+        raw = bytearray(length)
+        w = self._w()
+        off = REU_AUDIO_DST_TRACKER_ADDR - READ_PTR_LO_ADDR
+        r = self.r
+        if length > 2 and self.dst_writes and self.glitch:
+            self.glitch -= 1
+            r = RING_BUFFER_END
+        raw[0:2] = r.to_bytes(2, "little")
+        raw[off : off + 2] = w.to_bytes(2, "little")
+        return bytes(raw)
+
+    def lead(self) -> int:
+        return (self._w() - self.r) % RING_BUFFER_SIZE
+
+
+class MicRingLeadSeedTest(unittest.TestCase):
+    """AUD-2 A-F3: the bring-up chooses how far the pump's write head runs
+    ahead of the NMI reader in the $4000 ring, instead of inheriting whatever
+    the arm order left. On the solo path the reader is ~1 KB into the ring
+    before the pump's first tick, so a pump seeded at the ring start trailed it
+    and every sample waited most of a lap (~0.6 s at 12 kHz); under a
+    dispatcher the pump ran first and led by a few hundred bytes, which the
+    reader overtook into lap-old audio."""
+
+    def _start(self, *, skip_irq_vector_hook: bool = False, **ring):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        ptrs = _RingPointers(fake, **ring)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        # The lead servo's thread would share the fake's read; this class is
+        # about the bring-up alone.
+        cast(Any, s)._start_mic_lead_servo = lambda: None
+        s._start_mic_for_reu_pump(device=-1, skip_irq_vector_hook=skip_irq_vector_hook)
+        return s, ptrs
+
+    def test_solo_pump_is_seeded_ahead_of_a_reader_already_into_the_ring(self):
+        # R 125 ms into the ring when the $0314 patch starts the pump (the
+        # finding measured >=963 B, ~80 ms; a slow confirm stretches it), past
+        # what the install seed's lead absorbs. The pump ran a chunk since.
+        r = RING_BUFFER_ADDR + 1500
+        s, ptrs = self._start(r=r, pump_ran=REU_PUMP_CHUNK_SIZE)
+        self.assertEqual(ptrs.dst_writes, [mic_ring_seed(r)])
+        lead = ptrs.lead()
+        self.assertGreaterEqual(lead, REU_MIC_RING_LEAD)
+        self.assertLess(lead, REU_MIC_RING_LEAD + REU_PUMP_CHUNK_SIZE)
+
+    def test_dispatcher_pump_that_ran_before_the_arm_is_reseeded(self):
+        s, ptrs = self._start(skip_irq_vector_hook=True, r=RING_BUFFER_ADDR, pump_ran=1536)
+        self.assertEqual(ptrs.dst_writes, [mic_ring_seed(RING_BUFFER_ADDR)])
+        self.assertEqual(ptrs.lead(), REU_MIC_RING_LEAD)
+
+    def test_a_lead_already_in_range_is_left_alone(self):
+        # Every write is a chance for the pump's own tick to overwrite it. The
+        # measured ~963 B solo arm-to-pump lag leaves the install seed's lead
+        # at ~1.1 KB, in range.
+        s, ptrs = self._start(r=RING_BUFFER_ADDR + 963)
+        self.assertEqual(ptrs.dst_writes, [])
+        self.assertEqual(ptrs.reads, 1)
+
+    def test_a_seed_the_pump_overwrote_is_written_again(self):
+        r = RING_BUFFER_ADDR + 1500
+        s, ptrs = self._start(r=r, lose=1)
+        self.assertEqual(ptrs.dst_writes, [mic_ring_seed(r)] * 2)
+        self.assertTrue(mic_ring_lead_ok(ptrs.lead()))
+
+    def test_a_read_that_fails_after_a_seed_is_retried(self):
+        # Once a seed has gone out the tracker no longer holds the install
+        # seed, so one torn read must not end the bring-up's measurement.
+        r = RING_BUFFER_ADDR + 1500
+        s, ptrs = self._start(r=r, lose=1, glitch=1)
+        self.assertEqual(ptrs.reads, 4)
+        self.assertEqual(ptrs.dst_writes, [mic_ring_seed(r)] * 2)
+        self.assertTrue(mic_ring_lead_ok(ptrs.lead()))
+
+    def test_a_seed_that_never_holds_is_a_warning(self):
+        with self.assertLogs("c64cast.audio.audio", "WARNING") as cm:
+            s, ptrs = self._start(r=RING_BUFFER_ADDR + 1500, lose=99)
+        self.assertEqual(len(ptrs.dst_writes), audio_mod.TRACKED_PUMP_INSTALL_TRIES)
+        self.assertTrue(any("lead over the NMI reads" in m for m in cm.output), cm.output)
+        self.assertTrue(s.running, "an unseeded lead costs latency, not the scene's audio")
+
+    def test_unreadable_pointers_keep_the_install_seed(self):
+        s = _new_streamer()
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        cast(Any, s)._start_mic_lead_servo = lambda: None
+        with self.assertLogs("c64cast.audio.audio", "INFO") as cm:
+            s._start_mic_for_reu_pump(device=-1)
+        self.assertTrue(any("stays at its install seed" in m for m in cm.output), cm.output)
+        self.assertNotIn(f"{REU_AUDIO_DST_TRACKER_ADDR:04X}", cast(FakeAPI, s.api).memories)
+
+    def test_a_backend_without_reads_does_not_try(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        fake.profile = dataclasses.replace(fake.profile, supports_read=False)
+        ptrs = _RingPointers(fake, r=RING_BUFFER_ADDR + 963)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        cast(Any, s)._start_mic_lead_servo = lambda: None
+        s._start_mic_for_reu_pump(device=-1)
+        self.assertEqual((ptrs.reads, ptrs.dst_writes), (0, []))
+
+    def test_the_bring_up_log_states_both_stages_of_the_latency(self):
+        with self.assertLogs("c64cast.audio.audio", "INFO") as cm:
+            s, ptrs = self._start(r=RING_BUFFER_ADDR + 1500)
+        line = next(m for m in cm.output if "host lead=" in m)
+        lead = ptrs.lead()
+        ms = round(1000 * (REU_MIC_BOOTSTRAP_BYTES + lead) / s.sample_rate)
+        self.assertIn(f"C64 ring lead={lead}B", line)
+        self.assertIn(f"({ms}ms latency)", line)
+
+
+class MicRingSeedMathTest(unittest.TestCase):
+    def test_seed_is_chunk_aligned_and_at_least_the_lead_ahead(self):
+        for off in (
+            0,
+            1,
+            127,
+            128,
+            963,
+            RING_BUFFER_SIZE - REU_MIC_RING_LEAD,
+            RING_BUFFER_SIZE - 1,
+        ):
+            r = RING_BUFFER_ADDR + off
+            dst = mic_ring_seed(r)
+            self.assertTrue(RING_BUFFER_ADDR <= dst < RING_BUFFER_END, hex(dst))
+            self.assertEqual((dst - RING_BUFFER_ADDR) % REU_PUMP_CHUNK_SIZE, 0)
+            lead = (dst - r) % RING_BUFFER_SIZE
+            self.assertGreaterEqual(lead, REU_MIC_RING_LEAD, off)
+            self.assertLess(lead, REU_MIC_RING_LEAD + REU_PUMP_CHUNK_SIZE, off)
+
+    def test_lead_window(self):
+        self.assertFalse(mic_ring_lead_ok(REU_MIC_RING_LEAD_MIN - 1))
+        self.assertTrue(mic_ring_lead_ok(REU_MIC_RING_LEAD_MIN))
+        self.assertTrue(mic_ring_lead_ok(REU_MIC_RING_LEAD + REU_PUMP_CHUNK_SIZE + 256))
+        self.assertFalse(mic_ring_lead_ok(REU_MIC_RING_LEAD + REU_PUMP_CHUNK_SIZE + 257))
+        # The old solo-path lead: W a lap behind R.
+        self.assertFalse(mic_ring_lead_ok(RING_BUFFER_SIZE - 963))
+
+
 class _FakeStream:
     """Stand-in for sounddevice.InputStream so _start_mic_for_reu_pump
     can run without real audio hardware."""
@@ -380,6 +607,8 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         s = _new_streamer(use_reu_pump=True)
         called: list[int] = []
         s._start_mic_for_reu_pump = lambda device, **_kwargs: called.append(device)  # type: ignore[method-assign]
+        # Device validation is not under test, and must not query the host's.
+        s._resolve_input_device = lambda device: (device, "fake")  # type: ignore[method-assign]
         # AUDIO_AVAILABLE is a module global; without sounddevice installed
         # the function early-returns and the branch cannot be observed.
         from c64cast.audio import audio as audio_mod
@@ -396,6 +625,7 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")
         s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()  # type: ignore[method-assign]
+        s._resolve_input_device = lambda device: (device, "fake")  # type: ignore[method-assign]
         called_reu: list[int] = []
         s._start_mic_for_reu_pump = lambda device: called_reu.append(device)  # type: ignore[method-assign]
         s.start_mic(device=5, sensitivity=1.0, noise_gate=0.0)
@@ -590,6 +820,35 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         # The mask is confirmed delivered before the entry goes up.
         self.assertIn(("flush",), fake.ops[mask:entry])
 
+    def test_the_entry_waits_out_an_in_flight_pump_after_the_mask(self):
+        # A pump the dispatcher entered just before the mask landed is still
+        # running $C100; the drain lets it leave before its code is replaced.
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, 0x0000, 0)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        with mock.patch.object(
+            audio_mod.time, "sleep", side_effect=lambda dt: fake.ops.append(("sleep", dt))
+        ):
+            s._start_mic_for_reu_pump(device=-1, skip_irq_vector_hook=True)
+        self.addCleanup(s._stop_mic_lead_servo)
+        mask = self._index(fake, "write_memory", "DC0D", "7F")
+        entry = self._index(fake, "write_memory_file", "C100")
+        drain = fake.ops.index(("sleep", audio_mod.TRACKED_PUMP_ENTRY_DRAIN_S))
+        self.assertIn(("flush",), fake.ops[mask:drain])
+        self.assertLess(drain, entry)
+
+    def test_a_lost_mask_holds_the_entry_back_until_a_mask_lands(self):
+        # With the mask lost the dispatcher still JMPs to $C100, so writing
+        # the entry then would replace code a pump may be running.
+        s, fake, _ = self._start(lose=0xDC0D, times=1, skip_hook=True)
+        self.assertTrue(s._reu_pump_armed)
+        lost = fake.ops.index(("lost", "DC0D"))
+        remask = next(
+            i for i, o in enumerate(fake.ops) if i > lost and o == ("write_memory", "DC0D", "7F")
+        )
+        self.assertFalse(any(o[:2] == ("write_memory_file", "C100") for o in fake.ops[lost:remask]))
+
     def test_solo_path_leaves_cia1_alone(self):
         # $0314 is hooked last on the solo path, so $C100 is unreachable while
         # the entry goes up and masking would only cost keyboard ticks.
@@ -628,6 +887,91 @@ class TrackedPumpDeliveryTest(unittest.TestCase):
         park = max(i for i, o in enumerate(fake.ops) if o == ("write_memory", "C180", "60"))
         body = self._index(fake, "write_memory_file", "C180")
         self.assertLess(body, park)
+
+    def test_an_unconfirmed_dispatcher_entry_is_put_back_to_the_stub(self):
+        # Every attempt's entry may have landed with only the epoch moving, so
+        # the park puts the installer's stub back where the dispatcher JMPs.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, times=tries, skip_hook=True)
+        self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
+
+    def test_a_lost_entry_stub_restore_is_resent(self):
+        # The link that lost every entry attempt can lose the stub restore
+        # too; one lost restore would leave the tracked entry where the
+        # dispatcher JMPs, with the kernal at a third of its rate.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, times=tries + 1, skip_hook=True)
+        self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
+        restore = self._index(fake, "write_memory_file", "C100")
+        icr = [o for o in fake.ops[:restore] if o[:2] == ("write_memory", "DC0D")]
+        self.assertEqual(icr[-1][2], "7F")
+
+    def test_an_entry_stub_restore_that_never_lands_is_logged(self):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+            _s, fake, _ = self._start(lose=REU_PUMP_HANDLER_ADDR, skip_hook=True)
+        self.assertTrue(any("pump entry stub restore" in m for m in cm.output), cm.output)
+        icr = [o for o in fake.ops if o[:2] == ("write_memory", "DC0D")]
+        self.assertEqual(icr[-1][2], "81")
+
+    def test_a_lost_body_park_is_resent(self):
+        # A body stage that never confirmed may have left a torn body where the
+        # chunked dispatcher JSRs, so the RTS that parks it is confirmed too.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(
+                lose=REU_PUMP_BODY_SUBROUTINE_ADDR, times=tries + 1, skip_hook=True
+            )
+        self.assertEqual(sum(1 for o in fake.ops if o == ("lost", "C180")), tries + 1)
+        self.assertEqual(fake.memories["C180"], "60")
+
+    def test_a_lost_cia1_unmask_is_resent(self):
+        # Every entry and stub-restore attempt masks CIA #1, and a link that
+        # lost all of those can lose the unmask too, which would leave the
+        # kernal with no jiffy IRQ for the rest of the scene.
+        lost = 2 * audio_mod.TRACKED_PUMP_INSTALL_TRIES + 1
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            _s, fake, _ = self._start(lose=0xDC0D, times=lost, skip_hook=True)
+        self.assertEqual(sum(1 for o in fake.ops if o == ("lost", "DC0D")), lost)
+        self.assertEqual(fake.memories["DC0D"], "81")
+
+    @staticmethod
+    def _vector_writes(fake: FakeAPI) -> list[tuple]:
+        return [o[2] for o in fake.ops if o[:2] == ("write_regs", "0314")]
+
+    def test_a_latch_that_never_lands_aborts_before_the_vector_patch(self):
+        # The pump code is in place by then, so the abort parks it and puts the
+        # kernal's CIA #1 rate back, and $0314 is never pointed at $C100.
+        tries = audio_mod.TRACKED_PUMP_INSTALL_TRIES
+        for skip_hook in (False, True):
+            with self.subTest(skip_hook=skip_hook):
+                with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+                    s, fake, opened = self._start(
+                        lose=CIA1.TIMER_A_LO, times=tries, skip_hook=skip_hook
+                    )
+                self.assertFalse(s._reu_pump_armed)
+                self.assertFalse(s.running)
+                self.assertEqual(opened, [])
+                self.assertEqual(fake.memories["C180"], "60")
+                self.assertEqual(fake.memories["DC04"], _packed_latch(kernal_cia1_latch("NTSC")))
+                self.assertEqual(self._vector_writes(fake), [])
+                # Under a dispatcher, which keeps JMPing to $C100, the tracked
+                # entry goes back to the installer's JMP $EA31 stub.
+                expected = REU_PUMP_HANDLER_STUB if skip_hook else REU_IRQ_HANDLER_TRACKED
+                self.assertEqual(fake.mem_files["C100"], expected)
+
+    def test_a_vector_patch_that_never_confirms_is_restored_to_the_kernal(self):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s, fake, opened = self._start(
+                lose=VECTORS.IRQ, times=audio_mod.TRACKED_PUMP_INSTALL_TRIES, skip_hook=False
+            )
+        self.assertEqual(
+            self._vector_writes(fake)[-1], (KERNAL.IRQ_HANDLER & 0xFF, KERNAL.IRQ_HANDLER >> 8)
+        )
+        self.assertFalse(s._reu_pump_armed)
+        self.assertEqual(opened, [])
+        self.assertEqual(fake.memories["C180"], "60")
 
 
 class _PendingAnchor:
@@ -723,6 +1067,17 @@ class MicLeadServoWiringTest(unittest.TestCase):
         self.assertIsNone(s._mic_lead)
         self.assertIsNone(s._mic_shaper)
 
+    def test_the_servo_reads_the_live_write_head_at_the_streamer_rate(self):
+        s = _new_streamer(sample_rate=10000)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        s._start_mic_for_reu_pump(device=-1)
+        self.addCleanup(s.stop)
+        lead = s._mic_lead
+        assert lead is not None
+        s._mic_reu_write_pos = 4321
+        self.assertEqual(lead._write_pos(), 4321)
+        self.assertEqual(lead._rate, 10000)
+
     def test_a_backend_without_reads_runs_open_loop_and_says_so(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
@@ -762,6 +1117,45 @@ class MicLeadServoWiringTest(unittest.TestCase):
         cast(Any, s)._disarm_reu_pump = lambda: seen.append(servo._stop.is_set())
         s.stop()
         self.assertEqual(seen, [True])
+
+
+class MicRingPrefillDeliveryTest(unittest.TestCase):
+    """The NEUTRAL prefill of the REU mic ring is confirmed per slice: a lost
+    slice would have the pump play stale FPGA SRAM, which can be loud."""
+
+    def _start(self, lose: int, times: int | None):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        lose_reu_writes_to(fake, lose, times)
+        opened: list[int] = []
+
+        def open_stream(device, callback=None, *, sample_rate=None):
+            opened.append(device)
+            return _FakeStream()
+
+        s._open_input_stream = open_stream
+        s._start_mic_for_reu_pump(device=-1)
+        self.addCleanup(s._stop_mic_lead_servo)
+        return s, fake, opened
+
+    def test_a_lost_slice_is_resent(self):
+        s, fake, opened = self._start(REU_MIC_BASE + REU_UPLOAD_SLICE, 1)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(opened, [-1])
+        landed = dict(fake.socket_dma.reuwrites)
+        self.assertEqual(
+            landed[REU_MIC_BASE + REU_UPLOAD_SLICE], bytes([NEUTRAL_SAMPLE]) * REU_UPLOAD_SLICE
+        )
+
+    def test_a_slice_that_never_lands_aborts_the_bring_up(self):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+            s, fake, opened = self._start(REU_MIC_BASE + REU_UPLOAD_SLICE, None)
+        self.assertTrue(any("plays without audio" in m for m in cm.output), cm.output)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertFalse(s.running)
+        self.assertEqual(opened, [])
+        self.assertNotIn(f"{REU_PUMP_HANDLER_ADDR:04X}", fake.mem_files)
+        self.assertNotIn("0314", fake.regs)
 
 
 if __name__ == "__main__":

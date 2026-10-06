@@ -35,6 +35,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   C64's audio arrives on a line-in rather than a capture stick, pass that input
   with `--audio-device`.
 
+- **If a mic scene goes silent with "no audio input device matched", fix
+  `[audio].device` or `--audio-device`.** A device name that matches no
+  input, or an index that is not an input, used to fall back to the system
+  default input without saying much. On a laptop that is the built-in
+  microphone, which then played the room through the C64. Now a webcam or
+  blank scene logs an error and plays without sound, and a scene with
+  `audio_source = "mic"` or `"listen"` logs it and is skipped. `-1` still asks
+  for the default input.
+
 ### Added
 
 - **`scripts/diags/hw_lock.py` runs a command while holding a per-user lock on
@@ -283,8 +292,241 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
-- **A live mic on `[audio].use_reu_pump` keeps its delay near 133 ms at 12 kHz
-  (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
+- **`source_alignment_marker` now plays at the right level under a Mahoney DAC
+  curve, and `find_marker_in_capture` finds the marker at the effective rate.**
+  The chirp was always written as 0-15 volume codes, so with `dac_curve` on it
+  played without the filter bits the track's bytes carry; it now goes through
+  the active curve. The capture reference held each code for a whole number of
+  capture samples, so at the NTSC 12032 Hz rate against a 48 kHz capture it was
+  a quarter short and the anchor came out about 18 ms late; it now uses the
+  true ratio.
+
+- **With `nmi_rate_adaptive`, a scene with no display mode starts at the
+  nominal rate.** The previous scene's display mode outlived its stop, so such
+  a scene after an `mhires` one began at `mhires`'s faster learned rate (sharp
+  until the loop walked it back) and then filed its own settled rate under
+  `mhires`, mis-seeding the next `mhires` scene.
+- **After a network stall, `$D418` DAC audio picks up where it should instead
+  of overwriting itself.** If the link to the C64 stalled for more than about
+  a third of a second, the audio worker came back far behind its schedule and
+  wrote as fast as the link allowed to catch up. That overran the audio it had
+  just written before the C64 could play it, garbling up to as long as the
+  stall itself, and squeezed the video's writes. The worker now restarts a
+  safe distance ahead of the C64's playback and logs a warning. Live mic input
+  that piled up during the stall is dropped rather than played late, and a
+  warning says how many seconds of it went, whether or not the worker had to
+  restart.
+- **A slow U64 web server no longer makes `$D418` DAC audio replay itself.**
+  The audio worker reads the C64's playback position over REST once per chunk,
+  and a read slower than about 40 ms made it fall behind the player, which
+  then replayed a lap-old ring. A slow read is now skipped, with a warning,
+  and reading backs off until it is prompt again.
+- **With `[audio].nmi_rate_adaptive` on, a link stall no longer speeds the
+  `$D418` DAC up.** After a stall of about a second, the consumer-rate
+  estimate saw only the part of the read pointer's advance past a whole ring
+  lap, read the consumer as several times too slow, and stepped the NMI up by
+  as much as 5%. A reading across an interval that long is now dropped.
+- **On a TeensyROM+, the `$D418` DAC prebuffer goes out at full speed.** The
+  link slices writes only while the NMI player runs, but it was told the
+  player was running before the timer was armed, so the whole prebuffer went
+  out in slices with no NMI to spare. It now hears once the arm has taken.
+- **`--calibrate-dac` can read a capture device that records at 12 kHz or
+  below.** Each slot's edges were trimmed by a fixed 24 samples, which at
+  those rates left nothing to measure, so a clean recording was refused as
+  holding no ring pass. The trim is now a settling time (0.5 ms) that scales
+  with the capture rate.
+- **No `$D418` DAC latch is armed outside what the NMI handler and the CIA
+  timer allow.** A `pitch_mult_*` above about 1.13 at 12 kHz used to arm an NMI
+  period shorter than the handler's safe budget, a zero multiplier crashed and
+  a negative one locked the CPU in the handler; every latch is now held to the
+  budget and a non-positive multiplier is an error. With `nmi_rate_adaptive`
+  on, a rate past the safe ceiling played at the ceiling while the video clock
+  assumed the rate asked for (2.7 % flat at 14 kHz NTSC). **A `sample_rate`
+  inside the handler's entry-latency margin (about 13.7–15 kHz NTSC, 13.2–14.5
+  kHz PAL) is now refused at load instead of warned about**, as is one below
+  about 16 Hz, which the 16-bit timer truncated; where load cannot see the
+  machine (`system = "auto"` on a PAL unit), the timer arms the nearest safe
+  latch, reports that rate, and logs a WARNING.
+- **`[ultimate64] system = "ntsc"` no longer plays `$D418` DAC audio 3.9%
+  fast.** The lowercase spelling was accepted, but the NMI timer compared it
+  against `"NTSC"` exactly and fell through to the PAL clock, so an NTSC
+  machine ran the 12 kHz default at 12472 Hz — at the live-pipeline overrun
+  onset — while pacing and the video clock assumed 12015 Hz. The value is now
+  stored in its declared spelling when it loads, and the timer takes its clock
+  from the shared `cpu_clock()`.
+
+- **`[audio].dac_curve = "auto"` no longer applies the built-in UltiSID table
+  to a real SID chip it couldn't identify.** On an Ultimate II+, and on an
+  Ultimate 64 whose SID socket settings couldn't be read, `auto` assumed the
+  emulated UltiSID was playing and picked its table. On a real 6581/8580 that
+  table plays as heavy distortion. `auto` now uses the 4-bit linear DAC and
+  warns, unless a `--calibrate-dac` calibration applies.
+
+- **A single bad sample from an audio input no longer silences the rest of
+  the scene.** If a capture driver delivered one invalid (NaN or infinite)
+  sample, or one so large it overflowed, the DSP stages held on to it and the 4-bit DAC output stayed stuck
+  until the next scene. Invalid samples are now treated as silence (or full
+  scale, for an infinite one) when they arrive.
+
+- **`[audio_features].bands` of 10 or more no longer leaves the lowest band
+  dead.** At the default 1024-sample window the lowest band read zero
+  forever, which weakened the bass that drives brightness. Every band now
+  covers at least one frequency bin, and a band count larger than the window
+  can split is refused with an error instead of producing empty bands.
+
+- **An `[audio_features].fft_size` above 32768 is refused when the config
+  loads.** Any size passed, and a mistyped one such as `17179869184` made the
+  first reactive scene try to allocate hundreds of gigabytes.
+
+- **A video whose audio fell behind on the Ultimate Audio sampler stays in
+  sync with its sound.** When the decoder could not keep up, the sampler moved
+  the audio later to keep it playing, but the picture kept following the
+  sampler's own clock, so it ran ahead of the sound by the same amount for the
+  rest of the scene. The picture now follows the audio as heard, through to
+  the end of the track.
+
+- **Reactive visuals for an audio file now pulse with the beat you hear.**
+  The analyzer used to read the newest audio decoded, which runs ahead of
+  playback by the audio queued for the C64: about 1.5 seconds on the 4-bit
+  DAC, and on the Ultimate Audio sampler up to the whole of a short file.
+  Flashes, onsets and an `audio`-driven tempo arrived that far before the
+  sound. They now follow the audio's played position.
+
+- **The DAC audio clock no longer jumps backward after the audio stalls.** On
+  `$D418` DAC audio, when a video's decoder fell behind long enough to leave
+  silence in the C64's sound ring and then caught up, the playback position
+  stepped back by up to about a quarter of a second, then caught up again.
+  A relative seek or an A/B loop mark taken in that moment landed short, and
+  the on-screen timecode moved backward. The position now never moves
+  backward during a scene.
+
+- **An REU video scene no longer plays part of the previous scene's soundtrack
+  after a network blip during setup.** The track upload, its silent tail and
+  the REU mic ring's silent prefill are now confirmed slice by slice and
+  resent when lost. Before, a slice dropped by a broken DMA connection left
+  the previous track's audio (or loud noise) in its place, with only a log
+  warning. If a slice still does not land, the scene plays without audio.
+
+- **An REU audio pump no longer starts on writes that never reached the C64.**
+  On petscii and blank REU video scenes, and for the tail of every REU pump
+  setup, a write lost on the network (a dropped or redialed DMA connection)
+  went unnoticed, and the C64's interrupt was pointed at the pump anyway. It
+  could then run leftover code or copy audio into color RAM. Each of those
+  writes is now confirmed and retried; if one still does not land, the scene
+  logs an error and plays without audio.
+
+- **A remote video or audio URL whose server stops answering no longer
+  freezes the show.** Opening a stream now gives up after 20 seconds, and a
+  stream that goes silent mid-play gives up after 30 seconds without data, so
+  the scene ends and the playlist moves on. Before, a server that accepted the
+  connection and then sent nothing held the playlist on that scene forever.
+
+- **A username and password in a media URL no longer reach `--log-file`,
+  the web console's log, or its config-check report.** When a private
+  `https://user:token@…` audio or video file failed to open, the error
+  quoted the whole URL, and only `token=`/`sig=`-style values were masked.
+  The `user:token@` part is masked now as well, and so is the `hmac=`
+  signature in an Akamai `__token__=` or `hdnts=` parameter, URL-encoded
+  (`hmac%3D…`, `%26sig%3D…`) or not. So are `pwd=`, `passwd=`,
+  `passphrase=`, `passcode=`, `loginpas=`, `pass=`, `auth=`, `jwt=` and
+  `credential(s)=` values, in a query string, a `key=value` or `key: value`
+  pair, or JSON: an IP camera's `videostream.cgi?user=admin&pwd=…` or
+  `?loginuse=admin&loginpas=…` URL kept its password before. A key that
+  runs on past one of those names, such as `author=` or `pass_count=`, keeps
+  its value, and so does one with `pass` or `auth` glued onto its end, such
+  as `bypass=` or `oauth=`. The terminal
+  still shows the URL as it was.
+
+- **`[audio].sampler_clock_hz` outside 5000000..7500000 is refused when the
+  config loads.** A slip such as `6160` or `61600000` used to be accepted
+  and played sampler audio at the wrong speed, and `0` broke the sampler
+  outright.
+
+- **An audio-file scene ends when its audio does.** The scene used to last
+  as long as the file's header said, so a truncated download, a file that
+  stopped decoding, or a header claiming a wrong length played silence for
+  the difference. One test file claimed almost five years. With a folder or
+  glob of tracks, the scene also used to take the length of the first track
+  picked rather than the one playing. An explicit `duration_s` or `-t` still
+  cuts the scene short.
+
+- **An audio file shorter than about half a second plays.** On the 4-bit
+  `$D418` DAC it was never heard, and its scene sat silent for five seconds
+  past its length; on the Ultimate Audio sampler it started two seconds late.
+
+- **A DURATION set from the on-C64 menu now holds in a waveform scene.** The
+  next tune picked from a folder of SIDs, or the next subtune SHIFT cycled
+  to, used to take its song length (or the 180 s fallback) instead. The
+  menu's value now holds for every tune and subtune, as a `duration_s` in
+  the config does.
+
+- **A video or audio-file scene on the Ultimate Audio sampler plays sound
+  every time it comes round, not just the first time.** A scene keeps its
+  sampler between plays, and stopping it latched the sampler shut. So when a
+  playlist looped, or `--loop` repeated a single clip, every later play
+  waited two seconds for audio that never came and then played silence.
+  Audio-file scenes also stopped reacting to the music. The scene now resets
+  the sampler before it starts feeding it.
+
+- **A sampler scene that comes round again after the link to the Ultimate
+  stalled mid-write no longer plays scrambled audio.** The stalled write could
+  outlast the scene's stop, and the next play then ran a second writer beside
+  it, so the two fed the same ring out of order. While the stalled write is
+  still stuck, a video scene now plays that lap silent and an audio-file scene
+  is skipped.
+
+- **On the Ultimate Audio sampler, a seek, loop wrap or resume cuts cleanly
+  to the new spot.** A scrap of the audio from before the cut used to play
+  right at the splice, and the first moment of the new spot could be lost.
+
+- **On the Ultimate Audio sampler, sound stays in sync with the picture after
+  a seek, an A/B loop wrap, a resume from pause, or a decoding hiccup.** After
+  every seek, loop wrap or resume, the sound had been running behind the
+  picture by 0.15 s, and by about half a second once the clip took more than
+  a moment to seek. A decoding stall long enough to run the audio buffer
+  down added about 0.37 s more each time. The lag never recovered. Now, when
+  the clip is catching up after a seek or a stall, the sound lines up with
+  the picture again once it has. A clip catching up too slowly to line up
+  within about two seconds keeps playing a little behind the picture until
+  the next seek, loop wrap or resume. What a seek
+  costs instead is the first few tens of milliseconds of the new position's
+  audio. If the audio cannot catch up, it keeps playing behind the picture,
+  as it did before, and a warning is logged. That happens with a source slower than real time, a live stream
+  that resumes after a long stall, or a stream whose start timed out.
+
+- **The Ultimate Audio sampler sends its audio to the Ultimate in about 40
+  writes a second, whatever the source's frame size.** It had sent one write per decoded frame, so audio decoded in
+  2.5 ms Opus frames took about 400 writes a second, twice what the link
+  can carry. Even after that was fixed, it fell back to one write per frame
+  for a moment after every seek, loop wrap or resume, and while a source
+  slightly slower than real time, such as a live stream, ran its audio
+  buffer low. In the
+  other direction, a very large decoded block, such as a low-rate FLAC
+  block, was written whole: past the audio buffer and around the ring,
+  holding up a seek until it was done. And a write the link failed to
+  deliver lost its audio; it is now retried.
+
+- **A live mic on `[audio].use_reu_pump` no longer drops out every couple of
+  seconds after the machine speeds up mid-scene.** When the mic's delay had to
+  be reset (the C64 caught up with the computer, or fell far behind), the
+  correction that had been running before the reset carried on. If the C64 had
+  meanwhile sped up, for instance as a bank-switched video mode got lighter,
+  that stale correction caught it up again within seconds, and each reset is a
+  short silence: in simulation, about 24 silences a minute. The correction now
+  restarts from the speed the C64 is actually running at.
+
+- **A live mic on `[audio].use_reu_pump` plays about 0.3 s behind the input
+  at 12 kHz, down from about 0.73 s, and no longer replays old audio under
+  mhires.** The 133 ms the host holds is only the first stage of the delay;
+  the second is how far the C64 copies ahead of the sample it is playing,
+  and nothing chose it. Without a bank-switched video mode the copying started
+  behind the playback, so every sample waited most of an 8 KB lap. Under
+  `mhires` it started just ahead, and playback could catch up with it and play
+  audio from 0.7 s earlier. The scene now sets that lead to 2 KB (about
+  170 ms) once both are running, and logs a warning if it cannot.
+
+- **A live mic on `[audio].use_reu_pump` keeps the host's share of its delay
+  near 133 ms at 12 kHz (40–250 ms under mhires) instead of drifting.** Nothing tied the host's position in the REU mic ring to the
   pump that plays it. Under REU-staged `mhires` the delay grew by about
   1.8 seconds every ten seconds, until after about 34 s the host overwrote
   audio that had not played yet. Under `petscii` the pump caught up with

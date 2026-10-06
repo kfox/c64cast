@@ -19,14 +19,31 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 from _fakes import RestoresLogging
 
+from c64cast import _redact
 from c64cast._redact import redact_secrets, redact_source_line
 from c64cast.app import cli_commands
 
 LOGIN_LINE = "web console: open http://127.0.0.1:8123/api/login?token=s3cr3t&next=/"
+
+
+def _hidden_value_ladder(levels: int, filler: int) -> str:
+    """`levels` hidden values, each one separator level shallower than the
+    last, then `filler` characters, then the encoded `&`s that end them
+    deepest first, so each value runs on past the one before it."""
+    return (
+        "".join(
+            f"token%{'25' * (levels + 1)}3Dpassword%{'25' * e}3Dx%{'25' * (levels + 1)}26"
+            for e in range(levels - 1, -1, -1)
+        )
+        + "y" * filler
+        + "".join(f"%{'25' * d}26" for d in range(levels, -1, -1))
+    )
 
 
 def _record(message: str) -> logging.LogRecord:
@@ -142,10 +159,138 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertNotIn("abc123", redact_secrets("secret=abc123"))
         self.assertNotIn("abc123", redact_secrets("?client_secret=abc123"))
 
+    def test_a_camera_url_password_is_covered(self):
+        """A Foscam-style IP camera takes its login in the query string, and a
+        failed video open quotes the URL into its error."""
+        self.assertEqual(
+            redact_secrets("http://cam/videostream.cgi?user=admin&pwd=hunter2&res=0"),
+            "http://cam/videostream.cgi?user=admin&pwd=REDACTED&res=0",
+        )
+        self.assertEqual(
+            redact_secrets("http://cam/videostream.cgi?loginuse=admin&loginpas=hunter2"),
+            "http://cam/videostream.cgi?loginuse=admin&loginpas=REDACTED",
+        )
+
+    def test_each_password_and_credential_name_masks_its_value(self):
+        forms = (
+            "http://h/a?u=1&{name}=S3CR&n=1",
+            "{name}=S3CR",
+            "{name}: S3CR",
+            '{{"{name}": "S3CR", "x": 1}}',
+            "db_{name}=S3CR",
+            "X-{name}: S3CR",
+            "%26{name}%3DS3CR",
+        )
+        for name in (
+            "pwd",
+            "passwd",
+            "password",
+            "passphrase",
+            "passcode",
+            "loginpas",
+            "loginpass",
+            "pass",
+            "auth",
+            "jwt",
+            "credential",
+            "credentials",
+        ):
+            for form in forms:
+                line = form.format(name=name)
+                with self.subTest(line=line):
+                    self.assertNotIn("S3CR", redact_secrets(line))
+            with self.subTest(source_line=name):
+                safe, verbatim = redact_source_line([f'{name} == "S3CR"'], 1)
+                self.assertNotIn("S3CR", safe)
+                self.assertFalse(verbatim)
+
+    def test_a_glued_prefix_takes_the_long_names_but_not_pass_or_auth(self):
+        """`passwd`, `pwd`, `jwt` and `credential` are open names, like
+        `password`; `pass` and `auth` are short ones, like `key`, because a
+        glued prefix makes them `bypass` and `oauth`."""
+        for line, want in (
+            ("dbpasswd=x", "dbpasswd=REDACTED"),
+            ("wifipassphrase=x", "wifipassphrase=REDACTED"),
+            ("adminpasscode=x", "adminpasscode=REDACTED"),
+            ("userpwd=x", "userpwd=REDACTED"),
+            ("idjwt=x", "idjwt=REDACTED"),
+            ("awscredentials=x", "awscredentials=REDACTED"),
+            ("bypass=on", "bypass=on"),
+            ("oauth=1", "oauth=1"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_word_that_merely_contains_a_credential_name_is_left_alone(self):
+        """A name masks only when the key ends where the name does, so
+        ordinary diagnostic text keeps its values. `oauth_state` is kept on
+        purpose: it ends in `state`, and an OAuth credential travels as
+        `oauth_token`, which `token` covers."""
+        line = (
+            "passes=3 bypass=on compass: north author=Kelly authority: x "
+            "oauth_state=abc pass_count=2 jwt_expiry_s=30 passing: yes "
+            "authed=1 pwdx=1 jwts=1 credentialed=1 passwords=4 "
+            "passphrases=2 passcodes=2 loginpassed=1"
+        )
+        self.assertEqual(redact_secrets(line), line)
+
     def test_a_bearer_header_value_is_covered(self):
         out = redact_secrets("Authorization: Bearer s3cr3t")
         self.assertNotIn("s3cr3t", out)
         self.assertIn("Bearer REDACTED", out)
+
+    def test_a_bearer_token_under_a_secret_name_is_covered(self):
+        """A secret name's unquoted value ends at the space after `Bearer`, so
+        that word alone was masked and the token behind it was not — the same
+        whether the name is raw or found inside an encoded value."""
+        for line, want in (
+            ("access_token: Bearer s3cr3t", "access_token: REDACTED REDACTED"),
+            ("u=%2526token%253D Bearer s3cr3t", "u=%2526token%253D REDACTED REDACTED"),
+            ("key: Bearer Bearer s3cr3t", "key: REDACTED REDACTED REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_name_inside_a_bearer_value_does_not_hide_a_later_one(self):
+        """A name inside a Bearer value starts a match once the two rules are
+        searched apart, and its quoted value can close inside a later name's
+        quoted value: `bcdef` came back whole."""
+        for line in (
+            "Bearer token=' x secret=\"a'bcdef\"",
+            "u64://h:p@h Bearer token=' x secret=\"a'bcdef\"",
+        ):
+            with self.subTest(line=line):
+                self.assertNotIn("bcdef", redact_secrets(line))
+
+    def test_a_bearer_after_a_percent_escape_is_covered(self):
+        """The escape's hex digit leaves no word boundary before `Bearer`, and
+        a secret name's value ends at the space after it, so the token behind
+        an encoded separator was masked by neither rule. An encoded header
+        spells the space `%20` or `+`, and its value ends at the next one."""
+        for line, want in (
+            ("%22token%22%3ABearer abc", "%22token%22%3AREDACTED REDACTED"),
+            ("token%3aBearer abc", "token%3aREDACTED REDACTED"),
+            ("%2522token%2522%253ABearer abc", "%2522token%2522%253AREDACTED REDACTED"),
+            ("x%3DBearer abc", "x%3DBearer REDACTED"),
+            ("h=Authorization%3A%20Bearer%20abc%20x", "h=Authorization%3A%20Bearer%20REDACTED%20x"),
+            (
+                "h=Authorization%253A%2520Bearer%2520abc",
+                "h=Authorization%253A%2520Bearer%2520REDACTED",
+            ),
+            ("h=Authorization:+Bearer+abc+x", "h=Authorization:+Bearer+REDACTED+x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_encoded_bearers_is_redacted_in_linear_time(self):
+        """Every other `Bearer` in the run starts a match, and the one between
+        is its value (the `%20` a match consumes leaves that one no escape to
+        follow). A value that ran past an encoded space read the rest of the run
+        once per match, which is quadratic: 144 KB of `Bearer%20` took 3.6 s."""
+        line = "Bearer%20" * 16_000
+        start = time.perf_counter()
+        redact_secrets(line)
+        self.assertLess(time.perf_counter() - start, 2.0)
 
     def test_a_bare_key_or_sig_parameter_is_covered(self):
         """The spellings a signed media or feed URL uses. `-vv` releases the
@@ -156,12 +301,315 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertNotIn("deadbeef", redact_secrets("X-Amz-Signature=deadbeef"))
         self.assertNotIn("zzz", redact_secrets("signing_key=zzz"))
 
+    def test_an_akamai_token_loses_its_hmac(self):
+        """Akamai signs a URL with `__token__=` or `hdnts=`, neither of which
+        the key names reach (`__token__` has no word boundary after `token`).
+        Its signature is the `hmac=` field inside the value; the expiry and
+        path around it are not secret."""
+        for name in ("__token__", "hdnts"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    redact_secrets(f"https://cdn/a.mp3?{name}=exp=1~acl=/a/*~hmac=abc123&x=1"),
+                    f"https://cdn/a.mp3?{name}=exp=1~acl=/a/*~hmac=REDACTED&x=1",
+                )
+
+    def test_a_secret_inside_a_url_encoded_value_is_covered(self):
+        """`urlencode` turns the token's `=` into `%3D`, a Java-style encoder
+        turns its `~` into `%7E` too, and a redirect URL carried in a query
+        parameter spells `&sig=` as `%26sig%3D`. The escape's hex digit leaves
+        no word boundary before the name, and the value ends at `%26`."""
+        self.assertEqual(
+            redact_secrets("hdnts=exp%3D1~acl%3D%2Fa%2F%2A~hmac%3Dabc123&x=1"),
+            "hdnts=exp%3D1~acl%3D%2Fa%2F%2A~hmac%3DREDACTED&x=1",
+        )
+        self.assertEqual(
+            redact_secrets("__token__=exp%3D1%7Eacl%3D%2F%7Ehmac%3Dabc123"),
+            "__token__=exp%3D1%7Eacl%3D%2F%7Ehmac%3DREDACTED",
+        )
+        self.assertEqual(
+            redact_secrets("u=https%3A%2F%2Fh%2F%3Fsig%3Ddeadbeef%26next%3D2"),
+            "u=https%3A%2F%2Fh%2F%3Fsig%3DREDACTED%26next%3D2",
+        )
+        line = "u=%2Fmonkey%3D1%26sortkey%3Ddate"
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_secret_inside_a_twice_encoded_value_is_covered(self):
+        """A URL inside a parameter of a URL that is itself a parameter is
+        encoded twice: `&sig=` becomes `%2526sig%253D`. Its value ends at
+        `%2526`, or at the `%26` ending the middle URL's own parameter, while a
+        once-encoded value keeps a `%2526` as part of the secret."""
+        self.assertEqual(
+            redact_secrets("u=a%3Fr%3Dh%253A%252F%252Fh%252F%253Fsig%253Ddeadbeef%2526n%253D2"),
+            "u=a%3Fr%3Dh%253A%252F%252Fh%252F%253Fsig%253DREDACTED%2526n%253D2",
+        )
+        self.assertEqual(
+            redact_secrets("u=a%3Fr%3D%253Ftoken%253Dabc%26n%3D2"),
+            "u=a%3Fr%3D%253Ftoken%253DREDACTED%26n%3D2",
+        )
+        self.assertEqual(
+            redact_secrets("u=%3Fsig%3Dabc%2526def%26n%3D2"),
+            "u=%3Fsig%3DREDACTED%26n%3D2",
+        )
+        line = "u=%252Fmonkey%253D1%2526sortkey%253Ddate"
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_secret_encoded_any_number_of_times_is_covered(self):
+        """Each level of encoding puts one more `25` after every `%`. A value
+        encoded three times ends at an `&` of any shallower level, and keeps
+        its own `&`, which is `%25252526` there."""
+        for line, want in (
+            (
+                "u=%252526sig%25253Dab%25252526cd%252526n%25253D2",
+                "u=%252526sig%25253DREDACTED%252526n%25253D2",
+            ),
+            ("u=%252526token%25253Dab%2526n", "u=%252526token%25253DREDACTED%2526n"),
+            ("u=%25257Ehmac%25253Dab%26n", "u=%25257Ehmac%25253DREDACTED%26n"),
+            ("s=%25252522sig%25252522%2525253Aab", "s=%25252522sig%25252522%2525253AREDACTED"),
+            ("u=%25252526sig%2525253Dab", "u=%25252526sig%2525253DREDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        line = "u=%25252Fmonkey%25253D1%252526sortkey%25253Ddate"
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_an_encoded_colon_and_quote_read_as_their_raw_spellings(self):
+        """A JSON document carried in a query parameter spells `"token":"v"`
+        as `%22token%22%3A%22v%22`; with no encoded quote to end at, the value
+        runs on to the `%26`."""
+        self.assertEqual(
+            redact_secrets("state=%7B%22token%22%3A%22abc%22%7D%26n%3D1"),
+            "state=%7B%22token%22%3AREDACTED%26n%3D1",
+        )
+        self.assertEqual(
+            redact_secrets("s=%257B%2527sig%2527%253A%2527abc%2527%257D"),
+            "s=%257B%2527sig%2527%253AREDACTED",
+        )
+        line = "state=%7B%22monkey%22%3A%22abc%22%7D"
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_name_inside_another_names_value_keeps_its_value_masked(self):
+        """A search resumes where a match ends, so a name inside a value
+        starts no match of its own. Its value still outlasted the one it hid
+        in when its separator began where that value ended — at a space or a
+        quote — or when an encoded `&` ended the outer value and the hidden
+        name's separator was shallower than that `&` — or when the outer
+        value was quoted and the hidden one was quoted with another kind."""
+        for line, want in (
+            ("sig=\"x token:'a\" S3CR'", "sig=\"REDACTED'"),
+            ("sig=\"x 'token': 'a\" S3CR'", "sig=\"REDACTED'"),
+            ("sig%25253D'''x token:\"a''' S3CR\"", "sig%25253D'''REDACTED\""),
+            ('-sig%2525253d"""a-sig:\'\'\'"""" S3CR', '-sig%2525253d"""REDACTED'),
+            ("token%3Apassword =S3CR", "token%3AREDACTED =REDACTED"),
+            ("sig%253atoken%253d %2FS3CR[", "sig%253aREDACTED REDACTED"),
+            ("token%3Apassword'=S3CR", "token%3AREDACTED'=REDACTED"),
+            ("token%3AX-Auth-Token =S3CR", "token%3AREDACTED =REDACTED"),
+            ("token%3A%22key%22 =S3CR", "token%3AREDACTED =REDACTED"),
+            ("%22token%22%3Apassword%22%3A S3CR", "%22token%22%3AREDACTED REDACTED"),
+            ("token=password =S3CR", "token=REDACTED =REDACTED"),
+            ("token%3Apassword=a%26S3CR", "token%3AREDACTED"),
+            ("token%253Apassword%3Da%2526S3CR x", "token%253AREDACTED x"),
+            (
+                "token%3Dpassword=a%26b c token%3Dpassword=d%26S3CR",
+                "token%3DREDACTED c token%3DREDACTED",
+            ),
+            (
+                "token%25253Dpassword%253Dx%25252526token%25253Dpassword%3Dx%25252526"
+                "S3CR%252526S3CR%2526S3CR%26tail",
+                "token%25253DREDACTED%26tail",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        for line in ("token%3Ax%26n%3D1 y=2", "token%3Amonkey=1%26n%3D1", "token%3Ax y"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line).count("REDACTED"), 1)
+
+    def test_names_hidden_in_values_are_redacted_in_linear_time(self):
+        """Each value a hidden name could outlast is looked for only next to
+        the end it outlasts, and a value an earlier one already reaches past
+        is not read again."""
+        for line in (
+            "token%3A" + "token=" * 16_000 + "%26" + "a" * 96_000 + " ",
+            "token%3A" * 16_000 + "%26",
+            "token%253Apassword=x%2526" * 6_000 + " ",
+            "token%3Apassword " * 8_000,
+            "pwd%3Apass " * 8_000,
+            'sig="' + "token:'" * 8_000 + '"',
+            ('sig="x token:\'"' + "sig='y token:\"'") * 4_000,
+            _hidden_value_ladder(200, 400_000),
+        ):
+            with self.subTest(line=line[:24]):
+                start = time.perf_counter()
+                redact_secrets(line)
+                self.assertLess(time.perf_counter() - start, 2.0)
+
+    def test_a_hidden_value_ladder_reads_the_line_once(self):
+        """A hidden value that runs past an earlier one is read on from where
+        that one stopped, so the ends of every rung together cost one pass
+        over the line. Read from each rung's own end instead, the filler is
+        read once per rung. This counts characters rather than timing them:
+        at 200 rungs the rereading costs about 1 s, which a loaded machine
+        can hide under any time bound loose enough to stay quiet."""
+        line = _hidden_value_ladder(50, 5_000)
+        unquoted_end = _redact._unquoted_end
+        scanned = 0
+
+        def counting_unquoted_end(text: str, pos: int, depth: int) -> int:
+            nonlocal scanned
+            end = unquoted_end(text, pos, depth)
+            scanned += end - pos
+            return end
+
+        with mock.patch.object(_redact, "_unquoted_end", counting_unquoted_end):
+            redacted = redact_secrets(line)
+        self.assertNotIn("y", redacted)
+        # At least the filler was read, so the count measured this path.
+        self.assertGreaterEqual(scanned, 5_000)
+        self.assertLessEqual(scanned, len(line))
+
     def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
         """The short names are why `\\w*` cannot front them: `sortkey` would be
         masked with the rest, and a masked diagnostic value reads as coverage
         while telling the reader nothing."""
-        line = "?sortkey=date&hotkey=F1 monkey=1 sig_level=3 sigma=2 keys=3 keyboard=on"
+        line = "?sortkey=date&hotkey=F1 monkey=1 sig_level=3 sigma=2 keys=3 keyboard=on hmacs=1"
         self.assertEqual(redact_secrets(line), line)
+
+    def test_a_prefix_led_by_dashes_is_still_kept_and_its_value_masked(self):
+        """The prefixed names are tried from the start of a run of name
+        characters, which may be a `-` rather than a word character."""
+        for line, want in (
+            ("--signing-key=zzz", "--signing-key=REDACTED"),
+            ("-key=zzz x", "-key=REDACTED x"),
+            ("a-b-c-x_sig=zzz", "a-b-c-x_sig=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_open_name_partway_through_a_dashed_run_is_still_found(self):
+        """Only the short names are confined to the start of a run. `token`,
+        `password`, `secret` and `apikey` are still tried at every word
+        boundary, which is what reaches the one after a `-`. A `.` needs no
+        such help: it ends the run, so the name after it starts a new one."""
+        for line, want in (
+            ("X-Auth-Token=zzz x", "X-Auth-Token=REDACTED x"),
+            ("dma-password: zzz", "dma-password: REDACTED"),
+            ("a.b-secret=zzz", "a.b-secret=REDACTED"),
+            ("X-apikey=zzz", "X-apikey=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertNotIn("zzz", safe)
+                self.assertFalse(verbatim)
+
+    def test_a_long_dash_joined_run_is_redacted_in_linear_time(self):
+        """A `-` puts a word boundary at every letter of `a-a-a-…`. A prefixed
+        name tried from each of them scanned the rest of the run every time,
+        which is quadratic: 10 KB of one took 1.5 s on a log line, and 100 KB
+        took 139 s."""
+        for line in (
+            "a-" * 32_000,
+            "key-" * 16_000,
+            "pass-" * 16_000,
+            "pwd-" * 16_000,
+            "x-" * 32_000 + "=1",
+        ):
+            with self.subTest(line=line[:16]):
+                start = time.perf_counter()
+                redact_secrets(line)
+                redact_source_line([line], 1)
+                self.assertLess(time.perf_counter() - start, 2.0)
+
+    def test_a_long_run_of_encoded_percent_signs_is_redacted_in_linear_time(self):
+        """An escape is read as `%`, any run of `25`, then its digits. Given
+        back a pair at a time, that run rescans the name characters after it
+        once per pair, which is quadratic: 32 KB of `%2525…` took 16 s."""
+        for line in (
+            "%" + "25" * 8_000 + "a" * 16_000,
+            "%" + "25" * 32_000 + "token",
+            "%" + "25" * 32_000 + "pwd",
+            "%" + "25" * 32_000 + "pass",
+        ):
+            with self.subTest(line=line[:16]):
+                start = time.perf_counter()
+                redact_secrets(line)
+                redact_source_line([line], 1)
+                self.assertLess(time.perf_counter() - start, 2.0)
+
+
+class RedactUrlUserinfoTest(unittest.TestCase):
+    """A private media file is reached as `https://user:token@host/...`, and
+    FFmpeg quotes the URL it failed on into the error every caller logs. The
+    log file and the console's log tail redact at output, so the userinfo has
+    to be one of the shapes they recognize."""
+
+    def test_userinfo_is_masked(self):
+        self.assertEqual(
+            redact_secrets("open failed: 'https://alice:S3CRET@cdn.example/a.mp3'"),
+            "open failed: 'https://REDACTED@cdn.example/a.mp3'",
+        )
+
+    def test_a_raw_at_sign_in_the_password_goes_too(self):
+        self.assertEqual(redact_secrets("u64://kelly:p@ss@host/x"), "u64://REDACTED@host/x")
+
+    def test_a_signature_on_the_same_url_is_masked_as_well(self):
+        out = redact_secrets("https://a:b@cdn.example/v?sig=abc&x=1")
+        self.assertEqual(out, "https://REDACTED@cdn.example/v?sig=REDACTED&x=1")
+
+    def test_an_at_sign_outside_a_netloc_is_left_alone(self):
+        for line in (
+            "mail me@example.com",
+            "https://host/feed?to=me@example.com",
+            "tr://COM3 for kelly@host",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_masking_is_idempotent(self):
+        once = redact_secrets("https://alice:S3CRET@cdn.example/a.mp3")
+        self.assertEqual(redact_secrets(once), once)
+
+    def test_a_quote_in_the_password_goes_too(self):
+        """RFC 3986 allows a raw `'` in userinfo, so the URL is well formed and
+        FFmpeg opens it; a quote that bounded the match left it whole."""
+        for line, want in (
+            ("https://alice:it's@cdn.example/a.mp3", "https://REDACTED@cdn.example/a.mp3"),
+            ('"https://alice:it\'s@cdn.example/a.mp3"', '"https://REDACTED@cdn.example/a.mp3"'),
+            # A TOML basic string's `\"` parses to a raw `"` in the URL opened.
+            ('https://alice:it"s@cdn.example/a.mp3', "https://REDACTED@cdn.example/a.mp3"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_userinfo_reaching_into_the_next_string_does_not_strand_a_secret(self):
+        """No quote bounds the userinfo, so on a run with no whitespace it
+        reaches from a path-less URL into the next string. Masked first, it
+        swallowed that string's key name and left whatever followed the
+        secret's own `@` with nothing to name it."""
+        for line, want in (
+            ('{"url":"u64://192.168.2.64","dma_password":"hunt@er2"}', '{"url":"u64://REDACTED"}'),
+            ('["tr://COM3","token=abc@def"]', '["tr://REDACTED"]'),
+            ("{'url':'u64://h','viewer_token':'ab@cd'}", "{'url':'u64://REDACTED'}"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_value_the_userinfo_cut_short_is_masked_to_its_real_end(self):
+        """Read as given, the `'` in the password closes the token's value;
+        once the userinfo is masked the value runs on to its real quote."""
+        self.assertEqual(redact_secrets("token='https://u:it's@h/a.mp4'"), "token='REDACTED'")
+
+    def test_a_long_run_of_scheme_characters_is_redacted_in_linear_time(self):
+        """Every line `--log-file` and the console's log tail receive goes
+        through here. A scheme pattern retried from every offset of a run of
+        scheme characters is quadratic in the run: 64 KB of hex took 11 s, and
+        the same run on a config line the parser refused took 17 s to quote."""
+        for line in ("a" * 64_000, "deadbeef0123" * 5_000, "x://" + "a" * 64_000):
+            with self.subTest(line=line[:16]):
+                start = time.perf_counter()
+                self.assertEqual(redact_secrets(line), line)
+                redact_source_line([line], 1)
+                self.assertLess(time.perf_counter() - start, 2.0)
 
 
 class RedactSourceLineTest(unittest.TestCase):
@@ -262,6 +710,15 @@ class RedactSourceLineTest(unittest.TestCase):
                 self.assertFalse(verbatim)
                 self.assertTrue(safe.startswith("url = "), safe)
 
+    def test_the_cut_falls_where_the_scheme_begins(self):
+        """The cut keeps the key name and drops the whole URL, scheme
+        included, so nothing of the target is left to piece together."""
+        for line in ('url = "u64://kelly:hunter2@host"', "url=u64+x://kelly:hunter2@host"):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertEqual(safe, line[: line.index("u64")] + "REDACTED")
+                self.assertFalse(verbatim)
+
     def test_a_secret_key_later_on_the_line_does_not_carry_the_userinfo_through(self):
         """The key rule keeps the text up to the key name, so a password in a
         URL earlier on the same line rode out inside that prefix — the shape a
@@ -286,9 +743,7 @@ class RedactSourceLineTest(unittest.TestCase):
     def test_a_space_inside_the_userinfo_does_not_evade_the_rule(self):
         """A space is illegal in a URL, so stopping the netloc at one reads as
         defensible — but a passphrase with a space in it is exactly the shape
-        that fails to parse and lands here, and it came back whole. The quote
-        and `#` still bound the search, so nothing downwind of the value can
-        pull the cut earlier."""
+        that fails to parse and lands here, and it came back whole."""
         for line in (
             'url = "u64://kelly:my pass@192.168.2.64',
             "url = 'u64://kelly:my pass@192.168.2.64'",
@@ -299,6 +754,25 @@ class RedactSourceLineTest(unittest.TestCase):
                 self.assertNotIn("pass", safe)
                 self.assertFalse(verbatim)
                 self.assertTrue(safe.startswith("url = "), safe)
+
+    def test_a_quote_inside_the_userinfo_does_not_evade_the_rule(self):
+        """RFC 3986 allows a raw `'` in userinfo. In a literal string it ends
+        the value early, so the parser rejects that very line and it lands
+        here; a `'` that bounded the search echoed the password whole. A `"`
+        is not legal in a URL, but it is the same shape in a basic string: the
+        password's own quote ends the value, or an escaped one rides through
+        on a line refused for something else."""
+        for line in (
+            "file = 'https://kelly:it's@cdn.example/a.mp4'",
+            'file = "https://kelly:it\'s@cdn.example/a.mp4" bogus',
+            'file = "https://kelly:it"s@cdn.example/a.mp4"',
+            'file = "https://kelly:it\\"s@cdn.example/a.mp4" bogus',
+            'file = """https://kelly:it"s@cdn.example/a.mp4""" bogus',
+        ):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertEqual(safe, line[: line.index("https")] + "REDACTED")
+                self.assertFalse(verbatim)
 
     def test_an_at_sign_outside_a_netloc_is_not_userinfo(self):
         """The netloc ends at the first `/`, `?` or `#`. A line truncated over

@@ -13,6 +13,7 @@ stubs out the socket connect, and the ABC contract is checked structurally.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
+import sys
 import unittest
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, replace
@@ -116,6 +117,39 @@ class ProfileAndRegistryTest(unittest.TestCase):
         self.assertFalse(p.writes_are_acked)
         self.assertEqual(p.write_transport, "socket_dma")
         self.assertIsNone(p.max_fps)
+
+    def test_free_payload_is_the_knee_of_the_write_cost(self):
+        for p in (ULTIMATE_PROFILE, TEENSYROM_PROFILE):
+            knee = p.free_payload_bytes()
+            self.assertEqual(p.write_cost_s(knee), p.write_cost_floor_s, p.family)
+            self.assertGreater(p.write_cost_s(knee + 1), p.write_cost_floor_s, p.family)
+
+    def test_a_link_with_no_per_byte_cost_has_unbounded_free_payload(self):
+        # Every payload costs the same, so a streaming writer should coalesce
+        # as far as its other bounds allow, not fall back to one write per chunk.
+        flat = replace(ULTIMATE_PROFILE, write_cost_per_byte_s=0.0)
+        self.assertGreaterEqual(flat.free_payload_bytes(), 1 << 30)
+
+    def test_a_vanishing_per_byte_cost_is_unbounded_too(self):
+        # A subnormal slope divides the floor's headroom into infinity.
+        tiny = replace(ULTIMATE_PROFILE, write_cost_per_byte_s=5e-324)
+        self.assertEqual(tiny.free_payload_bytes(), sys.maxsize)
+
+    def test_a_floor_below_the_intercept_has_no_free_payload(self):
+        # The floor never binds, so no payload rides for it alone — and with a
+        # subnormal slope the headroom divides into -inf, not just below zero.
+        for per_byte in (ULTIMATE_PROFILE.write_cost_per_byte_s, 5e-324):
+            low = replace(
+                ULTIMATE_PROFILE,
+                write_cost_floor_s=ULTIMATE_PROFILE.write_cost_intercept_s / 2,
+                write_cost_per_byte_s=per_byte,
+            )
+            self.assertEqual(low.free_payload_bytes(), 0, per_byte)
+
+    def test_a_nan_cost_raises_rather_than_reading_as_a_size(self):
+        nan = replace(ULTIMATE_PROFILE, write_cost_floor_s=float("nan"))
+        with self.assertRaises(ValueError):
+            nan.free_payload_bytes()
 
     def test_profile_is_frozen(self):
         with self.assertRaises(FrozenInstanceError):

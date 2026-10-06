@@ -40,9 +40,14 @@ import time
 
 import _diaglib as d
 
-RING_ADDR = 0x4000  # audio.py RING_BUFFER_ADDR — the region the worker uses
-RING_SIZE = 0x2000  # audio.py RING_BUFFER_SIZE
-DAC_RATE_HZ = 12032.1  # audio.py effective NTSC rate, for ms-of-audio conversion
+from c64cast.app.config import AudioCfg
+from c64cast.audio.audio_handlers import RING_BUFFER_ADDR as RING_ADDR
+from c64cast.audio.audio_handlers import RING_BUFFER_SIZE as RING_SIZE
+from c64cast.hw.c64 import actual_rate_for_latch, cia1_latch_for_rate
+
+# The NTSC effective rate at the shipped [audio].sample_rate, for the
+# ms-of-audio conversion: what the CIA #2 latch actually clocks, not the request.
+DAC_RATE_HZ = actual_rate_for_latch(cia1_latch_for_rate(AudioCfg().sample_rate, "NTSC"), "NTSC")
 
 
 def _slot_addr(slot: int, quantum: int) -> int:
@@ -76,7 +81,10 @@ def _preflight(api, quantum: int) -> bool:
     if got != probe:
         differing = sum(1 for x, y in zip(got, probe, strict=True) if x != y)
         print(f"[preflight] region not quiescent: {differing}/{quantum} bytes changed in 1 s")
-        print("[preflight] something on the C64 is using $4000 — pick another --addr or reset")
+        print(
+            f"[preflight] something on the C64 is using ${RING_ADDR:04X}, the audio ring "
+            "this script measures (it has no other address); stop that program and run again"
+        )
         return False
     print(f"[preflight] ${RING_ADDR:04X} quiescent, readback exact")
     return True

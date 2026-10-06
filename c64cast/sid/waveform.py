@@ -26,6 +26,7 @@ See docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscillosc
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import threading
@@ -374,7 +375,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self.file_spec = file
         self._song_arg = song
         self.songlengths_db = songlengths_db
-        self._explicit_duration_s = duration_s
+        # 0 is the config's "run until stopped". Resolved here, not only by
+        # build_scene's later `duration_s = inf`, which would otherwise differ
+        # from the derived 0.0 and pass for a live DURATION change.
+        self._explicit_duration_s = math.inf if duration_s == 0 else duration_s
         # "auto"/"6581"/"8580"/"off", already resolved to a plain string by
         # sid_autoconfig.resolve_sid_model_cfg. See _apply_sid_hw_config.
         self._sid_model = sid_model
@@ -416,7 +420,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             target_fps = 25.0 if system.upper() == "PAL" else 30.0
         self.target_fps = float(target_fps)
         self.system = system
-        self.duration_s = float(self._resolve_duration_for_current_sid())
+        self._set_derived_duration(float(self._resolve_duration_for_current_sid()))
         # One displayed row of waveform covers exactly one display frame of audio
         # time (frame_time_s), locking the trace's visible phase to wall-clock.
         self._init_scope_knobs(
@@ -740,6 +744,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # -1 forces the first paint.
         self._last_window_wave: list[list[int]] = [[-1] * n for _ in range(3)]
 
+    def _adopt_live_duration(self) -> None:
+        """Make a `duration_s` set from the live menu the explicit duration,
+        so the next song's length lookup leaves it alone, as it leaves a
+        configured one. A later live change replaces it the same way, whether
+        the explicit value came from the config or an earlier live change."""
+        if self._duration_set_live():
+            self._explicit_duration_s = self.duration_s
+
     def _resolve_duration_for_current_sid(self) -> float:
         """Compute the playback duration for self.sid_bytes + self.song.
         Order: explicit user duration_s > songlengths DB > fallback default."""
@@ -780,12 +792,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         scene name — with the SID's embedded title, extension-stripped
         basename fallback) to reflect it. Returns False if every candidate
         was rejected / the directory is now empty."""
+        self._adopt_live_duration()
         try:
             self._pick_and_load_sid()
         except ValueError as e:
             log.error("waveform: %s", e)
             return False
-        self.duration_s = float(self._resolve_duration_for_current_sid())
+        self._set_derived_duration(float(self._resolve_duration_for_current_sid()))
         name = self.header.name.strip() or os.path.splitext(os.path.basename(self._sid_file))[0]
         self.name = f"SID: {name} #{self.song}"
         return True
@@ -1230,6 +1243,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if n <= 1:
             return None
 
+        # Before the candidate walk, which skips short subtunes only when no
+        # duration is explicit.
+        self._adopt_live_duration()
         self._cycle_silence_current()
         # One budget for everything this SHIFT press emulates — the candidate
         # walk and the chosen subtune's write footprint. Per-run deadlines would
@@ -1546,9 +1562,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if self.is_done:
             return None
         if self._explicit_duration_s is not None:
-            self.duration_s = float(self._explicit_duration_s)
+            self._set_derived_duration(float(self._explicit_duration_s))
         elif chosen_duration is not None:
-            self.duration_s = float(chosen_duration)
+            self._set_derived_duration(float(chosen_duration))
         log.info(
             "waveform: cycle hard-relaunched song %d/%d (reads RAM "
             "under BASIC ROM — needs $36 + a clean INIT)",
@@ -1587,9 +1603,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         least-surprising fallback."""
         self._host_emu = new_emu
         if self._explicit_duration_s is not None:
-            self.duration_s = float(self._explicit_duration_s)
+            self._set_derived_duration(float(self._explicit_duration_s))
         elif chosen_duration is not None:
-            self.duration_s = float(chosen_duration)
+            self._set_derived_duration(float(chosen_duration))
             log.info(
                 "waveform: songlengths matched %s #%d → %.1fs",
                 os.path.basename(self._sid_file),

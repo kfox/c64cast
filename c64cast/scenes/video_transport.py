@@ -21,6 +21,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Literal
 
+from c64cast.audio.audio_source import heard_seconds
 from c64cast.control.transport import LoopPresetStore, timecode
 from c64cast.hw.c64 import RegionID
 
@@ -61,7 +62,7 @@ class VideoTransportControls:
         self.wall_anchor_time = 0.0
         self.resync = False
         # The resync path's post-touch clock, in the scaled/PTS domain:
-        # audio_anchor_clock_s + (audio.position_seconds() - audio_anchor_pos),
+        # audio_anchor_clock_s + (heard_seconds(audio) - audio_anchor_pos),
         # frozen while paused, re-anchored at touch/pause/resume/seek.
         self.audio_anchor_clock_s = 0.0
         self.audio_anchor_pos = 0.0
@@ -102,14 +103,16 @@ class VideoTransportControls:
                 assert sc.audio is not None
                 if self.paused:
                     return self.audio_anchor_clock_s
-                return self.audio_anchor_clock_s + (
-                    sc.audio.position_seconds() - self.audio_anchor_pos
-                )
+                return self.audio_anchor_clock_s + (heard_seconds(sc.audio) - self.audio_anchor_pos)
             if self.paused:
                 return self.wall_anchor_clock_s
             return self.wall_anchor_clock_s + (time.time() - self.wall_anchor_time)
         if sc.audio and sc.audio.sample_rate:
-            return sc.audio.position_seconds()
+            # The heard position, not the sink's raw clock: a sampler that
+            # re-anchored late audio plays it that far behind its clock, and
+            # the picture read off the raw clock ran that far ahead of the
+            # sound and ended with the last lag's worth of audio unshown.
+            return heard_seconds(sc.audio)
         return time.time() - sc.wall_start_time
 
     def touch(self) -> None:
@@ -139,26 +142,41 @@ class VideoTransportControls:
             # The pre-touch clock is the audio position in the scaled domain, so
             # the anchor delta starts at zero and playback carries on unbroken.
             self.audio_anchor_clock_s = clock_s
-            self.audio_anchor_pos = sc.audio.position_seconds()
+            self.audio_anchor_pos = heard_seconds(sc.audio)
         else:
             self.wall_anchor_clock_s = clock_s
             self.wall_anchor_time = time.time()
             if sc.source is not None:
                 sc.source.set_muted(True)
 
-    def _splice(self, target_s: float) -> None:
+    def _splice(self, target_s: float, *, unmute: bool = False) -> None:
         """Resync-path splice primitive (target_s in content seconds): re-anchor
         the audio clock to the target, arm the demuxer's stale-audio guard, then
         drop everything already queued. Order is load-bearing — request_seek sets
-        the _emit_audio pending-seek guard live FIRST, then flush() drains; the
-        flush epoch handles any pusher already blocked inside push_samples."""
+        the _emit_audio pending-seek guard live FIRST, then flush() retires the
+        queue (the DAC drains it; the sampler leaves it for its writer to drop
+        by epoch tag); the flush epoch handles any pusher already blocked
+        inside push_samples.
+
+        ``unmute`` (resume) unlatches the source between the two. The demuxer
+        can apply the seek and decode the target's first audio while flush()
+        runs (the sampler's cut-over waits on the ring writer and blanks the
+        old lead, tens of ms), and a source still muted then drops it: the
+        stream starts that much past the target at the anchor, and the sound
+        plays ahead of the picture. Unmuted there, pre-seek audio is still
+        held back by the pending-seek guard, and anything that slips past it
+        before the flush is retired by the flush epoch, as on a seek."""
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
         self.audio_anchor_clock_s = self.content_to_clock(target_s)
         # The flush keeps what already sits in the C64 ring, so the target's
-        # first sample is heard one ring lead from now, not at once.
+        # first sample is heard one ring lead from now, not at once. The raw
+        # clock, not heard_seconds(): the splice clears a sampler's re-anchor
+        # lag, so after it the heard position is the clock.
         self.audio_anchor_pos = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
         sc.source.request_seek(target_s)
+        if unmute:
+            sc.source.set_muted(False)
         sc.audio.flush()
 
     def pause(self) -> None:
@@ -186,15 +204,14 @@ class VideoTransportControls:
         if not self.paused:
             return
         if self.resync:
-            # Splice back to the paused position first — re-anchor, flush, and
-            # restore the sampler's volume — THEN unmute; that order closes the
-            # resume audio-leak window. The sampler's wall position kept
-            # advancing through the pause, and the fresh audio_anchor_pos
-            # absorbs it (the DAC's position froze on its own).
+            # Splice back to the paused position, unmuting the source once the
+            # seek is requested and before the flush (see _splice). The
+            # sampler's wall position kept advancing through the pause, and the
+            # fresh audio_anchor_pos absorbs it (the DAC's position froze on
+            # its own).
             assert sc.source is not None
             self.paused = False
-            self._splice(self.clock_to_content(self.audio_anchor_clock_s))
-            sc.source.set_muted(False)
+            self._splice(self.clock_to_content(self.audio_anchor_clock_s), unmute=True)
         else:
             self.paused = False
             self.wall_anchor_time = time.time()

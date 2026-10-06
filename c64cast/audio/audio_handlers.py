@@ -21,48 +21,6 @@ import numpy as np
 
 from c64cast.hw.c64 import REU
 
-# $D418 DAC NMI routine assembled at $C020 (32 bytes).
-# Saves/restores only A; X and Y are untouched.
-#
-# Disassembly (NTSC NMI period = 127 cycles, fast path = 41 cycles total).
-# Three HI bytes are patched at upload time from RING_BUFFER_HI /
-# RING_BUFFER_END_HI so a future ring relocation is a one-line change:
-#   $C020: 48           PHA                  ; save A
-#   $C021: AD 0D DD     LDA $DD0D            ; ack CIA #2 NMI immediately
-#   $C024: AD 00 ??     LDA $????            ; read sample (HI ← RING_BUFFER_HI)
-#   $C027: 8D 18 D4     STA $D418            ; write to SID master volume
-#   $C02A: EE 25 C0     INC $C025            ; advance read-pointer LO
-#   $C02D: D0 0F        BNE $C03E            ; skip HI bump if no wrap
-#   $C02F: EE 26 C0     INC $C026            ; advance read-pointer HI
-#   $C032: AD 26 C0     LDA $C026            ; load HI for end-of-ring check
-#   $C035: C9 ??        CMP #$??             ; end HI ← RING_BUFFER_END_HI
-#   $C037: D0 05        BNE $C03E            ; not at end → done
-#   $C039: A9 ??        LDA #$??             ; reset value ← RING_BUFFER_HI
-#   $C03B: 8D 26 C0     STA $C026            ; restore pointer HI
-#   $C03E: 68           PLA                  ; restore A
-#   $C03F: 40           RTI
-#
-# With a badline (40 stolen cycles): handler takes 81 cycles total — well
-# within the 127-cycle NTSC NMI period, so no NMI stacking occurs.
-NMI_ROUTINE = bytes.fromhex(
-    "48"  # PHA
-    "AD0DDD"  # LDA $DD0D      ; ack NMI
-    "AD0000"  # LDA $00??      ; read sample (HI patched at offset 6)
-    "8D18D4"  # STA $D418      ; write to volume register
-    "EE25C0"  # INC $C025      ; advance pointer LO
-    "D00F"  # BNE +15        ; → $C03E (done)
-    "EE26C0"  # INC $C026      ; advance pointer HI
-    "AD26C0"  # LDA $C026      ; load HI for wrap check
-    "C900"  # CMP #$??       ; wrap-end HI (patched at offset 22)
-    "D005"  # BNE +5         ; → $C03E (done)
-    "A900"  # LDA #$??       ; reset HI = RING_BUFFER_HI (patched at offset 26)
-    "8D26C0"  # STA $C026      ; restore pointer HI
-    "68"  # PLA
-    "40"  # RTI
-)
-NMI_ROUTINE_PATCH_OFFSET_READ_HI = 6
-NMI_ROUTINE_PATCH_OFFSET_WRAP_HI = 22
-NMI_ROUTINE_PATCH_OFFSET_RESET_HI = 26
 # Where the NMI routine lives in C64 RAM ($C000-$C01F is big_text's).
 NMI_ROUTINE_ADDR = 0xC020
 
@@ -75,6 +33,81 @@ RING_BUFFER_SIZE = 0x2000
 RING_BUFFER_END = RING_BUFFER_ADDR + RING_BUFFER_SIZE
 RING_BUFFER_HI = RING_BUFFER_ADDR >> 8
 RING_BUFFER_END_HI = RING_BUFFER_END >> 8
+
+# The NMI read pointer R is the routine's own LDA operand (offsets 5/6), which
+# the routine increments in place. The host reads it for the servo and both
+# governed pumps read its HI byte on-chip; nothing else writes it.
+READ_PTR_LO_ADDR = NMI_ROUTINE_ADDR + 5  # $C025
+READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
+
+# $D418 DAC NMI routine at NMI_ROUTINE_ADDR (32 bytes), assembled here against
+# the addresses above: the self-modifying operands come from READ_PTR_* and the
+# ring bounds from RING_BUFFER_*, so moving either is a one-line change and the
+# bytes uploaded are exactly these. Saves/restores only A; X and Y are untouched.
+#
+# Disassembly at $C020 (fast path = 41 cycles; the NMI period is latch+1 cycles,
+# 128 at NTSC 8 kHz, 85 at NTSC 12 kHz (the default), 75 at the handler-budget
+# floor):
+#   $C020: 48           PHA                  ; save A
+#   $C021: AD 0D DD     LDA $DD0D            ; ack CIA #2 NMI immediately
+#   $C024: AD 00 40     LDA $4000            ; read sample (operand = R)
+#   $C027: 8D 18 D4     STA $D418            ; write to SID master volume
+#   $C02A: EE 25 C0     INC $C025            ; advance R LO
+#   $C02D: D0 0F        BNE $C03E            ; skip HI bump if no wrap
+#   $C02F: EE 26 C0     INC $C026            ; advance R HI
+#   $C032: AD 26 C0     LDA $C026            ; load HI for end-of-ring check
+#   $C035: C9 60        CMP #$60             ; RING_BUFFER_END_HI
+#   $C037: D0 05        BNE $C03E            ; not at end → done
+#   $C039: A9 40        LDA #$40             ; RING_BUFFER_HI
+#   $C03B: 8D 26 C0     STA $C026            ; restore R HI
+#   $C03E: 68           PLA                  ; restore A
+#   $C03F: 40           RTI
+#
+# With a badline (40 stolen cycles) the handler can take 81 cycles: 4 cycles
+# short of the NTSC 12 kHz period, and 6 past the 75-cycle floor the timer may
+# still arm. That floor rests on the measured overrun
+# onset (c64.NMI_HANDLER_WORST_CYCLES), not on this worst-case sum. Its upload
+# and its execution are pinned by tests/test_reu_audio.py's NmiRoutineTest.
+NMI_ROUTINE = bytes(
+    [
+        0x48,  # PHA
+        0xAD,
+        0x0D,
+        0xDD,  # LDA $DD0D     ; ack NMI
+        0xAD,
+        RING_BUFFER_ADDR & 0xFF,
+        RING_BUFFER_HI,  # LDA R         ; read sample
+        0x8D,
+        0x18,
+        0xD4,  # STA $D418
+        0xEE,
+        READ_PTR_LO_ADDR & 0xFF,
+        READ_PTR_LO_ADDR >> 8,  # INC R LO
+        0xD0,
+        0x0F,  # BNE +15 → PLA
+        0xEE,
+        READ_PTR_HI_ADDR & 0xFF,
+        READ_PTR_HI_ADDR >> 8,  # INC R HI
+        0xAD,
+        READ_PTR_HI_ADDR & 0xFF,
+        READ_PTR_HI_ADDR >> 8,  # LDA R HI
+        0xC9,
+        RING_BUFFER_END_HI,  # CMP #end_hi
+        0xD0,
+        0x05,  # BNE +5 → PLA
+        0xA9,
+        RING_BUFFER_HI,  # LDA #start_hi
+        0x8D,
+        READ_PTR_HI_ADDR & 0xFF,
+        READ_PTR_HI_ADDR >> 8,  # STA R HI
+        0x68,  # PLA
+        0x40,  # RTI
+    ]
+)
+assert len(NMI_ROUTINE) == 32, "NMI_ROUTINE length changed — both BNEs must still land on PLA"
+assert NMI_ROUTINE[4] == 0xAD and NMI_ROUTINE_ADDR + 5 == READ_PTR_LO_ADDR, (
+    "READ_PTR_* must name the routine's LDA operand"
+)
 
 # A transport pause NEUTRAL-fills the unplayed span [R + guard, W). The guard
 # leaves a stale tail un-stomped so the fill never races the NMI read head into
@@ -235,6 +268,9 @@ SAMPLE_TAP_SIZE = 2048
 # See docs/architecture/audio.md#audiouse_reu_pump--reu-staged-mic-streaming.
 
 REU_PUMP_HANDLER_ADDR = 0xC100  # IRQ handler lives here; $C020 NMI handler stays
+# What a bank-swap dispatcher's installer leaves at $C100 until the pump entry
+# goes up, and what a failed tracked install puts back (JMP $EA31).
+REU_PUMP_HANDLER_STUB = bytes([0x4C, 0x31, 0xEA])
 REU_AUDIO_BASE = 0x000000  # REU offset where preloaded audio starts
 REU_PUMP_CHUNK_SIZE = 128  # bytes per IRQ-triggered REU DMA (default)
 REU_UPLOAD_SLICE = 32 * 1024  # bytes per socket REUWRITE (one per slice)
@@ -295,10 +331,6 @@ del _chunk
 # it live instead (AudioStreamer._program_reu_pump_rate).
 REU_PUMP_CIA1_LATCH_8KHZ = 0x3FFF
 
-# A CIA Timer A latch is two 8-bit registers, so a derived latch above this
-# is silently truncated modulo 65536 by the register write.
-CIA_TIMER_LATCH_MAX = 0xFFFF
-
 # Between arming the NMI consumer and arming the C64-side pump, so the NMI is
 # already firing when the first pump DMA lands — otherwise that DMA overwrites
 # ring positions the NMI has not read yet. Both pump bring-ups wait it out.
@@ -346,9 +378,6 @@ REU_GOVERNOR_MAX_CHUNK = (REU_GOVERNOR_OVERTAKE_GAP_HI - REU_GOVERNOR_GAP_THRESH
 for _chunk in (REU_PUMP_CHUNK_SIZE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS):
     assert _chunk <= REU_GOVERNOR_MAX_CHUNK, f"pump chunk {_chunk} overshoots the skip window"
 del _chunk
-# NMI read pointer HI byte (R_hi): NMI_ROUTINE self-modifying operand at
-# $C026. Both governed pumps read this directly on-chip; the host never writes.
-READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 
 # Host-DMA pacing servo (closed-loop W→R rate match). The worker paces ring
 # writes strictly to wall-clock, so W advances at exactly sample_rate B/s, while
@@ -357,7 +386,6 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 # time.sleep, the loop closes with zero C64 writes: the worker reads R once per
 # chunk and a PI controller stretches or shrinks the per-chunk pace so the ring
 # gap locks near half a ring. See scripts/diags/hostdma_drift_probe.py.
-READ_PTR_LO_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 (R operand low byte)
 HOST_DMA_SERVO_TARGET_GAP = RING_BUFFER_SIZE // 2  # 4096 B (half ring)
 # HW-empirical gains. The drift to cancel is ~310 B/s, i.e. a steady period
 # stretch of ~+5 ms/chunk. KP = 5e-6 s/byte makes a 1000-byte phase error add
@@ -368,6 +396,30 @@ HOST_DMA_SERVO_KI = 5e-7  # s/(byte*chunk)    (HW-TUNABLE)
 HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
+# The R read sits inside the paced loop, after the chunk's drip writes, which
+# take about half the chunk period; a read slower than the rest of the period
+# makes the worker late. Such a reading is not used, and the servo stops
+# reading for a holdoff (holding its integral correction, servo_hold_period),
+# so a slow server is not charged once per chunk. The
+# holdoff doubles on each consecutive slow read, up to the max, and resets on
+# a prompt one.
+HOST_DMA_SERVO_READ_BUDGET_FRAC = 0.5  # of chunk_period
+HOST_DMA_SERVO_READ_HOLDOFF_MIN_S = 1.0
+HOST_DMA_SERVO_READ_HOLDOFF_MAX_S = 8.0
+# The stall re-anchor's own R-read budget, as a fraction of the lead it puts
+# W ahead of R in seconds. R moves on while the read is in flight, so the
+# anchor is only ahead of the live R if the read beats the lead, and the
+# quarter kept back (≈85 ms at 12 kHz) covers the NEUTRAL stomp before W's
+# first write. The servo's
+# per-chunk budget is far tighter (it is a pacing deadline, not a safety
+# bound), and borrowing it threw away readings this one can safely use.
+STALL_REANCHOR_READ_BUDGET_FRAC = 0.75  # of the re-anchor lead, in seconds
+# A W still ahead of R by less than this past R's travel during the read
+# counts as lapped: the refill's first write has to land before R gets there,
+# and a quarter chunk is ≈21 ms at 12 kHz, several DMA writes. A whole chunk
+# NEUTRAL-filled unplayed audio (656 B in one virtual-clock case) without
+# saving a single lap-old replay over a 48-case sweep.
+STALL_INSIDE_LEAD_SLACK = CHUNK_SIZE // 4  # bytes
 # Per-reading weight of the ring-lead EMA the A/V clock subtracts: about a
 # second at one R read per 1 KiB chunk, so one torn R read moves the clock by
 # a few ms rather than jumping it by up to a whole ring.
@@ -386,14 +438,18 @@ AUDIO_HEALTH_LOG_INTERVAL_S = 5.0
 # budget (c64.NMI_SAFE_MIN_PERIOD_CYCLES). Off by default; see
 # docs/architecture/audio.md#host-dma-pitch-compensation--why-two-of-the-three-knobs-default-off.
 #
-# The deadband MUST stay >= one latch quantum (~1% rate/step): the latch is an
-# integer, so a narrower one limit-cycles ±1 step, an audible ~1% pitch wobble.
+# The deadband MUST stay above half a latch quantum. The latch is an integer and
+# one step moves the rate by 1/latch (~0.8% at 8 kHz, ~1.35% at the ceiling latch
+# 74); a target between two grid rates lies within half a step of one of them,
+# so a deadband wider than half the widest step always leaves a latch to park
+# on. Narrower, the loop limit-cycles ±1 step, an audible ~1% pitch wobble.
+# 0.013 is about one full step, which leaves headroom for estimator noise.
 # The EMA alpha sets the estimator time constant (~chunk_period/alpha ≈ 2.1 s at
 # 12 kHz / 1024-byte chunks) — long enough to reject torn-16-bit-read noise,
 # short enough to re-acquire after a scene cut. The coarse zone converges a cold
 # start in ~2-3 s instead of ~9 s; the fine zone moves ±1 so steady-state pitch
 # steps are inaudible.
-NMI_RATE_LOOP_DEADBAND_FRAC = 0.013  # > one latch step (~1%); avoids limit cycle
+NMI_RATE_LOOP_DEADBAND_FRAC = 0.013  # > half the widest latch step; avoids limit cycle
 NMI_RATE_LOOP_COARSE_ZONE_FRAC = 0.03  # above this error, take a proportional step
 NMI_RATE_LOOP_MAX_COARSE_STEP = 4  # cap acquisition step (latch units)
 NMI_RATE_LOOP_EMA_ALPHA = 0.04  # per-chunk EMA weight for the R-rate estimate (fine)
@@ -657,6 +713,8 @@ _TRK_HI_BYTE = (REU_AUDIO_SRC_TRACKER_ADDR >> 8) & 0xFF
 # dst HI byte of the tracker (src LO/MI/HI at +0..+2, dst LO/HI at +3..+4): the
 # tracked governor's write head, since $DF03 holds a video address between pumps.
 _TRK_DST_HI_ADDR = REU_AUDIO_SRC_TRACKER_ADDR + 4
+# dst LO/HI as a pair: the host reseeds the mic pump's write head here.
+REU_AUDIO_DST_TRACKER_ADDR = REU_AUDIO_SRC_TRACKER_ADDR + 3
 
 # Same pattern as api.py SID_PLAYER_MC_TEMPLATE: the handler DECs a counter and
 # chains to the full kernal IRQ tail ($EA31: SCNKEY + UDTIM + cursor blink) only
@@ -982,6 +1040,45 @@ REU_MIC_BASE_HI = (REU_MIC_BASE >> 16) & 0xFF
 REU_MIC_END_HI = (REU_MIC_END >> 16) & 0xFF
 REU_MIC_BOOTSTRAP_BYTES = 1600  # ~133 ms @ 12 kHz; tunes steady-state latency
 
+# The second stage of the mic's latency: how far the pump's dst tracker (W)
+# runs ahead of the NMI read pointer R in the 8 KB $4000 ring. The host's lead
+# above is only the first stage; a sample waits (W - R) mod ring here before
+# the NMI plays it. Nothing chose this before: the pump started at $4000 after
+# the NMI had already read ~1 KB of the ring on the solo path, so W trailed R
+# and the ring added ~0.6 s; under the mhires dispatcher the pump ran before
+# the NMI armed, W led by a few hundred bytes, and R overtook it into lap-old
+# audio. 2 KB (~171 ms at 12 kHz) covers the bring-up's read-to-write lag and
+# the pump's per-frame burstiness under the bank-swap halts, and leaves 6 KB
+# before W could lap R. The mic pump has no governor, so the phase holds only
+# as well as the matched rates do.
+REU_MIC_RING_LEAD = 2048
+# A seeded phase below this, read back after the write, means the write was
+# lost (the pump's own dst advance can overwrite it mid-tick) or the
+# read-to-write lag ate half the lead: seed again.
+REU_MIC_RING_LEAD_MIN = REU_MIC_RING_LEAD // 2
+assert RING_BUFFER_SIZE % REU_MIC_RING_LEAD == 0 and REU_MIC_RING_LEAD % REU_PUMP_CHUNK_SIZE == 0, (
+    "the mic ring lead must tile the ring in whole chunks, or the dst wrap misses $6000"
+)
+
+
+def mic_ring_seed(r_addr: int, chunk: int = REU_PUMP_CHUNK_SIZE) -> int:
+    """The dst tracker value that puts the mic pump's write head
+    ``REU_MIC_RING_LEAD`` (rounded up to a whole chunk) ahead of the NMI read
+    pointer ``r_addr``. Chunk-aligned from ``RING_BUFFER_ADDR``, so the pump's
+    wrap still lands exactly on ``RING_BUFFER_END``."""
+    ahead = r_addr - RING_BUFFER_ADDR + REU_MIC_RING_LEAD
+    aligned = -(-ahead // chunk) * chunk
+    return RING_BUFFER_ADDR + aligned % RING_BUFFER_SIZE
+
+
+def mic_ring_lead_ok(phase: int, chunk: int = REU_PUMP_CHUNK_SIZE) -> bool:
+    """True when a read-back ``(W - R) mod ring`` is a lead the seed could
+    have produced: at least ``REU_MIC_RING_LEAD_MIN``, and no more than the
+    chunk-rounded lead plus 256 B, the error a read can carry when it lands
+    inside the NMI's or the pump's own lo/hi carry."""
+    return REU_MIC_RING_LEAD_MIN <= phase <= REU_MIC_RING_LEAD + chunk + 256
+
+
 # The mic pump is the tracked pump with one addition: its REU source is a
 # ring too, so after the shared body it wraps the src tracker at
 # REU_MIC_END_HI back to REU_MIC_BASE (the host's _push_mic_to_reu wraps its
@@ -1114,6 +1211,49 @@ def servo_period(
     return chunk_period + correction, integ
 
 
+def stall_reanchor(r_addr: int, chunk: int, lead: int = HOST_DMA_SERVO_TARGET_GAP) -> int:
+    """Where the host-DMA write head restarts after a stall: the first
+    chunk-grid address at least ``lead`` bytes ahead of R. The grid matters —
+    every ring write is a whole chunk at a chunk-aligned address, which is what
+    keeps a write from straddling ``RING_BUFFER_END`` (see the worker)."""
+    ahead = r_addr - RING_BUFFER_ADDR + lead
+    return RING_BUFFER_ADDR + (-(-ahead // chunk) * chunk) % RING_BUFFER_SIZE
+
+
+def stall_lapped(r_addr: int, w_head: int, behind: int, slack: int) -> bool:
+    """Whether R has reached the write head ``w_head`` (the end of what has
+    landed) during a stall the worker came back ``behind`` bytes of
+    consumption late; R is read after the stall.
+
+    The ring gap alone cannot say: R known modulo the ring reads the same a
+    few bytes short of W as a lap and a few bytes past it. The stall's length
+    settles it. If W is still ahead, the gap is the lead W had less what R
+    ate meanwhile, so gap + behind is that lead, under a ring. If R passed W
+    by x, the gap is a ring less x and gap + behind is a ring plus the old
+    lead, over one. The margin either side is the old lead's distance from a
+    ring (≈4 KiB at the target gap, less as an open-loop lead grows) and the
+    old lead itself, less what R moved during the read.
+
+    A gap under ``slack`` counts as lapped too: R kept moving while it was
+    read and while the caller acts on it, so a W only that far ahead may
+    already be behind it. The caller passes R's travel over the read plus
+    ``STALL_INSIDE_LEAD_SLACK``."""
+    gap = (w_head - r_addr) % RING_BUFFER_SIZE
+    return gap < slack or gap + behind >= RING_BUFFER_SIZE
+
+
+def servo_hold_period(integ: float, *, chunk_period: float, ki: float = HOST_DMA_SERVO_KI) -> float:
+    """The pace period with no gap reading to act on: only the integral term,
+    which carries the standing rate correction (the consumer's bus-halt
+    deficit), held where it was. Dropping to the bare ``chunk_period`` instead
+    would hand that drift back, and the ring laps in about 26 s of it."""
+    correction = max(
+        (HOST_DMA_SERVO_PERIOD_MIN_FRAC - 1.0) * chunk_period,
+        min((HOST_DMA_SERVO_PERIOD_MAX_FRAC - 1.0) * chunk_period, ki * integ),
+    )
+    return chunk_period + correction
+
+
 def pi_step(
     error: float,
     integ: float,
@@ -1160,7 +1300,7 @@ def nmi_rate_step(
     can therefore only SPEED UP from nominal toward the ceiling to overcome
     halt-induced tick loss; it can never push past the overrun guard.
 
-    Deadband (≥ one latch quantum) parks the integer latch instead of
+    Deadband (> half a latch quantum) parks the integer latch instead of
     limit-cycling. Outside ``coarse_zone_frac`` a proportional step (capped)
     acquires fast; inside it moves ±1 so steady-state pitch steps are inaudible.
     Pure (no I/O) for unit testing — mirrors ``servo_period``."""

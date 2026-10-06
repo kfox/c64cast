@@ -62,7 +62,7 @@ SELFTEST_TOLERANCE = 0.10
 #: re-recording is pointless and only the rig can be at fault.
 SILENT_CAPTURE_PEAK = 0.002
 
-#: Above this ``pass_spread_frac``, the capture is not the ring at all. A
+#: Above this ``pass_spread_p95_frac``, the capture is not the ring at all. A
 #: recording of something else (a laptop microphone picking up room noise is the
 #: one seen in the field) still yields *numbers*: the peak finder locks onto
 #: noise, a couple of "sync markers" turn up, and the levels come back near zero
@@ -71,7 +71,7 @@ SILENT_CAPTURE_PEAK = 0.002
 #: fewer than two markers, with a traceback and 30 s of measuring already spent.
 RING_SPREAD_NOT_THE_RING = 0.10
 
-#: Above this ``pass_spread_frac``, the capture *is* the ring but the ring is not
+#: Above this ``pass_spread_p95_frac``, the capture *is* the ring but the ring is not
 #: replaying the same levels each pass, so a ladder fitted to them is wrong.
 #:
 #: Every pass of one capture drives the SID through identical codes, so a healthy
@@ -98,13 +98,13 @@ RING_SPREAD_NOT_THE_RING = 0.10
 #: absorbs a transient.
 RING_TRUST_MAX_SPREAD = 0.005
 
-#: Top of the healthy ``pass_spread_frac`` band, for the per-ring progress line.
+#: Top of the healthy ``pass_spread_p95_frac`` band, for the per-ring progress line.
 #: A ring between this and :data:`RING_TRUST_MAX_SPREAD` is measured and kept,
 #: but is worth saying out loud — a whole run sitting in that band is how a
 #: quietly poor table gets built out of individually-passing rings.
 RING_SPREAD_HEALTHY = 0.002
 
-#: Fraction of ``pass_spread_frac`` that can survive :func:`_pass_gain_decomposition`
+#: Fraction of ``pass_spread_p95_frac`` that can survive :func:`_pass_gain_decomposition`
 #: and still count as "only the level was moving". Below it the disagreement is a
 #: per-pass gain — the ring replayed faithfully and was measured through something
 #: that changed level; above it the laps genuinely differ and rescaling won't fix
@@ -308,7 +308,7 @@ def _dc_restore_gain(x: np.ndarray, c: np.ndarray, windows: np.ndarray) -> float
 class SlotLevels:
     """Signed per-code output levels recovered from one slot-ring capture."""
 
-    levels: np.ndarray  # (n_codes,) mean across ring passes, ref level = 0
+    levels: np.ndarray  # (n_codes,) median across passes (mean below 3), ref level = 0
     per_pass: np.ndarray  # (n_passes, n_codes) — spread here is the trust metric
     diagnostics: dict[str, Any]
 
@@ -342,7 +342,7 @@ def _pass_gain_decomposition(
     Fitting one scalar per pass separates them: ``g_p`` is the level the whole ring
     came back at on lap ``p``, and the residual ``passes − g_p·levels`` is the part
     no single gain explains. It is deliberately reported in the same units as
-    ``pass_spread_frac`` (max per-code std over ``scale_ref``) so the two compare
+    ``pass_spread_p95_frac`` (95th-percentile per-code std over ``scale_ref``) so the two compare
     directly — a residual well under the spread means a gain change accounts for
     it. Both failure modes reach the same spread otherwise: on synthetic captures
     a 10 % drift across the window and 1 % random per-block gain jitter each read
@@ -377,12 +377,14 @@ _STEP_MAG_REF_PERCENTILE = 99.5
 #: and can never swallow a genuine neighbor.
 _STEP_PEAK_MIN_SEP_FRAC = 0.5
 
-#: Capture samples trimmed from each end of a slot before its plateau is
-#: averaged, keeping the boundary transition and its settling out of the mean.
-#: At 48 kHz a slot is ≈192 samples, so 24 (≈0.5 ms) each side leaves a
-#: ≈144-sample core; a pass whose tracked pitch leaves less than an 8-sample
-#: core after trimming is dropped instead.
-_SLOT_EDGE_GUARD_SAMPLES = 24
+#: Time trimmed from each end of a slot before its plateau is averaged, keeping
+#: the boundary transition and its settling out of the mean. It is a time, not a
+#: sample count, because the settling is: at 48 kHz it is 24 samples of a
+#: ≈192-sample slot, leaving a ≈144-sample core. As a fixed 24 samples it left
+#: no core at all at 12 kHz or below (a 48-sample slot), so every pass of a
+#: perfectly readable capture was dropped. A pass whose tracked pitch leaves
+#: less than an 8-sample core after trimming is still dropped.
+_SLOT_EDGE_GUARD_S = 0.0005
 
 
 def extract_slot_levels(
@@ -392,7 +394,7 @@ def extract_slot_levels(
     *,
     sr: int = CAP_SR,
     nmi_rate: float = NMI_RATE,
-    guard: int = _SLOT_EDGE_GUARD_SAMPLES,
+    guard: int | None = None,
 ) -> SlotLevels:
     """Recover each code's *signed* output level, relative to the reference
     slots, from a capture of the ring :func:`build_slot_ring` built.
@@ -413,6 +415,8 @@ def extract_slot_levels(
        reference slots, so ``level = mean(code) − mean(both neighbors)/2``
        cancels any residual slow drift locally.
     """
+    if guard is None:
+        guard = max(1, round(_SLOT_EDGE_GUARD_S * sr))
     x = np.asarray(cap, dtype=np.float64)
     x = x - x.mean()
     ring_slots = ring_size // SLOT_SAMPLES
@@ -481,7 +485,7 @@ def extract_slot_levels(
             float(np.percentile(passes.std(axis=0), _SPREAD_TRUST_PERCENTILE)) / scale_ref, 5
         ),
         "pass_outlier_codes": int((passes.std(axis=0) / scale_ref > RING_SPREAD_HEALTHY).sum()),
-        # What that spread is made of: a residual well under pass_spread_frac
+        # What that spread is made of: a residual well under pass_spread_p95_frac
         # means the ring replayed fine and only the measured level moved.
         "pass_gains": [round(float(g), 5) for g in gains],
         "pass_gain_span_frac": round(float(np.max(gains) - np.min(gains)), 5),

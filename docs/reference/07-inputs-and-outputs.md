@@ -151,13 +151,15 @@ missed one is simply skipped.
 ### Choosing a Microphone
 
 `-D/--audio-device`, or `[audio].device`, takes an index or a name substring —
-no identifier, since the audio layer exposes none. Unlike the camera resolver
-this one never fails: a name matching nothing warns and falls back to the system
-default input.
+no identifier, since the audio layer exposes none. A name matching no input, or
+an index that is not an input, is an error rather than opening the system
+default input, which on a laptop is its built-in microphone. A webcam or blank
+scene logs it and plays without sound; a scene with `audio_source = "mic"` or
+`"listen"` logs it and is skipped. Only `-1` (or leaving the setting empty) asks for the
+default. Several matches use the first and warn.
 
-DAC calibration does not forgive, because the system default is usually the
-built-in microphone and a calibration measured off room noise fails
-expensively. There, a name matching no input or several is an error, and with
+DAC calibration is stricter still, because a calibration measured off room
+noise fails expensively. There, a name matching no input or several is an error, and with
 no `--audio-device` the calibrator records from the one input named like the
 connected HDMI capture device, which it finds with the `camera` extra. When it
 cannot single one out, it stops before touching the machine and lists the

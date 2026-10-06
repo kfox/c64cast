@@ -302,7 +302,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | `--list-modes` | [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--list-overlays` | [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--list-scenes` | [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
-| `listen` | [`generative` (2)](03-vocabulary.md#generative), [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen), [The Beat Grid (6)](07-inputs-and-outputs.md#the-beat-grid) |
+| `listen` | [`generative` (2)](03-vocabulary.md#generative), [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen), [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone) |
 | `listen_sample_rate` | [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen), [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `location` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`weather` (C)](22-appendix-c-overlays.md#weather) |
 | `--log-file` | [What a Scene Records About Itself (6)](07-inputs-and-outputs.md#what-a-scene-records-about-itself), [Debug (G)](26-appendix-g-cli-flags.md#debug) |

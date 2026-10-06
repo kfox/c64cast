@@ -141,6 +141,214 @@ class RemoteRefusalMessageTest(unittest.TestCase):
             self.assertEqual(av_open("/tmp/clip.mp4"), "container")
         opened.assert_called_once_with("/tmp/clip.mp4")
 
+    def test_a_drive_letter_or_file_url_is_a_local_path(self):
+        # FFmpeg reads both with its `file` protocol, so neither gets the
+        # network bound — a one-letter "scheme" is a DOS drive, not a protocol.
+        import av
+
+        for path in ("C:\\clips\\clip.mp4", "file:/tmp/clip.mp4"):
+            with self.subTest(path=path):
+                with mock.patch.object(av, "open", return_value="container") as opened:
+                    av_open(path)
+                opened.assert_called_once_with(path)
+
+
+class _StallingHttpServer:
+    """A loopback server that accepts, sends `preamble`, then never writes
+    again and never closes — the shape of a wedged CDN. `close()` releases
+    every socket and joins the accept thread."""
+
+    def __init__(self, preamble: bytes = b""):
+        import socket
+
+        self._preamble = preamble
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(4)
+        self._srv.settimeout(0.05)
+        self.port = self._srv.getsockname()[1]
+        self._held: list = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                continue
+            self._held.append(conn)
+            if self._preamble:
+                conn.recv(4096)
+                conn.sendall(self._preamble)
+
+    def close(self):
+        self._stop.set()
+        self._thread.join(2.0)
+        for conn in self._held:
+            conn.close()
+        self._srv.close()
+
+
+def _wav_bytes(seconds: float = 2.0, rate: int = 8000) -> bytes:
+    import struct
+
+    data = b"\x00\x00" * int(seconds * rate)
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + fmt
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
+    )
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemoteStallBoundTest(unittest.TestCase):
+    """A server that accepts and then goes silent must not hang the thread
+    opening or reading it — that thread is the playlist's, for an audio-file
+    scene's setup, and nothing else can unstick it."""
+
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch("c64cast.video.video._REMOTE_OPEN_TIMEOUT_S", 0.5))
+        stack.enter_context(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 0.5))
+
+    def _bounded(self, fn, limit_s: float = 10.0):
+        """Run `fn` on a worker and return what it raised (or its result). A
+        worker still blocked after `limit_s` fails the test here rather than
+        hanging the run; closing the server in cleanup then releases it."""
+        box: list = []
+
+        def run():
+            try:
+                box.append(fn())
+            except Exception as e:  # noqa: BLE001 — the raise is the result
+                box.append(e)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(limit_s)
+        self.assertFalse(worker.is_alive(), f"still blocked after {limit_s}s")
+        return box[0]
+
+    def _server(self, preamble: bytes = b"") -> _StallingHttpServer:
+        server = _StallingHttpServer(preamble)
+        self.addCleanup(server.close)
+        return server
+
+    def test_a_silent_server_fails_the_open(self):
+        import av.error
+
+        server = self._server()
+        outcome = self._bounded(lambda: av_open(f"http://127.0.0.1:{server.port}/tune.wav"))
+        self.assertIsInstance(outcome, av.error.ExitError)
+
+    def test_a_silent_peer_on_another_protocol_fails_the_open(self):
+        import av.error
+
+        # http(s) is not the only network protocol FFmpeg honors, and an
+        # audio-file entry reaches av_open on its extension alone.
+        server = self._server()
+        outcome = self._bounded(lambda: av_open(f"tcp://127.0.0.1:{server.port}/tune.wav"))
+        self.assertIsInstance(outcome, av.error.ExitError)
+
+    def test_a_stream_that_stalls_mid_body_fails_the_read(self):
+        import av.error
+
+        # Enough body that probing finishes and the open returns: the stall
+        # has to land in demux, past the open bound, for this to test reads.
+        body = _wav_bytes(30.0)
+        head = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n"
+        )
+        server = self._server(head + body[:200_000])
+        container = av_open(f"http://127.0.0.1:{server.port}/tune.wav")
+
+        def drain():
+            for _ in container.demux(container.streams.audio[0]):
+                pass
+
+        # Closed here, not from a cleanup: if the bound regresses, `_bounded`
+        # fails with the worker still inside av_read_frame, and closing the
+        # container under it would free the context it is reading. Left open,
+        # the worker's own reference keeps it alive until the server's
+        # cleanup releases the read.
+        outcome = self._bounded(drain)
+        container.close()
+        self.assertIsInstance(outcome, av.error.ExitError)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class ResamplerTailTest(unittest.TestCase):
+    """A resampler holds back its filter's tail until flushed with None, so a
+    decode that stops at the last packet drops the end of every track."""
+
+    #: 0.4 s at 8 kHz, resampled to 44 kHz.
+    EXPECTED = 17600
+
+    def _wav(self) -> str:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "t.wav")
+        Path(path).write_bytes(_wav_bytes(0.4, 8000))
+        return path
+
+    def test_decode_audio_full_keeps_the_tail(self):
+        from c64cast.video.video import decode_audio_full
+
+        self.assertEqual(decode_audio_full(self._wav(), 44000).size, self.EXPECTED)
+
+    def _demux_source(self, pushed: list[int]) -> AVFileSource:
+        import av
+
+        src = AVFileSource.__new__(AVFileSource)
+        src._audio_push = lambda arr: pushed.append(int(arr.size))
+        src._resampler = av.AudioResampler(format="s16", layout="mono", rate=44000)
+        src._atempo_graph = None
+        src._closed = False
+        src._muted = False
+        src._pending_seek = None
+        src.audio_noise_gate = 0
+        src.audio_gain = 1.0
+        container = av.open(self._wav())
+        self.addCleanup(container.close)
+        src.container = container
+        src.path = "t.wav"
+        src._lock = threading.Lock()
+        src._eof = False
+        return src
+
+    def test_the_demux_path_flushes_the_tail_at_eof(self):
+        pushed: list[int] = []
+        src = self._demux_source(pushed)
+        src._demux_loop()
+        self.assertTrue(src._eof)
+        self.assertEqual(sum(pushed), self.EXPECTED)
+
+    def test_a_demuxer_that_ends_by_raising_eof_still_flushes_the_tail(self):
+        # Some demuxers end by raising EOFError instead of running dry; that
+        # branch flushes too.
+        pushed: list[int] = []
+        src = self._demux_source(pushed)
+        real = src.container
+
+        class _RaisesAtEof:
+            def demux(self, *streams):
+                yield from real.demux(*streams)
+                raise EOFError
+
+        src.container = _RaisesAtEof()
+        src._demux_loop()
+        self.assertTrue(src._eof)
+        self.assertEqual(sum(pushed), self.EXPECTED)
+
 
 class ProbeContainerTitleTest(unittest.TestCase):
     """A cheap header-only peek at a local file's own `title` tag — no real
@@ -472,6 +680,15 @@ class MuteLatchTest(unittest.TestCase):
         src._emit_audio(np.array([1], dtype=np.int16))
         self.assertEqual(len(sink), 1)
 
+    def test_closed_source_drops_packets(self):
+        # A demux thread outliving close()'s bounded join must not feed the
+        # reused sampler that the scene's next setup() re-armed.
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src._closed = True
+        src._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+        self.assertEqual(sink, [])
+
 
 class TransportSeekTest(unittest.TestCase):
     """`request_seek`/`_apply_pending_seek` (MIDI live-tune Phase 2): a
@@ -741,6 +958,27 @@ class _FakeSceneAudio:
             self._events.append(("flush", silence_output))
 
 
+class _FakeSamplerAudio(_FakeSceneAudio):
+    """A `_FakeSceneAudio` that plays as a sampler whose re-anchors put the
+    sound `lag` seconds behind its clock."""
+
+    is_sampler = True
+
+    def __init__(self, position: float = 0.0):
+        super().__init__(position=position)
+        self.lag = 0.0
+        self.lag_read_at: list[float | None] = []
+
+    def reanchor_lag_seconds(self, position: float | None = None) -> float:
+        self.lag_read_at.append(position)
+        return self.lag
+
+    def flush(self, *, silence_output: bool = False) -> None:
+        # As the sampler's cut-over does: a splice clears the re-anchor lag.
+        super().flush(silence_output=silence_output)
+        self.lag = 0.0
+
+
 class EmitAudioSeekGuardTest(unittest.TestCase):
     """AVFileSource._emit_audio drops audio while a seek is pending (so stale
     pre-seek samples don't reach the consumer past the splice flush)."""
@@ -877,6 +1115,43 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport_resume()
         self.assertEqual(source.seeks[-1], 42.0)
 
+    def test_untouched_clock_follows_a_sampler_s_reanchored_sound(self):
+        # A sampler that re-anchored late audio plays it that far behind its
+        # clock; read raw, the picture ran ahead of the sound by that much.
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        audio = _FakeSamplerAudio(position=10.0)
+        audio.lag = 0.25
+        scene.audio = audio  # type: ignore[assignment]
+        self.assertAlmostEqual(scene.transport.clock_s(), 9.75)
+        self.assertEqual(audio.lag_read_at, [10.0])  # taken at that position's head
+
+    def test_resync_clock_follows_a_sampler_s_reanchored_sound(self):
+        scene, source, _ = self._resync_scene(position=4.0)
+        audio = _FakeSamplerAudio(position=4.0)
+        scene.audio = audio  # type: ignore[assignment]
+        audio.lag = 0.1
+        scene.transport.touch()  # anchor_clock = heard 3.9, anchor_pos = heard 3.9
+        self.assertAlmostEqual(scene.transport.clock_s(), 3.9)
+        audio._position = 9.0
+        audio.lag = 0.6  # a re-anchor since the touch
+        self.assertAlmostEqual(scene.transport.clock_s(), 8.4)
+
+    def test_a_splice_anchors_on_the_sampler_s_raw_clock(self):
+        # The splice's flush clears the lag, so the heard position is the raw
+        # clock from then on; anchored on the heard position from before the
+        # flush, the picture reached the target that lag ahead of its sound.
+        scene, _, _ = self._resync_scene(position=10.0)
+        audio = _FakeSamplerAudio(position=10.0)
+        scene.audio = audio  # type: ignore[assignment]
+        audio.ring_lead = 0.15
+        audio.lag = 0.3
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        self.assertEqual(audio.lag, 0.0)  # the fake's flush ran
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0 - 0.15)
+        audio._position = 10.15  # the target's first sample is heard
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0)
+
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
         scene.transport.touch()  # anchor_clock=0, anchor_pos=0
@@ -896,7 +1171,11 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio._position = 99.0
         self.assertAlmostEqual(scene.transport.clock_s(), 10.0)
 
-    def test_resume_splices_back_then_unmutes(self):
+    def test_resume_requests_the_seek_then_unmutes_then_flushes(self):
+        # Order is load-bearing. The seek request first arms the pending-seek
+        # guard against pre-seek audio; the unmute before the flush lets the
+        # target's first audio through even when the demuxer decodes it while
+        # the flush is still running.
         events: list[tuple[str, object]] = []
         scene, _, _ = self._resync_scene(position=10.0, events=events)
         scene.transport.touch()
@@ -904,12 +1183,28 @@ class VideoSceneSpliceTest(unittest.TestCase):
         events.clear()
         scene.transport_resume()
         self.assertFalse(scene.transport.paused)
-        # Order is load-bearing: splice (request_seek then flush) BEFORE unmute.
-        self.assertEqual(
-            [e[0] for e in events],
-            ["seek", "flush", "muted"],
-        )
-        self.assertEqual(events[-1], ("muted", False))
+        self.assertEqual(events, [("seek", 10.0), ("muted", False), ("flush", False)])
+
+    def test_audio_the_demuxer_decodes_during_the_resume_flush_reaches_the_sink(self):
+        # Unmuting only after the flush dropped that audio at the source, so
+        # the stream started past its target at the anchor: on hardware the
+        # sound ran 50-200 ms ahead of the picture after every resume.
+        scene, _, audio = self._resync_scene(position=10.0)
+        sink: list[np.ndarray] = []
+        scene.transport.touch()  # resolves the resync path on the stub source
+        demux = _make_emit_audio_stub(sink)
+        demux._video_buf = []
+        scene.source = demux  # type: ignore[assignment]
+        scene.transport_pause()
+        self.assertTrue(demux._muted)
+
+        def flush_while_the_demuxer_seeks(*, silence_output: bool = False) -> None:
+            demux._pending_seek = None  # the demux thread applied the seek
+            demux._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+
+        audio.flush = flush_while_the_demuxer_seeks  # type: ignore[method-assign]
+        scene.transport_resume()
+        self.assertEqual(len(sink), 1, "the seek target's first audio was dropped")
 
     def test_a_seek_shows_its_target_frame_through_the_ring_lead(self):
         # A held FF re-seeks before each hold ends; frames chosen by the held

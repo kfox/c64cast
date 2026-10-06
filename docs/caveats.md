@@ -14,7 +14,7 @@ $D418 at 12 kHz by default (`[audio] sample_rate`). The classic path is
 plays back. You *can* raise `sample_rate`, but it isn't the quality lever:
 the C64-side NMI period is derived *from* it (it programs the CIA #2 Timer A
 latch), so the pitch stays correct, and there's little headroom — rates
-past the ≈13.6 kHz NTSC handler ceiling are rejected at load
+past ≈13.7 kHz NTSC (≈13.2 kHz PAL), where the nearest CIA latch drops under the handler's safe period, are rejected at load
 (`c64.nmi_rate_safety`). The real depth knob is `[audio] dac_curve`, whose
 `"auto"` default lifts the U64's (deterministic emulated) SID to the Mahoney
 ≈6-7-bit `$D418` technique; `--calibrate-dac` does the same for a physical
@@ -70,11 +70,13 @@ webcam audio always use the 4-bit DAC.
 Implementation (`c64cast/audio/sampler.py`): a **streaming REU ring**. Channel 0 is
 programmed as an A↔B loop over a region of REU; a host writer thread REUWRITEs
 decoded PCM ahead of a *wall-clock-computed* read head and wraps. The FPGA
-sample clock is crystal-exact, so the read position is computed (never read
-back) and the whole thing is open-loop and drift-free — no servo, no governor,
-no NMI. The sample rate is the FPGA's exact `6.25 MHz / divider`, a constant
-<0.5 % offset from the nominal request (inaudible, and drift-free because A/V
-both ride the same clock). The ring lives in REU SDRAM, so a sampler run also
+sample clock is fixed, so the read position is computed (never read back) and
+the whole thing is open-loop — no servo, no governor, no NMI. The sample rate
+is `[audio].sampler_clock_hz / divider`: the FPGA divides a 6.25 MHz design
+clock that the shipping firmware actually runs at ≈6.16 MHz, which is that
+setting's default. The rate lands a constant <0.5 % from the nominal request
+(inaudible, and drift-free as long as `sampler_clock_hz` matches the real
+clock, because A/V both ride it). The ring lives in REU SDRAM, so a sampler run also
 provisions the REU (16 MB) — which makes overlay-free bitmap video resolve to
 the tear-free REU bank-swap path; the sampler installs no `$0314` IRQ, so the
 two coexist with no contention.

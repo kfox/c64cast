@@ -35,6 +35,13 @@ from PIL import Image, ImageDraw, ImageFont
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from c64cast.audio.audio_handlers import (  # noqa: E402
+    NMI_ROUTINE_ADDR,
+    RING_BUFFER_ADDR,
+    RING_BUFFER_END,
+    RING_BUFFER_SIZE,
+)
+from c64cast.hw.api import _AUDIO_REGION_HI  # noqa: E402
 from c64cast.video.flicker import fuse as flicker_fuse  # noqa: E402
 from c64cast.video.palette import C64_PALETTE_BGR  # noqa: E402
 
@@ -780,7 +787,17 @@ _MEMORY: list[tuple[str, str, list[_Region]]] = [
     (
         "VIC bank 1",
         "$4000",
-        [(0x4000, 0x5FFF, _SOUND, "The audio ring, 8 KB", "$4000–$5FFF", -125, 0.5)],
+        [
+            (
+                RING_BUFFER_ADDR,
+                RING_BUFFER_END - 1,
+                _SOUND,
+                f"The audio ring, {RING_BUFFER_SIZE // 1024} KB",
+                f"${RING_BUFFER_ADDR:04X}–${RING_BUFFER_END - 1:04X}",
+                -125,
+                0.5,
+            )
+        ],
     ),
     (
         "VIC bank 2",
@@ -794,7 +811,15 @@ _MEMORY: list[tuple[str, str, list[_Region]]] = [
         "VIC bank 3",
         "$C000",
         [
-            (0xC020, 0xC2FF, _SOUND, "The audio handlers", "$C020–$C2FF", -20, 0.15),
+            (
+                NMI_ROUTINE_ADDR,
+                _AUDIO_REGION_HI - 1,
+                _SOUND,
+                "The audio handlers",
+                f"${NMI_ROUTINE_ADDR:04X}–${_AUDIO_REGION_HI - 1:04X}",
+                -20,
+                0.15,
+            ),
             (0xC300, 0xC70F, _CODE, "The SID player and friends", "$C300–$C70F", -160, 0.85),
         ],
     ),

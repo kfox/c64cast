@@ -1332,9 +1332,9 @@ def _validate_launcher(s: SceneCfg, cfg: Config) -> None:
 def validate_nmi_sample_rate(cfg: Config) -> None:
     """Guard [audio].sample_rate against the NMI handler's cycle budget.
 
-    Raises ConfigError when the configured rate would overrun the $D418 DAC NMI
-    handler on the target system (NMIs queue → pitch drop); logs a warning for
-    rates inside the entry-latency margin. Thin pass-through to
+    Raises ConfigError for a rate the $D418 DAC NMI timer will not arm on the
+    target system: one that overruns the handler or its entry-latency margin,
+    or is too slow for the 16-bit timer. Thin pass-through to
     `c64.nmi_rate_safety` so the rule lives in one place (shared with --doctor).
     No-op when audio is disabled.
 
@@ -1349,13 +1349,18 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
     level, message = nmi_rate_safety(system, cfg.audio.sample_rate)
     if level == "error":
         raise ConfigError(f"[audio].sample_rate: {message}")
-    if level == "warn":
-        log.warning("[audio].sample_rate: %s", message)
+
+
+#: Accepted [audio].sampler_clock_hz: ±20 % around the 6.25 MHz design clock,
+#: so the measured ~6.16 MHz and any plausible firmware fix pass while a unit
+#: slip (6160, 61600000) or a zero, which leaves the sampler a 0 Hz rate to
+#: divide by, is refused at load.
+SAMPLER_CLOCK_HZ_RANGE = (5_000_000, 7_500_000)
 
 
 def validate_sampler_cfg(cfg: Config) -> None:
     """Guard the Ultimate Audio sampler settings ([audio].sampler_bits /
-    sampler_sample_rate). Raises ConfigError on an unusable value. No-op when
+    sampler_sample_rate / sampler_clock_hz). Raises ConfigError on an unusable value. No-op when
     audio is disabled; the rate is only *used* when [audio].backend resolves to
     the sampler, but validating unconditionally keeps a typo from lurking until
     the backend is selected. The ring is length-independent (streaming), so
@@ -1368,6 +1373,13 @@ def validate_sampler_cfg(cfg: Config) -> None:
         raise ConfigError(
             "[audio].sampler_sample_rate must be 1000..48000 Hz, got "
             f"{cfg.audio.sampler_sample_rate}"
+        )
+    lo, hi = SAMPLER_CLOCK_HZ_RANGE
+    if not lo <= cfg.audio.sampler_clock_hz <= hi:
+        raise ConfigError(
+            f"[audio].sampler_clock_hz must be {lo}..{hi} Hz, got "
+            f"{cfg.audio.sampler_clock_hz} (the shipped default is the measured 6160000; "
+            "the design nominal is 6250000)"
         )
 
 
@@ -2624,8 +2636,9 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
     else:
         audio_src = NullAudioSource()
     scene = SourceScene(ctx.api, scene_base_audio, mode, gen, audio_src, name, color=ctx.color)
-    if file_audio_src is not None and s.duration_s is None and file_audio_src.duration_s:
-        scene.duration_s = file_audio_src.duration_s
+    if file_audio_src is not None and s.duration_s is None:
+        scene.duration_follows_audio = True
+        scene.sync_duration_to_audio()
     # A mic/file-source generative scene is digitized-audio-capable like webcam/video,
     # so a bitmap display caps its frame push: 20 fps while the 4-bit DAC streams, half
     # the system rate (30/25) otherwise. A sampler-routed file scene keeps the muted

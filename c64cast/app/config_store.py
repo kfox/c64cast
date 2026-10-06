@@ -81,6 +81,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from c64cast._redact import redact_secrets
 from c64cast.control.transport import atomic_write_text
 
 from . import config as cfgmod
@@ -207,7 +208,11 @@ def _capture_errors() -> Iterator[list[str]]:
     under the same `c64cast` logger, and an unfiltered handler would fold
     that thread's ERRORs into an unrelated request's report — including, via
     `_blame_layers`, misattributing a validation failure to a machine
-    setting."""
+    setting.
+
+    Each message is passed through `redact_secrets`: the report is rendered in
+    a browser, and a validator that quotes a media URL quotes its credential
+    and signature with it."""
     messages: list[str] = []
     owner = threading.get_ident()
 
@@ -218,7 +223,7 @@ def _capture_errors() -> Iterator[list[str]]:
                 and record.thread == owner
                 and len(messages) < _MAX_CAPTURED_MESSAGES
             ):
-                messages.append(record.getMessage())
+                messages.append(redact_secrets(record.getMessage()))
 
     handler = _Collector()
     logger = logging.getLogger("c64cast")

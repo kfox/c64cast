@@ -14,8 +14,10 @@ See docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfile
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -59,10 +61,38 @@ _HTTP_RECONNECT_OPTIONS = {
     "reconnect_delay_max": "5",
 }
 
+# Remote inputs only, passed as PyAV's `timeout=(open, read)`. Without them a
+# server that accepts the connection and then stops answering blocks the
+# opening thread forever: FFmpeg's own socket timeouts default to none, and
+# the reconnect options above fire on an error or EOF, never on silence. The
+# read bound applies per blocking read, so a slow-but-flowing stream is fine,
+# and it sits well above the reconnect backoff cap so a reconnect completes.
+_REMOTE_OPEN_TIMEOUT_S = 20.0
+_REMOTE_READ_TIMEOUT_S = 30.0
+
 
 def _is_remote_url(path: str) -> bool:
     """True for http(s) inputs, which get the FFmpeg reconnect options."""
     return path.startswith(("http://", "https://"))
+
+
+# FFmpeg's own protocol test (`url_find_protocol`): a run of these characters
+# followed by `:` names a protocol, except a single letter, which is a DOS
+# drive. Everything else, and an explicit `file:`, opens as a local file.
+_FFMPEG_PROTOCOL_PREFIX = re.compile(r"^([A-Za-z0-9+.-]+):")
+
+
+def _is_local_file(path: str) -> bool:
+    """True when FFmpeg opens `path` with its `file` protocol.
+
+    The open/read bound is keyed to this rather than to `_is_remote_url`
+    because http(s) is not the only network protocol FFmpeg honors: an
+    audio-file entry such as ``tcp://host:port/x.wav`` or ``rtsp://…`` passes
+    `resolve_file_spec` on its extension alone, has no existence check, and
+    blocks on a silent peer exactly as http does. Anything this does not
+    recognize as local is bounded, which is the safe direction."""
+    m = _FFMPEG_PROTOCOL_PREFIX.match(path)
+    return m is None or len(m.group(1)) == 1 or m.group(1) == "file"
 
 
 def _remote_refusal_message(e: Any) -> str:
@@ -93,7 +123,11 @@ def _remote_refusal_message(e: Any) -> str:
 def av_open(path: str):
     """`av.open` wrapper that injects the HTTP reconnect options for remote
     URLs so a transient CDN drop mid-stream resumes instead of crashing the
-    demuxer. Local paths open unchanged.
+    demuxer, and bounds the open and every later demux read
+    (`_REMOTE_OPEN_TIMEOUT_S` / `_REMOTE_READ_TIMEOUT_S`) so a stalled server
+    raises instead of hanging the playlist. Any other network protocol gets
+    the same bound without the http-only reconnect options; local files
+    (`_is_local_file`) open unchanged.
 
     A remote 4xx is re-raised naming the likeliest cause, because the raw
     ``HTTPForbiddenError`` is unreadable on the one shape it usually means.
@@ -107,10 +141,18 @@ def av_open(path: str):
 
     The wording is built by :func:`_remote_refusal_message`, which is where
     the URL is kept out of it."""
-    if not _is_remote_url(path):
+    if _is_local_file(path):
         return av.open(path)
+    if not _is_remote_url(path):
+        # A non-http network protocol: no reconnect options (they are
+        # http-only), but the same bound on a peer that goes silent.
+        return av.open(path, timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S))
     try:
-        return av.open(path, options=_HTTP_RECONNECT_OPTIONS)
+        return av.open(
+            path,
+            options=_HTTP_RECONNECT_OPTIONS,
+            timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S),
+        )
     except av.error.HTTPClientError as e:
         raise RuntimeError(_remote_refusal_message(e)) from e
 
@@ -296,12 +338,13 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
         a_stream = container.streams.audio[0]
         resampler = av.AudioResampler(format="s16", layout="mono", rate=target_sample_rate)
         chunks: list[np.ndarray] = []
-        for packet in container.demux(a_stream):
-            for frame in packet.decode():
-                for resampled in resampler.resample(frame):
-                    arr = resampled.to_ndarray().reshape(-1)
-                    if arr.size:
-                        chunks.append(arr.astype(np.int16, copy=False))
+        frames = (f for packet in container.demux(a_stream) for f in packet.decode())
+        # The trailing None flushes the filter tail the resampler holds back.
+        for frame in itertools.chain(frames, [None]):
+            for resampled in resampler.resample(frame):
+                arr = resampled.to_ndarray().reshape(-1)
+                if arr.size:
+                    chunks.append(arr.astype(np.int16, copy=False))
     finally:
         container.close()
     if not chunks:
@@ -726,7 +769,7 @@ class AVFileSource:
         self._eof = False
         self._closed = False
         self._demux_poll: PollThread | None = None
-        self._audio_push: Callable[[np.ndarray], None] | None = None
+        self._audio_push: Callable[[np.ndarray], object] | None = None
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -791,7 +834,7 @@ class AVFileSource:
             return 0
         return peak
 
-    def start(self, audio_push: Callable[[np.ndarray], None] | None):
+    def start(self, audio_push: Callable[[np.ndarray], object] | None):
         """Start the demuxer thread. ``audio_push=None`` skips audio decode
         entirely — used by the REU-staged audio path where the soundtrack
         has already been pre-decoded into REU and the demuxer shouldn't
@@ -840,8 +883,15 @@ class AVFileSource:
         # is pending, or it plays after the splice's flush. The unlocked
         # _pending_seek read is racy but benign: a chunk slipping through right
         # as the seek lands is discarded consumer-side by the
-        # AudioStreamer/sampler flush epoch.
-        if self._audio_push is None or self._muted or self._pending_seek is not None:
+        # AudioStreamer/sampler flush epoch. A closed source pushes nothing: a
+        # demux thread that outlived close()'s bounded join would otherwise
+        # feed a reused sampler that the scene's next setup() has re-armed.
+        if (
+            self._closed
+            or self._audio_push is None
+            or self._muted
+            or self._pending_seek is not None
+        ):
             return
         if self.audio_noise_gate > 0:
             # Zero source-noise-floor samples before gain, or the encoder jitters
@@ -993,11 +1043,27 @@ class AVFileSource:
         assert self._resampler is not None  # caller checks (audio-branch gate)
         for frame in packet.decode():
             for resampled in self._resampler.resample(frame):
-                if self._atempo_graph is not None:
-                    self._atempo_graph.push(resampled)
-                    self._drain_atempo()
-                else:
-                    self._emit_audio(resampled.to_ndarray().reshape(-1))
+                self._emit_resampled(resampled)
+
+    def _emit_resampled(self, resampled: Any) -> None:
+        if self._atempo_graph is not None:
+            self._atempo_graph.push(resampled)
+            self._drain_atempo()
+        else:
+            self._emit_audio(resampled.to_ndarray().reshape(-1))
+
+    def _flush_resampler(self) -> None:
+        """At EOF, emit the filter tail the resampler holds back until it is
+        flushed (a few milliseconds per track), ahead of `_flush_atempo` so the
+        tail is time-compressed with the rest. A transport seek rebuilds the
+        resampler, so flushing this one does not strand a later loop pass."""
+        if self._resampler is None or self._audio_push is None or self._closed:
+            return
+        try:
+            for resampled in self._resampler.resample(None):
+                self._emit_resampled(resampled)
+        except (av.error.FFmpegError, ValueError) as e:
+            log.debug("demux: resampler flush failed: %s", e)
 
     def _demux_loop(self):
         # "Container hit EOF" is expected and logs info; a mid-stream decode
@@ -1019,9 +1085,11 @@ class AVFileSource:
                     and self._audio_push is not None
                 ):
                     self._decode_audio_packet(packet)
+            self._flush_resampler()
             self._flush_atempo()
             log.debug("demux %s: EOF", self.path)
         except (EOFError, StopIteration):
+            self._flush_resampler()
             self._flush_atempo()
             log.debug("demux %s: EOF", self.path)
         except Exception:

@@ -104,8 +104,10 @@ def measured_pitch(cap: np.ndarray, sr: int, lo: float, hi: float) -> float:
 
 
 def latch_for(rate: int, system: str) -> int:
-    """CIA #2 Timer A latch (period = latch+1 cycles) for `rate` — the nominal
-    consumer latch, same math as NmiTimer.nominal_latch."""
+    """CIA #2 Timer A latch (period = latch+1 cycles) for `rate`: the rounding of
+    ``c64.nearest_latch``, floored at 1. ``NmiTimer.nominal_latch`` instead clamps
+    to [``ceiling_latch``, 0xFFFF], so a rate past the production ceiling arms here
+    at its own latch where the streamer would hold it at the ceiling."""
     clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
     return max(1, round(clock / rate) - 1)
 

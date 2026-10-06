@@ -56,7 +56,7 @@ DJ-style seek, pause, and loop, driven by `transport.TransportSession` via `[mid
 
 **Where it lives (2026-08):** the whole state machine — touched/paused flags, both post-touch clocks, the A/B loop, the record border, the loop preset store — is `video_transport.VideoTransportControls`, held by the scene as `self.transport` and `reset()` each setup. `VideoScene` keeps the thirteen `transport_*` methods as one-line delegators because they ARE the contract: `TransportSession` getattr-probes those names on whatever scene is current, so any scene type can opt in by declaring them. Tests that freeze the clock must patch `time` in **`video_transport`'s** namespace (test_video's `_freeze_time` patches both it and `scenes`); a `FrozenClock` bound only over `scenes.time` no longer reaches the anchors. The prose below describes the machine's semantics unchanged — read method names as their `VideoTransportControls` equivalents (`_touch_transport()` → `touch()`, `_clock_s()` → `clock_s()`, state fields lose their underscore).
 
-**The untouched clock.** `_clock_s()` normally reads the audio-position clock, or a plain wall clock from `_start_time` when unmuted with no streamer.
+**The untouched clock.** `_clock_s()` normally reads the audio-position clock, or a plain wall clock from `_start_time` when unmuted with no streamer. The audio position is the *heard* one (`audio_source.heard_seconds`, which an audio file's analyzer and end read too): a sampler that re-anchored late audio plays it `reanchor_lag_seconds()` behind its raw clock, and a picture read off the raw clock ran that far ahead of the sound. The resync path's audio delta reads it too; a splice's anchor reads the raw clock plus the ring lead, since the splice's flush clears the sampler's lag.
 
 **First touch.** Any of `transport_pause`/`_seek`/`_loop_toggle`/`_record`/`_stop`/`_loop_slot`, or a jog/rw/ff, routes through `_touch_transport()`. It:
 
@@ -105,14 +105,14 @@ On the resync path it does **not** mute, and seeds an **audio-anchored clock** �
 **The splice primitive.** `_splice(target_s)` re-anchors the clock, then:
 
 1. `source.request_seek(target_s)` — engaging `_emit_audio`'s pending-seek guard **first**.
-2. `audio.flush()` — dropping the queue; the flush epoch handles a pusher already blocked inside `push_samples`.
+2. `audio.flush()` — retiring the queue (the DAC drains it; the sampler's writer drops it by epoch tag); the flush epoch handles a pusher already blocked inside `push_samples`.
 
 It is used by `transport_seek`, the loop wrap, and resume-from-pause.
 
 **Pause and resume.**
 
 * *Pause* — freeze the anchor, `source.set_muted(True)`, `audio.flush(silence_output=True)` for a fast mute.
-* *Resume* — `_splice()` back to the paused position **then** `set_muted(False)`. Splice-first is what closes the resume leak window; the sampler's plain flush also restores its channel volume.
+* *Resume* — `_splice(..., unmute=True)` back to the paused position: `request_seek`, **then** `set_muted(False)`, **then** the plain flush, which also restores the sampler's channel volume. The seek request comes first so the pending-seek guard holds back pre-seek audio, and whatever slips past it before the flush is retired by the flush epoch. The unmute comes before the flush because the demuxer can apply the seek and decode the target's first audio while the flush is still running. The sampler's cut-over waits on the ring writer and blanks the old lead, which takes tens of ms. A source still muted during that time dropped the audio, so the stream started past its target at the anchor, and on hardware the sound ran 50–200 ms ahead of the picture after a resume. A fake-link repro measured −163 to −256 ms with the old order and 0 ms with this one.
 
 **Loop-wrap re-fire guard.** The wrap adds `not (resync and source.seek_pending)`, so a `source.finished` wrap flushes and seeks A exactly once — not every frame until the demux clears `_eof`.
 

@@ -52,6 +52,23 @@ class DownmixToMonoTest(unittest.TestCase):
         flat = np.array([0.25, -0.75], dtype=np.float32)
         np.testing.assert_allclose(downmix_to_mono(flat), flat)
 
+    def test_non_finite_samples_enter_as_silence_or_full_scale(self):
+        # The device's floats enter here; a NaN past this point latches the
+        # analyzer and DSP state for the rest of the run.
+        block = np.array([[np.nan, np.nan], [np.inf, np.inf], [-np.inf, -np.inf]], np.float32)
+        np.testing.assert_array_equal(downmix_to_mono(block), [0.0, 1.0, -1.0])
+        np.testing.assert_array_equal(
+            downmix_to_mono(np.array([np.nan, 0.5], dtype=np.float32)), [0.0, 0.5]
+        )
+
+    def test_a_huge_finite_sample_enters_held_to_the_ceiling(self):
+        # Times the default mic sensitivity of 1.5, 3e38 overflows float32 to
+        # inf ahead of the analyzer tap, which latches its level follower at NaN.
+        block = np.array([[3e38], [-3e38], [0.5]], dtype=np.float32)
+        mono = downmix_to_mono(block) * np.float32(1.5)
+        self.assertTrue(np.all(np.isfinite(mono)))
+        np.testing.assert_allclose(mono, [1.5e6, -1.5e6, 0.75])
+
     def test_single_channel_block_is_flattened(self):
         np.testing.assert_allclose(
             downmix_to_mono(np.array([[0.25], [-0.75]], dtype=np.float32)), [0.25, -0.75]
@@ -298,6 +315,15 @@ class EffectiveRateTest(unittest.TestCase):
         ):
             with self.subTest(rate=rate, system=system):
                 self.assertAlmostEqual(self._at(rate, system).effective_rate, want, places=6)
+
+    def test_a_lowercase_system_gets_its_own_clock(self):
+        # A bare `system == "NTSC"` gave "ntsc" the PAL clock: latch 81, which
+        # an NTSC machine plays at 12472 Hz while effective_rate said 12015.
+        for spelling in ("ntsc", " NTSC "):
+            with self.subTest(spelling=spelling):
+                self.assertAlmostEqual(
+                    self._at(12000, spelling).effective_rate, 1022727 / 85, places=6
+                )
 
     def test_the_default_rate_is_not_what_was_requested(self):
         # The whole point of the property: at the shipped default the achieved

@@ -1449,6 +1449,45 @@ class WaveformSceneTest(unittest.TestCase):
 
         self.mock_host_emu_cls.side_effect = build
 
+    def test_cycle_hard_relaunch_keeps_a_later_live_duration(self):
+        # The hard-relaunch path re-applies the explicit duration too, and has
+        # to record it as the scene's own: otherwise a live DURATION set back
+        # to the configured value reads as unchanged and the next cycle
+        # restores the earlier live one.
+        from c64cast.hw.c64 import CPU
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        self._host_emu_per_song()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene.setup()
+        try:
+            api.cue_song_reinits.clear()
+            with (
+                patch(
+                    "c64cast.sid.waveform._play_bank_for_footprints",
+                    return_value=CPU.PORT_BASIC_OUT,
+                ),
+                patch(
+                    "c64cast.sid.waveform.analyze_placement",
+                    return_value=PlacementFootprints(
+                        avoid=bytearray(65536),
+                        display=bytearray(65536),
+                        play_bank=CPU.PORT_BASIC_OUT,
+                        trusted=True,
+                    ),
+                ),
+            ):
+                scene.duration_s = 42.0
+                scene.cycle_style(api)
+                self.assertEqual(api.cue_song_reinits, [], "the first cycle is the hard relaunch")
+                self.assertAlmostEqual(scene.duration_s, 42.0)
+                scene.duration_s = 10.0
+                scene.cycle_style(api)
+            self.assertAlmostEqual(scene.duration_s, 10.0)
+        finally:
+            scene.teardown()
+
     def test_cycle_hard_relaunch_rebuilds_the_host_emulator_on_the_new_song(self):
         # The $37→$36 crossing (Times of Lore song 1 → 2) is the one cycle path
         # that re-runs the full player: it re-enters setup() with _prepared set,
@@ -2060,6 +2099,87 @@ class WaveformSceneTest(unittest.TestCase):
         try:
             scene.cycle_style(api)
             self.assertAlmostEqual(scene.duration_s, 42.0)
+        finally:
+            scene.teardown()
+
+    def test_cycle_style_keeps_a_duration_set_live(self):
+        # The live menu's DURATION sets scene.duration_s mid-play. A cycle's
+        # per-song re-lookup overwrote it with the DB length, though the same
+        # value saved to the config would have held for every subtune.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 99.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(
+                api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db
+            )
+        self.assertAlmostEqual(scene.duration_s, 99.0)
+        scene.setup()
+        try:
+            scene.duration_s = 42.0
+            scene.cycle_style(api)
+            self.assertAlmostEqual(scene.duration_s, 42.0)
+        finally:
+            scene.teardown()
+
+    def test_cycle_style_keeps_a_second_duration_set_live(self):
+        # The first live DURATION becomes the explicit one. A second one, set
+        # after that, has to hold through the next cycle too, not fall back to
+        # the first.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 99.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(
+                api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db
+            )
+        scene.setup()
+        try:
+            scene.duration_s = 42.0
+            scene.cycle_style(api)
+            scene.duration_s = 17.0
+            scene.cycle_style(api)
+            self.assertAlmostEqual(scene.duration_s, 17.0)
+        finally:
+            scene.teardown()
+
+    def test_cycle_style_keeps_a_duration_set_live_over_a_configured_one(self):
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=120.0)
+        scene.setup()
+        try:
+            scene.duration_s = 42.0
+            scene.cycle_style(api)
+            self.assertAlmostEqual(scene.duration_s, 42.0)
+        finally:
+            scene.teardown()
+
+    def test_cycle_style_keeps_a_live_duration_equal_to_the_last_derived_one(self):
+        # A cycle that re-applies the explicit value has to record it as the
+        # scene's own, or a later live DURATION that happens to equal the song
+        # length the scene derived before reads as unchanged and reverts.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 99.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(
+                api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db
+            )
+        scene.setup()
+        try:
+            scene.duration_s = 42.0
+            scene.cycle_style(api)
+            scene.duration_s = 99.0
+            scene.cycle_style(api)
+            self.assertAlmostEqual(scene.duration_s, 99.0)
         finally:
             scene.teardown()
 
@@ -2705,6 +2825,79 @@ class WaveformPoolPickTest(unittest.TestCase):
             ],
             ["match.sid", "junk.sid"],
         )
+
+    def test_a_duration_set_live_outlasts_the_next_pool_pick(self):
+        # The live menu's DURATION sets scene.duration_s between plays. The
+        # next pick's song-length lookup overwrote it, though the same value
+        # saved to the config would have held for every pick.
+        from c64cast.sid.waveform import WaveformScene
+
+        self._write_sid("one.sid", name=b"ONE")
+        self._write_sid("two.sid", name=b"TWO")
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 99.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(FakeAPI(), audio=None, file=self.tmpdir, songlengths_db=fake_db)
+        self.assertAlmostEqual(scene.duration_s, 99.0)
+        scene.duration_s = 42.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene.prepare_next()
+        self.assertAlmostEqual(scene.duration_s, 42.0)
+
+    def test_a_duration_set_live_outlasts_a_configured_one_at_the_next_pool_pick(self):
+        # A configured duration_s is explicit already. The live menu's
+        # DURATION, set after it, has to hold through the next pick rather
+        # than revert to the configured value.
+        from c64cast.sid.waveform import WaveformScene
+
+        self._write_sid("one.sid", name=b"ONE")
+        self._write_sid("two.sid", name=b"TWO")
+        scene = WaveformScene(FakeAPI(), audio=None, file=self.tmpdir, duration_s=120.0)
+        scene.duration_s = 42.0
+        scene.prepare_next()
+        self.assertAlmostEqual(scene.duration_s, 42.0)
+
+    def test_a_duration_stepped_up_and_back_is_no_live_change(self):
+        # The menu steps by adding its step, so +5 then -5 from 123.456 leaves
+        # 123.45600000000002. Read as a live change, that pinned the old song's
+        # length on every later pick instead of looking each one up.
+        from types import SimpleNamespace
+
+        from c64cast.scenes.overlays.menu import _build_duration
+        from c64cast.sid.waveform import WaveformScene
+
+        self._write_sid("one.sid", name=b"ONE")
+        self._write_sid("two.sid", name=b"TWO")
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = 123.456
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene = WaveformScene(FakeAPI(), audio=None, file=self.tmpdir, songlengths_db=fake_db)
+        item = _build_duration(scene, SimpleNamespace(), None, None, None)
+        assert item is not None
+        item.change(+1)
+        item.change(-1)
+        fake_db.lookup.return_value = 200.0
+        with self.assertLogs("c64cast.sid.waveform", level="INFO"):
+            scene.prepare_next()
+        self.assertIsNone(scene._explicit_duration_s)
+        self.assertAlmostEqual(scene.duration_s, 200.0)
+
+    def test_a_configured_zero_duration_runs_until_stopped_from_the_start(self):
+        # build_scene writes `duration_s = inf` for a configured 0 after the
+        # constructor. The scene has to have derived inf itself, or that write
+        # reads as a live DURATION change and the 0 holds only by accident.
+        import math
+
+        from c64cast.sid.waveform import WaveformScene
+
+        self._write_sid("one.sid", name=b"ONE")
+        self._write_sid("two.sid", name=b"TWO")
+        scene = WaveformScene(FakeAPI(), audio=None, file=self.tmpdir, duration_s=0.0)
+        self.assertEqual(scene.duration_s, math.inf)
+        scene.duration_s = math.inf  # build_scene's write
+        self.assertFalse(scene._duration_set_live())
+        scene.prepare_next()
+        self.assertEqual(scene.duration_s, math.inf)
 
     def test_single_file_pool_skips_repick_at_setup(self):
         """Single-file specs stay deterministic AND keep cycle_style

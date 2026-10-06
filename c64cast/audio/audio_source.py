@@ -23,9 +23,10 @@ import logging
 import os
 import random
 import threading
+import time
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from c64cast._teardown import run_teardown_steps
 
@@ -44,6 +45,22 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def heard_seconds(audio: AudioStreamer | UltimateAudioSampler) -> float:
+    """How much of the audio pushed to ``audio`` has been heard, on the
+    sink's clock. The sampler's clock is the wall since its gate, and a
+    re-anchor plays every later sample that much past its slot, so its lag
+    comes off; the DAC's clock counts the samples played and needs no
+    correction. Everything that reads a sink's clock as "the sound now" (an
+    audio file's analyzer and end, a video's playback clock) reads this, so
+    none of them runs a re-anchor's lag ahead of the sound."""
+    played = audio.position_seconds() or 0.0
+    if getattr(audio, "is_sampler", False):
+        # At this position's read head: the clock moves between the two
+        # reads, and inside a re-anchor's hold that stepped the sample back.
+        played -= cast("UltimateAudioSampler", audio).reanchor_lag_seconds(played)
+    return played
+
+
 @runtime_checkable
 class AudioSource(Protocol):
     """How a SourceScene makes sound. `setup`/`teardown` bracket the scene;
@@ -54,10 +71,16 @@ class AudioSource(Protocol):
     `resets_display` is True when `setup()` disturbs the VIC display state — a
     SID source kicks its player via the firmware's run_prg, which re-inits the
     machine back to text mode. SourceScene re-asserts the display mode AFTER
-    such a source starts so a bitmap display isn't left rendering text."""
+    such a source starts so a bitmap display isn't left rendering text.
+
+    `finished` is True once a finite source has played everything it had, and
+    SourceScene ends the scene on it. Sources with no end report False."""
 
     wants_audio_lock: bool
     resets_display: bool
+
+    @property
+    def finished(self) -> bool: ...
 
     def setup(self) -> None: ...
     def teardown(self) -> None: ...
@@ -70,6 +93,7 @@ class NullAudioSource:
 
     wants_audio_lock = False
     resets_display = False
+    finished = False
 
     def setup(self) -> None:
         return None
@@ -111,6 +135,7 @@ class MicAudioSource:
     # Uncorrelated input, not the ensemble's SID spotlight (as WebcamScene).
     wants_audio_lock = False
     resets_display = False  # the mic path doesn't touch the VIC
+    finished = False  # live input has no end
 
     def __init__(
         self,
@@ -231,16 +256,22 @@ class AudioFileSource:
     for the C64 and (pre-DSP) forwards them to `analysis_sink`, so the *same*
     analyzer the mic path uses drives the visuals off the decoded audio. Playback
     is real-time paced by push_samples' backpressure (queue-full block), so the
-    decode thread naturally tracks the consumption rate.
+    decode thread tracks the consumption rate once the sink's queue is full. The
+    sampler's queue holds 256 decoded chunks, about 23 s of a 44 kHz WAV, so a
+    shorter file is decoded whole before anything plays.
 
     `wants_audio_lock=False`: like the mic/video paths, a file is not the
     ensemble's SID spotlight (`config.build_scene` also suppresses its DAC audio
     in ensemble mode). `resets_display=False`: the DAC path never touches the VIC.
 
-    `duration_s` (read from the container at construction) lets `build_scene` size
-    the scene to the track so `c64cast tune.mp3` plays the whole song then
-    advances/loops. A startup failure degrades to non-reactive silence with the
-    scene intact, the same contract as `MicAudioSource`/`SidFileAudioSource`.
+    **End of track.** `finished` turns True once the decoder has reached the
+    end of the file (or failed) and the sink's clock has played out the audio
+    it pushed, so the scene ends when the sound does rather than when the container
+    header says it should. `duration_s` is the header's figure for the file the
+    last `setup()` picked; it only decides whether there is an end to wait for
+    (see `SourceScene.duration_follows_audio`). A startup failure degrades to
+    non-reactive silence with the scene intact, the same contract as
+    `MicAudioSource`/`SidFileAudioSource`.
     """
 
     wants_audio_lock = False
@@ -248,6 +279,29 @@ class AudioFileSource:
 
     # Mirrors SidFileAudioSource: a file that won't open is skipped.
     _MAX_PICK_ATTEMPTS = 8
+
+    # `finished` waits for the sink's clock to reach the length of the audio
+    # pushed, so it cannot be scheduled once at the decoder's end: the
+    # sampler's queue is counted in chunks, and 256 decoded chunks hold about
+    # 23 s of a 44 kHz WAV, so a short file is decoded whole before the ring is
+    # gated and its clock reads 0. This grace bounds the wait for a sink clock
+    # that never gets there, past the audio still unplayed when decode ended;
+    # it covers the sampler's bring-up (the ring prefill, and up to 2 s of
+    # prebuffer wait) between the end of decoding and the gate.
+    _DRAIN_GRACE_S = 5.0
+    # The most content lag gained after decoding ended that the deadline waits
+    # out. A sampler's lag grows with each re-anchor, so a
+    # deadline counting all of it could hold a scene open without end; past
+    # this, `finished` ends the scene anyway and says so. The lag already
+    # there when decoding ended counts whole: it is tail still queued, not
+    # growth, and capped it cut that tail on a long slow stream.
+    _MAX_COUNTED_LAG_S = 10.0
+
+    # How far behind the decoder the analyzer can read. The sampler's queue
+    # alone holds about 23 s of a 44 kHz WAV (above) plus its 1 s ring lead;
+    # the DAC's holds about 1.4 s plus its ring. Past this the analyzer reads
+    # silence and says so once, rather than audio from the wrong moment.
+    _FEATURE_HISTORY_S = 30.0
 
     def __init__(
         self,
@@ -270,6 +324,15 @@ class AudioFileSource:
         self._features: AudioFeatureStream | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # (seconds of audio pushed, monotonic deadline, the sink's content lag
+        # then) once decoding has ended; None while decoding. The deadline
+        # leaves out the content lag, which `finished` adds as it reads it,
+        # counting at most `_MAX_COUNTED_LAG_S` past the lag recorded here.
+        # Written once by the decode thread, read by the playlist thread.
+        self._end: tuple[float, float, float] | None = None
+        # Set once `finished` has logged that the lag cap ended the scene, so
+        # the playlist's polling logs it once per decode.
+        self._lag_cap_logged = False
         # At build time, so a misconfigured single scene raises there
         # (parity with SidFileAudioSource.__init__).
         self._pick_and_probe()
@@ -348,8 +411,13 @@ class AudioFileSource:
             self._thread = None
         self._pick_and_probe()
         self._stop.clear()
+        self._end = None
+        self._lag_cap_logged = False
         self._start_features()
         if self._is_sampler:
+            # The sampler is reused by every activation of this scene, so it is
+            # armed before the decoder can push into it.
+            cast("UltimateAudioSampler", self._audio).arm()
             self._start_decode_thread()
             self._audio.start_for_external_source()
         else:
@@ -385,7 +453,12 @@ class AudioFileSource:
 
     def _start_features(self) -> None:
         """Install the pre-DSP analyzer at the streamer's DAC rate (what the DAC
-        actually plays, like the mic path). A failure must not cost playback."""
+        actually plays, like the mic path). A failure must not cost playback.
+
+        The decoder runs the sink's whole queue and ring ahead of what is
+        heard, so the analyzer reads the window ending at the sink's played
+        position rather than the newest one; the tap keeps enough history to
+        reach back that far."""
         if not self._reactive:
             return
         from c64cast.app.config import AudioFeaturesCfg
@@ -393,8 +466,17 @@ class AudioFileSource:
         from .audio_features import AnalysisTap, AudioFeatureStream
 
         cfg = self._features_cfg or AudioFeaturesCfg()
+        audio = self._audio
+        # The tap is indexed in pushed samples, which the decoder resamples to
+        # this rate, and the sink's clock divides by the same one.
+        rate = float(audio.effective_rate or audio.sample_rate)
+
+        def played_index() -> float:
+            return max(self._heard_seconds(), 0.0) * rate
+
         try:
-            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096))
+            history = int(rate * self._FEATURE_HISTORY_S)
+            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096, history))
             stream = AudioFeatureStream(
                 tap,
                 self._audio.sample_rate,
@@ -402,6 +484,7 @@ class AudioFileSource:
                 fft_size=cfg.fft_size,
                 poll_hz=cfg.poll_hz,
                 onset_sensitivity=cfg.onset_sensitivity,
+                play_position=played_index,
             )
             self._audio.analysis_sink = tap.push
             stream.start()
@@ -418,21 +501,21 @@ class AudioFileSource:
         """Demux + resample the file to mono int16 at the DAC rate and feed
         push_samples (which DAC-encodes AND taps the analyzer). Real-time paced by
         push_samples' queue-full block. Ends at EOF or when `_stop` is set."""
-        import numpy as np
-
         from c64cast.video.video import av_open
 
+        # effective_rate, not sample_rate: the rate the sink really
+        # consumes at, so the servo starts from zero standing error.
+        rate = int(round(self._audio.effective_rate)) or self._audio.sample_rate
+        pushed = 0
         try:
             container = av_open(self._path)
         except Exception:
             log.exception("audio file: could not open %s for decode", self._path)
+            self._mark_decode_done(0)
             return
         try:
             import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
 
-            # effective_rate, not sample_rate: the rate the sink really
-            # consumes at, so the servo starts from zero standing error.
-            rate = int(round(self._audio.effective_rate)) or self._audio.sample_rate
             resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
             a_stream = container.streams.audio[0]
             for packet in container.demux(a_stream):
@@ -442,15 +525,105 @@ class AudioFileSource:
                     for resampled in resampler.resample(frame):
                         if self._stop.is_set():
                             return
-                        arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
-                        if arr.size:
-                            self._audio.push_samples(arr)
+                        pushed += self._push_frame(resampled)
+            # The resampler holds back its filter's tail until it is flushed;
+            # without this the last few milliseconds of every track are lost.
+            for resampled in resampler.resample(None):
+                if self._stop.is_set():
+                    return
+                pushed += self._push_frame(resampled)
             log.info("audio file: %s reached end of track", os.path.basename(self._path))
         except Exception:
             if not self._stop.is_set():
                 log.exception("audio file: decode of %s failed", os.path.basename(self._path))
         finally:
             container.close()
+        if not self._stop.is_set():
+            self._mark_decode_done(pushed)
+
+    def _push_frame(self, resampled: Any) -> int:
+        """Push one resampled frame to the sink; returns the samples it
+        accepted.
+
+        Not the samples handed over: the DAC drops a blob its queue held full
+        past the put timeout, and a sampler that gave up on its link takes
+        nothing. Counted, those put the length `finished` waits for past
+        anything the sink's clock reaches, and the scene sat out the deadline
+        on silence, the rest of the track when the sink died mid-file."""
+        import numpy as np
+
+        arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
+        if not arr.size:
+            return 0
+        return int(self._audio.push_samples(arr))
+
+    def _mark_decode_done(self, pushed_samples: int) -> None:
+        """Record the end of decoding: the length of the audio pushed, on the
+        sink's clock, and the deadline past which `finished` stops waiting for
+        that clock (the audio unplayed now, plus `_DRAIN_GRACE_S`).
+
+        Also tells the sink no more is coming: both wait for a prebuffer before
+        they play, and a clip shorter than it never fills one."""
+        self._audio.end_input()
+        # The sink's clock divides by its effective rate, so the length does
+        # too; the resampler's rounded integer rate would put it out of reach.
+        rate = float(self._audio.effective_rate or self._audio.sample_rate)
+        length = pushed_samples / rate if rate > 0 else 0.0
+        played = self._audio.position_seconds() or 0.0
+        lag = self._content_lag()
+        played = min(max(played, 0.0), length + lag)
+        self._end = (length, time.monotonic() + (length - played) + self._DRAIN_GRACE_S, lag)
+
+    def _content_lag(self) -> float:
+        """How far the sink plays its audio behind its clock: a sampler's
+        re-anchors (`UltimateAudioSampler.content_lag_seconds`). The DAC's
+        clock counts the samples that landed, so it has none."""
+        return float(self._audio.content_lag_seconds)
+
+    @property
+    def finished(self) -> bool:
+        """True once the decoder has ended (EOF or failure) and the sink's
+        clock has reached the end of what it pushed, or the deadline has
+        passed. False while decoding and before the first `setup()`.
+
+        Read off the sink's clock at each call rather than scheduled when
+        decoding ends: the sampler only starts its clock once its ring is
+        gated, after the decoder may already have finished."""
+        end = self._end
+        if end is None:
+            return False
+        length, deadline, lag_at_end = end
+        # A sampler that re-anchored late audio plays it that far behind its
+        # clock; ended on the clock alone, the scene cut off the track's tail.
+        # The bound waits it out too: re-anchors over a slow stretch add up,
+        # and a lag past the grace ended the scene with the tail still queued.
+        # But the lag gained after decoding ended counts only up to
+        # `_MAX_COUNTED_LAG_S`: the lag grows with each re-anchor, and a
+        # producer that keeps falling behind would otherwise never let the
+        # bound arrive.
+        lag = self._content_lag()
+        if self._heard_seconds() >= length - 1e-3:
+            return True
+        counted = min(lag, lag_at_end + self._MAX_COUNTED_LAG_S)
+        if time.monotonic() < deadline + counted:
+            return False
+        if lag > counted and not self._lag_cap_logged:
+            self._lag_cap_logged = True
+            log.warning(
+                "audio file: ending the scene with the sink's content lag at %.1f s, "
+                "%.1f s of it gained after decoding ended, past the %.0f s the end "
+                "waits for; the re-anchored tail may be cut",
+                lag,
+                lag - lag_at_end,
+                self._MAX_COUNTED_LAG_S,
+            )
+        return True
+
+    def _heard_seconds(self) -> float:
+        """`heard_seconds` of the sink. The analyzer's index and the end of
+        track both read this, so the last lag's worth of a re-anchored track
+        is not cut off."""
+        return heard_seconds(self._audio)
 
     def teardown(self) -> None:
         # The sink is unhooked before the streamer stops, so no callback can
@@ -475,7 +648,7 @@ class AudioFileSource:
             self._thread = None
 
     def position_seconds(self) -> float | None:
-        # The consumer clock, for the protocol. The scene ends on duration_s.
+        # The consumer clock, for the protocol. The scene ends on `finished`.
         return self._audio.position_seconds()
 
     def features(self) -> MusicModulation | None:
@@ -523,6 +696,7 @@ class SidFileAudioSource:
     # run_sid_player goes through run_prg, which re-inits the machine to text
     # mode, so SourceScene.setup must re-assert the display mode afterwards.
     resets_display = True
+    finished = False  # the chip plays on until teardown; duration_s ends it
 
     # Mirrors WaveformScene._pick_and_load_sid: a rejected SID is skipped.
     _MAX_PICK_ATTEMPTS = 8

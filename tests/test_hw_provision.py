@@ -285,10 +285,6 @@ class ReadReuConfigTest(unittest.TestCase):
         self.assertEqual(hw_provision.read_reu_config(api), (None, None))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class _FakeVideoApi:
     """A fake Ultimate serving the "U64 Specific Settings" category and
     recording put_config_item calls, for the video-output provisioner."""
@@ -776,3 +772,7 @@ class ResolveLivePaletteTest(unittest.TestCase):
         with _answering(stock_rgb):
             with self.assertNoLogs("c64cast.hw.hw_provision", level="WARNING"):
                 hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+
+
+if __name__ == "__main__":
+    unittest.main()

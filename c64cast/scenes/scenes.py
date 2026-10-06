@@ -25,7 +25,7 @@ from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
 from c64cast._transport_log import quiet_transport
 from c64cast.app.profiler import get_profiler
-from c64cast.audio.audio import AudioStreamer, PumpInstallError
+from c64cast.audio.audio import AudioInputDeviceError, AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     INT16_FULL_SCALE,
     REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
@@ -289,6 +289,11 @@ class Scene:
     # Consulted by the Playlist's ensemble audio lock before setup; ignored
     # entirely in single-system mode.
     WANTS_AUDIO_LOCK: bool = False
+    # The `duration_s` this scene last set through _set_derived_duration: one
+    # derived from its content (an audio pick, a SID's song length), or a
+    # waveform cycle's re-applied explicit one; None while it has set none.
+    # A class attribute so a scene built without __init__ (tests) still has one.
+    _derived_duration_s: float | None = None
 
     def __init__(
         self,
@@ -383,6 +388,27 @@ class Scene:
         happened to be loaded when it was saved (recall re-picks a different
         one)."""
         return self.name
+
+    def _set_derived_duration(self, duration_s: float) -> None:
+        """Set `duration_s` by the scene's own rule (from the content, or a
+        configured value it re-applies), not from the live menu, so that
+        `_duration_set_live` can tell the two apart."""
+        self.duration_s = duration_s
+        self._derived_duration_s = duration_s
+
+    def _duration_set_live(self) -> bool:
+        """True when `duration_s` differs from what `_set_derived_duration`
+        last set: the live menu's DURATION changed it, and that is an explicit
+        duration from then on, as one in the config is.
+
+        Compared within a microsecond, not exactly: the menu steps by adding
+        and subtracting its step, so +5 then -5 from a song length such as
+        123.456 lands on 123.45600000000002, and that is no change."""
+        if self._derived_duration_s is None:
+            return False
+        return not math.isclose(
+            self.duration_s, self._derived_duration_s, rel_tol=1e-9, abs_tol=1e-6
+        )
 
     def prepare_next(self) -> None:
         """Called by the Playlist right before the interstitial that
@@ -517,6 +543,30 @@ def _apply_rolling_palette(
         log.debug("rolling force_palette → %d colors %s", len(cmap.indices), list(cmap.indices))
 
 
+def _start_scene_mic(scene: Scene, audio_cfg: AudioCfg) -> None:
+    """Start the live mic for a webcam or blank scene. The mic path is always
+    the 4-bit DAC streamer; the sampler is a video-only backend.
+
+    A configured input that cannot be honored leaves the scene silent with an
+    error rather than ending the show: the picture is still worth having, and
+    the alternative the streamer used to take, the system default input, is a
+    laptop's own microphone."""
+    if not isinstance(scene.audio, AudioStreamer):
+        return
+    # A mode that installs the bank-swap merged dispatcher at $0314 owns that
+    # vector, so the mic REU pump must skip its own hook.
+    skip_hook = scene.audio.use_reu_pump and reu_pump_skips_irq_hook(scene.display_mode)
+    try:
+        scene.audio.start_mic(
+            audio_cfg.device,
+            audio_cfg.mic_sensitivity,
+            audio_cfg.noise_gate,
+            skip_irq_vector_hook=skip_hook,
+        )
+    except AudioInputDeviceError as e:
+        log.error("scene %r: no mic audio — %s", scene.name, e)
+
+
 class WebcamScene(Scene):
     """Live webcam scene optimized for low latency.
 
@@ -551,18 +601,7 @@ class WebcamScene(Scene):
         super().setup()
         self.start_time = time.time()
         self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
-        # The mic path is always the 4-bit DAC streamer; the sampler is a
-        # video-only backend.
-        if isinstance(self.audio, AudioStreamer):
-            # A mode that installs the bank-swap merged dispatcher at $0314
-            # owns that vector, so the mic REU pump must skip its own hook.
-            skip_hook = self.audio.use_reu_pump and reu_pump_skips_irq_hook(self.display_mode)
-            self.audio.start_mic(
-                self.audio_cfg.device,
-                self.audio_cfg.mic_sensitivity,
-                self.audio_cfg.noise_gate,
-                skip_irq_vector_hook=skip_hook,
-            )
+        _start_scene_mic(self, self.audio_cfg)
 
     def _read_frame(self) -> np.ndarray | None:
         img = self.source.read()
@@ -717,7 +756,14 @@ class SourceScene(Scene):
     chain (inside _render_with_overlays), quantize via the display mode, push —
     overlays compose on top. The source decides the scene's lifetime: infinite
     sources (generative art) run until `duration_s`; a finite source ends the
-    scene when it reports `finished`.
+    scene when it reports `finished`, and so does a finite audio source (an
+    audio file at its end).
+
+    `duration_follows_audio` (set by `build_scene` for an audio-file scene with
+    no explicit `duration_s`) re-sizes the scene at every `setup()` from the
+    file that setup picked: unbounded when the file has a length, so the scene
+    runs until the audio source reports `finished`, and the scene-type default
+    when it has none (a live stream, which has no end to wait for).
 
     Audio is delegated to the AudioSource building block, chosen independently
     of the video source. The base `audio` reference is still passed so the
@@ -742,6 +788,23 @@ class SourceScene(Scene):
         self._frame_count = 0
         self._color = color
         self._rolling_fp: RollingForcePalette | None = None
+        self.duration_follows_audio = False
+        self._unsized_duration_s: float | None = None
+
+    def sync_duration_to_audio(self) -> None:
+        """Apply `duration_follows_audio` for the audio source's current pick.
+
+        A `duration_s` changed since the last sync (the live menu's DURATION)
+        is an explicit duration from then on, as one in the config is."""
+        if not self.duration_follows_audio:
+            return
+        if self._duration_set_live():
+            self.duration_follows_audio = False
+            return
+        if self._unsized_duration_s is None:
+            self._unsized_duration_s = self.duration_s
+        has_length = float(getattr(self.audio_source, "duration_s", 0.0) or 0.0) > 0.0
+        self._set_derived_duration(math.inf if has_length else self._unsized_duration_s)
 
     def competes_for_audio_lock(self) -> bool:
         return self.audio_source.wants_audio_lock
@@ -765,6 +828,8 @@ class SourceScene(Scene):
                 type(self.audio_source).__name__,
             )
             self.is_done = True
+        if not self.is_done:
+            self.sync_duration_to_audio()
         # A SID audio source kicks its player through run_prg, which re-inits
         # the machine to text mode and clobbers the VIC registers super().setup()
         # just wrote; re-assert the display after it, against invalidated cache.
@@ -785,7 +850,7 @@ class SourceScene(Scene):
         # full duration.
         if self.is_done:
             return False
-        if self.source.finished:
+        if self.source.finished or self.audio_source.finished:
             return False
         if (current_time - self.start_time) >= self.duration_s:
             return False
@@ -839,14 +904,7 @@ class BlankScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
-        if isinstance(self.audio, AudioStreamer):
-            skip_hook = self.audio.use_reu_pump and reu_pump_skips_irq_hook(self.display_mode)
-            self.audio.start_mic(
-                self.audio_cfg.device,
-                self.audio_cfg.mic_sensitivity,
-                self.audio_cfg.noise_gate,
-                skip_irq_vector_hook=skip_hook,
-            )
+        _start_scene_mic(self, self.audio_cfg)
 
     def process_frame(self, current_time: float) -> bool:
         # Paints past duration_s too: the Playlist's overlay busy-defer flips
@@ -1435,8 +1493,20 @@ class VideoScene(MediaFileMixin, Scene):
             # a prebuffer, and push_samples accepts data before the ring is
             # gated, so starting the sampler first waits out the whole prebuffer
             # timeout on silence. AudioFileSource.setup keeps the same order.
-            self.source.start(audio_push=self.audio.push_samples)
-            self.audio.start()
+            # Armed before the demuxer pushes: the sampler is reused by every
+            # activation of this scene.
+            try:
+                self.audio.arm()
+            except RuntimeError as e:
+                # The last activation's writer outlived its stop (wedged on the
+                # link). The playlist does not catch a setup() raise, so this
+                # lap plays silent on the wall clock, like a failed pump install.
+                log.error("video: %s; playing %s silent", e, self.filepath)
+                self._audio_set_aside, self.audio = self.audio, None
+                self.source.start(audio_push=None)
+            else:
+                self.source.start(audio_push=self.audio.push_samples)
+                self.audio.start()
             progress.complete("audio-start")
         elif has_audio and getattr(self.audio, "use_reu_pump", False):
             # audio_push=None makes the demuxer skip audio decode entirely: the
@@ -1542,9 +1612,9 @@ class VideoScene(MediaFileMixin, Scene):
         # ndarray.tobytes() is typed Any by the stubs; the wrap is for mypy.
         encoded = bytes(vol.tobytes())
         if getattr(self, "prepend_alignment_marker", False):
-            from c64cast.audio.audio_marker import MARKER_DURATION_S, synthesize_marker_4bit
+            from c64cast.audio.audio_marker import MARKER_DURATION_S, synthesize_marker
 
-            marker = synthesize_marker_4bit(sr)
+            marker = synthesize_marker(sr, self.audio.dac_curve)
             log.info(
                 "video: prepending %d-byte alignment marker "
                 "(%.0f ms chirp) — source content shifts to %.0fms",

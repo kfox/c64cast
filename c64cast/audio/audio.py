@@ -14,6 +14,7 @@ See docs/architecture/audio.md#audiopy--audiostreamer.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 import logging
@@ -21,16 +22,19 @@ import queue
 import secrets
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from c64cast._teardown import run_teardown_steps
+from c64cast._wire_log import LogThrottle
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
+    CIA_TIMER_LATCH_MAX,
     KERNAL,
     REU,
     SID,
@@ -38,6 +42,7 @@ from c64cast.hw.c64 import (
     halt_quantum_bytes,
     kernal_cia1_latch,
 )
+from c64cast.hw.socket_dma import SocketDMAError
 
 from .audio_handlers import (
     AUDIO_HEALTH_LOG_INTERVAL_S,
@@ -47,7 +52,6 @@ from .audio_handlers import (
     CHUNK_SIZE,
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
-    CIA_TIMER_LATCH_MAX,
     HOST_DMA_SERVO_TARGET_GAP,
     INT16_FULL_SCALE,
     MAX_QUEUED_SAMPLES,
@@ -55,13 +59,11 @@ from .audio_handlers import (
     NMI_RATE_LOOP_WARMUP_S,
     NMI_ROUTINE,
     NMI_ROUTINE_ADDR,
-    NMI_ROUTINE_PATCH_OFFSET_READ_HI,
-    NMI_ROUTINE_PATCH_OFFSET_RESET_HI,
-    NMI_ROUTINE_PATCH_OFFSET_WRAP_HI,
     PREBUFFER_CHUNKS,
     QUEUE_PUT_TIMEOUT_S,
     READ_PTR_LO_ADDR,
     REU_AUDIO_BASE,
+    REU_AUDIO_DST_TRACKER_ADDR,
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_GOVERNOR_MAX_CHUNK,
@@ -74,6 +76,7 @@ from .audio_handlers import (
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_PUMP_BODY_SUBROUTINE,
+    REU_MIC_RING_LEAD,
     REU_MIC_SIZE,
     REU_PUMP_BODY_SUBROUTINE,
     REU_PUMP_BODY_SUBROUTINE_ADDR,
@@ -82,14 +85,13 @@ from .audio_handlers import (
     REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_HANDLER_STUB,
     REU_PUMP_INITIAL_MARGIN,
     REU_PUMP_SETTLE_S,
     REU_PUMP_TICK_COUNTER_ADDR,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
-    RING_BUFFER_END_HI,
-    RING_BUFFER_HI,
     RING_BUFFER_SIZE,
     SAMPLE_TAP_SIZE,
     SID_DIGIBOOST_CONTROL,
@@ -99,18 +101,33 @@ from .audio_handlers import (
     SID_MAHONEY_CONTROL,
     SID_MAHONEY_RES_FILT,
     SID_MAHONEY_SR,
+    STALL_INSIDE_LEAD_SLACK,
+    STALL_REANCHOR_READ_BUDGET_FRAC,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
+    mic_ring_lead_ok,
+    mic_ring_seed,
     patch_chunk_size,
     reu_pump_chunk_fits_ring,
+    stall_lapped,
+    stall_reanchor,
     stomp_spans,
 )
 from .audio_rate import NmiTimer, RateServo
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
-from .dsp import AudioDSP, DSPParams
+from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
 
 log = logging.getLogger(__name__)
+
+
+class StallInsideLead(NamedTuple):
+    """What ``AudioStreamer._resync_after_stall`` returns when R never
+    reached the write head: ``gap`` is how far W is still ahead of R, less
+    R's travel during the read."""
+
+    gap: int
+
 
 # Any so Pyright doesn't flag every sd.XXX as an attribute of None; the
 # intermediate name gives both branches one annotation, which mypy --strict
@@ -125,19 +142,27 @@ except ImportError:
     AUDIO_AVAILABLE = False
 
 
+class AudioInputDeviceError(RuntimeError):
+    """A configured audio input that cannot be honored. Raised instead of
+    opening the system default input in its place: on a laptop that is the
+    built-in microphone, and the room it hears would go out through the C64."""
+
+
 def resolve_audio_input_device(device: int | str) -> int:
     """Map a ``[audio].device`` value (int index, int-in-string, or a device
     *name substring*) to a sounddevice input index.
 
-    Returns ``-1`` ("use the system default input") for a negative/empty value,
-    when sounddevice is unavailable, or when a name matches nothing. Unlike the
-    camera resolver (:func:`c64cast.control.camera.resolve_camera_index`) this never
-    raises: audio degrades to the default input with a warning, matching
-    :meth:`AudioStreamer._resolve_input_device`'s forgiving fallback. PortAudio
-    exposes no USB VID:PID, so the only string form is a name substring, matched
-    case-insensitively against *input-capable* devices (first match on a tie,
-    with a warning). Names come from ``sd.query_devices()`` — the same listing
-    ``c64cast --list-devices`` prints."""
+    Returns ``-1`` ("use the system default input") only for a negative or
+    empty value — the one spelling that asks for the default. A name that
+    matches no input-capable device, a name given without sounddevice, or a
+    device list that cannot be read raises :class:`AudioInputDeviceError`
+    rather than falling back to the default, the same fail-closed rule as the
+    camera resolver (:func:`c64cast.control.camera.resolve_camera_index`).
+    PortAudio exposes no USB VID:PID, so the only string form is a name
+    substring, matched case-insensitively against *input-capable* devices
+    (first match on a tie, with a warning). Names come from
+    ``sd.query_devices()`` — the same listing ``c64cast --list-devices``
+    prints."""
     if isinstance(device, int):
         return device
     token = device.strip()
@@ -149,12 +174,9 @@ def resolve_audio_input_device(device: int | str) -> int:
         pass
 
     if not AUDIO_AVAILABLE or sd is None:
-        log.warning(
-            "selecting an audio device by name (%r) needs sounddevice (the 'mic' "
-            "extra); using the system default input",
-            token,
+        raise AudioInputDeviceError(
+            f"selecting an audio device by name ({token!r}) needs sounddevice (the 'mic' extra)"
         )
-        return -1
 
     low = token.lower()
     matches: list[tuple[int, str]] = []
@@ -166,16 +188,14 @@ def resolve_audio_input_device(device: int | str) -> int:
             if low in name.lower():
                 matches.append((idx, name))
     except Exception as e:  # pragma: no cover - defensive; enumerates the OS
-        log.warning("audio device enumeration failed (%s); using system default input", e)
-        return -1
+        raise AudioInputDeviceError(f"could not list audio devices to find {token!r}: {e}") from e
 
     if not matches:
-        log.warning(
-            "no audio input device matched %r; using the system default input "
-            "(run `c64cast --list-devices` to see names + indices)",
-            token,
+        raise AudioInputDeviceError(
+            f"no audio input device matched {token!r}; not using the system default "
+            "input in its place. Run `c64cast --list-devices` to see names and "
+            "indices, or set [audio].device = -1 to ask for the default."
         )
-        return -1
     if len(matches) > 1:
         # Device names come from USB/driver descriptors, so repr-quote them:
         # a name carrying CR/LF can otherwise forge --log-file lines.
@@ -202,8 +222,17 @@ def downmix_to_mono(indata: np.ndarray) -> np.ndarray:
     all three capture callbacks used to spell that fallback ``indata[:, 0]``,
     which can only raise IndexError on the 1-D input it exists for. One
     helper, so the three copies cannot drift apart again.
+
+    It is also where a device's floats enter, so non-finite samples become
+    0 / ±1 here and finite ones are held to ±`dsp.INPUT_CEILING`: a NaN from a
+    misbehaving driver would otherwise latch the analyzer's level follower and
+    the DSP chain's envelopes for the rest of the run, and the DAC encoder
+    casts NaN to the bottom rail. A finite sample near float32's limit gets
+    there too, overflowing to inf under the caller's sensitivity gain.
     """
-    return indata.mean(axis=1) if indata.ndim > 1 else indata
+    mono = indata.mean(axis=1) if indata.ndim > 1 else indata
+    clean = np.asarray(np.nan_to_num(mono, nan=0.0, posinf=1.0, neginf=-1.0))
+    return np.asarray(np.clip(clean, -INPUT_CEILING, INPUT_CEILING))
 
 
 # Attempts per stage of AudioStreamer._install_tracked_pump before it gives up.
@@ -316,6 +345,9 @@ class AudioStreamer:
         # _reu_pump_start_time is what position_seconds() uses in REU mode: the
         # host never sees the samples, so the queue counter does not apply.
         self._reu_pump_armed = False
+        # A failed install's $0314 restore that never confirmed: stop() owes
+        # it even though no pump armed (_unwind_pump_install).
+        self._irq_vector_restore_owed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
         # The matched CIA #1 pump latch this run derived; 0 before any pump
@@ -370,8 +402,14 @@ class AudioStreamer:
         # MAX_QUEUED_SAMPLES caps the buffer so a stalled consumer cannot
         # accumulate a wall of stale audio.
         self._max_queued_samples = MAX_QUEUED_SAMPLES
+        # Set by end_input() once the producer will push nothing more. A
+        # producer that ends short of the prebuffer would otherwise leave the
+        # worker waiting for it forever, the NMI never started and the clip
+        # never heard. Cleared by every _start_worker.
+        self._input_ended = False
         self.running = False
-        # Bumped by every _start_worker; a worker exits when it stops matching.
+        # Bumped by every _start_worker and by stop(); a worker exits when it
+        # stops matching.
         self._worker_generation = 0
         self.chunk_size = CHUNK_SIZE
         self.sensitivity = 1.0
@@ -385,12 +423,20 @@ class AudioStreamer:
 
         # Audio-master clock bookkeeping (used by PyAV-driven scenes).
         self._pushed_count = 0
-        # Pad bytes landed in the ring behind the last content byte. They hold
-        # the servo's gap open once the producer runs dry, so position_seconds()
-        # takes them out of the lead it subtracts; otherwise the clock would
-        # stop a whole ring short of the last sample.
-        self._ring_tail_pad = 0
-        self._ring_short_pad = 0
+        # Where the pad the worker landed sits in the ring's byte stream. The
+        # servo's gap counts pad and content alike, and position_seconds() takes
+        # out the pad still inside it wherever it sits: a dry tail would
+        # otherwise stop the clock a ring short of the last sample, and pad
+        # followed by content would step it backward once the content landed.
+        # The worker writes them and readers take them, both under the lock,
+        # which also makes the high-water mark position_seconds() never drops
+        # below a single read-modify-write.
+        self._ring_pad_lock = threading.Lock()
+        self._ring_landed_total = 0
+        self._ring_pads: deque[tuple[int, int]] = deque()
+        self._position_floor = 0.0
+        # One record per interval however often the link stalls.
+        self._stall_log = LogThrottle(log)
 
         # Sample tap for FFT overlays. Lockless write from input threads,
         # locked read from the render thread — readers tolerate a torn frame
@@ -403,8 +449,21 @@ class AudioStreamer:
         # reactive source at setup() and cleared at teardown(). Distinct from
         # the tap above and fed before the gate and _apply_dsp, because AGC +
         # compressor + limiter flatten the transients an onset detector reads.
-        self.analysis_sink: Callable[[np.ndarray], None] | None = None
+        self._analysis_sink: Callable[[np.ndarray], None] | None = None
         self._analysis_sink_failed = False
+
+    @property
+    def analysis_sink(self) -> Callable[[np.ndarray], None] | None:
+        return self._analysis_sink
+
+    @analysis_sink.setter
+    def analysis_sink(self, sink: Callable[[np.ndarray], None] | None) -> None:
+        # The session builds one streamer and every reactive source installs
+        # its own analyzer on it at setup(), so a newly installed sink gets its
+        # first failure logged even if an earlier one already failed.
+        if sink is not None:
+            self._analysis_sink_failed = False
+        self._analysis_sink = sink
 
     @property
     def dac_curve(self) -> np.ndarray | None:
@@ -414,11 +473,7 @@ class AudioStreamer:
         return self._dac_curve
 
     def _upload_nmi_and_buffers(self) -> None:
-        nmi = bytearray(NMI_ROUTINE)
-        nmi[NMI_ROUTINE_PATCH_OFFSET_READ_HI] = RING_BUFFER_HI
-        nmi[NMI_ROUTINE_PATCH_OFFSET_WRAP_HI] = RING_BUFFER_END_HI
-        nmi[NMI_ROUTINE_PATCH_OFFSET_RESET_HI] = RING_BUFFER_HI
-        self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", bytes(nmi))
+        self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", NMI_ROUTINE)
         self.api.write_memory_file(
             f"{RING_BUFFER_ADDR:04X}", bytes([self._neutral_byte] * RING_BUFFER_SIZE)
         )
@@ -429,7 +484,6 @@ class AudioStreamer:
         self.api.write_regs(
             f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
         )
-        self.api.note_nmi_consumer(True)
         if self._dac_curve is not None:
             self._enable_mahoney_env()
         elif self.digi_boost:
@@ -517,10 +571,22 @@ class AudioStreamer:
         return self.nmi.effective_rate
 
     def _collect_until(
-        self, chunk_buf: bytearray, n: int, leftover: bytes, deadline: float
+        self,
+        chunk_buf: bytearray,
+        n: int,
+        leftover: bytes,
+        deadline: float,
+        *,
+        generation: int,
     ) -> tuple[int, int, bytes]:
         """Fill ``chunk_buf`` from ``leftover`` then the queue until it holds
         ``chunk_size`` bytes or ``deadline`` passes.
+
+        A worker retired while parked in a ring write takes nothing more from
+        the queue: those blobs are the next activation's, already counted in
+        its queued count, and the retired worker's discard is fenced out of
+        that count (see :meth:`_discard_unpushed`), so a blob it took would
+        stay counted as queued for the rest of the run.
 
         Returns ``(new_n, taken_this_call, new_leftover)``. Split out of the
         worker so collection can be resumed across several short deadlines —
@@ -535,7 +601,7 @@ class AudioStreamer:
             n += take
             taken += take
             leftover = leftover[take:]
-        while n < size and not leftover and self.running:
+        while n < size and not leftover and self.running and generation == self._worker_generation:
             remaining = deadline - time.monotonic()
             # Past the deadline, still take what is already waiting rather than
             # reporting an underrun over a full queue: one over-long sub-write
@@ -545,6 +611,13 @@ class AudioStreamer:
                 piece = self.q.get(timeout=remaining) if remaining > 0 else self.q.get_nowait()
             except queue.Empty:
                 break
+            if not piece:
+                # end_input()'s wake-up: nothing more is coming to wait for.
+                # One left over from an earlier producer, whose end_input()
+                # raced its teardown's drain, is not this producer's end.
+                if self._input_ended:
+                    break
+                continue
             take = min(len(piece), size - n)
             chunk_buf[n : n + take] = piece[:take]
             n += take
@@ -561,6 +634,9 @@ class AudioStreamer:
         leftover: bytes,
         base_time: float,
         chunk_period: float,
+        current: Callable[[], bool],
+        *,
+        generation: int,
     ) -> tuple[int, int, bytes]:
         """Write `payload` into the ring as sub-NMI-period pieces spread evenly
         across `chunk_period`, collecting the *next* chunk in the gaps between
@@ -578,6 +654,12 @@ class AudioStreamer:
         Collecting between the writes rather than before them is what keeps the
         producer's full period of collect time — the writes now occupy the
         period that used to be spent asleep waiting for the pace deadline.
+
+        ``current`` is the worker's fence: each piece write can park past
+        stop()'s join, and a worker superseded meanwhile neither collects from
+        the next session's queue nor writes the rest of the chunk into the
+        ring that session is priming. ``generation`` is the value that fence
+        tests, handed on to :meth:`_collect_until`.
         """
         quantum = self._halt_quantum() or len(payload)
         slots = max(1, (len(payload) + quantum - 1) // quantum)
@@ -585,10 +667,16 @@ class AudioStreamer:
         n = 0
         taken_total = 0
         for i in range(slots):
+            if not current():
+                break
             slot_deadline = base_time + i * slot_period
-            n, taken, leftover = self._collect_until(chunk_buf, n, leftover, slot_deadline)
+            n, taken, leftover = self._collect_until(
+                chunk_buf, n, leftover, slot_deadline, generation=generation
+            )
             taken_total += taken
-            if not self.running:
+            # Retired between slots: the rest of the payload is not this
+            # worker's to write into a ring the next activation owns.
+            if not current():
                 break
             sleep_s = slot_deadline - time.monotonic()
             self._total_slots += 1
@@ -781,6 +869,18 @@ class AudioStreamer:
         # Stashed for NmiTimer.start: at scene setup the worker is usually still
         # prebuffering, so the timer picks the value up when it first arms.
         self.nmi.pitch_multiplier = multiplier
+        requested = self.nmi.requested_compensated_latch()
+        if requested != self.nmi.clamp_latch(requested):
+            log.warning(
+                "audio: pitch multiplier %g for %s needs CIA #2 latch %d, outside the "
+                "%d..%d the NMI handler budget and the 16-bit timer allow — arming %d",
+                multiplier,
+                display_mode,
+                requested,
+                self.nmi.ceiling_latch(),
+                CIA_TIMER_LATCH_MAX,
+                self.nmi.clamp_latch(requested),
+            )
         if not self.nmi.started:
             return
 
@@ -803,27 +903,35 @@ class AudioStreamer:
         stop()'s bounded join: it captures the value at start and exits as soon
         as it no longer matches, so it cannot be resurrected by this method
         setting ``running`` back to True (see :meth:`_worker`)."""
-        self._worker_generation += 1
+        with self._ring_pad_lock:
+            self._worker_generation += 1
+            generation = self._worker_generation
+            self._clear_ring_clock_locked()
+        self._input_ended = False
         thread = threading.Thread(
             target=self._worker,
-            args=(self._worker_generation,),
+            args=(generation,),
             daemon=True,
             name="audio-worker",
         )
         thread.start()
         return thread
 
-    def _consume_queued(self, n: int) -> None:
+    def _consume_queued(self, n: int, *, generation: int) -> None:
         """Account for ``n`` queued bytes that have now LANDED in the ring.
 
         Only the queued count drops, so ``position = pushed - queued`` advances
-        by exactly ``n`` — the audio clock moves because the audio played."""
+        by exactly ``n`` — the audio clock moves because the audio played. A
+        worker that outlived stop()'s bounded join counts nothing: its bytes
+        are not in the next activation's counts (see :meth:`_note_ring_landed`)."""
         if not n:
             return
         with self._count_lock:
+            if generation != self._worker_generation:
+                return
             self._queued_samples = max(0, self._queued_samples - n)
 
-    def _discard_unpushed(self, n: int) -> None:
+    def _discard_unpushed(self, n: int, *, generation: int | None = None) -> None:
         """Account for ``n`` bytes dropped before they reached the ring.
 
         Both counts drop — the paired subtract — so the bytes read as never
@@ -832,10 +940,15 @@ class AudioStreamer:
         without moving the audio clock, and the only difference from
         :meth:`_consume_queued` is whether the bytes were played: getting the
         two the wrong way round shifts A/V sync at every splice. Both live
-        here, once, rather than hand-written at each site."""
+        here, once, rather than hand-written at each site.
+
+        ``generation`` is the calling worker's, fenced as in
+        :meth:`_consume_queued`; flush()'s drain passes none."""
         if not n:
             return
         with self._count_lock:
+            if generation is not None and generation != self._worker_generation:
+                return
             self._queued_samples = max(0, self._queued_samples - n)
             self._pushed_count = max(0, self._pushed_count - n)
 
@@ -868,13 +981,20 @@ class AudioStreamer:
         pace point, and writes.
 
         The schedule is strict absolute — `next_write_time + chunk_period`,
-        never snapped forward on an overrun. With `host_dma_servo` on
+        never snapped forward on an ordinary overrun. With `host_dma_servo` on
         (default) the increment is `servo.next_pace_increment(...)` instead of
         the bare `chunk_period`, still added to the absolute time, and clamped
         to [0.5, 1.5]·chunk_period so one bad reading cannot stall or sprint
-        the schedule.
+        the schedule. The one exception is a stall longer than the ring lead
+        (a DMA link that blocked or redialed): catching that up would sprint
+        writes until W lapped R, so the worker re-anchors instead — see
+        :meth:`_resync_after_stall`.
 
         See docs/architecture/audio.md#the-worker-thread-and-its-pacing."""
+
+        def current() -> bool:
+            return not self._superseded(generation)
+
         try:
             write_addr = RING_BUFFER_ADDR
             # Just past the last byte actually written — what the servo needs as
@@ -889,6 +1009,9 @@ class AudioStreamer:
             # servo a standing offset to absorb before it could correct anything.
             chunk_period = self.chunk_size / self.effective_rate
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
+            # Behind schedule by more than this, the consumer has played the
+            # whole lead and is replaying the ring's previous lap.
+            stall_resync_s = HOST_DMA_SERVO_TARGET_GAP / self.effective_rate
             # Pace + collect deadlines. Zero until NMI starts.
             next_write_time = 0.0
             # Last iteration's chunk, dripped out over this one: one chunk_period
@@ -900,7 +1023,7 @@ class AudioStreamer:
             pending_pad = 0
             pending_epoch = 0
 
-            while self.running and generation == self._worker_generation:
+            while current():
                 # Captured before the collect: if flush() bumps it while this
                 # iteration holds data, that data is pre-splice and is dropped
                 # before the ring write below.
@@ -914,7 +1037,7 @@ class AudioStreamer:
                     if epoch != pending_epoch:
                         # Splice landed after this chunk left the queue: drop it
                         # unplayed, with the paired subtract used below.
-                        self._discard_unpushed(pending_from_queue)
+                        self._discard_unpushed(pending_from_queue, generation=generation)
                         # write_addr passed this chunk at hand-off and
                         # pending_addr is already beyond it, so nothing would
                         # ever write [pending_addr, +len) and the NMI would
@@ -922,7 +1045,9 @@ class AudioStreamer:
                         # promises silence. Filling it also keeps w_head honest,
                         # so the servo isn't handed a W a chunk behind the head.
                         self._neutral_fill_ring(pending_addr, len(pending))
-                        self._note_ring_landed(len(pending), len(pending))
+                        if not current():
+                            break
+                        self._note_ring_landed(generation, len(pending), len(pending))
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -933,42 +1058,73 @@ class AudioStreamer:
                         # the read head. Stomping from pending_addr keeps the
                         # chunk about to be written at the front of the span.
                         if self._stomp_requested:
-                            self._stomp_requested = False
-                            self._stomp_ring(pending_addr)
+                            self._stomp_ring(pending_addr, current)
                         n, from_queue, leftover = self._drip_chunk(
-                            pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
+                            pending,
+                            pending_addr,
+                            chunk_buf,
+                            leftover,
+                            pace_deadline,
+                            chunk_period,
+                            current,
+                            generation=generation,
                         )
-                        self._note_ring_landed(len(pending), pending_pad)
-                        self._consume_queued(pending_from_queue)
+                        # Every ring write can park past stop()'s join; past
+                        # it, the counters below are the next session's.
+                        if not current():
+                            break
+                        self._note_ring_landed(generation, len(pending), pending_pad)
+                        self._consume_queued(pending_from_queue, generation=generation)
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
                         pending = None
                         pending_from_queue = 0
 
+                # Read before the collect: end_input() follows the producer's
+                # last push, so a collect that comes back empty after it was
+                # seen leaves nothing behind in the queue.
+                input_ended = self._input_ended
                 if pending is None and n < self.chunk_size:
                     # Priming, or the drip's interleaved slots did not fill the
                     # chunk: fall back to a blocking collect on the same deadline.
+                    # A priming collect after the producer ended takes only what
+                    # is queued: nothing more is coming to wait for. Not before
+                    # anything landed, though: a producer that ended having
+                    # pushed nothing leaves the idle branch below to `continue`
+                    # every pass, and a zero deadline made that a busy spin.
                     collect_deadline = (
-                        pace_deadline if prebuffered else time.monotonic() + chunk_period
+                        pace_deadline
+                        if prebuffered
+                        else time.monotonic()
+                        + (0.0 if input_ended and bytes_prebuffered else chunk_period)
                     )
                     n, taken, leftover = self._collect_until(
-                        chunk_buf, n, leftover, collect_deadline
+                        chunk_buf, n, leftover, collect_deadline, generation=generation
                     )
                     from_queue += taken
 
-                if not self.running:
+                if not current():
                     break
 
                 pad = 0
+                # A pad is an underrun only while the NMI is reading and more
+                # input is due. After end_input() the collect above came up
+                # short because the queue is drained: the pads that follow
+                # are the silence the ring plays out after the last sample.
+                stalled = prebuffered and not input_ended
                 if n == 0:
-                    if not prebuffered:
+                    if not prebuffered and not (input_ended and bytes_prebuffered):
                         # Idle: no producer data, no NMI to feed.
                         continue
-                    # Real underrun: refresh ring with silence.
+                    # Real underrun: refresh ring with silence. Or, priming, a
+                    # producer that ended short of the prebuffer: fill the rest
+                    # of it with silence so the NMI starts on what it pushed,
+                    # behind the same lead as any other start.
                     chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
                     n = pad = self.chunk_size
-                    self._full_underruns += 1
+                    if stalled:
+                        self._full_underruns += 1
                 elif n < self.chunk_size:
                     # Pad every short chunk, including during the prebuffer fill:
                     # a raw-length write takes write_addr off the chunk grid
@@ -980,7 +1136,7 @@ class AudioStreamer:
                     pad = self.chunk_size - n
                     chunk_buf[n : n + pad] = bytes([self._neutral_byte]) * pad
                     n = self.chunk_size
-                    if prebuffered:
+                    if stalled:
                         # Consumption-phase only: with no NMI reading yet, a short
                         # prebuffer collect is a slow start, not an underrun.
                         self._partial_underruns += 1
@@ -989,16 +1145,17 @@ class AudioStreamer:
                 # leftover are pre-splice, so count them as never pushed (the
                 # paired subtract holds position) and skip the write and pace.
                 if self._flush_epoch != epoch:
-                    self._discard_unpushed(from_queue + len(leftover))
+                    self._discard_unpushed(from_queue + len(leftover), generation=generation)
                     leftover = b""
                     continue
 
-                # Pause fast mute, priming iteration only; steady state goes
-                # through the pending path above, which stomps against the chunk
-                # about to go out rather than this one.
+                # Pause fast mute, for a request the pending path above did not
+                # take: no chunk was pending (the first iteration after the arm,
+                # or one after a splice dropped it), or the request arrived
+                # during that path's drip and collect. That path stomps from
+                # the chunk about to go out; this one from the chunk in hand.
                 if self._stomp_requested and prebuffered:
-                    self._stomp_requested = False
-                    self._stomp_ring(write_addr)
+                    self._stomp_ring(write_addr, current)
 
                 if prebuffered:
                     # Hand off to the next iteration, which drips this into the
@@ -1015,15 +1172,45 @@ class AudioStreamer:
                     write_addr += n
                     if write_addr >= RING_BUFFER_END:
                         write_addr = RING_BUFFER_ADDR
-                    next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
+                    next_write_time += self.servo.next_pace_increment(w_head, chunk_period, current)
+                    # The pacing read can park past stop()'s join like a ring
+                    # write: past it, the resync and the health line below
+                    # would act on the next session's ring and counters.
+                    if not current():
+                        break
+                    lag = time.monotonic() - next_write_time
+                    if lag > stall_resync_s:
+                        outcome = self._resync_after_stall(lag, generation, w_head)
+                        # A superseded resync returns None, as an unreadable R
+                        # does; past it, the health line is the next session's.
+                        if not current():
+                            break
+                        next_write_time = time.monotonic()
+                        if isinstance(outcome, StallInsideLead):
+                            # Owe only what refills the target lead, not the
+                            # whole stall: catching all of it up from a lead
+                            # longer than the target (a slow consumer's)
+                            # drove W more than a ring ahead of R.
+                            short = max(0, HOST_DMA_SERVO_TARGET_GAP - outcome.gap)
+                            next_write_time -= short / self.effective_rate
+                        elif outcome is not None:
+                            pending_addr = outcome
+                            write_addr = outcome + n
+                            if write_addr >= RING_BUFFER_END:
+                                write_addr = RING_BUFFER_ADDR
                     self._maybe_log_health(time.monotonic())
                     continue
 
                 # Prebuffer fill: the NMI is not consuming yet, so there is no
                 # halt to hide from and one unsplit write primes the ring fastest.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
-                self._note_ring_landed(n, pad)
-                self._consume_queued(from_queue)
+                # Retired while parked in that write: the counts below are the
+                # next activation's, and the NMI start would reprogram the timer
+                # under it.
+                if not current():
+                    break
+                self._note_ring_landed(generation, n, pad)
+                self._consume_queued(from_queue, generation=generation)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1032,6 +1219,9 @@ class AudioStreamer:
                 bytes_prebuffered += n
                 if bytes_prebuffered >= prebuffer_bytes:
                     self.nmi.start(adaptive=self.nmi_rate_adaptive)
+                    # The arm reads R and writes the CIA, and can park too.
+                    if not current():
+                        break
                     prebuffered = True
                     # R only becomes meaningful now that the NMI consumes: start
                     # the servo integrator and rate loop clean (the warm-up gate
@@ -1046,9 +1236,145 @@ class AudioStreamer:
         except Exception:
             # Clearing `running` is what stats()["running"] reports, so a caller
             # can tell a dead worker from a live one rather than inferring it
-            # from silence.
+            # from silence. A superseded worker's write most often ends this
+            # way — a parked write on a stalled link raises rather than
+            # returns — and by then `running` is the next session's.
             log.exception("audio worker crashed")
-            self.running = False
+            # A retired worker's late write failing is not the next
+            # activation's crash: clearing `running` would stop that one.
+            if current():
+                self.running = False
+
+    def _resync_after_stall(
+        self, lag: float, generation: int, w_head: int
+    ) -> int | StallInsideLead | None:
+        """Recover from a worker stall longer than the ring lead; returns the
+        chunk-grid address the next chunk lands at, None when R cannot be
+        read promptly (the schedule is then only snapped forward), or a
+        ``StallInsideLead`` when R turns out not to have reached ``w_head``
+        (the live write head) after all.
+
+        The trigger is ``HOST_DMA_SERVO_TARGET_GAP`` of lag, but the lead the
+        stall ate can be longer: the ≈5 KiB the consumer starts behind before
+        the servo pulls it in, or an open-loop lead grown by the consumer's
+        bus-halt deficit. With W still ahead, the span from R to the anchor
+        holds audio not yet played, and NEUTRAL-filling it cut a hole in the
+        scene. R read here says which case this is (``stall_lapped``), and
+        when W is still ahead the ring is not touched; the worker restarts
+        its schedule from now, owing only what tops the lead back up to the
+        target. The whole stall is not caught up: from a lead grown longer
+        than the target, that drove W more than a ring ahead of R, and each
+        catch-up iteration still over the trigger read R and judged again,
+        until a lag that no longer measured what R ate passed for a lap.
+
+        By now the consumer has played all of the lead and some of the ring's
+        previous lap, and nothing written meanwhile can change that. What the
+        old schedule would do next is worse: write back-to-back at the link's
+        limit until it caught up, more than the audio share of the write
+        budget, while W overtook R and overwrote what had not yet played. So
+        the write head restarts ``HOST_DMA_SERVO_TARGET_GAP`` ahead of R, with
+        the span between them NEUTRAL-filled (it holds a lap-old ring), and
+        the schedule restarts from now.
+
+        A live input's backlog is the stall's: played late it would only add
+        that much latency for the rest of the session, so it is dropped. A
+        decoded source's is kept, and plays late — the picture is slaved to
+        the audio clock, which did not advance for what was not played.
+
+        R comes from ``RateServo.read_r_promptly``, against a budget of
+        ``STALL_REANCHOR_READ_BUDGET_FRAC`` of the lead: a stall is often a
+        slow server, and a read as slow as the one that tripped this would
+        leave R stale by more than the lead the anchor puts between them.
+
+        ``generation`` is the worker's own, as in :meth:`_worker`. A worker
+        parked in that read, or in a stomp write, can outlive stop()'s bounded
+        join, and the stall that parked it is the one that brings it here, so
+        it would otherwise stomp the next session's ring, drain its mic queue
+        and reset its clock state. Each step that blocks is followed by a
+        fence check — the R read's own backoff bookkeeping and each stomp
+        write included — and a superseded worker returns None and touches
+        nothing more."""
+
+        def current() -> bool:
+            return not self._superseded(generation)
+
+        read_started = time.monotonic()
+        r_addr = self.servo.read_r_promptly(
+            self.chunk_size / self.effective_rate,
+            STALL_REANCHOR_READ_BUDGET_FRAC * HOST_DMA_SERVO_TARGET_GAP / self.effective_rate,
+            current,
+        )
+        read_travel = int((time.monotonic() - read_started) * self.effective_rate)
+        if self._superseded(generation):
+            return None
+        dropped = 0
+        if self.mic_stream is not None:
+            dropped = self._drain_queue_samples()
+            self._discard_unpushed(dropped, generation=generation)
+        # R's consumption since the missed slot, counting the read: R may be
+        # sampled at the read's end, and a read that outlasts the old lead
+        # otherwise leaves a lap judged as W a ring's worth ahead.
+        behind = int(lag * self.effective_rate) + read_travel
+        if r_addr is not None and not stall_lapped(
+            r_addr, w_head, behind, read_travel + STALL_INSIDE_LEAD_SLACK
+        ):
+            gap = (w_head - r_addr) % RING_BUFFER_SIZE - read_travel
+            inside_lead = (
+                "audio: DAC worker stalled %.2f s, inside its %d-byte lead; "
+                "%d bytes still ahead of the C64's playback"
+            )
+            if dropped:
+                # Lost live input is audible, so it is reported at default
+                # verbosity, through the re-anchor's throttle.
+                self._stall_log.warn(
+                    inside_lead + "; dropped %.2f s of live input",
+                    lag,
+                    gap + behind,
+                    gap,
+                    dropped / self.effective_rate,
+                )
+            else:
+                log.debug(inside_lead, lag, gap + behind, gap)
+            # The refill is a short burst the adaptive loop should not steer on.
+            self.servo.note_disturbance()
+            return StallInsideLead(gap)
+        if r_addr is None:
+            self._stall_log.warn(
+                "audio: DAC worker stalled %.2f s behind the C64's playback "
+                "(a blocked or redialed link); the read pointer was not read inside a "
+                "slow read's backoff, or could not be read, or not in time, so the "
+                "write head could not be re-anchored",
+                lag,
+            )
+            self.servo.note_disturbance()
+            return None
+        anchor = stall_reanchor(r_addr, self.chunk_size)
+        self._stomp_from(r_addr, anchor, current)
+        if self._superseded(generation):
+            return None
+        lead = (anchor - r_addr) % RING_BUFFER_SIZE
+        # The new lead is all pad: recorded as a landing of NEUTRAL, the clock
+        # subtracts none of it until content lands behind it. Through the
+        # landing record, not the clock: everything landed before the stall
+        # has played, so the clock reaches the landed count here, and the
+        # high-water mark holds it there while the content behind the pad
+        # lands and is played.
+        self._note_ring_landed(generation, lead, lead)
+        self.servo.resync(lead)
+        self._stall_log.warn(
+            "audio: DAC worker stalled %.2f s behind the C64's playback (a blocked "
+            "or redialed link); it replayed its ring meanwhile. Re-anchored the "
+            "write head %d bytes ahead of it%s",
+            lag,
+            lead,
+            f" and dropped {dropped / self.effective_rate:.2f} s of live input" if dropped else "",
+        )
+        return anchor
+
+    def _superseded(self, generation: int) -> bool:
+        """True once the worker started as ``generation`` should stop acting:
+        stop() cleared ``running``, or a later start_* replaced it."""
+        return not self.running or generation != self._worker_generation
 
     def note_playback_disturbance(self) -> None:
         """Re-arm the adaptive NMI-rate loop's warm-up gate after a large playback
@@ -1067,8 +1393,8 @@ class AudioStreamer:
 
         Called from realtime callbacks, so a failing analyzer must never take
         the audio path down with it: the first exception is logged and the sink
-        is dropped for the rest of the run (visuals stop reacting, sound keeps
-        playing)."""
+        is dropped until a source installs another (visuals stop reacting,
+        sound keeps playing)."""
         sink = self.analysis_sink
         if sink is None:
             return
@@ -1333,8 +1659,10 @@ class AudioStreamer:
             log.warning("sounddevice not installed; mic capture disabled")
             return
         # Resolve a name substring / int-in-string up front so the log line and
-        # the REU delegation both see a plain int.
+        # the REU delegation both see a plain int. A configured device that
+        # cannot be honored raises here, before any capture state is touched.
         device = resolve_audio_input_device(device)
+        self._resolve_input_device(device)
         self.sensitivity = sensitivity
         self.noise_gate = noise_gate
         # Rebuild for a mic source so the AGC stage activates; line sources keep
@@ -1348,6 +1676,7 @@ class AudioStreamer:
             return
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
+        self._reset_ring_clock()
         self.running = True
         self._worker_thread = self._start_worker()
         assert sd is not None
@@ -1392,6 +1721,7 @@ class AudioStreamer:
             log.warning("sounddevice not installed; listen capture disabled")
             return
         device = resolve_audio_input_device(device)
+        self._resolve_input_device(device)
         self.sensitivity = sensitivity
         self._listen_mode = True
         rate = int(sample_rate) if sample_rate else self.sample_rate
@@ -1428,7 +1758,7 @@ class AudioStreamer:
         65536 — a truncated latch can land anywhere, including one that fires
         the pump hundreds of times faster than matched. At the default chunk the
         product passes 16 bits below ≈2 kHz, and ``c64.nmi_rate_safety`` bounds
-        only the fast end of ``sample_rate``.
+        ``sample_rate`` only to what the NMI's own 16-bit latch can hold.
 
         CIA #1 stays in continuous mode (the kernal already set CRA); only the
         latch changes. BASIC's TI$ jiffy clock drifts as a side effect —
@@ -1509,60 +1839,196 @@ class AudioStreamer:
             self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
 
         def upload_entry() -> None:
-            # Every attempt masks afresh: a retry follows an attempt whose
-            # unmask may have landed even though its entry did not.
-            if dispatcher_owns_irq:
-                epoch = self.api.delivery_epoch
-                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
-                self.api.flush()
-                if self.api.delivery_epoch != epoch:
-                    return
-                time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_IRQ_HANDLER_TRACKED)
-            if dispatcher_owns_irq:
-                self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+            self._write_pump_entry(REU_IRQ_HANDLER_TRACKED, dispatcher_owns_irq=dispatcher_owns_irq)
 
         stages = (("trackers", seed_trackers), ("body", upload_body), ("entry", upload_entry))
         for stage, write in stages:
-            if not self._write_confirmed(write):
-                self._park_tracked_pump(dispatcher_owns_irq)
-                raise PumpInstallError(
-                    f"REU pump install: the {stage} write was not confirmed delivered "
-                    f"after {TRACKED_PUMP_INSTALL_TRIES} attempts"
+            try:
+                self._require_confirmed(stage, write)
+            except PumpInstallError:
+                self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=stage == "entry")
+                raise
+
+    def _write_pump_entry(self, code: bytes, *, dispatcher_owns_irq: bool) -> None:
+        """Write ``code`` at the $C100 pump entry. Under a dispatcher, CIA #1 is
+        masked around it (see _install_tracked_pump), and nothing is written
+        when the mask did not confirm. Every call masks afresh: a retry follows
+        an attempt whose unmask may have landed even though its entry did not."""
+        if dispatcher_owns_irq:
+            epoch = self.api.delivery_epoch
+            self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
+            self.api.flush()
+            if self.api.delivery_epoch != epoch:
+                return
+            time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
+        self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", code)
+        if dispatcher_owns_irq:
+            self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+
+    def _require_confirmed(self, stage: str, write: Callable[[], None]) -> None:
+        """``_write_confirmed``, raising PumpInstallError naming ``stage`` when
+        no attempt held."""
+        if not self._write_confirmed(write):
+            raise PumpInstallError(
+                f"REU pump install: the {stage} write was not confirmed delivered "
+                f"after {TRACKED_PUMP_INSTALL_TRIES} attempts"
+            )
+
+    def _reu_write_confirmed(self, what: str, reu_offset: int, data: bytes) -> None:
+        """One REUWRITE slice, confirmed like a pump install stage. Every
+        staged track lands at the same REU offset, so a slice lost to a lossy
+        redial would play the previous track's audio (or stale SRAM noise)
+        rather than fail. Raises PumpInstallError when it never confirms."""
+        self._require_confirmed(what, lambda: self.api.reu_write(reu_offset, data))
+
+    def _write_irq_vector(self, handler: int) -> None:
+        """Point $0314/$0315 at ``handler``. write_regs coalesces into one DMA,
+        so both bytes change at once and no IRQ jumps through half a vector."""
+        self.api.write_regs(f"{VECTORS.IRQ:04X}", handler & 0xFF, (handler >> 8) & 0xFF)
+
+    def _arm_installed_pump(
+        self,
+        program_rec_and_rate: Callable[[], None],
+        *,
+        tracked: bool,
+        dispatcher_owns_irq: bool,
+    ) -> None:
+        """The tail both pump bring-ups share once their code is up: confirm
+        ``program_rec_and_rate`` (the REC registers and the CIA #1 latch), arm
+        the NMI, and point $0314 at the pump entry unless a dispatcher owns it.
+
+        The playback-clock origin is captured immediately before the NMI
+        starts firing: position_seconds() must measure time since audio became
+        audible, or video sync trails it by the bring-up cost. The settle lets
+        the NMI catch a few samples before the pump arms (REU_PUMP_SETTLE_S);
+        the pump then starts on the next CIA #1 IRQ.
+
+        A write that never confirms unwinds the install and the NMI bring-up
+        and raises PumpInstallError, with nothing armed."""
+        patched = False
+        try:
+            self._require_confirmed("REC and CIA #1 latch", program_rec_and_rate)
+            self._reu_pump_start_time = time.monotonic()
+            self.nmi.start(adaptive=self.nmi_rate_adaptive)
+            time.sleep(REU_PUMP_SETTLE_S)
+            if not dispatcher_owns_irq:
+                # Set first: an unconfirmed patch may have landed all the same.
+                patched = True
+                self._require_confirmed(
+                    "IRQ vector", lambda: self._write_irq_vector(REU_PUMP_HANDLER_ADDR)
                 )
+        except PumpInstallError as e:
+            self._unwind_pump_install(
+                restore_irq_vector=patched,
+                tracked=tracked,
+                dispatcher_owns_irq=dispatcher_owns_irq,
+            )
+            self._abandon_pump_bring_up(e)
+            raise
+
+    def _unwind_pump_install(
+        self, *, restore_irq_vector: bool, tracked: bool, dispatcher_owns_irq: bool
+    ) -> None:
+        """Best-effort undo of a pump install that failed after its code went
+        up: $0314 back to the kernal when this install may have patched it,
+        the tracked body parked on an RTS for anything still reaching $C180,
+        and CIA #1 Timer A back to the kernal latch. A dispatcher's $0314 is
+        never touched.
+
+        The vector restore is confirmed like the patch was, and stays owed to
+        `_disarm_reu_pump` until it lands: nothing is armed after this, so
+        without the debt stop() would leave every CIA #1 tick running a pump
+        whose session has ended."""
+        if restore_irq_vector:
+            self._irq_vector_restore_owed = True
+            run_teardown_steps(
+                log,
+                type(self).__name__,
+                [("IRQ vector restore", self._restore_irq_vector_confirmed)],
+            )
+        if tracked:
+            self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=True)
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
+                ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
+                ("pump unwind flush", self.api.flush),
+            ],
+        )
+
+    def _restore_irq_vector_confirmed(self) -> None:
+        """$0314 back to the kernal, confirmed; clears the restore debt only
+        once it held. Raises PumpInstallError when it never confirms."""
+        self._require_confirmed(
+            "IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)
+        )
+        self._irq_vector_restore_owed = False
 
     def _write_confirmed(self, write: Callable[[], None]) -> bool:
         """Run ``write`` and flush until a run leaves ``delivery_epoch``
-        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did."""
+        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did.
+
+        A run whose ``write`` raises a transport error counts as unconfirmed:
+        ``reu_write`` is not routed through ``_emit`` and raises when a redial
+        fails or is refused under backoff, which leaves ``delivery_epoch``
+        unmoved although nothing was sent."""
         for _ in range(TRACKED_PUMP_INSTALL_TRIES):
             epoch = self.api.delivery_epoch
-            write()
+            try:
+                write()
+            except (OSError, SocketDMAError) as e:
+                log.debug("audio: pump install write raised: %s", e)
+                continue
             self.api.flush()
             if self.api.delivery_epoch == epoch:
                 return True
         return False
 
-    def _park_tracked_pump(self, dispatcher_owns_irq: bool) -> None:
+    def _park_tracked_pump(self, dispatcher_owns_irq: bool, *, entry_may_be_up: bool) -> None:
         """Best-effort safe state after a failed tracked-pump install: an RTS at
         $C180 so neither the $C100 entry nor a dispatcher's inline JSR runs a
         body on unconfirmed trackers, and CIA #1 unmasked if the install masked
-        it. A one-byte write cannot tear an instruction the 6510 is fetching."""
-        steps: list[tuple[str, Callable[[], object]]] = [
-            (
+        it. A one-byte write cannot tear an instruction the 6510 is fetching.
+
+        Under a dispatcher, an entry that may have gone up (``entry_may_be_up``)
+        also goes back to the JMP $EA31 stub its installer left: the dispatcher
+        keeps JMPing to $C100 for the rest of the scene, and once CIA #1 is back
+        at the kernal latch the entry's tick divider would chain the kernal on
+        only every Nth tick (the jiffy clock, SCNKEY and the cursor blink at a
+        third speed).
+
+        Every write here is confirmed like an install stage, since the link
+        that lost the install can lose these too, and one that never confirms
+        is logged rather than dropped. A lost RTS leaves a torn body where the
+        chunked dispatcher JSRs, and a lost unmask after a masked entry upload
+        leaves the kernal with no jiffy IRQ at all, keyboard scan included."""
+
+        def confirmed(stage: str, write: Callable[[], None]) -> tuple[str, Callable[[], None]]:
+            return (stage, lambda: self._require_confirmed(stage, write))
+
+        steps = [
+            confirmed(
                 "pump body park",
                 lambda: self.api.write_memory(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", "60"),
             )
         ]
+        if dispatcher_owns_irq and entry_may_be_up:
+            steps.append(
+                confirmed(
+                    "pump entry stub restore",
+                    lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
+                )
+            )
         if dispatcher_owns_irq:
             steps.append(
-                (
+                confirmed(
                     "CIA #1 unmask",
                     lambda: self.api.write_memory(
                         f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
                     ),
                 )
             )
-        steps.append(("pump park flush", self.api.flush))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _abandon_pump_bring_up(self, err: PumpInstallError) -> None:
@@ -1594,7 +2060,7 @@ class AudioStreamer:
         The two sequences are still written out separately, which is how the
         CIA #1 latch came to be derived on one and hardcoded on the other;
         everything the two must agree on now lives in something they share
-        (_program_reu_pump_rate, REU_PUMP_SETTLE_S, the handler constants).
+        (_program_reu_pump_rate, _arm_installed_pump, the handler constants).
         A new field either goes in a shared helper or is a divergence again.
         """
         # Idempotent on an int (start_mic already resolved before delegating);
@@ -1607,65 +2073,67 @@ class AudioStreamer:
             "audio[reu mic]: prefilling REU ring at $%06X (%d bytes)", REU_MIC_BASE, REU_MIC_SIZE
         )
         pad = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
-        for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
-            n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
-            self.api.reu_write(REU_MIC_BASE + off, pad[:n])
+        try:
+            for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
+                n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
+                self._reu_write_confirmed("mic ring prefill", REU_MIC_BASE + off, pad[:n])
+        except PumpInstallError as e:
+            log.error("audio: %s — this scene plays without audio", e)
+            return
 
         # Standard NMI bring-up (handler + ring + digi-boost). NMI consumes from
         # the $4000 ring _upload_nmi_and_buffers just NEUTRAL-filled.
         self._upload_nmi_and_buffers()
 
         # Install the tracked pump with the mic body at $C180: src tracker =
-        # REU_MIC_BASE, dst tracker = RING_BUFFER_ADDR. Every tick reloads all
-        # five REC addresses from the trackers, so a bank-swap REC DMA or a REU
-        # screen push between ticks cannot redirect it (#551). Address control
-        # = 0: both sides auto-increment, no autoload.
+        # REU_MIC_BASE, dst tracker = REU_MIC_RING_LEAD into the ring, where
+        # the NMI reader (still parked at the ring start) is that far behind.
+        # _seed_mic_ring_lead re-measures that lead once both are running.
+        # Every tick reloads all five REC addresses from the trackers, so a
+        # bank-swap REC DMA or a REU screen push between ticks cannot redirect
+        # it (#551). Address control = 0: both sides auto-increment, no
+        # autoload.
         try:
             self._install_tracked_pump(
                 REU_MIC_PUMP_BODY_SUBROUTINE,
                 src=REU_MIC_BASE,
-                dst=RING_BUFFER_ADDR,
+                dst=RING_BUFFER_ADDR + REU_MIC_RING_LEAD,
                 dispatcher_owns_irq=skip_irq_vector_hook,
             )
         except PumpInstallError as e:
             self._abandon_pump_bring_up(e)
             return
-        self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
         # Match the pump rate to the NMI consume rate, derived from the live NMI
         # latch by the same helper the video path uses (_program_reu_pump_rate
-        # says why it cannot be a constant).
-        cia1_latch = self._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
-        self.api.flush()
+        # says why it cannot be a constant). Then arm the NMI, which consumes
+        # the prebuilt NEUTRAL ring, and patch $0314 at the mic pump entry
+        # unless a bank-swap dispatcher owns it and JMPs to $C100 itself; the
+        # pump reads NEUTRAL until the bootstrap window has passed.
+        def program_rec_and_rate() -> None:
+            self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
+            self._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
+
+        try:
+            self._arm_installed_pump(
+                program_rec_and_rate, tracked=True, dispatcher_owns_irq=skip_irq_vector_hook
+            )
+        except PumpInstallError:
+            return
         log.info(
             "audio[reu mic]: pump installed at $%04X, CIA #1 latch=$%04X",
             REU_PUMP_HANDLER_ADDR,
-            cia1_latch,
+            self._reu_cia1_latch_nominal,
         )
-
-        # Arm NMI (CIA #2 Timer A). NMI now consumes the prebuilt
-        # NEUTRAL ring at the consume rate.
-        self._reu_pump_start_time = time.monotonic()
-        self.nmi.start(adaptive=self.nmi_rate_adaptive)
-        time.sleep(REU_PUMP_SETTLE_S)  # let NMI catch a few samples first
-
-        # Patch the IRQ vector at the mic pump handler; it starts on the next
-        # kernal IRQ (~16 ms), reading NEUTRAL until the bootstrap window has
-        # passed. Skipped when the display mode's bank-swap dispatcher owns
-        # $0314 and JMPs to $C100 itself.
-        if not skip_irq_vector_hook:
-            self.api.write_regs(
-                f"{VECTORS.IRQ:04X}",
-                REU_PUMP_HANDLER_ADDR & 0xFF,
-                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF,
-            )
-            self.api.flush()
 
         self.running = True
         self._reu_pump_armed = True
         self._pushed_count = 0
-        # Start the host write head ahead of the pump's read head: steady-state
-        # latency is REU_MIC_BOOTSTRAP_BYTES / sample_rate, ~133 ms at 12 kHz.
+        ring_lead = self._seed_mic_ring_lead()
+        # Start the host write head ahead of the pump's src tracker. Latency is
+        # this lead plus the pump's lead over the NMI in the $4000 ring:
+        # (REU_MIC_BOOTSTRAP_BYTES + REU_MIC_RING_LEAD) / sample_rate, ~0.3 s
+        # at 12 kHz.
         self._mic_reu_write_pos = REU_MIC_BOOTSTRAP_BYTES
 
         # _open_input_stream hardcodes self._mic_callback, so swap in the REU
@@ -1673,16 +2141,98 @@ class AudioStreamer:
         self.mic_stream = self._open_input_stream(device, callback=self._mic_callback_reu)
         self.mic_stream.start()
         self._start_mic_lead_servo()
+        # An unread ring lead is logged as the nominal one it was seeded at.
+        ring_bytes = REU_MIC_RING_LEAD if ring_lead is None else ring_lead
         log.info(
             "audio[reu mic]: device=%d %dHz sensitivity=%.2f noise_gate=%.3f "
-            "bootstrap=%dB (%.0fms latency)",
+            "host lead=%dB + C64 ring lead=%dB%s (%.0fms latency)",
             device,
             self.sample_rate,
             self.sensitivity,
             self.noise_gate,
             REU_MIC_BOOTSTRAP_BYTES,
-            1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate,
+            ring_bytes,
+            "" if ring_lead is not None else " (nominal, unread)",
+            1000 * (REU_MIC_BOOTSTRAP_BYTES + ring_bytes) / self.sample_rate,
         )
+
+    def _read_mic_ring_phase(self) -> tuple[int, int] | None:
+        """``(R, W)`` from one read spanning the NMI read pointer at $C025 and
+        the pump's dst tracker at $C203, so the two come from the same instant
+        and their difference carries no round-trip skew. None when the read
+        fails or either pointer is outside the ring."""
+        span = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
+        try:
+            raw = self.api.read_memory(READ_PTR_LO_ADDR, span)
+        except Exception as e:
+            # A backend that cannot read raises rather than returning None.
+            log.debug("audio[reu mic]: ring pointer read failed: %s", e)
+            return None
+        if raw is None or len(raw) != span:
+            return None
+        w_off = REU_AUDIO_DST_TRACKER_ADDR - READ_PTR_LO_ADDR
+        r = raw[0] | (raw[1] << 8)
+        w = raw[w_off] | (raw[w_off + 1] << 8)
+        if not (
+            RING_BUFFER_ADDR <= r < RING_BUFFER_END and RING_BUFFER_ADDR <= w < RING_BUFFER_END
+        ):
+            return None
+        return r, w
+
+    def _seed_mic_ring_lead(self) -> int | None:
+        """Put the mic pump's write head ``REU_MIC_RING_LEAD`` ahead of the NMI
+        reader in the $4000 ring, once both are running, and return the lead
+        read back (bytes), or None when it could not be read.
+
+        The install seeded the dst tracker that far past the ring start, where
+        R sits until the NMI arms, but the two do not start together: on the
+        solo path the pump starts only at the $0314 patch, after the NMI has
+        already played ~1 KB, and under a dispatcher the pump runs from the
+        moment its body lands, before the NMI arms. So the lead is measured
+        here and, when it is off, the dst tracker is rewritten at a
+        chunk-aligned R + REU_MIC_RING_LEAD and read back. The pump advances
+        the same tracker every tick, and a host write that lands between its
+        load and its store is overwritten, so a read-back that does not show
+        the seed is retried. A backend without reads keeps the install seed.
+
+        A read that fails once a seed has gone out is retried within the same
+        bound: the tracker no longer holds the install seed, and one read can
+        land in the instant either pointer's HI byte sits at the ring end."""
+        if not self.api.profile.supports_read:
+            return None
+        phase: int | None = None
+        seeds = 0
+        for attempt in range(TRACKED_PUMP_INSTALL_TRIES + 1):
+            got = self._read_mic_ring_phase()
+            if got is None and seeds == 0:
+                log.info(
+                    "audio[reu mic]: could not read the C64 ring pointers; the pump's "
+                    "lead over the NMI stays at its install seed"
+                )
+                return None
+            if got is None:
+                phase = None
+                continue
+            r, w = got
+            phase = (w - r) % RING_BUFFER_SIZE
+            if mic_ring_lead_ok(phase):
+                return phase
+            if attempt == TRACKED_PUMP_INSTALL_TRIES:
+                break
+            dst = mic_ring_seed(r)
+            self.api.write_memory(
+                f"{REU_AUDIO_DST_TRACKER_ADDR:04X}", f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}"
+            )
+            self.api.flush()
+            seeds += 1
+        log.warning(
+            "audio[reu mic]: the pump's lead over the NMI reads %s B after %d seed(s), "
+            "not ~%d B; mic audio may run late or replay lap-old audio",
+            phase,
+            seeds,
+            REU_MIC_RING_LEAD,
+        )
+        return phase
 
     def _start_mic_lead_servo(self) -> None:
         """Close the loop on the write head's lead over the pump (#560), or
@@ -1729,15 +2279,17 @@ class AudioStreamer:
         - `device < 0`: use the system default input device (PortAudio
           accepts `None` for that).
         - The configured device exists and has input channels: use it.
-        - Otherwise (output-only or unknown): fall back to the system
-          default and warn the user that the configured device is unusable.
+        - Otherwise (output-only or unknown): raise `AudioInputDeviceError`.
+          The default input is never substituted for a device the user
+          named — on a laptop it is the built-in microphone.
 
         Returns (device_or_None, friendly_name).
         """
         assert sd is not None
 
-        # Coerce a name substring / int-in-string to an index first (returns -1
-        # for default / no-match), so the rest of this method is plain int logic.
+        # Coerce a name substring / int-in-string to an index first (-1 only
+        # for an explicit default; a name that matches nothing raises), so the
+        # rest of this method is plain int logic.
         device = resolve_audio_input_device(device)
 
         def _default_input() -> tuple[int | None, str]:
@@ -1758,18 +2310,16 @@ class AudioStreamer:
             if int(info.get("max_input_channels", 0)) > 0:
                 return device, str(info.get("name", f"device {device}"))
         except Exception as e:
-            # The "falling back" warning below already says what happened.
-            log.debug("could not query input device %r: %s", device, e)
-
-        fallback, name = _default_input()
-        log.warning(
-            "audio device %d has no input channels; falling back to "
-            "%s. Pass --audio-device N (see -L) or set audio.device = -1 "
-            "in your config to silence this warning.",
-            device,
-            name,
+            raise AudioInputDeviceError(
+                f"audio device {device} is not an input device ({e}); not using the "
+                "system default input in its place. Pass --audio-device N (see -L), "
+                "or set [audio].device = -1 to ask for the default."
+            ) from e
+        raise AudioInputDeviceError(
+            f"audio device {device} has no input channels; not using the system "
+            "default input in its place. Pass --audio-device N (see -L), or set "
+            "[audio].device = -1 to ask for the default."
         )
-        return fallback, name
 
     def _open_input_stream(
         self, device: int | str, callback: Any = None, *, sample_rate: int | None = None
@@ -1850,6 +2400,7 @@ class AudioStreamer:
         self._listen_mode = False
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
+        self._reset_ring_clock()
         self.running = True
         self._worker_thread = self._start_worker()
         # Report the achieved rate too: CIA latch quantization separates them
@@ -1917,9 +2468,11 @@ class AudioStreamer:
         REU_PUMP_INITIAL_MARGIN (reu_pump_chunk_fits_ring): any other chunk
         DMAs past the ring end once per lap. With reu_pump_governor on it must
         also be at most REU_GOVERNOR_MAX_CHUNK, or ValueError. Raises
-        PumpInstallError when the tracked pump's install never confirms
-        (``_install_tracked_pump``), with the NMI bring-up already undone and
-        nothing armed: the caller plays on without audio.
+        PumpInstallError when a write of the pump install never confirms (each
+        REUWRITE slice of the track and its EOF pad; the tracked pump's stages in ``_install_tracked_pump``; the plain handler;
+        the REC registers and CIA #1 latch; the $0314 patch), with the NMI
+        bring-up already undone and nothing armed: the caller plays on without
+        audio.
 
         ``on_progress`` (fraction 0..1 of payload + EOF-pad bytes uploaded) is
         called once per upload slice — the seconds-long upload is the bulk of
@@ -1987,21 +2540,31 @@ class AudioStreamer:
         )
         upload_total = len(audio_4bit) + eof_pad_bytes
         t0 = time.perf_counter()
-        for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
-            self.api.reu_write(REU_AUDIO_BASE + off, audio_4bit[off : off + REU_UPLOAD_SLICE])
-            if on_progress is not None:
-                on_progress(min(off + REU_UPLOAD_SLICE, len(audio_4bit)) / upload_total)
-        # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
-        # end-of-source plays silence instead of garbage.
-        pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
-        pad_off = len(audio_4bit)
-        pad_end = pad_off + eof_pad_bytes
-        while pad_off < pad_end:
-            chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
-            self.api.reu_write(REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len])
-            pad_off += chunk_len
-            if on_progress is not None:
-                on_progress(pad_off / upload_total)
+        try:
+            for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
+                self._reu_write_confirmed(
+                    "audio upload",
+                    REU_AUDIO_BASE + off,
+                    audio_4bit[off : off + REU_UPLOAD_SLICE],
+                )
+                if on_progress is not None:
+                    on_progress(min(off + REU_UPLOAD_SLICE, len(audio_4bit)) / upload_total)
+            # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
+            # end-of-source plays silence instead of garbage.
+            pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
+            pad_off = len(audio_4bit)
+            pad_end = pad_off + eof_pad_bytes
+            while pad_off < pad_end:
+                chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
+                self._reu_write_confirmed(
+                    "EOF pad", REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len]
+                )
+                pad_off += chunk_len
+                if on_progress is not None:
+                    on_progress(pad_off / upload_total)
+        except PumpInstallError as e:
+            log.error("audio: %s — this scene plays without audio", e)
+            raise
         log.info("audio: REU upload took %.2fs", time.perf_counter() - t0)
 
         self._upload_nmi_and_buffers()
@@ -2053,63 +2616,58 @@ class AudioStreamer:
             except PumpInstallError as e:
                 self._abandon_pump_bring_up(e)
                 raise
-        elif self.reu_pump_governor:
-            # Governor handler: skip-when-ahead prefix + the pump body.
-            handler = patch_chunk_size(
-                REU_IRQ_HANDLER_GOVERNOR, REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS, chunk
-            )
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
         else:
-            handler = patch_chunk_size(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, chunk)
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
-        self.api.write_memory(
-            f"{REU.C64_ADDR_LO:04X}", f"{initial_dst & 0xFF:02X}{(initial_dst >> 8) & 0xFF:02X}"
-        )
-        self.api.write_memory(
-            f"{REU.REU_ADDR_LO:04X}",
-            f"{initial_src_off & 0xFF:02X}{(initial_src_off >> 8) & 0xFF:02X}"
-            f"{(initial_src_off >> 16) & 0xFF:02X}",
-        )
-        self.api.write_memory(
-            f"{REU.LENGTH_LO:04X}", f"{chunk & 0xFF:02X}{(chunk >> 8) & 0xFF:02X}"
-        )
-        self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
+            # The governor handler is the skip-when-ahead prefix + the pump body.
+            if self.reu_pump_governor:
+                handler = patch_chunk_size(
+                    REU_IRQ_HANDLER_GOVERNOR, REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS, chunk
+                )
+            else:
+                handler = patch_chunk_size(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, chunk)
+            try:
+                self._require_confirmed(
+                    "handler",
+                    lambda: self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler),
+                )
+            except PumpInstallError as e:
+                self._abandon_pump_bring_up(e)
+                raise
 
-        # Reprogram CIA #1 Timer A latch for the matched pump rate (see
-        # _program_reu_pump_rate, which the mic bring-up shares).
-        cia1_latch = self._program_reu_pump_rate(
-            chunk, overdrive=REU_GOVERNOR_PUMP_OVERDRIVE if self.reu_pump_governor else 1.0
-        )
+        def program_rec_and_rate() -> None:
+            self.api.write_memory(
+                f"{REU.C64_ADDR_LO:04X}",
+                f"{initial_dst & 0xFF:02X}{(initial_dst >> 8) & 0xFF:02X}",
+            )
+            self.api.write_memory(
+                f"{REU.REU_ADDR_LO:04X}",
+                f"{initial_src_off & 0xFF:02X}{(initial_src_off >> 8) & 0xFF:02X}"
+                f"{(initial_src_off >> 16) & 0xFF:02X}",
+            )
+            self.api.write_memory(
+                f"{REU.LENGTH_LO:04X}", f"{chunk & 0xFF:02X}{(chunk >> 8) & 0xFF:02X}"
+            )
+            self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
+            # Reprogram CIA #1 Timer A latch for the matched pump rate (see
+            # _program_reu_pump_rate, which the mic bring-up shares).
+            self._program_reu_pump_rate(
+                chunk,
+                overdrive=REU_GOVERNOR_PUMP_OVERDRIVE if self.reu_pump_governor else 1.0,
+            )
 
-        self.api.flush()
+        # Arm the NMI on the pre-filled ring and patch $0314 at the pump entry,
+        # skipped when the display mode's bank-swap dispatcher owns $0314 and
+        # JMPs to $C100 itself.
+        self._arm_installed_pump(
+            program_rec_and_rate,
+            tracked=skip_irq_vector_hook,
+            dispatcher_owns_irq=skip_irq_vector_hook,
+        )
         log.info(
             "audio: REU pump installed at $%04X, chunk=%d, CIA #1 latch=$%04X",
             REU_PUMP_HANDLER_ADDR,
             chunk,
-            cia1_latch,
+            self._reu_cia1_latch_nominal,
         )
-
-        # Arm the NMI on the pre-filled ring, capturing the playback-clock
-        # origin immediately before it starts firing: position_seconds() must
-        # measure time since audio became audible, or video sync trails it by
-        # the bring-up cost.
-        self._reu_pump_start_time = time.monotonic()
-        self.nmi.start(adaptive=self.nmi_rate_adaptive)
-
-        # Brief settle so NMI is already firing before the REU pump arms
-        # (see REU_PUMP_SETTLE_S).
-        time.sleep(REU_PUMP_SETTLE_S)
-
-        # Patch the IRQ vector at the pump handler; it starts on the next kernal
-        # IRQ (~16 ms). Skipped when the display mode's bank-swap dispatcher owns
-        # $0314 and JMPs to $C100 itself.
-        if not skip_irq_vector_hook:
-            self.api.write_regs(
-                f"{VECTORS.IRQ:04X}",
-                REU_PUMP_HANDLER_ADDR & 0xFF,
-                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF,
-            )
-            self.api.flush()
 
         self.running = True
         self._reu_pump_armed = True
@@ -2126,25 +2684,25 @@ class AudioStreamer:
         """Restore IRQ vector to kernal default and CIA #1 Timer A to ~60 Hz.
 
         Idempotent — safe to call from stop() even if the REU pump was never
-        armed. Order: vector restore FIRST so the next kernal IRQ doesn't
-        fire into a handler we're about to dismantle, then CIA #1 latch
-        back to kernal's value, then the normal NMI/SID teardown."""
-        if not self._reu_pump_armed:
+        armed. Also runs when a failed install's unwind could not confirm its
+        vector restore (`_irq_vector_restore_owed`). Order: vector restore
+        FIRST so the next kernal IRQ doesn't fire into a handler we're about
+        to dismantle, then CIA #1 latch back to kernal's value, then the
+        normal NMI/SID teardown.
+
+        The vector restore is confirmed like the unwind's: this is the last
+        write that can take the pump off $0314, and one lost on a lossy link
+        leaves it running for every scene after. One that never confirms stays
+        owed, so the shared streamer's next stop() writes it again."""
+        if not (self._reu_pump_armed or self._irq_vector_restore_owed):
             return
+        # Cleared by the confirmed restore only once it held.
+        self._irq_vector_restore_owed = True
         run_teardown_steps(
             log,
             type(self).__name__,
             [
-                # write_regs coalesces into one DMA, so $0314 and $0315
-                # atomically point at the kernal.
-                (
-                    "IRQ vector restore",
-                    lambda: self.api.write_regs(
-                        f"{VECTORS.IRQ:04X}",
-                        KERNAL.IRQ_HANDLER & 0xFF,
-                        (KERNAL.IRQ_HANDLER >> 8) & 0xFF,
-                    ),
-                ),
+                ("IRQ vector restore", self._restore_irq_vector_confirmed),
                 ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
                 ("REU pump disarm flush", self.api.flush),
             ],
@@ -2161,18 +2719,39 @@ class AudioStreamer:
             f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
         )
 
-    def push_samples(self, samples_int16: np.ndarray) -> None:
+    def push_samples(self, samples_int16: np.ndarray) -> int:
         """Convert mono int16 → 4-bit volume codes and enqueue. Blocks
         briefly when the queue is full so the PyAV demuxer naturally
         throttles to the audio sample rate. A no-op once stopped, as the
-        sampler's is."""
+        sampler's is.
+
+        Returns the samples enqueued: 0 once stopped, or when the queue stayed
+        full past ``QUEUE_PUT_TIMEOUT_S`` and the blob was dropped."""
         if not self.running:
-            return
+            return 0
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
         # Pre-DSP analysis tap, as in the mic callbacks, so a decoded file
-        # drives reactive visuals through the same analyzer.
-        self._push_to_analysis(floats)
-        self._encode_and_enqueue(floats, block_on_full=True)
+        # drives reactive visuals through the same analyzer. Only audio the
+        # queue took: the file source reads the tap at this streamer's played
+        # count, which a blob dropped on a backpressure timeout never enters,
+        # so tapping it too would leave every later window that far behind
+        # the sound.
+        accepted = self._encode_and_enqueue(floats, block_on_full=True)
+        if accepted:
+            self._push_to_analysis(floats)
+        return accepted
+
+    def end_input(self) -> None:
+        """The ``push_samples`` producer has ended: start the consumer on what
+        it pushed even when that is short of the prebuffer, which otherwise
+        never fills and leaves a short clip unplayed. Call it after the last
+        push returns. Cleared when the next worker starts."""
+        self._input_ended = True
+        # An empty blob wakes a worker parked in a priming collect, which
+        # would otherwise wait out its chunk period for samples that will not
+        # come. Nothing else enqueues one. A full queue has no parked worker.
+        with contextlib.suppress(queue.Full):
+            self.q.put_nowait(b"")
 
     def position_seconds(self) -> float:
         """Approximate playback position from the consumer's perspective.
@@ -2189,8 +2768,10 @@ class AudioStreamer:
         Host-DMA mode counts a sample once it lands in the C64 ring, which the
         NMI plays a ring gap later: about a third of a second at the servo's
         target. Video slaved to the landed count ran that far ahead of the
-        sound, so the clock subtracts the servo's smoothed gap, and reads 0
-        until the consumer starts.
+        sound, so the clock subtracts the servo's smoothed gap, less the pad
+        still inside it, and reads 0 until the consumer starts. It never
+        decreases within an activation: an audio-file scene ends when it
+        reaches the pushed length.
 
         The divisor is `effective_rate` because this is a real-time clock —
         video is slaved to it, and the `clock/wall` gauge that calibrates
@@ -2205,63 +2786,112 @@ class AudioStreamer:
             if not self._reu_pump_total_samples:
                 return elapsed
             return min(elapsed, self._reu_pump_total_samples / rate)
-        # q.qsize() now counts bytes-blobs, not samples — read the explicit
-        # sample-count counter instead.
-        # Consumed before the lead: the worker clears the tail pad before it
-        # lands the content behind it, so a read torn across a landing lags by
-        # that chunk rather than leading by a ring of pad. Locked: the worker's
-        # discard of a pre-splice chunk drops both counts, and an unlocked read
-        # pairing the old pushed with the new queued leads by that chunk.
-        with self._count_lock:
-            consumed = self._pushed_count - self._queued_samples
-        lead = self._content_lead()
-        if lead is None:
-            return 0.0
-        return max(0.0, (consumed - lead) / rate)
+        _, heard = self._host_clock_bytes()
+        return heard / rate
+
+    @property
+    def content_lag_seconds(self) -> float:
+        """Always 0. The sampler's figure (`UltimateAudioSampler.content_lag_seconds`)
+        is how far its re-anchors put the sound behind a wall clock; this
+        clock counts the samples that landed, so it moves with the sound.
+        Present so `AudioFileSource` reads either sink's lag as a typed
+        attribute, where a rename fails the type check instead of reading 0."""
+        return 0.0
 
     def ring_lead_seconds(self) -> float:
         """Audio landed in the C64 ring but not yet played. A splice anchors
         on ``position_seconds() + ring_lead_seconds()``, where its first
         sample lands, so the video waits until that sample is heard.
 
-        Before the consumer starts, nothing landed has played, so the lead is
-        the whole landed count: a splice during the prebuffer is heard only
-        after the pre-splice prebuffer it lands behind. After it starts, the
-        lead is capped at the landed count: the smoothed gap counts prebuffer
-        pad, and while it exceeds the landed content position_seconds() reads
-        0, so an uncapped lead would anchor the splice that pad past its first
-        sample."""
+        It is the landed content less what position_seconds() reports as
+        heard, from one read of both, so the anchor is exactly the landed
+        count however the clock got there: before the consumer starts nothing
+        landed has played, and after it the clock has already taken out the
+        pad the smoothed gap counts."""
         rate = self.effective_rate
         if not rate or self._reu_pump_armed:
             return 0.0
-        with self._count_lock:
-            landed = max(0, self._pushed_count - self._queued_samples)
-        lead = self._content_lead()
-        if lead is None:
-            return landed / rate
-        return min(lead, landed) / rate
+        consumed, heard = self._host_clock_bytes()
+        return max(0.0, consumed - heard) / rate
 
-    def _content_lead(self) -> float | None:
-        """The servo's smoothed ring gap less the pad landed behind the last
-        content byte, or None before the consumer starts."""
-        lead = self.servo.ring_lead
-        if lead < 0:
-            return None
-        return max(0.0, lead - self._ring_tail_pad)
+    def _host_clock_bytes(self) -> tuple[int, float]:
+        """``(landed content, heard content)`` in bytes on the host-DMA path.
 
-    def _note_ring_landed(self, nbytes: int, pad: int) -> None:
+        Heard is the landed content less the servo's smoothed ring gap, with
+        the pad still inside that gap taken back out (``_unplayed_pad``), and
+        never below what an earlier read of this activation reported: the gap
+        is smoothed, so a widening gap would otherwise walk the clock back.
+        Zero before the consumer starts.
+
+        Consumed is read first: the worker records a landing's pad before it
+        counts the landing, so a read torn across one lags by that chunk
+        rather than leading by it. Locked: the worker's discard of a
+        pre-splice chunk drops both counts, and an unlocked read pairing the
+        old pushed with the new queued leads by that chunk. Read inside
+        ``_ring_pad_lock`` too: a count read before a reset and a floor
+        written after it would hold the new activation's clock at the old
+        one's position."""
+        with self._ring_pad_lock:
+            with self._count_lock:
+                consumed = max(0, self._pushed_count - self._queued_samples)
+            lead = self.servo.ring_lead
+            if lead < 0:
+                return consumed, 0.0
+            content_lead = max(0.0, lead - self._unplayed_pad(lead))
+            heard = max(self._position_floor, consumed - content_lead)
+            self._position_floor = heard
+        return consumed, heard
+
+    def _unplayed_pad(self, lead: float) -> float:
+        """The pad bytes among the last ``lead`` bytes landed in the ring.
+        Caller holds ``_ring_pad_lock``. The record is in landing order, so
+        the walk is newest first and stops at the first pad wholly behind the
+        gap."""
+        lo = self._ring_landed_total - lead
+        pad_bytes = 0.0
+        for end, pad in reversed(self._ring_pads):
+            if end <= lo:
+                break
+            pad_bytes += end - max(lo, end - pad)
+        return pad_bytes
+
+    def _note_ring_landed(self, generation: int, nbytes: int, pad: int) -> None:
         """Worker-side: ``nbytes`` reached the ring, the last ``pad`` of them
-        padding. A short chunk's pad counts only once a whole chunk of pad
-        follows it: a producer merely late for one chunk resumes behind it, and
-        counting it would step the clock forward and back by that pad."""
-        if pad >= nbytes:
-            self._ring_tail_pad += self._ring_short_pad + nbytes
-        else:
-            self._ring_tail_pad = 0
-        self._ring_short_pad = pad if pad < nbytes else 0
+        padding. Pad further back than a whole ring can no longer be inside
+        the gap, so it is dropped, which bounds the record at a ring's worth
+        of chunks.
+
+        A worker that outlived stop()'s bounded join records nothing: its
+        write returning late would otherwise land in the next activation's
+        fresh record, and the high-water mark would hold the clock past what
+        that landing moved. :meth:`_start_worker` bumps the generation and
+        clears the record under this lock, so no stale landing slips between
+        the two."""
+        with self._ring_pad_lock:
+            if generation != self._worker_generation:
+                return
+            self._ring_landed_total += nbytes
+            total = self._ring_landed_total
+            if pad > 0:
+                self._ring_pads.append((total, pad))
+            while self._ring_pads and self._ring_pads[0][0] <= total - RING_BUFFER_SIZE:
+                self._ring_pads.popleft()
+
+    def _reset_ring_clock(self) -> None:
+        """Start the host-DMA clock's pad record and high-water mark afresh,
+        for a new activation."""
+        with self._ring_pad_lock:
+            self._clear_ring_clock_locked()
+
+    def _clear_ring_clock_locked(self) -> None:
+        """:meth:`_reset_ring_clock`'s body. Caller holds ``_ring_pad_lock``."""
+        self._ring_landed_total = 0
+        self._ring_pads.clear()
+        self._position_floor = 0.0
 
     def reset_position(self) -> None:
         self._pushed_count = 0
+        self._reset_ring_clock()
 
     def _drain_queue_samples(self) -> int:
         """get_nowait-drain self.q; return the total samples dropped (each blob
@@ -2298,17 +2928,38 @@ class AudioStreamer:
         if silence_output:
             self._stomp_requested = True
 
-    def _stomp_ring(self, write_addr: int) -> None:
+    def _stomp_ring(self, write_addr: int, current: Callable[[], bool]) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the
         pause fast mute. On a bad R read it just returns (the drained queue pads
         the ring to silence within ~1 s regardless). Called only from the worker
-        thread, so write_addr is the live worker-local W."""
+        thread, so write_addr is the live worker-local W.
+
+        ``current`` is the worker's fence: the R read and each stomp write can
+        park past stop()'s join, as the stall re-anchor's can, and a worker
+        superseded meanwhile writes nothing more (see :meth:`_stomp_from`).
+        It is checked before the request is taken, too: a worker already
+        superseded leaves ``_stomp_requested`` alone, because once a later
+        start_* has run, a pause that set it is the next session's."""
+        if not current():
+            return
+        self._stomp_requested = False
         r_addr = self.read_consumer_ptr()
         if r_addr is None:
             return
-        neutral = bytes([self._neutral_byte])
+        self._stomp_from(r_addr, write_addr, current)
+
+    def _stomp_from(self, r_addr: int, write_addr: int, current: Callable[[], bool]) -> None:
+        """NEUTRAL-fill ``(r_addr + guard .. write_addr)`` — the pause stomp's
+        span, and the stall re-anchor's — split at ``RING_BUFFER_END``.
+
+        ``current`` fences the writes: once it is False, the rest are skipped.
+        A wrapped span's second write lands at ``RING_BUFFER_ADDR``, where the
+        next session's prebuffer starts, so a worker superseded during the
+        first must not make it."""
         for addr, ln in stomp_spans(r_addr, write_addr):
-            self.api.write_memory_file(f"{addr:04X}", neutral * ln)
+            if not current():
+                return
+            self._neutral_fill_ring(addr, ln)
 
     def _hardware_teardown_steps(self) -> list[tuple[str, Callable[[], object]]]:
         """The C64-side teardown of a DAC session, in `stop()`'s cutoff order."""
@@ -2341,6 +2992,15 @@ class AudioStreamer:
             )
 
     def stop(self) -> None:
+        # Retire the worker's generation first, and here, not only in the next
+        # _start_worker: the REU-pump and listen-only starts set running back
+        # to True without starting a worker, and start_mic sets it before its
+        # _start_worker bumps. Either way an orphan that outlived the join
+        # below would otherwise read its fence as current again, and drip into
+        # a ring it no longer owns. Under the pad lock, so a landing the orphan
+        # records is either counted before the bump or refused after it.
+        with self._ring_pad_lock:
+            self._worker_generation += 1
         # A listen-only session never touched the NMI/DAC/SID, so writing $D418
         # or the NMI vectors here would be spurious U64 traffic.
         if self._listen_mode:
@@ -2369,8 +3029,9 @@ class AudioStreamer:
         # check is what drops a blob from a producer this clear just released,
         # and the drain at the bottom only catches one that beats it there.
         self._flush_epoch += 1
-        # No-op if the pump was never armed. The governor lives entirely in the
-        # C64-side handler, so disarming the IRQ vector stops it.
+        # No-op if the pump was never armed and no $0314 restore is owed. The
+        # governor lives entirely in the C64-side handler, so disarming the IRQ
+        # vector stops it.
         self._disarm_reu_pump()
         run_teardown_steps(log, type(self).__name__, self._hardware_teardown_steps())
         self.api.note_nmi_consumer(False)
@@ -2387,8 +3048,9 @@ class AudioStreamer:
                 # A ring write on a stalled link can outlast the bounded join,
                 # and the counters cleared just below are still being mutated.
                 # Dropping the reference is safe: the surviving worker is
-                # generation-fenced (see _worker), so the next start_* cannot
-                # resurrect it into a second live writer.
+                # generation-fenced (see _worker, and the bump at the top of
+                # this method), so no later start_* can resurrect it into a
+                # second live writer.
                 log.warning(
                     "audio: worker did not exit within %.1fs; ring writes may still "
                     "be in flight (it will exit when its write returns)",
@@ -2400,8 +3062,7 @@ class AudioStreamer:
         self._drain_queue_samples()
         self._pushed_count = 0
         self._queued_samples = 0
-        self._ring_tail_pad = 0
-        self._ring_short_pad = 0
+        self._reset_ring_clock()
         self._stomp_requested = False
         # The streamer is reused across scenes: a total outliving its own scene
         # would clamp the next scene's position_seconds clock.
@@ -2413,7 +3074,7 @@ class AudioStreamer:
                 self._mic_reu_write_errors,
             )
         self._mic_reu_write_errors = 0
-        # Clear the timer's pitch-comp/arm state and the servo's watchdog +
+        # Clear the timer's pitch-comp/mode/arm state and the servo's watchdog +
         # adaptive-rate state so the next scene re-acquires from nominal; the
         # per-mode learned-latch cache survives (NmiTimer.reset_after_stop).
         self.nmi.reset_after_stop()

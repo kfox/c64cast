@@ -23,6 +23,11 @@ _EPS = 1e-9
 PRE_EMPHASIS_MIC_DEFAULT = 0.7
 PRE_EMPHASIS_LINE_DEFAULT = 0.6
 
+# Largest magnitude a sample may carry into the chain: 120 dB over full scale,
+# far past any real signal at a sane mic gain, yet far enough under
+# float32's 3.4e38 that no stage's gain or difference can overflow to inf.
+INPUT_CEILING = 1e6
+
 
 class _Processor(Protocol):
     """Structural type for a DSP stage: stateful, block-fed, resettable."""
@@ -109,8 +114,10 @@ class Compressor:
     Detector: an attack/release-smoothed peak envelope. Gain: a static dB curve
     (with optional soft knee) applied to the smoothed level, so above
     ``threshold_db`` the signal is reduced by ``(1 - 1/ratio)`` of its excess.
-    ``makeup_db=None`` auto-computes makeup so a signal at the threshold exits
-    near unity, restoring perceived loudness after the reduction.
+    ``makeup_db=None`` auto-computes makeup as ``-threshold_db * (1 - 1/ratio)``,
+    the reduction a full-scale (0 dBFS) signal receives, so full scale exits at
+    unity and quieter signals are lifted: one at the threshold comes out
+    ``+|threshold_db| * (1 - 1/ratio)`` dB hot (+13.5 dB at -18 dB, 4:1).
     """
 
     def __init__(
@@ -442,9 +449,17 @@ class AudioDSP:
             proc.reset()
 
     def process(self, x: np.ndarray) -> np.ndarray:
+        """Run the chain over one block. Non-finite samples become 0 / ±1
+        first, and finite ones are held to ±`INPUT_CEILING`: every stage
+        carries recursive state, and one NaN or inf there (Compressor's
+        envelope, AGC's RMS and gain) poisons every later block until
+        `reset()`, which the DAC encoder renders as a stuck rail. A finite
+        sample near float32's limit gets there too, by overflowing inside
+        PreEmphasis or AGC."""
         if not self._chain or x.size == 0:
             return x
-        y = x.astype(np.float32, copy=False)
+        y = np.nan_to_num(x.astype(np.float32, copy=False), nan=0.0, posinf=1.0, neginf=-1.0)
+        np.clip(y, -INPUT_CEILING, INPUT_CEILING, out=y)
         for proc in self._chain:
             y = proc.process(y)
         return y

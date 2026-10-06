@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
@@ -158,7 +159,21 @@ class HardwareProfile:
             self.write_cost_intercept_s + self.write_cost_per_byte_s * nbytes,
         )
 
-    audio_ring_addr: int = 0x4000  # base of the audio DAC ring buffer
+    def free_payload_bytes(self) -> int:
+        """The largest payload one write carries for the per-write floor alone:
+        the knee of `write_cost_s`, ~2.1 KB on the Ultimate. A streaming writer
+        coalesces up to this, since below it a second write costs a whole
+        floor and the bytes cost nothing. A link with no marginal per-byte
+        cost has no knee, so every payload is free: `sys.maxsize`."""
+        if self.write_cost_per_byte_s <= 0:
+            return sys.maxsize
+        knee = (self.write_cost_floor_s - self.write_cost_intercept_s) / self.write_cost_per_byte_s
+        # A per-byte cost small enough to divide into infinity is the same
+        # flat link, and `int(inf)` would raise rather than say so. That holds
+        # on both sides: a floor below the intercept divides into -inf. Both
+        # clamps come before `int()`, and `knee` leads each comparison so a NaN
+        # survives them and raises there instead of reading as a size.
+        return int(min(max(knee, 0.0), sys.maxsize))
 
     # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
@@ -232,7 +247,6 @@ ULTIMATE_PROFILE = HardwareProfile(
     write_cost_floor_s=5.222e-3,
     write_cost_intercept_s=1.328e-3,
     write_cost_per_byte_s=1.8454e-6,
-    audio_ring_addr=0x4000,
 )
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
@@ -268,7 +282,6 @@ TEENSYROM_PROFILE = HardwareProfile(
     write_cost_floor_s=0.287e-3,
     write_cost_intercept_s=0.210e-3,
     write_cost_per_byte_s=1.4429e-6,
-    audio_ring_addr=0x4000,
 )
 
 # The `[hardware].backend` tokens the CLI/config layer offers (`--describe`,
@@ -896,9 +909,9 @@ def make_backend(cfg: Config) -> C64Backend:
     # `system = "auto"` can't be settled yet (it needs a live REST read, and
     # there is no API until this function returns) — assume NTSC and let
     # hw_provision.resolve_system re-fold these fields once the answer is in.
-    # Normalize once: nothing at config load enforces SYSTEM_CHOICES' canonical
-    # spelling, so `system = "ntsc"` reaches here intact and a bare
-    # `== "NTSC"` would fold it onto the PAL fps with no diagnostic.
+    # Normalize once: load canonicalizes the spelling, but a Config built in
+    # code skips load, and there a bare `== "NTSC"` would fold "ntsc" onto
+    # the PAL fps with no diagnostic.
     configured_system = cfg.ultimate64.system.upper()
     system = "NTSC" if configured_system == "AUTO" else configured_system
     fps = 60.0 if system == "NTSC" else 50.0

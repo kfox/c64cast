@@ -523,10 +523,6 @@ class ReadPaletteFailureTest(unittest.TestCase):
         self.assertEqual(device._status_reads, 256)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SetPaletteTest(unittest.TestCase):
     def test_pushes_target_command_and_the_forty_eight_color_bytes(self):
         device = _FakeUltimate(reply=b"")
@@ -562,3 +558,7 @@ class SetPaletteTest(unittest.TestCase):
             uci.set_palette_rgb(_FakeUltimate(reply=b""), PALETTE_RGB[:15])
         with self.assertRaises(ValueError):
             uci.set_palette_rgb(_FakeUltimate(reply=b""), [(1, 2)] * 16)
+
+
+if __name__ == "__main__":
+    unittest.main()

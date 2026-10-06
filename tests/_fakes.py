@@ -478,7 +478,7 @@ def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
     ``("flush",)``, beside the writes FakeAPI already logs there."""
     key = f"{addr:04X}"
     remaining = [times]
-    real_memory, real_file = api.write_memory, api.write_memory_file
+    real_memory, real_file, real_regs = api.write_memory, api.write_memory_file, api.write_regs
 
     def lost(address: str) -> bool:
         if str(address).upper() != key or remaining[0] == 0:
@@ -497,12 +497,51 @@ def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
         if not lost(address):
             real_file(address, data)
 
+    def write_regs(base, *vals):
+        if not lost(base):
+            real_regs(base, *vals)
+
     def flush(timeout=5.0):
         api.ops.append(("flush",))
 
     api.write_memory = write_memory  # type: ignore[method-assign]
     api.write_memory_file = write_memory_file  # type: ignore[method-assign]
+    api.write_regs = write_regs  # type: ignore[method-assign]
     api.flush = flush  # type: ignore[method-assign]
+
+
+def lose_reu_writes_to(api: FakeAPI, reu_offset: int, times: int | None = None) -> None:
+    """`lose_writes_to` for REUWRITEs: each of the first ``times`` REU writes
+    starting at ``reu_offset`` (every one, if None) lands nowhere and moves
+    ``delivery_epoch``. A lost one goes to ``api.ops`` as ``("lost_reu",
+    offset)``, a delivered one as ``("reu_write", offset)``, and every
+    ``flush()`` as ``("flush",)``."""
+    remaining = [times]
+    real = api.reu_write
+
+    def reu_write(offset, data):
+        if offset == reu_offset and remaining[0] != 0:
+            if remaining[0] is not None:
+                remaining[0] -= 1
+            api.delivery_epoch += 1
+            api.ops.append(("lost_reu", offset))
+            return
+        api.ops.append(("reu_write", offset))
+        real(offset, data)
+
+    def flush(timeout=5.0):
+        api.ops.append(("flush",))
+
+    api.reu_write = reu_write  # type: ignore[method-assign]
+    api.flush = flush  # type: ignore[method-assign]
+
+
+#: A, X and Y as a handler under run_irq_handler finds them: distinct and
+#: non-zero, as the interrupted code leaves them on a real C64.
+IRQ_ENTRY_A, IRQ_ENTRY_X, IRQ_ENTRY_Y = 0xA5, 0x5A, 0xC3
+#: Where an interrupt frame pushed by run_irq_handler(..., rti=True) returns.
+RTI_RETURN_ADDR = 0x0334
+_RTI_PUSHED_P = 0x20  # the unused bit only; RTI must hand it back unchanged
 
 
 def run_irq_handler(
@@ -511,25 +550,34 @@ def run_irq_handler(
     addr: int = 0xC100,
     seed: dict[int, int] | None = None,
     images: dict[int, bytes] | None = None,
+    rti: bool = False,
 ):
     """Execute hand-assembled IRQ-handler bytes on a bare py65 6502 until
-    they chain into the kernal (JMP $EA31 full tail / JMP $EA81 lean tail).
+    they chain into the kernal (JMP $EA31 full tail / JMP $EA81 lean tail),
+    or, with ``rti=True``, until they return from the interrupt frame this
+    pushes first (an NMI handler that ends in its own RTI).
 
     `seed` is an {address: byte} map applied before the run (trackers,
     counters, fake REU registers); `images` is an {address: bytes} map of
-    other code the handler calls into (a JSR target). Returns an object with `memory` (the
-    sid_host_emu.TrappedRam, so `.ram` and the `.access` read/write bitmap
-    are inspectable), `exit_pc` (which kernal tail was taken) and `mpu`.
+    other code the handler calls into (a JSR target). Returns an object with
+    `memory` (the sid_host_emu.TrappedRam, so `.ram`, the `.access`
+    read/write bitmap and the `.footprint` write bitmap are inspectable),
+    `exit_pc` (which kernal tail was taken, or RTI_RETURN_ADDR) and `mpu`.
     The step budget turns a mis-assembled branch displacement — which JAMs
     a real C64 — into a loud failure instead of a hang, and a handler that
-    leaves its own PHA unbalanced shows up as `mpu.sp != 0xFF`."""
+    leaves its own PHA unbalanced shows up as `mpu.sp != 0xFF`.
+
+    A, X and Y start at the distinct non-zero IRQ_ENTRY_* values, so a
+    store from the wrong register writes a wrong byte instead of the zero a
+    reset CPU would hold. Every caller's handler promises to leave X and Y
+    alone (a dispatcher JSRs the pump body inline), so that is checked here."""
     from types import SimpleNamespace
 
     from py65.devices.mpu6502 import MPU
 
     from c64cast.sid.sid_host_emu import TrappedRam
 
-    memory = TrappedRam(track_access=True)
+    memory = TrappedRam(track_access=True, track_footprint=True)
     memory.ram[addr : addr + len(handler)] = handler
     for image_addr, image in (images or {}).items():
         memory.ram[image_addr : image_addr + len(image)] = image
@@ -538,12 +586,32 @@ def run_irq_handler(
     mpu = MPU(memory=memory)
     mpu.pc = addr
     mpu.sp = 0xFF
-    kernal_tails = (0xEA31, 0xEA81)
+    if rti:
+        # What the 6510 pushes on taking the interrupt: PC high, PC low, P.
+        for byte in (RTI_RETURN_ADDR >> 8, RTI_RETURN_ADDR & 0xFF, _RTI_PUSHED_P):
+            memory.ram[0x100 + mpu.sp] = byte
+            mpu.sp -= 1
+        exits: tuple[int, ...] = (RTI_RETURN_ADDR,)
+    else:
+        exits = (0xEA31, 0xEA81)
+    mpu.a, mpu.x, mpu.y = IRQ_ENTRY_A, IRQ_ENTRY_X, IRQ_ENTRY_Y
     for _ in range(5000):
         mpu.step()
-        if mpu.pc in kernal_tails:
+        if mpu.pc in exits:
+            if (mpu.x, mpu.y) != (IRQ_ENTRY_X, IRQ_ENTRY_Y):
+                raise AssertionError(
+                    f"handler clobbered X/Y: ${mpu.x:02X}/${mpu.y:02X}, entered with "
+                    f"${IRQ_ENTRY_X:02X}/${IRQ_ENTRY_Y:02X}"
+                )
             return SimpleNamespace(memory=memory, exit_pc=mpu.pc, mpu=mpu)
-    raise AssertionError(f"handler never chained to the kernal (PC=${mpu.pc:04X})")
+    raise AssertionError(f"handler never reached {[f'${e:04X}' for e in exits]} (PC=${mpu.pc:04X})")
+
+
+def written_addresses(run) -> set[int]:
+    """Every address a run_irq_handler run stored to, stack page included.
+    The seed, the images and the pushed interrupt frame go straight into RAM
+    and are not counted."""
+    return {a for a, hit in enumerate(run.memory.footprint) if hit}
 
 
 class FakeVdc:
