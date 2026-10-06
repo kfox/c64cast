@@ -87,7 +87,6 @@ from .sid_hw_config import (
     apply_config,
     apply_sid_map,
     detect_socket_models,
-    detect_sockets,
 )
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import host_chip_fit, log_resolved_audio
@@ -1122,9 +1121,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         standalone model pass."""
         from .asid_sidmap import plan_sid_map, plan_sid_map_for_addresses
 
+        socket_models = detect_socket_models(self.api)
         sid_map = plan_sid_map_for_addresses(
             self._sid_addresses,
-            socket_models=detect_socket_models(self.api),
+            socket_models=socket_models,
             required_models=self._required_sid_models(),
         )
         if sid_map is not None:
@@ -1140,8 +1140,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             ", ".join(f"${a:04X}" for a in self._sid_addresses),
             self._n_sids,
         )
-        socket1, socket2 = detect_sockets(self.api)
-        return plan_sid_map(self._n_sids, socket1_present=socket1, socket2_present=socket2), True
+        sid_map = plan_sid_map(
+            self._n_sids,
+            socket1_present=socket_models[0] is not None,
+            socket2_present=socket_models[1] is not None,
+            socket_models=socket_models,
+        )
+        return sid_map, True
 
     def _sid_sources(self, sid_map: SidMap | None) -> Sequence[str | None]:
         """The mixer source playing each of the tune's chips, in chip order. A

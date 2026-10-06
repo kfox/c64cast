@@ -299,11 +299,11 @@ class AsidSceneTest(unittest.TestCase):
         self.assertEqual(api.regs[chip1_addr][0x00], 0x22)
 
     def test_multi_sid_prefers_physical_socket(self):
-        from c64cast.sid.sid_hw_config import detect_sockets
+        from c64cast.sid.sid_hw_config import detect_socket_models
 
         scene, _ = self._make_multi(sockets={"SID Detected Socket 1": "6581"})
-        scene._socket_present = detect_sockets(scene.api)
-        self.assertEqual(scene._socket_present, (True, False))
+        scene._socket_models = detect_socket_models(scene.api)
+        self.assertEqual(scene._socket_models, ("6581", None))
         scene._reconfigure_chips(2)
         # Chip 0 → the physical socket at $D400; chip 1 → an UltiSID above it.
         self.assertEqual(scene._chip_addresses[0], SID.BASE)

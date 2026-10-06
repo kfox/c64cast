@@ -292,6 +292,19 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
+  switched to the model the tune asks for.** The chip's model is a setting, but
+  SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,
+  never matched, and moved every tune to an UltiSID core with the socket
+  disabled. The model is restored when the scene ends.
+
+- **An ARM2SID's second SID now plays two-SID tunes and ASID streams on an
+  Ultimate 64.** The firmware reports the chip as an ARMSID and socket 2 as
+  empty, so the right channel was never used. c64cast now asks the chip itself,
+  routes the tune's `$D420` chip to the right channel by setting `Ext DualSID
+  Range Split` to `A5` for the scene, and sets each channel's model separately.
+  The resolved-audio line names it as `socket2 (ARM2SID R 8580)`.
+
 - **`source_alignment_marker` now plays at the right level under a Mahoney DAC
   curve, and `find_marker_in_capture` finds the marker at the effective rate.**
   The chirp was always written as 0-15 volume codes, so with `dac_curve` on it

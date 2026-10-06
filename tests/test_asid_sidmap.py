@@ -13,6 +13,7 @@ import itertools
 import unittest
 
 from c64cast.hw.c64 import RESERVED_IO_WINDOWS
+from c64cast.sid import armsid
 from c64cast.sid import asid_sidmap as m
 
 # sid_split enum → split_bits (offset-space bits, i.e. address bits >> 4).
@@ -118,18 +119,29 @@ class PlanBasicsTest(unittest.TestCase):
         self.assertTrue(sm.clamped)
 
 
-def _realized_by_source(sm: m.SidMap) -> dict[str, list[int]]:
+def _realized_by_source(
+    sm: m.SidMap, socket_models: tuple[str | None, str | None] = (None, None)
+) -> dict[str, list[int]]:
     """Every $Dxxx base each audio source answers at under `sm`'s config (port
     of the firmware address math via _realize_core). A disabled socket answers
-    nothing, so the enable item gates it."""
+    nothing, so the enable item gates it.
+
+    An ARM2SID's right channel (`socket_models[1]`) ignores socket 2's own
+    items and answers at socket 1's base plus the Ext DualSID split's offset;
+    a plan that leaves the split unstated is read as leaving it off."""
     cfg = sm.config
     by_source: dict[str, list[int]] = {}
     for index, (addr_item, en_item) in enumerate(
         ((m.ITEM_SOCKET1_ADDR, m.ITEM_SOCKET1_EN), (m.ITEM_SOCKET2_ADDR, m.ITEM_SOCKET2_EN))
     ):
+        if index == 1 and armsid.is_right_channel(socket_models[1]):
+            continue
         value = cfg.get((m.CAT_ADDRESSING, addr_item))
         if cfg.get((m.CAT_SOCKETS, en_item)) == "Enabled" and value and value != m.ADDR_UNMAPPED:
             by_source[f"socket{index + 1}"] = [int(value.lstrip("$"), 16)]
+    offset = armsid.split_offset(cfg.get((m.CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)))
+    if armsid.is_right_channel(socket_models[1]) and "socket1" in by_source and offset:
+        by_source["socket2"] = [by_source["socket1"][0] + offset]
     split = cfg.get((m.CAT_ADDRESSING, m.ITEM_ULTISID_SPLIT), m.SPLIT_OFF)
     for index, core_item in enumerate((m.ITEM_ULTISID1_ADDR, m.ITEM_ULTISID2_ADDR)):
         value = cfg.get((m.CAT_ADDRESSING, core_item))
@@ -162,6 +174,10 @@ _SOCKET_MODEL_COMBOS: tuple[tuple[str | None, str | None], ...] = (
     (None, "6581"),
     ("6581", "6581"),
     ("8580", "6581"),
+    ("ARMSID 8580", None),
+    ("ARMSID 6581", "8580"),
+    ("ARM2SID 8580", "ARM2SID R 8580"),
+    ("ARM2SID 6581", "ARM2SID R 8580"),
 )
 
 
@@ -169,8 +185,10 @@ class RealizationOracleTest(unittest.TestCase):
     """Every planned map must realize each routed chip on the source that plans
     to play it, with no aliasing beyond the deliberate LED mirrors."""
 
-    def _assert_realizable(self, sm: m.SidMap):
-        by_source = _realized_by_source(sm)
+    def _assert_realizable(
+        self, sm: m.SidMap, socket_models: tuple[str | None, str | None] = (None, None)
+    ):
+        by_source = _realized_by_source(sm, socket_models)
         for address, source in zip(sm.addresses, sm.sources, strict=True):
             self.assertIn(
                 address,
@@ -178,11 +196,13 @@ class RealizationOracleTest(unittest.TestCase):
                 f"routed ${address:04X} not realized by {source} in {sm.config}",
             )
 
-    def _assert_only_mirrors_alias(self, sm: m.SidMap):
+    def _assert_only_mirrors_alias(
+        self, sm: m.SidMap, socket_models: tuple[str | None, str | None] = (None, None)
+    ):
         """Two sources may answer one address only when one of them is a spare
         core shadowing a socket for the LEDs — never two sources both playing
         chips, which would sound as a detuned double."""
-        by_source = _realized_by_source(sm)
+        by_source = _realized_by_source(sm, socket_models)
         playing = set(sm.sources)
         for source, addrs in by_source.items():
             for other, other_addrs in by_source.items():
@@ -228,8 +248,39 @@ class RealizationOracleTest(unittest.TestCase):
                     if sm is None:
                         continue
                     with self.subTest(a=addresses, s=socket_models, r=required[:1]):
-                        self._assert_realizable(sm)
-                        self._assert_only_mirrors_alias(sm)
+                        self._assert_realizable(sm, socket_models)
+                        self._assert_only_mirrors_alias(sm, socket_models)
+                        self._assert_socket_models_match(sm, socket_models, required)
+
+    def _assert_socket_models_match(
+        self,
+        sm: m.SidMap,
+        socket_models: tuple[str | None, str | None],
+        required: tuple[str, ...],
+    ):
+        """A chip a socket plays ends on the model it asked for: the socket's
+        own, or the one the plan switches an ARMSID to."""
+        for chip, source in enumerate(sm.sources):
+            if not source.startswith("socket") or chip >= len(required):
+                continue
+            index = int(source[-1]) - 1
+            final = sm.config.get(
+                (armsid.CAT_SOCKET_MODEL, source), armsid.label_model(socket_models[index])
+            )
+            self.assertEqual(final, required[chip], f"{source} in {sm.config}")
+
+    def test_canonical_layout_with_socket_models(self):
+        for n in range(1, m.MAX_SIDS + 1):
+            for socket_models in _SOCKET_MODEL_COMBOS:
+                sm = m.plan_sid_map(
+                    n,
+                    socket1_present=socket_models[0] is not None,
+                    socket2_present=socket_models[1] is not None,
+                    socket_models=socket_models,
+                )
+                with self.subTest(n=n, s=socket_models):
+                    self._assert_realizable(sm, socket_models)
+                    self._assert_only_mirrors_alias(sm, socket_models)
 
     def test_a_split_core_never_covers_an_enabled_sockets_address(self):
         # The repro: the firmware aligns a 1/2-split core's base down to $D400,

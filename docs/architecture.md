@@ -124,6 +124,7 @@ the two lists account for every module in the tree.
 | `app/serve.py` | [Control surfaces & live performance](architecture/control.md#appservepy--the-session-supervisor) |
 | `scenes/setup_progress.py` | [Scenes, sources & overlays](architecture/scenes.md#setup_progresspy--the-video-setup-progress-bar) |
 | `app/schema.py` | [Config, CLI & ensemble](architecture/config.md#schemapy--the-editor-surface) |
+| `sid/armsid.py` | [SID playback & the oscilloscope](architecture/sid.md#armsidpy--armsid--arm2sid) |
 | `sid/emusid_mixer.py` | [SID playback & the oscilloscope](architecture/sid.md#emusid_mixerpy--u2-emulated-stereo-sid-snoop-routing--model-matching) |
 | `sid/sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
 | SID player PRG | [SID playback & the oscilloscope](architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |

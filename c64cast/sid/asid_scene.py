@@ -40,7 +40,7 @@ from .asid_player import (
 )
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
 from .emusid_mixer import apply_emusid_routing
-from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
+from .sid_hw_config import SidHwSession, apply_sid_map, detect_socket_models
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import log_resolved_audio
 from .sid_volume import apply_volume
@@ -205,7 +205,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # _active_chips so the remap's display mutation stays on the main thread.
         self._max_chip_seen = 0
         self._sid_session = SidHwSession(api)
-        self._socket_present = (False, False)
+        self._socket_models: tuple[str | None, str | None] = (None, None)
         self._remap_failed = False  # one-shot WARNING gate for a failing remap
         # [ultimate64].sid_panning — empty means the auto spread.
         self._sid_panning = list(sid_panning or ())
@@ -534,7 +534,10 @@ class AsidScene(VoiceScopeRenderer, Scene):
         n = max(1, min(n, self._max_sids))
         self._sid_session.snapshot()
         sid_map = plan_sid_map(
-            n, socket1_present=self._socket_present[0], socket2_present=self._socket_present[1]
+            n,
+            socket1_present=self._socket_models[0] is not None,
+            socket2_present=self._socket_models[1] is not None,
+            socket_models=self._socket_models,
         )
         try:
             apply_sid_map(self.api, sid_map)
@@ -687,7 +690,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._set_window_count(1)
         self._reset_stream_state()
         if self._multi_sid:
-            self._socket_present = detect_sockets(self.api)
+            self._socket_models = detect_socket_models(self.api)
             # Before the mixer pass folds its originals in: `snapshot()` is
             # first-call-wins, so a fold makes a later snapshot a silent no-op and
             # the six MANAGED_ADDRESSING_ITEMS a remap rewrites lose their restore.

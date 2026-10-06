@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 
 from c64cast.hw.c64 import RESERVED_IO_WINDOWS
 
+from . import armsid
+
 # Config category / item names — must match the firmware exactly (u64_config.cc).
 CAT_ADDRESSING = "SID Addressing"
 CAT_SOCKETS = "SID Sockets Configuration"
@@ -95,15 +97,46 @@ def curve_for_model(model: str | None) -> str | None:
     return FILTER_CURVE_6581 if model == "6581" else FILTER_CURVE_8580
 
 
-def disable_unclaimed_sockets(config: dict[tuple[str, str], str], claimed: set[str]) -> None:
+def disable_unclaimed_sockets(
+    config: dict[tuple[str, str], str],
+    claimed: set[str],
+    socket_models: tuple[str | None, str | None] = (None, None),
+) -> None:
     """Explicitly ``Disabled`` every socket not in `claimed` (a set of
     ``"socket1"``/``"socket2"``). Unconditional rather than gated on chip
     detection: an enabled socket sitting at an address this plan just gave to an
     UltiSID core answers alongside it, and detection is exactly the thing that
-    can't be trusted when a stale config is the problem."""
+    can't be trusted when a stale config is the problem.
+
+    An ARM2SID's right channel standing in for socket 2 ignores socket 2's
+    enable, so leaving it unclaimed also turns the Ext DualSID split off — the
+    only thing that stops it answering beside a core."""
     for index, (_addr_item, en_item, _base) in enumerate(_SOCKET_SPECS):
         if f"socket{index + 1}" not in claimed:
             config[(CAT_SOCKETS, en_item)] = "Disabled"
+    if "socket2" not in claimed and armsid.is_right_channel(socket_models[1]):
+        config[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)] = armsid.EXT_SPLIT_OFF
+
+
+def _claim_socket(
+    config: dict[tuple[str, str], str],
+    index: int,
+    socket_models: tuple[str | None, str | None],
+    required: str | None,
+) -> None:
+    """Address + enable socket `index` at its fixed base, switching its model
+    first when it is an ARMSID that has to change for `required`. An ARM2SID's
+    right channel is reached through the Ext DualSID split instead of socket 2's
+    own items, which control nothing behind it."""
+    addr_item, en_item, base = _SOCKET_SPECS[index]
+    socket_label = socket_models[index]
+    if armsid.is_right_channel(socket_label):
+        config[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)] = armsid.EXT_SPLIT_RIGHT
+    else:
+        config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
+        config[(CAT_SOCKETS, en_item)] = "Enabled"
+    if required is not None and armsid.needs_model_change(socket_label, required):
+        config[(armsid.CAT_SOCKET_MODEL, f"socket{index + 1}")] = required
 
 
 def mirror_bases(split: str, core_bases: list[int], socket_bases: list[int]) -> list[int]:
@@ -182,14 +215,19 @@ def _pick_split(tail: int) -> str:
 
 
 def plan_sid_map(
-    n_sids: int, *, socket1_present: bool = False, socket2_present: bool = False
+    n_sids: int,
+    *,
+    socket1_present: bool = False,
+    socket2_present: bool = False,
+    socket_models: tuple[str | None, str | None] = (None, None),
 ) -> SidMap:
     """Plan the U64 address map for `n_sids` ASID chips, preferring physical
     socket SIDs. See the module docstring for the policy.
 
     `socket1_present` / `socket2_present` reflect whether a real SID is detected
     (and will be enabled) in each socket; sockets the plan doesn't claim are
-    explicitly disabled. The result is clamped to what the hardware can realize
+    explicitly disabled. `socket_models` is consulted only for an ARM2SID right
+    channel, which is claimed through the Ext DualSID split. The result is clamped to what the hardware can realize
     (2 sockets + up to 8 UltiSID instances, overall :data:`MAX_SIDS`).
 
     An ASID stream carries no chip-model information, so this planner routes on
@@ -201,18 +239,13 @@ def plan_sid_map(
     sources: list[str] = []
     config: dict[tuple[str, str], str] = {}
 
-    sockets = []
-    if socket1_present:
-        sockets.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0], "socket1"))
-    if socket2_present:
-        sockets.append((ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1], "socket2"))
+    sockets = [index for index, present in enumerate((socket1_present, socket2_present)) if present]
 
     used_sockets = min(len(sockets), n_sids)
-    for addr_item, en_item, base, source in sockets[:used_sockets]:
-        addresses.append(base)
-        sources.append(source)
-        config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
-        config[(CAT_SOCKETS, en_item)] = "Enabled"
+    for index in sockets[:used_sockets]:
+        addresses.append(_SOCKET_BASES[index])
+        sources.append(f"socket{index + 1}")
+        _claim_socket(config, index, socket_models, None)
 
     # Cores left over after the tail is placed mirror the socket addresses (LED
     # display); cores beyond that are unmapped so no stale mapping can collide.
@@ -240,7 +273,7 @@ def plan_sid_map(
     # Distinct addresses only.
     config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
 
-    disable_unclaimed_sockets(config, set(sources[:used_sockets]))
+    disable_unclaimed_sockets(config, set(sources[:used_sockets]), socket_models)
 
     return SidMap(
         addresses=tuple(addresses),
@@ -366,25 +399,30 @@ def _claim_sockets(
 ) -> dict[int, str]:
     """Which physical socket serves which target address. A socket claims its
     fixed base only when the tune asks for a chip there *and* the socket carries
-    the model that chip requires."""
+    the model that chip requires — or is an ARMSID, which can be switched to
+    it."""
     served: dict[int, str] = {}
     for index, (_addr_item, _en_item, base) in enumerate(_SOCKET_SPECS):
-        socketed = socket_models[index]
-        required = models.get(base)
-        if socketed is None or base not in targets or (required and socketed != required):
+        if base not in targets or not armsid.socket_serves(socket_models[index], models.get(base)):
             continue
         served[base] = f"socket{index + 1}"
+    # An ARM2SID's right channel is decoded through socket 1, so it answers only
+    # while socket 1 is enabled, which a plan leaving socket 1 unclaimed is not.
+    if armsid.is_right_channel(socket_models[1]) and "socket1" not in served.values():
+        served = {base: source for base, source in served.items() if source != "socket2"}
     return served
 
 
 def _enable_claimed_sockets(
-    config: dict[tuple[str, str], str], served_by_socket: dict[int, str]
+    config: dict[tuple[str, str], str],
+    served_by_socket: dict[int, str],
+    socket_models: tuple[str | None, str | None],
+    models: dict[int, str | None],
 ) -> None:
     """Address + enable the sockets a plan actually claimed."""
-    for index, (addr_item, en_item, base) in enumerate(_SOCKET_SPECS):
+    for index, (_addr_item, _en_item, base) in enumerate(_SOCKET_SPECS):
         if served_by_socket.get(base) == f"socket{index + 1}":
-            config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
-            config[(CAT_SOCKETS, en_item)] = "Enabled"
+            _claim_socket(config, index, socket_models, models.get(base))
 
 
 def _source_for_address(
@@ -476,7 +514,7 @@ def plan_sid_map_for_addresses(
         core_plan = _plan_ultisid_cores(targets)
     if core_plan is None:
         return None
-    _enable_claimed_sockets(config, served_by_socket)
+    _enable_claimed_sockets(config, served_by_socket, socket_models, models)
     split_label, core_bases = core_plan
     capacity = _SPLIT_CAPACITY[split_label]
     config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split_label
@@ -487,7 +525,7 @@ def plan_sid_map_for_addresses(
     _assign_cores(config, core_bases + mirrors, curves)
 
     config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
-    disable_unclaimed_sockets(config, set(served_by_socket.values()))
+    disable_unclaimed_sockets(config, set(served_by_socket.values()), socket_models)
 
     sources = tuple(
         _source_for_address(addr, served_by_socket, core_bases, capacity) for addr in addresses

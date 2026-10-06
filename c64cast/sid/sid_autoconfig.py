@@ -22,6 +22,7 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
+from . import armsid
 from .asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
@@ -97,12 +98,15 @@ def plan_sid_model_config(
     requirement and are always a no-op (any chip is fine). For chips that
     do:
 
-      1. Whatever currently answers that address already matches → no-op.
-      2. The *other* physical socket reports the required model (and isn't
-         already claimed by an earlier chip in this same pass) → remap that
-         socket's address to this chip's address (same address-swap
-         mechanism :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses`
-         uses for multi-SID routing).
+      1. Whatever currently answers that address already matches → no-op; an
+         ARMSID answering there is switched to the required model instead.
+      2. The *other* physical socket reports the required model, or is an
+         ARMSID (and isn't already claimed by an earlier chip in this same
+         pass) → remap that socket's address to this chip's address (same
+         address-swap mechanism
+         :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses` uses for
+         multi-SID routing), switching an ARMSID's model with it. An ARM2SID's
+         right channel never moves this way.
       3. `ultisid_allowed` and a free UltiSID core remains → route this
          chip's address to that core, set its filter-curve item to the fixed
          representative curve for the required model (`"6581"` / `"8580 Lo"`
@@ -127,7 +131,7 @@ def plan_sid_model_config(
         current_source = current_addr_map.get(address)
         if current_source in ("socket1", "socket2"):
             idx = 0 if current_source == "socket1" else 1
-            if socket_models[idx] == required:
+            if armsid.label_model(socket_models[idx]) == required:
                 log.info(
                     "sid autoconfig: chip at $%04X (%s) already on %s — no change",
                     address,
@@ -136,12 +140,27 @@ def plan_sid_model_config(
                 )
                 reserved.add(current_source)
                 continue
+            if armsid.socket_serves(socket_models[idx], required):
+                plan[(armsid.CAT_SOCKET_MODEL, current_source)] = required
+                reserved.add(current_source)
+                log.info(
+                    "sid autoconfig: chip at $%04X (%s) → %s, switched from %s",
+                    address,
+                    required,
+                    current_source,
+                    socket_models[idx],
+                )
+                continue
 
+        # An ARM2SID's right channel is not a socket that can be moved: socket 2's
+        # address item does not reach it.
         matched_idx = next(
             (
                 idx
                 for idx in (0, 1)
-                if socket_models[idx] == required and f"socket{idx + 1}" not in reserved
+                if armsid.socket_serves(socket_models[idx], required)
+                and not armsid.is_right_channel(socket_models[idx])
+                and f"socket{idx + 1}" not in reserved
             ),
             None,
         )
@@ -150,6 +169,8 @@ def plan_sid_model_config(
             en_item = ITEM_SOCKET1_EN if matched_idx == 0 else ITEM_SOCKET2_EN
             plan[(CAT_ADDRESSING, addr_item)] = f"${address:04X}"
             plan[(CAT_SOCKETS, en_item)] = "Enabled"
+            if armsid.needs_model_change(socket_models[matched_idx], required):
+                plan[(armsid.CAT_SOCKET_MODEL, f"socket{matched_idx + 1}")] = required
             reserved.add(f"socket{matched_idx + 1}")
             log.info(
                 "sid autoconfig: chip at $%04X (%s) → socket %d (swap)",

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from . import armsid
 from .asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
@@ -47,6 +48,7 @@ MANAGED_ADDRESSING_ITEMS = (
     "UltiSID 2 Address",
     "UltiSID Range Split",
     "Auto Address Mirroring",
+    armsid.ITEM_EXT_SPLIT,
 )
 MANAGED_SOCKET_ITEMS = ("SID Socket 1", "SID Socket 2")
 # UltiSID filter-curve items a model-autoconfig plan touches (sid_autoconfig.py).
@@ -94,11 +96,29 @@ def current_source_map(api: C64Backend) -> dict[int, str]:
         base = _parse_dxxx(addressing.get(ITEM_SOCKET1_ADDR, ""))
         if base is not None:
             addr_map[base] = "socket1"
+    labels = armsid.cached_labels(api) or (None, None)
+    if armsid.is_right_channel(labels[1]):
+        # Socket 2's own items reach nothing on an ARM2SID; its right channel
+        # answers wherever the Ext DualSID split puts it relative to socket 1.
+        base1 = _socket_base(addressing, sockets, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN)
+        offset = armsid.split_offset(addressing.get(armsid.ITEM_EXT_SPLIT))
+        if base1 is not None and offset is not None:
+            addr_map[base1 + offset] = "socket2"
+        return addr_map
     if sockets.get(ITEM_SOCKET2_EN) == "Enabled":
         base = _parse_dxxx(addressing.get(ITEM_SOCKET2_ADDR, ""))
         if base is not None:
             addr_map[base] = "socket2"
     return addr_map
+
+
+def _socket_base(
+    addressing: dict[str, str], sockets: dict[str, str], addr_item: str, en_item: str
+) -> int | None:
+    """Where an enabled socket answers, or None when it is disabled or unmapped."""
+    if sockets.get(en_item) != "Enabled":
+        return None
+    return _parse_dxxx(addressing.get(addr_item, ""))
 
 
 def detect_sockets(api: C64Backend) -> tuple[bool, bool]:
@@ -114,12 +134,17 @@ def detect_sockets(api: C64Backend) -> tuple[bool, bool]:
     return (s1, s2)
 
 
-def detect_socket_models(api: C64Backend) -> tuple[str | None, str | None]:
-    """Which chip model each physical SID socket reports (e.g. "6581"/"8580"),
-    or None for an empty/undetected socket (best-effort; (None, None) on any
-    read failure). Same read as detect_sockets, un-collapsed to the string
-    identity — dac_calibration_store.active_socket_at_d400 already treats these
-    values as chip identity strings."""
+def detect_socket_models(api: C64Backend, *, refresh: bool = True) -> tuple[str | None, str | None]:
+    """Which chip each SID socket carries — ``"6581"``/``"8580"`` for a real
+    chip, an :mod:`~c64cast.sid.armsid` label such as ``"ARMSID 8580"`` for a
+    chip whose model can be switched — or None for an empty/undetected socket
+    (best-effort; (None, None) on any read failure). An ARM2SID's right channel
+    is reported as socket 2, which is the mixer channel its audio comes back on.
+
+    An ARMSID is identified by asking the chip, which writes to its
+    registers; `refresh=False` answers from the last such probe instead — or
+    with the firmware's own labels when there was none — for a caller that may
+    run while a tune is playing."""
     try:
         sockets = api.get_config_category(CAT_SOCKETS)
     except Exception:
@@ -129,10 +154,24 @@ def detect_socket_models(api: C64Backend) -> tuple[str | None, str | None]:
     def _model(value: str) -> str | None:
         return value if value not in ("None", "") else None
 
-    return (
+    detected = (
         _model(sockets.get(ITEM_SOCKET1_TYPE, "None")),
         _model(sockets.get(ITEM_SOCKET2_TYPE, "None")),
     )
+    if not any(kind in armsid.DETECTED_TYPES for kind in detected):
+        return detected
+    if not refresh:
+        return armsid.cached_labels(api) or detected
+    try:
+        addressing = api.get_config_category(CAT_ADDRESSING)
+    except Exception:
+        log.debug("sid_hw_config: addressing read for ARMSID probe failed", exc_info=True)
+        return detected
+    bases = (
+        _socket_base(addressing, sockets, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN),
+        _socket_base(addressing, sockets, ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN),
+    )
+    return armsid.detect_labels(api, detected, bases, addressing.get(armsid.ITEM_EXT_SPLIT))
 
 
 def snapshot_sid_config(api: C64Backend) -> dict[tuple[str, str], str]:
@@ -156,6 +195,10 @@ def snapshot_sid_config(api: C64Backend) -> dict[tuple[str, str], str]:
     for item in MANAGED_MODEL_ITEMS:
         if item in ultisid:
             saved[(CAT_ULTISID, item)] = ultisid[item]
+    labels = armsid.cached_labels(api) or (None, None)
+    for source, socket_label in zip(("socket1", "socket2"), labels, strict=True):
+        if (model := armsid.label_model(socket_label)) and armsid.is_reconfigurable(socket_label):
+            saved[(armsid.CAT_SOCKET_MODEL, source)] = model
     return saved
 
 
@@ -168,7 +211,10 @@ def _put_all(api: C64Backend, mapping: dict[tuple[str, str], str], *, warn: bool
     log_fn = log.warning if warn else log.debug
     for (category, item), value in mapping.items():
         try:
-            api.put_config_item(category, item, value)
+            if category == armsid.CAT_SOCKET_MODEL:
+                armsid.set_socket_model(api, item, value)
+            else:
+                api.put_config_item(category, item, value)
         except Exception:
             log_fn("sid_hw_config: failed to set %s/%s=%s", category, item, value, exc_info=True)
 

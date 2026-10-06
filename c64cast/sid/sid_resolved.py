@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from . import armsid
 from .asid_sidmap import (
     CAT_ULTISID,
     ITEM_ULTISID1_FILTER,
@@ -142,7 +143,9 @@ def _describe_chip(address: int, required: str | None, state: SidHardwareState) 
     if not state.audible(source):
         cause = " (Vol Master OFF)" if state.master_off else ""
         return f"{fragment} — INAUDIBLE{cause}", False
-    if required not in NO_MODEL_REQUIREMENT and not model.startswith(required or ""):
+    if required not in NO_MODEL_REQUIREMENT and not (armsid.label_model(model) or model).startswith(
+        required or ""
+    ):
         return f"{fragment} — tune wants {required}", False
     return fragment, True
 
@@ -445,7 +448,9 @@ def read_sid_hardware_state(api: C64Backend) -> SidHardwareState | None:
         return None
     return SidHardwareState(
         addr_map=current_source_map(api),
-        socket_models=detect_socket_models(api),
+        # The line is logged while a tune may already be playing, and asking an
+        # ARMSID what it is writes to its registers.
+        socket_models=detect_socket_models(api, refresh=False),
         ultisid_curves={
             source: ultisid.get(item, "") for source, item in _ULTISID_FILTER_ITEM.items()
         },
