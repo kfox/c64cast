@@ -31,17 +31,26 @@ REDACTED = "REDACTED"
 #: by the value pattern and :func:`redact_source_line` — one spelling, so a
 #: name one of them recognizes the other does too.
 #:
-#: ``token``, ``password`` and ``secret`` take any prefix, glued or not, so
-#: ``viewer_token`` and ``client_secret`` match. ``key``, ``sig``,
-#: ``signature`` and ``hmac`` are too short for that: a prefix has to end in ``_`` or ``-``,
+#: ``token``, ``password``, ``passwd``, ``pwd``, ``jwt``, ``secret`` and
+#: ``credential(s)`` take any prefix, glued or not, so ``viewer_token``,
+#: ``client_secret`` and ``dbpasswd`` match. ``key``, ``sig``, ``signature``, ``hmac``, ``pass`` and ``auth`` are too
+#: short for that: a prefix has to end in ``_`` or ``-``,
 #: which is what makes the word its own component of the name rather than the
 #: tail of another one. So ``?key=``, ``api_key=``, ``signing-key=``, ``?sig=``
 #: ``X-Amz-Signature=`` and the ``hmac=`` inside an Akamai ``__token__=`` or
-#: ``hdnts=`` match — the spellings signed media and feed URLs use — while ``sortkey=``, ``hotkey=``, ``monkey=``, ``sig_level=`` and
-#: ``sigma=`` do not.
+#: ``hdnts=`` match — the spellings signed media and feed URLs use — as do a
+#: camera URL's ``?pass=`` and an ``X-Auth:`` header, while ``sortkey=``,
+#: ``hotkey=``, ``monkey=``, ``sig_level=``, ``sigma=``, ``bypass=``,
+#: ``compass=`` and ``oauth=`` do not.
+#:
+#: Every name must also end where the key does, so ``passes=``, ``author=``,
+#: ``pass_count=`` and ``jwt_expiry_s=`` keep their values: the trailing ``\b``
+#: does not fall inside a run of word characters. ``oauth_state=`` is kept for
+#: the same reason; an OAuth flow's credential travels as ``oauth_token=`` or
+#: ``access_token=``, which ``token`` already covers.
 #:
 #: The rule is positional and knows nothing about meaning, so a name whose last
-#: component happens to be one of the four is masked whatever it holds:
+#: component happens to be one of the short names is masked whatever it holds:
 #: ``cache_key=`` loses its value. That direction is the cheap one — a
 #: diagnostic value goes missing from two destinations — and the reverse is a
 #: credential in a file that outlives the run.
@@ -80,12 +89,14 @@ REDACTED = "REDACTED"
 #:
 #: The open form appears in both branches, spliced from one spelling so a name
 #: added to it is found at a run's start and partway through it alike.
-_OPEN_SECRET_NAME = r"\w* (?: token | password | secret | api[_-]?key )"
+_OPEN_SECRET_NAME = r"""\w* (?:
+    token | passw (?:or)? d | pwd | jwt | secret | credentials? | api[_-]?key
+)"""
 _SECRET_KEY = r"""
     (?:
         (?: (?<![\w-]) -* \b | % (?:25)*+ (?:[0-9a-f]{2})? (?<=[0-9a-f]) ) (?:
             {open}
-          | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac )
+          | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac | pass | auth )
         )
       | \b {open}
     ) \b
@@ -456,14 +467,16 @@ def _source_span(span: Span, userinfo: Sequence[Span], out_starts: Sequence[int]
 def redact_secrets(text: str) -> str:
     """`text` with every recognized secret value reduced to ``REDACTED`` —
     `token=VALUE`, `password: VALUE`, `secret=VALUE`, `api_key=VALUE`,
-    `key=VALUE`, `sig=VALUE`, `signature=VALUE`, `hmac=VALUE` (`=` or `:`, and the first four
+    `passwd=VALUE`, `pwd=VALUE`, `jwt=VALUE`, `credential(s)=VALUE`,
+    `key=VALUE`, `sig=VALUE`, `signature=VALUE`, `hmac=VALUE`, `pass=VALUE`,
+    `auth=VALUE` (`=` or `:`, and the first eight
     with any prefix, so `viewer_token` and `client_secret` match),
     `Bearer VALUE`, and the userinfo of a URL (`https://user:pass@host` comes
     back as `https://REDACTED@host`) — a private media file is legitimately
     reached that way, and FFmpeg quotes the URL it failed on into its errors.
 
     The short names take a prefix only when a `_` or `-` separates it, so
-    `signing_key=` is covered and `sortkey=` is left alone.
+    `signing_key=` is covered and `sortkey=` and `bypass=` are left alone.
 
     An unquoted value ends at whitespace, `&`, a comma, a quote, or a closing
     brace. A name inside a URL-encoded value (`%26sig%3DVALUE`,

@@ -159,6 +159,70 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertNotIn("abc123", redact_secrets("secret=abc123"))
         self.assertNotIn("abc123", redact_secrets("?client_secret=abc123"))
 
+    def test_a_camera_url_password_is_covered(self):
+        """A Foscam-style IP camera takes its login in the query string, and a
+        failed video open quotes the URL into its error."""
+        self.assertEqual(
+            redact_secrets("http://cam/videostream.cgi?user=admin&pwd=hunter2&res=0"),
+            "http://cam/videostream.cgi?user=admin&pwd=REDACTED&res=0",
+        )
+
+    def test_each_password_and_credential_name_masks_its_value(self):
+        forms = (
+            "http://h/a?u=1&{name}=S3CR&n=1",
+            "{name}=S3CR",
+            "{name}: S3CR",
+            '{{"{name}": "S3CR", "x": 1}}',
+            "db_{name}=S3CR",
+            "X-{name}: S3CR",
+            "%26{name}%3DS3CR",
+        )
+        for name in (
+            "pwd",
+            "passwd",
+            "password",
+            "pass",
+            "auth",
+            "jwt",
+            "credential",
+            "credentials",
+        ):
+            for form in forms:
+                line = form.format(name=name)
+                with self.subTest(line=line):
+                    self.assertNotIn("S3CR", redact_secrets(line))
+            with self.subTest(source_line=name):
+                safe, verbatim = redact_source_line([f'{name} == "S3CR"'], 1)
+                self.assertNotIn("S3CR", safe)
+                self.assertFalse(verbatim)
+
+    def test_a_glued_prefix_takes_the_long_names_but_not_pass_or_auth(self):
+        """`passwd`, `pwd`, `jwt` and `credential` are open names, like
+        `password`; `pass` and `auth` are short ones, like `key`, because a
+        glued prefix makes them `bypass` and `oauth`."""
+        for line, want in (
+            ("dbpasswd=x", "dbpasswd=REDACTED"),
+            ("userpwd=x", "userpwd=REDACTED"),
+            ("idjwt=x", "idjwt=REDACTED"),
+            ("awscredentials=x", "awscredentials=REDACTED"),
+            ("bypass=on", "bypass=on"),
+            ("oauth=1", "oauth=1"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_word_that_merely_contains_a_credential_name_is_left_alone(self):
+        """A name masks only when it is the whole last component of the key,
+        so ordinary diagnostic text keeps its values. `oauth_state` is kept on
+        purpose: it ends in `state`, and an OAuth credential travels as
+        `oauth_token`, which `token` covers."""
+        line = (
+            "passes=3 bypass=on compass: north author=Kelly authority: x "
+            "oauth_state=abc pass_count=2 jwt_expiry_s=30 passing: yes "
+            "authed=1 pwdx=1 jwts=1 credentialed=1 passwords=4"
+        )
+        self.assertEqual(redact_secrets(line), line)
+
     def test_a_bearer_header_value_is_covered(self):
         out = redact_secrets("Authorization: Bearer s3cr3t")
         self.assertNotIn("s3cr3t", out)
@@ -358,6 +422,7 @@ class RedactSecretsTest(unittest.TestCase):
             "token%3A" * 16_000 + "%26",
             "token%253Apassword=x%2526" * 6_000 + " ",
             "token%3Apassword " * 8_000,
+            "pwd%3Apass " * 8_000,
             'sig="' + "token:'" * 8_000 + '"',
             ('sig="x token:\'"' + "sig='y token:\"'") * 4_000,
             _hidden_value_ladder(200, 400_000),
@@ -431,7 +496,13 @@ class RedactSecretsTest(unittest.TestCase):
         name tried from each of them scanned the rest of the run every time,
         which is quadratic: 10 KB of one took 1.5 s on a log line, and 100 KB
         took 139 s."""
-        for line in ("a-" * 32_000, "key-" * 16_000, "x-" * 32_000 + "=1"):
+        for line in (
+            "a-" * 32_000,
+            "key-" * 16_000,
+            "pass-" * 16_000,
+            "pwd-" * 16_000,
+            "x-" * 32_000 + "=1",
+        ):
             with self.subTest(line=line[:16]):
                 start = time.perf_counter()
                 redact_secrets(line)
@@ -442,7 +513,12 @@ class RedactSecretsTest(unittest.TestCase):
         """An escape is read as `%`, any run of `25`, then its digits. Given
         back a pair at a time, that run rescans the name characters after it
         once per pair, which is quadratic: 32 KB of `%2525…` took 16 s."""
-        for line in ("%" + "25" * 8_000 + "a" * 16_000, "%" + "25" * 32_000 + "token"):
+        for line in (
+            "%" + "25" * 8_000 + "a" * 16_000,
+            "%" + "25" * 32_000 + "token",
+            "%" + "25" * 32_000 + "pwd",
+            "%" + "25" * 32_000 + "pass",
+        ):
             with self.subTest(line=line[:16]):
                 start = time.perf_counter()
                 redact_secrets(line)

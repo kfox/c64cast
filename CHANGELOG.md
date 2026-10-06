@@ -427,7 +427,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   quoted the whole URL, and only `token=`/`sig=`-style values were masked.
   The `user:token@` part is masked now as well, and so is the `hmac=`
   signature in an Akamai `__token__=` or `hdnts=` parameter, URL-encoded
-  (`hmac%3D…`, `%26sig%3D…`) or not. The terminal
+  (`hmac%3D…`, `%26sig%3D…`) or not. So are `pwd=`, `passwd=`, `pass=`,
+  `auth=`, `jwt=` and `credential(s)=` values, in a query string, a
+  `key=value` or `key: value` pair, or JSON: an IP camera's
+  `videostream.cgi?user=admin&pwd=…` URL kept its password before. Words
+  that merely contain one of those names, such as `bypass=`, `author=` or
+  `pass_count=`, keep their values. The terminal
   still shows the URL as it was.
 
 - **`[audio].sampler_clock_hz` outside 5000000..7500000 is refused when the
