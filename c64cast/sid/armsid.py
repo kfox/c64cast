@@ -170,8 +170,13 @@ def label(kind: str, model: str | None, *, right: bool = False) -> str:
 
 
 def is_reconfigurable(socket_label: str | None) -> bool:
-    """Whether the chip behind `socket_label` can be switched to either model."""
-    return socket_label is not None and socket_label.split(" ", 1)[0] in DETECTED_TYPES
+    """Whether the chip behind `socket_label` can be switched to either model.
+    Only a label :func:`label` built counts: the firmware's bare ``"ARMSID"``
+    is what a socket keeps when the chip did not answer its probe."""
+    if socket_label is None:
+        return False
+    kind, _, rest = socket_label.partition(" ")
+    return kind in DETECTED_TYPES and bool(rest)
 
 
 def is_right_channel(socket_label: str | None) -> bool:

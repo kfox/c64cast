@@ -187,6 +187,13 @@ class LabelTest(unittest.TestCase):
         self.assertFalse(armsid.needs_model_change("ARMSID 6581", "6581"))
         self.assertFalse(armsid.needs_model_change("6581", "8580"))
 
+    def test_the_firmwares_bare_label_is_a_fixed_chip(self):
+        # What a socket keeps when its probe went unanswered: nothing is known
+        # about the chip, so nothing may be switched on it.
+        self.assertFalse(armsid.is_reconfigurable("ARMSID"))
+        self.assertFalse(armsid.socket_serves("ARMSID", "6581"))
+        self.assertFalse(armsid.needs_model_change("ARMSID", "6581"))
+
     def test_right_channel(self):
         self.assertTrue(armsid.is_right_channel("ARM2SID R 8580"))
         self.assertFalse(armsid.is_right_channel("ARM2SID 8580"))
