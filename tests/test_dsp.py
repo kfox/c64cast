@@ -134,8 +134,9 @@ class CompressorTest(unittest.TestCase):
         y = comp.process(x)
         self.assertAlmostEqual(lin_to_db(_rms(y[-1000:]) / _rms(x[-1000:])), 6.0, delta=0.5)
 
-    def test_auto_makeup_brings_threshold_to_unity(self):
-        # With auto makeup, a signal AT threshold comes out near 0 dB change.
+    def test_auto_makeup_brings_full_scale_back_to_unity(self):
+        # Auto makeup is the reduction a 0 dBFS level gets, (1 - 1/ratio) of
+        # the threshold's depth, so a full-scale signal exits at full scale.
         comp = Compressor(
             sample_rate=SR,
             threshold_db=-18.0,
@@ -145,7 +146,9 @@ class CompressorTest(unittest.TestCase):
             release_ms=50.0,
             makeup_db=None,
         )  # None = auto
-        self.assertGreater(comp.makeup_db, 0.0)
+        self.assertAlmostEqual(comp.makeup_db, 18.0 * (1.0 - 1.0 / 4.0))
+        y = comp.process(np.ones(SR // 10, dtype=np.float32))
+        self.assertAlmostEqual(float(y[-1]), 1.0, places=4)
 
     def test_output_finite_and_bounded(self):
         comp = self._comp()
@@ -276,8 +279,9 @@ class AGCTest(unittest.TestCase):
         x = _sine(400, 1.0, amp=db_to_lin(-30.0))
         a = self._agc().process(x)
         b = _split_process(self._agc(), x, [256, 256, 1000, 2000])
-        # AGC ramps gain per-block; modest tolerance.
-        np.testing.assert_allclose(a, b, atol=2e-2)
+        # The gain and RMS state is per sample and carried across blocks, so
+        # the split changes nothing past float rounding.
+        np.testing.assert_allclose(a, b, atol=1e-6)
 
 
 class AudioDSPChainTest(unittest.TestCase):
@@ -365,6 +369,67 @@ class AudioDSPChainTest(unittest.TestCase):
         dsp.reset()
         second = dsp.process(x)
         np.testing.assert_allclose(first, second, atol=1e-5)
+
+
+class CompressorCurveTest(unittest.TestCase):
+    def test_the_soft_knee_is_the_quadratic_between_its_edges(self):
+        # Threshold -18, ratio 4, a 6 dB knee: no reduction 3 dB under the
+        # threshold, the full slope 3 dB over it, and the quadratic's
+        # slope * (knee / 2)^2 / (2 * knee) = -0.5625 dB at the threshold.
+        comp = Compressor(sample_rate=SR, threshold_db=-18.0, ratio=4.0, knee_db=6.0)
+        gain = comp._gain_db(np.array([-21.0, -18.0, -15.0], dtype=np.float32))
+        np.testing.assert_allclose(gain, [0.0, -0.5625, -2.25], atol=1e-6)
+
+
+class LimiterReleaseTest(unittest.TestCase):
+    def test_the_gain_recovers_at_the_release_rate_after_a_peak(self):
+        # Held down right after the peak, then back to unity once the
+        # detector has decayed under the ceiling.
+        lim = Limiter(sample_rate=SR, ceiling=0.5, release_ms=20.0)
+        x = np.full(SR, 0.25, dtype=np.float32)
+        x[0] = 1.0
+        y = lim.process(x)
+        rel = float(np.exp(-1.0 / (0.02 * SR)))
+        env = rel * 1.0 + (1.0 - rel) * 0.25
+        self.assertAlmostEqual(float(y[1]), 0.25 * 0.5 / env, places=5)
+        self.assertAlmostEqual(float(y[-1]), 0.25, places=6)
+
+
+class ExpanderFloorTest(unittest.TestCase):
+    def test_attenuation_stops_at_the_floor(self):
+        # 40 dB under a ratio-4 threshold asks for 120 dB of attenuation; the
+        # floor holds it at 20 dB.
+        exp = Expander(
+            sample_rate=SR, threshold_db=-40.0, ratio=4.0, floor_db=-20.0, release_ms=60.0
+        )
+        x = np.full(2 * SR, db_to_lin(-80.0), dtype=np.float32)
+        y = exp.process(x)
+        self.assertAlmostEqual(float(y[-1] / x[-1]), db_to_lin(-20.0), places=4)
+
+
+class AGCNoiseFloorTest(unittest.TestCase):
+    def test_input_under_the_noise_floor_is_not_boosted(self):
+        agc = AGC(sample_rate=SR, target_db=-18.0, max_gain_db=24.0, noise_floor_db=-60.0)
+        x = _sine(400, 2.0, amp=db_to_lin(-70.0))
+        y = agc.process(x)
+        np.testing.assert_allclose(y, x, rtol=1e-6)
+
+
+class AudioDSPOrderTest(unittest.TestCase):
+    def test_the_chain_runs_in_its_documented_order(self):
+        # Pre-emphasis, AGC, expander, compressor, limiter: the expander has to
+        # clean the floor before the compressor's makeup raises it, and the
+        # limiter has to be last to be a ceiling.
+        params = DSPParams(enabled=True, agc=True)
+        dsp = AudioDSP(params, sample_rate=SR, is_mic=True)
+        self.assertEqual(
+            [type(p) for p in dsp._chain], [PreEmphasis, AGC, Expander, Compressor, Limiter]
+        )
+        x = _sine(500, 0.5, amp=db_to_lin(-30.0))
+        expected = x
+        for proc in AudioDSP(params, sample_rate=SR, is_mic=True)._chain:
+            expected = proc.process(expected)
+        np.testing.assert_array_equal(dsp.process(x), expected)
 
 
 if __name__ == "__main__":

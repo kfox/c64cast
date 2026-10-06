@@ -37,6 +37,16 @@ class ResolveDacCurveTest(unittest.TestCase):
         self.assertEqual(len(table), 256)
         self.assertTrue(all(0 <= b <= 255 for b in table))
 
+    def test_the_baked_ultisid_table_is_its_measured_source_of_record(self):
+        import json
+        import pathlib
+
+        record = pathlib.Path(__file__).resolve().parent.parent / (
+            "scripts/diags/mahoney_measured_tables.json"
+        )
+        measured = json.loads(record.read_text(encoding="utf-8"))["ultisid"]["sidtable"]
+        self.assertEqual(MAHONEY_ULTISID, bytes(measured))
+
     def test_unknown_curve_raises(self):
         with self.assertRaises(ValueError):
             resolve_dac_curve("nope")
