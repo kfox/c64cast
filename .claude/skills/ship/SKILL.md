@@ -3,7 +3,7 @@ name: ship
 description: >
   Take a change in this repository all the way to a pull request that is ready
   to merge: branch, implement, commit, review each changeset as it lands, run a
-  branch-wide review at high effort, open the PR as a draft, watch CI and GHAS
+  branch-wide review, open the PR as a draft, watch CI and GHAS
   until green, then mark it ready for review. Stops before merging — the merge is always the user's. Use when asked
   to implement a non-trivial change, or when asked to take a change through
   the full branch-review-PR workflow ("ship", "land", "take this to a PR").
@@ -16,7 +16,7 @@ mandatory unless the user says otherwise, and the last one is a hard stop.
 
 ```
 branch → (implement → commit → review that changeset)* → branch-wide review
-       at high effort → draft PR → CI/GHAS green → ready for review → STOP
+       → draft PR → CI/GHAS green → ready for review → STOP
 ```
 
 **Never merge.** The user merges. Do not run `gh pr merge`, do not enable
@@ -191,7 +191,7 @@ Do not batch this to the end. The whole point is that the reviewer sees one
 changeset instead of a branch: a wide scope spends its attention before it
 reaches the small commit, and reads back as a clean pass.
 
-## 4. Branch-wide review at high effort
+## 4. Branch-wide review
 
 The per-changeset reviews in step 3 are the first net and the one that catches
 most defects. This is the **second** net: it sees what no single-commit review
@@ -201,7 +201,11 @@ commit has had its own review, never instead of them.
 
 Spawn **one subagent** with the Agent tool and have it review the whole branch:
 
-    Skill(skill="code-review", args="high origin/main...HEAD")
+    Skill(skill="code-review", args="medium origin/main...HEAD")
+
+Medium is the default, because every commit has already had its own review by
+now. Raise it for an exceptional branch, or lower it when the need is reduced,
+and say which level ran and why when it was not medium.
 
 The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last. Its Agent `description` is
