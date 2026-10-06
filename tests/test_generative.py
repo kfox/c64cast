@@ -1910,6 +1910,23 @@ class AudioFileShortClipTest(unittest.TestCase):
         )
         self.assertEqual(n, 16, "a stale wake-up ended the next producer's collect")
 
+    def test_a_new_dac_worker_clears_the_last_producers_end(self):
+        # end_input() marks one producer's end. The next activation's worker
+        # starts without it, or the wake-up the last producer left in the
+        # queue reads as this producer's end and cuts its first collect.
+        from _fakes import FakeAPI
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac.end_input()
+        with mock.patch.object(dac, "_worker"):
+            dac._start_worker().join(timeout=5.0)
+        dac.running = True
+        dac.q.put_nowait(b"\x01" * 16)
+        n, _, _ = dac._collect_until(
+            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+        )
+        self.assertEqual(n, 16, "the last producer's end cut the next producer's collect")
+
     def test_a_dac_worker_idles_after_a_producer_that_pushed_nothing(self):
         # A decode that failed before its first push still ends the input. With
         # nothing landed there is no prebuffer to pad out, and a priming collect
