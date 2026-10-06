@@ -40,6 +40,7 @@ from c64cast.hw.backend import BackendSetupError, C64Backend, make_backend
 from c64cast.hw.teensyrom_dma import TRError
 from c64cast.scenes.interstitial import default_factory as interstitial_factory
 from c64cast.scenes.scenes import Scene
+from c64cast.sid.sid_hw_config import restore_sid_config
 from c64cast.video.video import WebcamSource
 
 from . import config as cfgmod
@@ -638,6 +639,14 @@ def _acquire_stack(
     audio = _build_audio(cfg, api)
     if audio is not None:
         release_on_failure("audio shutdown", audio.close)
+    dac_model_restore = (
+        dac_curve_resolve.provision_calibrated_chip_model(cfg, api, audio.dac_curve_name)
+        if audio is not None and api.profile.supports_sid_config
+        else None
+    )
+    release_on_failure(
+        "DAC chip model restore", lambda: restore_sid_config(api, dac_model_restore or {})
+    )
 
     reu_available = _resolve_reu_available(cfg, api)
     sampler_available = _resolve_sampler_available(cfg, api)
@@ -760,6 +769,7 @@ def _acquire_stack(
         sampler_restore=sampler_restore,
         master_volume_restore=master_volume_restore,
         video_output_restore=video_output_restore,
+        dac_model_restore=dac_model_restore,
         hardware_palette=palette_control,
         framebuffer=framebuffer,
         preview_window=preview_window,
@@ -803,6 +813,10 @@ def teardown_stack(stack: SystemStack) -> None:
         (
             "video output restore",
             lambda: hw_provision.restore_video_output(stack.api, stack.video_output_restore),
+        ),
+        (
+            "DAC chip model restore",
+            lambda: restore_sid_config(stack.api, stack.dac_model_restore or {}),
         ),
         # Before the reset, so a reset that fails still leaves the machine
         # showing its own palette.

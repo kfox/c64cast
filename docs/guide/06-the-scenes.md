@@ -300,6 +300,14 @@ addresses itself; the chips are already where the tune expects them, so there
 is nothing to route. This is true through a TeensyROM+ and through an Ultimate
 II+ alike.
 
+An Ultimate 64 with an ARMSID or ARM2SID in its SID sockets needs no
+declaration either: c64cast asks the chip what it is. An ARMSID's model is a
+setting, so each tune is played on it with the model switched to the one the
+tune asks for, and switched back afterward. An ARM2SID's second SID answers at
+`$D420` once `Ext DualSID Range Split` is `A5`; c64cast sets that for a tune
+that uses it and puts your setting back afterward, and the second SID is heard
+through the mixer's `Socket 2` channel.
+
 What c64cast cannot do is *guess* that your machine is one of these. Left
 undeclared it assumes the ordinary single chip — which is the right assumption
 for almost every Commodore, and the reason a two-chip tune gets a warning:

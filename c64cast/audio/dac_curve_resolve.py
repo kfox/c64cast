@@ -11,8 +11,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from c64cast.sid import armsid
+from c64cast.sid.sid_hw_config import detect_socket_models
+
 from .dac_calibration_store import (
     D400_UNKNOWN,
+    calibrated_chip,
     d400_owner,
     load_calibrated_table,
     path_for_key,
@@ -135,3 +139,62 @@ def resolve_dac_curve_for_backend(
             return ("linear", None)
         return _resolve_auto_curve(cfg, be, resolve_calibration_key(cfg, be))
     return (name, resolve_dac_curve(name))
+
+
+def provision_calibrated_chip_model(
+    cfg: Config, be: C64Backend, dac_curve_label: str
+) -> dict[tuple[str, str], str] | None:
+    """Put an ARMSID back into the model its calibrated table was measured in,
+    for a run that plays through that table; return what to restore at teardown
+    (None when nothing changed).
+
+    An ARMSID's ``$D418`` ladder depends on its model, and the model is a
+    setting that the menu, a tune's autoconfig or another tool can leave either
+    way, so a table measured in one model and played in the other is a table
+    for a different chip. The calibration records the model in the chip's
+    label; this enforces it. A chip of fixed model, or a table that names none,
+    is left alone."""
+    if not dac_curve_label.startswith("calibrated:"):
+        return None
+    measured = calibrated_chip(cfg, be=be, path=path_for_key(cfg, dac_curve_label.split(":", 1)[1]))
+    if measured is None:
+        return None
+    socket, recorded = measured
+    wanted = armsid.label_model(recorded) if armsid.is_reconfigurable(recorded) else None
+    if wanted is None:
+        return None
+    live = detect_socket_models(be)[socket - 1]
+    if not armsid.is_reconfigurable(live) or armsid.is_right_channel(live):
+        log.warning(
+            "audio: the DAC calibration was measured on an %s in socket %d, which now "
+            "reports %s; playing through it unchanged",
+            recorded,
+            socket,
+            live or "nothing",
+        )
+        return None
+    current = armsid.label_model(live)
+    if current is None or current == wanted:
+        return None
+    source = f"socket{socket}"
+    # Returned even when the switch fails: a write that took before its reply
+    # was lost still gets put back, and putting back an unchanged model is a no-op.
+    restore = {(armsid.CAT_SOCKET_MODEL, source): current}
+    try:
+        armsid.set_socket_model(be, source, wanted)
+    except Exception:  # noqa: BLE001 — best-effort, like every SID config write
+        log.warning(
+            "audio: could not switch socket %d to %s for its DAC calibration; "
+            "playing through it unchanged",
+            socket,
+            wanted,
+            exc_info=True,
+        )
+        return restore
+    log.info(
+        "audio: switched the %s in socket %d to %s, the model its DAC calibration was measured in",
+        (live or "").rsplit(" ", 1)[0],
+        socket,
+        wanted,
+    )
+    return restore

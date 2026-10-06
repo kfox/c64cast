@@ -22,6 +22,7 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
+from . import armsid
 from .asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
@@ -97,12 +98,16 @@ def plan_sid_model_config(
     requirement and are always a no-op (any chip is fine). For chips that
     do:
 
-      1. Whatever currently answers that address already matches → no-op.
-      2. The *other* physical socket reports the required model (and isn't
-         already claimed by an earlier chip in this same pass) → remap that
-         socket's address to this chip's address (same address-swap
-         mechanism :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses`
-         uses for multi-SID routing).
+      1. Whatever currently answers that address already matches → no-op; an
+         ARMSID answering there is switched to the required model instead.
+      2. The *other* physical socket reports the required model, or is an
+         ARMSID (and isn't already claimed by an earlier chip in this same
+         pass) → remap that socket's address to this chip's address (same
+         address-swap mechanism
+         :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses` uses for
+         multi-SID routing), switching an ARMSID's model with it. An ARM2SID's
+         right channel never moves this way, and neither does socket 1 while
+         that right channel plays one of the tune's chips.
       3. `ultisid_allowed` and a free UltiSID core remains → route this
          chip's address to that core, set its filter-curve item to the fixed
          representative curve for the required model (`"6581"` / `"8580 Lo"`
@@ -111,6 +116,8 @@ def plan_sid_model_config(
          address: `Auto Address Mirroring` off, plus the socket sitting there
          disabled. Without that last part the route is silent-by-design — the
          real chip keeps answering and the core never reaches the mixer.
+         Socket 1 is not displaced while an ARM2SID's right channel plays
+         one of the tune's chips, since disabling it silences that channel.
       4. Otherwise: log a warning (best-effort — never raises) and leave the
          chip unchanged.
 
@@ -119,6 +126,11 @@ def plan_sid_model_config(
     :func:`apply_sid_autoconfig` can skip the snapshot/apply dance entirely."""
     plan: dict[tuple[str, str], str] = {}
     reserved: set[str] = set()
+    # An ARM2SID's right channel is decoded through socket 1's enable, so
+    # disabling socket 1 would silence a chip the right channel plays.
+    right_channel_plays = armsid.is_right_channel(socket_models[1]) and any(
+        current_addr_map.get(address) == "socket2" for address, _ in chips
+    )
 
     for address, required in chips:
         if required in _NO_REQUIREMENT:
@@ -127,7 +139,7 @@ def plan_sid_model_config(
         current_source = current_addr_map.get(address)
         if current_source in ("socket1", "socket2"):
             idx = 0 if current_source == "socket1" else 1
-            if socket_models[idx] == required:
+            if armsid.label_model(socket_models[idx]) == required:
                 log.info(
                     "sid autoconfig: chip at $%04X (%s) already on %s — no change",
                     address,
@@ -136,12 +148,30 @@ def plan_sid_model_config(
                 )
                 reserved.add(current_source)
                 continue
+            if armsid.socket_serves(socket_models[idx], required):
+                plan[(armsid.CAT_SOCKET_MODEL, current_source)] = required
+                reserved.add(current_source)
+                log.info(
+                    "sid autoconfig: chip at $%04X (%s) → %s, switched from %s",
+                    address,
+                    required,
+                    current_source,
+                    socket_models[idx],
+                )
+                continue
 
+        # An ARM2SID's right channel is not a socket that can be moved: socket 2's
+        # address item does not reach it. Nor is socket 1 while the right channel
+        # plays: the right channel answers relative to socket 1's base, so moving
+        # socket 1 moves it off the chip it plays.
         matched_idx = next(
             (
                 idx
                 for idx in (0, 1)
-                if socket_models[idx] == required and f"socket{idx + 1}" not in reserved
+                if armsid.socket_serves(socket_models[idx], required)
+                and not armsid.is_right_channel(socket_models[idx])
+                and not (idx == 0 and right_channel_plays)
+                and f"socket{idx + 1}" not in reserved
             ),
             None,
         )
@@ -150,12 +180,24 @@ def plan_sid_model_config(
             en_item = ITEM_SOCKET1_EN if matched_idx == 0 else ITEM_SOCKET2_EN
             plan[(CAT_ADDRESSING, addr_item)] = f"${address:04X}"
             plan[(CAT_SOCKETS, en_item)] = "Enabled"
+            if armsid.needs_model_change(socket_models[matched_idx], required):
+                plan[(armsid.CAT_SOCKET_MODEL, f"socket{matched_idx + 1}")] = required
             reserved.add(f"socket{matched_idx + 1}")
             log.info(
                 "sid autoconfig: chip at $%04X (%s) → socket %d (swap)",
                 address,
                 required,
                 matched_idx + 1,
+            )
+            continue
+
+        if current_source == "socket1" and right_channel_plays:
+            log.warning(
+                "sid autoconfig: chip at $%04X wants %s but socket 1 cannot be "
+                "displaced without silencing the ARM2SID right channel — leaving "
+                "it on socket 1",
+                address,
+                required,
             )
             continue
 
@@ -170,7 +212,12 @@ def plan_sid_model_config(
                 # A core route the address is not taken away from is inaudible:
                 # a mirroring socket answers alongside it and wins.
                 plan[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
-                if displaced := _SOCKET_ENABLE_ITEM.get(current_source or ""):
+                displaced = _SOCKET_ENABLE_ITEM.get(current_source or "")
+                if current_source == "socket2" and armsid.is_right_channel(socket_models[1]):
+                    # Socket 2's enable does not reach an ARM2SID's right
+                    # channel; turning the split off is what silences it.
+                    plan[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)] = armsid.EXT_SPLIT_OFF
+                elif displaced:
                     plan[(CAT_SOCKETS, displaced)] = "Disabled"
                 reserved.add(core)
                 log.info(
@@ -228,13 +275,15 @@ def plan_model_config_for_header(
 ) -> dict[tuple[str, str], str] | None:
     """Resolve `sid_model`, read the *current* live SID hardware state, and
     decide the REST plan (if any) that makes the header's chip-model
-    requirements match reality — but does not touch the hardware. Split out
+    requirements match reality — but does not apply it. Split out
     from :func:`apply_sid_autoconfig` so a caller that also plans multi-SID
     *address* routing (:class:`~c64cast.sid.waveform.WaveformScene`) can apply
     that first, then call this against the now-current addressing (so a
     model swap doesn't fight an address remap decided moments earlier), all
-    under one outer snapshot/apply/restore. Read-only; a REST read failure
-    degrades to "nothing to change" (best-effort, like the rest of this
+    under one outer snapshot/apply/restore. Not read-only on an ARMSID:
+    detection asks the chip over its registers and may move the Ext DualSID
+    split for the length of the probe, so call it before a tune starts, never
+    during one. A REST read failure degrades to "nothing to change" (best-effort, like the rest of this
     module) rather than raising."""
     if sid_model == "off":
         log.info("sid autoconfig: off — leaving SID hardware config untouched")
@@ -252,8 +301,9 @@ def plan_model_config_for_header(
     required = header.sid_models if sid_model == "auto" else tuple(sid_model for _ in range(n))
     chips = tuple(zip(header.sid_addresses, required, strict=True))
 
-    current_addr_map = _current_addr_map(api)
+    # Detection first: the address map reads the ARM2SID labels it caches.
     socket_models = detect_socket_models(api)
+    current_addr_map = _current_addr_map(api)
     plan = plan_sid_model_config(chips, current_addr_map, socket_models, ultisid_allowed=True)
     if not plan:
         log.info(

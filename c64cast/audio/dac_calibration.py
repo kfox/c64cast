@@ -31,6 +31,7 @@ from c64cast._teardown import run_teardown_steps
 from c64cast.app import paths
 from c64cast.hw.c64 import CIA2, SCREEN
 from c64cast.hw.hw_provision import MASTER_VOL_FIELD, master_volume
+from c64cast.sid import armsid
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -46,7 +47,12 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID2_ADDR,
 )
 from c64cast.sid.emusid_mixer import CAT_EMUSID
-from c64cast.sid.sid_hw_config import SidHwSession, detect_sockets, restore_sid_config
+from c64cast.sid.sid_hw_config import (
+    SidHwSession,
+    detect_socket_models,
+    detect_sockets,
+    restore_sid_config,
+)
 from c64cast.sid.sid_panning import CAT_MIXER
 from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
@@ -568,10 +574,20 @@ def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tu
         s1, s2 = detect_sockets(be)
         if s1 or s2:
             sockets_info = be.get_config_category(CAT_SOCKETS)
+            # An ARMSID's label carries the model it is measured in, which
+            # playback puts the chip back into before using the table.
+            labels = detect_socket_models(be)
+
+            def identity(index: int, item: str) -> str:
+                label = labels[index]
+                if armsid.is_reconfigurable(label) and not armsid.is_right_channel(label):
+                    return label or ""
+                return sockets_info.get(item, "")
+
             if s1:
-                out.append((1, sockets_info.get(ITEM_SOCKET1_TYPE, "")))
+                out.append((1, identity(0, ITEM_SOCKET1_TYPE)))
             if s2:
-                out.append((2, sockets_info.get(ITEM_SOCKET2_TYPE, "")))
+                out.append((2, identity(1, ITEM_SOCKET2_TYPE)))
     except Exception:  # noqa: BLE001 — best-effort; fall back to single measurement
         log_fn("[calib] socket detection failed — falling back to a single measurement")
     return out
