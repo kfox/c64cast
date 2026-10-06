@@ -176,12 +176,34 @@ def provision_calibrated_chip_model(
     current = armsid.label_model(live)
     if current == wanted:
         return None
+    if current is None:
+        log.warning(
+            "audio: the %s in socket %d did not report its model, so it cannot be put "
+            "back after the run; leaving it unchanged for the %s DAC calibration",
+            (live or "").rsplit(" ", 1)[0],
+            socket,
+            wanted,
+        )
+        return None
     source = f"socket{socket}"
-    armsid.set_socket_model(be, source, wanted)
+    # Returned even when the switch fails: a write that took before its reply
+    # was lost still gets put back, and putting back an unchanged model is a no-op.
+    restore = {(armsid.CAT_SOCKET_MODEL, source): current}
+    try:
+        armsid.set_socket_model(be, source, wanted)
+    except Exception:  # noqa: BLE001 — best-effort, like every SID config write
+        log.warning(
+            "audio: could not switch socket %d to %s for its DAC calibration; "
+            "playing through it unchanged",
+            socket,
+            wanted,
+            exc_info=True,
+        )
+        return restore
     log.info(
         "audio: switched the %s in socket %d to %s, the model its DAC calibration was measured in",
         (live or "").rsplit(" ", 1)[0],
         socket,
         wanted,
     )
-    return {(armsid.CAT_SOCKET_MODEL, source): current} if current else {}
+    return restore

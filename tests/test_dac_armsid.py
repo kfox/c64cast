@@ -62,6 +62,24 @@ class ProvisionModelTest(_NoSettle):
         )
         self.assertEqual(api.left.model, "8580")
 
+    def test_a_failed_switch_does_not_raise_and_still_restores(self):
+        api = ArmsidAPI(left="8580")
+
+        def refuse(*_a, **_k):
+            raise OSError("REST unreachable")
+
+        api.put_config_item = refuse  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            restore = self._provision(api, _cfg_with_calibration("ARMSID 6581"))
+        self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, "socket1"): "8580"})
+        self.assertEqual(api.left.model, "8580")
+
+    def test_a_chip_whose_model_is_unknown_is_left_alone(self):
+        api = ArmsidAPI(left="??")  # a model reply that is neither 6581 nor 8580
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            self.assertIsNone(self._provision(api, _cfg_with_calibration("ARMSID 6581")))
+        self.assertEqual(api.config_puts, [])
+
     def test_a_chip_that_is_no_longer_an_armsid_is_warned_about(self):
         api = ArmsidAPI(left="8580")
         api.read_memory = lambda *a, **k: None  # type: ignore[method-assign]
