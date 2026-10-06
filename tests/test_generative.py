@@ -1467,6 +1467,51 @@ class AudioFileSourceEndTest(unittest.TestCase):
     def test_not_finished_before_decoding_ends(self):
         self.assertFalse(self._source(_FileSink()).finished)
 
+    def test_the_decoder_resamples_to_the_rate_the_sink_plays_at(self):
+        # 44.1 kHz asked, 44 kHz achieved: 0.4 s is 17600 samples at the
+        # achieved rate, or the clip plays 0.2 % long against its picture.
+        sink = _FileSink()
+        sink.sample_rate = 44100
+        sink.effective_rate = 44000.0
+        self._source(sink)._decode_loop()
+        self.assertEqual(sink.pushed, 17600)
+
+    def test_position_seconds_is_the_sinks_clock(self):
+        self.assertEqual(self._source(_FileSink(played=1.25)).position_seconds(), 1.25)
+
+    def test_a_file_with_no_audio_stream_is_skipped(self):
+        container = SimpleNamespace(
+            streams=SimpleNamespace(audio=[]), duration=1_000_000, close=lambda: None
+        )
+        src = self._source(_FileSink())
+        with (
+            mock.patch("c64cast.video.video.av_open", return_value=container),
+            self.assertLogs("c64cast.audio.audio_source", "WARNING") as cm,
+            self.assertRaises(ValueError),
+        ):
+            src._pick_and_probe()
+        self.assertTrue(any("no audio stream" in m for m in cm.output), cm.output)
+
+    def test_a_second_setup_decodes_again(self):
+        # Teardown leaves the stop event set; setup has to clear it, or every
+        # later activation of the scene decodes nothing and plays silence.
+        class _Startable(_FileSink):
+            def start_for_external_source(self) -> None:
+                pass
+
+            def stop(self) -> None:
+                pass
+
+        sink = _Startable()
+        src = self._source(sink)
+        src._stop.set()
+        with self.assertLogs("c64cast.audio.audio_source", "INFO"):
+            src.setup()
+            assert src._thread is not None
+            src._thread.join(timeout=5.0)
+        self.addCleanup(src.teardown)
+        self.assertGreater(sink.pushed, 0)
+
     def test_finishes_at_end_of_track_once_played_out(self):
         sink = _FileSink()
         src = self._source(sink)
