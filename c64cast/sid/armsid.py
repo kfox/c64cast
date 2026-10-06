@@ -80,8 +80,8 @@ _REG_REPLY: Final = 27
 _REG_MODE: Final = 29
 _REG_CMD_HI: Final = 30
 _REG_CMD_LO: Final = 31
-# The firmware waits 10 ms after a command before reading the reply; a DMA write
-# and the REST read that follows travel separate paths, so allow twice that.
+# The firmware waits 10 ms after a command before reading the reply; allow
+# twice that once the writes have landed.
 _SETTLE_S: Final = 0.02
 
 
@@ -89,14 +89,23 @@ def _write(api: C64Backend, address: int, value: int) -> None:
     api.write_memory(f"{address:04X}", f"{value:02X}")
 
 
+def _settle(api: C64Backend) -> None:
+    """Wait for the chip to act on the writes so far. They are queued on the DMA
+    socket while every read and config PUT goes over REST, so a REST call made
+    without a flush can overtake them."""
+    api.flush()
+    time.sleep(_SETTLE_S)
+
+
 def _enter(api: C64Backend, base: int) -> None:
     for offset, letter in ((_REG_MODE, "S"), (_REG_CMD_HI, "I"), (_REG_CMD_LO, "D")):
         _write(api, base + offset, ord(letter))
-    time.sleep(_SETTLE_S)
+    _settle(api)
 
 
 def _leave(api: C64Backend, base: int) -> None:
     _write(api, base + _REG_MODE, 0)
+    api.flush()
 
 
 def _reply(api: C64Backend, base: int) -> bytes | None:
@@ -107,7 +116,7 @@ def _reply(api: C64Backend, base: int) -> bytes | None:
 def _query(api: C64Backend, base: int, command: str) -> bytes | None:
     _write(api, base + _REG_CMD_LO, ord(command))
     _write(api, base + _REG_CMD_HI, ord("I"))
-    time.sleep(_SETTLE_S)
+    _settle(api)
     return _reply(api, base)
 
 
@@ -159,7 +168,7 @@ def write_model(api: C64Backend, base: int, model: str) -> None:
         for offset, value in ((_REG_MODE, ord("S")), (_REG_CMD_HI, ord("E"))):
             _write(api, base + offset, value)
         _write(api, base + _REG_CMD_LO, ord(model[0]))
-        time.sleep(_SETTLE_S)
+        _settle(api)
     finally:
         _leave(api, base)
 

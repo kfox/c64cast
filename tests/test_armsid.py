@@ -137,6 +137,23 @@ class ArmsidAPI(FakeAPI):
         return bytes(chip.read(reg + k) for k in range(length))
 
 
+class QueuedArmsidAPI(ArmsidAPI):
+    """An ArmsidAPI whose DMA writes reach the chip only at a flush, as on the
+    U64 where they queue on the socket while reads and PUTs go over REST."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.pending: list[tuple[str, str]] = []
+
+    def write_memory(self, addr, data_hex):
+        self.pending.append((addr, data_hex))
+
+    def flush(self, timeout=5.0):
+        pending, self.pending = self.pending, []
+        for addr, data_hex in pending:
+            super().write_memory(addr, data_hex)
+
+
 class _NoSettle(unittest.TestCase):
     def setUp(self) -> None:
         patcher = mock.patch.object(armsid, "_SETTLE_S", 0.0)
@@ -220,6 +237,16 @@ class DetectTest(_NoSettle):
             [value for _c, item, value in api.config_puts if item == armsid.ITEM_EXT_SPLIT],
             ["A5", "Off"],
         )
+
+    def test_queued_writes_land_before_each_read_and_split_restore(self):
+        api = QueuedArmsidAPI(left="8580", right="6581")
+        api.config_store[CAT_ADDRESSING][armsid.ITEM_EXT_SPLIT] = "Off"
+        self.assertEqual(detect_socket_models(api), ("ARM2SID 8580", "ARM2SID R 6581"))
+        self.assertEqual(api.pending, [])
+        self.assertFalse(api.right.config_mode, "left config mode before the split went off")
+        armsid.set_socket_model(api, "socket2", "8580")
+        self.assertEqual(api.right.model, "8580")
+        self.assertFalse(api.right.config_mode)
 
     def test_plain_armsid_has_no_right_channel(self):
         api = ArmsidAPI(kind="ARMSID", left="6581")
