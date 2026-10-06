@@ -289,7 +289,7 @@ def detect_labels(
     says. An ARM2SID in socket 1 with nothing detected in socket 2 has its right
     channel looked for at socket 1's base plus the split's offset — and when the
     split is off, under ``A5`` for the length of the probe, since that is the
-    only way to reach it. A socket whose probe fails keeps its firmware label,
+    only way to reach it. A socket that is disabled, unmapped or silent keeps its firmware label,
     which no planner treats as reconfigurable."""
     labels: list[str | None] = list(detected)
     for index, (kind, base) in enumerate(zip(detected, bases, strict=True)):
