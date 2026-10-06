@@ -46,7 +46,7 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 # bytes uploaded are exactly these. Saves/restores only A; X and Y are untouched.
 #
 # Disassembly at $C020 (fast path = 41 cycles; the NMI period is latch+1 cycles,
-# 127 at NTSC 8 kHz, 85 at NTSC 12 kHz (the default), 75 at the handler-budget
+# 128 at NTSC 8 kHz, 85 at NTSC 12 kHz (the default), 75 at the handler-budget
 # floor):
 #   $C020: 48           PHA                  ; save A
 #   $C021: AD 0D DD     LDA $DD0D            ; ack CIA #2 NMI immediately
