@@ -1108,6 +1108,11 @@ class AudioStreamer:
                     break
 
                 pad = 0
+                # A pad is an underrun only while the NMI is reading and more
+                # input is due. After end_input() the collect above came up
+                # short because the queue is drained: the pads that follow
+                # are the silence the ring plays out after the last sample.
+                stalled = prebuffered and not input_ended
                 if n == 0:
                     if not prebuffered and not (input_ended and bytes_prebuffered):
                         # Idle: no producer data, no NMI to feed.
@@ -1118,7 +1123,7 @@ class AudioStreamer:
                     # behind the same lead as any other start.
                     chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
                     n = pad = self.chunk_size
-                    if prebuffered:
+                    if stalled:
                         self._full_underruns += 1
                 elif n < self.chunk_size:
                     # Pad every short chunk, including during the prebuffer fill:
@@ -1131,7 +1136,7 @@ class AudioStreamer:
                     pad = self.chunk_size - n
                     chunk_buf[n : n + pad] = bytes([self._neutral_byte]) * pad
                     n = self.chunk_size
-                    if prebuffered:
+                    if stalled:
                         # Consumption-phase only: with no NMI reading yet, a short
                         # prebuffer collect is a slow start, not an underrun.
                         self._partial_underruns += 1

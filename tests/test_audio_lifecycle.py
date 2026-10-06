@@ -189,6 +189,46 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         )
         self.assertIn(expected, _written_stream(s), "partial chunk was not NEUTRAL-padded")
 
+    def test_pads_after_end_input_are_not_underruns(self):
+        # A file scene lives on after end_input() while the ring plays out.
+        # The worker pads NEUTRAL behind the last sample, which is silence
+        # after the track, not a producer stall: neither counter moves, for
+        # the short tail chunk nor for the full pads after it.
+        s = _make_worker_streamer(chunk_size=32)
+        for _ in range(PREBUFFER_CHUNKS):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        s.q.put(bytes([4] * 16))
+        s._queued_samples += 16
+        s.end_input()
+        played_out = (PREBUFFER_CHUNKS + 1 + 3) * 32
+        _run_worker(s, until=lambda: len(_written_stream(s)) >= played_out, timeout=3.0)
+        stream = _written_stream(s)
+        self.assertGreaterEqual(len(stream), played_out, "fewer than 3 pad chunks landed")
+        self.assertIn(bytes([4] * 16) + bytes([NEUTRAL_SAMPLE] * 16), stream)
+        self.assertEqual(s._partial_underruns, 0, "the track's short tail counted as a stall")
+        self.assertEqual(s._full_underruns, 0, "the play-out pads counted as a stall")
+
+    def test_a_stall_before_end_input_stays_counted(self):
+        s = _make_worker_streamer(chunk_size=32)
+        for _ in range(PREBUFFER_CHUNKS):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        mark: list[int] = []
+
+        def stalled_then_ended() -> bool:
+            if not mark:
+                if s._full_underruns < 1:
+                    return False
+                s.end_input()
+                mark.append(len(_written_stream(s)))
+            return len(_written_stream(s)) >= mark[0] + 3 * 32
+
+        _run_worker(s, until=stalled_then_ended, timeout=3.0)
+        self.assertTrue(mark, "the starved worker never counted an underrun")
+        self.assertGreaterEqual(len(_written_stream(s)), mark[0] + 3 * 32)
+        self.assertGreaterEqual(s._full_underruns, 1)
+
     def test_oversized_blob_carried_via_leftover(self):
         # A single blob bigger than chunk_size must split across writes through
         # the `leftover` carry, preserving byte order.

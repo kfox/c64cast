@@ -983,11 +983,15 @@ class UltimateAudioSampler:
         # A producer paced at real time (a live stream) never builds a queue
         # backlog, so writing what one pass gathered would write every frame.
         # While the lead has the slack, the writer waits for a whole quantum.
+        # Read before the gather: end_input() follows the producer's last put,
+        # so a gather that comes back empty after it was seen leaves nothing
+        # behind in the queue.
+        ended = self._input_ended
         payload = self._next_payload(room)
         if payload is None:
             if self._carry is not None:
                 return False  # held for a whole quantum: data is flowing
-            return self._pad_underrun(gen)
+            return self._pad_underrun(gen, stalled=not ended)
         return self._write_payload(gen, *payload)
 
     def _write_payload(self, gen: int, epoch: int, data: bytes) -> bool:
@@ -1218,12 +1222,15 @@ class UltimateAudioSampler:
             self._reanchor_lag[0] / self.bps / self._actual_rate,
         )
 
-    def _pad_underrun(self, gen: int) -> bool:
+    def _pad_underrun(self, gen: int, *, stalled: bool = True) -> bool:
         """The queue came up empty. Below the low watermark the ring is about
         to run out of anything current, so NEUTRAL-pad ahead of it — a real
         underrun, where the alternative is the FPGA replaying stale ring data.
         The pad leaves _content_pos alone, so the data that follows overwrites
-        whatever of it has not been played."""
+        whatever of it has not been played.
+
+        Counted only when ``stalled``: after end_input() the queue is drained,
+        and the pad is the silence the ring plays out after the last sample."""
         with self._io_lock:
             if gen != self._writer_gen:
                 return False
@@ -1235,7 +1242,8 @@ class UltimateAudioSampler:
             hi -= (hi - lo) % self.bps
             if hi <= lo:
                 return False
-            self._underrun_pads += 1
+            if stalled:
+                self._underrun_pads += 1
             self._blank(lo, hi)
             self._written = hi
             return True

@@ -880,6 +880,17 @@ class SamplerWriteSizingTest(unittest.TestCase):
         self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual(smp._underrun_pads, 1)
 
+    def test_a_pad_after_end_input_still_pads_but_is_not_an_underrun(self):
+        # A file scene lives on after end_input() while the ring plays out,
+        # and the lead falls through the watermark behind the last sample.
+        api = _FakeBackend()
+        smp = self._idle_reader(api, lead_seconds=1.0)
+        self._place(smp, smp._lead_panic)
+        smp.end_input()
+        self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertGreater(smp._written, smp._lead_panic, "the play-out was not padded")
+        self.assertEqual(smp._underrun_pads, 0)
+
     def test_the_lead_never_exceeds_half_the_ring(self):
         # Write-ahead deeper than half the ring could lap the reader.
         smp = _make(
