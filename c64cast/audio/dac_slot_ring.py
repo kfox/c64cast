@@ -308,7 +308,7 @@ def _dc_restore_gain(x: np.ndarray, c: np.ndarray, windows: np.ndarray) -> float
 class SlotLevels:
     """Signed per-code output levels recovered from one slot-ring capture."""
 
-    levels: np.ndarray  # (n_codes,) mean across ring passes, ref level = 0
+    levels: np.ndarray  # (n_codes,) median across passes (mean below 3), ref level = 0
     per_pass: np.ndarray  # (n_passes, n_codes) — spread here is the trust metric
     diagnostics: dict[str, Any]
 
