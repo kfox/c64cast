@@ -3711,10 +3711,6 @@ class LifecycleTest(unittest.TestCase):
             self.assertEqual(api.memories.get(ctrl), "40")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class _StuckThread:
     """A worker thread that survives a bounded join (the stalled-link case)."""
 
@@ -3796,3 +3792,7 @@ class StopWorkerJoinTest(unittest.TestCase):
         with mock.patch.object(audio_mod.log, "warning") as warn:
             s.stop()
         warn.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

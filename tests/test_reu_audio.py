@@ -1274,10 +1274,6 @@ class HostDmaServoTest(unittest.TestCase):
         self.assertEqual(s.position_seconds(), 0.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReuPumpLatchDerivationTest(unittest.TestCase):
     """The pump latch is derived, never a constant: pump period = chunk x the
     NMI period, and the NMI period tracks [audio].sample_rate. One derivation
@@ -1808,3 +1804,7 @@ class StagedUploadDeliveryTest(unittest.TestCase):
         self.assertNotIn(lost, dict(fake.socket_dma.reuwrites))
         self.assertFalse(s._reu_pump_armed)
         self.assertNotIn(f"{NMI_ROUTINE_ADDR:04X}", fake.mem_files)
+
+
+if __name__ == "__main__":
+    unittest.main()
