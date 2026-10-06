@@ -191,7 +191,12 @@ def plan_sid_model_config(
                 # A core route the address is not taken away from is inaudible:
                 # a mirroring socket answers alongside it and wins.
                 plan[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
-                if displaced := _SOCKET_ENABLE_ITEM.get(current_source or ""):
+                displaced = _SOCKET_ENABLE_ITEM.get(current_source or "")
+                if current_source == "socket2" and armsid.is_right_channel(socket_models[1]):
+                    # Socket 2's enable does not reach an ARM2SID's right
+                    # channel; turning the split off is what silences it.
+                    plan[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)] = armsid.EXT_SPLIT_OFF
+                elif displaced:
                     plan[(CAT_SOCKETS, displaced)] = "Disabled"
                 reserved.add(core)
                 log.info(

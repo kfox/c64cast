@@ -377,6 +377,20 @@ class PlannerTest(unittest.TestCase):
             plan = sa.plan_model_config_for_header(api, header, "auto")
         self.assertIn("$D420", (plan or {}).values())
 
+    def test_a_core_displacing_the_right_channel_turns_the_split_off(self):
+        # A right channel whose model reply was unknown cannot serve the chip,
+        # so a core takes $D420; socket 2's enable would not silence it.
+        with self.assertLogs("c64cast.sid.sid_autoconfig", "INFO"):
+            plan = sa.plan_sid_model_config(
+                chips=((0xD400, "8580"), (0xD420, "6581")),
+                current_addr_map={0xD400: "socket1", 0xD420: "socket2"},
+                socket_models=("ARM2SID 8580", "ARM2SID R ?"),
+                ultisid_allowed=True,
+            )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)], armsid.EXT_SPLIT_OFF)
+        self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET2_EN), plan)
+
     def test_two_sid_tune_lands_on_both_channels_with_their_models(self):
         sm = plan_sid_map_for_addresses(
             (0xD400, 0xD420),
