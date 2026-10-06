@@ -681,7 +681,7 @@ Two halves.
 * `channel_register_writes(...)` — the big-endian register byte layout: start `$01000000`+REU offset, length, rate divider, and repeat A/B as **byte positions in the sample**
 * `program_channel` / `gate_off`
 
-**`UltimateAudioSampler`** is the scene-facing object, mirroring the slice of `AudioStreamer` that scenes actually call: `sample_rate`, `position_seconds`, `push_samples`, `get_recent_samples`, `stop`, `start_for_external_source` (an alias for `start()` so a `push_samples`-feeding caller can bring up either backend uniformly), an `analysis_sink` hook (fed the pre-DSP floats in `push_samples`, so `audio_source = "file"`'s reactive analyzer installs identically on either backend), plus no-op `set_pre_emphasis` / `mark_eof`, and `is_sampler=True`.
+**`UltimateAudioSampler`** is the scene-facing object, mirroring the slice of `AudioStreamer` that scenes actually call: `sample_rate`, `position_seconds`, `push_samples`, `get_recent_samples`, `stop`, `start_for_external_source` (an alias for `start()` so a `push_samples`-feeding caller can bring up either backend uniformly), an `analysis_sink` hook (fed the pre-DSP floats in `push_samples`, so `audio_source = "file"`'s reactive analyzer installs identically on either backend), plus a no-op `set_pre_emphasis`, a `mark_eof` that latches the end-of-input clamp on `position_seconds`, and `is_sampler=True`.
 
 ### The streaming REU ring
 
