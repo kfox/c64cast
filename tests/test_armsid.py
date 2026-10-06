@@ -378,6 +378,22 @@ class SessionRoundTripTest(_NoSettle):
         self.assertEqual((api.left.model, api.right.model), ("8580", "8580"))
         self.assertEqual(api.config_store[CAT_ADDRESSING][armsid.ITEM_EXT_SPLIT], "Off")
 
+    def test_right_channel_follows_socket_1_when_the_plan_moves_it(self):
+        api = ArmsidAPI(left="8580", right="8580")
+        api.config_store[CAT_ADDRESSING][ITEM_SOCKET1_ADDR] = "$D500"
+        models = detect_socket_models(api)
+        sm = plan_sid_map_for_addresses(
+            (0xD400, 0xD420), socket_models=models, required_models=("6581", "6581")
+        )
+        assert sm is not None
+        session = SidHwSession(api)
+        session.snapshot()
+        apply_config(api, sm.config)
+        self.assertEqual((api.left.model, api.right.model), ("6581", "6581"))
+        session.restore()
+        self.assertEqual((api.left.model, api.right.model), ("8580", "8580"))
+        self.assertEqual(api.config_store[CAT_ADDRESSING][ITEM_SOCKET1_ADDR], "$D500")
+
 
 class ResolvedLineTest(unittest.TestCase):
     def test_armsid_label_is_judged_by_its_model(self):

@@ -92,27 +92,24 @@ def current_source_map(api: C64Backend) -> dict[int, str]:
         base = _parse_dxxx(addressing.get(item, ""))
         if base is not None:
             addr_map[base] = core
-    if sockets.get(ITEM_SOCKET1_EN) == "Enabled":
-        base = _parse_dxxx(addressing.get(ITEM_SOCKET1_ADDR, ""))
-        if base is not None:
-            addr_map[base] = "socket1"
+    base1 = socket_base(addressing, sockets, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN)
+    if base1 is not None:
+        addr_map[base1] = "socket1"
     labels = armsid.cached_labels(api) or (None, None)
     if armsid.is_right_channel(labels[1]):
         # Socket 2's own items reach nothing on an ARM2SID; its right channel
         # answers wherever the Ext DualSID split puts it relative to socket 1.
-        base1 = _socket_base(addressing, sockets, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN)
         offset = armsid.split_offset(addressing.get(armsid.ITEM_EXT_SPLIT))
         if base1 is not None and offset is not None:
             addr_map[base1 + offset] = "socket2"
         return addr_map
-    if sockets.get(ITEM_SOCKET2_EN) == "Enabled":
-        base = _parse_dxxx(addressing.get(ITEM_SOCKET2_ADDR, ""))
-        if base is not None:
-            addr_map[base] = "socket2"
+    base2 = socket_base(addressing, sockets, ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN)
+    if base2 is not None:
+        addr_map[base2] = "socket2"
     return addr_map
 
 
-def _socket_base(
+def socket_base(
     addressing: dict[str, str], sockets: dict[str, str], addr_item: str, en_item: str
 ) -> int | None:
     """Where an enabled socket answers, or None when it is disabled or unmapped."""
@@ -168,8 +165,8 @@ def detect_socket_models(api: C64Backend, *, refresh: bool = True) -> tuple[str 
         log.debug("sid_hw_config: addressing read for ARMSID probe failed", exc_info=True)
         return detected
     bases = (
-        _socket_base(addressing, sockets, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN),
-        _socket_base(addressing, sockets, ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN),
+        socket_base(addressing, sockets, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN),
+        socket_base(addressing, sockets, ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN),
     )
     return armsid.detect_labels(api, detected, bases, addressing.get(armsid.ITEM_EXT_SPLIT))
 

@@ -29,6 +29,7 @@ See docs/architecture/sid.md#armsidpy--armsid--arm2sid.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 import weakref
@@ -229,9 +230,6 @@ def split_offset(split: str | None) -> int | None:
 _labels: weakref.WeakKeyDictionary[object, tuple[str | None, str | None]] = (
     weakref.WeakKeyDictionary()
 )
-# Where each backend's socket 1 was, and which split was live, at detection —
-# what reaching the right channel later needs.
-_socket1_base: weakref.WeakKeyDictionary[object, int] = weakref.WeakKeyDictionary()
 
 
 def cached_labels(api: C64Backend) -> tuple[str | None, str | None] | None:
@@ -242,13 +240,10 @@ def cached_labels(api: C64Backend) -> tuple[str | None, str | None] | None:
         return None
 
 
-def _remember(api: C64Backend, labels: tuple[str | None, str | None], base1: int | None) -> None:
-    try:
+def _remember(api: C64Backend, labels: tuple[str | None, str | None]) -> None:
+    # An object that cannot be weakly referenced goes uncached.
+    with contextlib.suppress(TypeError):
         _labels[api] = labels
-        if base1 is not None:
-            _socket1_base[api] = base1
-    except TypeError:  # an object that cannot be weakly referenced goes uncached
-        pass
 
 
 def _right_channel_split(split: str | None) -> tuple[int, str]:
@@ -325,7 +320,7 @@ def detect_labels(
             labels[1] = label(KIND_ARM2SID, right.model, right=True)
 
     result = (labels[0], labels[1])
-    _remember(api, result, base1)
+    _remember(api, result)
     return result
 
 
@@ -338,7 +333,8 @@ def set_socket_model(api: C64Backend, source: str, model: str) -> None:
     right channel has no config item, so it is set through its registers —
     with the split moved to reach it when it is off, and put back after. A
     source with no ARMSID behind it is left alone."""
-    from .asid_sidmap import CAT_ADDRESSING
+    from .asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN
+    from .sid_hw_config import socket_base
 
     labels = cached_labels(api) or (None, None)
     index = {"socket1": 0, "socket2": 1}.get(source)
@@ -349,14 +345,20 @@ def set_socket_model(api: C64Backend, source: str, model: str) -> None:
         return
     socket_label = labels[index] or ""
     if is_right_channel(socket_label):
-        base1 = _socket1_base.get(api)
+        # Where socket 1 answers now: a plan or a restore may have moved it
+        # since detection, and the right channel moves with it.
+        addressing = api.get_config_category(CAT_ADDRESSING)
+        base1 = socket_base(
+            addressing, api.get_config_category(CAT_SOCKETS), ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN
+        )
         if base1 is None:
+            log.debug("armsid: socket 1 is off — right channel model %s not set", model)
             return
-        split = api.get_config_category(CAT_ADDRESSING).get(ITEM_EXT_SPLIT)
+        split = addressing.get(ITEM_EXT_SPLIT)
         offset, wanted = _right_channel_split(split)
         _with_split(api, split, wanted, lambda: write_model(api, base1 + offset, model))
     else:
         api.put_config_item(CAT_ARMSID_FMT.format(n=index + 1), ITEM_ARMSID_MODE, model)
     updated = list(labels)
     updated[index] = f"{socket_label.rsplit(' ', 1)[0]} {model}"
-    _remember(api, (updated[0], updated[1]), None)
+    _remember(api, (updated[0], updated[1]))
