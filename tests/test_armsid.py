@@ -248,6 +248,12 @@ class DetectTest(_NoSettle):
         self.assertEqual(api.right.model, "8580")
         self.assertFalse(api.right.config_mode)
 
+    def test_an_unreadable_split_is_never_moved(self):
+        api = ArmsidAPI()
+        del api.config_store[CAT_ADDRESSING][armsid.ITEM_EXT_SPLIT]
+        self.assertEqual(detect_socket_models(api), ("ARM2SID 8580", None))
+        self.assertNotIn(armsid.ITEM_EXT_SPLIT, {item for _c, item, _v in api.config_puts})
+
     def test_plain_armsid_has_no_right_channel(self):
         api = ArmsidAPI(kind="ARMSID", left="6581")
         self.assertEqual(detect_socket_models(api), ("ARMSID 6581", None))
@@ -310,6 +316,15 @@ class SetModelTest(_NoSettle):
         self.assertEqual(api.right.model, "6581")
         self.assertEqual(api.config_store[CAT_ADDRESSING][armsid.ITEM_EXT_SPLIT], "Off")
         self.assertNotIn(CAT_ARMSID1, {c for c, _i, _v in api.config_puts})
+
+    def test_right_channel_is_left_alone_when_the_split_is_unreadable(self):
+        api = ArmsidAPI()
+        detect_socket_models(api)
+        del api.config_store[CAT_ADDRESSING][armsid.ITEM_EXT_SPLIT]
+        api.config_puts.clear()
+        armsid.set_socket_model(api, "socket2", "6581")
+        self.assertEqual(api.config_puts, [])
+        self.assertEqual(api.right.model, "8580")
 
     def test_a_socket_with_no_armsid_is_left_alone(self):
         api = FakeAPI.ultimate()

@@ -265,9 +265,10 @@ def _right_channel_split(split: str | None) -> tuple[int, str]:
     return RIGHT_OFFSET, EXT_SPLIT_RIGHT
 
 
-def _with_split(api: C64Backend, current: str | None, wanted: str, action: Callable[[], _T]) -> _T:
+def _with_split(api: C64Backend, current: str, wanted: str, action: Callable[[], _T]) -> _T:
     """Run `action` with the Ext DualSID split at `wanted`, putting `current`
-    back afterward when it differed."""
+    back afterward when it differed. A caller that could not read the split
+    has nothing to put back, so it does not come here."""
     from .asid_sidmap import CAT_ADDRESSING
 
     if current == wanted:
@@ -276,8 +277,7 @@ def _with_split(api: C64Backend, current: str | None, wanted: str, action: Calla
     try:
         return action()
     finally:
-        if current is not None:
-            api.put_config_item(CAT_ADDRESSING, ITEM_EXT_SPLIT, current)
+        api.put_config_item(CAT_ADDRESSING, ITEM_EXT_SPLIT, current)
 
 
 def detect_labels(
@@ -318,6 +318,7 @@ def detect_labels(
         and labels[0].startswith(f"{KIND_ARM2SID} ")
         and detected[1] is None
         and base1 is not None
+        and split is not None
     ):
         offset, wanted = _right_channel_split(split)
         try:
@@ -364,6 +365,11 @@ def set_socket_model(api: C64Backend, source: str, model: str) -> None:
             log.debug("armsid: socket 1 is off — right channel model %s not set", model)
             return
         split = addressing.get(ITEM_EXT_SPLIT)
+        if split is None:
+            log.debug(
+                "armsid: Ext DualSID split unreadable — right channel model %s not set", model
+            )
+            return
         offset, wanted = _right_channel_split(split)
         _with_split(api, split, wanted, lambda: write_model(api, base1 + offset, model))
     else:
