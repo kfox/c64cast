@@ -1732,6 +1732,42 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         self.assertEqual(fake.memories["DC0D"], "81")
 
 
+class TrackedVideoPumpEntryMaskTest(unittest.TestCase):
+    """Under a bank-swap dispatcher the video pump's $C100 entry goes up the
+    way the mic pump's does: CIA #1 masked first, unmasked after, since the
+    dispatcher reaches $C100 on its own IRQs whatever $0314 holds."""
+
+    def test_the_dispatcher_entry_upload_is_bracketed_by_a_cia1_mask(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.addCleanup(s.stop)
+        self.assertTrue(s._reu_pump_armed)
+        ops = fake.ops
+        entry = next(
+            i
+            for i, o in enumerate(ops)
+            if o[:2] == ("write_memory_file", "C100") and o[2] != REU_PUMP_HANDLER_STUB
+        )
+        icr = [(i, o[2]) for i, o in enumerate(ops) if o[:2] == ("write_memory", "DC0D")]
+        self.assertEqual([v for i, v in icr if i < entry][-1:], ["7F"])
+        self.assertEqual([v for i, v in icr if i > entry][:1], ["81"])
+
+
+class GovernorChunkBoundTest(unittest.TestCase):
+    def test_a_chunk_of_exactly_the_governor_maximum_is_accepted(self):
+        from c64cast.audio.audio_handlers import REU_GOVERNOR_MAX_CHUNK
+
+        # The refusal past it is test_start_refuses_a_governed_chunk_past_the_maximum.
+        s = _new_streamer()
+        s.reu_pump_governor = True
+        # Empty audio returns right after the chunk checks, so only a
+        # ValueError from those checks can reach the test.
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            s.start_for_reu_staged(b"", chunk_size=REU_GOVERNOR_MAX_CHUNK)
+        self.assertTrue(any("empty data" in m for m in cm.output), cm.output)
+
+
 class StagedUploadDeliveryTest(unittest.TestCase):
     """Each REUWRITE slice of the staged track and its EOF pad is confirmed
     delivered. Every track lands at REU_AUDIO_BASE, so a slice lost to a
