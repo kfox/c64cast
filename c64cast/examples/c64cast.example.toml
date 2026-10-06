@@ -430,7 +430,7 @@ backend = "auto"                    # video-audio backend: "auto" = U64 "Ultimat
                                     # mic/webcam audio always uses the DAC.
 sampler_sample_rate = 44100         # Hz for the sampler backend (1000..48000).
                                     # 44100 = CD quality (the FPGA plays at the
-                                    # nearest divider of its 6.25 MHz reference).
+                                    # nearest divider of sampler_clock_hz below).
 sampler_bits = 16                   # sampler PCM depth: 8 (signed) or 16 (signed LE)
 sampler_clock_hz = 6160000          # sampler reference clock (Hz). Default is the
                                     # MEASURED effective clock of the shipping U64 firmware
