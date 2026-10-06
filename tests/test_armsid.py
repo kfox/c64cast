@@ -404,6 +404,21 @@ class PlannerTest(unittest.TestCase):
         self.assertIsNone(plan)
         self.assertTrue(any("cannot be displaced" in line for line in logs.output))
 
+    def test_socket1_is_not_swapped_away_under_a_playing_right_channel(self):
+        # The right channel answers at socket 1's base + $20: swapping socket 1
+        # to $D500 would carry the right channel off the $D420 chip it plays.
+        with self.assertLogs("c64cast.sid.sid_autoconfig", "INFO"):
+            plan = sa.plan_sid_model_config(
+                chips=((0xD400, None), (0xD420, "8580"), (0xD500, "6581")),
+                current_addr_map={0xD400: "socket1", 0xD420: "socket2"},
+                socket_models=("ARM2SID 8580", "ARM2SID R 6581"),
+                ultisid_allowed=True,
+            )
+        assert plan is not None
+        self.assertNotIn((CAT_ADDRESSING, ITEM_SOCKET1_ADDR), plan)
+        self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET1_EN), plan)
+        self.assertNotIn((armsid.CAT_SOCKET_MODEL, "socket1"), plan)
+
     def test_socket1_is_displaced_when_the_right_channel_plays_nothing(self):
         with self.assertLogs("c64cast.sid.sid_autoconfig", "INFO"):
             plan = sa.plan_sid_model_config(

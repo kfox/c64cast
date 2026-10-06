@@ -106,7 +106,8 @@ def plan_sid_model_config(
          address-swap mechanism
          :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses` uses for
          multi-SID routing), switching an ARMSID's model with it. An ARM2SID's
-         right channel never moves this way.
+         right channel never moves this way, and neither does socket 1 while
+         that right channel plays one of the tune's chips.
       3. `ultisid_allowed` and a free UltiSID core remains → route this
          chip's address to that core, set its filter-curve item to the fixed
          representative curve for the required model (`"6581"` / `"8580 Lo"`
@@ -160,13 +161,16 @@ def plan_sid_model_config(
                 continue
 
         # An ARM2SID's right channel is not a socket that can be moved: socket 2's
-        # address item does not reach it.
+        # address item does not reach it. Nor is socket 1 while the right channel
+        # plays: the right channel answers relative to socket 1's base, so moving
+        # socket 1 moves it off the chip it plays.
         matched_idx = next(
             (
                 idx
                 for idx in (0, 1)
                 if armsid.socket_serves(socket_models[idx], required)
                 and not armsid.is_right_channel(socket_models[idx])
+                and not (idx == 0 and right_channel_plays)
                 and f"socket{idx + 1}" not in reserved
             ),
             None,
