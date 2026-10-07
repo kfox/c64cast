@@ -306,6 +306,15 @@ class RemoteStallBoundTest(unittest.TestCase):
         outcome = self._bounded(lambda: av_open(f"tcp://127.0.0.1:{server.port}/tune.wav"))
         self.assertIsInstance(outcome, av.error.ExitError)
 
+    def test_a_silent_rtsp_peer_is_bounded_by_ffmpegs_own_io_timeout(self):
+        # The open bound is set out of reach, so only the per-IO timeout
+        # (twice the 0.5 s read bound) can end this open inside the limit —
+        # the same timeout that ends a seek nothing else interrupts.
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_OPEN_TIMEOUT_S", 60.0))
+        server = self._server()
+        outcome = self._bounded(lambda: av_open(f"rtsp://127.0.0.1:{server.port}/tune.wav"))
+        self.assertIsInstance(outcome, Exception)
+
     def test_a_stream_that_stalls_mid_body_fails_the_read(self):
         import av.error
 

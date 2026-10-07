@@ -71,15 +71,23 @@ _REMOTE_OPEN_TIMEOUT_S = 20.0
 _REMOTE_READ_TIMEOUT_S = 30.0
 
 
-def _protocol_options() -> dict[str, str]:
+def _protocol_options(path: str) -> dict[str, str]:
     """FFmpeg's own per-IO ``rw_timeout`` (microseconds) for a network input.
 
     PyAV's bound is an interrupt callback it arms only inside ``demux()``, so
     a seek `_seek` abandons has no bound of its own and would hold its
     worker, socket and container for as long as the server holds the
     connection. Twice the read bound, so inside ``demux()`` PyAV's bound still
-    fires first and playback behaves as before."""
-    return {"rw_timeout": str(int(_REMOTE_READ_TIMEOUT_S * 2 * 1_000_000))}
+    fires first and playback behaves as before.
+
+    The RTSP demuxer opens its control connection without the caller's
+    protocol options, so ``rw_timeout`` never reaches it; it takes the same
+    bound as its own ``timeout`` option instead."""
+    bound = str(int(_REMOTE_READ_TIMEOUT_S * 2 * 1_000_000))
+    options = {"rw_timeout": bound}
+    if path.lower().startswith(("rtsp://", "rtsps://")):
+        options["timeout"] = bound
+    return options
 
 
 def _is_remote_url(path: str) -> bool:
@@ -159,13 +167,13 @@ def av_open(path: str):
         # http-only), but the same bound on a peer that goes silent.
         return av.open(
             path,
-            options=_protocol_options(),
+            options=_protocol_options(path),
             timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S),
         )
     try:
         return av.open(
             path,
-            options={**_HTTP_RECONNECT_OPTIONS, **_protocol_options()},
+            options={**_HTTP_RECONNECT_OPTIONS, **_protocol_options(path)},
             timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S),
         )
     except av.error.HTTPClientError as e:
