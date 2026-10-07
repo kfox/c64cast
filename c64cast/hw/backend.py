@@ -374,6 +374,14 @@ class C64Backend(ABC):
         Default 0: a backend that cannot tell never asks for a resend."""
         return 0
 
+    def link_answers(self) -> bool:
+        """Whether the machine answers a round trip over the write link now.
+        The playlist asks before setting a scene up again after an outage
+        cost its setup some writes, rather than re-running a whole setup
+        (a video's decode and audio encode) to find out. Default True: a
+        backend with no cheap round trip lets the setup itself try."""
+        return True
+
     def dac_bitmap_tempo(self, multicolor: bool) -> float:
         """The clock/wall speed a $D418-DAC video drains at over a bitmap mode
         on this link, for an unset [audio].dac_bitmap_tempo_*. Measured on an

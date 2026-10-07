@@ -374,6 +374,200 @@ class BlockedConnectCountsTest(unittest.TestCase):
         self.assertIn("link back after 5.0 s; 50 frame(s) skipped", logs.output[-1])
 
 
+class _OutageApi(FakeApi):
+    """A FakeApi whose link stays down for `down_probes` calls to
+    `link_answers`, then answers. `on_probe` runs on every probe."""
+
+    def __init__(self, down_probes: int) -> None:
+        super().__init__()
+        self.down_probes = down_probes
+        self.probes = 0
+        self.on_probe: Any = None
+
+    def link_answers(self) -> bool:
+        self.probes += 1
+        if self.on_probe is not None:
+            self.on_probe()
+        if self.probes <= self.down_probes:
+            return False
+        self.stats["writes"] += 1  # the probe's own round trip landed
+        return True
+
+
+class _LossySetupScene(FakeScene):
+    """A setup that loses its writes (moves `delivery_epoch` or raises)
+    on its first `lossy_setups` runs and lands every one after."""
+
+    def __init__(self, api: Any, lossy_setups: int, *, raise_it: bool = False) -> None:
+        super().__init__("B", frames_until_done=10_000)
+        self.api = api
+        self.lossy_setups = lossy_setups
+        self.raise_it = raise_it
+
+    def setup(self) -> None:
+        super().setup()
+        if self.setup_count <= self.lossy_setups:
+            if self.raise_it:
+                raise SocketDMAError("did not answer the last redial")
+            self.api.delivery_epoch += 1
+            self.api.stats["errors"] += 1
+        else:
+            self.api.stats["writes"] += 3
+
+
+class SetupThroughOutageTest(unittest.TestCase):
+    """A scene set up while the link is down waits for the link and sets up
+    again, rather than playing a setup that never reached the machine or
+    ending the run (c64cast#609)."""
+
+    def setUp(self) -> None:
+        p = patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _playlist(self, api: FakeApi, scene: FakeScene) -> Playlist:
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: 0.0)
+        return pl
+
+    def _assert_waited_then_set_up_again(self, raise_it: bool) -> None:
+        api = _OutageApi(down_probes=4)
+        scene = _LossySetupScene(api, lossy_setups=1, raise_it=raise_it)
+        pl = self._playlist(api, scene)
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.safe_setup(scene)
+        self.assertEqual(api.probes, 5, "the setup did not wait for the link")
+        self.assertEqual(scene.setup_count, 2)
+        self.assertEqual(scene.teardown_count, 1, "the failed setup was not torn down first")
+        warnings = [line for line in logs.output if line.startswith("WARNING")]
+        self.assertEqual(len(warnings), 1, logs.output)
+        self.assertIn("setup of 'B'", warnings[0])
+        self.assertIn("link back after", logs.output[-1])
+        self.assertFalse(pl.link_outage.active)
+
+    def test_a_setup_whose_writes_were_lost_waits_and_sets_up_again(self):
+        self._assert_waited_then_set_up_again(raise_it=False)
+
+    def test_a_setup_that_raises_a_link_error_waits_and_sets_up_again(self):
+        self._assert_waited_then_set_up_again(raise_it=True)
+
+    def test_a_clean_setup_runs_once_and_asks_the_link_nothing(self):
+        api = _OutageApi(down_probes=0)
+        scene = _LossySetupScene(api, lossy_setups=0)
+        self._playlist(api, scene).safe_setup(scene)
+        self.assertEqual((scene.setup_count, scene.teardown_count, api.probes), (1, 0, 0))
+
+    def test_a_link_that_answers_but_keeps_losing_writes_is_retried_a_bounded_number_of_times(
+        self,
+    ):
+        from c64cast.app.playlist import SETUP_LOSSY_TRIES
+
+        api = _OutageApi(down_probes=0)
+        scene = _LossySetupScene(api, lossy_setups=10_000)
+        pl = self._playlist(api, scene)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+            pl.safe_setup(scene)
+        self.assertEqual(scene.setup_count, SETUP_LOSSY_TRIES)
+        self.assertEqual(scene.teardown_count, SETUP_LOSSY_TRIES - 1)
+        self.assertIn("keeping it as set up", logs.output[-1])
+
+    def test_a_stop_while_waiting_ends_the_run_without_rendering_the_scene(self):
+        api = _OutageApi(down_probes=10_000)
+        scene = _LossySetupScene(api, lossy_setups=10_000)
+        pl = self._playlist(api, scene)
+
+        def stop_after_a_few() -> None:
+            if api.probes >= 3:
+                pl.stop_event.set()
+
+        api.on_probe = stop_after_a_few
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        self.assertEqual(scene.setup_count, 1)
+        self.assertEqual(scene.frame_count, 0, "a scene that never set up rendered a frame")
+        self.assertEqual(scene.teardown_count, 1, "the run's teardown missed the scene")
+
+
+class _Flaky(_Link):
+    """A `_Link` that comes back up after `down_dials` failed dials."""
+
+    def __init__(self, down_dials: int) -> None:
+        super().__init__()
+        self.down_dials = down_dials
+
+    def dial(self, *a: Any, **kw: Any) -> FakeSocket:
+        if not self.up and self.failed_dials >= self.down_dials:
+            self.up = True
+        sock = super().dial(*a, **kw)
+        # The handshake's IDENTIFY, then the link probes' round trips.
+        sock._replies.extend([_IDENT_REPLY] * 8)
+        return sock
+
+
+class _RegisterScene(FakeScene):
+    """A setup that pokes the VIC registers, as every display mode's does."""
+
+    def __init__(self, api: Any) -> None:
+        super().__init__("B", frames_until_done=10_000)
+        self.api = api
+
+    def setup(self) -> None:
+        super().setup()
+        self.api.write_regs("D020", 0, 0)
+
+
+class SetupSurvivesDmaOutageTest(unittest.TestCase):
+    """End to end over the real DMA client: the next scene's setup runs with
+    the cable pulled, and the scene sets up again once it is back."""
+
+    def test_the_setup_waits_out_the_outage_and_lands_once_the_link_is_back(self):
+        from c64cast.hw.api import Ultimate64API
+
+        link = _Flaky(down_dials=3)
+        for target, value in (
+            ("c64cast.hw.socket_dma.socket.create_connection", link.dial),
+            ("c64cast.hw.socket_dma.REDIAL_BACKOFF_MIN_S", 0.0),
+            ("c64cast.hw.socket_dma.REDIAL_BACKOFF_MAX_S", 0.0),
+            ("c64cast.app.playlist.SETUP_RETRY_S", 0.0),
+        ):
+            p = patch(target, side_effect=value) if callable(value) else patch(target, value)
+            p.start()
+            self.addCleanup(p.stop)
+        with self.assertLogs("c64cast.hw.socket_dma", level="INFO"):
+            api = Ultimate64API("http://example.invalid")
+        self.addCleanup(api.close)
+        scene = _RegisterScene(api)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: 0.0)
+        api.write_regs("D020", 1)
+        link.pull()
+        with (
+            self.assertLogs("c64cast.app.playlist", level="INFO") as logs,
+            self.assertLogs("c64cast.hw", level="DEBUG"),
+        ):
+            pl.safe_setup(scene)
+        self.assertTrue(link.up)
+        self.assertEqual(scene.setup_count, 2)
+        self.assertEqual(scene.teardown_count, 1)
+        self.assertIn("link back after", logs.output[-1])
+        sent = bytes(link.connections[-1].sent)
+        self.assertIn(b"\x20\xd0\x00\x00", sent, "the second setup's writes never landed")
+
+
 class RenderLinkOutageLogTest(unittest.TestCase):
     """A long outage keeps saying so; a recovered one says how long it was."""
 

@@ -42,6 +42,12 @@ _AUDIO_DISTURBANCE_DROP_S = 0.5
 # How often a render-path link outage that is still going repeats its WARNING.
 LINK_OUTAGE_REPORT_S = 10.0
 
+# How often a scene setup the link failed asks the link whether it answers.
+SETUP_RETRY_S = 0.5
+# Setups in a row that may lose writes while the link still answers before the
+# scene is kept as the last one left it; an outage waits without a bound.
+SETUP_LOSSY_TRIES = 3
+
 
 class RenderLinkOutage:
     """Log for a render-path link outage: a WARNING when frames start failing
@@ -680,8 +686,8 @@ class Playlist:
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
-        hardware_palette.settle_for(self.api, scene)
-        scene.setup()
+        if not self._setup_through_outage(scene):
+            return
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
         if self.user_dim < 1.0:
@@ -714,6 +720,78 @@ class Playlist:
                 self.log.exception("overlay %r setup failed on %r — disabling", ov.name, scene.name)
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
+
+    def _setup_through_outage(self, scene: Scene) -> bool:
+        """Set `scene` up, and again once the link answers when the link
+        cost the setup a write. False when `stop_event` fired while waiting;
+        the scene is then left as its last setup left it, for the caller's
+        teardown.
+
+        A setup lost a write when it raised a `LinkError` or moved the
+        backend's `delivery_epoch`. Most setup steps swallow a dead link
+        rather than raise it (`_emit`, `write_confirmed`, a scene that ends
+        itself when its SID player cannot start), so a raise alone would
+        let a setup that never reached the machine play as if it had: a
+        silent clip, an IRQ that was never installed, a skipped scene.
+
+        While the link does not answer the setup waits, and the time counts
+        as skipped frames in `link_outage`, without a bound, like a frame
+        the render path skips. A setup that lost writes on a link that
+        answers again at once is retried up to `SETUP_LOSSY_TRIES` times,
+        then kept, so a link that drops writes without going down cannot
+        hold the playlist."""
+        where = f"setup of {scene.name!r}"
+        lossy_tries = 0
+        while True:
+            started = self.link_outage.now()
+            epoch = self.api.delivery_epoch
+            error: LinkError | None = None
+            try:
+                hardware_palette.settle_for(self.api, scene)
+                scene.setup()
+            except LinkError as e:
+                error = e
+            if error is None and self.api.delivery_epoch == epoch:
+                self.link_outage.frame_ok(self.api.stats["writes"])
+                return True
+            if error is None:
+                error = LinkError("a write during setup may not have reached the machine")
+            frame_time = self.frame_time_for(scene)
+            self.link_outage.failed(
+                where, error, self.api.stats["writes"], started=started, frame_time=frame_time
+            )
+            if self.api.link_answers():
+                lossy_tries += 1
+                if lossy_tries >= SETUP_LOSSY_TRIES:
+                    self.log.warning(
+                        "%s lost writes %d times on a link that answers; keeping it as set up",
+                        where,
+                        lossy_tries,
+                    )
+                    return True
+            elif not self._wait_for_link(where, error, frame_time):
+                return False
+            try:
+                scene.teardown()
+            except Exception:
+                self.log.exception("teardown of %r before its setup retry failed", scene.name)
+
+    def _wait_for_link(self, where: str, error: LinkError, frame_time: float) -> bool:
+        """Ask the link every `SETUP_RETRY_S` until it answers (True) or
+        `stop_event` fires (False), charging the wait to `link_outage`."""
+        while True:
+            waited_from = self.link_outage.now()
+            if self.stop_event.wait(SETUP_RETRY_S):
+                return False
+            if self.api.link_answers():
+                return True
+            self.link_outage.failed(
+                where,
+                error,
+                self.api.stats["writes"],
+                started=waited_from,
+                frame_time=frame_time,
+            )
 
     def _log_scene_recording_metadata(self, scene: Scene) -> None:
         """Log a SCENE_CONFIG_JSON snapshot of this scene's coalesced
@@ -1040,8 +1118,10 @@ class Playlist:
                     self.log.exception("playlist advance failed; aborting")
                     break
                 # loop=False end-of-playlist: `_advance` has torn down the last
-                # scene, cleared `current` and set `stop_event`.
-                if self.current is None:
+                # scene, cleared `current` and set `stop_event`. A stop while a
+                # setup waited on the link leaves a scene that never finished
+                # setting up, which must not render.
+                if self.current is None or self.stop_event.is_set():
                     break
 
                 self.menu.service()

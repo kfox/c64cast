@@ -115,9 +115,15 @@ class FakeApi:
             "bytes": 0,
         }
         self.calls = []
+        # A test simulating a lossy link moves these.
+        self.delivery_epoch = 0
+        self.answers = True
 
     def format_write_latency(self):
         return None
+
+    def link_answers(self):
+        return self.answers
 
     def pause_idle(self):
         self.calls.append("pause_idle")

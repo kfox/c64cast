@@ -2333,6 +2333,18 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         else:
             self._last_flush_failed = False
 
+    def link_answers(self) -> bool:
+        """An IDENTIFY round trip on the DMA socket, redialing first under
+        the client's redial backoff, so a refused redial answers False with
+        no network I/O. Nothing is logged: the caller reports the outage.
+        A redial that may have dropped commands answers False once, because
+        `SocketDMAClient.flush` raises for it after the reply."""
+        try:
+            self.socket_dma.flush()
+        except (OSError, SocketDMAError):
+            return False
+        return True
+
     def _flush_or_raise(self, action: str) -> None:
         """`flush()`, but raise instead of only logging when it fails.
 
