@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -690,6 +691,25 @@ class RedirectTest(unittest.TestCase):
 
     def test_the_data_dir_is_redirected(self):
         self.assertIsNone(_fs_sandbox.violation(str(paths.data_root() / "anything")))
+
+    def test_the_temp_dir_is_the_suite_root(self):
+        root = os.environ[_fs_sandbox._TAKEOVER_ENV]
+        self.assertEqual(os.path.realpath(tempfile.gettempdir()), os.path.realpath(root))
+        for name in _fs_sandbox._TEMP_ENVS:
+            with self.subTest(env=name):
+                self.assertEqual(os.environ[name], root)
+
+    def test_a_run_leaves_nothing_in_the_temp_dir_it_was_given(self):
+        given = tempfile.mkdtemp()
+        env = {k: v for k, v in os.environ.items() if k != _fs_sandbox._TAKEOVER_ENV}
+        env.update(dict.fromkeys(_fs_sandbox._TEMP_ENVS, given))
+        env["PYTHONPATH"] = str(CHECKOUT / "tests")
+        # What a leaking test does: a directory and a file nobody removes.
+        leak = (
+            "import tempfile; tempfile.mkdtemp(); tempfile.NamedTemporaryFile(delete=False).close()"
+        )
+        run_bounded([sys.executable, "-c", leak], env=env, cwd=CHECKOUT, check=True)
+        self.assertEqual(os.listdir(given), [])
 
     def test_the_legacy_chargen_fallback_is_neutralized(self):
         # It is a cwd-relative path into assets/, so on a machine that has

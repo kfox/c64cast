@@ -159,7 +159,8 @@ Check with `make test` and read the output: anything between the dots is a leak.
 asked for.** Every entry point sets `PYTHONPATH=tests` so
 [tests/sitecustomize.py](tests/sitecustomize.py) arms
 [tests/_fs_sandbox.py](tests/_fs_sandbox.py) at interpreter startup: the machine
-settings and data dir are redirected to a throwaway directory for the whole run,
+settings, the data dir and the temp dir are redirected to a throwaway directory
+removed when the run ends,
 `char_rom`'s cwd-relative ROM fallback is blanked, and an audit hook fails any
 test that reads or writes outside the checkout + temp dirs, reaches an
 `assets/` file git does not carry, touches `.git/`, or shells out to a `git`

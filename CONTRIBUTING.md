@@ -169,7 +169,8 @@ trusting the convention.** Every entry point runs with `PYTHONPATH=tests`, which
 makes `site` import [`tests/sitecustomize.py`](tests/sitecustomize.py) at
 interpreter startup — in `unittest_parallel`'s worker processes as well as the
 parent, since only the environment reaches those. That points the machine
-settings and the data dir at a throwaway directory for the whole run, blanks
+settings, the data dir and `TMPDIR` at a throwaway directory removed when the
+run ends, so a test that leaves a temp file behind leaves it there, blanks
 `char_rom`'s cwd-relative ROM fallback, and installs an audit hook that fails
 any test reading or writing outside the checkout and the temp directories, plus
 anything under `assets/` that git does not carry and anything under `.git/`,

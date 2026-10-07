@@ -84,6 +84,7 @@ from typing import NamedTuple
 _TAKEOVER_ENV = "_C64CAST_SUITE_ROOT"
 _SETTINGS_ENV = "C64CAST_SETTINGS"
 _DATA_DIR_ENV = "C64CAST_DATA_DIR"
+_TEMP_ENVS = ("TMPDIR", "TEMP", "TMP")
 
 # Filesystem audit events whose first argument is a path — not the complete set
 # CPython raises. `open` covers every read and rewrite; the rest catch the directory
@@ -690,6 +691,13 @@ def redirect_local_state() -> None:
     file is *read* and "absent" is the state a defaults test wants;
     `$C64CAST_DATA_DIR` is a real empty directory, because the data dir is
     *written* and its writers create what they need under it.
+
+    The same directory is the temp directory for the run, for this process,
+    its workers and every child they start, so whatever a test or a tool
+    under it leaves in `tempfile`'s directory goes with the root at exit
+    instead of accumulating in `$TMPDIR` run after run. Cleaning up after
+    each leaking test instead would hold only the sites fixed so far; a new
+    `mkdtemp()` without its `addCleanup` would leak again unnoticed.
     """
     if _TAKEOVER_ENV in os.environ:
         return
@@ -700,6 +708,10 @@ def redirect_local_state() -> None:
     os.environ[_TAKEOVER_ENV] = root
     os.environ[_SETTINGS_ENV] = os.path.join(root, "no-such-settings.toml")
     os.environ[_DATA_DIR_ENV] = data
+    # TEMP and TMP as well: Windows children read those, not TMPDIR.
+    for name in _TEMP_ENVS:
+        os.environ[name] = root
+    tempfile.tempdir = root
 
     def cleanup() -> None:
         # A forked worker inherits this handler; without the owner check the
