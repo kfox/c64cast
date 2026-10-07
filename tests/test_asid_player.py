@@ -1122,6 +1122,22 @@ class BringUpTeardownTest(unittest.TestCase):
         finally:
             p.stop()
 
+    def test_a_lost_pre_arm_handler_rebuild_is_sent_again(self):
+        # The rebuild replaces the confirmed install, so losing it would arm
+        # the player at the old tick divider.
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        try:
+            lose_writes_to(api, ap.HANDLER_ADDR, times=1)
+            p.set_frame_rate(120.0)
+            self.assertIn(("lost", f"{ap.HANDLER_ADDR:04X}"), api.ops)
+            self.assertEqual(
+                api.mem_files[f"{ap.HANDLER_ADDR:04X}"],
+                ap.build_player(p.slot_size, 2),
+            )
+        finally:
+            p.stop()
+
     def test_a_hostile_speed_message_cannot_set_an_arbitrary_rate(self):
         # frame_delta_us = 1 → 1 MHz. Unclamped this became CIA latch 1, i.e.
         # _rate 511,364 Hz: an IRQ every 2 cycles on the C64 and a permanently

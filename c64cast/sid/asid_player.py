@@ -35,6 +35,7 @@ See docs/architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player.
 
 from __future__ import annotations
 
+import functools
 import logging
 import queue
 import threading
@@ -864,8 +865,7 @@ class AsidRingPlayer:
         return True
 
     def _install_handler(self) -> None:
-        handler = build_player(self.slot_size, self._divider, ring_base=self.ring_base)
-        self.api.write_memory_file(f"{HANDLER_ADDR:04X}", handler)
+        self._write_rate(self._latch, self._divider, rebuild_handler=True)
         self.api.write_memory(
             f"{TRACKER_ADDR:04X}",
             f"{self.ring_base & 0xFF:02X}"
@@ -875,10 +875,17 @@ class AsidRingPlayer:
         # tick counter = 1: first IRQ DECs to 0, reloads N, chains; nops = 0.
         self.api.write_memory(f"{TICK_COUNTER_ADDR:04X}", "01")
         self.api.write_memory(f"{NOPS_COUNTER_ADDR:04X}", "00")
+
+    def _write_rate(self, latch: int, divider: int, *, rebuild_handler: bool) -> None:
         # Program CIA #1 Timer A latch (kernal left it running in continuous mode).
         self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{self._latch & 0xFF:02X}{(self._latch >> 8) & 0xFF:02X}"
+            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
         )
+        if rebuild_handler:
+            self.api.write_memory_file(
+                f"{HANDLER_ADDR:04X}",
+                build_player(self.slot_size, divider, ring_base=self.ring_base),
+            )
 
     def _prefill_holds(self) -> None:
         hold = hold_slot(self.slot_size)
@@ -968,19 +975,21 @@ class AsidRingPlayer:
                 self._prebuffer_target = max(
                     1, min(int(rate * self._prebuffer_seconds), self._lead_target)
                 )
-        # Takes effect at the vector swap if not armed.
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
-        )
-        if not armed:
-            # The vector isn't hooked yet, so the handler can be rebuilt in
-            # place and its tick divider matches the real rate before it runs.
-            # `armed` came from the locked read above, so this cannot race an arm.
-            self.api.write_memory_file(
-                f"{HANDLER_ADDR:04X}",
-                build_player(self.slot_size, divider, ring_base=self.ring_base),
+        # Takes effect at the vector swap if not armed. Pre-arm, the vector
+        # isn't hooked yet, so the handler can be rebuilt in place and its tick
+        # divider matches the real rate before it runs. `armed` came from the
+        # locked read above, so this cannot race an arm. Confirmed like the
+        # install, which this rewrite supersedes before _try_arm runs it.
+        if not write_confirmed(
+            self.api,
+            functools.partial(self._write_rate, latch, divider, rebuild_handler=not armed),
+        ):
+            log.error(
+                "asid_player: the retune to %.1f Hz was not confirmed delivered after %d "
+                "attempts; the C64 may still run the previous rate",
+                rate,
+                CONFIRM_TRIES,
             )
-        self.api.flush()
         log.info(
             "asid_player: retuned to %.1f Hz (latch %d, N=%d, %s)",
             rate,
