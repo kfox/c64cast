@@ -934,7 +934,8 @@ class UltimateAudioSampler:
         retried after a doubling back-off rather than ending the thread: a
         dead writer leaves the channel gated, looping the ring's stale audio
         while the producer parks on a queue nothing drains. Past
-        WRITER_GIVE_UP_S of unbroken failure it gates the channel off."""
+        WRITER_GIVE_UP_S of unbroken failure it gates the channel off, and
+        stays to retry that until it lands."""
         failing_since: float | None = None
         backoff = 0.0
         while self._running and gen == self._writer_gen:
@@ -946,7 +947,7 @@ class UltimateAudioSampler:
                     failing_since = now
                     log.warning("sampler: ring write failed (%s); retrying", e)
                 elif now - failing_since >= WRITER_GIVE_UP_S:
-                    self._give_up(e)
+                    self._give_up(e, gen)
                     return
                 backoff = min(WRITER_BACKOFF_MAX_S, max(WRITER_BACKOFF_MIN_S, backoff * 2))
                 time.sleep(backoff)
@@ -959,17 +960,48 @@ class UltimateAudioSampler:
                 failing_since = None
                 backoff = 0.0
 
-    def _give_up(self, error: Exception) -> None:
+    def _give_up(self, error: Exception, gen: int) -> None:
+        """Stop taking audio, and gate the channel off once the link carries
+        the write.
+
+        The gate-off goes over the link that just failed, and `write_memory`
+        does not raise when a write is lost, so it is confirmed against
+        `delivery_epoch` and sent again every WRITER_BACKOFF_MAX_S until it
+        lands or the writer is stopped or superseded. Sent once, it was lost
+        to the outage it answered, and the ring went on looping stale audio
+        after the link came back, under a scene that survives the outage."""
         self._failed = True
         log.error(
             "sampler: ring writes failing for %.0f s (%s); gating the channel off",
             WRITER_GIVE_UP_S,
             error,
         )
+        retrying = False
+        while self._running and gen == self._writer_gen:
+            if self._gate_off_landed():
+                if retrying:
+                    log.info("sampler: the link is back; channel gated off")
+                return
+            if not retrying:
+                retrying = True
+                log.warning(
+                    "sampler: the gate-off did not reach the machine; "
+                    "retrying until the link answers"
+                )
+            time.sleep(WRITER_BACKOFF_MAX_S)
+
+    def _gate_off_landed(self) -> bool:
+        """One gate-off, and whether the link vouches it arrived: nothing it
+        carried was counted lost (``delivery_epoch`` unmoved). A loss of some
+        other thread's write in the same window reads as this one's, which
+        costs a repeat of an idempotent write."""
+        epoch = self.api.delivery_epoch
         try:
             gate_off(self.api, self.channel)
-        except Exception as e:  # the link is what failed; nothing more to try
-            log.error("sampler: gate-off after giving up failed too: %s", e)
+        except Exception as e:  # the link is what failed
+            log.debug("sampler: gate-off raised: %s", e)
+            return False
+        return self.api.delivery_epoch == epoch
 
     def _writer_step(self, gen: int) -> bool:
         """One writer pass: sleep while far enough ahead, else write the next

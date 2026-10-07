@@ -146,6 +146,7 @@ class _FakeBackend:
         self.mem_writes: list[tuple[str, str]] = []
         self.flushes = 0
         self.audible_writes = 0  # REU writes carrying anything but silence
+        self.delivery_epoch = 0
 
     def reu_write(self, offset: int, data: bytes) -> None:
         self.reu_writes.append((offset, len(data)))
@@ -527,6 +528,23 @@ class _FailingBackend(_FakeBackend):
         super().reu_write(offset, data)
 
 
+class _LossyGateOffBackend(_FailingBackend):
+    """A link that stays down for REU writes and also loses the writer
+    thread's next ``lost`` register writes the way ``_emit`` loses one:
+    without raising, moving ``delivery_epoch``."""
+
+    def __init__(self, lost: int) -> None:
+        super().__init__(failures=-1)
+        self.lost = lost
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        if self.lost and threading.current_thread().name == "uaudio-writer":
+            self.lost -= 1
+            self.delivery_epoch += 1
+            return
+        super().write_memory(address, data_hex)
+
+
 class SamplerWriterFailureTest(unittest.TestCase):
     TONE = np.full(256, 8000, dtype=np.int16)
 
@@ -571,6 +589,25 @@ class SamplerWriterFailureTest(unittest.TestCase):
         t0 = time.monotonic()
         smp.push_samples(self.TONE)  # a full queue nothing drains
         self.assertLess(time.monotonic() - t0, 0.05, "the producer parked on a dead sampler")
+
+    def test_a_gate_off_lost_to_the_outage_is_sent_until_it_lands(self):
+        # The gate-off travels the link that failed. Sent once and lost, the
+        # ring looped stale audio after the link came back, under a scene that
+        # now survives the outage.
+        api = _LossyGateOffBackend(lost=3)
+        with (
+            mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1),
+            mock.patch.object(s, "WRITER_BACKOFF_MAX_S", 0.01),
+            self.assertLogs("c64cast.audio.sampler", level="INFO") as logs,
+        ):
+            smp = self._started(api)
+            self.assertTrue(
+                self._wait(lambda: ("DF20", "00") in api.mem_writes), "the gate-off never landed"
+            )
+        self.assertEqual(api.lost, 0)
+        self.assertTrue(smp._failed)
+        self.assertTrue(any("retrying until the link answers" in m for m in logs.output))
+        self.assertTrue(any("channel gated off" in m for m in logs.output), logs.output)
 
     def test_push_samples_reports_what_it_accepted(self):
         # An audio-file scene waits for the sink's clock to reach what it
