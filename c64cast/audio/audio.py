@@ -417,10 +417,12 @@ class AudioStreamer:
         # MAX_QUEUED_SAMPLES caps the buffer so a stalled consumer cannot
         # accumulate a wall of stale audio.
         self._max_queued_samples = MAX_QUEUED_SAMPLES
-        # Set by end_input() once the producer will push nothing more. A
-        # producer that ends short of the prebuffer would otherwise leave the
-        # worker waiting for it forever, the NMI never started and the clip
-        # never heard. Cleared by every _start_worker.
+        # Set by end_input() once the producer has pushed its last sample for
+        # now. A producer that ends short of the prebuffer would otherwise
+        # leave the worker waiting for it forever, the NMI never started and
+        # the clip never heard. Cleared by every _start_worker and by the next
+        # accepted push (a video's demuxer pushes again after a seek back), so
+        # it is not a "track finished" signal.
         self._input_ended = False
         self.running = False
         # Bumped by every _start_worker and by stop(); a worker exits when it
@@ -632,7 +634,9 @@ class AudioStreamer:
             if not piece:
                 # end_input()'s wake-up: nothing more is coming to wait for.
                 # One left over from an earlier producer, whose end_input()
-                # raced its teardown's drain, is not this producer's end.
+                # raced its teardown's drain, or from an earlier pass of a
+                # video's demuxer that has pushed again since, is not this
+                # input's end.
                 if self._input_ended:
                     break
                 continue

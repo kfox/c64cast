@@ -1708,6 +1708,29 @@ class VideoSceneEndsAudioInputTest(unittest.TestCase):
         )
 
 
+class EndAudioInputSeekGuardTest(unittest.TestCase):
+    """A pass that reaches EOF ends the sink's input, except when a seek is
+    already pending: the splice's flush may have run, and an end marked after
+    it would cut the post-seek input."""
+
+    def _source(self, *, pending_seek: float | None) -> tuple[AVFileSource, list[bool]]:
+        ended: list[bool] = []
+        src = _make_emit_audio_stub([])
+        src._audio_end = lambda: ended.append(True)
+        src._pending_seek = pending_seek
+        return src, ended
+
+    def test_eof_ends_the_input(self):
+        src, ended = self._source(pending_seek=None)
+        src._end_audio_input()
+        self.assertEqual(ended, [True])
+
+    def test_a_pending_seek_holds_the_end_back(self):
+        src, ended = self._source(pending_seek=1.0)
+        src._end_audio_input()
+        self.assertEqual(ended, [])
+
+
 class VideoSceneProcessFrameLoopTest(unittest.TestCase):
     """process_frame's EOF check + loop-wrap: an active A/B loop neither
     ends the scene at EOF nor at reaching B — it seeks back to A instead."""

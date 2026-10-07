@@ -451,9 +451,11 @@ class UltimateAudioSampler:
         self._running = False
         self._stopped = False
         self._eof = False
-        # Set by end_input() once the producer will push nothing more, so
-        # start() stops waiting for a prebuffer a short clip cannot fill.
-        # Unlike _eof it leaves the clock alone. Cleared by arm().
+        # Set by end_input() once the producer has pushed its last sample for
+        # now, so start() stops waiting for a prebuffer a short clip cannot
+        # fill. Unlike _eof it leaves the clock alone. Cleared by arm() and by
+        # the next accepted push (a video's demuxer pushes again after a seek
+        # back), so it is not a "track finished" signal.
         self._input_ended = False
         # Set when the writer gave up on a dead link; push_samples then drops
         # rather than park the producer on a queue nothing drains.

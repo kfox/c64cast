@@ -1120,8 +1120,16 @@ class AVFileSource:
                 self._demux_exited = True
 
     def _end_audio_input(self) -> None:
-        """Tell the sink this pass pushed its last sample (see `start`)."""
-        if self._audio_end is None or self._audio_push is None or self._closed:
+        """Tell the sink this pass pushed its last sample (see `start`). Not
+        when a seek is already pending: that pass is superseded and the next
+        one ends the input at its own EOF, while a call here can land after
+        the splice's flush and mark the post-seek input ended."""
+        if (
+            self._audio_end is None
+            or self._audio_push is None
+            or self._closed
+            or self._pending_seek is not None
+        ):
             return
         self._audio_end()
 
