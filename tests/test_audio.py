@@ -294,6 +294,20 @@ class WorkerBatchingTest(unittest.TestCase):
         self.assertGreater(s._total_slots, 0)
 
 
+def _signal_backpressure(s: AudioStreamer) -> threading.Event:
+    """Set once a blocking push has captured its epoch and is about to spin
+    for room, so a test can cut it there without guessing how long that takes."""
+    parked = threading.Event()
+    wait_s = s._backpressure_wait_s
+
+    def backpressure_wait_s(n: int) -> float:
+        parked.set()
+        return wait_s(n)
+
+    s._backpressure_wait_s = backpressure_wait_s  # type: ignore[method-assign]
+    return parked
+
+
 class EffectiveRateTest(unittest.TestCase):
     """`sample_rate` is a request; `effective_rate` is what the CIA latch
     actually yields. The NMI period is an integer PHI2 cycle count, so the
@@ -406,8 +420,6 @@ class EffectiveRateTest(unittest.TestCase):
         self.assertEqual(s._flush_epoch, 0)
 
     def test_blocked_push_dropped_by_flush_epoch(self):
-        import time
-
         s = new_streamer()
         s.running = True
         s._max_queued_samples = 16384
@@ -416,13 +428,14 @@ class EffectiveRateTest(unittest.TestCase):
             s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)  # 16384 samples queued
 
         result: dict[str, int] = {}
+        parked = _signal_backpressure(s)
 
         def push():
             result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
 
         t = threading.Thread(target=push)
         t.start()
-        time.sleep(0.02)  # let it park in the backpressure spin
+        self.assertTrue(parked.wait(2.0), "the producer never reached the backpressure spin")
         s.flush()  # drains the 16384 queued samples + bumps the epoch
         t.join(timeout=1.0)
         self.assertEqual(result["n"], 0)  # stale push dropped
@@ -430,8 +443,6 @@ class EffectiveRateTest(unittest.TestCase):
 
     def test_blocked_push_dropped_by_stop(self):
         """`stop()` owes the next scene the same cut-over `flush()` does."""
-        import time
-
         s = new_streamer()
         s.running = True
         s._max_queued_samples = 16384
@@ -440,13 +451,14 @@ class EffectiveRateTest(unittest.TestCase):
             s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)
 
         result: dict[str, int] = {}
+        parked = _signal_backpressure(s)
 
         def push():
             result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
 
         t = threading.Thread(target=push)
         t.start()
-        time.sleep(0.02)  # let it park in the backpressure spin
+        self.assertTrue(parked.wait(2.0), "the producer never reached the backpressure spin")
         s.stop()
         t.join(timeout=1.0)
         self.assertEqual(result["n"], 0)
