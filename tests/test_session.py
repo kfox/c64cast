@@ -511,6 +511,54 @@ class BuildStackHardwarePaletteTest(unittest.TestCase):
         control.restore.assert_called_once()
 
 
+class BuildStackDacCurveTest(unittest.TestCase):
+    """build_stack resolves [audio].dac_curve only for a run with audio, and
+    turns a 'calibrated' curve with no calibration into a StackBuildError, so
+    build_session tears down the stacks that did come up."""
+
+    def _build(self, cfg: cfgmod.Config, resolve: mock.MagicMock) -> None:
+        api = mock.MagicMock(name="api")
+        api.profile.max_fps = None
+        api.disable_case_switch.side_effect = session.StackBuildError(4)
+        api.read_menu_screen.return_value = None
+        with (
+            mock.patch.object(session, "_open_backend", return_value=api),
+            mock.patch.object(session, "hw_provision"),
+            mock.patch.object(session, "_build_audio", return_value=None),
+            mock.patch.object(session.dac_curve_resolve, "resolve_dac_curve_for_backend", resolve),
+            mock.patch.object(session, "_resolve_reu_available", return_value=False),
+            mock.patch.object(session, "_resolve_sampler_available", return_value=False),
+            mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]),
+            mock.patch.object(session.char_rom, "ensure_installed"),
+            mock.patch.object(session.time, "sleep"),
+            mock.patch.object(session.hardware_palette, "provision_hardware_palette"),
+        ):
+            session.build_stack(
+                cfg, "a", stop_event=threading.Event(), profiler=mock.MagicMock(name="profiler")
+            )
+
+    def test_a_missing_calibration_is_a_stack_build_error(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        resolve = mock.MagicMock(side_effect=ValueError("no usable calibration"))
+        with (
+            self.assertLogs("c64cast", "ERROR") as cm,
+            self.assertRaises(session.StackBuildError) as raised,
+        ):
+            self._build(cfg, resolve)
+        self.assertEqual(raised.exception.exit_code, 3)
+        self.assertIn("no usable calibration", "\n".join(cm.output))
+
+    def test_a_run_without_audio_resolves_no_curve(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        cfg.audio.enabled = False
+        resolve = mock.MagicMock()
+        with self.assertRaises(session.StackBuildError):
+            self._build(cfg, resolve)
+        resolve.assert_not_called()
+
+
 class BuildPreviewAndRecordingTest(unittest.TestCase):
     def test_a_recorder_that_fails_to_start_detaches_the_framebuffer(self):
         # The write listener costs a shadow-memory update on every DMA write for the

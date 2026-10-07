@@ -150,7 +150,7 @@ class AutoSkipsArmsidTableTest(unittest.TestCase):
             got = dac_curve_resolve.resolve_dac_curve_for_backend(
                 _cfg_with_calibration("ARMSID 6581"), be=api
             )
-        self.assertEqual(got, dac_curve_resolve.DacCurve("linear", None, (1, "ARMSID 6581")))
+        self.assertEqual((got.label, got.table, got.measured), ("linear", None, (1, "ARMSID 6581")))
         self.assertEqual(len(reads), 2, reads)
 
     def test_calibrated_still_plays_the_table(self):

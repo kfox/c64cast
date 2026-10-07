@@ -51,11 +51,14 @@ class DacCurve:
     consumer that needs the chip reads it here rather than from the file again:
     each read of the file makes its own socket-map read, and one that fails
     falls back to the file's recorded mapping, which can name the other
-    socket."""
+    socket. ``key`` is the calibration key the resolution looked up, None
+    when it looked up none, for the same reason: deriving it again is another
+    live round-trip, and one that fails falls back to the host key."""
 
     label: str
     table: bytes | None
     measured: tuple[int, str] | None = None
+    key: str | None = None
 
     @property
     def declined_chip(self) -> str | None:
@@ -84,8 +87,8 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
                 path,
                 declined,
             )
-            return DacCurve("linear", None, measured)
-        return DacCurve(f"calibrated:{key}", table, measured)
+            return DacCurve("linear", None, measured, key)
+        return DacCurve(f"calibrated:{key}", table, measured, key)
     if cfg.audio.dac_calibration_profile:
         log.warning(
             "[audio].dac_calibration_profile = %r → %s holds no usable calibration; falling back.",
@@ -108,7 +111,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
                 owner,
                 key,
             )
-            return DacCurve("linear", None)
+            return DacCurve("linear", None, key=key)
         if owner == D400_UNKNOWN:
             # Not "an UltiSID core owns it": an Ultimate II+ has no socket
             # map to read and drives the C64's own chip, and a failed read
@@ -122,7 +125,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
                 "SID for full-fidelity playback.",
                 key,
             )
-            return DacCurve("linear", None)
+            return DacCurve("linear", None, key=key)
         if be is not None:
             log.info(
                 "no per-unit DAC calibration found for %s; using the baked "
@@ -130,7 +133,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
                 "socketed physical SID.",
                 key,
             )
-        return DacCurve("mahoney_ultisid", resolve_dac_curve("mahoney_ultisid"))
+        return DacCurve("mahoney_ultisid", resolve_dac_curve("mahoney_ultisid"), key=key)
     if be is not None:
         log.warning(
             "no DAC calibration found for %s; falling back to the 4-bit "
@@ -138,7 +141,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
             "measure this SID for full-fidelity playback.",
             key,
         )
-    return DacCurve("linear", None)
+    return DacCurve("linear", None, key=key)
 
 
 def resolve_dac_curve_for_backend(cfg: Config, be: C64Backend | None = None) -> DacCurve:
@@ -178,7 +181,7 @@ def resolve_dac_curve_for_backend(cfg: Config, be: C64Backend | None = None) -> 
                 "[audio].dac_calibration_profile at an existing calibration file, or "
                 "use 'auto'."
             )
-        return DacCurve(f"calibrated:{key}", table, measured)
+        return DacCurve(f"calibrated:{key}", table, measured, key)
     if name == "auto":
         # Ahead of resolve_calibration_key: this arm must not pay its live
         # round-trip. digi_boost + an explicit curve is validate_dac_curve_cfg's.

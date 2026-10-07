@@ -2430,7 +2430,7 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
     """
     if not _wants_dac_calibration_check(cfg):
         return []
-    from c64cast.audio import dac_calibration_store, dac_curve_resolve
+    from c64cast.audio import dac_curve_resolve
 
     subject = f"{name} (DAC calibration)"
     curve = cfg.audio.dac_curve
@@ -2450,8 +2450,7 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
                 "[audio].dac_curve = 'auto'.",
             )
         ]
-    key = dac_calibration_store.resolve_calibration_key(cfg, api)  # type: ignore[arg-type]
-    label, declined = resolved.label, resolved.declined_chip
+    label, declined, key = resolved.label, resolved.declined_chip, resolved.key
     if resolved.table is not None:
         message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
     elif curve == "auto" and cfg.audio.digi_boost:

@@ -1464,6 +1464,32 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         self.assertEqual(diags[0].level, "ok")
         self.assertIn("mahoney_ultisid", diags[0].message)
 
+    def test_a_failed_later_device_info_read_still_names_the_resolved_key(self):
+        # A second identity read that fails falls back to the host key, which
+        # is not the key the resolution looked up.
+        cfg = self._cfg("auto")
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
+        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D420"}
+        api.config_store["SID Sockets Configuration"] = {"SID Socket 1": "Enabled"}
+        api.device_info = {"unique_id": "abc123"}
+        real = api.get_device_info
+        calls = 0
+
+        def second_read_fails(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise RuntimeError("REST unreachable")
+            return real(**kwargs)
+
+        api.get_device_info = second_read_fails  # type: ignore[method-assign]
+        diags = doctor._probe_dac_calibration_status("sys", cfg, api)
+        self.assertEqual(len(diags), 1)
+        self.assertIn("'ultimate-abc123'", diags[0].message)
+
     def test_auto_over_an_armsid_table_names_the_table_it_declined(self):
         cfg = self._cfg("auto")
         tmp = tempfile.TemporaryDirectory()
