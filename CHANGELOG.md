@@ -305,8 +305,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 - **Seeking back once a video's sound has run out keeps the picture in step
   with it on the Ultimate Audio sampler.** A seek, resume or A/B loop wrap
   after the audio ended put the picture ahead of the sound by however long the
-  audio had been out. On the DAC, a seek could also land the picture up to a
-  chunk of audio off from the sound.
+  audio had been out.
 
 - **The Programmer's Reference memory map gives the REU pump's tracker its
   full size.** It listed `$C200` as a three-byte tracker; the tracker is five
