@@ -24,7 +24,7 @@ import unittest
 
 from _fakes import RestoresLogging
 
-from c64cast._redact import redact_secrets, redact_source_line
+from c64cast._redact import _NOT_A_PASSWORD_REACH, redact_secrets, redact_source_line
 from c64cast.app import cli_commands
 
 LOGIN_LINE = "web console: open http://127.0.0.1:8123/api/login?token=s3cr3t&next=/"
@@ -270,6 +270,9 @@ class RedactSecretsTest(unittest.TestCase):
             "broadband_pass",
             "failover-pass",
             "telecom_pass",
+            # A run past the reach: the window opens on the `by` of `qby`,
+            # which only looks like the start of `bypass`.
+            "qby" + "_" * (_NOT_A_PASSWORD_REACH - 2) + "pass",
         ):
             with self.subTest(name=name):
                 self.assertEqual(redact_secrets(f"{name}=hunter2"), f"{name}=REDACTED")
@@ -312,6 +315,7 @@ class RedactSecretsTest(unittest.TestCase):
             ("{'token' => 'abc'}", "{'token' => 'REDACTED'}"),
             ("{'token'=>'abc'}", "{'token'=>'REDACTED'}"),
             ("password=>abc123 x", "password=REDACTED x"),
+            ("{\\'token\\'=>\\'abc\\'}", "{\\'token\\'=>\\'REDACTED'}"),
             (
                 '"{\\\\\\"token\\\\\\": \\\\\\"abc\\\\\\"}"',
                 '"{\\\\\\"token\\\\\\": \\\\\\"REDACTED"}"',
