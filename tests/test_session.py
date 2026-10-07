@@ -312,6 +312,50 @@ class BuildSessionTest(unittest.TestCase):
                 torn = [c.args[0].name for c in teardown.call_args_list]
                 self.assertEqual(torn, ["b", "a"])
 
+    def test_a_teardown_that_raises_still_tears_down_the_stacks_under_it(self):
+        # A second Ctrl+C while system b's teardown runs must not strand a.
+        loaded = _loaded(["a", "b", "c"], is_ensemble=True)
+        built = [fake_system_stack("a"), fake_system_stack("b")]
+        torn: list[str] = []
+
+        def teardown(st):
+            torn.append(st.name)
+            if st.name == "b":
+                raise KeyboardInterrupt
+
+        with (
+            mock.patch.object(
+                session, "build_stack", side_effect=[*built, session.StackBuildError(4)]
+            ),
+            mock.patch.object(session, "teardown_stack", side_effect=teardown),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                session.build_session(_args(), loaded, loaded.cfgs)
+        self.assertEqual(torn, ["b", "a"])
+
+    def test_a_failure_wiring_the_ensemble_tears_down_every_stack(self):
+        loaded = _loaded(["a", "b"], is_ensemble=True)
+        built = [fake_system_stack("a"), fake_system_stack("b")]
+        built[1].playlist.bind_ensemble.side_effect = KeyboardInterrupt
+        with (
+            mock.patch.object(session, "build_stack", side_effect=built),
+            mock.patch.object(session, "teardown_stack") as teardown,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                session.build_session(_args(), loaded, loaded.cfgs)
+        torn = [c.args[0].name for c in teardown.call_args_list]
+        self.assertEqual(torn, ["b", "a"])
+
+    def test_a_successful_build_tears_nothing_down(self):
+        loaded = _loaded(["a", "b"], is_ensemble=True)
+        built = [fake_system_stack("a"), fake_system_stack("b")]
+        with (
+            mock.patch.object(session, "build_stack", side_effect=built),
+            mock.patch.object(session, "teardown_stack") as teardown,
+        ):
+            session.build_session(_args(), loaded, loaded.cfgs)
+        teardown.assert_not_called()
+
     def test_ensemble_mode_binds_every_playlist(self):
         loaded = _loaded(["a", "b"], is_ensemble=True)
         stacks = [fake_system_stack("a"), fake_system_stack("b")]

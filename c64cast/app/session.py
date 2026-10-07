@@ -1186,8 +1186,8 @@ def build_session(
     """Open every system's hardware and build its stack, wired to the shared
     stop_event (and to the Ensemble, in multi-system mode).
 
-    Call validate_configs first. On any exception from a later build — a
-    StackBuildError or anything else a provisioning step raises, a Ctrl+C
+    Call validate_configs first. On any exception before the Session exists —
+    a StackBuildError or anything else a provisioning step raises, a Ctrl+C
     included — the stacks that did come up are torn down in reverse before it
     propagates, so a partial failure leaves no hardware held."""
     # Before the Playlists are constructed, so the module-global accessor is
@@ -1211,49 +1211,51 @@ def build_session(
     else:
         stop_event = threading.Event()
 
+    # An ExitStack rather than a try/except around the loop: a teardown that
+    # raises (a second Ctrl+C) would end a hand-written reverse loop and strand
+    # every stack under it, and the ensemble wiring after the loop has to be
+    # covered too.
     stacks: list[SystemStack] = []
-    try:
+    with ExitStack() as unwind:
         for cfg, name, sub_path in zip(cfgs, loaded.names, loaded.paths, strict=True):
-            stacks.append(
-                build_stack(
-                    cfg,
-                    name,
-                    stop_event=stop_event,
-                    profiler=profiler,
-                    is_ensemble=loaded.is_ensemble,
-                    config_path=sub_path,
+            st = build_stack(
+                cfg,
+                name,
+                stop_event=stop_event,
+                profiler=profiler,
+                is_ensemble=loaded.is_ensemble,
+                config_path=sub_path,
+            )
+            stacks.append(st)
+            unwind.callback(teardown_stack, st)
+
+        if ensemble is not None:
+            ensemble.stacks = stacks
+            ensemble.populate_broadcast_events()
+            # The follower-scene factory closes over the stack's api/audio/source/cfg,
+            # which the playlist has no way to reach. Built by a helper rather than a
+            # loop-body lambda, so each captures its own stack.
+            for st, cfg in zip(stacks, cfgs, strict=True):
+                st.playlist.bind_ensemble(
+                    ensemble,
+                    interrupt=ensemble.broadcast_interrupt[st.name],
+                    resume=ensemble.broadcast_resume[st.name],
+                    build_follower_scene=_follower_scene_factory(st, cfg),
                 )
-            )
-    except BaseException:
-        for st in reversed(stacks):
-            teardown_stack(st)
-        raise
 
-    if ensemble is not None:
-        ensemble.stacks = stacks
-        ensemble.populate_broadcast_events()
-        # The follower-scene factory closes over the stack's api/audio/source/cfg,
-        # which the playlist has no way to reach. Built by a helper rather than a
-        # loop-body lambda, so each captures its own stack.
-        for st, cfg in zip(stacks, cfgs, strict=True):
-            st.playlist.bind_ensemble(
-                ensemble,
-                interrupt=ensemble.broadcast_interrupt[st.name],
-                resume=ensemble.broadcast_resume[st.name],
-                build_follower_scene=_follower_scene_factory(st, cfg),
-            )
-
-    return Session(
-        args=args,
-        loaded=loaded,
-        cfgs=cfgs,
-        stacks=stacks,
-        ensemble=ensemble,
-        stop_event=stop_event,
-        profiler=profiler,
-        interactive=interactive,
-        generation=generation,
-    )
+        sess = Session(
+            args=args,
+            loaded=loaded,
+            cfgs=cfgs,
+            stacks=stacks,
+            ensemble=ensemble,
+            stop_event=stop_event,
+            profiler=profiler,
+            interactive=interactive,
+            generation=generation,
+        )
+        unwind.pop_all()
+    return sess
 
 
 def _reload_cfg(sess: Session, index: int) -> cfgmod.Config:
