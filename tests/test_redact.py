@@ -937,6 +937,7 @@ class RedactSourceLineTest(unittest.TestCase):
             "dma_password : 'hunter2'",
             'dma_password-"hunter2"',
             'dma_password-= "hunter2"',
+            'dma_password_"hunter2"',
         ):
             with self.subTest(line=line):
                 safe, verbatim = redact_source_line(["[ultimate64]", line], 2)
@@ -952,6 +953,30 @@ class RedactSourceLineTest(unittest.TestCase):
             with self.subTest(name=name):
                 safe, verbatim = redact_source_line([line], 1)
                 self.assertEqual(safe, line[: line.index("%3D")] + " REDACTED")
+                self.assertFalse(verbatim)
+
+    def test_an_encoded_dash_after_an_encoded_name_still_cuts_it(self):
+        """The `-` read as a space has to be the decoded one as well: raw, the
+        `%73` hides the name, and decoded the `-` glues onto it."""
+        line = 'dma_pas%73word%2D"hunter2"'
+        self.assertEqual(redact_source_line([line], 1), ("dma_pas%73word REDACTED", False))
+
+    def test_a_dash_glued_exempt_word_on_a_rejected_line_is_kept(self):
+        """A `-` is read as a space to find `dma_password-"x"`, but whether a
+        name is one of the exempt words is still read as written."""
+        line = 'filter = "high-pass" bogus'
+        self.assertEqual(redact_source_line([line], 1), (line, True))
+
+    def test_an_encoded_url_password_on_a_rejected_line_is_dropped(self):
+        """`redact_secrets` reads userinfo decoded; read raw, an encoded `://`
+        or `@` hid it and the line came back verbatim."""
+        for line in (
+            'url = "https%3A%2F%2Fkelly:hunter2%40host/a" junk',
+            'url = "u64%3A//kelly:hunter2@host" junk',
+        ):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertEqual(safe, 'url = "REDACTED')
                 self.assertFalse(verbatim)
 
     def test_a_continuation_line_of_a_secret_value_is_dropped_whole(self):

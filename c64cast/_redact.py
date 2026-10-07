@@ -369,11 +369,14 @@ def _is_name_char(c: str) -> bool:
     return c.isalnum() or c in "_-"
 
 
-def _secret_names(text: str) -> Iterator[re.Match[str]]:
-    """Each secret-shaped name in `text` that ends a run of name characters."""
+def _secret_names(text: str, judge: str | None = None) -> Iterator[re.Match[str]]:
+    """Each secret-shaped name in `text` that ends a run of name characters.
+    Whether a match is glued or one of the exempt words is read from `judge`
+    instead when given, a text of the same length as `text`."""
+    judged = text if judge is None else judge
     pos = 0
     while (m := _NAME.search(text, pos)) is not None:
-        if _names_a_secret(text, m):
+        if _names_a_secret(judged, m):
             yield m
             pos = m.end()
         else:
@@ -764,22 +767,39 @@ def _value_open(lines: Sequence[str], lineno: int) -> bool:
     return delim is not None or depth > 0
 
 
-def _first_name_end(line: str) -> int | None:
+#: Read as a space when looking for a name on a rejected line.
+_NAME_JOINERS = str.maketrans("-_", "  ")
+
+
+def _first_name_end(line: str, decoded: str, starts: array[int] | None) -> int | None:
     """Where the earliest secret-shaped name on a rejected `line` ends, read
-    as given and percent-decoded, and each of those again with every `-` read
-    as a space. Decoded, because :func:`redact_secrets` reads `%26sig%3D` as
-    a name and the raw `6sig` is glued. With `-` as a space, because the rule
-    that a name ends where its key does would otherwise keep
-    `dma_password-"hunter2"` whole, and a `-` typed for an `=` is exactly the
-    kind of line a parser refuses."""
+    as given and as `decoded` (whose characters start at `starts`), and each
+    of those again with every `-` and `_` read as a space. Decoded, because
+    :func:`redact_secrets` reads `%26sig%3D` as a name and the raw `6sig` is
+    glued. With `-` and `_` as a space, because the rule that a name ends
+    where its key does would otherwise keep `dma_password-"hunter2"` or
+    `dma_password_"hunter2"` whole, and either key next to `=` typed for it
+    is exactly the kind of line a parser refuses. Glue and the exempt words
+    are still judged on the text as written, so `high-pass` stays a filter."""
     ends: list[int] = []
-    for view in (line, line.replace("-", " ")):
-        if (name := next(_secret_names(view), None)) is not None:
-            ends.append(name.end())
-        decoded, starts, _ = _decode(view)
-        if starts is not None and (name := next(_secret_names(decoded), None)) is not None:
-            ends.append(starts[name.end()])
+    readings = [(line, None)] if starts is None else [(line, None), (decoded, starts)]
+    for text, source in readings:
+        for view in (text, text.translate(_NAME_JOINERS)):
+            if (name := next(_secret_names(view, text), None)) is not None:
+                ends.append(name.end() if source is None else source[name.end()])
     return min(ends, default=None)
+
+
+def _userinfo_cut(line: str, decoded: str, starts: array[int] | None) -> int | None:
+    """Where the scheme of the first URL userinfo on a rejected `line` starts,
+    read as given and as `decoded`: `https%3A%2F%2Fkelly:pw%40host` carries
+    the same password as its decoded spelling."""
+    cuts: list[int] = []
+    if (raw := _URL_USERINFO.search(line)) is not None:
+        cuts.append(_scheme_start(line, raw.start()))
+    if starts is not None and (dec := _URL_USERINFO.search(decoded)) is not None:
+        cuts.append(starts[_scheme_start(decoded, dec.start())])
+    return min(cuts, default=None)
 
 
 def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
@@ -823,9 +843,9 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     if _value_open(lines, lineno):
         return REDACTED, False
     line = lines[lineno - 1]
-    key_end = _first_name_end(line)
-    userinfo = _URL_USERINFO.search(line)
-    cut = _scheme_start(line, userinfo.start()) if userinfo is not None else None
+    decoded, starts, _ = _decode(line)
+    key_end = _first_name_end(line, decoded, starts)
+    cut = _userinfo_cut(line, decoded, starts)
     if cut is not None and (key_end is None or cut < key_end):
         return f"{line[:cut]}{REDACTED}", False
     if key_end is not None:
