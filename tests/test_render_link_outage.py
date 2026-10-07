@@ -183,6 +183,7 @@ class RenderLinkFailureTest(unittest.TestCase):
                 self.calls += 1
                 if self.calls == 1:
                     raise SocketDMAError("did not answer the last redial")
+                api.stats["writes"] += 1
 
             def is_busy(self) -> bool:
                 return False
@@ -198,6 +199,37 @@ class RenderLinkFailureTest(unittest.TestCase):
             pl.run_one_frame(scene, time.time())
         self.assertEqual(ov.calls, 2)
         self.assertIn("1 frame(s) skipped", logs.output[-1])
+
+    def test_a_frame_that_sends_nothing_does_not_end_the_outage(self):
+        # A video between source frames returns True without sending anything,
+        # so every other tick of a dead link raises nothing.
+        class SkippingScene(FakeScene):
+            land_writes = False
+
+            def process_frame(self, current_time: float) -> bool:
+                self.frame_count += 1
+                if self.land_writes:
+                    self.api.stats["writes"] += 1
+                elif self.frame_count % 2:
+                    raise SocketDMAError("did not answer the last redial")
+                return True
+
+        scene = SkippingScene("Video", frames_until_done=10_000)
+        pl = self._playlist(scene)
+        scene.api = pl.api  # type: ignore[attr-defined]
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            for _ in range(6):
+                pl.run_one_frame(scene, time.time())
+        self.assertEqual(len(logs.output), 1, logs.output)
+        self.assertIn("WARNING", logs.output[0])
+        self.assertTrue(pl.link_outage.active, "a frame that sent nothing ended the outage")
+
+        scene.land_writes = True
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.run_one_frame(scene, time.time())
+        self.assertIn("link back after", logs.output[-1])
+        self.assertIn("3 frame(s) skipped", logs.output[-1])
+        self.assertFalse(pl.link_outage.active)
 
     def test_a_frame_where_scene_and_overlay_both_fail_counts_once(self):
         class Overlay:

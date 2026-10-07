@@ -46,7 +46,7 @@ LINK_OUTAGE_REPORT_S = 10.0
 class RenderLinkOutage:
     """Log for a render-path link outage: a WARNING when frames start failing
     on a `LinkError`, another every `LINK_OUTAGE_REPORT_S` while they still
-    fail, and an INFO line when a frame renders again.
+    fail, and an INFO line when a frame lands a write again.
 
     Skipping is silent otherwise, so a link that never comes back (a
     rejected password, say) keeps saying so instead of going quiet after
@@ -811,7 +811,10 @@ class Playlist:
         A `LinkError` is the exception: the link to the machine is down, not
         the scene, so the frame is skipped and the scene stays active, and the
         next frame tries the link again. An overlay that raises one is skipped
-        for this frame rather than disabled.
+        for this frame rather than disabled. The outage ends only on a frame
+        that raised nothing and landed a write: a frame that sent nothing
+        (a video tick between source frames) says nothing about the link, and
+        an `_emit` failure is swallowed rather than raised.
 
         Overlays with PAINTS_INTO_BUFFERS are skipped here: they were already
         composed into the scene's screen+color buffers during
@@ -819,6 +822,7 @@ class Playlist:
         scene write."""
         with self.profiler.stage("cpu_render"):
             link_failure: tuple[str, LinkError] | None = None
+            writes_before = self.api.stats["writes"] if self.link_outage.active else None
             try:
                 still_active = scene.process_frame(t0)
             except LinkError as e:
@@ -840,10 +844,10 @@ class Playlist:
                 except Exception:
                     self.log.exception("overlay %r raised on %r — disabling", ov.name, scene.name)
                     ov.disabled = True
-            if link_failure is None:
-                self.link_outage.recovered()
-            else:
+            if link_failure is not None:
                 self.link_outage.failed(*link_failure)
+            elif writes_before is not None and self.api.stats["writes"] > writes_before:
+                self.link_outage.recovered()
         return still_active
 
     def _apply_frame_events(self, scene: Scene, still_active: bool) -> None:
