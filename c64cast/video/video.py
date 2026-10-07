@@ -1126,8 +1126,10 @@ class AVFileSource:
                     self._decode_audio_packet(packet)
         except (EOFError, StopIteration):
             pass
-        # A seek requested after the last packet would otherwise park with it.
-        return "seek" if self._apply_pending_seek() else "eof"
+        # A seek requested after the last packet is not applied here, where
+        # the generator has finished and no longer bounds its reads:
+        # `_await_seek_after_eof` returns at once and the next pass applies it.
+        return "eof"
 
     def _await_seek_after_eof(self) -> bool:
         """Mark EOF and park until a seek is requested (True; the next pass

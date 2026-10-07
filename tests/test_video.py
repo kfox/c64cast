@@ -2084,31 +2084,27 @@ class SeekAfterEofTest(unittest.TestCase):
             self.assertTrue(scene.process_frame(current_time=0.0))
         self.assertAlmostEqual(src.last_frame_pts, 1.0, delta=0.25)
 
-    def test_a_seek_after_eof_is_applied_inside_a_live_demux(self):
-        # PyAV arms a remote input's read timeout only while a demux()
-        # generator is alive, so a seek applied after one has finished waits
-        # forever on a server that stops answering the range request.
-        class _TimedContainer(_FakeContainer):
-            def __init__(self, packets: list[_FakePacket]):
-                super().__init__(packets)
+    class _LiveDemuxContainer(_FakeContainer):
+        """Records, at each seek, whether a demux() generator was still live."""
+
+        def __init__(self, packets: list[_FakePacket], flush: _FakePacket | None = None):
+            super().__init__(packets)
+            self._flush = flush if flush is not None else _FakePacket([])
+            self.reading = False
+            self.seeks: list[bool] = []
+
+        def demux(self):
+            self.reading = True
+            try:
+                yield from self._packets
+                yield self._flush  # PyAV's trailing flush packet
+            finally:
                 self.reading = False
-                self.seeks: list[bool] = []  # was a demux() live at each seek
 
-            def demux(self):
-                self.reading = True
-                try:
-                    yield from self._packets
-                    yield _FakePacket([])  # PyAV's trailing flush packet
-                finally:
-                    self.reading = False
+        def seek(self, offset_us: int) -> None:
+            self.seeks.append(self.reading)
 
-            def seek(self, offset_us: int) -> None:
-                self.seeks.append(self.reading)
-
-        src = _make_demux_source_stub([])
-        container = _TimedContainer([_FakePacket([_FakeFrame(0)])])
-        src.container = container
-
+    def _run_demux_loop(self, src: AVFileSource) -> None:
         def close() -> None:
             with src._lock:
                 src._closed = True
@@ -2118,8 +2114,39 @@ class SeekAfterEofTest(unittest.TestCase):
         worker.start()
         self.addCleanup(worker.join, 5.0)
         self.addCleanup(close)
+
+    def test_a_seek_after_eof_is_applied_inside_a_live_demux(self):
+        # PyAV arms a remote input's read timeout only while a demux()
+        # generator is alive, so a seek applied after one has finished waits
+        # forever on a server that stops answering the range request.
+        src = _make_demux_source_stub([])
+        container = self._LiveDemuxContainer([_FakePacket([_FakeFrame(0)])])
+        src.container = container
+        self._run_demux_loop(src)
         self.assertTrue(_wait_until(lambda: src._eof), "demux loop never reached EOF")
         src.request_seek(0.0)
+        self.assertTrue(_wait_until(lambda: container.seeks), "the seek was never applied")
+        self.assertEqual(container.seeks, [True])
+
+    def test_a_seek_landing_on_the_flush_packet_is_applied_inside_a_live_demux(self):
+        # The generator finishes right after its flush packet, so a seek
+        # requested while that packet decodes must wait for the next pass.
+        src = _make_demux_source_stub([])
+
+        class _SeekingPacket(_FakePacket):
+            requested = False
+
+            def decode(self):
+                if not self.requested:  # once: every pass yields this packet
+                    self.requested = True
+                    src.request_seek(0.0)
+                return []
+
+        container = self._LiveDemuxContainer(
+            [_FakePacket([_FakeFrame(0)])], flush=_SeekingPacket([])
+        )
+        src.container = container
+        self._run_demux_loop(src)
         self.assertTrue(_wait_until(lambda: container.seeks), "the seek was never applied")
         self.assertEqual(container.seeks, [True])
 
