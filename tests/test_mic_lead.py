@@ -15,9 +15,13 @@ from c64cast.audio.audio_handlers import (
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
+    REU_MIC_RING_LEAD,
     REU_MIC_SIZE,
     REU_PUMP_CHUNK_SIZE,
+    RING_BUFFER_ADDR,
+    RING_BUFFER_SIZE,
 )
+from c64cast.hw.c64 import CIA_TIMER_LATCH_MAX
 
 RATE = 12000
 
@@ -844,6 +848,277 @@ class MicLeadThreadExitTest(unittest.TestCase):
         servo._open_loop = True
         servo._fails = 5000
         self.assertEqual(servo._next_wait(), ml.MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
+
+
+# The matched CIA #1 latch at 12 kHz NTSC: chunk 128 x NMI period 85, less one.
+MATCHED = REU_PUMP_CHUNK_SIZE * 85 - 1
+# Rates measured on a U64-II with the mic pump (#580), in bytes per second.
+PETSCII_PUMP, PETSCII_READER = 12031.0, 11342.0
+MHIRES_PUMP, MHIRES_READER = 10094.0, 9938.0
+
+
+class _RingRig:
+    """A pump at ``pump`` B/s while its latch is the matched one, and an NMI
+    reader at ``reader`` B/s; ``lead`` is the pump's unwrapped lead over the
+    reader. One ``step`` is one governor interval."""
+
+    def __init__(self, pump: float, reader: float, *, lead: float = REU_MIC_RING_LEAD) -> None:
+        self.pump_matched = pump
+        self.reader = reader
+        self.lead = float(lead)
+        self.latch = MATCHED
+        self.writes: list[int] = []
+        self.fail_reads = 0
+        self.accept_writes = True
+        self.gov = ml.MicRingGovernor(
+            read_phase=self.read,
+            write_latch=self.write,
+            matched_latch=MATCHED,
+            sample_rate=RATE,
+        )
+
+    def read(self) -> tuple[int, int] | None:
+        if self.fail_reads:
+            self.fail_reads -= 1
+            return None
+        r = RING_BUFFER_ADDR + 0x0A00
+        # The pump lands whole chunks, so W moves in chunk steps.
+        ahead = int(self.lead) // REU_PUMP_CHUNK_SIZE * REU_PUMP_CHUNK_SIZE
+        return r, RING_BUFFER_ADDR + (r - RING_BUFFER_ADDR + ahead) % RING_BUFFER_SIZE
+
+    def write(self, latch: int) -> bool:
+        if not self.accept_writes:
+            return False
+        self.writes.append(latch)
+        self.latch = latch
+        return True
+
+    @property
+    def pump_rate(self) -> float:
+        return self.pump_matched * (MATCHED + 1) / (self.latch + 1)
+
+    def step(self) -> None:
+        self.gov.tick()
+        self.lead += self.pump_rate - self.reader
+
+
+class MicRingCorrectionTest(unittest.TestCase):
+    def test_on_target_with_no_history_asks_for_nothing(self):
+        self.assertEqual(ml.mic_ring_correction(REU_MIC_RING_LEAD, 0.0, sample_rate=RATE), (0, 0))
+
+    def test_a_pump_too_far_ahead_is_slowed_and_one_short_of_it_sped_up(self):
+        ahead, _ = ml.mic_ring_correction(REU_MIC_RING_LEAD + 1000, 0.0, sample_rate=RATE)
+        behind, _ = ml.mic_ring_correction(REU_MIC_RING_LEAD - 1000, 0.0, sample_rate=RATE)
+        self.assertGreater(ahead, 0.0)
+        self.assertLess(behind, 0.0)
+
+    def test_a_reader_just_past_the_pump_reads_as_short_of_the_target(self):
+        # The lead is known modulo the ring: a reader that overran the write
+        # head shows up as a lead just short of a full ring, and the pump has
+        # to be sped up rather than slowed further behind it.
+        overrun = RING_BUFFER_SIZE - ml.MIC_RING_OVERRUN_WINDOW // 2
+        frac, _ = ml.mic_ring_correction(overrun, 0.0, sample_rate=RATE)
+        self.assertLess(frac, 0.0)
+
+    def test_a_pump_far_ahead_is_slowed_however_far(self):
+        # Bus halts only slow the reader, so a large lead short of the overrun
+        # window is the pump ahead, even past half a ring from the target.
+        far = RING_BUFFER_SIZE - ml.MIC_RING_OVERRUN_WINDOW - 1
+        frac, _ = ml.mic_ring_correction(far, 0.0, sample_rate=RATE)
+        self.assertGreater(frac, 0.0)
+
+    def test_output_and_integrator_are_held_to_the_trim_range(self):
+        hi, _ = ml.mic_ring_correction(REU_MIC_RING_LEAD + 4000, 10**9, sample_rate=RATE)
+        lo, _ = ml.mic_ring_correction(REU_MIC_RING_LEAD - 2000, -(10**9), sample_rate=RATE)
+        self.assertEqual(hi, ml.MIC_RING_MAX_SLOW)
+        self.assertEqual(lo, -ml.MIC_RING_MAX_FAST)
+        # A minute pinned at the slow ceiling, then a lead short of target:
+        # the trim has to come off the ceiling at once.
+        integ = 0.0
+        for _ in range(60):
+            _, integ = ml.mic_ring_correction(REU_MIC_RING_LEAD + 4000, integ, sample_rate=RATE)
+        frac, _ = ml.mic_ring_correction(REU_MIC_RING_LEAD - 1500, integ, sample_rate=RATE)
+        self.assertLess(frac, ml.MIC_RING_MAX_SLOW)
+
+
+class TrimmedPumpLatchTest(unittest.TestCase):
+    def test_no_trim_is_the_matched_latch(self):
+        self.assertEqual(ml.trimmed_pump_latch(MATCHED, 0.0), MATCHED)
+
+    def test_a_trim_stretches_the_period_not_the_latch(self):
+        # Period = latch + 1: 10880 x 1.05 = 11424 cycles is latch 11423.
+        self.assertEqual(ml.trimmed_pump_latch(MATCHED, 0.05), 11423)
+        self.assertEqual(ml.trimmed_pump_latch(MATCHED, -0.03), 10553)
+
+    def test_a_period_past_sixteen_bits_is_clamped(self):
+        self.assertEqual(ml.trimmed_pump_latch(60000, 0.25), CIA_TIMER_LATCH_MAX)
+
+
+class MicRingGovernorClosedLoopTest(unittest.TestCase):
+    """The governor against the rates measured on a U64-II (#580)."""
+
+    def _settle(self, pump: float, reader: float, steps: int = 90) -> _RingRig:
+        rig = _RingRig(pump, reader)
+        leads = []
+        for _ in range(steps):
+            rig.step()
+            leads.append(rig.lead)
+        # Never a lap either way, and parked near the target once settled.
+        self.assertGreater(min(leads), 0)
+        self.assertLess(max(leads), RING_BUFFER_SIZE)
+        for lead in leads[40:]:
+            self.assertLess(abs(lead - REU_MIC_RING_LEAD), 300)
+        self.assertAlmostEqual(rig.pump_rate, reader, delta=reader * 0.002)
+        return rig
+
+    def test_the_petscii_reader_deficit_is_absorbed_by_a_slower_pump(self):
+        rig = self._settle(PETSCII_PUMP, PETSCII_READER)
+        self.assertGreater(rig.latch, MATCHED)
+
+    def test_the_mhires_reader_deficit_is_absorbed_too(self):
+        self._settle(MHIRES_PUMP, MHIRES_READER)
+
+    def test_without_the_governor_the_petscii_pump_laps_the_reader(self):
+        # The rig reproduces the defect when nothing steers the pump, so the
+        # tests above are about the governor.
+        rig = _RingRig(PETSCII_PUMP, PETSCII_READER)
+        for _ in range(12):
+            rig.lead += rig.pump_rate - rig.reader
+        self.assertGreater(rig.lead, RING_BUFFER_SIZE)
+
+    def test_a_failed_read_holds_the_latch(self):
+        rig = _RingRig(PETSCII_PUMP, PETSCII_READER)
+        for _ in range(20):
+            rig.step()
+        latch, writes = rig.latch, len(rig.writes)
+        rig.fail_reads = 3
+        for _ in range(3):
+            rig.gov.tick()
+        self.assertEqual((rig.latch, len(rig.writes)), (latch, writes))
+        self.assertEqual(rig.gov.failed_reads, 3)
+
+    def test_a_refused_write_retires_the_governor(self):
+        # The streamer refuses once the pump is disarmed; a governor that kept
+        # writing could land a trim after the kernal latch restore.
+        rig = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 2000)
+        rig.accept_writes = False
+        rig.gov.tick()
+        self.assertTrue(rig.gov.retired)
+        rig.accept_writes = True
+        rig.gov.tick()
+        self.assertEqual(rig.writes, [])
+
+    def test_an_overrun_is_recorded_as_a_negative_lead(self):
+        rig = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=-200)
+        rig.gov.tick()
+        self.assertEqual((rig.gov.lead_min, rig.gov.lead_max), (-256, -256))
+
+    def test_an_unchanged_latch_is_not_rewritten(self):
+        rig = _RingRig(PETSCII_PUMP, PETSCII_PUMP)
+        for _ in range(5):
+            rig.step()
+        self.assertEqual(rig.writes, [])
+
+
+class MicLeadAndRingCascadeTest(unittest.TestCase):
+    """Both loops at once: the governor slows the pump to the reader, and the
+    host lead servo follows the slower pump by dropping input."""
+
+    def _run(self, pump: float, reader: float, steps: int = 120) -> tuple[_Rig, _RingRig]:
+        host = _Rig(drift=0.0)
+        ring = _RingRig(pump, reader)
+        host.servo.ring_governor = ring.gov
+        host_leads, ring_leads = [], []
+        for _ in range(steps):
+            host.servo.tick()
+            host.servo._tick_ring_governor()
+            self.assertIsNone(host.servo.take_reanchor())
+            host.t += 1.0
+            host.pump += ring.pump_rate
+            host.host += RATE * (1.0 - host.servo.drop_frac)
+            ring.lead += ring.pump_rate - ring.reader
+            host_leads.append(host.lead)
+            ring_leads.append(ring.lead)
+        self.assertEqual(host.servo.reanchors, 0)
+        self.assertGreater(min(host_leads), 0)
+        self.assertLess(max(host_leads), ml.MIC_LEAD_REANCHOR_ABOVE)
+        self.assertGreater(min(ring_leads), 0)
+        self.assertLess(max(ring_leads), RING_BUFFER_SIZE)
+        for lead in host_leads[60:]:
+            self.assertLess(abs(lead - REU_MIC_BOOTSTRAP_BYTES), 300)
+        for lead in ring_leads[60:]:
+            self.assertLess(abs(lead - REU_MIC_RING_LEAD), 300)
+        return host, ring
+
+    def test_petscii(self):
+        host, _ = self._run(PETSCII_PUMP, PETSCII_READER)
+        # The host now drops what the reader cannot play: ~5.5 % at 12 kHz.
+        self.assertAlmostEqual(host.servo.drop_frac, 1 - PETSCII_READER / RATE, delta=0.005)
+
+    def test_mhires(self):
+        self._run(MHIRES_PUMP, MHIRES_READER)
+
+    def test_the_servo_thread_steps_the_governor_each_interval(self):
+        ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
+        servo = ml.MicLeadServo(
+            read_memory=lambda a, n, timeout=1.0: None,
+            write_pos=lambda: 0,
+            sample_rate=RATE,
+            ring_governor=ring.gov,
+        )
+        waits: list[float] = []
+
+        class _Stop:
+            def wait(self, timeout: float) -> bool:
+                waits.append(timeout)
+                return len(waits) > 2
+
+            def is_set(self) -> bool:
+                return False
+
+        servo._stop = _Stop()  # type: ignore[assignment]
+        servo._run()
+        # Two intervals ran; the lead servo's reads failing does not stop it.
+        self.assertEqual(len(ring.writes), 2)
+
+    def test_an_open_loop_holds_the_governor(self):
+        # The open loop's backed-off wait would step the governor's per-second
+        # gains across up to 8 s, which overshoots into a lap.
+        host = _Rig(drift=0.0)
+        ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
+        host.servo.ring_governor = ring.gov
+        host.servo._open_loop = True
+        host.servo._tick_ring_governor()
+        self.assertEqual(ring.writes, [])
+        host.servo._open_loop = False
+        host.servo._tick_ring_governor()
+        self.assertEqual(len(ring.writes), 1)
+
+    def test_a_stopped_servo_does_not_step_the_governor(self):
+        host = _Rig(drift=0.0)
+        ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
+        host.servo.ring_governor = ring.gov
+        host.servo._stop.set()
+        host.servo._tick_ring_governor()
+        self.assertEqual(ring.writes, [])
+
+    def test_a_failing_governor_is_retired_and_the_host_loop_carries_on(self):
+        def boom() -> tuple[int, int] | None:
+            raise ValueError("bug")
+
+        gov = ml.MicRingGovernor(
+            read_phase=boom, write_latch=lambda latch: True, matched_latch=MATCHED, sample_rate=RATE
+        )
+        servo = ml.MicLeadServo(
+            read_memory=lambda a, n, timeout=1.0: None,
+            write_pos=lambda: 0,
+            sample_rate=RATE,
+            ring_governor=gov,
+        )
+        with self.assertLogs("c64cast.audio.mic_lead", "ERROR") as cm:
+            servo._tick_ring_governor()
+        self.assertTrue(gov.retired)
+        self.assertIn("holding the pump", cm.output[0])
 
 
 if __name__ == "__main__":

@@ -818,15 +818,18 @@ class AudioCfg:
     # = audible echo. The governor lives in the pump's own IRQ handler: it reads the NMI
     # read pointer and skips a chunk when the write head is too far ahead, and the pump
     # runs faster than matched so there is always a surplus to skip. Covers both the
-    # char-mode and the bitmap bank-swap video pumps; the REU mic pump has none.
+    # char-mode and the bitmap bank-swap video pumps. The REU mic pump's body has no
+    # room for that test, so there the flag gates mic_lead.MicRingGovernor, which
+    # trims the pump's CIA #1 latch from the host on the measured lead instead.
     reu_pump_governor: bool = field(
         default=True,
         metadata={
             "help": "C64-side rate governor for the REU audio pump: the pump runs "
             "faster than the reader and its IRQ skips a chunk when its write "
             "head is half a ring ahead, stopping drift/echo with no host "
-            "writes. Video scenes with use_reu_pump only; the REU mic pump "
-            "has no governor."
+            "writes. On the REU mic pump the host trims the pump's rate "
+            "instead, from the measured lead about once a second. Only "
+            "matters with use_reu_pump."
         },
     )
     # The host-DMA worker paces ring writes to wall-clock, so the write head W

@@ -311,6 +311,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   continuously between chunks, which also smooths video played over the DAC
   without the REU pump.
 
+- **REU-pumped mic audio no longer jumps every few seconds.** With
+  `[audio].use_reu_pump`, the C64-side pump fed the audio ring at the nominal
+  rate while the reader lost ticks to video DMA, so the pump lapped it about
+  every 12 s under petscii (every 30 to 60 s under mhires), and each lap
+  skipped most of a second of audio. The pump's rate now follows the reader,
+  steered from the measured ring lead about once a second; the excess input is
+  dropped in short crossfaded splices instead. `[audio].reu_pump_governor`
+  (on by default) turns it off.
+
 - **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
   switched to the model the tune asks for.** The chip's model is a setting, but
   SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,

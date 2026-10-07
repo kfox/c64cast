@@ -15,6 +15,12 @@ Two collaborators of ``AudioStreamer`` close that loop:
   the lead error into a drop fraction through the shared ``pi_step``, asks for
   a re-anchor when the lead reads as overtaken or far past the target, and
   falls back to open loop — loudly — when the reads keep failing.
+* ``MicRingGovernor`` — the second stage (#580): the pump's lead over the
+  NMI reader in the $4000 ring. The reader loses ticks to bus halts and the
+  pump does not, so the pump laps it unless something slows the pump down.
+  Ticked from the servo's thread, it reads R and the pump's dst tracker in
+  one span read and trims the pump's CIA #1 latch through the shared
+  ``pi_step``; the host loop above then follows the slower pump.
 * ``MicLeadShaper`` — callback-side, stateful: applies the drop fraction to
   the sample stream. Within ``±MIC_LEAD_RESAMPLE_MAX`` it resamples (single
   samples dropped or repeated, interpolated; the pitch moves by that
@@ -22,7 +28,8 @@ Two collaborators of ``AudioStreamer`` close that loop:
   whole correction, evenly spaced by the steady accrual of the drop, so the
   pitch stays exact and content is skipped instead.
 
-**Threading contract.** ``MicLeadServo`` fields are written by its own thread;
+**Threading contract.** ``MicLeadServo`` and ``MicRingGovernor`` fields are
+written by the servo's thread;
 the audio callback reads ``drop_frac`` (one float, atomic) and claims a
 re-anchor through ``take_reanchor`` (under ``_lock``). ``MicLeadShaper`` is
 touched only by the audio callback.
@@ -40,13 +47,17 @@ from collections.abc import Callable
 
 import numpy as np
 
+from c64cast.hw.c64 import CIA_TIMER_LATCH_MAX
+
 from .audio_handlers import (
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_END,
+    REU_MIC_RING_LEAD,
     REU_MIC_SIZE,
     REU_PUMP_CHUNK_SIZE,
+    RING_BUFFER_SIZE,
 )
 from .audio_servo import (
     pi_step,
@@ -108,6 +119,26 @@ MIC_LEAD_OPEN_LOOP_MAX_WAIT_S = 8.0
 MIC_SPLICE_MS = 30.0
 MIC_SPLICE_SEARCH_MS = 10.0
 MIC_SPLICE_FADE_MS = 8.0
+# The ring governor's plant has the lead servo's shape (a lead that integrates
+# a rate mismatch, steered by a fraction of the nominal rate), so it runs on the
+# same gains and settles as the lead does. The cascade is stable because the
+# host loop measures the pump's rate every interval and follows it.
+MIC_RING_KP = MIC_LEAD_KP
+MIC_RING_KI = MIC_LEAD_KI
+# How far the governor may stretch the pump's period. The reader has measured
+# 5.7 % short of the pump under petscii and 1.5 % under mhires on a U64-II, so
+# 25 % is headroom; past it, the host loop would be splicing a quarter of the
+# input away. The pump runs faster than matched only when the reader is the
+# faster one, which bus halts cannot cause, so that side stays narrow.
+MIC_RING_MAX_SLOW = 0.25
+MIC_RING_MAX_FAST = 0.03
+# The lead is known only modulo the ring, so one split point decides whether a
+# large reading is a pump far ahead or a reader that overran the pump. Bus
+# halts slow only the reader, so the pump running ahead is the drift there is;
+# an overrun can come only from a pump burst short of the reader's, which moved
+# the lead about 1 KB in a second under mhires. A reading within this many
+# bytes behind the reader is an overrun, and any other is the pump ahead.
+MIC_RING_OVERRUN_WINDOW = 1024
 
 
 def mic_lead_correction(
@@ -156,6 +187,51 @@ def mic_lead_rate_seed(pump_rate: float, *, sample_rate: int) -> tuple[float, fl
     rate = float(sample_rate)
     need = max(-MIC_LEAD_RESAMPLE_MAX, min(MIC_LEAD_MAX_DROP, 1.0 - pump_rate / rate))
     return need, need * rate / MIC_LEAD_KI
+
+
+def signed_ring_lead(lead: int) -> int:
+    """The pump's lead over the NMI reader, from its value modulo the ring:
+    one within ``MIC_RING_OVERRUN_WINDOW`` of a full ring is the reader past
+    the pump (negative), and any other is the pump that far ahead."""
+    lead %= RING_BUFFER_SIZE
+    if lead >= RING_BUFFER_SIZE - MIC_RING_OVERRUN_WINDOW:
+        lead -= RING_BUFFER_SIZE
+    return lead
+
+
+def mic_ring_correction(
+    lead: int,
+    integ: float,
+    *,
+    sample_rate: int,
+    target: int = REU_MIC_RING_LEAD,
+) -> tuple[float, float]:
+    """One ring-governor decision: ``(slow_frac, new_integ)``.
+
+    ``lead`` is the pump's dst tracker less the NMI read pointer, read as
+    ``signed_ring_lead`` does. A positive ``slow_frac`` stretches the pump's
+    period by that fraction (the pump is ahead); negative shortens it. Pure,
+    for the tests."""
+    rate = float(sample_rate)
+    error = signed_ring_lead(lead) - target
+    return pi_step(
+        error,
+        integ,
+        kp=MIC_RING_KP / rate,
+        ki=MIC_RING_KI / rate,
+        integ_min=-MIC_RING_MAX_FAST * rate / MIC_RING_KI,
+        integ_max=MIC_RING_MAX_SLOW * rate / MIC_RING_KI,
+        out_min=-MIC_RING_MAX_FAST,
+        out_max=MIC_RING_MAX_SLOW,
+    )
+
+
+def trimmed_pump_latch(matched_latch: int, slow_frac: float) -> int:
+    """The CIA #1 latch that stretches the matched pump period by
+    ``slow_frac``. The period is ``latch + 1`` cycles, about 10.9 k at 12 kHz,
+    so one latch step is ~0.01 % of the rate. Held to the 16-bit timer."""
+    period = (matched_latch + 1) * (1.0 + slow_frac)
+    return max(1, min(CIA_TIMER_LATCH_MAX, round(period) - 1))
 
 
 def reanchor_fill(anchor: int) -> tuple[int, int]:
@@ -284,8 +360,10 @@ class MicLeadServo:
         sample_rate: int,
         interval_s: float = MIC_LEAD_SERVO_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
+        ring_governor: MicRingGovernor | None = None,
     ) -> None:
         self._clock = clock
+        self.ring_governor = ring_governor
         self._read = read_memory
         self._write_pos = write_pos
         self._rate = sample_rate
@@ -345,6 +423,29 @@ class MicLeadServo:
                 self.drop_frac = 0.0
                 log.exception("audio[reu mic]: lead servo step failed; running open-loop")
                 return
+            self._tick_ring_governor()
+
+    def _tick_ring_governor(self) -> None:
+        """Step the ring governor, if there is one and the loop is still
+        running. One that raises is retired at the latch it last wrote, which
+        holds the correction it had reached, and the host loop carries on.
+
+        While this loop is open its wait backs off to as much as
+        ``MIC_LEAD_OPEN_LOOP_MAX_WAIT_S``, and the governor's gains are per
+        ``interval_s``: stepped every 8 s they would correct eight intervals'
+        worth of lead per step and oscillate into a lap. So an open loop holds
+        the latch, as a failed read does."""
+        gov = self.ring_governor
+        if gov is None or gov.retired or self._open_loop or self._stop.is_set():
+            return
+        try:
+            gov.tick()
+        except Exception:
+            gov.retired = True
+            log.exception(
+                "audio[reu mic]: ring governor step failed; holding the pump at CIA #1 latch %d",
+                gov.latch,
+            )
 
     def _next_wait(self) -> float:
         if not self._open_loop:
@@ -489,3 +590,72 @@ class MicLeadServo:
             )
         self._fails = 0
         self._open_loop = False
+
+
+class MicRingGovernor:
+    """The 1 Hz closed loop on the pump's lead over the NMI reader (#580).
+
+    ``read_phase`` returns ``(R, W)`` from one span read, or None.
+    ``write_latch`` writes a CIA #1 latch and returns False once the pump it
+    governs has been disarmed, after which the governor writes nothing more:
+    a write landing after the teardown's kernal-latch restore would leave the
+    jiffy IRQ at the pump's rate for every later scene."""
+
+    def __init__(
+        self,
+        *,
+        read_phase: Callable[[], tuple[int, int] | None],
+        write_latch: Callable[[int], bool],
+        matched_latch: int,
+        sample_rate: int,
+    ) -> None:
+        self._read_phase = read_phase
+        self._write_latch = write_latch
+        self._matched = matched_latch
+        self._rate = sample_rate
+        self._integ = 0.0
+        self.slow_frac = 0.0
+        self.latch = matched_latch
+        self.retired = False
+        self.lead_min: int | None = None
+        self.lead_max: int | None = None
+        self.slow_min: float | None = None
+        self.slow_max: float | None = None
+        self.failed_reads = 0
+
+    def tick(self) -> None:
+        """One measurement and decision. A failed read holds the latch: the
+        integrator is the standing bus-halt correction, and dropping it would
+        hand back the drift that laps the ring."""
+        if self.retired:
+            return
+        got = self._read_phase()
+        if got is None:
+            self.failed_reads += 1
+            return
+        r, w = got
+        # Signed, so an overrun shows in the stop() summary as the negative
+        # lead it is rather than as a near-full ring.
+        lead = signed_ring_lead(w - r)
+        self.lead_min = lead if self.lead_min is None else min(self.lead_min, lead)
+        self.lead_max = lead if self.lead_max is None else max(self.lead_max, lead)
+        self.slow_frac, self._integ = mic_ring_correction(lead, self._integ, sample_rate=self._rate)
+        self.slow_min = (
+            self.slow_frac if self.slow_min is None else min(self.slow_min, self.slow_frac)
+        )
+        self.slow_max = (
+            self.slow_frac if self.slow_max is None else max(self.slow_max, self.slow_frac)
+        )
+        latch = trimmed_pump_latch(self._matched, self.slow_frac)
+        log.debug(
+            "audio[reu mic]: C64 ring lead %d B → pump slowed %.4f (CIA #1 latch %d)",
+            lead,
+            self.slow_frac,
+            latch,
+        )
+        if latch == self.latch:
+            return
+        if not self._write_latch(latch):
+            self.retired = True
+            return
+        self.latch = latch

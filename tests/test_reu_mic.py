@@ -53,7 +53,13 @@ from c64cast.audio.audio_handlers import (
     mic_ring_lead_ok,
     mic_ring_seed,
 )
-from c64cast.audio.mic_lead import MIC_LEAD_REANCHOR_GUARD, MicLeadServo, MicLeadShaper
+from c64cast.audio.mic_lead import (
+    MIC_LEAD_READ_TIMEOUT_S,
+    MIC_LEAD_REANCHOR_GUARD,
+    MicLeadServo,
+    MicLeadShaper,
+    MicRingGovernor,
+)
 from c64cast.hw.c64 import CIA1, KERNAL, VECTORS, kernal_cia1_latch
 
 
@@ -1105,6 +1111,29 @@ class MicLeadServoWiringTest(unittest.TestCase):
             cm.output,
         )
 
+    def test_stop_summarizes_the_ring_governor(self):
+        s = _new_streamer()
+        gov = MicRingGovernor(
+            read_phase=lambda: None,
+            write_latch=lambda latch: True,
+            matched_latch=10879,
+            sample_rate=12000,
+        )
+        gov.lead_min, gov.lead_max, gov.slow_min, gov.slow_max = 1900, 2300, 0.01, 0.06
+        gov.latch = 11500
+        s._mic_lead = MicLeadServo(
+            read_memory=lambda *a, **k: None,
+            write_pos=lambda: 0,
+            sample_rate=12000,
+            ring_governor=gov,
+        )
+        with self.assertLogs("c64cast.audio.audio", "INFO") as cm:
+            s.stop()
+        self.assertTrue(
+            any("C64 ring lead 1900..2300 B" in m and "latch 11500" in m for m in cm.output),
+            cm.output,
+        )
+
     def test_stop_ends_the_servo_loop_before_the_teardown(self):
         # A teardown stalled past the claim window would otherwise have the
         # servo drop an unclaimed re-anchor at WARNING during a normal stop.
@@ -1117,6 +1146,71 @@ class MicLeadServoWiringTest(unittest.TestCase):
         cast(Any, s)._disarm_reu_pump = lambda: seen.append(servo._stop.is_set())
         s.stop()
         self.assertEqual(seen, [True])
+
+
+class MicRingGovernorWiringTest(unittest.TestCase):
+    """The streamer side of the #580 ring governor: it rides the lead servo
+    with ``reu_pump_governor`` on, and its CIA #1 writes are fenced to the pump
+    arm that created it."""
+
+    def _start(self, *, governor: bool = True) -> AudioStreamer:
+        s = new_streamer(dither=False, use_reu_pump=True, reu_pump_governor=governor)
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
+        s._start_mic_for_reu_pump(device=-1)
+        self.addCleanup(s.stop)
+        return s
+
+    def _governor(self, s: AudioStreamer) -> MicRingGovernor:
+        lead = s._mic_lead
+        assert lead is not None and lead.ring_governor is not None
+        return lead.ring_governor
+
+    def test_bring_up_attaches_a_governor_at_the_matched_latch(self):
+        s = self._start()
+        gov = self._governor(s)
+        self.assertEqual(gov.latch, s._reu_cia1_latch_nominal)
+        self.assertEqual(gov._matched, 10879)
+
+    def test_with_the_governor_off_there_is_none(self):
+        s = self._start(governor=False)
+        assert s._mic_lead is not None
+        self.assertIsNone(s._mic_lead.ring_governor)
+
+    def test_a_trim_writes_the_pump_latch_while_armed(self):
+        s = self._start()
+        fake = cast(FakeAPI, s.api)
+        self.assertTrue(self._governor(s)._write_latch(11000))
+        self.assertEqual(fake.memories["DC04"], _packed_latch(11000))
+
+    def test_no_trim_lands_after_the_disarm_restores_the_kernal_latch(self):
+        s = self._start()
+        fake = cast(FakeAPI, s.api)
+        write = self._governor(s)._write_latch
+        s._disarm_reu_pump()
+        self.assertFalse(write(11000))
+        self.assertEqual(fake.memories["DC04"], _packed_latch(kernal_cia1_latch("NTSC")))
+
+    def test_a_previous_arms_governor_cannot_trim_the_next_pump(self):
+        s = self._start()
+        stale = self._governor(s)._write_latch
+        s.stop()
+        s._start_mic_for_reu_pump(device=-1)
+        self.assertFalse(stale(11000))
+        self.assertTrue(self._governor(s)._write_latch(11000))
+
+    def test_the_governor_reads_both_pointers_at_the_servo_timeout(self):
+        s = self._start()
+        fake = cast(FakeAPI, s.api)
+        calls: list[tuple[int, int, float]] = []
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            calls.append((address, length, timeout))
+            return None
+
+        fake.read_memory = read  # type: ignore[method-assign]
+        self._governor(s).tick()
+        span = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
+        self.assertEqual(calls, [(READ_PTR_LO_ADDR, span, MIC_LEAD_READ_TIMEOUT_S)])
 
 
 class MicRingPrefillDeliveryTest(unittest.TestCase):
