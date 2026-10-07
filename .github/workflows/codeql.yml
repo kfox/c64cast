@@ -11,9 +11,11 @@ on:
 permissions:
   contents: read
 
+# Not keyed by ref alone outside PRs: a queued main run would be replaced by
+# the next merge's, and its commit would get no result.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:
