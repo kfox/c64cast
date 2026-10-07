@@ -34,6 +34,7 @@ from c64cast.hw.c64 import (
     CIA_TIMER_LATCH_MAX,
     NMI_CEILING_LATCH,
     VECTORS,
+    actual_rate_for_latch,
     clamp_nmi_latch,
     cpu_clock,
     nearest_latch,
@@ -135,8 +136,7 @@ class NmiTimer:
             # Callers read a falsy rate as "no audio clock" (position_seconds);
             # nominal_latch would raise ValueError.
             return 0.0
-        clock = cpu_clock(self._st.system)
-        return clock / (self.nominal_latch() + 1)
+        return actual_rate_for_latch(self.nominal_latch(), self._st.system)
 
     def ceiling_latch(self) -> int:
         """Smallest (fastest) CIA #2 Timer A latch the adaptive loop may use: the
