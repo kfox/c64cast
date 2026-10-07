@@ -303,6 +303,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   startup), the systems already started kept their connection open and their
   REU, sampler, master volume, video output and palette changes in place.
 
+- **`[audio].dac_curve = "calibrated"` with no calibration now fails before
+  touching the machine.** It could first switch the Ultimate's video output
+  (making a capture device re-lock), reset the C64 and change its REU and audio
+  settings, then put them all back and exit.
+
 - **An Ultimate's network dropping out for a few seconds no longer ends the
   scene.** A REU-staged video (`hires`, `mhires`, or a REU-staged character
   mode) whose link stayed down past one reconnect attempt stopped with

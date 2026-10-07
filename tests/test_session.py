@@ -534,13 +534,14 @@ class BuildStackDacCurveTest(unittest.TestCase):
     build_session tears down the stacks that did come up."""
 
     def _build(self, cfg: cfgmod.Config, resolve: mock.MagicMock) -> None:
-        api = mock.MagicMock(name="api")
+        api = self.api = mock.MagicMock(name="api")
         api.profile.max_fps = None
         api.disable_case_switch.side_effect = session.StackBuildError(4)
         api.read_menu_screen.return_value = None
+        self.hw_provision = mock.MagicMock(name="hw_provision")
         with (
             mock.patch.object(session, "_open_backend", return_value=api),
-            mock.patch.object(session, "hw_provision"),
+            mock.patch.object(session, "hw_provision", self.hw_provision),
             mock.patch.object(session, "_build_audio", return_value=mock.MagicMock(name="audio")),
             mock.patch.object(session.dac_curve_resolve, "resolve_dac_curve_for_backend", resolve),
             mock.patch.object(session, "_resolve_reu_available", return_value=False),
@@ -565,6 +566,24 @@ class BuildStackDacCurveTest(unittest.TestCase):
             self._build(cfg, resolve)
         self.assertEqual(raised.exception.exit_code, 3)
         self.assertIn("no usable calibration", "\n".join(cm.output))
+
+    def test_a_missing_calibration_fails_before_the_machine_is_touched(self):
+        # Master volume, the HDMI mode switch (a capture device re-locks on it)
+        # and the reset would all happen only to be reverted by the unwind.
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        resolve = mock.MagicMock(side_effect=ValueError("no usable calibration"))
+        with (
+            self.assertLogs("c64cast", "ERROR"),
+            self.assertRaises(session.StackBuildError),
+        ):
+            self._build(cfg, resolve)
+        resolve.assert_called_once()
+        self.assertEqual(
+            [c[0] for c in self.hw_provision.mock_calls if c[0].startswith("provision_")], []
+        )
+        self.api.reset.assert_not_called()
+        self.api.close.assert_called_once()
 
     def test_a_run_without_audio_resolves_no_curve(self):
         cfg = cfgmod.Config()

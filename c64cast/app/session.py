@@ -602,6 +602,18 @@ def _acquire_stack(
     api = _open_backend(cfg, name)
     release_on_failure("API close", api.close)
 
+    # Before any provisioning, so a 'calibrated' curve with no table fails
+    # without switching the HDMI mode or resetting the machine only for the
+    # unwind to switch it back. It reads the SID socket map and the calibration
+    # file, which nothing below changes.
+    dac_curve: dac_curve_resolve.DacCurve | None = None
+    if cfg.audio.enabled:
+        try:
+            dac_curve = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
+        except ValueError as e:
+            log.error("%s", e)
+            raise StackBuildError(3) from e
+
     # Drop REU-staged opt-ins on a backend with no REU, before the AudioStreamer
     # + scenes are built (so the host-DMA paths are used instead).
     _coerce_reu_for_backend(cfg, api)
@@ -638,12 +650,7 @@ def _acquire_stack(
         api.reset()
     audio: AudioStreamer | None = None
     dac_model_restore: dict[tuple[str, str], str] | None = None
-    if cfg.audio.enabled:
-        try:
-            dac_curve = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
-        except ValueError as e:
-            log.error("%s", e)
-            raise StackBuildError(3) from e
+    if dac_curve is not None:
         audio = _build_audio(cfg, api, dac_curve)
         release_on_failure("audio shutdown", audio.close)
         if api.profile.supports_sid_config:
