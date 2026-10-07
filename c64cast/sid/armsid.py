@@ -37,6 +37,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, TypeVar
 
+from c64cast.hw.c64 import SID
+
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
 
@@ -78,7 +80,6 @@ CAT_SOCKET_MODEL: Final = "c64cast: socket model"
 # The source for a chip known only as whatever answers $D400, with no socket
 # behind it: set through its registers there, which needs no SID config surface.
 SOURCE_D400: Final = "$D400"
-D400_BASE: Final = 0xD400
 
 _REG_REPLY: Final = 27
 _REG_MODE: Final = 29
@@ -359,7 +360,7 @@ def set_socket_model(api: C64Backend, source: str, model: str) -> None:
 
     if source == SOURCE_D400:
         if model in MODELS:
-            write_model(api, D400_BASE, model)
+            write_model(api, SID.BASE, model)
         return
     labels = cached_labels(api) or (None, None)
     index = {"socket1": 0, "socket2": 1}.get(source)

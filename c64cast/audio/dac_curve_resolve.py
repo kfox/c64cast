@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from c64cast.hw.c64 import SID
 from c64cast.sid import armsid
 from c64cast.sid.sid_hw_config import detect_socket_models
 
@@ -263,7 +264,7 @@ def _provision_d400_model(
 ) -> dict[tuple[str, str], str] | None:
     """:func:`provision_calibrated_chip_model` for an entry with no socket: ask
     the chip at ``$D400`` for its model and switch it to `wanted` there."""
-    reply = armsid.probe(be, armsid.D400_BASE)
+    reply = armsid.probe(be, SID.BASE)
     if reply is None or reply.model is None:
         log.warning(
             "audio: the DAC calibration was measured on an %s at $D400, which now "
@@ -277,7 +278,7 @@ def _provision_d400_model(
     # Returned even when the switch fails, for the reason the socket arm gives.
     restore = {(armsid.CAT_SOCKET_MODEL, armsid.SOURCE_D400): reply.model}
     try:
-        armsid.write_model(be, armsid.D400_BASE, wanted)
+        armsid.set_socket_model(be, armsid.SOURCE_D400, wanted)
     except Exception:  # noqa: BLE001 — best-effort, like every SID config write
         log.warning(
             "audio: could not switch the %s at $D400 to %s for its DAC calibration; "

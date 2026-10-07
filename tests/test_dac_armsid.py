@@ -78,6 +78,16 @@ class ProvisionModelTest(_NoSettle):
         self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, "socket1"): "8580"})
         self.assertEqual(api.left.model, "8580")
 
+    def test_a_socket_entry_on_a_link_without_sid_config_is_left_alone(self):
+        # The socket arm switches through the firmware's config item, which a
+        # link without the SID config surface does not have.
+        api = ArmsidAPI(left="8580")
+        api.profile = FakeAPI().profile
+        resolved = dac_curve_resolve.DacCurve("calibrated:k", bytes(256), (1, "ARMSID 6581"))
+        self.assertIsNone(dac_curve_resolve.provision_calibrated_chip_model(api, resolved))
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_puts, [])
+
     def test_a_chip_whose_model_is_unknown_is_left_alone(self):
         api = ArmsidAPI(left="??")  # a model reply that is neither 6581 nor 8580
         with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
