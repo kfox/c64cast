@@ -62,12 +62,13 @@ import time
 import _diaglib as d
 
 # Bring-up is shared with ring_race_probe so both tools measure the same machine.
-from ring_race_probe import arm, disarm, effective_rate, latch_for, read_r, setup
+from ring_race_probe import arm, disarm, effective_rate, read_r, setup
 
 from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.audio.audio_handlers import RING_BUFFER_SIZE
 from c64cast.hw.backend import make_backend
+from c64cast.hw.c64 import nmi_latch_for_rate
 
 SCRATCH_ADDR = 0x6000  # clear of the ring ($4000-$5FFF) and the NMI handler ($C020)
 DEFAULT_PAYLOADS = (64, 128, 256, 512, 1024)
@@ -266,7 +267,7 @@ def main() -> int:
     args = ap.parse_args()
 
     eff = effective_rate(args.nmi_rate, args.system)
-    cycles_per_tick = latch_for(args.nmi_rate, args.system) + 1
+    cycles_per_tick = nmi_latch_for_rate(args.nmi_rate, args.system) + 1
     payloads = [int(p) for p in args.payloads.split(",") if p.strip()]
 
     print(f"[setup] {args.url}  NMI {args.nmi_rate} -> effective {eff:.1f} Hz")

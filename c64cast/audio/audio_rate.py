@@ -32,10 +32,11 @@ from c64cast._transport_log import quiet_transport
 from c64cast.hw.c64 import (
     CIA2,
     CIA_TIMER_LATCH_MAX,
-    NMI_SAFE_MIN_PERIOD_CYCLES,
+    NMI_CEILING_LATCH,
     VECTORS,
     cpu_clock,
     nearest_latch,
+    nmi_latch_for_rate,
 )
 
 from .audio_handlers import (
@@ -112,7 +113,9 @@ class NmiTimer:
         rejects both, but an unresolved "auto" is validated as NTSC and a PAL
         machine's ceiling sits lower; `start` warns when the clamp engages.
         """
-        return self.clamp_latch(self.requested_latch())
+        return nmi_latch_for_rate(
+            self._st.sample_rate, self._st.system, ceiling=self.ceiling_latch()
+        )
 
     def requested_latch(self) -> int:
         """The nearest-grid latch for sample_rate, before any clamp."""
@@ -140,7 +143,7 @@ class NmiTimer:
         (c64.NMI_SAFE_MIN_PERIOD_CYCLES). period = latch+1, so latch = budget-1.
         Bounds how far the loop can speed the NMI to overcome bus-halt tick loss
         without overrunning the handler. System-independent (a cycle count)."""
-        return max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
+        return NMI_CEILING_LATCH
 
     def seed_latch_for_mode(self, mode: str | None) -> int:
         """Starting CIA #2 latch for the adaptive loop, chosen so playback begins

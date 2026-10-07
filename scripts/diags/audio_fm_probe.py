@@ -115,7 +115,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+from c64cast.hw.c64 import CIA2, actual_rate_for_latch, nmi_latch_for_rate
 
 CAP_SR = 48000
 
@@ -150,19 +150,10 @@ MOD_BANDS: tuple[tuple[str, float, float], ...] = (
 )
 
 
-def latch_for(rate: int, system: str) -> int:
-    """CIA #2 Timer A latch (period = latch+1 cycles) for `rate`: the rounding of
-    ``c64.nearest_latch``, floored at 1. ``NmiTimer.nominal_latch`` instead clamps
-    to [``ceiling_latch``, 0xFFFF], so the two agree only inside that range."""
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    return max(1, round(clock / rate) - 1)
-
-
 def effective_rate(rate: int, system: str) -> float:
     """The rate the CIA latch grid actually yields — the real consumer rate, and
     the byte rate the production worker paces against."""
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    return clock / (latch_for(rate, system) + 1)
+    return actual_rate_for_latch(nmi_latch_for_rate(rate, system), system)
 
 
 def build_ring_tone(cycles: int) -> bytes:
@@ -199,7 +190,7 @@ def setup(be, system: str, cycles: int) -> None:
 
 def arm(be, rate: int, system: str) -> None:
     """(Re)arm the NMI at `rate`: disarm, set the Timer A latch, enable."""
-    latch = latch_for(rate, system)
+    latch = nmi_latch_for_rate(rate, system)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
