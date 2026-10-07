@@ -2806,16 +2806,9 @@ class SamplerFlushTests(unittest.TestCase):
         # it up, and the stale chunk ahead of it is dropped by the writer.
         api = _FakeBackend()
         smp = self._running(api, consumed=0)
-        parked = threading.Event()
-
-        class _SignalingQueue(s.queue.Queue):  # type: ignore[type-arg]
-            def put(self, *a: Any, **kw: Any) -> None:
-                parked.set()
-                super().put(*a, **kw)
-
-        smp._q = _SignalingQueue(maxsize=1)
+        smp._q = s.queue.Queue(maxsize=1)
         smp._q.put((smp._flush_epoch, b"\x01" * 32))
-        parked.clear()
+        parked = _signal_on_put(smp)
         tapped: list[np.ndarray] = []
         smp.analysis_sink = tapped.append
         t = threading.Thread(target=smp.push_samples, args=(np.full(50, 8000, dtype=np.int16),))
