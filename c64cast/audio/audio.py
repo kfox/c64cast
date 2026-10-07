@@ -437,6 +437,9 @@ class AudioStreamer:
         self._ring_landed_total = 0
         self._ring_pads: deque[tuple[int, int]] = deque()
         self._position_floor = 0.0
+        # When the clock's last landed count was taken (monotonic): the
+        # consumer's start, then each landing. None until the consumer starts.
+        self._ring_landed_at: float | None = None
         # One record per interval however often the link stalls.
         self._stall_log = LogThrottle(log)
 
@@ -1229,6 +1232,7 @@ class AudioStreamer:
                     # the servo integrator and rate loop clean (the warm-up gate
                     # arms inside reset_for_consumer_start).
                     self.servo.reset_for_consumer_start(bytes_prebuffered)
+                    self._mark_ring_clock()
                     # Health windows measure the consuming phase only — the
                     # prebuffer fill writes unsplit and has no slots to be late.
                     self._health_last_log = 0.0
@@ -2840,21 +2844,55 @@ class AudioStreamer:
             if lead < 0:
                 return consumed, 0.0
             content_lead = max(0.0, lead - self._unplayed_pad(lead))
-            heard = max(self._position_floor, consumed - content_lead)
+            played = self._played_since_landing(lead)
+            heard = max(self._position_floor, consumed - content_lead + played)
             self._position_floor = heard
         return consumed, heard
 
+    def _played_since_landing(self, lead: float) -> float:
+        """Content the NMI has played since the last landing, in bytes.
+        Caller holds ``_ring_pad_lock``.
+
+        The landed count moves a whole chunk at a time, and the gap is read
+        just after a landing, so without this the clock held for a chunk
+        period (≈85 ms at 12 kHz) and then jumped by a chunk. An analyzer
+        reading the audio-file tap at that clock saw its window jump by its
+        own length, and a click near the edge of the one window that held it
+        never reached the onset threshold; video slaved to it moved in the
+        same steps.
+
+        What the NMI plays next is the front of the gap, so pad there moves
+        nothing: content landed behind a dry stretch is not heard until the
+        stretch has played. At most one chunk, the next landing's worth, so a
+        link that stalls holds the clock rather than running it past what
+        landed. Zero until the consumer starts."""
+        if self._ring_landed_at is None:
+            return 0.0
+        elapsed = max(0.0, time.monotonic() - self._ring_landed_at)
+        span = min(elapsed * self.effective_rate, float(self.chunk_size), lead)
+        lo = self._ring_landed_total - lead
+        return span - self._pad_in(lo, lo + span)
+
+    def _mark_ring_clock(self) -> None:
+        """The consumer started: interpolate the clock from now."""
+        with self._ring_pad_lock:
+            self._ring_landed_at = time.monotonic()
+
     def _unplayed_pad(self, lead: float) -> float:
         """The pad bytes among the last ``lead`` bytes landed in the ring.
+        Caller holds ``_ring_pad_lock``."""
+        return self._pad_in(self._ring_landed_total - lead, self._ring_landed_total)
+
+    def _pad_in(self, lo: float, hi: float) -> float:
+        """The pad bytes in ``[lo, hi)`` of the ring's landed byte stream.
         Caller holds ``_ring_pad_lock``. The record is in landing order, so
-        the walk is newest first and stops at the first pad wholly behind the
-        gap."""
-        lo = self._ring_landed_total - lead
+        the walk is newest first and stops at the first pad wholly behind
+        ``lo``."""
         pad_bytes = 0.0
         for end, pad in reversed(self._ring_pads):
             if end <= lo:
                 break
-            pad_bytes += end - max(lo, end - pad)
+            pad_bytes += max(0.0, min(hi, end) - max(lo, end - pad))
         return pad_bytes
 
     def _note_ring_landed(self, generation: int, nbytes: int, pad: int) -> None:
@@ -2873,6 +2911,8 @@ class AudioStreamer:
             if generation != self._worker_generation:
                 return
             self._ring_landed_total += nbytes
+            if self._ring_landed_at is not None:
+                self._ring_landed_at = time.monotonic()
             total = self._ring_landed_total
             if pad > 0:
                 self._ring_pads.append((total, pad))
@@ -2890,6 +2930,7 @@ class AudioStreamer:
         self._ring_landed_total = 0
         self._ring_pads.clear()
         self._position_floor = 0.0
+        self._ring_landed_at = None
 
     def reset_position(self) -> None:
         self._pushed_count = 0

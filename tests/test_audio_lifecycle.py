@@ -22,7 +22,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, FakeTime, SleepDrivenClock, quiet_logging
+from _fakes import FakeAPI, FakeTime, FrozenClock, SleepDrivenClock, quiet_logging
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio import audio_rate as audio_rate_mod
@@ -3261,6 +3261,62 @@ class LifecycleTest(unittest.TestCase):
         steps = self._drive_ring(s, "ccscsccspcccccc", chunk=32, gap=128)
         for clock, heard in steps:
             self.assertAlmostEqual(clock, heard, places=6)
+
+    def _started_on(self, clock: FrozenClock, plan: str) -> AudioStreamer:
+        """A streamer whose consumer started on ``clock`` with a 4096-byte
+        gap, then one 1024-byte chunk landed per plan letter (``c`` content,
+        ``p`` pad), the gap read just after the last landing."""
+        s = _make(sample_rate=12000)
+        s.chunk_size = 1024
+        with mock.patch.object(audio_mod, "time", clock):
+            for _ in range(4):
+                s._pushed_count += 1024
+                s._note_ring_landed(s._worker_generation, 1024, 0)
+            s.servo.reset_for_consumer_start(4096)
+            s._mark_ring_clock()
+            for kind in plan:
+                pad = 1024 if kind == "p" else 0
+                s._note_ring_landed(s._worker_generation, 1024, pad)
+                s._pushed_count += 1024 - pad
+            s.servo.ring_lead = 4096.0
+        return s
+
+    def test_the_clock_moves_between_landings(self):
+        # The landed count moves a chunk at a time. Read only at landings, the
+        # clock held for a chunk period and then jumped a chunk, and an
+        # analyzer reading the file's tap at it skipped whole windows.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "c")
+        period = 1024 / s.effective_rate
+        with mock.patch.object(audio_mod, "time", clock):
+            at_landing = s.position_seconds()
+            self.assertAlmostEqual(at_landing, 1024 / s.effective_rate, places=9)
+            clock.advance(period / 4)
+            self.assertAlmostEqual(s.position_seconds(), at_landing + period / 4, places=9)
+            clock.advance(period / 2)
+            self.assertAlmostEqual(s.position_seconds(), at_landing + 3 * period / 4, places=9)
+
+    def test_the_clock_between_landings_stops_at_the_next_chunk(self):
+        # A link that stalls lands nothing: the clock runs on for at most the
+        # chunk the next landing would have counted, then holds.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "c")
+        with mock.patch.object(audio_mod, "time", clock):
+            at_landing = s.position_seconds()
+            clock.advance(5.0)
+            self.assertAlmostEqual(
+                s.position_seconds(), at_landing + 1024 / s.effective_rate, places=9
+            )
+
+    def test_the_clock_between_landings_does_not_move_over_pad(self):
+        # Pad at the front of the gap is what the NMI plays next, and content
+        # landed behind it is not heard until it has played.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "ppppc")
+        with mock.patch.object(audio_mod, "time", clock):
+            at_landing = s.position_seconds()
+            clock.advance(1024 / s.effective_rate)
+            self.assertEqual(s.position_seconds(), at_landing)
 
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between
