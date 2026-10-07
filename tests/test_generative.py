@@ -1991,6 +1991,56 @@ class AudioFileShortClipTest(unittest.TestCase):
         )
         self.assertEqual(n, 16, "a stale wake-up ended the next producer's collect")
 
+    def test_a_push_after_end_input_reopens_a_dacs_input(self):
+        # A video's demuxer ends its input at EOF and pushes again after a
+        # seek back. Left ended, the wake-up it left in the queue cuts the
+        # resumed producer's collect, and its stalls stop counting.
+        from _fakes import FakeAPI
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac.running = True
+        dac.end_input()
+        self.assertGreater(dac.push_samples(np.ones(16, dtype=np.int16)), 0)
+        n, _, _ = dac._collect_until(
+            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+        )
+        self.assertEqual(n, 16, "the ended input cut the resumed producer's collect")
+
+    def test_a_push_after_end_input_reopens_a_samplers_input(self):
+        from c64cast.audio import sampler
+
+        with mock.patch.object(sampler, "PollThread", _NoWriter):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=8000)
+            smp.arm()
+            smp.end_input()
+            self.assertGreater(smp.push_samples(np.ones(16, dtype=np.int16)), 0)
+        # Read by the writer's underrun count: after a reopen a stall counts.
+        self.assertFalse(smp._input_ended)
+
+    def test_a_splice_reopens_a_dacs_input(self):
+        # A pass that reached EOF before the seek was requested ended the
+        # input. Left ended across the splice, a worker still priming pads the
+        # rest of its prebuffer with silence before the post-seek audio comes,
+        # and stalls after the splice stop counting as underruns.
+        from _fakes import FakeAPI
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac.running = True
+        dac.end_input()
+        dac.flush()
+        self.assertFalse(dac._input_ended)
+
+    def test_a_splice_reopens_a_samplers_input(self):
+        from c64cast.audio import sampler
+
+        with mock.patch.object(sampler, "PollThread", _NoWriter):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=8000)
+            smp.arm()
+            smp._running = True
+            smp.end_input()
+            smp.flush()
+        self.assertFalse(smp._input_ended)
+
     def test_a_new_dac_worker_clears_the_last_producers_end(self):
         # end_input() marks one producer's end. The next activation's worker
         # starts without it, or the wake-up the last producer left in the
@@ -2065,6 +2115,106 @@ def _make_click_wav(path: str, *, seconds: float, period: float, rate: int = 441
         w.setframerate(rate)
         w.writeframes((x * 32767).astype("<i2").tobytes())
     return clicks
+
+
+def _write_av_clip(path: str, seconds: float, *, fps: int = 30, rate: int = 8000) -> None:
+    """A tiny Matroska clip with a video stream and a tone on a PCM audio
+    stream, `seconds` long."""
+    import av
+
+    container = av.open(path, "w", format="matroska")
+    try:
+        video = container.add_stream("mpeg4", rate=fps)
+        video.width, video.height = 64, 64
+        video.pix_fmt = "yuv420p"
+        audio = container.add_stream("pcm_s16le", rate=rate)
+        audio.layout = "mono"
+        grey = np.full((64, 64, 3), 128, dtype=np.uint8)
+        for _ in range(int(seconds * fps)):
+            for packet in video.encode(av.VideoFrame.from_ndarray(grey, "rgb24")):
+                container.mux(packet)
+        t = np.arange(int(seconds * rate)) / rate
+        pcm = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16).reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
+        frame.sample_rate = rate
+        frame.pts = 0
+        for packet in audio.encode(frame):
+            container.mux(packet)
+        for stream in (video, audio):
+            for packet in stream.encode():
+                container.mux(packet)
+    finally:
+        container.close()
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class VideoShortClipTest(unittest.TestCase):
+    """A video whose audio is shorter than the sink's prebuffer still plays it.
+    The demuxer is the producer here, so it is the one that has to say the
+    input ended: without that the DAC never started its NMI, the playback
+    clock never moved and the scene never ended, and the sampler held setup()
+    for its prebuffer timeout. Real time, as in AudioFileShortClipTest."""
+
+    CLIP_S = 0.3
+    SLACK_S = 1.0
+
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(self.clip, self.CLIP_S)
+
+    def _source(self, sink):
+        from c64cast.video.video import AVFileSource
+
+        src = AVFileSource(self.clip, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src.start(audio_push=sink.push_samples, audio_end=sink.end_input)
+        return src
+
+    def test_a_dac_starts_its_nmi_on_a_clip_shorter_than_its_prebuffer(self):
+        from _fakes import FakeAPI, quiet_logging
+
+        api = FakeAPI()
+        dac = AudioStreamer(cast(C64Backend, api), 8000, "NTSC")
+        link = _ConsumerLink(FakeAPI(), dac.effective_rate)
+        api.read_memory = link.read_memory  # type: ignore[method-assign]
+        start_nmi = dac.nmi.start
+
+        def started(*args, **kwargs):
+            link.started_at = time.monotonic()
+            return start_nmi(*args, **kwargs)
+
+        with quiet_logging(), mock.patch.object(dac.nmi, "start", side_effect=started):
+            dac.start_for_external_source()
+            try:
+                self._source(dac)
+                deadline = time.monotonic() + self.CLIP_S + self.SLACK_S
+                while link.started_at is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            finally:
+                dac.stop()
+        self.assertIsNotNone(link.started_at, "the NMI never started, so the clip never played")
+
+    def test_a_sampler_gates_without_waiting_out_its_prebuffer(self):
+        from _fakes import quiet_logging
+
+        from c64cast.audio import sampler
+
+        with mock.patch.object(sampler, "PollThread", _NoWriter):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=8000)
+            with quiet_logging():
+                smp.arm()
+                self._source(smp)
+                t0 = time.monotonic()
+                try:
+                    smp.start()
+                    took = time.monotonic() - t0
+                finally:
+                    smp.stop()
+        self.assertLess(took, self.CLIP_S + self.SLACK_S, "setup sat out the prebuffer timeout")
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")

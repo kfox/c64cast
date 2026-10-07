@@ -330,6 +330,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   dropped in short crossfaded splices instead. `[audio].reu_pump_governor`
   (on by default) turns it off.
 
+- **A video clip shorter than about half a second now plays its sound and
+  ends with the clip.** The audio waits for half a second of sound before it
+  starts, so on the DAC such a clip never started at all and the scene did not
+  end when the clip did, and the sampler waited out a 2 s timeout before
+  playing it.
+
 - **Resuming a paused video near the end of its clip resumes it instead of
   ending the scene.** The video decoder reads several seconds ahead and stopped
   for good when it reached the end of the file, so a seek made after that was

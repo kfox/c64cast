@@ -452,9 +452,11 @@ class UltimateAudioSampler:
         self._running = False
         self._stopped = False
         self._eof = False
-        # Set by end_input() once the producer will push nothing more, so
-        # start() stops waiting for a prebuffer a short clip cannot fill.
-        # Unlike _eof it leaves the clock alone. Cleared by arm().
+        # Set by end_input() once the producer has pushed its last sample for
+        # now, so start() stops waiting for a prebuffer a short clip cannot
+        # fill. Unlike _eof it leaves the clock alone. Cleared by arm() and by
+        # the next accepted push (a video's demuxer pushes again after a seek
+        # back), so it is not a "track finished" signal.
         self._input_ended = False
         # Set when the writer gave up on a dead link; push_samples then drops
         # rather than park the producer on a queue nothing drains.
@@ -826,14 +828,18 @@ class UltimateAudioSampler:
             return 0
         accepted = int(samples_int16.shape[0])
         self._pushed_samples += accepted
+        # A video's demuxer ends its input at EOF and pushes again after
+        # a seek back (an A/B loop wrap, a resume near the end).
+        self._input_ended = False
         self._push_to_analysis(raw)
         return accepted
 
     def end_input(self) -> None:
         """The ``push_samples`` producer has ended: ``start()`` gates the ring
         on what it pushed rather than waiting out the prebuffer timeout for
-        audio that will not come. Call it after the last push returns. Leaves
-        ``position_seconds`` alone, unlike ``mark_eof``."""
+        audio that will not come. Call it after the last push returns, and
+        again after a later push: the next accepted push, or a flush(),
+        reopens the input. Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
         self._input_ended = True
 
     def mark_eof(self) -> None:
@@ -893,6 +899,9 @@ class UltimateAudioSampler:
         # before the cut-over below takes it, and that cut-over rewrites it.
         epoch = self._flush_epoch + 1
         self._flush_epoch = epoch
+        # An end the pre-splice pass marked is not the post-splice input's:
+        # left set, the writer stops counting a stall after the splice.
+        self._input_ended = False
         try:
             self._cut_over(anchor, epoch, silence_output=silence_output)
         except BaseException:
