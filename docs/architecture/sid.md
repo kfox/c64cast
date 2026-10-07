@@ -525,7 +525,7 @@ The C64 crystal is exact, so this is fully open-loop: no servo, and **no C64→h
 
 `n_ops == 0` is a **hold** tick: the SID holds state, which is the graceful underrun pad, with no echo. A tick divider chains `$EA31` every Nth tick so SCNKEY and jiffy stay ≈60 Hz.
 
-**Bring-up arms lazily** — this is hardware-driven, and both symptoms below were observed. `start` prefills holds (confirmed delivered by `hw/delivery.write_confirmed`: a ring slot the prefill misses keeps the last session's bytes, possibly at another slot size, which misaligns the player's slot reads as `_take_slot` describes; one that never confirms logs an ERROR and leaves the buffered path down for the activation), uploads the handler, seeds the tracker, programs the CIA #1 latch, and starts the writer thread. But it does **not** swap `$0314` or start the read-head clock until a real-frame prebuffer has accumulated (`_try_arm`).
+**Bring-up arms lazily** — this is hardware-driven, and both symptoms below were observed. `start` prefills holds (confirmed delivered by `hw/delivery.write_confirmed`: a ring slot the prefill misses keeps the last session's bytes, possibly at another slot size, which misaligns the player's slot reads as `_take_slot` describes; one that never confirms logs an ERROR and leaves the buffered path down for the activation), uploads the handler, seeds the tracker, programs the CIA #1 latch (confirmed the same way, since `_try_arm` later points `$0314` at the handler), and starts the writer thread. But it does **not** swap `$0314` or start the read-head clock until a real-frame prebuffer has accumulated (`_try_arm`).
 
 That matters because the producer is real-time: an ASID host does not begin streaming the instant we install.
 

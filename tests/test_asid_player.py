@@ -22,7 +22,13 @@ from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, frozen_throttle, frozen_throttles  # noqa: E402
+from _fakes import (  # noqa: E402
+    FakeAPI,
+    frozen_throttle,
+    frozen_throttles,
+    lose_reu_writes_to,
+    lose_writes_to,
+)
 
 from c64cast.hw.backend import C64Backend  # noqa: E402
 from c64cast.hw.c64 import CLOCK_NTSC  # noqa: E402
@@ -841,26 +847,11 @@ class BringUpTeardownTest(unittest.TestCase):
         finally:
             p.stop()
 
-    def _lose_reu_writes(self, api: Any, times: int) -> None:
-        """The next ``times`` REU writes (-1 = every one) land nowhere and
-        move ``delivery_epoch``, as on a lossy redial."""
-        real = api.reu_write
-        left = [times]
-
-        def reu_write(offset, data):
-            if left[0]:
-                left[0] -= 1 if left[0] > 0 else 0
-                api.delivery_epoch += 1
-                return
-            real(offset, data)
-
-        api.reu_write = reu_write
-
     def test_a_lost_ring_prefill_slice_is_sent_again(self):
         # A ring slot the prefill missed keeps what the last session left,
         # possibly at another slot size, which misaligns the player's reads.
         p, api = self._player(prebuffer_seconds=0.0)
-        self._lose_reu_writes(api, times=1)
+        lose_reu_writes_to(api, ap.RING_BASE, times=1)
         p.push_frame(ap.hold_slot(p.slot_size))
         p.start(60.0)
         try:
@@ -873,12 +864,37 @@ class BringUpTeardownTest(unittest.TestCase):
 
     def test_a_ring_prefill_that_never_lands_keeps_the_player_out(self):
         p, api = self._player(prebuffer_seconds=0.0)
-        self._lose_reu_writes(api, times=-1)
+        lose_reu_writes_to(api, ap.RING_BASE)
         p.push_frame(ap.hold_slot(p.slot_size))
         with self.assertLogs("c64cast.sid.asid_player", "ERROR"):
             p.start(60.0)
         try:
             self.assertNotIn(f"{ap.HANDLER_ADDR:04X}", api.mem_files)
+            self.assertNotIn("0314", api.regs)
+            self.assertFalse(p._armed)
+        finally:
+            p.stop()
+
+    def test_a_lost_handler_upload_is_sent_again(self):
+        # _try_arm points $0314 at HANDLER_ADDR, so arming over a lost upload
+        # sends every IRQ into whatever RAM held there.
+        p, api = self._player(prebuffer_seconds=0.0)
+        lose_writes_to(api, ap.HANDLER_ADDR, times=1)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        try:
+            self.assertIn(f"{ap.HANDLER_ADDR:04X}", api.mem_files)
+            self.assertTrue(p._armed)
+        finally:
+            p.stop()
+
+    def test_a_handler_upload_that_never_lands_keeps_the_vector_unhooked(self):
+        p, api = self._player(prebuffer_seconds=0.0)
+        lose_writes_to(api, ap.HANDLER_ADDR)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        with self.assertLogs("c64cast.sid.asid_player", "ERROR"):
+            p.start(60.0)
+        try:
             self.assertNotIn("0314", api.regs)
             self.assertFalse(p._armed)
         finally:

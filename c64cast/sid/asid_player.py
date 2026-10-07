@@ -770,23 +770,16 @@ class AsidRingPlayer:
 
         # Upload the player, seed the tracker + counters + CIA latch. The vector
         # swap is deferred to _try_arm (the CIA keeps running the kernal tail at
-        # the new latch until then — harmless).
-        handler = build_player(self.slot_size, self._divider, ring_base=self.ring_base)
-        self.api.write_memory_file(f"{HANDLER_ADDR:04X}", handler)
-        self.api.write_memory(
-            f"{TRACKER_ADDR:04X}",
-            f"{self.ring_base & 0xFF:02X}"
-            f"{(self.ring_base >> 8) & 0xFF:02X}"
-            f"{(self.ring_base >> 16) & 0xFF:02X}",
-        )
-        # tick counter = 1: first IRQ DECs to 0, reloads N, chains; nops = 0.
-        self.api.write_memory(f"{TICK_COUNTER_ADDR:04X}", "01")
-        self.api.write_memory(f"{NOPS_COUNTER_ADDR:04X}", "00")
-        # Program CIA #1 Timer A latch (kernal left it running in continuous mode).
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{self._latch & 0xFF:02X}{(self._latch >> 8) & 0xFF:02X}"
-        )
-        self.api.flush()
+        # the new latch until then — harmless). Confirmed like the prefill:
+        # _try_arm later points $0314 at HANDLER_ADDR, so a lost handler upload
+        # would send every IRQ into whatever RAM held there.
+        if not write_confirmed(self.api, self._install_handler):
+            log.error(
+                "asid_player: the player install was not confirmed delivered after %d "
+                "attempts; the buffered path stays down for this activation",
+                CONFIRM_TRIES,
+            )
+            return
 
         self._writer.start()
         log.info(
@@ -869,6 +862,23 @@ class AsidRingPlayer:
             self.api.flush()
         log.info("asid_player: armed — read head live, %d slots prebuffered", n)
         return True
+
+    def _install_handler(self) -> None:
+        handler = build_player(self.slot_size, self._divider, ring_base=self.ring_base)
+        self.api.write_memory_file(f"{HANDLER_ADDR:04X}", handler)
+        self.api.write_memory(
+            f"{TRACKER_ADDR:04X}",
+            f"{self.ring_base & 0xFF:02X}"
+            f"{(self.ring_base >> 8) & 0xFF:02X}"
+            f"{(self.ring_base >> 16) & 0xFF:02X}",
+        )
+        # tick counter = 1: first IRQ DECs to 0, reloads N, chains; nops = 0.
+        self.api.write_memory(f"{TICK_COUNTER_ADDR:04X}", "01")
+        self.api.write_memory(f"{NOPS_COUNTER_ADDR:04X}", "00")
+        # Program CIA #1 Timer A latch (kernal left it running in continuous mode).
+        self.api.write_memory(
+            f"{CIA1.TIMER_A_LO:04X}", f"{self._latch & 0xFF:02X}{(self._latch >> 8) & 0xFF:02X}"
+        )
 
     def _prefill_holds(self) -> None:
         hold = hold_slot(self.slot_size)
