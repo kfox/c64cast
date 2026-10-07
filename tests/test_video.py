@@ -1739,6 +1739,14 @@ class EndAudioInputSeekGuardTest(unittest.TestCase):
         src._end_audio_input()
         self.assertEqual(held, [True])
 
+    def test_a_closed_source_does_not_end_the_input(self):
+        # The sink outlives the source: a demux thread that outlived
+        # close()'s join would otherwise end the next activation's input.
+        src, ended = self._source(pending_seek=None)
+        src._closed = True
+        src._end_audio_input()
+        self.assertEqual(ended, [])
+
     def test_a_demux_crash_ends_the_input(self):
         # Nothing more is pushed after a crash, so a clip that pushed less
         # than the prebuffer before it is played only if the input ends.

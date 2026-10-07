@@ -1981,6 +1981,30 @@ class AudioFileShortClipTest(unittest.TestCase):
         # Read by the writer's underrun count: after a reopen a stall counts.
         self.assertFalse(smp._input_ended)
 
+    def test_a_splice_reopens_a_dacs_input(self):
+        # A pass that reached EOF before the seek was requested ended the
+        # input. Left ended across the splice, a worker still priming pads the
+        # rest of its prebuffer with silence before the post-seek audio comes,
+        # and stalls after the splice stop counting as underruns.
+        from _fakes import FakeAPI
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac.running = True
+        dac.end_input()
+        dac.flush()
+        self.assertFalse(dac._input_ended)
+
+    def test_a_splice_reopens_a_samplers_input(self):
+        from c64cast.audio import sampler
+
+        with mock.patch.object(sampler, "PollThread", _NoWriter):
+            smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=8000)
+            smp.arm()
+            smp._running = True
+            smp.end_input()
+            smp.flush()
+        self.assertFalse(smp._input_ended)
+
     def test_a_new_dac_worker_clears_the_last_producers_end(self):
         # end_input() marks one producer's end. The next activation's worker
         # starts without it, or the wake-up the last producer left in the

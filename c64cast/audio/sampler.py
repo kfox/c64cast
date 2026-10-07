@@ -807,8 +807,8 @@ class UltimateAudioSampler:
         """The ``push_samples`` producer has ended: ``start()`` gates the ring
         on what it pushed rather than waiting out the prebuffer timeout for
         audio that will not come. Call it after the last push returns, and
-        again after a later push: the next accepted push reopens the input.
-        Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
+        again after a later push: the next accepted push, or a flush(),
+        reopens the input. Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
         self._input_ended = True
 
     def mark_eof(self) -> None:
@@ -868,6 +868,9 @@ class UltimateAudioSampler:
         # before the cut-over below takes it, and that cut-over rewrites it.
         epoch = self._flush_epoch + 1
         self._flush_epoch = epoch
+        # An end the pre-splice pass marked is not the post-splice input's:
+        # left set, the writer stops counting a stall after the splice.
+        self._input_ended = False
         try:
             self._cut_over(anchor, epoch, silence_output=silence_output)
         except BaseException:

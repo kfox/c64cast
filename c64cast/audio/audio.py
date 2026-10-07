@@ -2824,8 +2824,8 @@ class AudioStreamer:
         """The ``push_samples`` producer has ended: start the consumer on what
         it pushed even when that is short of the prebuffer, which otherwise
         never fills and leaves a short clip unplayed. Call it after the last
-        push returns. Cleared when the next worker starts, and by the next
-        accepted push."""
+        push returns. Cleared when the next worker starts, by a flush(), and
+        by the next accepted push."""
         self._input_ended = True
         # An empty blob wakes a worker parked in a priming collect, which
         # would otherwise wait out its chunk period for samples that will not
@@ -3049,6 +3049,11 @@ class AudioStreamer:
         if self._reu_pump_armed:
             return
         self._flush_epoch += 1
+        # A pass that reached EOF before the seek was requested ended the
+        # input, and the post-splice pass has yet to push: left ended, a
+        # priming worker pads its prebuffer out with silence and a stall
+        # after the splice is not counted.
+        self._input_ended = False
         self._discard_unpushed(self._drain_queue_samples())
         if silence_output:
             self._stomp_requested = True
