@@ -3284,17 +3284,18 @@ class AudioStreamer:
         #    even when the NMI-source disable is the write that failed.
         #  - The DAC-bias gate release goes last, so the bias collapse it
         #    starts (release=0 under digi-boost) happens at volume 0.
+        # Ahead of `running` clearing, which is what releases a producer
+        # parked in the backpressure spin: bumped after it, a producer that
+        # woke in between found its epoch current and landed its blob. The
+        # drain at the bottom only catches one that beats it there. Under
+        # _count_lock, where the push path checks it and puts.
+        with self._count_lock:
+            self._flush_epoch += 1
         self.running = False
         # The callback stops claiming re-anchors at running=False; the servo
         # must stop posting them before the teardown below can stall.
         if self._mic_lead is not None:
             self._mic_lead.request_stop()
-        # Ahead of everything a producer could outlast: the push path's epoch
-        # check is what drops a blob from a producer this clear just released,
-        # and the drain at the bottom only catches one that beats it there.
-        # Under _count_lock, where the push path checks it and puts.
-        with self._count_lock:
-            self._flush_epoch += 1
         # No-op if the pump was never armed and no $0314 restore or CIA #1
         # unmask is owed. The video pumps' governor lives in the C64-side
         # handler, so disarming the IRQ vector stops it; the mic pump's

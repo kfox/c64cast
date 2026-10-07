@@ -294,6 +294,22 @@ class WorkerBatchingTest(unittest.TestCase):
         self.assertGreater(s._total_slots, 0)
 
 
+class _HoldingMicLead:
+    """A mic lead servo whose request_stop() waits for ``thread`` to end."""
+
+    ring_governor = None
+    lead_min = None
+
+    def __init__(self, thread: threading.Thread) -> None:
+        self.thread = thread
+
+    def request_stop(self) -> None:
+        self.thread.join(2.0)
+
+    def stop(self) -> None:
+        pass
+
+
 def _signal_backpressure(s: AudioStreamer) -> threading.Event:
     """Set once a blocking push has captured its epoch and is about to spin
     for room, so a test can cut it there without guessing how long that takes."""
@@ -478,6 +494,31 @@ class EffectiveRateTest(unittest.TestCase):
         with patch.object(AudioStreamer, "_drain_queue_samples", recording_drain):
             s.stop()
         self.assertEqual(seen, [1], "stop() drained before it bumped")
+
+    def test_a_push_stop_releases_finds_the_epoch_bumped(self):
+        """Clearing `running` releases a push parked in the backpressure spin;
+        the bump has to be in place by then, or the push lands its blob."""
+        s = new_streamer()
+        s.running = True
+        s._max_queued_samples = 16384
+        s._queued_samples = 16384
+        result: dict[str, int] = {}
+        parked = _signal_backpressure(s)
+
+        def push():
+            result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
+
+        t = threading.Thread(target=push)
+        self.addCleanup(t.join, 1.0)
+        # request_stop() is the first thing stop() does after clearing
+        # `running`: holding it until the released push returns gives that
+        # push every chance to land.
+        s._mic_lead = cast(Any, _HoldingMicLead(t))
+        t.start()
+        self.assertTrue(parked.wait(2.0), "the producer never reached the backpressure spin")
+        s.stop()
+        self.assertFalse(t.is_alive())
+        self.assertEqual(result["n"], 0, "a push released by stop() landed its blob")
 
     def test_stop_still_drains_and_zeroes(self):
         # stop() routes its drain through _drain_queue_samples; the queue must
