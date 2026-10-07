@@ -2795,6 +2795,55 @@ class EncodeBackpressureTest(unittest.TestCase):
         self.assertEqual(round(anchors[0] * s.effective_rate), 1000)
         self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
 
+    def _park_a_push_on_a_full_queue(
+        self, s: AudioStreamer
+    ) -> tuple[threading.Thread, dict[str, int]]:
+        # Every blob slot taken, the sample cap clear: the push gets past the
+        # backpressure spin and counts its blob, then waits for a slot.
+        s.running = True
+        s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
+        s.q = queue.Queue(maxsize=4)
+        for _ in range(4):
+            s.q.put(b"\x07" * 8)
+        with s._count_lock:
+            s._pushed_count = 1032
+            s._queued_samples = 32
+        out: dict[str, int] = {}
+
+        def push() -> None:
+            out["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
+
+        t = threading.Thread(target=push)
+        t.start()
+        self.addCleanup(t.join, 2.0)
+        deadline = time.monotonic() + 2.0
+        while s._queued_samples != 132 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(s._queued_samples, 132)
+        return t, out
+
+    def test_a_flush_drops_a_push_parked_on_a_full_queue(self):
+        # The drain frees the slot the parked put waits for, so the pre-splice
+        # blob entered the queue behind the splice and played after it.
+        s = _make()
+        t, out = self._park_a_push_on_a_full_queue(s)
+        anchor = s.flush()
+        t.join(2.0)
+        self.assertEqual(out["n"], 0)
+        self.assertEqual(round(anchor * s.effective_rate), 1000)
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
+
+    def test_stop_drops_a_push_parked_on_a_full_queue(self):
+        # Landing after stop()'s drain, the blob sat in the queue for the next
+        # activation with its count already zeroed.
+        s = _make()
+        t, out = self._park_a_push_on_a_full_queue(s)
+        with quiet_logging():
+            s.stop()
+        t.join(2.0)
+        self.assertEqual(out["n"], 0)
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (0, 0, 0))
+
     def test_empty_input_returns_zero(self):
         s = _make()
         self.assertEqual(s._encode_and_enqueue(np.array([], dtype=np.float32)), 0)

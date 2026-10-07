@@ -1615,17 +1615,23 @@ class AudioStreamer:
         with self._count_lock:
             self._queued_samples += n
             self._pushed_count += n
-        try:
-            if block_on_full:
-                self.q.put(payload, timeout=QUEUE_PUT_TIMEOUT_S)
-            else:
+        # Polled rather than a blocking q.put(timeout=...): flush()'s and
+        # stop()'s drain frees the very slots a parked put waits on, so the
+        # pre-splice blob would land in the queue right after the drain.
+        put_deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S
+        while self._flush_epoch == epoch:
+            try:
                 self.q.put_nowait(payload)
-        except queue.Full:
-            with self._count_lock:
-                self._queued_samples = max(0, self._queued_samples - n)
-                self._pushed_count = max(0, self._pushed_count - n)
-            return 0
-        return n
+                return n
+            except queue.Full:
+                pass
+            if not block_on_full or time.monotonic() >= put_deadline:
+                break
+            time.sleep(BACKPRESSURE_SPIN_S)
+        with self._count_lock:
+            self._queued_samples = max(0, self._queued_samples - n)
+            self._pushed_count = max(0, self._pushed_count - n)
+        return 0
 
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
         if status or not self.running:
@@ -1749,8 +1755,7 @@ class AudioStreamer:
             self._start_mic_for_reu_pump(device, skip_irq_vector_hook=skip_irq_vector_hook)
             return
         self._upload_nmi_and_buffers()
-        self._pushed_count = 0
-        self._reset_ring_clock()
+        self.reset_position()
         self.running = True
         self._worker_thread = self._start_worker()
         assert sd is not None
@@ -2553,8 +2558,7 @@ class AudioStreamer:
         via push_samples()."""
         self._listen_mode = False
         self._upload_nmi_and_buffers()
-        self._pushed_count = 0
-        self._reset_ring_clock()
+        self.reset_position()
         self.running = True
         self._worker_thread = self._start_worker()
         # Report the achieved rate too: CIA latch quantization separates them
@@ -3317,9 +3321,13 @@ class AudioStreamer:
         # Drain so subsequent runs start clean. The epoch bumped above is what
         # covers a producer still between its own capture and its put.
         self._drain_queue_samples()
-        self._pushed_count = 0
-        self._queued_samples = 0
-        self._in_flight_samples = 0
+        # Locked: a producer rolling back a blob the epoch bump refused does a
+        # read-modify-write under _count_lock, and an unlocked store here could
+        # land inside it and be overwritten with the pre-zero count.
+        with self._count_lock:
+            self._pushed_count = 0
+            self._queued_samples = 0
+            self._in_flight_samples = 0
         self._reset_ring_clock()
         self._stomp_requested = False
         # The streamer is reused across scenes: a total outliving its own scene
