@@ -1749,6 +1749,68 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         self.assertEqual(fake.memories[icr], unmask)
         self.assertFalse(s._cia1_unmask_owed)
 
+    @staticmethod
+    def _drop_unmasks(fake: FakeAPI) -> list[bool]:
+        """Lose every CIA #1 unmask while the returned flag holds True."""
+        icr, unmask = f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+        real_memory = fake.write_memory
+        dropping = [True]
+
+        def write_memory(addr, data_hex):
+            if dropping[0] and str(addr).upper() == icr and data_hex == unmask:
+                fake.delivery_epoch += 1
+                return
+            real_memory(addr, data_hex)
+
+        fake.write_memory = write_memory  # type: ignore[method-assign]
+        return dropping
+
+    def test_an_owed_unmask_at_stop_waits_behind_a_vector_restore(self):
+        # A dispatcher install whose entry and every unmask after it are lost
+        # leaves CIA #1 masked with nothing armed. The dispatcher's uninstall
+        # keeps its own mask when its $0314 restore is lost, so stop() unmasks
+        # only once $0314 is back at the kernal.
+        icr, unmask = f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+        s = new_streamer(dither=False, use_reu_pump=True)
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, REU_PUMP_HANDLER_ADDR, self.TRIES)
+        dropping = self._drop_unmasks(fake)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertTrue(s._cia1_unmask_owed)
+        self.assertEqual(fake.memories[icr], f"{CIA1.ICR_DISABLE_ALL:02X}")
+        fake.regs["0314"] = (0x00, 0xC5)
+        dropping[0] = False
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+        self.assertEqual(fake.memories[icr], unmask)
+        self.assertFalse(s._cia1_unmask_owed)
+        restore = max(
+            i for i, o in enumerate(fake.ops) if o == ("write_regs", "0314", self.KERNAL_IRQ)
+        )
+        unmasks = [i for i, o in enumerate(fake.ops) if o == ("write_memory", icr, unmask)]
+        self.assertLess(restore, unmasks[-1])
+
+    def test_a_pump_armed_under_an_owed_unmask_unmasks_cia1(self):
+        # Masked, CIA #1 raises no IRQ at all, so a pump armed on $0314
+        # without the unmask never runs.
+        s, fake = self._start(0x0000, 0)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        dropping = self._drop_unmasks(fake)
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s.stop()
+        self.assertTrue(s._cia1_unmask_owed)
+        dropping[0] = False
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(fake.regs["0314"], self.PUMP_IRQ)
+        self.assertEqual(fake.memories[f"{CIA1.ICR:04X}"], f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+        self.assertFalse(s._cia1_unmask_owed)
+
     def test_a_lost_vector_restore_at_stop_is_resent(self):
         # stop()'s restore is the last write that can take an armed pump off
         # $0314; one lost on the link would leave it running past the scene.

@@ -357,8 +357,8 @@ class AudioStreamer:
         # A failed install's $0314 restore that never confirmed: stop() owes
         # it even though no pump armed (_unwind_pump_install).
         self._irq_vector_restore_owed = False
-        # A CIA #1 unmask that never confirmed after a masked $C100 write:
-        # stop() owes it, since no later write on these paths unmasks CIA #1.
+        # A CIA #1 unmask that never confirmed after a masked $C100 write: the
+        # next pump arm or stop() owes it (_cia1_unmask_step).
         self._cia1_unmask_owed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
@@ -1949,6 +1949,8 @@ class AudioStreamer:
                 self._require_confirmed(
                     "IRQ vector", lambda: self._write_irq_vector(REU_PUMP_HANDLER_ADDR)
                 )
+            if self._cia1_unmask_owed:
+                self._cia1_unmask_step()[1]()
         except PumpInstallError as e:
             self._unwind_pump_install(
                 restore_irq_vector=patched,
@@ -2031,9 +2033,10 @@ class AudioStreamer:
 
     def _cia1_unmask_step(self) -> tuple[str, Callable[[], None]]:
         """The confirmed teardown step that unmasks CIA #1 Timer A; the debt
-        (`_cia1_unmask_owed`) clears only once it held, and `_disarm_reu_pump`
-        writes it again until then. A mask left in place stops the kernal's
-        jiffy IRQ outright, SCNKEY included, and nothing else here unmasks."""
+        (`_cia1_unmask_owed`) clears only once it held, and the next
+        `_arm_installed_pump` or `_disarm_reu_pump` writes it again until then.
+        A mask left in place stops the kernal's jiffy IRQ outright, SCNKEY
+        included, and a pump armed under it never runs."""
 
         def unmask() -> None:
             self._require_confirmed(
@@ -2793,38 +2796,38 @@ class AudioStreamer:
         owed, so the shared streamer's next stop() writes it again.
 
         A CIA #1 unmask that never confirmed after a masked $C100 write
-        (`_cia1_unmask_owed`) is written again here the same way, once no
-        vector restore is owed: a restore that fails has just written the
-        stub and its unmask itself."""
-        restore = self._reu_pump_armed or self._irq_vector_restore_owed
-        if not (restore or self._cia1_unmask_owed):
+        (`_cia1_unmask_owed`) is written again here the same way, and only
+        behind a $0314 restore that confirmed: a restore that fails has just
+        written the stub and its unmask itself. Unmasking without one would
+        undo the mask `uninstall_bank_swap_irq` leaves when its own restore is
+        lost, and vector every jiffy IRQ through the stale in-RAM dispatcher."""
+        if not (self._reu_pump_armed or self._irq_vector_restore_owed or self._cia1_unmask_owed):
             return
         # Retire the mic ring governor's latch writes first; one already in
         # flight finishes before this returns, so it lands ahead of the
         # restore below rather than after it.
         with self._pump_trim_lock:
             self._pump_trim_token += 1
-        steps: list[tuple[str, Callable[[], object]]] = []
-        if restore:
-            # Cleared by the confirmed restore only once it held.
-            self._irq_vector_restore_owed = True
-            steps += [
+        # Cleared by the confirmed restore only once it held.
+        self._irq_vector_restore_owed = True
+        unmask_label, unmask = self._cia1_unmask_step()
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
                 ("IRQ vector restore", self._restore_irq_vector_confirmed),
                 ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
-            ]
-        unmask_label, unmask = self._cia1_unmask_step()
-        steps += [
-            (
-                unmask_label,
-                lambda: (
-                    unmask()
-                    if self._cia1_unmask_owed and not self._irq_vector_restore_owed
-                    else None
+                (
+                    unmask_label,
+                    lambda: (
+                        unmask()
+                        if self._cia1_unmask_owed and not self._irq_vector_restore_owed
+                        else None
+                    ),
                 ),
-            ),
-            ("REU pump disarm flush", self.api.flush),
-        ]
-        run_teardown_steps(log, type(self).__name__, steps)
+                ("REU pump disarm flush", self.api.flush),
+            ],
+        )
         self._reu_pump_armed = False
 
     def _write_cia1_timer_a_latch(self, latch: int) -> None:
