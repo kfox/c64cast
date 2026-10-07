@@ -560,10 +560,8 @@ reu_pump_governor = true            # C64-side rate governor for the REU audio
                                     # reads the NMI read pointer and SKIPS a
                                     # chunk whenever its write head is half a
                                     # ring ahead, self-throttling to the
-                                    # consumer with zero host bus writes (a
-                                    # host-side servo was tried first but its
-                                    # CIA-latch writes audibly glitched the
-                                    # pump). Covers char-mode and bitmap
+                                    # consumer with zero host bus writes.
+                                    # Covers char-mode and bitmap
                                     # (REU bank-swap) video. The mic pump has
                                     # no room for that test, so there the host
                                     # reads both pointers about once a second

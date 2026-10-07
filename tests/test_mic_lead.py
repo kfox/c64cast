@@ -912,13 +912,20 @@ class MicRingCorrectionTest(unittest.TestCase):
         self.assertGreater(ahead, 0.0)
         self.assertLess(behind, 0.0)
 
-    def test_a_lead_past_half_a_ring_from_target_reads_as_short_of_it(self):
-        # The lead is known modulo the ring: a write head that has run on past
-        # a lap shows up just behind the reader, which is far short of the
-        # target, and has to be sped up rather than slowed into a second lap.
-        lapped = (REU_MIC_RING_LEAD + RING_BUFFER_SIZE // 2 + 500) % RING_BUFFER_SIZE
-        frac, _ = ml.mic_ring_correction(lapped, 0.0, sample_rate=RATE)
+    def test_a_reader_just_past_the_pump_reads_as_short_of_the_target(self):
+        # The lead is known modulo the ring: a reader that overran the write
+        # head shows up as a lead just short of a full ring, and the pump has
+        # to be sped up rather than slowed further behind it.
+        overrun = RING_BUFFER_SIZE - ml.MIC_RING_OVERRUN_WINDOW // 2
+        frac, _ = ml.mic_ring_correction(overrun, 0.0, sample_rate=RATE)
         self.assertLess(frac, 0.0)
+
+    def test_a_pump_far_ahead_is_slowed_however_far(self):
+        # Bus halts only slow the reader, so a large lead short of the overrun
+        # window is the pump ahead, even past half a ring from the target.
+        far = RING_BUFFER_SIZE - ml.MIC_RING_OVERRUN_WINDOW - 1
+        frac, _ = ml.mic_ring_correction(far, 0.0, sample_rate=RATE)
+        self.assertGreater(frac, 0.0)
 
     def test_output_and_integrator_are_held_to_the_trim_range(self):
         hi, _ = ml.mic_ring_correction(REU_MIC_RING_LEAD + 4000, 10**9, sample_rate=RATE)

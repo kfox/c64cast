@@ -132,6 +132,13 @@ MIC_RING_KI = MIC_LEAD_KI
 # faster one, which bus halts cannot cause, so that side stays narrow.
 MIC_RING_MAX_SLOW = 0.25
 MIC_RING_MAX_FAST = 0.03
+# The lead is known only modulo the ring, so one split point decides whether a
+# large reading is a pump far ahead or a reader that overran the pump. Bus
+# halts slow only the reader, so the pump running ahead is the drift there is;
+# an overrun can come only from a pump burst short of the reader's, which moved
+# the lead about 1 KB in a second under mhires. A reading within this many
+# bytes behind the reader is an overrun, and any other is the pump ahead.
+MIC_RING_OVERRUN_WINDOW = 1024
 
 
 def mic_lead_correction(
@@ -192,12 +199,15 @@ def mic_ring_correction(
     """One ring-governor decision: ``(slow_frac, new_integ)``.
 
     ``lead`` is the pump's dst tracker less the NMI read pointer, modulo the
-    ring. It is judged as a signed distance from ``target`` within half a ring,
-    so a lead that has run past a lap reads as short of the target rather than
-    far beyond it. A positive ``slow_frac`` stretches the pump's period by that
+    ring. A lead within ``MIC_RING_OVERRUN_WINDOW`` of a full ring is the
+    reader past the pump, short of the target; any other is the pump that far
+    ahead. A positive ``slow_frac`` stretches the pump's period by that
     fraction (the pump is ahead); negative shortens it. Pure, for the tests."""
     rate = float(sample_rate)
-    error = signed_ring_delta(lead, target, RING_BUFFER_SIZE)
+    lead %= RING_BUFFER_SIZE
+    if lead >= RING_BUFFER_SIZE - MIC_RING_OVERRUN_WINDOW:
+        lead -= RING_BUFFER_SIZE
+    error = lead - target
     return pi_step(
         error,
         integ,
