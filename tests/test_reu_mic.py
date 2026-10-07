@@ -59,6 +59,7 @@ from c64cast.audio.mic_lead import (
     MicLeadServo,
     MicLeadShaper,
     MicRingGovernor,
+    TrimWrite,
 )
 from c64cast.hw.c64 import CIA1, KERNAL, VECTORS, kernal_cia1_latch
 
@@ -1115,7 +1116,7 @@ class MicLeadServoWiringTest(unittest.TestCase):
         s = _new_streamer()
         gov = MicRingGovernor(
             read_phase=lambda: None,
-            write_latch=lambda latch: True,
+            write_latch=lambda latch: TrimWrite.DELIVERED,
             matched_latch=10879,
             sample_rate=12000,
         )
@@ -1179,7 +1180,7 @@ class MicRingGovernorWiringTest(unittest.TestCase):
     def test_a_trim_writes_the_pump_latch_while_armed(self):
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        self.assertTrue(self._governor(s)._write_latch(11000))
+        self.assertIs(self._governor(s)._write_latch(11000), TrimWrite.DELIVERED)
         self.assertEqual(fake.memories["DC04"], _packed_latch(11000))
 
     def test_no_trim_lands_after_the_disarm_restores_the_kernal_latch(self):
@@ -1187,7 +1188,7 @@ class MicRingGovernorWiringTest(unittest.TestCase):
         fake = cast(FakeAPI, s.api)
         write = self._governor(s)._write_latch
         s._disarm_reu_pump()
-        self.assertFalse(write(11000))
+        self.assertIs(write(11000), TrimWrite.REFUSED)
         self.assertEqual(fake.memories["DC04"], _packed_latch(kernal_cia1_latch("NTSC")))
 
     def test_a_previous_arms_governor_cannot_trim_the_next_pump(self):
@@ -1195,8 +1196,58 @@ class MicRingGovernorWiringTest(unittest.TestCase):
         stale = self._governor(s)._write_latch
         s.stop()
         s._start_mic_for_reu_pump(device=-1)
-        self.assertFalse(stale(11000))
-        self.assertTrue(self._governor(s)._write_latch(11000))
+        self.assertIs(stale(11000), TrimWrite.REFUSED)
+        self.assertIs(self._governor(s)._write_latch(11000), TrimWrite.DELIVERED)
+
+    def test_a_trim_the_link_dropped_is_sent_again(self):
+        # #602: the first trim is lost on the link. The second interval's
+        # reading asks for the same latch, which the governor took as already
+        # written, so the pump ran untrimmed until the output moved a step.
+        s = self._start()
+        servo = s._mic_lead
+        assert servo is not None
+        servo.stop()
+        fake = cast(FakeAPI, s.api)
+        r = RING_BUFFER_ADDR + 0x0A00
+        # Two readings PI-equivalent at the same output: (kp + ki)·e1 on the
+        # first, kp·e2 + ki·(e1 + e2) on the second, so e2 = e1·kp/(kp + ki).
+        w = r + REU_MIC_RING_LEAD + 1100
+        image = bytearray(0x10000)
+        src = REU_MIC_BASE
+        image[REU_AUDIO_SRC_TRACKER_ADDR : REU_AUDIO_SRC_TRACKER_ADDR + 5] = bytes(
+            [src & 0xFF, (src >> 8) & 0xFF, src >> 16, w & 0xFF, w >> 8]
+        )
+
+        def set_r(addr: int) -> None:
+            image[READ_PTR_LO_ADDR : READ_PTR_LO_ADDR + 2] = bytes([addr & 0xFF, addr >> 8])
+
+        set_r(r)
+        fake.read_memory = (  # type: ignore[method-assign]
+            lambda address, length, timeout=1.0: bytes(image[address : address + length])
+        )
+        lose_writes_to(fake, CIA1.TIMER_A_LO, times=1)
+        waits: list[float] = []
+
+        class _Stop:
+            def wait(self, timeout: float) -> bool:
+                waits.append(timeout)
+                if len(waits) == 2:
+                    set_r(r + 100)
+                return len(waits) > 2
+
+            def is_set(self) -> bool:
+                return False
+
+        real_stop = servo._stop
+        servo._stop = _Stop()  # type: ignore[assignment]
+        try:
+            servo._run()
+        finally:
+            servo._stop = real_stop
+        gov = self._governor(s)
+        self.assertIn(("lost", "DC04"), fake.ops)
+        self.assertNotEqual(gov.latch, s._reu_cia1_latch_nominal)
+        self.assertEqual(fake.memories["DC04"], _packed_latch(gov.latch))
 
     def test_the_governor_reads_both_pointers_at_the_servo_timeout(self):
         s = self._start()

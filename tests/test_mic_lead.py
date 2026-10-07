@@ -870,6 +870,7 @@ class _RingRig:
         self.writes: list[int] = []
         self.fail_reads = 0
         self.accept_writes = True
+        self.lose_writes = 0
         self.gov = ml.MicRingGovernor(
             read_phase=self.read,
             write_latch=self.write,
@@ -886,12 +887,15 @@ class _RingRig:
         ahead = int(self.lead) // REU_PUMP_CHUNK_SIZE * REU_PUMP_CHUNK_SIZE
         return r, RING_BUFFER_ADDR + (r - RING_BUFFER_ADDR + ahead) % RING_BUFFER_SIZE
 
-    def write(self, latch: int) -> bool:
+    def write(self, latch: int) -> ml.TrimWrite:
         if not self.accept_writes:
-            return False
+            return ml.TrimWrite.REFUSED
         self.writes.append(latch)
+        if self.lose_writes:
+            self.lose_writes -= 1
+            return ml.TrimWrite.UNCONFIRMED
         self.latch = latch
-        return True
+        return ml.TrimWrite.DELIVERED
 
     @property
     def pump_rate(self) -> float:
@@ -1013,6 +1017,23 @@ class MicRingGovernorClosedLoopTest(unittest.TestCase):
         rig.gov.tick()
         self.assertEqual((rig.gov.lead_min, rig.gov.lead_max), (-256, -256))
 
+    def test_an_unconfirmed_trim_is_sent_again_though_the_latch_is_unchanged(self):
+        # #602: the link may have dropped it, and the next reading asks for
+        # the same latch, which used to go unsent until the PI output moved a
+        # whole latch step.
+        chunk = REU_PUMP_CHUNK_SIZE
+        rig = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 11 * chunk)
+        rig.lose_writes = 1
+        rig.gov.tick()
+        first = rig.writes[-1]
+        # e2 = e1·kp/(kp + ki) holds the PI output where e1 left it; whole
+        # chunks, as the rig reads W.
+        rig.lead = REU_MIC_RING_LEAD + 10 * chunk
+        rig.gov.tick()
+        self.assertEqual(rig.writes, [first, first])
+        self.assertEqual(rig.latch, first)
+        self.assertEqual(rig.gov.unconfirmed_trims, 1)
+
     def test_an_unchanged_latch_is_not_rewritten(self):
         rig = _RingRig(PETSCII_PUMP, PETSCII_PUMP)
         for _ in range(5):
@@ -1107,7 +1128,10 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
             raise ValueError("bug")
 
         gov = ml.MicRingGovernor(
-            read_phase=boom, write_latch=lambda latch: True, matched_latch=MATCHED, sample_rate=RATE
+            read_phase=boom,
+            write_latch=lambda latch: ml.TrimWrite.DELIVERED,
+            matched_latch=MATCHED,
+            sample_rate=RATE,
         )
         servo = ml.MicLeadServo(
             read_memory=lambda a, n, timeout=1.0: None,

@@ -39,6 +39,7 @@ See docs/architecture/audio.md#mic_leadpy--reu-mic-lead-servo.
 
 from __future__ import annotations
 
+import enum
 import logging
 import math
 import threading
@@ -139,6 +140,17 @@ MIC_RING_MAX_FAST = 0.03
 # the lead about 1 KB in a second under mhires. A reading within this many
 # bytes behind the reader is an overrun, and any other is the pump ahead.
 MIC_RING_OVERRUN_WINDOW = 1024
+
+
+class TrimWrite(enum.Enum):
+    """What became of one CIA #1 trim the governor sent."""
+
+    DELIVERED = enum.auto()
+    # Sent, but the backend's delivery_epoch moved across it, so the link may
+    # have dropped it: the governor sends its next latch even when unchanged.
+    UNCONFIRMED = enum.auto()
+    # The pump it governs is disarmed; the governor writes nothing more.
+    REFUSED = enum.auto()
 
 
 def mic_lead_correction(
@@ -596,16 +608,18 @@ class MicRingGovernor:
     """The 1 Hz closed loop on the pump's lead over the NMI reader (#580).
 
     ``read_phase`` returns ``(R, W)`` from one span read, or None.
-    ``write_latch`` writes a CIA #1 latch and returns False once the pump it
-    governs has been disarmed, after which the governor writes nothing more:
-    a write landing after the teardown's kernal-latch restore would leave the
-    jiffy IRQ at the pump's rate for every later scene."""
+    ``write_latch`` writes a CIA #1 latch and says what became of it
+    (``TrimWrite``). Once it is refused, because the pump it governs has been
+    disarmed, the governor writes nothing more: a write landing after the
+    teardown's kernal-latch restore would leave the jiffy IRQ at the pump's
+    rate for every later scene. A write the link may have dropped is sent
+    again at the next tick, whatever latch that tick asks for."""
 
     def __init__(
         self,
         *,
         read_phase: Callable[[], tuple[int, int] | None],
-        write_latch: Callable[[int], bool],
+        write_latch: Callable[[int], TrimWrite],
         matched_latch: int,
         sample_rate: int,
     ) -> None:
@@ -616,12 +630,15 @@ class MicRingGovernor:
         self._integ = 0.0
         self.slow_frac = 0.0
         self.latch = matched_latch
+        # The pump arm confirmed the matched latch before the governor exists.
+        self._latch_delivered = True
         self.retired = False
         self.lead_min: int | None = None
         self.lead_max: int | None = None
         self.slow_min: float | None = None
         self.slow_max: float | None = None
         self.failed_reads = 0
+        self.unconfirmed_trims = 0
 
     def tick(self) -> None:
         """One measurement and decision. A failed read holds the latch: the
@@ -653,9 +670,13 @@ class MicRingGovernor:
             self.slow_frac,
             latch,
         )
-        if latch == self.latch:
+        if latch == self.latch and self._latch_delivered:
             return
-        if not self._write_latch(latch):
+        sent = self._write_latch(latch)
+        if sent is TrimWrite.REFUSED:
             self.retired = True
             return
         self.latch = latch
+        self._latch_delivered = sent is TrimWrite.DELIVERED
+        if not self._latch_delivered:
+            self.unconfirmed_trims += 1

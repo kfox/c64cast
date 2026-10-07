@@ -123,6 +123,7 @@ from .mic_lead import (
     MicLeadServo,
     MicLeadShaper,
     MicRingGovernor,
+    TrimWrite,
     reanchor_fill,
 )
 
@@ -2389,17 +2390,21 @@ class AudioStreamer:
             sample_rate=self.sample_rate,
         )
 
-    def _write_mic_pump_latch(self, token: int, latch: int) -> bool:
-        """Write the governed pump's CIA #1 latch, or return False without
-        writing once the pump armed under ``token`` has been disarmed (or
-        rearmed for a later scene). A latch write takes effect at the next
-        underflow and does not restart the count, so a trim lands between two
-        pump ticks rather than inside one."""
+    def _write_mic_pump_latch(self, token: int, latch: int) -> TrimWrite:
+        """Write the governed pump's CIA #1 latch, flushed and checked against
+        ``delivery_epoch``, or refuse without writing once the pump armed
+        under ``token`` has been disarmed (or rearmed for a later scene). A
+        latch write takes effect at the next underflow and does not restart
+        the count, so a trim lands between two pump ticks rather than inside
+        one. One attempt per tick: an unconfirmed trim is sent again at the
+        governor's next tick rather than retried here under the lock the
+        disarm waits on."""
         with self._pump_trim_lock:
             if token != self._pump_trim_token:
-                return False
-            self._write_cia1_timer_a_latch(latch)
-            return True
+                return TrimWrite.REFUSED
+            if write_confirmed(self.api, lambda: self._write_cia1_timer_a_latch(latch), tries=1):
+                return TrimWrite.DELIVERED
+            return TrimWrite.UNCONFIRMED
 
     def _stop_mic_lead_servo(self) -> None:
         lead, self._mic_lead = self._mic_lead, None
@@ -2411,7 +2416,8 @@ class AudioStreamer:
         if gov is not None and gov.lead_min is not None:
             log.info(
                 "audio[reu mic]: C64 ring lead %d..%d B (target %d), pump slowed "
-                "%.2f..%.2f %%, last CIA #1 latch %d (matched %d), %d failed read(s)%s",
+                "%.2f..%.2f %%, last CIA #1 latch %d (matched %d), %d failed read(s), "
+                "%d unconfirmed trim(s)%s",
                 gov.lead_min,
                 gov.lead_max,
                 REU_MIC_RING_LEAD,
@@ -2420,6 +2426,7 @@ class AudioStreamer:
                 gov.latch,
                 self._reu_cia1_latch_nominal,
                 gov.failed_reads,
+                gov.unconfirmed_trims,
                 ", retired" if gov.retired else "",
             )
         if lead.lead_min is None:
