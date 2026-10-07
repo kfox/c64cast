@@ -487,6 +487,23 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertNotIn("deadbeef", redact_secrets("X-Amz-Signature=deadbeef"))
         self.assertNotIn("zzz", redact_secrets("signing_key=zzz"))
 
+    def test_a_json_escaped_separator_before_a_short_name_still_separates(self):
+        """A URL inside a JSON string spells `&` as `\\u0026`, so the escape's
+        last hex digit sits against `sig` and the name read as glued to a word.
+        An escape of a letter is still a word: `\\u0061key` is `akey`."""
+        for line, expected in (
+            (
+                '"https://h/x?a=1\\u0026sig=abc123 rest"',
+                '"https://h/x?a=1\\u0026sig=REDACTED rest"',
+            ),
+            ("x\\u002Chmac=abc123 rest", "x\\u002Chmac=REDACTED rest"),
+            ("a\\\\u0026key=abc123 rest", "a\\\\u0026key=REDACTED rest"),
+            ("x\\u0061key=abc123 rest", "x\\u0061key=abc123 rest"),
+            ("x\\u0026signal=1 rest", "x\\u0026signal=1 rest"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), expected)
+
     def test_an_akamai_token_loses_its_hmac(self):
         """Akamai signs a URL with `__token__=` or `hdnts=`, neither of which
         the key names reach (`__token__` has no word boundary after `token`).
@@ -701,6 +718,7 @@ class RedactSecretsTest(unittest.TestCase):
             "token%3Dx" * 16_000 + "%2526" * 64_000 + "%26",
             "token%25253D" + "x%2526" * 32_000,
             "bypass=" * 32_000,
+            "\\u0026sig=" * 20_000,
         ):
             with self.subTest(line=line[:24]):
                 start = time.perf_counter()

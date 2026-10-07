@@ -1460,7 +1460,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   glued names such as `userpass=` and `authkey=` are now masked, and
   `high-pass=` and the shell's `PWD=` keep their values. A `bearer` key, a
   `=>` separator and an `Authorization:` value whose first word is no known
-  scheme are masked as well.
+  scheme are masked as well, as is a `sig=` or `key=` after a JSON-escaped
+  `&` in a URL quoted inside a JSON string.
 
 - **`--log-file` now rotates, so a network peer can no longer choose how large
   it gets.** The destination was a plain `logging.FileHandler` with no size of

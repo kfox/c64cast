@@ -380,9 +380,23 @@ def _secret_names(text: str) -> Iterator[re.Match[str]]:
             pos = m.start() + 1
 
 
+#: A JSON `\uXXXX` escape ending just before a name. Its last hex digit glues
+#: to the name, so `\u0026sig=` would read as the word `u0026sig`.
+_JSON_ESCAPE = re.compile(r"\\u(?P<hex>[0-9A-Fa-f]{4})\Z")
+
+
+def _is_glued(text: str, s: int) -> bool:
+    """Whether the name at `s` continues a word, rather than following a
+    separator or a JSON escape of one."""
+    if s == 0 or not _is_name_char(text[s - 1]) or text[s - 1] in "_-":
+        return False
+    escape = _JSON_ESCAPE.search(text, max(0, s - 6), s)
+    return escape is None or _is_name_char(chr(int(escape.group("hex"), 16)))
+
+
 def _names_a_secret(text: str, m: re.Match[str]) -> bool:
     s = m.start()
-    glued = s > 0 and _is_name_char(text[s - 1]) and text[s - 1] not in "_-"
+    glued = _is_glued(text, s)
     if m.group("open") is None:
         return not glued
     name = m.group("open").lower()
@@ -593,7 +607,8 @@ def redact_secrets(text: str) -> str:
       secret (`bypass`, `high-pass`, starting a component, so `firewall_pass`
       still matches) and the shell's `PWD` — or whose last `_`/`-` component
       is `key`, `sig`, `signature`, `hmac`, `auth` or `bearer`, so
-      `signing_key` matches and `sortkey` does not. `=`, `:` or `=>`
+      `signing_key` matches and `sortkey` does not, and a JSON escape of a
+      separator (`\\u0026sig=`) counts as one. `=`, `:` or `=>`
       separates them, with the key quoted or not;
     * the credential after `Bearer` and a space, and in an `Authorization:`
       value, after a registered scheme (`Basic`, `token`, …) and any
