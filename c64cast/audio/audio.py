@@ -1988,11 +1988,50 @@ class AudioStreamer:
 
     def _restore_irq_vector_confirmed(self) -> None:
         """$0314 back to the kernal, confirmed; clears the restore debt only
-        once it held. Raises PumpInstallError when it never confirms."""
-        self._require_confirmed(
-            "IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)
-        )
+        once it held. Raises PumpInstallError when it never confirms, after
+        putting the JMP $EA31 stub at the $C100 entry the vector still names.
+
+        Left as it was, that entry's tick divider chained the kernal on only
+        every Nth CIA #1 tick once the latch went back to the kernal's, so the
+        jiffy clock, SCNKEY and the cursor ran at a third of their speed until
+        a later stop() landed the restore."""
+        try:
+            self._require_confirmed(
+                "IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)
+            )
+        except PumpInstallError:
+            self._stub_pump_entry()
+            raise
         self._irq_vector_restore_owed = False
+
+    def _stub_pump_entry(self) -> None:
+        """The JMP $EA31 stub at $C100, written under a CIA #1 mask as a
+        dispatcher's entry is (an IRQ may be running the entry), then CIA #1
+        unmasked; each confirmed, and one that never confirms is logged."""
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
+                (
+                    "pump entry stub",
+                    lambda: self._require_confirmed(
+                        "pump entry stub",
+                        lambda: self._write_pump_entry(
+                            REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True
+                        ),
+                    ),
+                ),
+                (
+                    "CIA #1 unmask",
+                    lambda: self._require_confirmed(
+                        "CIA #1 unmask",
+                        lambda: self.api.write_memory(
+                            f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+                        ),
+                    ),
+                ),
+            ],
+        )
 
     def _write_confirmed(self, write: Callable[[], None]) -> bool:
         """``delivery.write_confirmed`` at TRACKED_PUMP_INSTALL_TRIES tries."""

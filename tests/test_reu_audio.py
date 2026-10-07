@@ -1673,6 +1673,46 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         s.stop()
         self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
 
+    def _assert_entry_stubbed(self, fake: FakeAPI) -> None:
+        # $0314 still names $C100, so every CIA #1 tick runs it: the stub
+        # chains the kernal on each one, where the pump entry's divider did so
+        # on every third (a slow jiffy clock, keyboard and cursor).
+        self.assertEqual(fake.regs["0314"], self.PUMP_IRQ)
+        self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
+        self.assertEqual(fake.memories[f"{CIA1.ICR:04X}"], f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+
+    def test_an_unwind_whose_vector_restore_never_lands_stubs_the_entry(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        real_regs = fake.write_regs
+        vector_writes = [0]
+
+        def write_regs(base, *vals):
+            # Every patch lands behind a moved epoch; every restore is lost.
+            if base.upper() == f"{VECTORS.IRQ:04X}":
+                vector_writes[0] += 1
+                fake.delivery_epoch += 1
+                if vector_writes[0] > self.TRIES:
+                    return
+            real_regs(base, *vals)
+
+        fake.write_regs = write_regs  # type: ignore[method-assign]
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertTrue(s._irq_vector_restore_owed)
+        self._assert_entry_stubbed(fake)
+
+    def test_a_stop_whose_vector_restore_never_lands_stubs_the_entry(self):
+        s, fake = self._start(0x0000, 0)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s.stop()
+        self.assertTrue(s._irq_vector_restore_owed)
+        self._assert_entry_stubbed(fake)
+
     def test_a_lost_vector_restore_at_stop_is_resent(self):
         # stop()'s restore is the last write that can take an armed pump off
         # $0314; one lost on the link would leave it running past the scene.

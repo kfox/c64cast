@@ -327,6 +327,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   seconds, which used to hold a frozen frame, and a seek back from near the
   end.
 
+- **A lossy link that kept the REU audio pump's `$0314` from being restored no
+  longer leaves the C64's clock and cursor running slow.** Until a later scene
+  landed the restore, every timer interrupt still went to the pump's entry,
+  which hands off to the KERNAL only every third tick. That entry is now
+  replaced by a jump straight to the KERNAL.
+
 - **The sampler and the ASID player no longer start over stale REU audio
   after a lossy reconnect.** Their ring prefills (and the sampler's first
   prebuffer write) were sent once and not checked, so a slice lost on the link
