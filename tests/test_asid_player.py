@@ -1138,6 +1138,17 @@ class BringUpTeardownTest(unittest.TestCase):
         finally:
             p.stop()
 
+    def test_a_retune_that_never_confirms_is_not_logged_as_done(self):
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        self.addCleanup(p.stop)
+        lose_writes_to(api, ap.HANDLER_ADDR)
+        with self.assertLogs("c64cast.sid.asid_player", "INFO") as logs:
+            p.set_frame_rate(120.0)
+        text = "\n".join(logs.output)
+        self.assertIn("was not confirmed delivered", text)
+        self.assertNotIn("retuned to", text)
+
     def test_a_retune_after_teardown_leaves_the_kernal_latch(self):
         # A reader abandoned by its bounded join can still deliver a 0x31 after
         # stop() restored the kernal latch; nothing would restore it again.

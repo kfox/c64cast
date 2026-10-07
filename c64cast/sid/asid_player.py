@@ -1002,6 +1002,7 @@ class AsidRingPlayer:
                 rate,
                 CONFIRM_TRIES,
             )
+            return
         log.info(
             "asid_player: retuned to %.1f Hz (latch %d, N=%d, %s)",
             rate,
