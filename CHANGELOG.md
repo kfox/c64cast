@@ -1458,7 +1458,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   schemes and URL userinfo wherever they start, and an encoded value ends at
   the delimiters of its own level of encoding. Two naming fixes ride along:
   glued names such as `userpass=` and `authkey=` are now masked, and
-  `high-pass=` and the shell's `PWD=` keep their values.
+  `high-pass=` and the shell's `PWD=` keep their values. A `bearer` key, a
+  `=>` separator and an `Authorization:` value whose first word is no known
+  scheme are masked as well.
 
 - **`--log-file` now rotates, so a network peer can no longer choose how large
   it gets.** The destination was a plain `logging.FileHandler` with no size of

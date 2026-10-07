@@ -64,7 +64,8 @@ _NAME = re.compile(
 
 #: Words that end in `pass` and name no secret: audio filters, encoder passes,
 #: and the English words. Compared with `_` and `-` removed, so `high-pass` and
-#: `bypass_audio` are both read here.
+#: `bypass_audio` are both read here, but only from the start of a component:
+#: see :func:`_names_no_password`.
 _NOT_A_PASSWORD = (
     "allpass",
     "bandpass",
@@ -90,17 +91,49 @@ _NOT_A_PASSWORD_REACH = max(map(len, _NOT_A_PASSWORD)) * 2
 #: Matched case-sensitively: a camera URL's `pwd=` is lowercase.
 _SHELL_PWD = ("PWD", "OLDPWD")
 
-#: What follows a key: an optional closing quote (escaped, in a rendering such
-#: as `{\'token\': …}`), then `=` or `:`, then the value.
-_KEY_TAIL = re.compile(r"""\\? ["']? \s* (?P<sep> [=:] ) [=:]* \s*""", re.VERBOSE)
+#: What follows a key: an optional closing quote (escaped, once or more, in a
+#: rendering such as `{\'token\': …}`), then `=`, `:` or `=>`, then the value.
+_KEY_TAIL = re.compile(r"""\\* ["']? \s* (?P<sep> [=:] ) [=:>]* \s*""", re.VERBOSE)
 
 #: A quote that opens a value: single or triple, after an optional Python
-#: string prefix (`b'…'`) or a backslash (an escaped rendering).
-_OPENER = re.compile(r"""[bBrRuUfF]{0,2} (?P<esc> \\ )? (?P<q> "{3} | '{3} | ["'] )""", re.VERBOSE)
+#: string prefix (`b'…'`) or backslashes (an escaped rendering, perhaps
+#: escaped again).
+_OPENER = re.compile(
+    r"""(?P<prefix> [bBrRuUfF]{0,2} ) (?P<esc> \\+ )? (?P<q> "{3} | '{3} | ["'] )""", re.VERBOSE
+)
+
+#: The string prefixes Python accepts, lowercased.
+_STRING_PREFIXES = frozenset({"", "b", "r", "u", "f", "br", "rb", "fr", "rf"})
 
 #: What separates an auth scheme from its credential: whitespace at any depth,
 #: or the `+` a form-encoded header spells a space with.
 _SCHEME_GAP = re.compile(r"[\s+]+")
+
+#: The schemes an `Authorization` value keeps in view: the IANA HTTP
+#: Authentication Scheme Registry, GitHub's `token` and AWS's signature scheme.
+#: Keeping any first word would keep a bare credential that more text follows,
+#: since that reads as a scheme and its credential.
+_AUTH_SCHEMES = frozenset(
+    {
+        "aws4-hmac-sha256",
+        "basic",
+        "bearer",
+        "concealed",
+        "digest",
+        "dpop",
+        "gnap",
+        "hoba",
+        "mutual",
+        "negotiate",
+        "ntlm",
+        "oauth",
+        "privatetoken",
+        "scram-sha-1",
+        "scram-sha-256",
+        "token",
+        "vapid",
+    }
+)
 
 #: An `Authorization:` value that is a scheme and a credential.
 _SCHEME_AND_GAP = re.compile(r"\+* (?P<scheme> [\w.-]+ ) (?P<gap> [\s+]+ )", re.VERBOSE)
@@ -345,11 +378,7 @@ def _names_a_secret(text: str, m: re.Match[str]) -> bool:
         return not glued
     name = m.group("open").lower()
     if name == "pass":
-        lo = s
-        while lo > 0 and s - lo < _NOT_A_PASSWORD_REACH and _is_name_char(text[lo - 1]):
-            lo -= 1
-        run = text[lo : m.end()].lower().replace("_", "").replace("-", "")
-        return not run.endswith(_NOT_A_PASSWORD)
+        return not _names_no_password(text, s, m.end())
     if name == "pwd":
         for word in _SHELL_PWD:
             lo = m.end() - len(word)
@@ -358,13 +387,50 @@ def _names_a_secret(text: str, m: re.Match[str]) -> bool:
     return True
 
 
+def _names_no_password(text: str, s: int, end: int) -> bool:
+    """Whether the key ending in the `pass` at `s` ends with one of
+    `_NOT_A_PASSWORD`, starting where one of the key's `_`/`-` components
+    does. A plain suffix test on the joined run reads `firewall_pass` as
+    `allpass` and `phone_pass` as `onepass`. A run longer than the reach is
+    not known to start a component where the window does, so it keeps its
+    mask."""
+    lo = s
+    while lo > 0 and s - lo < _NOT_A_PASSWORD_REACH and _is_name_char(text[lo - 1]):
+        lo -= 1
+    boundary = lo == 0 or not _is_name_char(text[lo - 1])
+    letters: list[str] = []
+    starts: set[int] = set()
+    for c in text[lo:end].lower():
+        if c in "_-":
+            boundary = True
+            continue
+        if boundary:
+            starts.add(len(letters))
+            boundary = False
+        letters.append(c)
+    run = "".join(letters)
+    return any(run.endswith(w) and len(run) - len(w) in starts for w in _NOT_A_PASSWORD)
+
+
+def _opener(text: str, p: int) -> re.Match[str] | None:
+    """The quote opening a value at `p`, after a prefix Python would accept.
+    Any other letters before a quote begin an unquoted value: read as a
+    prefix, the `rU` of `rU'secret` would stay in view."""
+    m = _OPENER.match(text, p)
+    return m if m is not None and m.group("prefix").lower() in _STRING_PREFIXES else None
+
+
 def _value(line: _Line, v: int, d: int, kind: str) -> Span | None:
     """The span of the value starting at `v`, quoted or not; an unquoted one
     ends at a `kind` stop no deeper than `d`, which is its separator's depth."""
-    opener = _OPENER.match(line.text, v)
+    opener = _opener(line.text, v)
     if opener is not None:
         start = opener.end()
         end = _quoted_end(line, opener, start)
+        if opener.group("prefix") and end == len(line.text):
+            # Nothing closed it, so the letters are not known to be a prefix:
+            # they may be the secret's own first characters.
+            return (v, end)
         return (start, end) if end > start else None
     end = line.stop(kind, v, d)
     return (v, end) if end > v else None
@@ -391,7 +457,7 @@ def _credential(line: _Line, c: int, gap: str, d: int) -> Span | None:
     ends at a `+` only when a `+` is what separated it from the scheme."""
     if c >= len(line.text):
         return None
-    if _OPENER.match(line.text, c) is not None:
+    if _opener(line.text, c) is not None:
         return _value(line, c, d, "unquoted")
     return (c, line.stop("unquoted+" if "+" in gap else "unquoted", c + 1, d))
 
@@ -399,14 +465,14 @@ def _credential(line: _Line, c: int, gap: str, d: int) -> Span | None:
 def _key_values(line: _Line) -> Iterator[Span]:
     text = line.text
     for name in _secret_names(text):
-        if name.group("scheme") is not None:
+        tail = _KEY_TAIL.match(text, name.end())
+        if name.group("scheme") is not None and tail is None:
             gap = _SCHEME_GAP.match(text, name.end())
             if gap is not None:
                 span = _credential(line, gap.end(), gap.group(), line.deepest(*gap.span()))
                 if span is not None:
                     yield span
             continue
-        tail = _KEY_TAIL.match(text, name.end())
         if tail is None:
             continue
         v, d = tail.end(), line.depth(tail.start("sep"))
@@ -419,19 +485,30 @@ def _key_values(line: _Line) -> Iterator[Span]:
 
 def _past_scheme(line: _Line, v: int, span: Span | None) -> Span | None:
     """The credential in an `Authorization` value at `v`, whose `span` is what
-    a value there would cover. The scheme before it is kept, as `Bearer` is."""
+    a value there would cover. A known scheme before it is kept, as `Bearer`
+    is; any other first word may be the credential itself, so it goes with
+    what follows it."""
     text = line.text
-    opener = _OPENER.match(text, v)
+    opener = _opener(text, v)
     if opener is not None:
         if span is None:
             return None
         scheme = _SCHEME_AND_GAP.match(text, span[0], span[1])
-        return span if scheme is None or scheme.end() == span[1] else (scheme.end(), span[1])
+        if scheme is None or scheme.end() == span[1] or not _is_auth_scheme(scheme):
+            return span
+        return (scheme.end(), span[1])
     scheme = _SCHEME_AND_GAP.match(text, v)
     if scheme is None or scheme.end() == len(text):
         return span
     gap_start, gap_end = scheme.span("gap")
-    return _credential(line, gap_end, scheme.group("gap"), line.deepest(gap_start, gap_end))
+    credential = _credential(line, gap_end, scheme.group("gap"), line.deepest(gap_start, gap_end))
+    if credential is None or _is_auth_scheme(scheme):
+        return credential
+    return (v, credential[1])
+
+
+def _is_auth_scheme(m: re.Match[str]) -> bool:
+    return m.group("scheme").lower() in _AUTH_SCHEMES
 
 
 def _userinfo(line: _Line) -> Iterator[Span]:
@@ -488,12 +565,14 @@ def redact_secrets(text: str) -> str:
       `pass`, `passphrase`, `passcode`, `loginpas(s)`, `pwd`, `jwt`, `secret`,
       `credential(s)` or `apikey` — glued to any prefix, so `viewer_token` and
       `userpass` match, bar the words that end in `pass` and name nothing
-      secret (`bypass`, `highpass`) and the shell's `PWD` — or whose last
-      `_`/`-` component is `key`, `sig`, `signature`, `hmac` or `auth`, so
-      `signing_key` matches and `sortkey` does not. `=` or `:` separates them,
-      with the key quoted or not;
-    * the credential after `Bearer`, and after any scheme in an
-      `Authorization:` value (`Basic`, `token`, …);
+      secret (`bypass`, `high-pass`, starting a component, so `firewall_pass`
+      still matches) and the shell's `PWD` — or whose last `_`/`-` component
+      is `key`, `sig`, `signature`, `hmac`, `auth` or `bearer`, so
+      `signing_key` matches and `sortkey` does not. `=`, `:` or `=>`
+      separates them, with the key quoted or not;
+    * the credential after `Bearer` and a space, and in an `Authorization:`
+      value, after a registered scheme (`Basic`, `token`, …), which stays in
+      view; a first word that is no known scheme is masked with the rest;
     * the userinfo of a URL (`https://user:pass@host` comes back as
       `https://REDACTED@host`) — a private media file is legitimately reached
       that way, and FFmpeg quotes the URL it failed on into its errors.
@@ -502,8 +581,10 @@ def redact_secrets(text: str) -> str:
     `Bearer%20VALUE` are covered at any depth of encoding. An unquoted value
     ends at whitespace, `&` or a comma no deeper than its separator, or at a
     quote or `}` that no letter or digit follows. A quoted one — `'`, `"`,
-    `'''` or `\"\"\"`, perhaps `b`-prefixed or backslash-escaped — runs to the
-    matching quote that no backslash escapes and no letter or digit follows.
+    `'''` or `\"\"\"`, perhaps backslash-escaped or after a string prefix
+    Python accepts (`b`, `rb`, …) — runs to the matching quote that no
+    backslash escapes and no letter or digit follows; when nothing closes a
+    prefixed one, the prefix letters are masked too.
 
     Nothing crosses a line break: a value written across several lines is
     masked only as far as its first one. Masking a value means finding where it

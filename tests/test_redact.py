@@ -248,6 +248,24 @@ class RedactSecretsTest(unittest.TestCase):
         self.assertEqual(redact_secrets(line), line)
         self.assertEqual(redact_secrets("pwd=x Pwd=y"), "pwd=REDACTED Pwd=REDACTED")
 
+    def test_an_excluded_word_counts_only_from_the_start_of_a_component(self):
+        """`firewall_pass` joined is `firewallpass`, which ends in `allpass`,
+        and `phone_pass` ends in `onepass`; neither names a filter or an
+        encoder pass, so both keep their mask."""
+        for name in (
+            "firewall_pass",
+            "phone_pass",
+            "lobby_pass",
+            "broadband_pass",
+            "failover-pass",
+            "telecom_pass",
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(redact_secrets(f"{name}=hunter2"), f"{name}=REDACTED")
+                safe, verbatim = redact_source_line([f'{name} = "hunter2'], 1)
+                self.assertNotIn("hunter2", safe)
+                self.assertFalse(verbatim)
+
     def test_a_quote_inside_a_one_word_value_does_not_end_it(self):
         """A quote that a letter or digit follows is part of the value: the
         `'` in a password `it's@er2` ended the value early and left the rest,
@@ -261,6 +279,31 @@ class RedactSecretsTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertNotIn(secret, redact_secrets(line))
         self.assertEqual(redact_secrets("token: b's3cr3t' x"), "token: b'REDACTED' x")
+
+    def test_letters_before_a_quote_are_a_prefix_only_when_python_takes_them(self):
+        """`rU` is no string prefix, and a `b` whose quote never closes is not
+        known to be one, so the letters are the secret's own and go too."""
+        for line, want in (
+            ("token=rU'secretvalue", "token=REDACTED"),
+            ('token=bU"secretvalue" more', 'token=REDACTED" more'),
+            ("token=b'secretvalue", "token=REDACTED"),
+            ("token=rb'secretvalue' x", "token=rb'REDACTED' x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_arrow_or_a_doubly_escaped_rendering_still_separates(self):
+        """A Ruby or PHP hash spells the separator `=>`, and JSON quoted
+        inside JSON escapes its quotes more than once."""
+        for line, want in (
+            ("{'token' => 'abc'}", "{'token' => 'REDACTED'}"),
+            (
+                '"{\\\\\\"token\\\\\\": \\\\\\"abc\\\\\\"}"',
+                '"{\\\\\\"token\\\\\\": \\\\\\"REDACTED"}"',
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
 
     def test_a_quoted_value_holding_prose_ends_at_its_first_quote(self):
         """A value that has held whitespace is prose, and a possessive's `'`
@@ -299,6 +342,28 @@ class RedactSecretsTest(unittest.TestCase):
                 "h=Authorization:%20Bearer%20ab+cd/ef==",
                 "h=Authorization:%20Bearer%20REDACTED",
             ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_first_word_that_is_no_known_scheme_goes_with_the_credential(self):
+        """A bare credential followed by more text reads as a scheme and its
+        credential, so only a registered scheme is kept in view."""
+        for line, want in (
+            ("Authorization: s3cr3t rejected by host", "Authorization: REDACTED by host"),
+            ("{'Authorization': 's3cr3t def'}", "{'Authorization': 'REDACTED'}"),
+            ("Authorization: SSWS s3cr3t", "Authorization: REDACTED"),
+            ("Authorization: NEGOTIATE s3cr3t", "Authorization: NEGOTIATE REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_bearer_as_a_key_masks_its_value(self):
+        """Followed by a separator rather than a space, `bearer` is a key."""
+        for line, want in (
+            ("bearer=s3cr3t", "bearer=REDACTED"),
+            ('{"bearer": "s3cr3t"}', '{"bearer": "REDACTED"}'),
+            ("x_bearer: s3cr3t", "x_bearer: REDACTED"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
