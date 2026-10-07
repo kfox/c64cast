@@ -596,6 +596,10 @@ class RedactSecretsTest(unittest.TestCase):
             ("Authorization: (Basic) ab rest", "Authorization: (Basic) REDACTED rest"),
             ("Authorization: Basic, ab rest", "Authorization: Basic, REDACTED rest"),
             ("Authorization: s3cr3t, ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: %22Basic%22 ab rest", "Authorization: %22Basic%22 REDACTED rest"),
+            ("Authorization: %22s3cr3t%22, ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: %22Basic a b%22-tail rest", "Authorization: %22Basic REDACTED rest"),
+            ("Authorization: %22s3 a b%22-tail rest", "Authorization: REDACTED rest"),
             ("token: rU%27a b%27-tail rest", "token: REDACTED rest"),
             ("Bearer rU%22ab cd%22-tail rest", "Bearer REDACTED rest"),
         ):
@@ -677,6 +681,7 @@ class RedactSecretsTest(unittest.TestCase):
             "Bearer " * 32_000,
             "x_Bearer+" * 24_000,
             "Authorization: Basic " * 12_000,
+            "Authorization: %22Basic%22 " * 12_000,
             "Bearer%2520" * 20_000,
             "a://a@" * 32_000,
             "x%3A%2F%2F" * 20_000,

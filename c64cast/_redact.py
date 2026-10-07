@@ -499,19 +499,20 @@ def _key_values(line: _Line) -> Iterator[Span]:
         v, d = tail.end(), line.depth(tail.start("sep"))
         span = _value(line, v, d, "unquoted")
         if name.group("header") is not None:
-            span = _past_scheme(line, v, span)
+            span = _past_scheme(line, v, d, span)
         if span is not None:
             yield span
 
 
-def _past_scheme(line: _Line, v: int, span: Span | None) -> Span | None:
-    """The credential in an `Authorization` value at `v`, whose `span` is what
-    a value there would cover. A known scheme before it is kept, as `Bearer`
-    is; any other first word may be the credential itself, so it goes with
-    what follows it."""
+def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
+    """The credential in an `Authorization` value at `v`, `d` deep, whose
+    `span` is what a value there would cover. A known scheme before it is
+    kept, as `Bearer` is; any other first word may be the credential itself,
+    so it goes with what follows it."""
     text = line.text
     opener = _opener(text, v)
-    if opener is not None:
+    deep = opener is not None and line.deepest(v, opener.end()) > d
+    if opener is not None and not deep:
         if span is None:
             return None
         scheme = _SCHEME_AND_GAP.match(text, span[0], span[1])
@@ -523,6 +524,10 @@ def _past_scheme(line: _Line, v: int, span: Span | None) -> Span | None:
         return span
     gap_start, gap_end = scheme.span("gap")
     credential = _credential(line, gap_end, scheme.group("gap"), line.deepest(gap_start, gap_end))
+    if deep and span is not None and span[1] > gap_end:
+        # A quote deeper than the separator is read both ways, as in
+        # `_value`: bounded by the quoted span alone, `%22Basic%22 x` kept `x`.
+        credential = (gap_end, max(span[1], gap_end if credential is None else credential[1]))
     if _is_auth_scheme(scheme):
         return credential
     return span if credential is None else (v, credential[1])
