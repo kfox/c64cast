@@ -181,6 +181,14 @@ def _make(api: _FakeBackend, **kw) -> s.UltimateAudioSampler:
     return s.UltimateAudioSampler(cast(Any, api), **kw)
 
 
+def _outlasting(wait_s: float, sample_rate: int = 8000) -> np.ndarray:
+    """A tone that plays on past a test's wait for it to reach the ring. The
+    writer drops audio whose slot the wall-clock read head has passed, so a
+    shorter one made that slot, not the wait, the writer's budget: half a
+    second pushed after start() is all late about 0.3 s later."""
+    return np.full(int(sample_rate * (wait_s + 1.0)), 8000, dtype=np.int16)
+
+
 class StreamerTest(unittest.TestCase):
     def test_init_resolves_rate_and_ring(self):
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16, ring_size=4097)
@@ -359,8 +367,7 @@ class SamplerReuseTest(unittest.TestCase):
         self._lap(smp, api)
         api.audible_writes = 0
         smp.start(prebuffer_timeout=0.01)
-        for _ in range(4):  # more than the start-up slot the reader passes
-            smp.push_samples(self.TONE)
+        smp.push_samples(_outlasting(2.0))
         deadline = time.monotonic() + 2.0
         while api.audible_writes == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -640,6 +647,7 @@ class _UnconfirmedGateOffBackend(_FailingBackend):
 
 class SamplerWriterFailureTest(unittest.TestCase):
     TONE = np.full(256, 8000, dtype=np.int16)
+    WAIT_S = 3.0
 
     def _started(self, api: _FakeBackend) -> s.UltimateAudioSampler:
         smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.01)
@@ -652,8 +660,8 @@ class SamplerWriterFailureTest(unittest.TestCase):
         smp.start(prebuffer_timeout=0.01)
         return smp
 
-    def _wait(self, cond: Any, timeout: float = 3.0) -> bool:
-        deadline = time.monotonic() + timeout
+    def _wait(self, cond: Any) -> bool:
+        deadline = time.monotonic() + self.WAIT_S
         while not cond() and time.monotonic() < deadline:
             time.sleep(0.01)
         return bool(cond())
@@ -663,8 +671,7 @@ class SamplerWriterFailureTest(unittest.TestCase):
         with self.assertLogs("c64cast.audio.sampler", level="WARNING") as logs:
             smp = self._started(api)
             api.audible_writes = 0
-            for _ in range(16):
-                smp.push_samples(self.TONE)
+            smp.push_samples(_outlasting(self.WAIT_S))
             self.assertTrue(self._wait(lambda: api.audible_writes > 0), "the writer died")
         self.assertTrue(any("ring write failed" in m for m in logs.output), logs.output)
         assert smp._writer is not None
