@@ -93,6 +93,9 @@ class RenderSurvivesDmaOutageTest(unittest.TestCase):
             stop_event=threading.Event(),
             interstitial_factory=_transition_factory()[0],
         )
+        # A still clock: these frames run far over a 10000 fps budget, and
+        # the outage would charge each one for the slots it overran.
+        self.pl.link_outage = RenderLinkOutage(self.pl.log, lambda: 0.0)
 
     def _frame(self) -> None:
         self.pl.run_one_frame(self.scene, time.time())
@@ -157,7 +160,7 @@ class RenderLinkFailureTest(unittest.TestCase):
     """The playlist's side, with a scene that raises the link error itself."""
 
     def _playlist(self, scene: FakeScene) -> Playlist:
-        return Playlist(
+        pl = Playlist(
             [scene],
             FakeApi(),
             target_fps=10000.0,
@@ -165,6 +168,9 @@ class RenderLinkFailureTest(unittest.TestCase):
             stop_event=threading.Event(),
             interstitial_factory=_transition_factory()[0],
         )
+        # A still clock, as in RenderSurvivesDmaOutageTest.
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: 0.0)
+        return pl
 
     def test_any_other_exception_still_ends_the_scene(self):
         scene = FakeScene("A", frames_until_done=100, raise_on_frame=1)
