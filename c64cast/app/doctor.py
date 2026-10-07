@@ -2447,6 +2447,8 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
             declined = dac_curve_resolve.auto_declined_chip(measured)
     if table is not None:
         message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
+    elif curve == "auto" and cfg.audio.digi_boost:
+        message = f"[audio].digi_boost holds 'auto' on {label!r}; no calibrated table is read."
     elif declined is not None:
         message = (
             f"a calibration measured on an {declined} applies (key {key!r}), but 'auto' "

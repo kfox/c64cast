@@ -1501,6 +1501,8 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         diags = doctor._probe_dac_calibration_status("sys", cfg, api)
         self.assertEqual(len(diags), 1)
         self.assertNotIn("'calibrated'", diags[0].message)
+        self.assertNotIn("no calibration applies", diags[0].message)
+        self.assertIn("digi_boost", diags[0].message)
 
     def test_calibrated_missing_is_error_with_hint(self):
         cfg = self._cfg("calibrated")
