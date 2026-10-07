@@ -804,6 +804,19 @@ class TransportSeekTest(unittest.TestCase):
         src = self._make_src([0])
         self.assertFalse(src._apply_pending_seek())
 
+    def test_a_close_during_the_seek_ends_the_loop_before_the_next_pass(self):
+        # On a remote input the seek's worker closes the container once it
+        # returns, so a pass opened after that would read a freed container.
+        src = self._make_src([], pending_seek=3.0)
+        src._demux_poll = None
+        closed_at_demux: list[bool] = []
+        packets = src.container.demux()
+        src.container.demux = lambda: closed_at_demux.append(src._closed) or packets
+        src.container.seek = lambda _offset: src.close()
+        src.container.close = lambda: None
+        src._demux_loop()
+        self.assertEqual(closed_at_demux, [False])
+
 
 class _StubSource:
     """Duck-types the bits of AVFileSource that VideoScene's transport
