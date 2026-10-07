@@ -154,7 +154,7 @@ the ring differ.
 
 | `dac_curve` | Meaning |
 |---|---|
-| `"auto"` | The default. A calibration measured from the SID answering `$D400` if one exists, else the built-in table when an UltiSID core owns that address, else `"linear"` — so an uncalibrated socketed chip gets the plain 4-bit path, not a table measured on different silicon |
+| `"auto"` | The default. A calibration measured from the SID answering `$D400` if one exists (except one measured on an ARMSID or ARM2SID, which gets `"linear"`), else the built-in table when an UltiSID core owns that address, else `"linear"` — so an uncalibrated socketed chip gets the plain 4-bit path, not a table measured on different silicon |
 | `"linear"` | The plain 4-bit path |
 | `"mahoney_ultisid"` | The built-in table, measured from the Ultimate's own emulated SID |
 | `"calibrated"` | Force the measured table; an error if there is none |

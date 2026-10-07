@@ -191,6 +191,12 @@ def is_reconfigurable(socket_label: str | None) -> bool:
     return kind in DETECTED_TYPES and socket_label.rsplit(" ", 1)[-1] in MODELS
 
 
+def is_armsid(socket_label: str | None) -> bool:
+    """Whether `socket_label` names a chip of this family in any state — a
+    probed label, the firmware's bare ``"ARMSID"``, or ``"ARMSID ?"``."""
+    return socket_label is not None and socket_label.partition(" ")[0] in DETECTED_TYPES
+
+
 def is_right_channel(socket_label: str | None) -> bool:
     """Whether `socket_label` is an ARM2SID's right channel standing in for
     socket 2 — realized through the Ext DualSID split, not socket 2's items."""

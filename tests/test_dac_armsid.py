@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import tempfile
+import unittest
 from pathlib import Path
 
 from test_armsid import ArmsidAPI, _NoSettle
 
 from c64cast.app.config import Config
 from c64cast.audio import dac_calibration, dac_curve_resolve
+from c64cast.audio.dac_calibration_store import CalibrationResult
 from c64cast.sid import armsid
 from c64cast.sid.sid_hw_config import restore_sid_config
 
@@ -90,6 +92,52 @@ class ProvisionModelTest(_NoSettle):
             self.assertIsNone(self._provision(api, _cfg_with_calibration("ARMSID 6581")))
 
 
+class AutoSkipsArmsidTableTest(unittest.TestCase):
+    """`auto` plays linear over a table measured on an ARMSID (#587);
+    `calibrated` still plays it."""
+
+    def test_auto_plays_linear_and_names_the_opt_in(self):
+        for detected in ("ARM2SID 6581", "ARMSID 8580", "ARMSID", "ARMSID ?"):
+            with (
+                self.subTest(detected=detected),
+                self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as cm,
+            ):
+                cfg = _cfg_with_calibration(detected)
+                self.assertEqual(
+                    dac_curve_resolve.resolve_dac_curve_for_backend(cfg), ("linear", None)
+                )
+                self.assertIn('dac_curve = "calibrated"', "\n".join(cm.output))
+
+    def test_calibrated_still_plays_the_table(self):
+        cfg = _cfg_with_calibration("ARM2SID 6581")
+        cfg.audio.dac_curve = "calibrated"
+        label, table = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
+        self.assertTrue(label.startswith("calibrated:"), label)
+        self.assertEqual(table, bytes(range(256)))
+
+    def test_auto_still_plays_a_real_chips_table(self):
+        label, table = dac_curve_resolve.resolve_dac_curve_for_backend(
+            _cfg_with_calibration("6581")
+        )
+        self.assertTrue(label.startswith("calibrated:"), label)
+        self.assertEqual(table, bytes(range(256)))
+
+    def test_calibration_report_names_the_opt_in(self):
+        result = CalibrationResult(
+            sidtable=[0] * 256,
+            metrics={
+                "ladder_bits": 5.73,
+                "signed_span": [-0.389, 0.252],
+                "worst_gap_frac": 0.034,
+                "worst_gap_from_zero_frac": 0.1,
+            },
+            detected="ARM2SID 6581",
+        )
+        lines: list[str] = []
+        dac_calibration._report_run({"1": result}, Path("cal.json"), lines.append)
+        self.assertTrue(any('"calibrated"' in line for line in lines), lines)
+
+
 class RecordModelTest(_NoSettle):
     def test_the_measured_socket_is_labeled_with_its_model(self):
         api = ArmsidAPI(left="6581")
@@ -99,6 +147,4 @@ class RecordModelTest(_NoSettle):
 
 
 if __name__ == "__main__":
-    import unittest
-
     unittest.main()

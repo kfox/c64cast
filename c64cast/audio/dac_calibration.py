@@ -660,6 +660,11 @@ def _report_run(
             f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
             f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
         )
+        if armsid.is_armsid(r.detected):
+            log_fn(
+                f'[calib] {name}: measured on an {r.detected}; dac_curve = "auto" plays '
+                'linear on it, so set [audio].dac_curve = "calibrated" to play this table'
+            )
     log_fn(f"[calib] wrote {path}")
 
 

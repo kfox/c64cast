@@ -39,6 +39,19 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
     path = path_for_key(cfg, key)
     table = load_calibrated_table(cfg, be=be, path=path)
     if table is not None:
+        measured = calibrated_chip(cfg, be=be, path=path)
+        if measured is not None and armsid.is_armsid(measured[1]):
+            # Its ladder metrics matched a good 6581's, yet it played a click
+            # track as a splat that linear plays clean (#587), so no metric
+            # here can vouch for it; "calibrated" is the explicit opt-in.
+            log.warning(
+                "the DAC calibration at %s was measured on an %s, which `auto` does not "
+                "play through; using the 4-bit linear DAC. Set [audio].dac_curve = "
+                '"calibrated" to use it anyway.',
+                path,
+                measured[1],
+            )
+            return ("linear", None)
         return (f"calibrated:{key}", table)
     if cfg.audio.dac_calibration_profile:
         log.warning(
@@ -103,7 +116,8 @@ def resolve_dac_curve_for_backend(
     (the legacy linear 4-bit path).
 
     * ``"auto"`` (default) — prefer a calibrated table applicable to this
-      system/socket if one exists; else ``mahoney_ultisid`` when an UltiSID
+      system/socket if one exists, unless it was measured on an ARMSID
+      (``linear`` then); else ``mahoney_ultisid`` when an UltiSID
       core answers ``$D400`` (the baked table *is* that core's curve); else
       ``linear`` (a physical/unknown SID with no calibration: the baked
       emulated table would not match it, so stay on the safe 4-bit path).
