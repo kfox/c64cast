@@ -636,8 +636,8 @@ def _acquire_stack(
     )
     if video_output_restore is not None and api.profile.supports_reset:
         api.reset()
-    dac_curve: dac_curve_resolve.DacCurve | None = None
     audio: AudioStreamer | None = None
+    dac_model_restore: dict[tuple[str, str], str] | None = None
     if cfg.audio.enabled:
         try:
             dac_curve = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
@@ -645,13 +645,12 @@ def _acquire_stack(
             log.error("%s", e)
             raise StackBuildError(3) from e
         audio = _build_audio(cfg, api, dac_curve)
-    if audio is not None:
-        release_on_failure("audio shutdown", audio.close)
-    dac_model_restore = (
-        dac_curve_resolve.provision_calibrated_chip_model(api, dac_curve)
-        if dac_curve is not None and audio is not None and api.profile.supports_sid_config
-        else None
-    )
+        if audio is not None:
+            release_on_failure("audio shutdown", audio.close)
+            if api.profile.supports_sid_config:
+                dac_model_restore = dac_curve_resolve.provision_calibrated_chip_model(
+                    api, dac_curve
+                )
     release_on_failure(
         "DAC chip model restore", lambda: restore_sid_config(api, dac_model_restore or {})
     )
