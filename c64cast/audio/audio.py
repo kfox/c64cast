@@ -42,7 +42,7 @@ from c64cast.hw.c64 import (
     halt_quantum_bytes,
     kernal_cia1_latch,
 )
-from c64cast.hw.socket_dma import SocketDMAError
+from c64cast.hw.delivery import write_confirmed
 
 from .audio_handlers import (
     AUDIO_HEALTH_LOG_INTERVAL_S,
@@ -357,6 +357,10 @@ class AudioStreamer:
         # A failed install's $0314 restore that never confirmed: stop() owes
         # it even though no pump armed (_unwind_pump_install).
         self._irq_vector_restore_owed = False
+        # A CIA #1 unmask that never confirmed after a masked $C100 write: the
+        # next dispatcher entry upload, pump arm or stop() owes it
+        # (_cia1_unmask_step).
+        self._cia1_unmask_owed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
         # The matched CIA #1 pump latch this run derived; 0 before any pump
@@ -1510,6 +1514,18 @@ class AudioStreamer:
                 curve=self._dac_curve,
             )
 
+    def _backpressure_wait_s(self, n: int) -> float:
+        """How long a blocking push of an ``n``-sample blob waits for room
+        before the blob is dropped.
+
+        The worker frees room a whole chunk at a time, one chunk behind its
+        collect, so a live consumer needs up to two chunk periods beyond the
+        blob's own length to make room for it. A flat QUEUE_PUT_TIMEOUT_S fell
+        inside that at startup, while the first chunks after the prebuffer
+        were still in hand, and dropped the producer's next blob (about 93 ms
+        of a 44.1 kHz WAV at 12 kHz)."""
+        return QUEUE_PUT_TIMEOUT_S + (n + 2 * self.chunk_size) / self.effective_rate
+
     def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
         DAC queue as 4-bit values. Returns the number of samples enqueued.
@@ -1519,7 +1535,7 @@ class AudioStreamer:
         acquisitions/sec on a 44.1 kHz PyAV stream; this is one per
         producer call (~10-40/sec).
 
-        block_on_full: if True, block up to 200ms for queue capacity (used
+        block_on_full: if True, block for queue capacity, up to the drain bound (used
         by the PyAV push path so the demuxer naturally throttles). If
         False, drop the whole blob when full (mic path, where the
         sounddevice callback is real-time and can't block). Backpressure
@@ -1543,7 +1559,7 @@ class AudioStreamer:
             # monotonic, like every other deadline here: a wall-clock step would
             # either expire this wait instantly or park the PyAV demuxer thread
             # for the length of a backward step.
-            deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S
+            deadline = time.monotonic() + self._backpressure_wait_s(n)
             # `self._queued_samples and` admits a blob bigger than the whole
             # cap once the queue drains. Without it the condition never clears
             # however empty the queue gets, and the caller returns 0 forever.
@@ -1865,11 +1881,17 @@ class AudioStreamer:
             except PumpInstallError:
                 self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=stage == "entry")
                 raise
+        if dispatcher_owns_irq:
+            # Not left owed to _arm_installed_pump: the entry's confirmed unmask
+            # already held, and a second one lost there would unwind the pump.
+            self._cia1_unmask_owed = False
 
-    def _write_pump_entry(self, code: bytes, *, dispatcher_owns_irq: bool) -> None:
+    def _write_pump_entry(
+        self, code: bytes, *, dispatcher_owns_irq: bool, unmask: bool = True
+    ) -> None:
         """Write ``code`` at the $C100 pump entry. Under a dispatcher, CIA #1 is
         masked around it (see _install_tracked_pump), and nothing is written
-        when the mask did not confirm. Every call masks afresh: a retry follows
+        when the mask did not confirm; without ``unmask`` the mask stays. Every call masks afresh: a retry follows
         an attempt whose unmask may have landed even though its entry did not."""
         if dispatcher_owns_irq:
             epoch = self.api.delivery_epoch
@@ -1879,7 +1901,7 @@ class AudioStreamer:
                 return
             time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
         self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", code)
-        if dispatcher_owns_irq:
+        if dispatcher_owns_irq and unmask:
             self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
 
     def _require_confirmed(self, stage: str, write: Callable[[], None]) -> None:
@@ -1934,6 +1956,8 @@ class AudioStreamer:
                 self._require_confirmed(
                     "IRQ vector", lambda: self._write_irq_vector(REU_PUMP_HANDLER_ADDR)
                 )
+            if self._cia1_unmask_owed:
+                self._cia1_unmask_step()[1]()
         except PumpInstallError as e:
             self._unwind_pump_install(
                 restore_irq_vector=patched,
@@ -1976,31 +2000,71 @@ class AudioStreamer:
 
     def _restore_irq_vector_confirmed(self) -> None:
         """$0314 back to the kernal, confirmed; clears the restore debt only
-        once it held. Raises PumpInstallError when it never confirms."""
-        self._require_confirmed(
-            "IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)
-        )
+        once it held. Raises PumpInstallError when it never confirms, after
+        putting the JMP $EA31 stub at the $C100 entry the vector still names.
+
+        Left as it was, that entry's tick divider chained the kernal on only
+        every Nth CIA #1 tick once the latch went back to the kernal's, so the
+        jiffy clock, SCNKEY and the cursor ran at a third of their speed until
+        a later stop() landed the restore."""
+        try:
+            self._require_confirmed(
+                "IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)
+            )
+        except PumpInstallError:
+            # A mask already owed was not placed here, and $0314 may name a
+            # stale dispatcher rather than $C100, so the stub keeps it.
+            self._stub_pump_entry(unmask=not self._cia1_unmask_owed)
+            raise
         self._irq_vector_restore_owed = False
 
-    def _write_confirmed(self, write: Callable[[], None]) -> bool:
-        """Run ``write`` and flush until a run leaves ``delivery_epoch``
-        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did.
+    def _stub_pump_entry(self, *, unmask: bool) -> None:
+        """The JMP $EA31 stub at $C100, written under a CIA #1 mask as a
+        dispatcher's entry is (an IRQ may be running the entry), then CIA #1
+        unmasked when ``unmask``; each confirmed, and one that never confirms
+        is logged. Without ``unmask`` the mask stays owed."""
+        steps = [self._entry_stub_step(unmask=unmask)]
+        if unmask:
+            steps.append(self._cia1_unmask_step())
+        run_teardown_steps(log, type(self).__name__, steps)
 
-        A run whose ``write`` raises a transport error counts as unconfirmed:
-        ``reu_write`` is not routed through ``_emit`` and raises when a redial
-        fails or is refused under backoff, which leaves ``delivery_epoch``
-        unmoved although nothing was sent."""
-        for _ in range(TRACKED_PUMP_INSTALL_TRIES):
-            epoch = self.api.delivery_epoch
-            try:
-                write()
-            except (OSError, SocketDMAError) as e:
-                log.debug("audio: pump install write raised: %s", e)
-                continue
-            self.api.flush()
-            if self.api.delivery_epoch == epoch:
-                return True
-        return False
+    def _entry_stub_step(self, *, unmask: bool = True) -> tuple[str, Callable[[], None]]:
+        """The confirmed teardown step that puts the JMP $EA31 stub back at
+        $C100 under a CIA #1 mask. The mask may land without the unmask that
+        follows it, so the unmask is owed until `_cia1_unmask_step` holds."""
+
+        def stub() -> None:
+            self._cia1_unmask_owed = True
+            self._require_confirmed(
+                "pump entry stub restore",
+                lambda: self._write_pump_entry(
+                    REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True, unmask=unmask
+                ),
+            )
+
+        return ("pump entry stub restore", stub)
+
+    def _cia1_unmask_step(self) -> tuple[str, Callable[[], None]]:
+        """The confirmed teardown step that unmasks CIA #1 Timer A; the debt
+        (`_cia1_unmask_owed`) clears only once it held, and the next
+        `_arm_installed_pump` or `_disarm_reu_pump` writes it again until then
+        (a dispatcher's confirmed entry upload in `_install_tracked_pump`
+        unmasks too, and pays it).
+        A mask left in place stops the kernal's jiffy IRQ outright, SCNKEY
+        included, and a pump armed under it never runs."""
+
+        def unmask() -> None:
+            self._require_confirmed(
+                "CIA #1 unmask",
+                lambda: self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"),
+            )
+            self._cia1_unmask_owed = False
+
+        return ("CIA #1 unmask", unmask)
+
+    def _write_confirmed(self, write: Callable[[], None]) -> bool:
+        """``delivery.write_confirmed`` at TRACKED_PUMP_INSTALL_TRIES tries."""
+        return write_confirmed(self.api, write, tries=TRACKED_PUMP_INSTALL_TRIES)
 
     def _park_tracked_pump(self, dispatcher_owns_irq: bool, *, entry_may_be_up: bool) -> None:
         """Best-effort safe state after a failed tracked-pump install: an RTS at
@@ -2031,21 +2095,9 @@ class AudioStreamer:
             )
         ]
         if dispatcher_owns_irq and entry_may_be_up:
-            steps.append(
-                confirmed(
-                    "pump entry stub restore",
-                    lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
-                )
-            )
+            steps.append(self._entry_stub_step())
         if dispatcher_owns_irq:
-            steps.append(
-                confirmed(
-                    "CIA #1 unmask",
-                    lambda: self.api.write_memory(
-                        f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
-                    ),
-                )
-            )
+            steps.append(self._cia1_unmask_step())
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _abandon_pump_bring_up(self, err: PumpInstallError) -> None:
@@ -2756,8 +2808,16 @@ class AudioStreamer:
         The vector restore is confirmed like the unwind's: this is the last
         write that can take the pump off $0314, and one lost on a lossy link
         leaves it running for every scene after. One that never confirms stays
-        owed, so the shared streamer's next stop() writes it again."""
-        if not (self._reu_pump_armed or self._irq_vector_restore_owed):
+        owed, so the shared streamer's next stop() writes it again.
+
+        A CIA #1 unmask that never confirmed after a masked $C100 write
+        (`_cia1_unmask_owed`) is written again here the same way, and only
+        behind a $0314 restore that confirmed: a restore that fails has just
+        written the stub, and an unmask already owed keeps its mask there.
+        Unmasking without one would
+        undo the mask `uninstall_bank_swap_irq` leaves when its own restore is
+        lost, and vector every jiffy IRQ through the stale in-RAM dispatcher."""
+        if not (self._reu_pump_armed or self._irq_vector_restore_owed or self._cia1_unmask_owed):
             return
         # Retire the mic ring governor's latch writes first; one already in
         # flight finishes before this returns, so it lands ahead of the
@@ -2766,12 +2826,21 @@ class AudioStreamer:
             self._pump_trim_token += 1
         # Cleared by the confirmed restore only once it held.
         self._irq_vector_restore_owed = True
+        unmask_label, unmask = self._cia1_unmask_step()
         run_teardown_steps(
             log,
             type(self).__name__,
             [
                 ("IRQ vector restore", self._restore_irq_vector_confirmed),
                 ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
+                (
+                    unmask_label,
+                    lambda: (
+                        unmask()
+                        if self._cia1_unmask_owed and not self._irq_vector_restore_owed
+                        else None
+                    ),
+                ),
                 ("REU pump disarm flush", self.api.flush),
             ],
         )
@@ -2798,7 +2867,8 @@ class AudioStreamer:
         sampler's is.
 
         Returns the samples enqueued: 0 once stopped, or when the queue stayed
-        full past ``QUEUE_PUT_TIMEOUT_S`` and the blob was dropped."""
+        full past ``QUEUE_PUT_TIMEOUT_S`` plus the worker's drain time for the
+        blob, and the blob was dropped."""
         if not self.running:
             return 0
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
@@ -3146,10 +3216,11 @@ class AudioStreamer:
         # check is what drops a blob from a producer this clear just released,
         # and the drain at the bottom only catches one that beats it there.
         self._flush_epoch += 1
-        # No-op if the pump was never armed and no $0314 restore is owed. The
-        # video pumps' governor lives in the C64-side handler, so disarming the
-        # IRQ vector stops it; the mic pump's host-side MicRingGovernor is
-        # fenced off by the disarm's trim-token bump.
+        # No-op if the pump was never armed and no $0314 restore or CIA #1
+        # unmask is owed. The video pumps' governor lives in the C64-side
+        # handler, so disarming the IRQ vector stops it; the mic pump's
+        # host-side MicRingGovernor is fenced off by the disarm's trim-token
+        # bump.
         self._disarm_reu_pump()
         run_teardown_steps(log, type(self).__name__, self._hardware_teardown_steps())
         self.api.note_nmi_consumer(False)

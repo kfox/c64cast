@@ -327,6 +327,35 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   seconds, which used to hold a frozen frame, and a seek back from near the
   end.
 
+- **A lossy link that kept the REU audio pump's `$0314` from being restored no
+  longer leaves the C64's clock and cursor running slow.** Until a later scene
+  landed the restore, every timer interrupt still went to the pump's entry,
+  which hands off to the KERNAL only every third tick. That entry is now
+  replaced by a jump straight to the KERNAL.
+
+- **The sampler and the ASID player no longer start over stale REU audio
+  after a lossy reconnect.** Their ring prefills (and the sampler's first
+  prebuffer write) were sent once and not checked, so a slice lost on the link
+  left the previous scene's audio in the ring: the sampler played it until the
+  writer caught up, and an ASID ring left at another chip count's slot size
+  could misalign the player. They are now confirmed and resent like the REU
+  pump's install; an ASID prefill that never lands keeps the buffered player
+  off for that activation.
+
+- **Reactive visuals on a large-block FLAC file played through the sampler
+  keep following the music.** The decoder handed the sampler each decoded
+  frame whole, and the sampler's queue counts frames, so with frames of up to
+  65535 samples it ran minutes ahead of the sound, past the 30 s the analyzer
+  can look back; the visuals then went still. Frames are now pushed in pieces
+  of at most 0.1 s.
+
+- **DAC audio from a file or a video no longer loses a block at startup.** A
+  decoder running ahead of real time filled the `$D418` DAC's queue at once,
+  and its next block waited behind the worker's first chunks for longer than
+  the 200 ms put timeout, so about 93 ms of audio near the start was dropped.
+  The wait now allows for the time the worker takes to drain room for the
+  block.
+
 - **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
   switched to the model the tune asks for.** The chip's model is a setting, but
   SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,

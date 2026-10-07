@@ -35,6 +35,7 @@ See docs/architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player.
 
 from __future__ import annotations
 
+import functools
 import logging
 import queue
 import threading
@@ -55,6 +56,7 @@ from c64cast.hw.c64 import (
     cpu_clock,
     kernal_cia1_latch,
 )
+from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
 from .asid import _ASID_REG_TO_OFFSET
 
@@ -756,28 +758,29 @@ class AsidRingPlayer:
         )
         self._divider = tick_divider_for_rate(self._rate)
 
-        # So the first laps read silence, not uninitialized REU.
-        self._prefill_holds()
+        # So the first laps read silence, not uninitialized REU. A ring left
+        # by a session at another slot size misaligns the player's slot reads
+        # (see _take_slot), so a prefill that never lands keeps the player out.
+        if not write_confirmed(self.api, self._prefill_holds):
+            log.error(
+                "asid_player: the ring prefill was not confirmed delivered after %d "
+                "attempts; the buffered path stays down for this activation",
+                CONFIRM_TRIES,
+            )
+            return
 
         # Upload the player, seed the tracker + counters + CIA latch. The vector
         # swap is deferred to _try_arm (the CIA keeps running the kernal tail at
-        # the new latch until then — harmless).
-        handler = build_player(self.slot_size, self._divider, ring_base=self.ring_base)
-        self.api.write_memory_file(f"{HANDLER_ADDR:04X}", handler)
-        self.api.write_memory(
-            f"{TRACKER_ADDR:04X}",
-            f"{self.ring_base & 0xFF:02X}"
-            f"{(self.ring_base >> 8) & 0xFF:02X}"
-            f"{(self.ring_base >> 16) & 0xFF:02X}",
-        )
-        # tick counter = 1: first IRQ DECs to 0, reloads N, chains; nops = 0.
-        self.api.write_memory(f"{TICK_COUNTER_ADDR:04X}", "01")
-        self.api.write_memory(f"{NOPS_COUNTER_ADDR:04X}", "00")
-        # Program CIA #1 Timer A latch (kernal left it running in continuous mode).
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{self._latch & 0xFF:02X}{(self._latch >> 8) & 0xFF:02X}"
-        )
-        self.api.flush()
+        # the new latch until then — harmless). Confirmed like the prefill:
+        # _try_arm later points $0314 at HANDLER_ADDR, so a lost handler upload
+        # would send every IRQ into whatever RAM held there.
+        if not write_confirmed(self.api, self._install_handler):
+            log.error(
+                "asid_player: the player install was not confirmed delivered after %d "
+                "attempts; the buffered path stays down for this activation",
+                CONFIRM_TRIES,
+            )
+            return
 
         self._writer.start()
         log.info(
@@ -861,6 +864,36 @@ class AsidRingPlayer:
         log.info("asid_player: armed — read head live, %d slots prebuffered", n)
         return True
 
+    def _install_handler(self) -> None:
+        self._write_rate(self._latch, self._divider, rebuild_handler=True)
+        self.api.write_memory(
+            f"{TRACKER_ADDR:04X}",
+            f"{self.ring_base & 0xFF:02X}"
+            f"{(self.ring_base >> 8) & 0xFF:02X}"
+            f"{(self.ring_base >> 16) & 0xFF:02X}",
+        )
+        # tick counter = 1: first IRQ DECs to 0, reloads N, chains; nops = 0.
+        self.api.write_memory(f"{TICK_COUNTER_ADDR:04X}", "01")
+        self.api.write_memory(f"{NOPS_COUNTER_ADDR:04X}", "00")
+
+    def _write_rate(self, latch: int, divider: int, *, rebuild_handler: bool) -> None:
+        # Program CIA #1 Timer A latch (kernal left it running in continuous mode).
+        self.api.write_memory(
+            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+        )
+        if rebuild_handler:
+            self.api.write_memory_file(
+                f"{HANDLER_ADDR:04X}",
+                build_player(self.slot_size, divider, ring_base=self.ring_base),
+            )
+
+    def _write_rate_if_installed(self, latch: int, divider: int, rebuild_handler: bool) -> None:
+        # Checked per attempt, not once: teardown's claim gives up on the lock
+        # after a bound and restores without it, so a retry on a slow link can
+        # otherwise land after the kernal latch went back.
+        if self._installed:
+            self._write_rate(latch, divider, rebuild_handler=rebuild_handler)
+
     def _prefill_holds(self) -> None:
         hold = hold_slot(self.slot_size)
         # The whole ring is holds, so one capped burst of a repeated block does.
@@ -869,7 +902,6 @@ class AsidRingPlayer:
         for off in range(0, total, len(block)):
             n = min(len(block), total - off)
             self.api.reu_write(self.ring_base + off, block[:n])
-        self.api.flush()
 
     def push_frame(self, slot_bytes: bytes) -> None:
         """Enqueue one serialized frame-slot. Never blocks the reader thread: the
@@ -950,19 +982,27 @@ class AsidRingPlayer:
                 self._prebuffer_target = max(
                     1, min(int(rate * self._prebuffer_seconds), self._lead_target)
                 )
-        # Takes effect at the vector swap if not armed.
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
-        )
-        if not armed:
-            # The vector isn't hooked yet, so the handler can be rebuilt in
-            # place and its tick divider matches the real rate before it runs.
-            # `armed` came from the locked read above, so this cannot race an arm.
-            self.api.write_memory_file(
-                f"{HANDLER_ADDR:04X}",
-                build_player(self.slot_size, divider, ring_base=self.ring_base),
+            if not self._installed:
+                # Teardown has already restored the kernal latch, or no player
+                # was ever installed: a latch written now nothing would put back.
+                return
+            # Written under the lock: released first, _try_arm could hook $0314
+            # between the read of `armed` and the in-place rebuild below, and a
+            # teardown could restore the kernal latch before a retry re-sent ours.
+            # Pre-arm the handler is rebuilt so its tick divider matches the real
+            # rate before it runs; confirmed like the install it supersedes.
+            confirmed = write_confirmed(
+                self.api,
+                functools.partial(self._write_rate_if_installed, latch, divider, not armed),
             )
-        self.api.flush()
+        if not confirmed:
+            log.error(
+                "asid_player: the retune to %.1f Hz was not confirmed delivered after %d "
+                "attempts; the C64 may still run the previous rate",
+                rate,
+                CONFIRM_TRIES,
+            )
+            return
         log.info(
             "asid_player: retuned to %.1f Hz (latch %d, N=%d, %s)",
             rate,

@@ -22,7 +22,13 @@ from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, frozen_throttle, frozen_throttles  # noqa: E402
+from _fakes import (  # noqa: E402
+    FakeAPI,
+    frozen_throttle,
+    frozen_throttles,
+    lose_reu_writes_to,
+    lose_writes_to,
+)
 
 from c64cast.hw.backend import C64Backend  # noqa: E402
 from c64cast.hw.c64 import CLOCK_NTSC  # noqa: E402
@@ -841,6 +847,59 @@ class BringUpTeardownTest(unittest.TestCase):
         finally:
             p.stop()
 
+    def test_a_lost_ring_prefill_slice_is_sent_again(self):
+        # A ring slot the prefill missed keeps what the last session left,
+        # possibly at another slot size, which misaligns the player's reads.
+        p, api = self._player(prebuffer_seconds=0.0)
+        lose_reu_writes_to(api, ap.RING_BASE, times=1)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        try:
+            total = ap.RING_SLOTS * p.slot_size
+            landed = sum(len(d) for o, d in api.socket_dma.reuwrites if o < ap.RING_BASE + total)
+            self.assertGreaterEqual(landed, total)
+            self.assertTrue(p._armed)
+        finally:
+            p.stop()
+
+    def test_a_ring_prefill_that_never_lands_keeps_the_player_out(self):
+        p, api = self._player(prebuffer_seconds=0.0)
+        lose_reu_writes_to(api, ap.RING_BASE)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        with self.assertLogs("c64cast.sid.asid_player", "ERROR"):
+            p.start(60.0)
+        try:
+            self.assertNotIn(f"{ap.HANDLER_ADDR:04X}", api.mem_files)
+            self.assertNotIn("0314", api.regs)
+            self.assertFalse(p._armed)
+        finally:
+            p.stop()
+
+    def test_a_lost_handler_upload_is_sent_again(self):
+        # _try_arm points $0314 at HANDLER_ADDR, so arming over a lost upload
+        # sends every IRQ into whatever RAM held there.
+        p, api = self._player(prebuffer_seconds=0.0)
+        lose_writes_to(api, ap.HANDLER_ADDR, times=1)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        try:
+            self.assertIn(f"{ap.HANDLER_ADDR:04X}", api.mem_files)
+            self.assertTrue(p._armed)
+        finally:
+            p.stop()
+
+    def test_a_handler_upload_that_never_lands_keeps_the_vector_unhooked(self):
+        p, api = self._player(prebuffer_seconds=0.0)
+        lose_writes_to(api, ap.HANDLER_ADDR)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        with self.assertLogs("c64cast.sid.asid_player", "ERROR"):
+            p.start(60.0)
+        try:
+            self.assertNotIn("0314", api.regs)
+            self.assertFalse(p._armed)
+        finally:
+            p.stop()
+
     def test_stop_restores_vector_and_latch(self):
         # The latch half is the one guard on a CHANGELOG-recorded regression:
         # writing PAL's $4025 back on an NTSC machine ran the jiffy clock ~3.8%
@@ -1062,6 +1121,69 @@ class BringUpTeardownTest(unittest.TestCase):
             )
         finally:
             p.stop()
+
+    def test_a_lost_pre_arm_handler_rebuild_is_sent_again(self):
+        # The rebuild replaces the confirmed install, so losing it would arm
+        # the player at the old tick divider.
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        try:
+            lose_writes_to(api, ap.HANDLER_ADDR, times=1)
+            p.set_frame_rate(120.0)
+            self.assertIn(("lost", f"{ap.HANDLER_ADDR:04X}"), api.ops)
+            self.assertEqual(
+                api.mem_files[f"{ap.HANDLER_ADDR:04X}"],
+                ap.build_player(p.slot_size, 2),
+            )
+        finally:
+            p.stop()
+
+    def test_a_retune_that_never_confirms_is_not_logged_as_done(self):
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        self.addCleanup(p.stop)
+        lose_writes_to(api, ap.HANDLER_ADDR)
+        with self.assertLogs("c64cast.sid.asid_player", "INFO") as logs:
+            p.set_frame_rate(120.0)
+        text = "\n".join(logs.output)
+        self.assertIn("was not confirmed delivered", text)
+        self.assertNotIn("retuned to", text)
+
+    def test_a_retune_after_teardown_leaves_the_kernal_latch(self):
+        # A reader abandoned by its bounded join can still deliver a 0x31 after
+        # stop() restored the kernal latch; nothing would restore it again.
+        from c64cast.hw.c64 import kernal_cia1_latch
+
+        p, api = self._player()
+        p.start(60.0)
+        p.stop()
+        p.set_frame_rate(960.0)
+        self.assertEqual(
+            api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"], _packed_latch(kernal_cia1_latch("NTSC"))
+        )
+
+    def test_a_retune_retry_does_not_follow_a_lockless_teardown(self):
+        # stop() waits on the arm lock for a bounded time and then restores
+        # without it, so a retune still retrying under the lock on a slow link
+        # sees the kernal latch restored between two of its tries.
+        from c64cast.hw.c64 import kernal_cia1_latch
+
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        self.addCleanup(p.stop)
+        real_file = api.write_memory_file
+
+        def teardown_mid_retune(address, data):
+            api.write_memory_file = real_file
+            p._installed = False
+            ap.restore_kernal_irq(api, "NTSC")
+            api.delivery_epoch += 1
+
+        api.write_memory_file = teardown_mid_retune
+        p.set_frame_rate(960.0)
+        self.assertEqual(
+            api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"], _packed_latch(kernal_cia1_latch("NTSC"))
+        )
 
     def test_a_hostile_speed_message_cannot_set_an_arbitrary_rate(self):
         # frame_delta_us = 1 → 1 MHz. Unclamped this became CIA latch 1, i.e.

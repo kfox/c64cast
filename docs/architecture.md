@@ -49,6 +49,7 @@ the two lists account for every module in the tree.
 | `hw/backend.py` | [Hardware I/O & transports](architecture/hardware-io.md#backendpy--the-c64backend-duck-type-hardware-profiles-and-the-shared-write-path) |
 | `scenes/backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `scenes/bitmap_text.py` | [Scenes, sources & overlays](architecture/scenes.md#bitmap_textpy--the-shared-glyph-rasterizer) |
+| `hw/delivery.py` | [Hardware I/O & transports](architecture/hardware-io.md#backendpy--the-c64backend-duck-type-hardware-profiles-and-the-shared-write-path) |
 | `hw/c64.py` | [Hardware I/O & transports](architecture/hardware-io.md#c64py--the-hardware-constant-register) |
 | `control/auth.py` | [Control surfaces & live performance](architecture/control.md#authpy--shared-token-gate-optional) |
 | `control/setup_gate.py` | [Control surfaces & live performance](architecture/control.md#setup_gatepy--setup_apipy--the-appliance-first-run-setup-window) |

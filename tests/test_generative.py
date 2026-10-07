@@ -1406,6 +1406,8 @@ class _SamplerSink(_FileSink):
 class _SamplerLink:
     """The write surface `UltimateAudioSampler` drives, recording nothing."""
 
+    delivery_epoch = 0
+
     def reu_write(self, offset: int, data: bytes) -> None:
         pass
 
@@ -1466,6 +1468,41 @@ class AudioFileSourceEndTest(unittest.TestCase):
 
     def test_not_finished_before_decoding_ends(self):
         self.assertFalse(self._source(_FileSink()).finished)
+
+    def test_a_large_frame_reaches_the_sink_in_pieces_the_history_covers(self):
+        # The sampler's queue counts pushes, so the push size is what bounds
+        # how far ahead of the sound it holds: a whole 65535-sample FLAC frame
+        # per push let 256 of them hold minutes, past the analyzer's history.
+        from c64cast.audio import sampler
+
+        sink = _FileSink()
+        sink.sample_rate, sink.effective_rate = 44100, 44100.0
+        sizes: list[int] = []
+        push = sink.push_samples
+
+        def record(arr):
+            sizes.append(int(arr.size))
+            return push(arr)
+
+        sink.push_samples = record  # type: ignore[method-assign]
+        src = self._source(sink)
+        frame = SimpleNamespace(to_ndarray=lambda: np.zeros((1, 65535), dtype=np.int16))
+        self.assertEqual(src._push_frame(frame), 65535)
+        self.assertEqual(sum(sizes), 65535)
+        smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+        held_s = smp._q.maxsize * max(sizes) / 44100 + sampler.DEFAULT_LEAD_SECONDS
+        self.assertLess(held_s, src._FEATURE_HISTORY_S)
+
+    def test_the_dac_keeps_the_history_its_lag_can_reach_and_not_30_s(self):
+        # The DAC holds at most its queue's soft cap, a push over it, the
+        # worker's chunks in hand and the ring unplayed: about 2 s at 12 kHz.
+        from c64cast.audio.audio_handlers import MAX_QUEUED_SAMPLES, RING_BUFFER_SIZE
+
+        sink = _FileSink()
+        sink.sample_rate, sink.effective_rate = 12000, 12032.0
+        history = self._source(sink)._feature_history_samples(12032.0)
+        self.assertGreater(history, MAX_QUEUED_SAMPLES + RING_BUFFER_SIZE)
+        self.assertLess(history / 12032.0, 6.0)
 
     def test_the_decoder_resamples_to_the_rate_the_sink_plays_at(self):
         # 44.1 kHz asked, 44 kHz achieved: 0.4 s is 17600 samples at the
@@ -1712,14 +1749,13 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # here, so every blob past the cap is dropped at once.
         from _fakes import FakeAPI
 
-        from c64cast.audio import audio as audio_mod
         from c64cast.audio.audio_source import AudioFileSource
 
         dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
         dac._max_queued_samples = 1600
         src = AudioFileSource(dac, self.wav, reactive=False)
         dac.running = True
-        with mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 0.0):
+        with mock.patch.object(dac, "_backpressure_wait_s", return_value=0.0):
             src._decode_loop()
         self.assertLess(dac._pushed_count, 3200, "the DAC dropped nothing")
         # Everything it enqueued lands and plays: the queue is empty and the
@@ -2123,7 +2159,6 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
         # window that far behind the sound.
         from _fakes import new_streamer
 
-        from c64cast.audio import audio as audio_mod
         from c64cast.audio.audio_features import AnalysisTap
 
         streamer = new_streamer(sample_rate=12000)
@@ -2131,7 +2166,7 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
         streamer.analysis_sink = tap.push
         streamer.running = True
         streamer.push_samples(np.full(streamer._max_queued_samples, 1000, dtype=np.int16))
-        with mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 0.0):
+        with mock.patch.object(streamer, "_backpressure_wait_s", return_value=0.0):
             streamer.push_samples(np.full(512, 2000, dtype=np.int16))
         self.assertEqual(streamer._pushed_count, streamer._max_queued_samples)
         self.assertEqual(tap.pushed, streamer._pushed_count)
