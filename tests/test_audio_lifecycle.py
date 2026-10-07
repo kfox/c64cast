@@ -3308,6 +3308,34 @@ class LifecycleTest(unittest.TestCase):
                 s.position_seconds(), at_landing + 1024 / s.effective_rate, places=9
             )
 
+    def test_each_landing_restarts_the_clock_between_landings(self):
+        # The gap is read just after a landing, so it already holds what played
+        # before it; counting that again from an older start runs the clock
+        # ahead of the sound.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        with mock.patch.object(audio_mod, "time", clock):
+            clock.advance(period / 2)
+            s._note_ring_landed(s._worker_generation, 1024, 0)
+            s._pushed_count += 1024
+            self.assertAlmostEqual(s.position_seconds(), period, places=9)
+            clock.advance(period / 4)
+            self.assertAlmostEqual(s.position_seconds(), period + period / 4, places=9)
+
+    def test_the_worker_starts_the_clock_between_landings_with_the_consumer(self):
+        # Without the start the clock never runs between landings at all: a
+        # landing restarts it only once the consumer has started it.
+        s = _make_worker_streamer(chunk_size=32)
+        s.host_dma_servo = False
+        s.start_for_external_source()
+        self.addCleanup(s.stop)
+        s.push_samples(np.zeros(32 * 6, dtype=np.int16))
+        deadline = time.monotonic() + 5.0
+        while s._ring_landed_at is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertIsNotNone(s._ring_landed_at)
+
     def test_the_clock_between_landings_does_not_move_over_pad(self):
         # Pad at the front of the gap is what the NMI plays next, and content
         # landed behind it is not heard until it has played.
