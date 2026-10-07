@@ -55,6 +55,14 @@ def _arm_locks(src: AVFileSource) -> AVFileSource:
     return src
 
 
+def _signal_close(src: AVFileSource) -> None:
+    """The half of `close()` a stub can run: set `_closed` and wake a demux
+    thread parked at EOF, leaving the (fake) container and poll alone."""
+    with src._lock:
+        src._closed = True
+        src._wake.notify_all()
+
+
 def _demux_until_parked(src: AVFileSource) -> None:
     """Run the real `_demux_loop` until it parks at EOF waiting for a seek,
     then close it the way `close()` does and join it. A loop that never
@@ -65,9 +73,7 @@ def _demux_until_parked(src: AVFileSource) -> None:
         if not _wait_until(lambda: src._eof or not worker.is_alive()):
             raise AssertionError("demux loop never reached EOF")
     finally:
-        with src._lock:
-            src._closed = True
-            src._wake.notify_all()
+        _signal_close(src)
         worker.join(5.0)
     if worker.is_alive():
         raise AssertionError("demux loop did not exit on close")
@@ -2125,15 +2131,10 @@ class SeekAfterEofTest(unittest.TestCase):
             self.seeks.append(self.reading)
 
     def _run_demux_loop(self, src: AVFileSource) -> None:
-        def close() -> None:
-            with src._lock:
-                src._closed = True
-                src._wake.notify_all()
-
         worker = threading.Thread(target=src._demux_loop, daemon=True)
         worker.start()
         self.addCleanup(worker.join, 5.0)
-        self.addCleanup(close)
+        self.addCleanup(_signal_close, src)
 
     def test_a_seek_after_eof_is_applied_inside_a_live_demux(self):
         # PyAV arms a remote input's read timeout only while a demux()
