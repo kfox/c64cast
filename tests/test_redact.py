@@ -536,6 +536,8 @@ class RedactSecretsTest(unittest.TestCase):
         for line in (
             "x\\u0026bypass=1 rest",
             "x\\u0026high-pass=1 rest",
+            "x\\u005fbypass=1 rest",
+            "x\\u002dbypass=1 rest",
             "x\\u0026PWD=/home/k rest",
         ):
             with self.subTest(line=line):

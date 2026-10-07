@@ -437,7 +437,13 @@ def _names_no_password(text: str, s: int, end: int) -> bool:
     while lo > 0 and s - lo < _NOT_A_PASSWORD_REACH and _is_name_char(text[lo - 1]):
         lo -= 1
     first = 0 if lo == 0 or not _is_name_char(text[lo - 1]) else 1
-    if first == 0 and lo + 5 <= s and _starts_word(text, lo + 5):
+    if (
+        first == 0
+        and lo > 0
+        and text[lo - 1] == "\\"
+        and lo + 5 <= s
+        and not _is_glued(text, lo + 5)
+    ):
         # The run opens with the tail of a JSON escape of a separator: read
         # as part of the key, the `u0026` of `\u0026bypass` hid the word.
         lo += 5
