@@ -36,7 +36,7 @@ from c64cast.hw.c64 import (
     nearest_latch,
     nmi_rate_safety,
 )
-from c64cast.sid import emusid_mixer
+from c64cast.sid import armsid, emusid_mixer
 
 from .config import (
     AudioCfg,
@@ -2436,8 +2436,22 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
             )
         ]
     key = dac_calibration_store.resolve_calibration_key(cfg, api)  # type: ignore[arg-type]
+    declined = None
+    if table is None and curve == "auto":
+        found, measured = dac_calibration_store.load_calibrated_table_and_chip(
+            cfg,
+            be=api,  # type: ignore[arg-type]
+            path=dac_calibration_store.path_for_key(cfg, key),
+        )
+        if found is not None and measured is not None and armsid.is_armsid(measured[1]):
+            declined = measured[1]
     if table is not None:
         message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
+    elif declined is not None:
+        message = (
+            f"a calibration measured on an {declined} applies (key {key!r}), but 'auto' "
+            f"resolves to {label!r} over it; set [audio].dac_curve = 'calibrated' to play it."
+        )
     else:
         message = f"no calibration applies right now (key {key!r}); resolves to {label!r}."
     return [Diagnostic(level="ok", category="connectivity", subject=subject, message=message)]

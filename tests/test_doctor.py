@@ -1449,6 +1449,32 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         self.assertEqual(diags[0].level, "ok")
         self.assertIn("mahoney_ultisid", diags[0].message)
 
+    def test_auto_over_an_armsid_table_names_the_table_it_declined(self):
+        cfg = self._cfg("auto")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "cal.json"
+        path.write_text(
+            '{"schema": 2, "d400_socket": 1, "sids": {"1": '
+            f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
+        )
+        cfg.audio.dac_calibration_profile = str(path)
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
+        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D400"}
+        api.config_store["SID Sockets Configuration"] = {
+            "SID Socket 1": "Enabled",
+            "SID Detected Socket 1": "ARMSID",
+        }
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            diags = doctor._probe_dac_calibration_status("sys", cfg, api)
+        self.assertEqual(len(diags), 1)
+        self.assertIn("ARMSID 8580", diags[0].message)
+        self.assertIn("'calibrated'", diags[0].message)
+        self.assertNotIn("no calibration applies", diags[0].message)
+
     def test_calibrated_missing_is_error_with_hint(self):
         cfg = self._cfg("calibrated")
         api = FakeAPI()

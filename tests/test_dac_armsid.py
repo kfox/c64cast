@@ -108,6 +108,26 @@ class AutoSkipsArmsidTableTest(unittest.TestCase):
                 )
                 self.assertIn('dac_curve = "calibrated"', "\n".join(cm.output))
 
+    def test_a_live_run_reads_the_socket_map_once(self):
+        # The table and the chip that vetoes it must come from one entry: a
+        # second socket-map read that failed would fall back to the file's
+        # recorded mapping and could pair this table with another socket's chip.
+        api = ArmsidAPI(left="6581")
+        reads: list[str] = []
+        real = api.get_config_category
+
+        def counting(category, *args, **kwargs):
+            reads.append(category)
+            return real(category, *args, **kwargs)
+
+        api.get_config_category = counting  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            got = dac_curve_resolve.resolve_dac_curve_for_backend(
+                _cfg_with_calibration("ARMSID 6581"), be=api
+            )
+        self.assertEqual(got, ("linear", None))
+        self.assertEqual(len(reads), 2, reads)
+
     def test_calibrated_still_plays_the_table(self):
         cfg = _cfg_with_calibration("ARM2SID 6581")
         cfg.audio.dac_curve = "calibrated"

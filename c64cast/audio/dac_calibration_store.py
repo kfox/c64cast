@@ -313,7 +313,10 @@ def calibrated_chip(
     """The socket the applicable table was measured on and the chip label the
     calibrating run recorded for it (``"6581"``, ``"ARMSID 8580"``), or None
     when the entry names no socket or no chip."""
-    applicable = _applicable_entry(cfg, be, path)
+    return _chip_of(_applicable_entry(cfg, be, path))
+
+
+def _chip_of(applicable: tuple[str, dict[str, Any]] | None) -> tuple[int, str] | None:
     if applicable is None:
         return None
     entry_key, entry = applicable
@@ -334,7 +337,24 @@ def load_calibrated_table(
     ``path`` lets a caller that has already resolved the file (resolving the
     key can cost a live device round-trip on the Ultimate) skip the internal
     resolution; see ``dac_curve_resolve``."""
+    return _table_of(cfg, be, _applicable_entry(cfg, be, path))
+
+
+def load_calibrated_table_and_chip(
+    cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
+) -> tuple[bytes | None, tuple[int, str] | None]:
+    """:func:`load_calibrated_table` and :func:`calibrated_chip` from one read
+    of the file and of the live socket map. Two reads can each pick a
+    different entry — a socket-map read that fails the second time falls back
+    to the file's recorded mapping — and pair one entry's table with another's
+    chip."""
     applicable = _applicable_entry(cfg, be, path)
+    return (_table_of(cfg, be, applicable), _chip_of(applicable))
+
+
+def _table_of(
+    cfg: Config, be: C64Backend | None, applicable: tuple[str, dict[str, Any]] | None
+) -> bytes | None:
     if applicable is None:
         return None
     entry_key, entry = applicable

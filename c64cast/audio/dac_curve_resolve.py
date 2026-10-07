@@ -19,6 +19,7 @@ from .dac_calibration_store import (
     calibrated_chip,
     d400_owner,
     load_calibrated_table,
+    load_calibrated_table_and_chip,
     path_for_key,
     resolve_calibration_key,
 )
@@ -37,9 +38,8 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
     the safe 4-bit linear path. ``key`` arrives already resolved because
     resolving it can cost a live device round-trip on the Ultimate."""
     path = path_for_key(cfg, key)
-    table = load_calibrated_table(cfg, be=be, path=path)
+    table, measured = load_calibrated_table_and_chip(cfg, be=be, path=path)
     if table is not None:
-        measured = calibrated_chip(cfg, be=be, path=path)
         if measured is not None and armsid.is_armsid(measured[1]):
             # Its ladder metrics matched a good 6581's, yet it played a click
             # track as a splat that linear plays clean (#587), so no metric
