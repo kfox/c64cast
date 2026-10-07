@@ -81,7 +81,7 @@ class FrameEffect:
 
     # Which MusicModulation feeder drives this layer: "audio" (the scene's
     # feature stream), "clock" (the TempoClock beat grid), or "off" (never
-    # react). Set per-scene by config.build_scene.
+    # react). Set per-scene by scene_factory.build_scene.
     mod_source: str = "audio"
 
     # name -> (min, max) for a CC-style [0, 1] sweep. midi_control.py scales

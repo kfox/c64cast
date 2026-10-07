@@ -494,7 +494,7 @@ class ParseStartOffsetTest(unittest.TestCase):
 class ClassifyUrlTest(unittest.TestCase):
     def test_video_url_becomes_video(self):
         # classify_url stores the URL verbatim — resolution is deferred to
-        # config.build_scene (the single, shared resolution path).
+        # scene_factory.build_scene (the single, shared resolution path).
         scene = quickcast.classify_url("https://youtu.be/abc", display=None)
         self.assertEqual(scene.type, "video")
         self.assertEqual(scene.file, "https://youtu.be/abc")
@@ -536,7 +536,7 @@ class UrlNeedsYtdlpTest(unittest.TestCase):
 
 
 class ResolveVideoUrlTest(unittest.TestCase):
-    """The shared resolver used by both quick playback and config.build_scene."""
+    """The shared resolver used by both quick playback and scene_factory.build_scene."""
 
     def tearDown(self):
         sys.modules.pop("yt_dlp", None)

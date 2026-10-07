@@ -109,7 +109,7 @@ Pitch survives because the `$D418` *output* rate stays ≈ `sample_rate` — a p
 
 **The fix — pre-compress the content.** Compress the content in the time domain by the inverse factor, so the system's own stretch nets back to real time.
 
-`config.build_scene` resolves `tempo_scale = s`, the observed speed fraction, from `[audio].dac_bitmap_tempo_hires` / `_mhires`. Both default to unset, which asks the connected backend (`C64Backend.dac_bitmap_tempo`): `s` depends on how the link's writes halt the NMI player, so no one number fits every machine. The ABC returns the U64-II NTSC figures, 0.89 hires / 0.88 mhires, which a TeensyROM writing with WriteC64Mem also matches; a TR+ writing sliced returns 0.97 ([teensyrom_api.py](hardware-io.md#teensyrom_apipy--the-teensyrom-backend)). An explicit value always wins. `s` is also content-dependent — a mostly static clip drains near 1.0 on either link, so there a fixed `s` makes it play fast (11% at 0.88, 2.5% at 0.97); only reading the drain live would remove that. It is gated to `backend == "dac"` **and** `isinstance(mode, BitmapDisplayMode)` **and** not `use_reu_pump`; anything else gets 1.0, since the off-bus sampler, the REU pump, char modes, and muted scenes do not stretch. It threads through `VideoScene._tempo_scale` into `AVFileSource`.
+`scene_factory.build_scene` resolves `tempo_scale = s`, the observed speed fraction, from `[audio].dac_bitmap_tempo_hires` / `_mhires`. Both default to unset, which asks the connected backend (`C64Backend.dac_bitmap_tempo`): `s` depends on how the link's writes halt the NMI player, so no one number fits every machine. The ABC returns the U64-II NTSC figures, 0.89 hires / 0.88 mhires, which a TeensyROM writing with WriteC64Mem also matches; a TR+ writing sliced returns 0.97 ([teensyrom_api.py](hardware-io.md#teensyrom_apipy--the-teensyrom-backend)). An explicit value always wins. `s` is also content-dependent — a mostly static clip drains near 1.0 on either link, so there a fixed `s` makes it play fast (11% at 0.88, 2.5% at 0.97); only reading the drain live would remove that. It is gated to `backend == "dac"` **and** `isinstance(mode, BitmapDisplayMode)` **and** not `use_reu_pump`; anything else gets 1.0, since the off-bus sampler, the REU pump, char modes, and muted scenes do not stretch. It threads through `VideoScene._tempo_scale` into `AVFileSource`.
 
 There, when `tempo_scale < 1.0`:
 
@@ -297,7 +297,7 @@ Padding with an arbitrary zero-count index leaks an out-of-palette color — gre
 
 ### `[color].dither` — spatial dither
 
-Implemented in `dither.py`. Adds a spatial-dither stage to mhires/mcm/hires, ahead of nearest-palette quantization. Two families, chosen by `dither_method` (`"none"` (default resolves to a concrete value via `config.resolve_dither_method` — see below) `| "ordered" | "blue_noise" | "floyd-steinberg" | "atkinson"`), threaded into each mode's constructor alongside `channel_boost`/`hue_corrections`:
+Implemented in `dither.py`. Adds a spatial-dither stage to mhires/mcm/hires, ahead of nearest-palette quantization. Two families, chosen by `dither_method` (`"none"` (default resolves to a concrete value via `scene_factory.resolve_dither_method` — see below) `| "ordered" | "blue_noise" | "floyd-steinberg" | "atkinson"`), threaded into each mode's constructor alongside `channel_boost`/`hue_corrections`:
 
 #### The ordered family — `"ordered"` / `"blue_noise"`
 
@@ -335,7 +335,7 @@ That is precisely why `"auto"` never picks these for a motion scene: independent
 
 #### `"auto"` resolution
 
-`config.resolve_dither_method(dither_setting, scene_type)` resolves the default at `build_scene` time, via `_display_mode_for_scene` — the single funnel webcam, video, slideshow, and generative scenes share.
+`scene_factory.resolve_dither_method(dither_setting, scene_type)` resolves the default at `build_scene` time, via `_display_mode_for_scene` — the single funnel webcam, video, slideshow, and generative scenes share.
 
 * **Static** scenes (`slideshow`) → `"floyd-steinberg"`. Composed once per image, so the per-pixel cost is a non-issue and it is the highest-quality method.
 * **Everything else** (webcam, video, generative — recomposed every frame) → `"blue_noise"`. Strictly better than `"ordered"` at the same realtime, no-shimmer cost.
@@ -360,7 +360,7 @@ The gray penalty and the percell code/quant hysteresis bonuses are all d²-space
 
 **Reach.** petscii threads the metric through `petscii_styles._quantize_color` / `_quantize_to_spectrum`. The force-palette remap is unaffected — its pixels are already exact palette colors, so every metric returns the same index.
 
-**`"auto"` resolution.** `config.resolve_color_match(setting, display_mode_name)`, inside the single construction funnel `_build_display_mode`, picks perceptual on every quantizing mode (`_COLOR_MATCH_AUTO_PERCEPTUAL`) and rgb on the non-color-picking ones (blank, hires_edges). `validate_color_match_cfg` and `doctor._validate_color_match` report the resolved metric per scene.
+**`"auto"` resolution.** `scene_factory.resolve_color_match(setting, display_mode_name)`, inside the single construction funnel `_build_display_mode`, picks perceptual on every quantizing mode (`_COLOR_MATCH_AUTO_PERCEPTUAL`) and rgb on the non-color-picking ones (blank, hires_edges). `validate_color_match_cfg` and `doctor._validate_color_match` report the resolved metric per scene.
 
 **Hardware A/B on the U64**, with the default `auto_fit` saturation lift in play: MCM improves clearly, with smoother skin gradients and far less per-cell color speckle. mhires, hires, and petscii range from a wash to a marginal win, because `auto_fit` already dominates their color decision. But perceptual never regressed once the shaping was kept, so `auto` chooses it everywhere it applies.
 
@@ -385,7 +385,7 @@ All four keep the **absent-slot → bg0 poison-filler guard**, and the caller st
 
 It also carries a guarantee: since the frequency top-3 is always one of the 20 trios error-min scores, error-min's reconstruction error **can never exceed** frequency's on the same cell. The tests assert this invariant.
 
-**`"auto"` resolution.** `config.resolve_cell_strategy(setting, scene_type)` picks:
+**`"auto"` resolution.** `scene_factory.resolve_cell_strategy(setting, scene_type)` picks:
 
 * `error-min` for **static** scenes (`slideshow`) — composed once, so the trio search cost is paid a single time in exchange for the best reconstruction.
 * `frequency` for **motion** scenes (video, webcam, generative) — the per-frame recompose makes temporal stability the right call, since the tonal-extreme strategies re-rank on noisier raw content and churn slots frame to frame.
@@ -620,7 +620,7 @@ A standard PETSCII char mode with no video input — every cell is `SC_SPACE` (0
 
 Routes video pushes through the REU. Tri-state `true | false | "auto"`, default `"auto"`.
 
-**Resolution.** `config.resolve_use_reu_staged(setting, display, reu_available)` resolves per scene's display mode at build time. `"auto"` yields True only when *all three* hold:
+**Resolution.** `scene_factory.resolve_use_reu_staged(setting, display, reu_available)` resolves per scene's display mode at build time. `"auto"` yields True only when *all three* hold:
 
 1. The mode is a bitmap mode (`_REU_BITMAP_MODES` = hires, hires_edges, mhires).
 2. The startup probe confirmed the REU is on.
@@ -650,7 +650,7 @@ MCM does not support staging yet.
 
 The host-DMA page-flip sibling of `use_reu_staged` — tear-free bitmap video without needing a REU at all. Tri-state `true | false | "auto"`, default `"auto"`.
 
-**Resolution.** `config.resolve_double_buffer(setting, display, *, use_reu_staged, backend_supports_reu, has_buffer_overlays, audio_reu_pump_active)` enables it only for a bitmap mode (`_REU_BITMAP_MODES`), and only when `use_reu_staged` resolved False — the two are mutually exclusive, since both flip `$DD00`.
+**Resolution.** `scene_factory.resolve_double_buffer(setting, display, *, use_reu_staged, backend_supports_reu, has_buffer_overlays, audio_reu_pump_active)` enables it only for a bitmap mode (`_REU_BITMAP_MODES`), and only when `use_reu_staged` resolved False — the two are mutually exclusive, since both flip `$DD00`.
 
 Under `"auto"` it fires when REU staging offers no tear-free alternative for the scene, which is either:
 

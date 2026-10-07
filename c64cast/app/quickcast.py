@@ -128,7 +128,7 @@ _TIMESTR_HMS_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", re.IGNORECA
 
 # Display mode for video *and* slideshow scenes when `-d/--display` isn't
 # passed. Explicit rather than deferred because the two have different
-# unset-display resolutions (config.resolve_scene_display versus
+# unset-display resolutions (scene_factory.resolve_scene_display versus
 # scene_factory._resolve_slideshow_display).
 _DEFAULT_VIDEO_DISPLAY = "mhires"
 
@@ -389,7 +389,7 @@ def resolve_video_url(url: str) -> ResolvedMedia:
     filled from the URL's own ``t=``/``start=``/``#t=`` timestamp (None if
     absent). Raises ValueError if the URL resolves to audio-only (deferred).
     Shared by quick playback and the config loader
-    (:func:`c64cast.app.config.build_scene`) so both interfaces resolve URLs
+    (:func:`c64cast.app.scene_factory.build_scene`) so both interfaces resolve URLs
     and honor timestamps identically."""
     media = resolve_media_url(url)
     if media.kind != "video":
@@ -404,7 +404,7 @@ def classify_url(arg: str, *, display: str | None) -> SceneCfg:
     """Turn a URL argument into a video SceneCfg.
 
     The URL is stored **verbatim**; it is resolved (yt-dlp) and audio-rejected
-    later in :func:`c64cast.app.config.build_scene` — the single resolution path
+    later in :func:`c64cast.app.scene_factory.build_scene` — the single resolution path
     shared with config-driven runs. The ``t=``/``start=`` timestamp is parsed
     here (offline) so it rides onto the SceneCfg's ``start_s``."""
     scene = _make_scene("video", arg, display=display, duration_s=None)

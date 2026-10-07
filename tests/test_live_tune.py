@@ -877,7 +877,7 @@ class LiveTuneTrackerTests(unittest.TestCase):
 
 
 class BuildSceneOsdStampTests(unittest.TestCase):
-    """config.build_scene stamps [midi_control].osd onto each scene's OsdState."""
+    """scene_factory.build_scene stamps [midi_control].osd onto each scene's OsdState."""
 
     def _build(self, osd_value: str) -> scenes.Scene:
         cfg = Config()
@@ -902,7 +902,7 @@ class BuildSceneOsdStampTests(unittest.TestCase):
 
 
 class BuildSceneLoopAudioStampTests(unittest.TestCase):
-    """config.build_scene passes [midi_control].loop_audio to VideoScene's
+    """scene_factory.build_scene passes [midi_control].loop_audio to VideoScene's
     ctor (Phase 4 audio-resync policy) — mirrors BuildSceneOsdStampTests."""
 
     def _build_video(self, loop_audio: str) -> scenes.Scene:

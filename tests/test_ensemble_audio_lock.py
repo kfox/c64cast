@@ -2,7 +2,7 @@
 
 Three layers:
   1. `Ensemble.try_claim_audio` / `release_audio` — the atomic primitive.
-  2. `config.build_scene(..., is_ensemble=True)` — live scenes (webcam,
+  2. `scene_factory.build_scene(..., is_ensemble=True)` — live scenes (webcam,
      blank) build with audio=None so they can't compete for the SID.
   3. `Playlist.ensemble_coord.resolve_next_index` + `_safe_teardown` — gating
      audio-bearing scene advancement and releasing the slot on teardown.

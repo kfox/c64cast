@@ -15,7 +15,7 @@ Two build modes:
 * **Multi-scene playlist** — several scenes in order with the "UP NEXT"
   interstitial, optional video interleaving, and loop-vs-play-once behavior.
 
-Either result is validated with ``config.validate_scene_cfg`` and written via
+Either result is validated with ``scene_factory.validate_scene_cfg`` and written via
 ``config_serialize.dumps`` as annotated, ``#:schema``-tagged TOML. The serializer
 already round-trips N ``[[scenes]]`` + ``[playlist]``/``[interstitial]`` sections
 (``load(dumps(cfg)) == cfg``), so multi-scene is purely a wizard-flow extension.

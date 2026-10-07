@@ -94,7 +94,7 @@ class ReuStagedFlagDefaultTest(unittest.TestCase):
 
 
 class ResolveUseReuStagedTest(unittest.TestCase):
-    """config.resolve_use_reu_staged() maps the tri-state + probe verdict +
+    """scene_factory.resolve_use_reu_staged() maps the tri-state + probe verdict +
     display mode to a concrete bool. "auto" stages bitmap modes only when REU
     is available; explicit true/false ignore the probe."""
 
