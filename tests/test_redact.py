@@ -761,6 +761,10 @@ class RedactSecretsTest(unittest.TestCase):
             "bypass=" * 32_000,
             "\\u0026sig=" * 20_000,
             "--password " * 20_000,
+            "token" + "\\" * 192_000,
+            "token" + " " * 192_000,
+            "Authorization: " + "!" * 192_000,
+            "Authorization: x" + "!" * 192_000,
             "-" * 100_000 + "token x",
         ):
             with self.subTest(line=line[:24]):

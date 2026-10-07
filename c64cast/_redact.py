@@ -95,9 +95,12 @@ _SHELL_PWD = ("PWD", "OLDPWD")
 #: What follows a key: an optional closing quote (escaped, once or more, in a
 #: rendering such as `{\'token\': …}`), then `=`, `:` or `=>`, then the value.
 #: The `>` is the separator's only when a space or a quote follows it; glued to
-#: more text it is the value's first character, as in `password=>abc`.
+#: more text it is the value's first character, as in `password=>abc`. The
+#: runs are possessive because none can give a character back to what follows
+#: it, so backtracking into one is wasted work, and polynomial work to a
+#: static ReDoS check.
 _KEY_TAIL = re.compile(
-    r"""\\* ["']? \s* (?P<sep> [=:] ) [=:]* (?: > (?= [\s"'\\] ) )? \s*""", re.VERBOSE
+    r"""\\*+ ["']? \s*+ (?P<sep> [=:] ) [=:]*+ (?: > (?= [\s"'\\] ) )? \s*""", re.VERBOSE
 )
 
 #: A quote that opens a value: single or triple, after an optional Python
@@ -145,9 +148,10 @@ _AUTH_SCHEMES = frozenset(
 #: `s3cr3t, x` or a `%22` too deep to open a quote ends the value at the first
 #: word and leaves the credential in view. Neither run takes `.` or `-`, nor
 #: the trailing one `+`, so none can trade characters with its neighbor, which
-#: is quadratic on a long run of them.
+#: is quadratic on a long run of them. They are possessive for the reason
+#: `_KEY_TAIL`'s are.
 _SCHEME_AND_GAP = re.compile(
-    r"[^\w\s.-]* (?P<scheme> [\w.-]+ ) [^\w\s.+-]* (?P<gap> [\s+]+ )", re.VERBOSE
+    r"[^\w\s.-]*+ (?P<scheme> [\w.-]++ ) [^\w\s.+-]*+ (?P<gap> [\s+]+ )", re.VERBOSE
 )
 
 #: The `://` of a URL, after a scheme character. Anchored on the separator and
