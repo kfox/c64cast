@@ -297,6 +297,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   bytes (`$C200-$C204`) and the pump's tick counter follows at `$C205`, so data
   placed at `$C203` from the old table would land on the pump's write head.
 
+- **`[audio].dac_curve = "calibrated"` with no calibration on disk now exits
+  with an error instead of a traceback, and no longer fails a run with
+  `--no-audio`.** The curve was resolved even with audio off, and in an
+  ensemble the missing table skipped the teardown of the systems already
+  started, leaving their machines as the run had set them up.
+
 - **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
   switched to the model the tune asks for.** The chip's model is a setting, but
   SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,
