@@ -882,6 +882,14 @@ class AVFileSource:
         with self._lock:
             return self._pending_seek is not None
 
+    @property
+    def accepts_seeks(self) -> bool:
+        """False once the demux thread has returned for good (closed or
+        crashed): a seek requested after that is never applied, so an A/B loop
+        wrap at EOF cannot restart playback."""
+        with self._lock:
+            return not self._demux_exited
+
     def _emit_audio(self, arr: np.ndarray) -> None:
         """Apply the noise gate + normalization gain to a mono int16 sample
         array and hand it to the audio consumer. Shared by the direct path and

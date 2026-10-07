@@ -808,6 +808,7 @@ class _StubSource:
         self.duration_s = duration
         self.video_fps = video_fps
         self.finished = False
+        self.accepts_seeks = True
         self.last_frame_pts = 0.0
         self.seeks: list[float] = []
         self.muted_calls: list[bool] = []
@@ -1694,6 +1695,24 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         self.assertTrue(still_active)
         self.assertEqual(source.seeks, [5.0])
 
+    def test_eof_with_a_dead_demux_thread_ends_a_looping_scene(self):
+        # Nothing is left to apply the wrap's seek, so wrapping would hold
+        # the last frame, re-requesting A every tick, until the loop is cleared.
+        source = _StubSource(duration=100.0)
+        source.finished = True
+        source.accepts_seeks = False
+        scene = _make_video_scene_stub(source)
+        scene.transport.touched = True
+        scene.transport.loop_state = "active"
+        scene.transport.loop_a = 5.0
+        scene.transport.loop_b = 50.0
+        scene.transport.wall_anchor_clock_s = 20.0
+        scene.transport.wall_anchor_time = 0.0
+        with _freeze_time(0.0):
+            still_active = scene.process_frame(current_time=0.0)
+        self.assertFalse(still_active)
+        self.assertEqual(source.seeks, [])
+
     def test_finished_without_active_loop_ends_scene(self):
         source = _StubSource(duration=100.0)
         source.finished = True
@@ -2072,6 +2091,7 @@ class SeekAfterEofTest(unittest.TestCase):
         src._demux_exited = True
         src.request_seek(1.0)
         self.assertTrue(src.finished)
+        self.assertFalse(src.accepts_seeks)
 
     def test_a_scene_seeking_back_after_eof_keeps_playing(self):
         src = self._started_at_eof()

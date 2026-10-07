@@ -1669,8 +1669,13 @@ class VideoScene(MediaFileMixin, Scene):
 
     def process_frame(self, current_time: float) -> bool:
         # A source at EOF under an active A/B loop is about to wrap to A below,
-        # so it does not end the scene.
-        if self.source is None or (self.source.finished and self.transport.loop_state != "active"):
+        # so it does not end the scene — unless its demux thread is gone, when
+        # the wrap's seek would never land and the loop would hold its last
+        # frame for good.
+        if self.source is None or (
+            self.source.finished
+            and (self.transport.loop_state != "active" or not self.source.accepts_seeks)
+        ):
             # Clamps a sampler's position_seconds() to the pushed total; a
             # no-op for the DAC streamer, and idempotent.
             if self.audio is not None:
