@@ -173,8 +173,10 @@ class VideoTransportControls:
         # first sample is heard one ring lead from now, not at once. The raw
         # clock, not heard_seconds(): the splice clears a sampler's re-anchor
         # lag, so after it the heard position is the clock. This estimate
-        # only holds the clock below the target while the flush runs (the
-        # render thread reads it meanwhile); the anchor is what the flush
+        # holds the clock near the target while the flush runs, for the web
+        # console, whose HTTP worker reads position() off the playlist
+        # thread (transport commands and frames both run on that thread, so
+        # no frame sees it); the anchor is what the flush
         # returns, read once, on the clock as it runs after the flush — which
         # clears a sampler's end-of-stream clamp, so an anchor read before it
         # put the picture the clamp's overrun ahead of the sound.
