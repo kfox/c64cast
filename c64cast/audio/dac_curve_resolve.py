@@ -127,8 +127,8 @@ def resolve_dac_curve_for_backend(
     (the legacy linear 4-bit path).
 
     * ``"auto"`` (default) — prefer a calibrated table applicable to this
-      system/socket if one exists, unless it was measured on an ARMSID
-      (``linear`` then); else ``mahoney_ultisid`` when an UltiSID
+      system/socket if one exists, unless the calibrating run identified its chip as an
+      ARMSID or ARM2SID (``linear`` then); else ``mahoney_ultisid`` when an UltiSID
       core answers ``$D400`` (the baked table *is* that core's curve); else
       ``linear`` (a physical/unknown SID with no calibration: the baked
       emulated table would not match it, so stay on the safe 4-bit path).
