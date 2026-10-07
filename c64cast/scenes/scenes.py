@@ -1288,7 +1288,7 @@ class VideoScene(MediaFileMixin, Scene):
         # Bitmap + $D418-DAC tempo compensation (1.0 = off): AVFileSource
         # time-compresses the audio by 1/tempo_scale and scales video PTS by
         # tempo_scale, canceling the bitmap+DAC slowdown. Resolved in
-        # config.build_scene.
+        # scene_factory.build_scene.
         self.tempo_scale = tempo_scale
         self._last_rendered_img: np.ndarray | None = None
         # The OSD text baked into the last rendered frame; compared each tick so

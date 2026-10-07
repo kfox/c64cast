@@ -999,7 +999,7 @@ Defaults (all overridable with an explicit `target_fps`):
   per-region delta cache mostly skips is cheap, so these keep the playlist
   system default (60 NTSC / 50 PAL).
 
-These caps (`config._frame_push_default_fps`) are worth revisiting once the
+These caps (`scene_factory._frame_push_default_fps`) are worth revisiting once the
 firmware no longer halts the CPU on DMA writes — see the U64 zero-halt DMA
 path notes.
 

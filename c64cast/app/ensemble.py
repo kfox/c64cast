@@ -121,7 +121,7 @@ class Ensemble:
     it until the holder releases. `audio_lock` guards the claim/release
     transaction so concurrent claims can't both win. Live scenes
     (webcam, blank) never claim — their audio is suppressed at build
-    time in ensemble mode (see config.build_scene)."""
+    time in ensemble mode (see scene_factory.build_scene)."""
 
     stacks: list[SystemStack]
     stop_event: threading.Event

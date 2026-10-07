@@ -292,6 +292,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The Programmer's Reference memory map gives the REU pump's tracker its
+  full size.** It listed `$C200` as a three-byte tracker; the tracker is five
+  bytes (`$C200-$C204`) and the pump's tick counter follows at `$C205`, so data
+  placed at `$C203` from the old table would land on the pump's write head.
+
 - **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
   switched to the model the tune asks for.** The chip's model is a setting, but
   SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,

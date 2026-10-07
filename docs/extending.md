@@ -111,7 +111,7 @@ hz = 2.0
   `audio.get_recent_samples()` when the scene reports no features.
 
 These are validated by `overlays.validate_for_scene` (invoked from
-`config._attach_overlays` in [config.py](../c64cast/app/config.py)) at
+`_attach_overlays` in [scene_factory.py](../c64cast/app/scene_factory.py)) at
 config-load time, not at the first frame.
 
 An overlay whose `setup()` points `$0314` at its own handler and masks CIA #1
@@ -213,16 +213,22 @@ class MyScene(Scene):
 
 ### Wire it into the config loader
 
-Open [config.py](../c64cast/app/config.py) and add a branch in
-`scenes_from_config`:
+Add the type name to `SCENE_TYPES` in [config.py](../c64cast/app/config.py),
+then give it a validator and a builder in
+[scene_factory.py](../c64cast/app/scene_factory.py), registered in
+`_VALIDATORS` and `_BUILDERS` under the same key:
 
 ```python
-elif s.type == "my_scene":
-    mode = _build_display_mode(s.display)
-    scene = MyScene(api, audio, mode, s.name or "My scene")
+def _validate_my_scene(s: SceneCfg, cfg: Config) -> DisplayMode:
+    # Raise ValueError on a bad field; return the scene's display mode.
+    return _display_mode_for_scene(s.display, s, cfg)
+
+def _build_my_scene(ctx: _SceneBuildContext) -> Scene:
+    mode = ctx.display_mode(ctx.s.display)
+    return MyScene(ctx.api, ctx.audio, mode, ctx.s.name or "My scene")
 ```
 
-Then add any custom config fields to `SceneCfg` (also in `config.py`)
+Then add any custom config fields to `SceneCfg` (in `config.py`)
 so they round-trip through TOML.
 
 ### Things to honor
@@ -265,7 +271,7 @@ class MyDisplayMode(DisplayMode):
 Wire it into the loader's mode factory:
 
 ```python
-# config.py — _build_display_mode
+# scene_factory.py — _build_display_mode
 if name == "mymode":
     return MyDisplayMode()
 ```
@@ -390,8 +396,8 @@ per surface, fakes at the top, three-to-six small `test_*` methods.
 | What you're adding         | Where it goes                                                | Wire-up                                                                 |
 |----------------------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
 | Overlay                    | [c64cast/scenes/overlays/yours.py](../c64cast/scenes/overlays/)        | `@register("yours")` + add to `_load_all()` in `overlays/__init__.py`   |
-| Scene                      | [c64cast/scenes/scenes.py](../c64cast/scenes/scenes.py) (or new file)  | branch in `config.scenes_from_config` + optional `SceneCfg` fields      |
-| DisplayMode                | [c64cast/video/modes/](../c64cast/video/modes/)                      | branch in `config._build_display_mode`                                  |
+| Scene                      | [c64cast/scenes/scenes.py](../c64cast/scenes/scenes.py) (or new file)  | `SCENE_TYPES` + `_VALIDATORS`/`_BUILDERS` entries in `scene_factory` + optional `SceneCfg` fields |
+| DisplayMode                | [c64cast/video/modes/](../c64cast/video/modes/)                      | branch in `scene_factory._build_display_mode`                                  |
 | Background                 | [c64cast/scenes/backgrounds.py](../c64cast/scenes/backgrounds.py)      | `@register("yours")` decorator                                          |
 | CLI flag                   | [c64cast/app/cli.py](../c64cast/app/cli.py)                      | `default=None` + entry in `config.CLI_TO_CFG`                           |
 | Control-plane endpoint     | [c64cast/control/control_plane.py](../c64cast/control/control_plane.py)  | new event on `Playlist` + handler in the run loop                       |

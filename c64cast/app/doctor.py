@@ -844,7 +844,7 @@ def _validate_dac_curve_cfg(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [audio].dac_curve name or the dac_curve + digi_boost
     conflict per system. Pure config validation — no hardware/calibration
     involved — so it always runs, live or offline. Delegates to
-    config.validate_dac_curve_cfg. See _validate_dac_curve_resolution for
+    scene_factory.validate_dac_curve_cfg. See _validate_dac_curve_resolution for
     the (hardware-identity-dependent) "resolves to X" reporting."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
@@ -978,7 +978,7 @@ def _validate_dac_curve_resolution(
 
 def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an out-of-range [audio].dac_bitmap_tempo_* fraction per system.
-    Offline — delegates to config.validate_dac_bitmap_tempo_cfg."""
+    Offline — delegates to scene_factory.validate_dac_bitmap_tempo_cfg."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         try:
@@ -1131,7 +1131,7 @@ def _validate_hardware_palette(loaded: LoadResult) -> list[Diagnostic]:
 
 def _validate_sid_model(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [ultimate64].sid_model value per system. Offline —
-    delegates to config.validate_sid_model_cfg."""
+    delegates to scene_factory.validate_sid_model_cfg."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         try:
@@ -1156,13 +1156,13 @@ _DITHER_HINT = "See [color].dither in the config reference / --describe section:
 def _validate_dither(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [color].dither name / out-of-range dither_strength on
     [color] and on every scene's own [scenes.color] override, and report how
-    "auto" resolves per scene (see config.resolve_dither_method).
+    "auto" resolves per scene (see scene_factory.resolve_dither_method).
 
     Each scene is checked independently (rather than one whole-config
     validate_dither_cfg call) so a bad override on one scene reports an error
     for that scene alone, instead of also swallowing the resolution report for
     every other scene in the same system. Offline — delegates the actual
-    check to config.dither_cfg_error."""
+    check to scene_factory.dither_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         err = dither_cfg_error("[color]", cfg.color)
@@ -1230,10 +1230,10 @@ _COLOR_MATCH_HINT = "See [color].color_match in the config reference / --describ
 def _validate_color_match(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [color].color_match value on [color] and on every
     scene's own [scenes.color] override, and report how "auto" resolves per
-    scene's display mode (see config.resolve_color_match).
+    scene's display mode (see scene_factory.resolve_color_match).
 
     Each scene is checked independently — see `_validate_dither` for why.
-    Offline — delegates the actual check to config.color_match_cfg_error."""
+    Offline — delegates the actual check to scene_factory.color_match_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         err = color_match_cfg_error("[color]", cfg.color)
@@ -1304,12 +1304,12 @@ _CELL_STRATEGY_HINT = (
 def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [color].cell_strategy value on [color] and on every
     scene's own [scenes.color] override, and report how "auto" resolves per
-    scene (see config.resolve_cell_strategy). The knob only affects mhires
+    scene (see scene_factory.resolve_cell_strategy). The knob only affects mhires
     with palette_mode=percell, so the resolution report is scoped to those
     scenes.
 
     Each scene is checked independently — see `_validate_dither` for why.
-    Offline — delegates the actual check to config.cell_strategy_cfg_error."""
+    Offline — delegates the actual check to scene_factory.cell_strategy_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         err = cell_strategy_cfg_error("[color]", cfg.color)
@@ -1382,7 +1382,7 @@ def _validate_motion_smoothing(loaded: LoadResult) -> list[Diagnostic]:
     scenes it affects.
 
     Each scene is checked independently — see `_validate_dither` for why.
-    Offline — delegates the actual check to config.motion_smoothing_cfg_error."""
+    Offline — delegates the actual check to scene_factory.motion_smoothing_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         err = motion_smoothing_cfg_error("[color]", cfg.color)
@@ -1470,7 +1470,7 @@ def _validate_midi_control(loaded: LoadResult) -> list[Diagnostic]:
     """Flag a malformed [midi_control] section. Process-wide (like
     [control]), so this validates loaded.master_midi_control once rather
     than looping per system. Offline — delegates to
-    config.validate_midi_control_cfg."""
+    scene_factory.validate_midi_control_cfg."""
     try:
         validate_midi_control_cfg(loaded.master_midi_control)
     except ConfigError as e:
@@ -1499,7 +1499,7 @@ def _validate_wled(loaded: LoadResult) -> list[Diagnostic]:
     """Flag a malformed [wled] section and report each resolved endpoint when
     enabled: the Mode 3 broadcast target (audio-sync out) and the Mode 1 listen
     bind (virtual WLED device / control surface in). Per-system, offline —
-    delegates bounds/warnings to config.validate_wled_cfg."""
+    delegates bounds/warnings to scene_factory.validate_wled_cfg."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         try:

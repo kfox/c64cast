@@ -238,7 +238,7 @@ class AudioFileSource:
     reacts to the track. The audio half of `c64cast tune.mp3`
     (audio_source = "file").
 
-    **Backend.** The audio object is whatever `config.build_scene` resolved for
+    **Backend.** The audio object is whatever `scene_factory.build_scene` resolved for
     the run: on a sampler-capable U64 with `[audio].backend` = auto/sampler it is
     an off-bus `UltimateAudioSampler` (16-bit PCM straight from REU — no
     $D418/NMI/4-bit quantization/DSP, and immune to the CPU-freeze that host-DMA
@@ -261,7 +261,7 @@ class AudioFileSource:
     shorter file is decoded whole before anything plays.
 
     `wants_audio_lock=False`: like the mic/video paths, a file is not the
-    ensemble's SID spotlight (`config.build_scene` also suppresses its DAC audio
+    ensemble's SID spotlight (`scene_factory.build_scene` also suppresses its DAC audio
     in ensemble mode). `resets_display=False`: the DAC path never touches the VIC.
 
     **End of track.** `finished` turns True once the decoder has reached the

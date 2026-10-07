@@ -148,7 +148,8 @@ color can still tear across a bank swap while the picture itself does not.
 | `$4000-$5FFF` | The 8 KB audio ring the interrupt reads from |
 | `$C020` | The interrupt handler that writes `$D418` |
 | `$C100` | The expansion-memory pump handler |
-| `$C200` | Its three-byte source tracker |
+| `$C200-$C204` | Its five-byte tracker: the expansion-memory read position (three bytes), then the ring write position (two) |
+| `$C205` | The pump's tick counter |
 
 The ring lives at `$4000` — VIC bank 1 — deliberately. Banks 0 and 2 are the
 ones the display paths use, and are also the two banks where the character ROM

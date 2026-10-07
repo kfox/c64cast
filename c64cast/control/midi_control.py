@@ -142,7 +142,7 @@ class _CCMapping:
 
 def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping]:
     """Parse cc_map dicts into a (kind, number)-keyed lookup table. Raises
-    ValueError on a malformed entry — mirrors config.validate_midi_control_cfg's
+    ValueError on a malformed entry — mirrors scene_factory.validate_midi_control_cfg's
     checks, kept independent so this module is testable without config.py's
     ConfigError (the same "config stays import-light" rationale in reverse:
     midi_control.py doesn't need to import config's private choice tuples).
