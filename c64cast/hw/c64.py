@@ -494,7 +494,6 @@ def actual_rate_for_latch(latch: int, system: str) -> float:
 NMI_HANDLER_WORST_CYCLES: Final = 68  # measured overrun onset
 NMI_ENTRY_LATENCY_CYCLES: Final = 7  # margin for entry latency + PAL/unit variation
 NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 75
-# The fastest CIA #2 latch the NMI DAC arms: a period of exactly the budget.
 NMI_CEILING_LATCH: Final = max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
 
 
