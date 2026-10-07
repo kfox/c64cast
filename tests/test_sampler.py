@@ -545,6 +545,99 @@ class _LossyGateOffBackend(_FailingBackend):
         super().write_memory(address, data_hex)
 
 
+class _StallingGateOffBackend(_FailingBackend):
+    """A link that stays down for REU writes, where the writer thread's
+    gate-off sits in the transport (a dial to a machine that is switched off)
+    until ``release`` is set, and then lands."""
+
+    def __init__(self) -> None:
+        super().__init__(failures=-1)
+        self.stalled = threading.Event()
+        self.release = threading.Event()
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        if threading.current_thread().name == "uaudio-writer" and not self.release.is_set():
+            self.stalled.set()
+            self.release.wait(5.0)
+        super().write_memory(address, data_hex)
+
+
+class SamplerGaveUpSurvivorTest(unittest.TestCase):
+    """A writer that gave up on the link and is still in its gate-off when
+    stop()'s join runs out: the next activation goes ahead, and that gate-off
+    cannot land after the new gate-on."""
+
+    def test_the_next_activation_starts_and_its_gate_on_lands_last(self):
+        api = _StallingGateOffBackend()
+        self.addCleanup(api.release.set)
+        smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.01)
+        with (
+            mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1),
+            mock.patch.object(s, "WRITER_BACKOFF_MAX_S", 0.01),
+            quiet_logging(),
+        ):
+            smp.start(prebuffer_timeout=0.01)
+            self.assertTrue(api.stalled.wait(3.0), "the writer never sent its gate-off")
+            survivor = smp._writer
+            assert survivor is not None
+            self.addCleanup(survivor.stop)
+            survivor._join_timeout = 0.05
+            smp.stop()
+            self.assertTrue(survivor.is_running(), "the survivor did not outlive the join")
+            smp.arm()  # refused before: the lap played silent
+            starter = threading.Thread(target=smp.start, kwargs={"prebuffer_timeout": 0.01})
+            starter.start()
+            time.sleep(0.1)
+            api.release.set()
+            starter.join(3.0)
+            self.assertFalse(starter.is_alive(), "start() never gated the channel on")
+            survivor.stop()
+            self.assertFalse(survivor.is_running())
+            last = [d for a, d in api.mem_writes if a == "DF20"][-1]
+            smp.stop()
+        self.assertNotEqual(last, "00", "the retired writer's gate-off landed after the gate-on")
+
+    def test_a_retired_writer_sends_no_gate_off_after_the_next_gate_on(self):
+        # Every gate-off reaches the machine but reads as lost, so the writer
+        # keeps retrying across stop() and the next start().
+        api = _UnconfirmedGateOffBackend()
+        smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.01)
+        with (
+            mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1),
+            mock.patch.object(s, "WRITER_BACKOFF_MAX_S", 0.01),
+            quiet_logging(),
+        ):
+            smp.start(prebuffer_timeout=0.01)
+            deadline = time.monotonic() + 3.0
+            while api.delivery_epoch < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertGreaterEqual(api.delivery_epoch, 3, "the gate-off was not retried")
+            survivor = smp._writer
+            assert survivor is not None
+            self.addCleanup(survivor.stop)
+            smp.stop()
+            with mock.patch.object(s, "WRITER_GIVE_UP_S", 60.0):
+                smp.start(prebuffer_timeout=0.01)
+                gate_on = len(api.mem_writes)
+                time.sleep(0.1)
+                after = [w for w in api.mem_writes[gate_on:] if w == ("DF20", "00")]
+                smp.stop()
+        self.assertEqual(after, [], "a retired writer gated the new activation off")
+
+
+class _UnconfirmedGateOffBackend(_FailingBackend):
+    """A link that stays down for REU writes, and on which every writer-thread
+    register write lands but is counted lost (``delivery_epoch`` moves)."""
+
+    def __init__(self) -> None:
+        super().__init__(failures=-1)
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        super().write_memory(address, data_hex)
+        if threading.current_thread().name == "uaudio-writer":
+            self.delivery_epoch += 1
+
+
 class SamplerWriterFailureTest(unittest.TestCase):
     TONE = np.full(256, 8000, dtype=np.int16)
 
