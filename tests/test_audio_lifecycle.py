@@ -73,8 +73,8 @@ class _FlushDuringClaim(AudioStreamer):
     """An AudioStreamer whose worker is flushed, from another thread, between
     reading the flush epoch in ``_claim_ring_write`` and recording the chunk
     as in flight: the window a check made outside ``_count_lock`` leaves open.
-    The flush gets 0.2 s to finish there; against the lock it blocks until the
-    claim is done."""
+    With ``_count_lock`` free there, the flush runs to completion before the
+    claim goes on; against the lock it blocks until the claim is done."""
 
     trigger_claim = 0
     _claims = 0
@@ -96,7 +96,10 @@ class _FlushDuringClaim(AudioStreamer):
                     target=lambda: self.anchors.append(self.flush()), name="test-flusher"
                 )
                 self.flusher.start()
-                self.flusher.join(0.2)
+                # Held, the lock blocks the flush until the claim is done, and
+                # any wait is only the window. Free, the flush runs through,
+                # so wait it out rather than race a slow start under load.
+                self.flusher.join(0.2 if self._count_lock.locked() else 5.0)
                 return value
         return self._epoch
 
