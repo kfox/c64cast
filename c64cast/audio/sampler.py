@@ -797,7 +797,7 @@ class UltimateAudioSampler:
             return 0
         accepted = int(samples_int16.shape[0])
         self._pushed_samples += accepted
-        # A video's demuxer ends its input at every EOF and pushes again after
+        # A video's demuxer ends its input at EOF and pushes again after
         # a seek back (an A/B loop wrap, a resume near the end).
         self._input_ended = False
         self._push_to_analysis(raw)

@@ -2814,7 +2814,7 @@ class AudioStreamer:
         # the sound.
         accepted = self._encode_and_enqueue(floats, block_on_full=True)
         if accepted:
-            # A video's demuxer ends its input at every EOF and pushes again
+            # A video's demuxer ends its input at EOF and pushes again
             # after a seek back (an A/B loop wrap, a resume near the end).
             self._input_ended = False
             self._push_to_analysis(floats)
