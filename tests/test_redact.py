@@ -895,11 +895,23 @@ class RedactSourceLineTest(unittest.TestCase):
             'dma_password "hunter2"',
             'dma_password ""hunter2""',
             "dma_password : 'hunter2'",
+            'dma_password-"hunter2"',
+            'dma_password-= "hunter2"',
         ):
             with self.subTest(line=line):
                 safe, verbatim = redact_source_line(["[ultimate64]", line], 2)
                 self.assertNotIn("hunter2", safe)
                 self.assertIn("dma_password", safe)
+                self.assertFalse(verbatim)
+
+    def test_a_percent_encoded_name_on_a_rejected_line_still_cuts_it(self):
+        """`redact_secrets` reads `%26sig%3D` decoded, as `&sig=`; read raw,
+        the `6` glues onto `sig` and the signed URL came back verbatim."""
+        for name in ("sig", "hmac", "key", "auth"):
+            line = f'url = "https://h/a?x=1%26{name}%3Dhunter2" junk'
+            with self.subTest(name=name):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertEqual(safe, line[: line.index("%3D")] + " REDACTED")
                 self.assertFalse(verbatim)
 
     def test_a_continuation_line_of_a_secret_value_is_dropped_whole(self):

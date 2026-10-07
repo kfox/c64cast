@@ -339,13 +339,10 @@ class _Line:
 
     def stop(self, kind: str, p: int, d: int) -> int:
         """Where a value of `kind` that starts at `p`, and is `d` deep, ends."""
-        found = self._stops_of(kind).first(p, d)
+        found = self.stops(kind).first(p, d)
         return len(self.text) if found is None else found
 
     def stops(self, kind: str) -> _Stops:
-        return self._stops_of(kind)
-
-    def _stops_of(self, kind: str) -> _Stops:
         stops = self._stops.get(kind)
         if stops is None:
             text = self.text
@@ -726,6 +723,24 @@ def _value_open(lines: Sequence[str], lineno: int) -> bool:
     return delim is not None or depth > 0
 
 
+def _first_name_end(line: str) -> int | None:
+    """Where the earliest secret-shaped name on a rejected `line` ends, read
+    as given and percent-decoded, and each of those again with every `-` read
+    as a space. Decoded, because :func:`redact_secrets` reads `%26sig%3D` as
+    a name and the raw `6sig` is glued. With `-` as a space, because the rule
+    that a name ends where its key does would otherwise keep
+    `dma_password-"hunter2"` whole, and a `-` typed for an `=` is exactly the
+    kind of line a parser refuses."""
+    ends: list[int] = []
+    for view in (line, line.replace("-", " ")):
+        if (name := next(_secret_names(view), None)) is not None:
+            ends.append(name.end())
+        decoded, starts, _ = _decode(view)
+        if starts is not None and (name := next(_secret_names(decoded), None)) is not None:
+            ends.append(starts[name.end()])
+    return min(ends, default=None)
+
+
 def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     """The 1-based `lineno`-th of `lines` in a form safe to quote back, and
     whether what comes back is that line verbatim.
@@ -767,11 +782,11 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     if _value_open(lines, lineno):
         return REDACTED, False
     line = lines[lineno - 1]
-    key = next(_secret_names(line), None)
+    key_end = _first_name_end(line)
     userinfo = _URL_USERINFO.search(line)
     cut = _scheme_start(line, userinfo.start()) if userinfo is not None else None
-    if cut is not None and (key is None or cut < key.end()):
+    if cut is not None and (key_end is None or cut < key_end):
         return f"{line[:cut]}{REDACTED}", False
-    if key is not None:
-        return f"{line[: key.end()]} {REDACTED}", False
+    if key_end is not None:
+        return f"{line[:key_end]} {REDACTED}", False
     return line, True
