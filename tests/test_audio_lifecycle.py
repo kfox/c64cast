@@ -2785,24 +2785,33 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         s.running = True
         s._pushed_count = 1000  # everything pushed so far has landed
-        anchors: list[float] = []
+        # The put holds _count_lock, so a flush cannot run inside it; what the
+        # flush finds once it can is the blob in the queue with whatever
+        # counts were in place when it got there.
+        counts_at_put: list[tuple[int, int]] = []
 
-        class FlushAfterPut(queue.Queue):  # type: ignore[type-arg]
+        class RecordCountsAtPut(queue.Queue):  # type: ignore[type-arg]
             def put(self, item, block=True, timeout=None):  # type: ignore[no-untyped-def]
+                counts_at_put.append((s._pushed_count, s._queued_samples))
                 super().put(item, block, timeout)
-                if not anchors:
-                    anchors.append(s.flush())
 
-        s.q = FlushAfterPut(maxsize=s.q.maxsize)
+        s.q = RecordCountsAtPut(maxsize=s.q.maxsize)
         self.assertEqual(s._encode_and_enqueue(np.zeros(200, dtype=np.float32), True), 200)
-        self.assertEqual(round(anchors[0] * s.effective_rate), 1000)
+        self.assertEqual(counts_at_put, [(1200, 200)])
+        anchor = s.flush()
+        self.assertEqual(round(anchor * s.effective_rate), 1000)
         self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
 
     def _park_a_push_on_a_full_queue(
         self, s: AudioStreamer
     ) -> tuple[threading.Thread, dict[str, int]]:
         # Every blob slot taken, the sample cap clear: the push gets past the
-        # backpressure spin and counts its blob, then waits for a slot.
+        # backpressure spin and counts its blob, then waits for a slot. The
+        # wait outlasts the test, so the push cannot give up on its own and
+        # pass for a drop the flush or stop made.
+        patcher = mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 30.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         s.running = True
         s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         s.q = queue.Queue(maxsize=4)
@@ -2845,6 +2854,32 @@ class EncodeBackpressureTest(unittest.TestCase):
             s.stop()
         t.join(2.0)
         self.assertEqual(out["n"], 0)
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (0, 0, 0))
+
+    def test_a_flush_between_the_epoch_check_and_the_put_drains_the_blob(self):
+        # The check passed, then a flush bumped the epoch and drained the
+        # queue before the put: the pre-splice blob landed behind the drain.
+        s = _make()
+        s.running = True
+        flushed = threading.Event()
+
+        def flush() -> None:
+            s.flush()
+            flushed.set()
+
+        flusher = threading.Thread(target=flush)
+
+        class FlushBeforePut(queue.Queue):  # type: ignore[type-arg]
+            def put_nowait(self, item):  # type: ignore[no-untyped-def]
+                if not flusher.is_alive() and not flushed.is_set():
+                    flusher.start()
+                    flushed.wait(0.2)
+                super().put_nowait(item)
+
+        s.q = FlushBeforePut(maxsize=s.q.maxsize)
+        s._encode_and_enqueue(np.zeros(200, dtype=np.float32), True)
+        flusher.join(2.0)
+        self.assertTrue(flushed.is_set())
         self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (0, 0, 0))
 
     def test_empty_input_returns_zero(self):

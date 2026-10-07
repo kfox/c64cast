@@ -1617,14 +1617,19 @@ class AudioStreamer:
             self._pushed_count += n
         # Polled rather than a blocking q.put(timeout=...): flush()'s and
         # stop()'s drain frees the very slots a parked put waits on, so the
-        # pre-splice blob would land in the queue right after the drain.
+        # pre-splice blob would land in the queue right after the drain. The
+        # check and the put share _count_lock with the epoch bump, so a put
+        # cannot pass its check before a bump and land after the drain.
         put_deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S
-        while self._flush_epoch == epoch:
-            try:
-                self.q.put_nowait(payload)
-                return n
-            except queue.Full:
-                pass
+        while True:
+            with self._count_lock:
+                if self._flush_epoch != epoch:
+                    break
+                try:
+                    self.q.put_nowait(payload)
+                    return n
+                except queue.Full:
+                    pass
             if not block_on_full or time.monotonic() >= put_deadline:
                 break
             time.sleep(BACKPRESSURE_SPIN_S)
@@ -3287,7 +3292,9 @@ class AudioStreamer:
         # Ahead of everything a producer could outlast: the push path's epoch
         # check is what drops a blob from a producer this clear just released,
         # and the drain at the bottom only catches one that beats it there.
-        self._flush_epoch += 1
+        # Under _count_lock, where the push path checks it and puts.
+        with self._count_lock:
+            self._flush_epoch += 1
         # No-op if the pump was never armed and no $0314 restore or CIA #1
         # unmask is owed. The video pumps' governor lives in the C64-side
         # handler, so disarming the IRQ vector stops it; the mic pump's
