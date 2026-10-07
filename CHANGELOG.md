@@ -303,6 +303,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   ensemble the missing table skipped the teardown of the systems already
   started, leaving their machines as the run had set them up.
 
+- **A reactive scene playing an audio file through the 4-bit `$D418` DAC no
+  longer misses some onsets.** The DAC's playback clock moved in steps of one
+  ring chunk, about 85 ms at 12 kHz, so the analyzer's window jumped by its own
+  length and a click near the edge of the only window that held it never
+  flashed. The same clicks missed on every run. The clock now moves
+  continuously between chunks, which also smooths video played over the DAC
+  without the REU pump.
+
 - **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
   switched to the model the tune asks for.** The chip's model is a setting, but
   SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,

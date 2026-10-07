@@ -22,7 +22,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, FakeTime, SleepDrivenClock, quiet_logging
+from _fakes import FakeAPI, FakeTime, FrozenClock, SleepDrivenClock, quiet_logging
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio import audio_rate as audio_rate_mod
@@ -3261,6 +3261,127 @@ class LifecycleTest(unittest.TestCase):
         steps = self._drive_ring(s, "ccscsccspcccccc", chunk=32, gap=128)
         for clock, heard in steps:
             self.assertAlmostEqual(clock, heard, places=6)
+
+    def _started_on(self, clock: FrozenClock, plan: str) -> AudioStreamer:
+        """A streamer whose consumer started on ``clock`` with a 4096-byte
+        gap, then one 1024-byte chunk landed per plan letter (``c`` content,
+        ``p`` pad), the gap read just after the last landing."""
+        s = _make(sample_rate=12000)
+        s.chunk_size = 1024
+        with mock.patch.object(audio_mod, "time", clock):
+            for _ in range(4):
+                s._pushed_count += 1024
+                s._note_ring_landed(s._worker_generation, 1024, 0)
+            s.servo.reset_for_consumer_start(4096)
+            s._mark_ring_clock()
+            for kind in plan:
+                pad = 1024 if kind == "p" else 0
+                s._note_ring_landed(s._worker_generation, 1024, pad)
+                s._pushed_count += 1024 - pad
+            s.servo.ring_lead = 4096.0
+        return s
+
+    def test_the_clock_moves_between_landings(self):
+        # The landed count moves a chunk at a time. Read only at landings, the
+        # clock held for a chunk period and then jumped a chunk, and an
+        # analyzer reading the file's tap at it skipped whole windows.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "c")
+        period = 1024 / s.effective_rate
+        with mock.patch.object(audio_mod, "time", clock):
+            at_landing = s.position_seconds()
+            self.assertAlmostEqual(at_landing, 1024 / s.effective_rate, places=9)
+            clock.advance(period / 4)
+            self.assertAlmostEqual(s.position_seconds(), at_landing + period / 4, places=9)
+            clock.advance(period / 2)
+            self.assertAlmostEqual(s.position_seconds(), at_landing + 3 * period / 4, places=9)
+
+    def test_the_clock_between_landings_stops_at_the_next_chunk(self):
+        # A link that stalls lands nothing: the clock runs on for at most the
+        # chunk the next landing would have counted, then holds.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "c")
+        with mock.patch.object(audio_mod, "time", clock):
+            at_landing = s.position_seconds()
+            clock.advance(5.0)
+            self.assertAlmostEqual(
+                s.position_seconds(), at_landing + 1024 / s.effective_rate, places=9
+            )
+
+    def test_each_landing_restarts_the_clock_between_landings(self):
+        # The gap is read just after a landing, so it already holds what played
+        # before it; counting that again from an older start runs the clock
+        # ahead of the sound.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        with mock.patch.object(audio_mod, "time", clock):
+            clock.advance(period / 2)
+            s._note_ring_landed(s._worker_generation, 1024, 0)
+            s._pushed_count += 1024
+            self.assertAlmostEqual(s.position_seconds(), period, places=9)
+            clock.advance(period / 4)
+            self.assertAlmostEqual(s.position_seconds(), period + period / 4, places=9)
+
+    def test_the_worker_starts_the_clock_between_landings_with_the_consumer(self):
+        # Without the start the clock never runs between landings at all: a
+        # landing restarts it only once the consumer has started it.
+        s = _make_worker_streamer(chunk_size=32)
+        s.host_dma_servo = False
+        s.start_for_external_source()
+        self.addCleanup(s.stop)
+        s.push_samples(np.zeros(32 * 6, dtype=np.int16))
+        deadline = time.monotonic() + 5.0
+        while s._ring_landed_at is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertIsNotNone(s._ring_landed_at)
+
+    def test_the_clock_between_landings_does_not_move_over_pad(self):
+        # Pad at the front of the gap is what the NMI plays next, and content
+        # landed behind it is not heard until it has played.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "ppppc")
+        with mock.patch.object(audio_mod, "time", clock):
+            at_landing = s.position_seconds()
+            clock.advance(1024 / s.effective_rate)
+            self.assertEqual(s.position_seconds(), at_landing)
+
+    def test_a_fractional_gap_does_not_move_the_clock_over_pad(self):
+        # The smoothed gap is fractional; in fractional bytes the pad under a
+        # partial span netted a few ULPs short of the span, and the clock read
+        # that much content past the pad as heard. Read at the term itself: at
+        # a clock of a third of a second those ULPs round away, and early in a
+        # scene they did not.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "ppppc")
+        with mock.patch.object(audio_mod, "time", clock):
+            for _ in range(20):
+                clock.advance(0.037 * 1024 / s.effective_rate)
+                with s._ring_pad_lock:
+                    self.assertEqual(s._played_since_landing(4095.7), 0.0)
+
+    def test_the_clock_between_landings_stops_at_the_landed_content(self):
+        # With pad across a fractional gap's front, the content in the gap is
+        # counted from the fractional front and the content played since the
+        # landing from a whole byte, and they came out a few ULPs apart: once
+        # the interpolation reached the last content byte, the clock read
+        # past everything landed.
+        clock = FrozenClock(100.0, "monotonic")
+        s = _make(sample_rate=12000)
+        s.chunk_size = 1024
+        with mock.patch.object(audio_mod, "time", clock):
+            s._pushed_count += 64
+            s._note_ring_landed(s._worker_generation, 64, 0)
+            s.servo.reset_for_consumer_start(64)
+            s._mark_ring_clock()
+            s._pushed_count += 1024 - 600
+            s._note_ring_landed(s._worker_generation, 1024, 600)
+            s._pushed_count += 300
+            s._note_ring_landed(s._worker_generation, 300, 0)
+            s.servo.ring_lead = 301.4
+            clock.advance(1.0)
+            consumed, heard = s._host_clock_bytes()
+        self.assertEqual(heard, consumed)
 
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between
