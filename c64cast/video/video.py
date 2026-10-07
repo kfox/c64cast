@@ -839,8 +839,8 @@ class AVFileSource:
         # arithmetic is in _demux_loop.
         self._pts_anchor_target: float = 0.0
         # Transport. Guarded by self._lock alongside _video_buf: a pending seek
-        # is a target_s float or None, consumed by the demux thread at the top of
-        # the packet loop and inside the backpressure wait. set_muted latches
+        # is a target_s float or None, consumed by the demux thread between
+        # passes (_demux_loop), never inside a live demux(). set_muted latches
         # audio off once a scene's transport is touched.
         self._pending_seek: float | None = None
         self._muted = False
@@ -1208,8 +1208,8 @@ class AVFileSource:
             with self._lock:
                 if self._pending_seek is not None:
                     # A seek landed while blocked on a full buffer, so this
-                    # frame predates it. The demux loop's top-of-packet check
-                    # applies the seek on the next packet.
+                    # frame predates it. The pass ends at its next packet
+                    # and _demux_loop applies the seek between passes.
                     return True
                 if len(self._video_buf) < self.max_video_buffer:
                     self._video_buf.append((pts, img))
