@@ -312,11 +312,16 @@ class RemoteStallBoundTest(unittest.TestCase):
         # the same timeout that ends a seek nothing else interrupts.
         self.enterContext(mock.patch("c64cast.video.video._REMOTE_OPEN_TIMEOUT_S", 60.0))
         server = self._server()
+        started = time.monotonic()
         outcome = self._bounded(lambda: av_open(f"rtsp://127.0.0.1:{server.port}/tune.wav"))
+        elapsed = time.monotonic() - started
         self.assertIsInstance(outcome, Exception)
         # An open that fails before reaching the peer would pass the two
         # checks above without the timeout ever being exercised.
         self.assertTrue(server._held, "the open never reached the silent peer")
+        # FFmpeg reports this timeout as InvalidDataError, so the type cannot
+        # tell it from a bound passed in the wrong unit; the wait can.
+        self.assertGreaterEqual(elapsed, 0.75, "the IO timeout fired far short of its bound")
 
     def test_a_stream_that_stalls_mid_body_fails_the_read(self):
         import av.error
