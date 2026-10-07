@@ -2763,7 +2763,8 @@ class AudioStreamer:
         """Approximate playback position from the consumer's perspective.
 
         Host-DMA mode: (samples pushed - samples still queued - the ring's
-        unplayed content lead) / effective_rate.
+        unplayed content lead + the content played since the last landing) /
+        effective_rate.
         REU pump mode: wall-clock seconds since the IRQ pump armed, clamped to
         the total source length so over-runs don't desync video — but only when
         there IS a total. A live REU-mic session has no finite length and never
@@ -2824,8 +2825,9 @@ class AudioStreamer:
         """``(landed content, heard content)`` in bytes on the host-DMA path.
 
         Heard is the landed content less the servo's smoothed ring gap, with
-        the pad still inside that gap taken back out (``_unplayed_pad``), and
-        never below what an earlier read of this activation reported: the gap
+        the pad still inside that gap taken back out (``_unplayed_pad``), plus
+        the content played since the last landing (``_played_since_landing``),
+        and never below what an earlier read of this activation reported: the gap
         is smoothed, so a widening gap would otherwise walk the clock back.
         Zero before the consumer starts.
 
