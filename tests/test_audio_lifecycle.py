@@ -2663,6 +2663,27 @@ class EncodeBackpressureTest(unittest.TestCase):
         s._queued_samples = 0  # but keep the sample cap clear
         n = s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0)
+        self.assertEqual((s._queued_samples, s._pushed_count), (0, 0))
+
+    def test_a_flush_that_drains_a_blob_just_put_keeps_the_landed_count(self):
+        # Drained before its count was added, the blob's subtract clamped at
+        # zero and the late add left a queued count the ring never consumes,
+        # with the landed count dropped by the blob.
+        s = _make()
+        s.running = True
+        s._pushed_count = 1000  # everything pushed so far has landed
+        anchors: list[float] = []
+
+        class FlushAfterPut(queue.Queue):  # type: ignore[type-arg]
+            def put(self, item, block=True, timeout=None):  # type: ignore[no-untyped-def]
+                super().put(item, block, timeout)
+                if not anchors:
+                    anchors.append(s.flush())
+
+        s.q = FlushAfterPut(maxsize=s.q.maxsize)
+        self.assertEqual(s._encode_and_enqueue(np.zeros(200, dtype=np.float32), True), 200)
+        self.assertEqual(round(anchors[0] * s.effective_rate), 1000)
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
 
     def test_empty_input_returns_zero(self):
         s = _make()
@@ -3784,8 +3805,9 @@ class LifecycleTest(unittest.TestCase):
     def test_reset_position(self):
         s = _make()
         s._pushed_count = 1234
+        s._in_flight_samples = 32
         s.reset_position()
-        self.assertEqual(s._pushed_count, 0)
+        self.assertEqual((s._pushed_count, s._in_flight_samples), (0, 0))
 
     def test_stop_teardown_writes_and_logs_clean(self):
         s = _make()

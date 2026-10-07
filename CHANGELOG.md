@@ -311,6 +311,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   picture up to a chunk of audio (about 85 ms) ahead of the sound** until the
   next one.
 
+- **A seek, resume or A/B loop wrap on the 4-bit DAC can no longer leave the
+  audio clock behind the sound for the rest of the scene.** A splice that
+  caught a block of audio as it entered the queue dropped its samples from the
+  clock but kept them counted as waiting, so the picture lagged the sound by
+  that block until the scene ended.
+
 - **The Programmer's Reference memory map gives the REU pump's tracker its
   full size.** It listed `$C200` as a three-byte tracker; the tracker is five
   bytes (`$C200-$C204`) and the pump's tick counter follows at `$C205`, so data

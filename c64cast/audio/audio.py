@@ -1608,16 +1608,23 @@ class AudioStreamer:
         # residual epoch-check→put window is µs against a user-rate flush.
         if self._flush_epoch != epoch:
             return 0
+        # Counted before the put: a blob in the queue without its count, taken
+        # by flush()'s drain or the worker, is subtracted from a queued count
+        # that clamps at zero, and the late add then leaves a phantom queued
+        # count the ring never consumes.
+        with self._count_lock:
+            self._queued_samples += n
+            self._pushed_count += n
         try:
             if block_on_full:
                 self.q.put(payload, timeout=QUEUE_PUT_TIMEOUT_S)
             else:
                 self.q.put_nowait(payload)
         except queue.Full:
+            with self._count_lock:
+                self._queued_samples = max(0, self._queued_samples - n)
+                self._pushed_count = max(0, self._pushed_count - n)
             return 0
-        with self._count_lock:
-            self._queued_samples += n
-            self._pushed_count += n
         return n
 
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
@@ -3115,7 +3122,9 @@ class AudioStreamer:
         self._ring_landed_at = None
 
     def reset_position(self) -> None:
-        self._pushed_count = 0
+        with self._count_lock:
+            self._pushed_count = 0
+            self._in_flight_samples = 0
         self._reset_ring_clock()
 
     def _drain_queue_samples(self) -> int:
