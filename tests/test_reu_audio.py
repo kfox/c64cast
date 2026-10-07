@@ -29,10 +29,6 @@ from _fakes import (
 from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
-    HOST_DMA_SERVO_INTEG_CLAMP,
-    HOST_DMA_SERVO_PERIOD_MAX_FRAC,
-    HOST_DMA_SERVO_PERIOD_MIN_FRAC,
-    HOST_DMA_SERVO_TARGET_GAP,
     NEUTRAL_SAMPLE,
     NMI_ROUTINE,
     NMI_ROUTINE_ADDR,
@@ -61,6 +57,12 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_SIZE,
     RING_LEAD_EMA_ALPHA,
     patch_chunk_size,
+)
+from c64cast.audio.audio_servo import (
+    HOST_DMA_SERVO_INTEG_CLAMP,
+    HOST_DMA_SERVO_PERIOD_MAX_FRAC,
+    HOST_DMA_SERVO_PERIOD_MIN_FRAC,
+    HOST_DMA_SERVO_TARGET_GAP,
     servo_hold_period,
     servo_period,
 )
@@ -1164,7 +1166,7 @@ class HostDmaServoTest(unittest.TestCase):
         integ = 0.0
         for _ in range(10_000):
             _, integ = servo_period(RING_BUFFER_SIZE - 1, integ, chunk_period=self.CHUNK_PERIOD)
-        from c64cast.audio.audio_handlers import HOST_DMA_SERVO_KI
+        from c64cast.audio.audio_servo import HOST_DMA_SERVO_KI
 
         self.assertLessEqual(
             abs(HOST_DMA_SERVO_KI * integ), HOST_DMA_SERVO_INTEG_CLAMP * self.CHUNK_PERIOD + 1e-12

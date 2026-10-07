@@ -36,6 +36,8 @@ from c64cast.audio.audio_handlers import (
     STOMP_GUARD_BYTES,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
+)
+from c64cast.audio.audio_servo import (
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
@@ -2218,7 +2220,7 @@ class NmiRateSafetyTest(unittest.TestCase):
 
 
 class NmiRateAdaptiveStepTest(unittest.TestCase):
-    """The pure adaptive-rate control step (`audio_handlers.nmi_rate_step`) + its wiring.
+    """The pure adaptive-rate control step (`audio_servo.nmi_rate_step`) + its wiring.
 
     Drives the measured consumer rate toward target by stepping the CIA #2 latch.
     Rate/latch are inverse, so R too slow → SMALLER latch (faster). NTSC@10500:

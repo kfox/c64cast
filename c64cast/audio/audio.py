@@ -52,11 +52,9 @@ from .audio_handlers import (
     CHUNK_SIZE,
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
-    HOST_DMA_SERVO_TARGET_GAP,
     INT16_FULL_SCALE,
     MAX_QUEUED_SAMPLES,
     NEUTRAL_SAMPLE,
-    NMI_RATE_LOOP_WARMUP_S,
     NMI_ROUTINE,
     NMI_ROUTINE_ADDR,
     PREBUFFER_CHUNKS,
@@ -101,19 +99,23 @@ from .audio_handlers import (
     SID_MAHONEY_CONTROL,
     SID_MAHONEY_RES_FILT,
     SID_MAHONEY_SR,
-    STALL_INSIDE_LEAD_SLACK,
-    STALL_REANCHOR_READ_BUDGET_FRAC,
     WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
     mic_ring_lead_ok,
     mic_ring_seed,
     patch_chunk_size,
     reu_pump_chunk_fits_ring,
-    stall_lapped,
-    stall_reanchor,
     stomp_spans,
 )
 from .audio_rate import NmiTimer, RateServo
+from .audio_servo import (
+    HOST_DMA_SERVO_TARGET_GAP,
+    NMI_RATE_LOOP_WARMUP_S,
+    STALL_INSIDE_LEAD_SLACK,
+    STALL_REANCHOR_READ_BUDGET_FRAC,
+    stall_lapped,
+    stall_reanchor,
+)
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill

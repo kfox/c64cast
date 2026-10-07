@@ -72,11 +72,13 @@ from c64cast.audio.audio_handlers import (
     CIA2_ICR_DISABLE_ALL,
     CIA2_ICR_ENABLE_TIMER_A_NMI,
     CIA2_TIMER_A_CONTINUOUS,
-    HOST_DMA_SERVO_TARGET_GAP,
     READ_PTR_LO_ADDR,
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
     RING_BUFFER_SIZE,
+)
+from c64cast.audio.audio_servo import (
+    HOST_DMA_SERVO_TARGET_GAP,
     servo_period,
 )
 from c64cast.audio.dsp import DSPParams
