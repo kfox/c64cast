@@ -1151,6 +1151,29 @@ class BringUpTeardownTest(unittest.TestCase):
             api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"], _packed_latch(kernal_cia1_latch("NTSC"))
         )
 
+    def test_a_retune_retry_does_not_follow_a_lockless_teardown(self):
+        # stop() waits on the arm lock for a bounded time and then restores
+        # without it, so a retune still retrying under the lock on a slow link
+        # sees the kernal latch restored between two of its tries.
+        from c64cast.hw.c64 import kernal_cia1_latch
+
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        self.addCleanup(p.stop)
+        real_file = api.write_memory_file
+
+        def teardown_mid_retune(address, data):
+            api.write_memory_file = real_file
+            p._installed = False
+            ap.restore_kernal_irq(api, "NTSC")
+            api.delivery_epoch += 1
+
+        api.write_memory_file = teardown_mid_retune
+        p.set_frame_rate(960.0)
+        self.assertEqual(
+            api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"], _packed_latch(kernal_cia1_latch("NTSC"))
+        )
+
     def test_a_hostile_speed_message_cannot_set_an_arbitrary_rate(self):
         # frame_delta_us = 1 → 1 MHz. Unclamped this became CIA latch 1, i.e.
         # _rate 511,364 Hz: an IRQ every 2 cycles on the C64 and a permanently

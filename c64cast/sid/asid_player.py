@@ -887,6 +887,13 @@ class AsidRingPlayer:
                 build_player(self.slot_size, divider, ring_base=self.ring_base),
             )
 
+    def _write_rate_if_installed(self, latch: int, divider: int, rebuild_handler: bool) -> None:
+        # Checked per attempt, not once: teardown's claim gives up on the lock
+        # after a bound and restores without it, so a retry on a slow link can
+        # otherwise land after the kernal latch went back.
+        if self._installed:
+            self._write_rate(latch, divider, rebuild_handler=rebuild_handler)
+
     def _prefill_holds(self) -> None:
         hold = hold_slot(self.slot_size)
         # The whole ring is holds, so one capped burst of a repeated block does.
@@ -986,7 +993,7 @@ class AsidRingPlayer:
             # rate before it runs; confirmed like the install it supersedes.
             confirmed = write_confirmed(
                 self.api,
-                functools.partial(self._write_rate, latch, divider, rebuild_handler=not armed),
+                functools.partial(self._write_rate_if_installed, latch, divider, not armed),
             )
         if not confirmed:
             log.error(
