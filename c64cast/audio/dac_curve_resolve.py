@@ -73,7 +73,9 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
     the safe 4-bit linear path. ``key`` arrives already resolved because
     resolving it can cost a live device round-trip on the Ultimate."""
     path = path_for_key(cfg, key)
-    table, measured = load_calibrated_table_and_chip(cfg, be=be, path=path)
+    table, measured = load_calibrated_table_and_chip(
+        cfg, be=be, path=path, declines=lambda chip: auto_declined_chip(chip) is not None
+    )
     if table is not None:
         declined = auto_declined_chip(measured)
         if declined is not None:

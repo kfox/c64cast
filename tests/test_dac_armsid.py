@@ -271,6 +271,17 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
         self.assertEqual(table, bytes(range(256)))
         self.assertIn("assumes one SID", "\n".join(logs.output))
 
+    def test_a_declined_default_entry_gets_no_note_about_its_table(self):
+        # `auto` plays linear here, so advice about the table's blend is moot.
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.hardware.backend = "teensyrom"
+        with (
+            self.assertNoLogs("c64cast.audio.dac_calibration_store", "INFO"),
+            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"),
+        ):
+            resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+        self.assertEqual(resolved.declined_chip, "ARMSID 6581")
+
     def test_the_report_names_the_opt_in(self):
         result = CalibrationResult(
             sidtable=[0] * 256,
