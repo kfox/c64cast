@@ -553,6 +553,29 @@ class RedactSecretsTest(unittest.TestCase):
         line = "state=%7B%22monkey%22%3A%22abc%22%7D"
         self.assertEqual(redact_secrets(line), line)
 
+    def test_a_quote_deeper_than_the_separator_is_part_of_the_value(self):
+        """A percent-encoded password may hold a quote. Behind a raw `=`, a
+        `%22` read only as an opener ended the mask at the next `%22` and the
+        rest of the password stayed in view — from a value, a `Bearer`
+        credential, and an `Authorization` value alike."""
+        for line, want in (
+            (
+                "GET /cam?u=a&pwd=R%22ab%22-tail&x=1 HTTP/1.1",
+                "GET /cam?u=a&pwd=REDACTED&x=1 HTTP/1.1",
+            ),
+            ("/cam?pwd=b%27ab%27.tail&x=1", "/cam?pwd=REDACTED&x=1"),
+            ("/cam?pwd=%27ab%27%26tail&x=1", "/cam?pwd=REDACTED&x=1"),
+            ("/cam?pwd=%22ab%22%20tail x", "/cam?pwd=REDACTED x"),
+            ("/x?pwd=%5C%22ab%5C%22-tail&x=1", "/x?pwd=REDACTED&x=1"),
+            ("Bearer %22ab%22-tail rest", "Bearer REDACTED rest"),
+            ("Authorization: Basic %27ab%27-tail rest", "Authorization: Basic REDACTED rest"),
+            ("Authorization: %22ab%22-tail rest", "Authorization: REDACTED rest"),
+            ("Authorization: %22Basic ab%22-tail rest", "Authorization: %22Basic REDACTED rest"),
+            ("Authorization: (Basic ab) rest", "Authorization: (Basic REDACTED rest"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
     def test_a_name_inside_another_names_value_keeps_its_value_masked(self):
         """A search resumes where a match ends, so a name inside a value
         starts no match of its own. Its value still outlasted the one it hid

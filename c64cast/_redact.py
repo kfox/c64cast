@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import bisect
 import functools
+import itertools
 import re
 from array import array
 from collections.abc import Iterator, Sequence
@@ -135,8 +136,12 @@ _AUTH_SCHEMES = frozenset(
     }
 )
 
-#: An `Authorization:` value that is a scheme and a credential.
-_SCHEME_AND_GAP = re.compile(r"\+* (?P<scheme> [\w.-]+ ) (?P<gap> [\s+]+ )", re.VERBOSE)
+#: An `Authorization:` value that is a scheme and a credential, after any
+#: punctuation. Without that lead, `(Basic x)` or a `%22` too deep to open a
+#: quote ends the value at the scheme and leaves the credential in view. The
+#: lead excludes `.` and `-` so it cannot trade characters with the scheme,
+#: which is quadratic on a long run of them.
+_SCHEME_AND_GAP = re.compile(r"[^\w\s.-]* (?P<scheme> [\w.-]+ ) (?P<gap> [\s+]+ )", re.VERBOSE)
 
 #: The `://` of a URL, after a scheme character. Anchored on the separator and
 #: only looking behind it: a pattern that matched the scheme itself is retried
@@ -427,6 +432,13 @@ def _value(line: _Line, v: int, d: int, kind: str) -> Span | None:
     if opener is not None:
         start = opener.end()
         end = _quoted_end(line, opener, start)
+        if line.deepest(v, start) > d:
+            # A quote deeper than the separator may be the value's own
+            # character (`pwd=R%22x%22-tail`) or a quote a log line encoded
+            # (`token:%27a b%27`). Read as either alone, the other one's tail
+            # stays in view, so the value runs past the closing quote to the
+            # separator's own next stop.
+            return (v, line.stop(kind, end, d))
         if opener.group("prefix") and end == len(line.text):
             # Nothing closed it, so the letters are not known to be a prefix:
             # they may be the secret's own first characters.
@@ -457,9 +469,10 @@ def _credential(line: _Line, c: int, gap: str, d: int) -> Span | None:
     ends at a `+` only when a `+` is what separated it from the scheme."""
     if c >= len(line.text):
         return None
+    kind = "unquoted+" if "+" in gap else "unquoted"
     if _opener(line.text, c) is not None:
-        return _value(line, c, d, "unquoted")
-    return (c, line.stop("unquoted+" if "+" in gap else "unquoted", c + 1, d))
+        return _value(line, c, d, kind)
+    return (c, line.stop(kind, c + 1, d))
 
 
 def _key_values(line: _Line) -> Iterator[Span]:
@@ -571,8 +584,9 @@ def redact_secrets(text: str) -> str:
       `signing_key` matches and `sortkey` does not. `=`, `:` or `=>`
       separates them, with the key quoted or not;
     * the credential after `Bearer` and a space, and in an `Authorization:`
-      value, after a registered scheme (`Basic`, `token`, …), which stays in
-      view; a first word that is no known scheme is masked with the rest;
+      value, after a registered scheme (`Basic`, `token`, …) and any
+      punctuation before it, which stay in view; a first word that is no
+      known scheme is masked with the rest;
     * the userinfo of a URL (`https://user:pass@host` comes back as
       `https://REDACTED@host`) — a private media file is legitimately reached
       that way, and FFmpeg quotes the URL it failed on into its errors.
@@ -584,7 +598,9 @@ def redact_secrets(text: str) -> str:
     `'''` or `\"\"\"`, perhaps backslash-escaped or after a string prefix
     Python accepts (`b`, `rb`, …) — runs to the matching quote that no
     backslash escapes and no letter or digit follows; when nothing closes a
-    prefixed one, the prefix letters are masked too.
+    prefixed one, the prefix letters are masked too. A quote deeper than the
+    value's separator (`pwd=%22…`) runs to its match as well, and the value
+    goes on from there to the separator's own next stop.
 
     Nothing crosses a line break: a value written across several lines is
     masked only as far as its first one. Masking a value means finding where it
@@ -592,7 +608,7 @@ def redact_secrets(text: str) -> str:
     :func:`redact_source_line` is for the caller quoting one of those."""
     spans: list[Span] = []
     start = 0
-    for brk in [*_LINE_BREAK.finditer(text), None]:
+    for brk in itertools.chain(_LINE_BREAK.finditer(text), (None,)):
         end = len(text) if brk is None else brk.start()
         if end > start:
             spans += [(a + start, b + start) for a, b in _line_spans(text[start:end])]
