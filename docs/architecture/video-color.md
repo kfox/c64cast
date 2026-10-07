@@ -144,7 +144,7 @@ Three additions serving `VideoScene`'s DJ-style transport surface — see the [`
 
 **`request_seek(target_s)`** sets `self._pending_seek` and clears `_video_buf` immediately, both under `self._lock`. The clear matters as much as the flag: it unblocks a demuxer currently spin-waiting on a full buffer, since the backpressure loop's capacity check passes again right away.
 
-**`_apply_pending_seek()`** is demux-thread-only, and is checked in *two* places — at the top of `_demux_loop`'s packet loop **and** inside the backpressure wait. The packet already in flight when a seek lands was fetched from the pre-seek read position and is therefore always stale, so it is discarded via `continue`/`break` rather than buffered. That double check is what stops a seek being silently ignored while the demuxer is mid-decode.
+**`_apply_pending_seek()`** is demux-thread-only, and runs in one place: `_demux_loop`, between passes, with no `demux()` generator live. A pending seek ends the current `_demux_pass` — checked at the top of each packet, and the backpressure wait in `_enqueue_frame` returns as soon as one lands so the pass reaches that check. The packet in flight when a seek lands was read from the pre-seek position, so its frames are dropped rather than buffered. Applying the seek outside a live `demux()` is deliberate: a generator that has read EOF yields only flush packets, which would drain the decoders the seek just reset, and a seek inside one is timed against its stale last read (see `_seek`).
 
 When it fires it re-seeks the container, rebuilds the resampler and atempo graph so no stale samples carry across the jump, clears `_eof`, and re-derives `_pts_offset` from a **new anchor**: `_pts_anchor_target`, set to `target_s` rather than the ordinary `0.0`.
 
