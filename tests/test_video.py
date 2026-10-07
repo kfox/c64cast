@@ -2732,24 +2732,18 @@ class SpliceAnchorTest(unittest.TestCase):
         self.assertEqual(polls, [10.0])
         self.assertFalse(scene.transport.is_paused())
 
-    def test_a_dac_splice_anchors_on_one_read_of_its_clock(self):
-        # A chunk landing between two reads paired one read's heard position
-        # with the other's lead, an anchor no single landed count gives.
+    def test_a_dac_splice_anchors_behind_the_chunk_in_flight(self):
+        # 1000 bytes landed and a 400-byte chunk on its way to the ring: the
+        # target's first sample is heard at 1400. A position and a lead read
+        # separately also paired two landed counts when a chunk landed
+        # between the reads.
         dac = AudioStreamer(cast(Ultimate64API, FakeAPI()), 8000, "NTSC")
         scene = self._touched(dac)
-        landed: list[int] = []
-
-        def host_clock_bytes() -> tuple[int, float]:
-            # A 400-byte chunk lands between reads, and the ring gap moves.
-            landed.append(1000 + 400 * len(landed))
-            return landed[-1], landed[-1] - (100.0 if len(landed) % 2 else 300.0)
-
-        with mock.patch.object(dac, "_host_clock_bytes", side_effect=host_clock_bytes):
-            scene.transport_seek(2.0)
+        dac._pushed_count, dac._queued_samples, dac._in_flight_samples = 1800, 800, 400
+        scene.transport_seek(2.0)
         pos = scene.transport.audio_anchor_pos
         assert pos is not None
-        anchor_bytes = round(pos * dac.effective_rate, 6)
-        self.assertIn(anchor_bytes, landed)
+        self.assertEqual(round(pos * dac.effective_rate, 6), 1400)
 
 
 if __name__ == "__main__":

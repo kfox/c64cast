@@ -475,6 +475,41 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             if addr >= RING_BUFFER_END:
                 addr = RING_BUFFER_ADDR
 
+    def test_a_splice_during_a_ring_write_anchors_behind_that_chunk(self):
+        """A chunk the worker is writing when the flush lands is in the ring
+        ahead of every post-splice sample, so the anchor counts it. Read
+        before it was counted as landed, the anchor came out one chunk early
+        and the picture ran that far ahead of the sound until the next splice.
+        Both the priming write and the paced drip are covered."""
+        for flush_at in (1, PREBUFFER_CHUNKS + 1):
+            with self.subTest(write=flush_at):
+                s, anchor = self._flush_during_chunk(flush_at)
+                landed = s._pushed_count - s._queued_samples
+                self.assertEqual(round(anchor * s.effective_rate), landed)
+                self.assertEqual(landed, 32 * flush_at, "the splice dropped a chunk it wrote")
+
+    def _flush_during_chunk(self, chunk: int) -> tuple[AudioStreamer, float]:
+        """Run a worker over a full queue, flushing during the first ring
+        write of its ``chunk``-th chunk; return the streamer and the anchor."""
+        s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+        for _ in range(PREBUFFER_CHUNKS + 3):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        anchors: list[float] = []
+
+        def write_then_flush(addr, data):  # type: ignore[no-untyped-def]
+            if len(_written_stream(s)) // 32 + 1 == chunk and not anchors:
+                anchors.append(s.flush())
+            real_write(addr, data)
+
+        api.write_memory_file = write_then_flush
+        _run_worker(s, until=lambda: s._queued_samples == 0, timeout=3.0)
+        self.assertEqual(len(anchors), 1)
+        return s, anchors[0]
+
     def test_worker_exits_when_its_generation_is_superseded(self):
         """stop()'s join is bounded, so a worker parked in a ring write can
         outlive it — and the next scene's start_* sets `running` back to True,
