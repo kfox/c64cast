@@ -1510,6 +1510,18 @@ class AudioStreamer:
                 curve=self._dac_curve,
             )
 
+    def _backpressure_wait_s(self, n: int) -> float:
+        """How long a blocking push of an ``n``-sample blob waits for room
+        before the blob is dropped.
+
+        The worker frees room a whole chunk at a time, one chunk behind its
+        collect, so a live consumer needs up to two chunk periods beyond the
+        blob's own length to make room for it. A flat QUEUE_PUT_TIMEOUT_S fell
+        inside that at startup, while the first chunks after the prebuffer
+        were still in hand, and dropped the producer's next blob (about 93 ms
+        of a 44.1 kHz WAV at 12 kHz)."""
+        return QUEUE_PUT_TIMEOUT_S + (n + 2 * self.chunk_size) / self.effective_rate
+
     def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
         DAC queue as 4-bit values. Returns the number of samples enqueued.
@@ -1543,14 +1555,7 @@ class AudioStreamer:
             # monotonic, like every other deadline here: a wall-clock step would
             # either expire this wait instantly or park the PyAV demuxer thread
             # for the length of a backward step.
-            # The worker frees room a whole chunk at a time, one chunk behind
-            # its collect, so a live consumer needs up to two chunk periods
-            # beyond the blob's own length to make room for it. A flat
-            # QUEUE_PUT_TIMEOUT_S fell inside that at startup, while the first
-            # chunks after the prebuffer were still in hand, and dropped the
-            # producer's next blob (about 93 ms of a 44.1 kHz WAV at 12 kHz).
-            drain_s = (n + 2 * self.chunk_size) / (self.effective_rate or self.sample_rate)
-            deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S + drain_s
+            deadline = time.monotonic() + self._backpressure_wait_s(n)
             # `self._queued_samples and` admits a blob bigger than the whole
             # cap once the queue drains. Without it the condition never clears
             # however empty the queue gets, and the caller returns 0 forever.

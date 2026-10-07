@@ -2588,12 +2588,8 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         s.running = True
         s._queued_samples = s._max_queued_samples  # saturate the soft cap
-        orig = audio_mod.QUEUE_PUT_TIMEOUT_S
-        audio_mod.QUEUE_PUT_TIMEOUT_S = 0.001  # keep the spin loop instant
-        try:
+        with mock.patch.object(s, "_backpressure_wait_s", return_value=0.0):
             n = s._encode_and_enqueue(np.zeros(64, dtype=np.float32), block_on_full=True)
-        finally:
-            audio_mod.QUEUE_PUT_TIMEOUT_S = orig
         self.assertEqual(n, 0)
 
     def test_a_decoder_ahead_of_real_time_loses_no_blob_at_startup(self):

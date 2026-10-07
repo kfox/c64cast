@@ -1749,14 +1749,13 @@ class AudioFileSourceEndTest(unittest.TestCase):
         # here, so every blob past the cap is dropped at once.
         from _fakes import FakeAPI
 
-        from c64cast.audio import audio as audio_mod
         from c64cast.audio.audio_source import AudioFileSource
 
         dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
         dac._max_queued_samples = 1600
         src = AudioFileSource(dac, self.wav, reactive=False)
         dac.running = True
-        with mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 0.0):
+        with mock.patch.object(dac, "_backpressure_wait_s", return_value=0.0):
             src._decode_loop()
         self.assertLess(dac._pushed_count, 3200, "the DAC dropped nothing")
         # Everything it enqueued lands and plays: the queue is empty and the
@@ -2160,7 +2159,6 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
         # window that far behind the sound.
         from _fakes import new_streamer
 
-        from c64cast.audio import audio as audio_mod
         from c64cast.audio.audio_features import AnalysisTap
 
         streamer = new_streamer(sample_rate=12000)
@@ -2168,7 +2166,7 @@ class AudioFileSourceFeatureSyncTest(unittest.TestCase):
         streamer.analysis_sink = tap.push
         streamer.running = True
         streamer.push_samples(np.full(streamer._max_queued_samples, 1000, dtype=np.int16))
-        with mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 0.0):
+        with mock.patch.object(streamer, "_backpressure_wait_s", return_value=0.0):
             streamer.push_samples(np.full(512, 2000, dtype=np.int16))
         self.assertEqual(streamer._pushed_count, streamer._max_queued_samples)
         self.assertEqual(tap.pushed, streamer._pushed_count)
