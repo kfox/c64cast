@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def auto_declined_chip(measured: tuple[int, str] | None) -> str | None:
+def auto_declined_chip(measured: tuple[int | None, str] | None) -> str | None:
     """The chip label of a calibrated entry that ``"auto"`` will not play
     through, or None when it would. ``measured`` is the entry's
     ``(socket, detected)`` from
@@ -57,7 +57,7 @@ class DacCurve:
 
     label: str
     table: bytes | None
-    measured: tuple[int, str] | None = None
+    measured: tuple[int | None, str] | None = None
     key: str | None = None
 
     @property
@@ -207,6 +207,10 @@ def provision_calibrated_chip_model(
     if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
     socket, recorded = dac_curve.measured
+    if socket is None:
+        # Measured without isolating a socket: which one carries the chip is
+        # not recorded, so there is no socket to switch.
+        return None
     wanted = armsid.label_model(recorded) if armsid.is_reconfigurable(recorded) else None
     if wanted is None:
         return None

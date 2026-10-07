@@ -29,7 +29,7 @@ import numpy as np
 
 from c64cast._teardown import run_teardown_steps
 from c64cast.app import paths
-from c64cast.hw.c64 import CIA2, SCREEN
+from c64cast.hw.c64 import CIA2, SCREEN, SID
 from c64cast.hw.hw_provision import MASTER_VOL_FIELD, master_volume
 from c64cast.sid import armsid
 from c64cast.sid.asid_sidmap import (
@@ -594,6 +594,20 @@ def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tu
     return out
 
 
+def _identify_d400_chip(be: C64Backend, log_fn: Callable[[str], None]) -> str | None:
+    """The label of the chip answering ``$D400`` when it is an ARMSID or
+    ARM2SID, for a run that measures it without socket detection; None for any
+    other chip. The chip's own register protocol needs no SID config query, so
+    this works on every link, and ``"auto"`` declines the table the same way
+    whichever link measured it."""
+    reply = armsid.probe(be, SID.BASE)
+    if reply is None:
+        return None
+    chip = armsid.label(reply.kind, reply.model, right=reply.channel == "R")
+    log_fn(f"[calib] $D400 answers as an {chip}")
+    return chip
+
+
 def _measure_each_socket(
     ctx: _RunContext, st: AudioStreamer, sockets: list[tuple[int, str]]
 ) -> dict[str, CalibrationResult]:
@@ -661,7 +675,7 @@ def _report_run(
             f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
             f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
         )
-        declined = auto_declined_chip(None if r.detected is None else (int(name), r.detected))
+        declined = auto_declined_chip(None if r.detected is None else (None, r.detected))
         if declined is not None:
             log_fn(
                 f'[calib] {name}: measured on an {declined}; dac_curve = "auto" plays '
@@ -693,8 +707,9 @@ def run_calibration(
     measured, then every socket's original SID address/socket config is
     restored. A board with no populated sockets, or a backend without that
     surface (TeensyROM has no config API; the Ultimate II+ has no sockets to
-    isolate), falls back to a single unlabeled measurement of whatever SID
-    currently answers ``$D400``.
+    isolate), falls back to a single ``"default"`` measurement of whatever SID
+    currently answers ``$D400``, labeled only when that chip is an ARMSID or
+    ARM2SID (:func:`_identify_d400_chip`).
 
     Raises :class:`CaptureUnavailableError` if capture can't be set up.
     """
@@ -718,6 +733,7 @@ def run_calibration(
         # Before the measurement loop: _isolate_socket remaps every socket to
         # $D400 in turn, so asking afterwards answers with c64cast's own edit.
         normal_d400 = active_socket_at_d400(be) if supports_sid_config else None
+        d400_chip = None if sockets else _identify_d400_chip(be, log_fn)
         # Last screen write of the run — strictly before the first capture.
         _paint_status_line(be, _ESTIMATE_ROW, _estimate_text(max(1, len(sockets)), secs, settle))
 
@@ -725,7 +741,7 @@ def run_calibration(
             entries = _measure_each_socket(ctx, st, sockets)
         else:
             sidtable, metrics, raw = _measure_one(ctx, "SID")
-            entries = {"default": CalibrationResult(sidtable, metrics, None, raw)}
+            entries = {"default": CalibrationResult(sidtable, metrics, d400_chip, raw)}
     finally:
         try:
             _silence_and_reset(be)

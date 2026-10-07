@@ -307,17 +307,18 @@ def _applicable_entry(
     return (entry_key, entry) if isinstance(entry, dict) else None
 
 
-def _chip_of(applicable: tuple[str, dict[str, Any]] | None) -> tuple[int, str] | None:
-    """The socket the entry was measured on and the chip label the calibrating
-    run recorded for it (``"6581"``, ``"ARMSID 8580"``), or None when the entry
-    names no socket or no chip."""
+def _chip_of(applicable: tuple[str, dict[str, Any]] | None) -> tuple[int | None, str] | None:
+    """The socket the entry was measured on (None for a ``"default"`` entry,
+    measured without isolating one) and the chip label the calibrating run
+    recorded for it (``"6581"``, ``"ARMSID 8580"``), or None when the entry
+    names no chip."""
     if applicable is None:
         return None
     entry_key, entry = applicable
     detected = entry.get("detected")
-    if entry_key not in ("1", "2") or not isinstance(detected, str):
+    if not isinstance(detected, str):
         return None
-    return (int(entry_key), detected)
+    return (int(entry_key) if entry_key in ("1", "2") else None, detected)
 
 
 def load_calibrated_table(
@@ -336,7 +337,7 @@ def load_calibrated_table(
 
 def load_calibrated_table_and_chip(
     cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
-) -> tuple[bytes | None, tuple[int, str] | None]:
+) -> tuple[bytes | None, tuple[int | None, str] | None]:
     """:func:`load_calibrated_table`, with the ``(socket, detected)`` of the
     entry it came from (see :func:`_chip_of`), from one read of the file and of
     the live socket map. Two reads can each pick a different entry — a
