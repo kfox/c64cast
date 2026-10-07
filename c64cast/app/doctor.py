@@ -36,7 +36,7 @@ from c64cast.hw.c64 import (
     nearest_latch,
     nmi_rate_safety,
 )
-from c64cast.sid import armsid, emusid_mixer
+from c64cast.sid import emusid_mixer
 
 from .config import (
     AudioCfg,
@@ -2443,8 +2443,8 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
             be=api,  # type: ignore[arg-type]
             path=dac_calibration_store.path_for_key(cfg, key),
         )
-        if found is not None and measured is not None and armsid.is_armsid(measured[1]):
-            declined = measured[1]
+        if found is not None:
+            declined = dac_curve_resolve.auto_declined_chip(measured)
     if table is not None:
         message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
     elif declined is not None:

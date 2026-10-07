@@ -32,6 +32,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def auto_declined_chip(measured: tuple[int, str] | None) -> str | None:
+    """The chip label of a calibrated entry that ``"auto"`` will not play
+    through, or None when it would. ``measured`` is the entry's
+    ``(socket, detected)`` from
+    :func:`~c64cast.audio.dac_calibration_store.load_calibrated_table_and_chip`."""
+    if measured is not None and armsid.is_armsid(measured[1]):
+        return measured[1]
+    return None
+
+
 def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[str, bytes | None]:
     """The ``"auto"`` arm: a calibrated table when one applies, the baked
     emulated-UltiSID table only when an UltiSID core answers ``$D400``, else
@@ -40,7 +50,8 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
     path = path_for_key(cfg, key)
     table, measured = load_calibrated_table_and_chip(cfg, be=be, path=path)
     if table is not None:
-        if measured is not None and armsid.is_armsid(measured[1]):
+        declined = auto_declined_chip(measured)
+        if declined is not None:
             # Its ladder metrics matched a good 6581's, yet it played a click
             # track as a splat that linear plays clean (#587), so no metric
             # here can vouch for it; "calibrated" is the explicit opt-in.
@@ -49,7 +60,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
                 "play through; using the 4-bit linear DAC. Set [audio].dac_curve = "
                 '"calibrated" to use it anyway.',
                 path,
-                measured[1],
+                declined,
             )
             return ("linear", None)
         return (f"calibrated:{key}", table)
