@@ -703,6 +703,22 @@ class TeardownSessionTest(unittest.TestCase):
             session.teardown_session(sess, save_live_tune=False)
         self.assertEqual(order, ["midi", "wled", "control", "stack-b", "stack-a"])
 
+    def test_a_teardown_that_raises_still_tears_down_the_stacks_under_it(self):
+        # A second Ctrl+C while system b's teardown runs must not cost a its
+        # final reset.
+        sess = _session("a", "b")
+        torn: list[str] = []
+
+        def teardown(st):
+            torn.append(st.name)
+            if st.name == "b":
+                raise KeyboardInterrupt
+
+        with mock.patch.object(session, "teardown_stack", side_effect=teardown):
+            with self.assertRaises(KeyboardInterrupt):
+                session.teardown_session(sess, save_live_tune=False)
+        self.assertEqual(torn, ["b", "a"])
+
     def test_the_playlists_are_stopped_and_drained_before_the_stacks(self):
         # teardown_stack closes audio, resets and closes the API. Running that
         # underneath a worker still issuing DMA writes is the mid-DMA cut that wedges

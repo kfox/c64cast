@@ -1474,8 +1474,11 @@ def teardown_session(sess: Session, *, save_live_tune: bool = True) -> None:
             sess.control_server.stop()
         except Exception:
             log.exception("control plane shutdown failed")
-    for st in reversed(sess.stacks):
-        teardown_stack(st)
+    # An ExitStack for the same reason build_session's unwind is one: a second
+    # Ctrl+C during one stack's teardown must not strand the stacks under it.
+    with ExitStack() as unwind:
+        for st in sess.stacks:
+            unwind.callback(teardown_stack, st)
     # After teardown, so the terminal is free for the prompt — which is a
     # blocking `input()`, hence the `interactive` gate. Guarded so a save-flow
     # error cannot mask the original shutdown.
