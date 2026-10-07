@@ -140,12 +140,15 @@ _AUTH_SCHEMES = frozenset(
     }
 )
 
-#: An `Authorization:` value that is a scheme and a credential, after any
-#: punctuation. Without that lead, `(Basic x)` or a `%22` too deep to open a
-#: quote ends the value at the scheme and leaves the credential in view. The
-#: lead excludes `.` and `-` so it cannot trade characters with the scheme,
-#: which is quadratic on a long run of them.
-_SCHEME_AND_GAP = re.compile(r"[^\w\s.-]* (?P<scheme> [\w.-]+ ) (?P<gap> [\s+]+ )", re.VERBOSE)
+#: An `Authorization:` value that is a scheme and a credential, with any
+#: punctuation around the scheme. Without it, `(Basic x)`, `(Basic) x`,
+#: `s3cr3t, x` or a `%22` too deep to open a quote ends the value at the first
+#: word and leaves the credential in view. Neither run takes `.` or `-`, nor
+#: the trailing one `+`, so none can trade characters with its neighbor, which
+#: is quadratic on a long run of them.
+_SCHEME_AND_GAP = re.compile(
+    r"[^\w\s.-]* (?P<scheme> [\w.-]+ ) [^\w\s.+-]* (?P<gap> [\s+]+ )", re.VERBOSE
+)
 
 #: The `://` of a URL, after a scheme character. Anchored on the separator and
 #: only looking behind it: a pattern that matched the scheme itself is retried
@@ -429,6 +432,10 @@ def _value(line: _Line, v: int, d: int, kind: str) -> Span | None:
         # whichever end is later. Read as unquoted alone, `rU'abc def'` left
         # `def'` in view.
         quoted = _quoted_end(line, shaped, shaped.end())
+        if line.deepest(v, shaped.end()) > d:
+            # As for a deep quote after a prefix below: `rU%27a b%27-tail`
+            # otherwise kept `%27-tail`.
+            return (v, line.stop(kind, quoted, d))
         return (v, max(quoted, line.stop(kind, v, d)))
     if opener is not None:
         start = opener.end()
@@ -586,8 +593,8 @@ def redact_secrets(text: str) -> str:
       separates them, with the key quoted or not;
     * the credential after `Bearer` and a space, and in an `Authorization:`
       value, after a registered scheme (`Basic`, `token`, …) and any
-      punctuation before it, which stay in view; a first word that is no
-      known scheme is masked with the rest;
+      punctuation around it, which stay in view; a first word that is no
+      known scheme is masked with the rest, punctuation and all;
     * the userinfo of a URL (`https://user:pass@host` comes back as
       `https://REDACTED@host`) — a private media file is legitimately reached
       that way, and FFmpeg quotes the URL it failed on into its errors.

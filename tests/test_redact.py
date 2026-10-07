@@ -589,6 +589,11 @@ class RedactSecretsTest(unittest.TestCase):
             ("Authorization: %22ab%22-tail rest", "Authorization: REDACTED rest"),
             ("Authorization: %22Basic ab%22-tail rest", "Authorization: %22Basic REDACTED rest"),
             ("Authorization: (Basic ab) rest", "Authorization: (Basic REDACTED rest"),
+            ("Authorization: (Basic) ab rest", "Authorization: (Basic) REDACTED rest"),
+            ("Authorization: Basic, ab rest", "Authorization: Basic, REDACTED rest"),
+            ("Authorization: s3cr3t, ab rest", "Authorization: REDACTED rest"),
+            ("token: rU%27a b%27-tail rest", "token: REDACTED rest"),
+            ("Bearer rU%22ab cd%22-tail rest", "Bearer REDACTED rest"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
