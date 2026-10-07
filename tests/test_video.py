@@ -314,6 +314,9 @@ class RemoteStallBoundTest(unittest.TestCase):
         server = self._server()
         outcome = self._bounded(lambda: av_open(f"rtsp://127.0.0.1:{server.port}/tune.wav"))
         self.assertIsInstance(outcome, Exception)
+        # An open that fails before reaching the peer would pass the two
+        # checks above without the timeout ever being exercised.
+        self.assertTrue(server._held, "the open never reached the silent peer")
 
     def test_a_stream_that_stalls_mid_body_fails_the_read(self):
         import av.error
