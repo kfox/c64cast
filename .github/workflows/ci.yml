@@ -8,9 +8,12 @@ on:
 permissions:
   contents: read
 
+# Main runs are never cancelled, and get a group per SHA rather than per ref:
+# under a shared group the next merge's run replaces a queued one, so that
+# commit would get no CI result.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pre-commit:

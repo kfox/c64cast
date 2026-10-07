@@ -4,16 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   schedule:
     - cron: "24 3 * * 1"
 
 permissions:
   contents: read
 
+# A running main analysis is never cancelled, but a waiting one is replaced
+# when a newer merge queues, so a commit merged mid-burst can go unanalyzed.
+# Not keyed per SHA the way CI is: parallel main runs could upload an older
+# commit's analysis after a newer one's and leave main's alerts describing
+# code that is gone.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:
