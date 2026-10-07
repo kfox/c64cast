@@ -240,6 +240,19 @@ class MicLeadReanchorTest(unittest.TestCase):
             state,
         )
 
+    def test_a_good_read_while_a_reanchor_waits_resets_the_failure_count(self):
+        # fail, good, fail is not two failures in a row, whether or not the
+        # good read steered.
+        rig = _Rig(drift=0.0, lead=-500)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        rig.fail_reads = 1
+        self.assertIsNone(rig.servo.tick())
+        self.assertIsNotNone(rig.servo.tick())
+        rig.fail_reads = 1
+        self.assertIsNone(rig.servo.tick())
+        self.assertEqual(rig.servo._fails, 1)
+
     def test_an_unclaimed_reanchor_is_dropped_and_measuring_resumes(self):
         rig = _Rig(drift=0.0, lead=-500)
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):

@@ -560,13 +560,15 @@ class MicLeadServo:
             if not self._stop.is_set():
                 self._note_failure()
             return None
+        # Counted whether or not it steers: a re-anchor's wait must not leave
+        # failures around a good read looking consecutive.
+        self._note_success()
         if steer:
             self._steer(m)
         return m.reading.r, m.reading.w
 
     def _steer(self, m: _Measurement) -> None:
         lead, pump, at = m.lead, m.reading.src, m.at
-        self._note_success()
         last, self._last_pump = self._last_pump, (pump, at)
         # A re-anchor reseeds the loop from the fastest of three rates: the
         # one the integrator already holds the host to, the rate average
