@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from _fakes import FakeAPI
 from test_armsid import ArmsidAPI, _NoSettle
 
 from c64cast.app.config import Config
@@ -191,6 +192,127 @@ class RecordModelTest(_NoSettle):
         self.assertEqual(
             dac_calibration._populated_sockets(api, lambda _msg: None), [(1, "ARM2SID 6581")]
         )
+
+
+def _run_unisolated(api) -> dict[str, CalibrationResult]:
+    """run_calibration on a link without socket detection, everything but the
+    identification patched out; the entries it would save."""
+    saved: list[dict[str, CalibrationResult]] = []
+
+    def save(_cfg, doc):
+        saved.append(doc.entries)
+        return Path("cal.json")
+
+    cfg = Config()
+    cfg.hardware.backend = "teensyrom"
+    with (
+        mock.patch.object(dac_calibration, "_require_sounddevice"),
+        mock.patch.object(dac_calibration, "_bring_up_dac_env"),
+        mock.patch.object(dac_calibration, "_open_capture", return_value=(0, None)),
+        mock.patch.object(
+            dac_calibration, "_measure_one", return_value=([0] * 256, {"ladder_bits": 6.5}, [])
+        ),
+        mock.patch.object(dac_calibration, "_silence_and_reset"),
+        mock.patch.object(dac_calibration, "save_calibration", side_effect=save),
+        mock.patch.object(dac_calibration, "_report_run"),
+        mock.patch.object(dac_calibration, "resolve_calibration_key", return_value="k"),
+        mock.patch.object(dac_calibration, "_device_provenance", return_value={}),
+    ):
+        dac_calibration.run_calibration(api, cfg, log_fn=lambda _msg: None)
+    return saved[0]
+
+
+class IdentifyWithoutSocketDetectionTest(_NoSettle):
+    """A run that cannot detect sockets still asks the chip at $D400 whether it
+    is an ARMSID, so `auto` decides the same way on every link (#592)."""
+
+    def _no_socket_detection(self, api):
+        api.profile = FakeAPI().profile  # no SID config surface, like a TeensyROM+
+        return api
+
+    def test_an_armsid_at_d400_is_recorded(self):
+        api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="6581"))
+        entries = _run_unisolated(api)
+        self.assertEqual(list(entries), ["default"])
+        self.assertEqual(entries["default"].detected, "ARMSID 6581")
+
+    def test_an_arm2sid_at_d400_is_recorded_as_its_left_channel(self):
+        api = self._no_socket_detection(ArmsidAPI(kind="ARM2SID", left="8580"))
+        self.assertEqual(_run_unisolated(api)["default"].detected, "ARM2SID 8580")
+
+    def test_an_ordinary_sid_stays_unnamed(self):
+        api = self._no_socket_detection(FakeAPI())
+        self.assertIsNone(_run_unisolated(api)["default"].detected)
+
+    def test_auto_declines_the_recorded_default_entry(self):
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.hardware.backend = "teensyrom"
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
+        self.assertEqual((resolved.label, resolved.table), ("linear", None))
+        self.assertEqual(resolved.declined_chip, "ARMSID 6581")
+
+    def test_calibrated_plays_it_and_switches_no_socket(self):
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.audio.dac_curve = "calibrated"
+        resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
+        self.assertEqual(resolved.table, bytes(range(256)))
+        self.assertIsNone(dac_curve_resolve.provision_calibrated_chip_model(api, resolved))
+        self.assertEqual(api.config_puts, [])
+
+    def test_a_labeled_default_entry_still_states_the_one_sid_assumption(self):
+        # The probe names the chip answering $D400, not whether a second one is
+        # mirrored there, so the blend caveat holds for a labeled entry too.
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.hardware.backend = "teensyrom"
+        with self.assertLogs("c64cast.audio.dac_calibration_store", "INFO") as logs:
+            table = dac_calibration_store.load_calibrated_table(cfg, be=FakeAPI())
+        self.assertEqual(table, bytes(range(256)))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
+
+    def test_a_declined_default_entry_gets_no_note_about_its_table(self):
+        # `auto` plays linear here, so advice about the table's blend is moot.
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.hardware.backend = "teensyrom"
+        with (
+            self.assertNoLogs("c64cast.audio.dac_calibration_store", "INFO"),
+            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"),
+        ):
+            resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+        self.assertEqual(resolved.declined_chip, "ARMSID 6581")
+
+    def test_auto_playing_an_unlabeled_default_entry_states_the_assumption(self):
+        cfg = _cfg_with_calibration(None, socket="default")
+        cfg.hardware.backend = "teensyrom"
+        with self.assertLogs("c64cast.audio.dac_calibration_store", "INFO") as logs:
+            resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+        self.assertEqual(resolved.table, bytes(range(256)))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
+
+    def test_calibrated_playing_a_labeled_default_entry_states_the_assumption(self):
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.hardware.backend = "teensyrom"
+        cfg.audio.dac_curve = "calibrated"
+        with self.assertLogs("c64cast.audio.dac_calibration_store", "INFO") as logs:
+            resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+        self.assertEqual(resolved.table, bytes(range(256)))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
+
+    def test_the_report_names_the_opt_in(self):
+        result = CalibrationResult(
+            sidtable=[0] * 256,
+            metrics={
+                "ladder_bits": 6.3,
+                "signed_span": [-0.4, 0.25],
+                "worst_gap_frac": 0.03,
+                "worst_gap_from_zero_frac": 0.1,
+            },
+            detected="ARMSID 6581",
+        )
+        lines: list[str] = []
+        dac_calibration._report_run({"default": result}, Path("cal.json"), lines.append)
+        self.assertTrue(any('"calibrated"' in line for line in lines), lines)
 
 
 if __name__ == "__main__":

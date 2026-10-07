@@ -336,9 +336,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   an ARMSID or ARM2SID.** One such table measured as well as a real 6581's yet
   turned a click track into noise that the 4-bit linear path plays cleanly, so
   `auto` now uses linear and logs why. Set `[audio].dac_curve = "calibrated"` to
-  play the table anyway; `--calibrate-dac` says so when it measures one. This
-  needs the chip identified in its socket, so it does not cover a table measured
-  over a TeensyROM+, which cannot tell which chip it measured.
+  play the table anyway; `--calibrate-dac` says so when it measures one. A
+  calibration over a TeensyROM+, or any link that cannot detect SID sockets,
+  asks the chip at `$D400` whether it is an ARMSID, so this covers those tables
+  too.
 
 - **An ARM2SID's second SID now plays two-SID tunes and ASID streams on an
   Ultimate 64.** The firmware reports the chip as an ARMSID and socket 2 as

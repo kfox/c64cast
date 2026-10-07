@@ -36,6 +36,8 @@ from c64cast.sid.asid_sidmap import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from c64cast.app.config import Config
     from c64cast.hw.backend import C64Backend
 
@@ -307,17 +309,18 @@ def _applicable_entry(
     return (entry_key, entry) if isinstance(entry, dict) else None
 
 
-def _chip_of(applicable: tuple[str, dict[str, Any]] | None) -> tuple[int, str] | None:
-    """The socket the entry was measured on and the chip label the calibrating
-    run recorded for it (``"6581"``, ``"ARMSID 8580"``), or None when the entry
-    names no socket or no chip."""
+def _chip_of(applicable: tuple[str, dict[str, Any]] | None) -> tuple[int | None, str] | None:
+    """The socket the entry was measured on (None for a ``"default"`` entry,
+    measured without isolating one) and the chip label the calibrating run
+    recorded for it (``"6581"``, ``"ARMSID 8580"``), or None when the entry
+    names no chip."""
     if applicable is None:
         return None
     entry_key, entry = applicable
     detected = entry.get("detected")
-    if entry_key not in ("1", "2") or not isinstance(detected, str):
+    if not isinstance(detected, str):
         return None
-    return (int(entry_key), detected)
+    return (int(entry_key) if entry_key in ("1", "2") else None, detected)
 
 
 def load_calibrated_table(
@@ -331,50 +334,64 @@ def load_calibrated_table(
     ``path`` lets a caller that has already resolved the file (resolving the
     key can cost a live device round-trip on the Ultimate) skip the internal
     resolution; see ``dac_curve_resolve``."""
-    return _table_of(cfg, be, _applicable_entry(cfg, be, path))
+    applicable = _applicable_entry(cfg, be, path)
+    table = _table_of(applicable)
+    if table is not None and applicable is not None:
+        _note_one_sid_assumption(cfg, be, applicable[0])
+    return table
 
 
 def load_calibrated_table_and_chip(
-    cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
-) -> tuple[bytes | None, tuple[int, str] | None]:
+    cfg: Config,
+    *,
+    be: C64Backend | None = None,
+    path: Path | None = None,
+    declines: Callable[[tuple[int | None, str] | None], bool] | None = None,
+) -> tuple[bytes | None, tuple[int | None, str] | None]:
     """:func:`load_calibrated_table`, with the ``(socket, detected)`` of the
     entry it came from (see :func:`_chip_of`), from one read of the file and of
     the live socket map. Two reads can each pick a different entry — a
     socket-map read that fails the second time falls back to the file's
-    recorded mapping — and pair one entry's table with another's chip."""
+    recorded mapping — and pair one entry's table with another's chip.
+
+    ``declines`` is the caller's verdict on that ``(socket, detected)``: a
+    table it will not play gets no note about what the table assumes."""
     applicable = _applicable_entry(cfg, be, path)
-    return (_table_of(cfg, be, applicable), _chip_of(applicable))
+    table, chip = _table_of(applicable), _chip_of(applicable)
+    if table is not None and applicable is not None and not (declines and declines(chip)):
+        _note_one_sid_assumption(cfg, be, applicable[0])
+    return table, chip
 
 
-def _table_of(
-    cfg: Config, be: C64Backend | None, applicable: tuple[str, dict[str, Any]] | None
-) -> bytes | None:
+def _table_of(applicable: tuple[str, dict[str, Any]] | None) -> bytes | None:
     if applicable is None:
         return None
-    entry_key, entry = applicable
-    table = entry.get("sidtable")
+    table = applicable[1].get("sidtable")
     if not isinstance(table, list) or len(table) != 256:
         return None
+    try:
+        return bytes(int(v) & 0xFF for v in table)
+    except (TypeError, ValueError):
+        return None
+
+
+def _note_one_sid_assumption(cfg: Config, be: C64Backend | None, entry_key: str) -> None:
     if (
         entry_key == "default"
-        and isinstance(entry, dict)
-        and entry.get("detected") is None
-        # Only on a link that *cannot* establish the identity; a backend with
-        # the socket map either resolved it or knowingly declined to.
+        # A chip label recorded by the $D400 ARMSID probe does not rule out a
+        # second chip mirrored there, so a labeled entry is no exception.
+        # Only on a link that *cannot* isolate a socket; a backend with the
+        # socket map either resolved it or knowingly declined to.
         and be is not None
         and not getattr(be.profile, "supports_sid_config", False)
     ):
         log.info(
-            "audio: this calibration was measured without identifying the SID at $D400 "
+            "audio: this calibration was measured without isolating a SID socket at $D400 "
             "(the %s link has no SID config query), so it assumes one SID. If this "
             "machine has a second SID or address mirroring, re-measure over a link "
             "that can isolate a socket, or set [audio].dac_curve explicitly.",
             cfg.hardware.backend,
         )
-    try:
-        return bytes(int(v) & 0xFF for v in table)
-    except (TypeError, ValueError):
-        return None
 
 
 @dataclass(frozen=True)

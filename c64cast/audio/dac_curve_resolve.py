@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def auto_declined_chip(measured: tuple[int, str] | None) -> str | None:
+def auto_declined_chip(measured: tuple[int | None, str] | None) -> str | None:
     """The chip label of a calibrated entry that ``"auto"`` will not play
     through, or None when it would. ``measured`` is the entry's
     ``(socket, detected)`` from
@@ -47,7 +47,8 @@ class DacCurve:
 
     ``measured`` is the ``(socket, detected)`` of the calibrated entry whose
     table it read — the one ``table`` holds, or the one ``"auto"`` declined —
-    and None when it read no table or the entry names no socket and chip. A
+    and None when it read no table or the entry names no chip. Its socket is
+    None for a ``"default"`` entry, measured without isolating one. A
     consumer that needs the chip reads it here rather than from the file again:
     each read of the file makes its own socket-map read, and one that fails
     falls back to the file's recorded mapping, which can name the other
@@ -57,7 +58,7 @@ class DacCurve:
 
     label: str
     table: bytes | None
-    measured: tuple[int, str] | None = None
+    measured: tuple[int | None, str] | None = None
     key: str | None = None
 
     @property
@@ -73,7 +74,9 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
     the safe 4-bit linear path. ``key`` arrives already resolved because
     resolving it can cost a live device round-trip on the Ultimate."""
     path = path_for_key(cfg, key)
-    table, measured = load_calibrated_table_and_chip(cfg, be=be, path=path)
+    table, measured = load_calibrated_table_and_chip(
+        cfg, be=be, path=path, declines=lambda chip: auto_declined_chip(chip) is not None
+    )
     if table is not None:
         declined = auto_declined_chip(measured)
         if declined is not None:
@@ -207,6 +210,10 @@ def provision_calibrated_chip_model(
     if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
     socket, recorded = dac_curve.measured
+    if socket is None:
+        # Measured without isolating a socket: which one carries the chip is
+        # not recorded, so there is no socket to switch.
+        return None
     wanted = armsid.label_model(recorded) if armsid.is_reconfigurable(recorded) else None
     if wanted is None:
         return None
