@@ -1359,6 +1359,20 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
         self.assertIn("1 calibration file(s) on disk", diags[0].message)
         self.assertIn("--skip-probe", diags[0].hint or "")
 
+    def test_auto_over_an_armsid_table_names_the_table_it_declined(self):
+        path = Path(self._tmp.name) / "rig.json"
+        path.write_text(
+            '{"schema": 2, "d400_socket": 1, "sids": {"1": '
+            f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
+        )
+        loaded = self._loaded("auto", extra=f"dac_calibration_profile = {ser._fmt_str(str(path))}")
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            diags = doctor._validate_dac_curve_resolution(loaded)
+        self.assertEqual(len(diags), 1)
+        self.assertIn("ARMSID 8580", diags[0].message)
+        self.assertIn("'calibrated'", diags[0].message)
+        self.assertNotIn("no calibration", diags[0].message)
+
     def test_calibrated_no_files_anywhere_is_still_a_hard_error(self):
         diags = doctor._validate_dac_curve_resolution(self._loaded("calibrated"))
         self.assertEqual(len(diags), 1)
@@ -1448,6 +1462,61 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "ok")
         self.assertIn("mahoney_ultisid", diags[0].message)
+
+    def test_auto_over_an_armsid_table_names_the_table_it_declined(self):
+        cfg = self._cfg("auto")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "cal.json"
+        path.write_text(
+            '{"schema": 2, "d400_socket": 1, "sids": {"1": '
+            f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
+        )
+        cfg.audio.dac_calibration_profile = str(path)
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
+        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D400"}
+        api.config_store["SID Sockets Configuration"] = {
+            "SID Socket 1": "Enabled",
+            "SID Detected Socket 1": "ARMSID",
+        }
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            diags = doctor._probe_dac_calibration_status("sys", cfg, api)
+        self.assertEqual(len(diags), 1)
+        self.assertIn("ARMSID 8580", diags[0].message)
+        self.assertIn("'calibrated'", diags[0].message)
+        self.assertNotIn("no calibration applies", diags[0].message)
+
+    def test_auto_under_digi_boost_does_not_offer_the_armsid_table(self):
+        # digi_boost holds auto on linear before any table is read, and
+        # 'calibrated' is mutually exclusive with it, so the opt-in hint would
+        # send the user to a config that fails validation.
+        cfg = self._cfg("auto")
+        cfg.audio.digi_boost = True
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "cal.json"
+        path.write_text(
+            '{"schema": 2, "d400_socket": 1, "sids": {"1": '
+            f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
+        )
+        cfg.audio.dac_calibration_profile = str(path)
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
+        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D400"}
+        api.config_store["SID Sockets Configuration"] = {
+            "SID Socket 1": "Enabled",
+            "SID Detected Socket 1": "ARMSID",
+        }
+        diags = doctor._probe_dac_calibration_status("sys", cfg, api)
+        self.assertEqual(len(diags), 1)
+        self.assertNotIn("'calibrated'", diags[0].message)
+        self.assertNotIn("no calibration applies", diags[0].message)
+        self.assertIn("digi_boost", diags[0].message)
 
     def test_calibrated_missing_is_error_with_hint(self):
         cfg = self._cfg("calibrated")

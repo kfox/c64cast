@@ -304,6 +304,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   putting yours back at the end; before, a table measured in one model played
   through the other model's ladder.
 
+- **`dac_curve = "auto"` no longer plays through a DAC calibration measured on
+  an ARMSID or ARM2SID.** One such table measured as well as a real 6581's yet
+  turned a click track into noise that the 4-bit linear path plays cleanly, so
+  `auto` now uses linear and logs why. Set `[audio].dac_curve = "calibrated"` to
+  play the table anyway; `--calibrate-dac` says so when it measures one. This
+  needs the chip identified in its socket, so it does not cover a table measured
+  over a TeensyROM+, which cannot tell which chip it measured.
+
 - **An ARM2SID's second SID now plays two-SID tunes and ASID streams on an
   Ultimate 64.** The firmware reports the chip as an ARMSID and socket 2 as
   empty, so the right channel was never used. c64cast now asks the chip itself,

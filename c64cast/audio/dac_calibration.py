@@ -76,6 +76,7 @@ from .dac_capture_device import (
     find_capture_device,
     resolve_capture_format,
 )
+from .dac_curve_resolve import auto_declined_chip
 from .dac_slot_ring import (
     ANCHOR_CODE,
     NMI_RATE,
@@ -660,6 +661,12 @@ def _report_run(
             f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
             f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
         )
+        declined = auto_declined_chip(None if r.detected is None else (int(name), r.detected))
+        if declined is not None:
+            log_fn(
+                f'[calib] {name}: measured on an {declined}; dac_curve = "auto" plays '
+                'linear on it, so set [audio].dac_curve = "calibrated" to play this table'
+            )
     log_fn(f"[calib] wrote {path}")
 
 

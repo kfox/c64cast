@@ -19,6 +19,7 @@ from .dac_calibration_store import (
     calibrated_chip,
     d400_owner,
     load_calibrated_table,
+    load_calibrated_table_and_chip,
     path_for_key,
     resolve_calibration_key,
 )
@@ -31,14 +32,37 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def auto_declined_chip(measured: tuple[int, str] | None) -> str | None:
+    """The chip label of a calibrated entry that ``"auto"`` will not play
+    through, or None when it would. ``measured`` is the entry's
+    ``(socket, detected)`` from
+    :func:`~c64cast.audio.dac_calibration_store.load_calibrated_table_and_chip`."""
+    if measured is not None and armsid.is_armsid(measured[1]):
+        return measured[1]
+    return None
+
+
 def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[str, bytes | None]:
     """The ``"auto"`` arm: a calibrated table when one applies, the baked
     emulated-UltiSID table only when an UltiSID core answers ``$D400``, else
     the safe 4-bit linear path. ``key`` arrives already resolved because
     resolving it can cost a live device round-trip on the Ultimate."""
     path = path_for_key(cfg, key)
-    table = load_calibrated_table(cfg, be=be, path=path)
+    table, measured = load_calibrated_table_and_chip(cfg, be=be, path=path)
     if table is not None:
+        declined = auto_declined_chip(measured)
+        if declined is not None:
+            # Its ladder metrics matched a good 6581's, yet it played a click
+            # track as a splat that linear plays clean (#587), so no metric
+            # here can vouch for it; "calibrated" is the explicit opt-in.
+            log.warning(
+                "the DAC calibration at %s was measured on an %s, which `auto` does not "
+                "play through; using the 4-bit linear DAC. Set [audio].dac_curve = "
+                '"calibrated" to use it anyway.',
+                path,
+                declined,
+            )
+            return ("linear", None)
         return (f"calibrated:{key}", table)
     if cfg.audio.dac_calibration_profile:
         log.warning(
@@ -103,7 +127,8 @@ def resolve_dac_curve_for_backend(
     (the legacy linear 4-bit path).
 
     * ``"auto"`` (default) — prefer a calibrated table applicable to this
-      system/socket if one exists; else ``mahoney_ultisid`` when an UltiSID
+      system/socket if one exists, unless the calibrating run identified its chip as an
+      ARMSID or ARM2SID (``linear`` then); else ``mahoney_ultisid`` when an UltiSID
       core answers ``$D400`` (the baked table *is* that core's curve); else
       ``linear`` (a physical/unknown SID with no calibration: the baked
       emulated table would not match it, so stay on the safe 4-bit path).
