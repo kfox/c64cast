@@ -75,6 +75,10 @@ RIGHT_OFFSET: Final = _EXT_SPLIT_OFFSET[EXT_SPLIT_RIGHT]
 # items it travels with. `sid_hw_config._put_all` routes it to
 # :func:`set_socket_model`; the firmware never sees this category name.
 CAT_SOCKET_MODEL: Final = "c64cast: socket model"
+# The source for a chip known only as whatever answers $D400, with no socket
+# behind it: set through its registers there, which needs no SID config surface.
+SOURCE_D400: Final = "$D400"
+D400_BASE: Final = 0xD400
 
 _REG_REPLY: Final = 27
 _REG_MODE: Final = 29
@@ -342,7 +346,8 @@ def detect_labels(
 
 def set_socket_model(api: C64Backend, source: str, model: str) -> None:
     """Switch the ARMSID-family chip behind `source` (``"socket1"``/``"socket2"``)
-    to `model`, per the labels :func:`detect_labels` last recorded.
+    to `model`, per the labels :func:`detect_labels` last recorded, or the chip
+    answering ``$D400`` (:data:`SOURCE_D400`) through its registers there.
 
     A chip in a physical socket is set through the firmware's own config item,
     which applies it at once and keeps the U64's menu truthful. An ARM2SID's
@@ -352,6 +357,10 @@ def set_socket_model(api: C64Backend, source: str, model: str) -> None:
     from .asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN
     from .sid_hw_config import socket_base
 
+    if source == SOURCE_D400:
+        if model in MODELS:
+            write_model(api, D400_BASE, model)
+        return
     labels = cached_labels(api) or (None, None)
     index = {"socket1": 0, "socket2": 1}.get(source)
     if index is None or not is_reconfigurable(labels[index]):

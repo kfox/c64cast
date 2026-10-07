@@ -315,6 +315,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   reopened; on a TeensyROM+ the next command first waits about a second and a
   half for the cartridge to give up on the cut one.
 
+- **`[audio].dac_curve = "calibrated"` now puts an ARMSID back into the model
+  it was calibrated in when the calibration ran without socket detection** (on
+  a TeensyROM+, or when detection failed). The table used to play in whatever
+  model the chip happened to be in. The chip at `$D400` is now switched for the
+  run and put back afterward, on any link.
+
 - **An ensemble whose second system fails to start no longer leaves the first
   one held.** When a later system's setup failed with anything but c64cast's
   own startup errors (an unexpected network error, say, or Ctrl+C during

@@ -206,16 +206,20 @@ def provision_calibrated_chip_model(
     way, so a table measured in one model and played in the other is a table
     for a different chip. The calibration records the model in the chip's
     label; this enforces it. A chip of fixed model, or a table that names none,
-    is left alone."""
+    is left alone.
+
+    A calibration measured without socket detection recorded the chip only as
+    whatever answered ``$D400``, so that chip is the one switched, through its
+    own register protocol, which works on every link."""
     if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
     socket, recorded = dac_curve.measured
-    if socket is None:
-        # Measured without isolating a socket: which one carries the chip is
-        # not recorded, so there is no socket to switch.
-        return None
     wanted = armsid.label_model(recorded) if armsid.is_reconfigurable(recorded) else None
     if wanted is None:
+        return None
+    if socket is None:
+        return _provision_d400_model(be, recorded, wanted)
+    if not be.profile.supports_sid_config:
         return None
     live = detect_socket_models(be)[socket - 1]
     if not armsid.is_reconfigurable(live) or armsid.is_right_channel(live):
@@ -249,6 +253,43 @@ def provision_calibrated_chip_model(
         "audio: switched the %s in socket %d to %s, the model its DAC calibration was measured in",
         (live or "").rsplit(" ", 1)[0],
         socket,
+        wanted,
+    )
+    return restore
+
+
+def _provision_d400_model(
+    be: C64Backend, recorded: str, wanted: str
+) -> dict[tuple[str, str], str] | None:
+    """:func:`provision_calibrated_chip_model` for an entry with no socket: ask
+    the chip at ``$D400`` for its model and switch it to `wanted` there."""
+    reply = armsid.probe(be, armsid.D400_BASE)
+    if reply is None or reply.model is None:
+        log.warning(
+            "audio: the DAC calibration was measured on an %s at $D400, which now "
+            "reports %s; playing through it unchanged",
+            recorded,
+            "an unreadable model" if reply is not None else "no ARMSID",
+        )
+        return None
+    if reply.model == wanted:
+        return None
+    # Returned even when the switch fails, for the reason the socket arm gives.
+    restore = {(armsid.CAT_SOCKET_MODEL, armsid.SOURCE_D400): reply.model}
+    try:
+        armsid.write_model(be, armsid.D400_BASE, wanted)
+    except Exception:  # noqa: BLE001 — best-effort, like every SID config write
+        log.warning(
+            "audio: could not switch the %s at $D400 to %s for its DAC calibration; "
+            "playing through it unchanged",
+            reply.kind,
+            wanted,
+            exc_info=True,
+        )
+        return restore
+    log.info(
+        "audio: switched the %s at $D400 to %s, the model its DAC calibration was measured in",
+        reply.kind,
         wanted,
     )
     return restore

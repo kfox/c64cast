@@ -719,8 +719,7 @@ def _acquire_stack(
     if dac_curve is not None:
         audio = _build_audio(cfg, api, dac_curve)
         release_on_failure("audio shutdown", audio.close)
-        if api.profile.supports_sid_config:
-            dac_model_restore = dac_curve_resolve.provision_calibrated_chip_model(api, dac_curve)
+        dac_model_restore = dac_curve_resolve.provision_calibrated_chip_model(api, dac_curve)
     release_on_failure(
         "DAC chip model restore", lambda: restore_sid_config(api, dac_model_restore or {})
     )
