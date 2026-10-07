@@ -307,16 +307,10 @@ def _applicable_entry(
     return (entry_key, entry) if isinstance(entry, dict) else None
 
 
-def calibrated_chip(
-    cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
-) -> tuple[int, str] | None:
-    """The socket the applicable table was measured on and the chip label the
-    calibrating run recorded for it (``"6581"``, ``"ARMSID 8580"``), or None
-    when the entry names no socket or no chip."""
-    return _chip_of(_applicable_entry(cfg, be, path))
-
-
 def _chip_of(applicable: tuple[str, dict[str, Any]] | None) -> tuple[int, str] | None:
+    """The socket the entry was measured on and the chip label the calibrating
+    run recorded for it (``"6581"``, ``"ARMSID 8580"``), or None when the entry
+    names no socket or no chip."""
     if applicable is None:
         return None
     entry_key, entry = applicable
@@ -343,11 +337,11 @@ def load_calibrated_table(
 def load_calibrated_table_and_chip(
     cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
 ) -> tuple[bytes | None, tuple[int, str] | None]:
-    """:func:`load_calibrated_table` and :func:`calibrated_chip` from one read
-    of the file and of the live socket map. Two reads can each pick a
-    different entry — a socket-map read that fails the second time falls back
-    to the file's recorded mapping — and pair one entry's table with another's
-    chip."""
+    """:func:`load_calibrated_table`, with the ``(socket, detected)`` of the
+    entry it came from (see :func:`_chip_of`), from one read of the file and of
+    the live socket map. Two reads can each pick a different entry — a
+    socket-map read that fails the second time falls back to the file's
+    recorded mapping — and pair one entry's table with another's chip."""
     applicable = _applicable_entry(cfg, be, path)
     return (_table_of(cfg, be, applicable), _chip_of(applicable))
 

@@ -1,7 +1,7 @@
-"""Resolve ``[audio].dac_curve`` to the effective ``(label, table)`` pair for
-the connected system — the policy layer between the calibration store
-(:mod:`c64cast.audio.dac_calibration_store`) and the audio path that plays
-through the result.
+"""Resolve ``[audio].dac_curve`` to the effective label and table (a
+:class:`DacCurve`) for the connected system — the policy layer between the
+calibration store (:mod:`c64cast.audio.dac_calibration_store`) and the audio
+path that plays through the result.
 
 See docs/architecture/audio.md#table-selection-auto-and-per-system-calibration.
 """
@@ -9,6 +9,7 @@ See docs/architecture/audio.md#table-selection-auto-and-per-system-calibration.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from c64cast.sid import armsid
@@ -16,9 +17,7 @@ from c64cast.sid.sid_hw_config import detect_socket_models
 
 from .dac_calibration_store import (
     D400_UNKNOWN,
-    calibrated_chip,
     d400_owner,
-    load_calibrated_table,
     load_calibrated_table_and_chip,
     path_for_key,
     resolve_calibration_key,
@@ -42,7 +41,33 @@ def auto_declined_chip(measured: tuple[int, str] | None) -> str | None:
     return None
 
 
-def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[str, bytes | None]:
+@dataclass(frozen=True)
+class DacCurve:
+    """What :func:`resolve_dac_curve_for_backend` chose.
+
+    ``measured`` is the ``(socket, detected)`` of the calibrated entry whose
+    table it read — the one ``table`` holds, or the one ``"auto"`` declined —
+    and None when it read no table or the entry names no socket and chip. A
+    consumer that needs the chip reads it here rather than from the file again:
+    each read of the file makes its own socket-map read, and one that fails
+    falls back to the file's recorded mapping, which can name the other
+    socket. ``key`` is the calibration key the resolution looked up, None
+    when it looked up none, for the same reason: deriving it again is another
+    live round-trip, and one that fails falls back to the host key."""
+
+    label: str
+    table: bytes | None
+    measured: tuple[int, str] | None = None
+    key: str | None = None
+
+    @property
+    def declined_chip(self) -> str | None:
+        """The chip label of the calibration ``"auto"`` resolved past, or None
+        when it played one or none applied."""
+        return None if self.table is not None else auto_declined_chip(self.measured)
+
+
+def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurve:
     """The ``"auto"`` arm: a calibrated table when one applies, the baked
     emulated-UltiSID table only when an UltiSID core answers ``$D400``, else
     the safe 4-bit linear path. ``key`` arrives already resolved because
@@ -62,8 +87,8 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
                 path,
                 declined,
             )
-            return ("linear", None)
-        return (f"calibrated:{key}", table)
+            return DacCurve("linear", None, measured, key)
+        return DacCurve(f"calibrated:{key}", table, measured, key)
     if cfg.audio.dac_calibration_profile:
         log.warning(
             "[audio].dac_calibration_profile = %r → %s holds no usable calibration; falling back.",
@@ -86,7 +111,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
                 owner,
                 key,
             )
-            return ("linear", None)
+            return DacCurve("linear", None, key=key)
         if owner == D400_UNKNOWN:
             # Not "an UltiSID core owns it": an Ultimate II+ has no socket
             # map to read and drives the C64's own chip, and a failed read
@@ -100,7 +125,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
                 "SID for full-fidelity playback.",
                 key,
             )
-            return ("linear", None)
+            return DacCurve("linear", None, key=key)
         if be is not None:
             log.info(
                 "no per-unit DAC calibration found for %s; using the baked "
@@ -108,7 +133,7 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
                 "socketed physical SID.",
                 key,
             )
-        return ("mahoney_ultisid", resolve_dac_curve("mahoney_ultisid"))
+        return DacCurve("mahoney_ultisid", resolve_dac_curve("mahoney_ultisid"), key=key)
     if be is not None:
         log.warning(
             "no DAC calibration found for %s; falling back to the 4-bit "
@@ -116,14 +141,13 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> tuple[s
             "measure this SID for full-fidelity playback.",
             key,
         )
-    return ("linear", None)
+    return DacCurve("linear", None, key=key)
 
 
-def resolve_dac_curve_for_backend(
-    cfg: Config, be: C64Backend | None = None
-) -> tuple[str, bytes | None]:
-    """Resolve ``[audio].dac_curve`` to an effective ``(label, table)`` pair for
-    this system/backend. ``table`` is a 256-byte amplitude→``$D418`` map or None
+def resolve_dac_curve_for_backend(cfg: Config, be: C64Backend | None = None) -> DacCurve:
+    """Resolve ``[audio].dac_curve`` to an effective label and table for this
+    system/backend, with the calibrated entry the table came from (see
+    :class:`DacCurve`). ``table`` is a 256-byte amplitude→``$D418`` map or None
     (the legacy linear 4-bit path).
 
     * ``"auto"`` (default) — prefer a calibrated table applicable to this
@@ -141,13 +165,14 @@ def resolve_dac_curve_for_backend(
 
     `be`, when given a live/reachable backend, lets the resolution pick the
     correct per-socket entry from a multi-SID calibration file (see
-    :func:`load_calibrated_table`). Without it (e.g. offline ``--doctor
-    --skip-probe``), resolution is best-effort."""
+    :func:`~c64cast.audio.dac_calibration_store.load_calibrated_table`).
+    Without it (e.g. offline ``--doctor --skip-probe``), resolution is
+    best-effort."""
     name = cfg.audio.dac_curve
     if name == "calibrated":
         key = resolve_calibration_key(cfg, be)
         path = path_for_key(cfg, key)
-        table = load_calibrated_table(cfg, be=be, path=path)
+        table, measured = load_calibrated_table_and_chip(cfg, be=be, path=path)
         if table is None:
             raise ValueError(
                 "[audio].dac_curve = 'calibrated' but no usable calibration was found "
@@ -156,18 +181,18 @@ def resolve_dac_curve_for_backend(
                 "[audio].dac_calibration_profile at an existing calibration file, or "
                 "use 'auto'."
             )
-        return (f"calibrated:{key}", table)
+        return DacCurve(f"calibrated:{key}", table, measured, key)
     if name == "auto":
         # Ahead of resolve_calibration_key: this arm must not pay its live
         # round-trip. digi_boost + an explicit curve is validate_dac_curve_cfg's.
         if cfg.audio.digi_boost:
-            return ("linear", None)
+            return DacCurve("linear", None)
         return _resolve_auto_curve(cfg, be, resolve_calibration_key(cfg, be))
-    return (name, resolve_dac_curve(name))
+    return DacCurve(name, resolve_dac_curve(name))
 
 
 def provision_calibrated_chip_model(
-    cfg: Config, be: C64Backend, dac_curve_label: str
+    be: C64Backend, dac_curve: DacCurve
 ) -> dict[tuple[str, str], str] | None:
     """Put an ARMSID back into the model its calibrated table was measured in,
     for a run that plays through that table; return what to restore at teardown
@@ -179,12 +204,9 @@ def provision_calibrated_chip_model(
     for a different chip. The calibration records the model in the chip's
     label; this enforces it. A chip of fixed model, or a table that names none,
     is left alone."""
-    if not dac_curve_label.startswith("calibrated:"):
+    if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
-    measured = calibrated_chip(cfg, be=be, path=path_for_key(cfg, dac_curve_label.split(":", 1)[1]))
-    if measured is None:
-        return None
-    socket, recorded = measured
+    socket, recorded = dac_curve.measured
     wanted = armsid.label_model(recorded) if armsid.is_reconfigurable(recorded) else None
     if wanted is None:
         return None

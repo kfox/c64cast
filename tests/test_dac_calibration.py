@@ -561,19 +561,22 @@ class RaiseMasterTest(unittest.TestCase):
 
 class ResolveCurveTest(DataDirIsolated):
     def test_auto_ultimate_no_cal_uses_baked_mahoney(self):
-        label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
+        resolved = dcr.resolve_dac_curve_for_backend(_u64_cfg())
+        label, table = resolved.label, resolved.table
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
     def test_auto_teensyrom_no_cal_uses_linear(self):
-        label, table = dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
+        resolved = dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
+        label, table = resolved.label, resolved.table
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
 
     def test_auto_prefers_calibration_when_present(self):
         cfg = _u64_cfg()
         self.save(cfg, {"default": _result(0)})
-        label, table = dcr.resolve_dac_curve_for_backend(cfg)
+        resolved = dcr.resolve_dac_curve_for_backend(cfg)
+        label, table = resolved.label, resolved.table
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
 
@@ -583,7 +586,7 @@ class ResolveCurveTest(DataDirIsolated):
         cfg = _u64_cfg()
         cfg.audio.dac_calibration_profile = "breadbin"
         with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as cm:
-            label, _ = dcr.resolve_dac_curve_for_backend(cfg)
+            label = dcr.resolve_dac_curve_for_backend(cfg).label
         self.assertEqual(label, "mahoney_ultisid")
         self.assertTrue(
             any("'breadbin'" in m and "no usable calibration" in m for m in cm.output), cm.output
@@ -592,7 +595,8 @@ class ResolveCurveTest(DataDirIsolated):
     def test_auto_yields_to_digi_boost(self):
         cfg = _u64_cfg()
         cfg.audio.digi_boost = True
-        label, table = dcr.resolve_dac_curve_for_backend(cfg)
+        resolved = dcr.resolve_dac_curve_for_backend(cfg)
+        label, table = resolved.label, resolved.table
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
 
@@ -606,16 +610,18 @@ class ResolveCurveTest(DataDirIsolated):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "calibrated"
         self.save(cfg, {"default": _result(0)})
-        label, table = dcr.resolve_dac_curve_for_backend(cfg)
+        resolved = dcr.resolve_dac_curve_for_backend(cfg)
+        label, table = resolved.label, resolved.table
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
 
     def test_explicit_linear_and_mahoney_pass_through(self):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "linear"
-        self.assertEqual(dcr.resolve_dac_curve_for_backend(cfg), ("linear", None))
+        self.assertEqual(dcr.resolve_dac_curve_for_backend(cfg), dcr.DacCurve("linear", None))
         cfg.audio.dac_curve = "mahoney_ultisid"
-        label, table = dcr.resolve_dac_curve_for_backend(cfg)
+        resolved = dcr.resolve_dac_curve_for_backend(cfg)
+        label, table = resolved.label, resolved.table
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -631,7 +637,8 @@ class MissingCalibrationLogTest(DataDirIsolated):
         # unreadable one is unknown, not UltiSID (AutoCurveD400OwnershipTest).
         cfg = _u64_cfg()
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="INFO") as cm:
-            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultisid_at_d400())
+            resolved = dcr.resolve_dac_curve_for_backend(cfg, be=_ultisid_at_d400())
+            label, table = resolved.label, resolved.table
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
         joined = "\n".join(cm.output)
@@ -642,7 +649,8 @@ class MissingCalibrationLogTest(DataDirIsolated):
         cfg = _tr_serial_cfg()
         with patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value=None):
             with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
-                label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+                resolved = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+                label, table = resolved.label, resolved.table
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
         joined = "\n".join(cm.output)
@@ -660,7 +668,7 @@ class MissingCalibrationLogTest(DataDirIsolated):
         cfg = _u64_cfg()
         self.save(cfg, {"default": _result(0)})
         with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
-            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.ultimate())
+            label = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.ultimate()).label
         self.assertTrue(label.startswith("calibrated:"))
 
 
@@ -721,7 +729,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
     def test_physical_socket_at_d400_without_calibration_falls_back_to_linear(self):
         cfg = _u64_cfg()
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
-            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+            resolved = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+            label, table = resolved.label, resolved.table
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
         joined = "\n".join(cm.output)
@@ -731,35 +740,38 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
     def test_socket_2_at_d400_is_named_in_the_warning(self):
         cfg = _u64_cfg()
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
-            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2))
+            label = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2)).label
         self.assertEqual(label, "linear")
         self.assertIn("socket 2", "\n".join(cm.output))
 
     def test_ultisid_at_d400_still_gets_the_baked_table(self):
         # Nothing physical answers $D400, so the baked table is the *matched* one.
         cfg = _u64_cfg()
-        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultisid_at_d400())
+        resolved = dcr.resolve_dac_curve_for_backend(cfg, be=_ultisid_at_d400())
+        label, table = resolved.label, resolved.table
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
     def test_empty_socket_mapped_at_d400_still_gets_the_baked_table(self):
         # Mapped but no chip detected — nothing physical is there to mismatch.
         cfg = _u64_cfg()
-        label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_empty_socket_at_d400())
+        label = dcr.resolve_dac_curve_for_backend(cfg, be=_empty_socket_at_d400()).label
         self.assertEqual(label, "mahoney_ultisid")
 
     def test_calibration_for_that_socket_still_wins(self):
         # The guard is a fallback, not a veto: a table measured on the $D400 owner wins.
         cfg = _u64_cfg()
         self.save(cfg, {"1": _result(1), "2": _result(2)})
-        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        resolved = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        label, table = resolved.label, resolved.table
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
 
     def test_offline_resolution_is_unchanged_and_silent(self):
         # be=None can't read who owns $D400; --doctor reports that separately.
         with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
-            label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
+            resolved = dcr.resolve_dac_curve_for_backend(_u64_cfg())
+            label, table = resolved.label, resolved.table
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -768,7 +780,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         # baked emulated table mismatches. Unknown is not "UltiSID owns it".
         cfg = _u64_cfg()
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
-            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.u2plus())
+            resolved = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.u2plus())
+            label, table = resolved.label, resolved.table
         self.assertEqual((label, table), ("linear", None))
         self.assertIn("could not tell which SID answers $D400", "\n".join(cm.output))
 
@@ -776,7 +789,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         # Before refine_capabilities (or under --skip-probe) a U2+ still claims
         # the multi-SID surface, and the categories come back unregistered.
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING"):
-            label, _ = dcr.resolve_dac_curve_for_backend(_u64_cfg(), be=FakeAPI.ultimate())
+            label = dcr.resolve_dac_curve_for_backend(_u64_cfg(), be=FakeAPI.ultimate()).label
         self.assertEqual(label, "linear")
 
     def test_a_failed_socket_map_read_gets_linear(self):
@@ -787,13 +800,15 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
         api.get_config_category = unreachable  # type: ignore[method-assign]
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING"):
-            label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg(), be=api)
+            resolved = dcr.resolve_dac_curve_for_backend(_u64_cfg(), be=api)
+            label, table = resolved.label, resolved.table
         self.assertEqual((label, table), ("linear", None))
 
     def test_a_u2plus_calibration_still_wins(self):
         cfg = _u64_cfg()
         self.save(cfg, {"default": _result(5)})
-        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.u2plus())
+        resolved = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.u2plus())
+        label, table = resolved.label, resolved.table
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([5] * 256))
 
@@ -808,7 +823,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
             raise ConnectionError("REST timeout")
 
         api.get_config_category = unreachable  # type: ignore[method-assign]
-        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=api)
+        resolved = dcr.resolve_dac_curve_for_backend(cfg, be=api)
+        label, table = resolved.label, resolved.table
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([2] * 256))
 
@@ -830,7 +846,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         # The guard only shapes "auto".
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "mahoney_ultisid"
-        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        resolved = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        label, table = resolved.label, resolved.table
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -852,7 +869,8 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         cfg, be = self._tr()
         self.save(cfg, be=be, entries={"1": _result(1), "2": _result(2)})
         with self.assertLogs("c64cast.audio.dac_calibration_store", level="WARNING"):
-            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=be)
+            resolved = dcr.resolve_dac_curve_for_backend(cfg, be=be)
+            label, table = resolved.label, resolved.table
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
 
