@@ -670,7 +670,8 @@ class UltimateAudioSampler:
         Raises RuntimeError on a sampler that is already running, or whose
         last writer is still alive and had not given up on the link. The
         gate-on waits for a given-up writer's gate-off still in flight, which
-        is one link call, bounded by the transport's own timeouts."""
+        is one write and its flush, each bounded by the transport's own
+        timeouts."""
         if self._running:
             raise RuntimeError("sampler is already started")
         self._refuse_if_writer_survives()
