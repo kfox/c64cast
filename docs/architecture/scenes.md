@@ -70,7 +70,7 @@ From then on `_clock_s()` free-runs from the anchor as `_wall_anchor_clock_s + (
 
 **`transport_loop_toggle()`** is a minimal 3-state cycle — mark A, mark B and start looping, clear — read by `process_frame`. Two things change there:
 
-* The EOF check becomes `source.finished and loop_state != "active"`, since an active loop is never "done".
+* The EOF check becomes `source.finished and (loop_state != "active" or not source.accepts_seeks)`, since an active loop is never "done" while the demux thread can still apply its wrap.
 * After computing `clock_s`, a loop-active scene checks `clock_s >= loop_b or source.finished` and seeks back to `loop_a` instead of rendering that tick.
 
 **Reset.** All transport state resets at the top of `setup()`, so a repeated or looped scene starts back on the audio-master clock, untouched.
