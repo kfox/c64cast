@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -34,14 +35,59 @@ from c64cast.video.video import (
 )
 
 
+def _wait_until(predicate, limit_s: float = 5.0) -> bool:
+    """Poll `predicate` until it holds or `limit_s` passes; its last answer."""
+    deadline = time.monotonic() + limit_s
+    while not predicate():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.005)
+    return True
+
+
+def _arm_locks(src: AVFileSource) -> AVFileSource:
+    """The lock-side fields every `__new__` stub needs, in one place: the
+    buffer lock, the condition that wakes a demux thread parked at EOF, and
+    the thread-exited flag `finished` reads."""
+    src._lock = threading.Lock()
+    src._wake = threading.Condition(src._lock)
+    src._demux_exited = False
+    return src
+
+
+def _signal_close(src: AVFileSource) -> None:
+    """The half of `close()` a stub can run: set `_closed` and wake a demux
+    thread parked at EOF, leaving the (fake) container and poll alone."""
+    with src._lock:
+        src._closed = True
+        src._wake.notify_all()
+
+
+def _demux_until_parked(src: AVFileSource) -> None:
+    """Run the real `_demux_loop` until it parks at EOF waiting for a seek,
+    then close it the way `close()` does and join it. A loop that never
+    parks fails the test instead of hanging the run."""
+    worker = threading.Thread(target=src._demux_loop, daemon=True)
+    worker.start()
+    try:
+        if not _wait_until(lambda: src._eof or not worker.is_alive()):
+            raise AssertionError("demux loop never reached EOF")
+    finally:
+        _signal_close(src)
+        worker.join(5.0)
+    if worker.is_alive():
+        raise AssertionError("demux loop did not exit on close")
+
+
 def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> AVFileSource:
     """Build an AVFileSource without going through __init__ (which opens a
     real container via PyAV). Only the attributes touched by
     `current_frame` / `finished` are set; everything else stays unset."""
     src = AVFileSource.__new__(AVFileSource)
     src._video_buf = list(frames)
-    src._lock = threading.Lock()
+    _arm_locks(src)
     src._eof = eof
+    src._pending_seek = None
     return src
 
 
@@ -321,14 +367,14 @@ class ResamplerTailTest(unittest.TestCase):
         self.addCleanup(container.close)
         src.container = container
         src.path = "t.wav"
-        src._lock = threading.Lock()
+        _arm_locks(src)
         src._eof = False
         return src
 
     def test_the_demux_path_flushes_the_tail_at_eof(self):
         pushed: list[int] = []
         src = self._demux_source(pushed)
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertTrue(src._eof)
         self.assertEqual(sum(pushed), self.EXPECTED)
 
@@ -345,7 +391,7 @@ class ResamplerTailTest(unittest.TestCase):
                 raise EOFError
 
         src.container = _RaisesAtEof()
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertTrue(src._eof)
         self.assertEqual(sum(pushed), self.EXPECTED)
 
@@ -566,10 +612,12 @@ class _FakePacket:
 
 class _FakeContainer:
     def __init__(self, packets: list[_FakePacket]):
-        self._packets = packets
+        # One read head shared by every demux() call, as a real container's
+        # is: a pass that ends on a seek and the next pass read on from it.
+        self._packets = iter(packets)
 
     def demux(self):
-        return iter(self._packets)
+        return self._packets
 
     def seek(self, offset_us: int) -> None:
         # No-op by default (recording variants override this attribute
@@ -597,7 +645,8 @@ def _make_demux_source_stub(
     src._muted = False
     src.video_time_base = 1.0  # 1 PTS tick == 1 second
     src._video_buf = []
-    src._lock = threading.Lock()
+    _arm_locks(src)
+    src._eof = False
     src.max_video_buffer = 240
     src._resampler = None
     src._audio_push = None
@@ -624,7 +673,7 @@ def _make_emit_audio_stub(sink: list[np.ndarray], *, tempo_scale: float = 1.0) -
     src._closed = False
     src._muted = False
     src._pending_seek = None
-    src._lock = threading.Lock()
+    _arm_locks(src)
     src._audio_push = sink.append
     src.audio_noise_gate = 0
     src.audio_gain = 1.0
@@ -640,7 +689,7 @@ class DemuxRebaseTest(unittest.TestCase):
 
     def _run_demux(self, frame_ptss: list[int]) -> list[float]:
         src = _make_demux_source_stub([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
-        src._demux_loop()
+        _demux_until_parked(src)
         return [pts for pts, _ in src._video_buf]
 
     def test_seeked_source_rebases_to_zero(self):
@@ -727,7 +776,7 @@ class TransportSeekTest(unittest.TestCase):
         stale = _FakePacket([_FakeFrame(999)])
         real = [_FakePacket([_FakeFrame(p)]) for p in (50, 51, 52)]
         src.container = _FakeContainer([stale, *real])
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertEqual([pts for pts, _ in src._video_buf], [30.0, 31.0, 32.0])
         self.assertIsNone(src._pending_seek, "pending seek must be consumed")
         self.assertEqual(src._pts_anchor_target, 30.0)
@@ -736,12 +785,12 @@ class TransportSeekTest(unittest.TestCase):
         seeks: list[int] = []
         src = self._make_src([10], pending_seek=7.5)
         src.container.seek = seeks.append  # type: ignore[method-assign]
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertEqual(seeks, [7_500_000])
 
     def test_no_pending_seek_behaves_like_ordinary_start(self):
         src = self._make_src([0, 1, 2])
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertEqual([pts for pts, _ in src._video_buf], [0.0, 1.0, 2.0])
 
     def test_apply_pending_seek_returns_false_when_none_queued(self):
@@ -765,6 +814,7 @@ class _StubSource:
         self.duration_s = duration
         self.video_fps = video_fps
         self.finished = False
+        self.accepts_seeks = True
         self.last_frame_pts = 0.0
         self.seeks: list[float] = []
         self.muted_calls: list[bool] = []
@@ -1651,6 +1701,24 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         self.assertTrue(still_active)
         self.assertEqual(source.seeks, [5.0])
 
+    def test_eof_with_a_dead_demux_thread_ends_a_looping_scene(self):
+        # Nothing is left to apply the wrap's seek, so wrapping would hold
+        # the last frame, re-requesting A every tick, until the loop is cleared.
+        source = _StubSource(duration=100.0)
+        source.finished = True
+        source.accepts_seeks = False
+        scene = _make_video_scene_stub(source)
+        scene.transport.touched = True
+        scene.transport.loop_state = "active"
+        scene.transport.loop_a = 5.0
+        scene.transport.loop_b = 50.0
+        scene.transport.wall_anchor_clock_s = 20.0
+        scene.transport.wall_anchor_time = 0.0
+        with _freeze_time(0.0):
+            still_active = scene.process_frame(current_time=0.0)
+        self.assertFalse(still_active)
+        self.assertEqual(source.seeks, [])
+
     def test_finished_without_active_loop_ends_scene(self):
         source = _StubSource(duration=100.0)
         source.finished = True
@@ -1757,7 +1825,7 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
     def _run(self, decode_target, src_w=3840, src_h=2160):
         frame = _FakeFrame(0, width=src_w, height=src_h)
         src = _make_demux_source_stub([_FakePacket([frame])], decode_target=decode_target)
-        src._demux_loop()
+        _demux_until_parked(src)
         return src, frame
 
     def test_reformats_to_planned_size(self):
@@ -1979,6 +2047,138 @@ class DurationSTest(unittest.TestCase):
             self.assertAlmostEqual(src.duration_s, 3.0, delta=0.5)
         finally:
             src.close()
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class SeekAfterEofTest(unittest.TestCase):
+    """The demuxer reads up to `max_video_buffer` frames ahead of playback, so
+    near the end of a clip it reaches EOF while the scene still has frames to
+    show — and a paused scene's frozen clock lets it run all the way there.
+    A seek requested after that (a resume, an A/B loop wrap, a jog back) has
+    to restart it at the target rather than end the scene."""
+
+    def _started_at_eof(self) -> AVFileSource:
+        fd, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        _write_synthetic_video(path, seconds=3, fps=30)
+        src = AVFileSource(path, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src.start(audio_push=None)
+        # 90 frames fit the read-ahead buffer, so the demuxer reaches EOF
+        # with no consumer at all.
+        self.assertTrue(_wait_until(lambda: src._eof), "demuxer never reached EOF")
+        return src
+
+    def test_a_seek_after_eof_is_applied(self):
+        src = self._started_at_eof()
+        src.request_seek(2.0)
+        self.assertTrue(
+            _wait_until(lambda: src.video_buffer_depth > 0), "the seek was never applied"
+        )
+        img = src.current_frame(2.0)
+        assert img is not None
+        # The PTS rebase stamps any first frame with the target, so the
+        # content decides: 2.0 s opens the blue third (BGR).
+        self.assertGreater(img[..., 0].mean(), 200)
+        self.assertLess(img[..., 2].mean(), 60)
+
+    def test_a_pending_seek_after_eof_is_not_finished(self):
+        # The scene polls `finished` every tick, and the request clears the
+        # buffer at once: between the request and the demuxer applying it,
+        # an EOF source with an empty buffer must not read as done.
+        src = _make_av_source_stub([], eof=True)
+        src.request_seek(1.0)
+        self.assertFalse(src.finished)
+
+    def test_a_seek_no_thread_will_apply_does_not_hold_finished_off(self):
+        # A demux thread that crashed or closed has nothing left to apply it.
+        src = _make_av_source_stub([], eof=True)
+        src._demux_exited = True
+        src.request_seek(1.0)
+        self.assertTrue(src.finished)
+        self.assertFalse(src.accepts_seeks)
+
+    def test_a_scene_seeking_back_after_eof_keeps_playing(self):
+        src = self._started_at_eof()
+        scene = _make_video_scene_stub(_StubSource(duration=3.0))
+        scene.source = src
+        with mock.patch.object(scenes, "_render_with_overlays"), _freeze_time(0.0):
+            scene.transport_seek(1.0)
+            self.assertTrue(scene.process_frame(current_time=0.0), "the seek ended the scene")
+            self.assertTrue(_wait_until(lambda: src.video_buffer_depth > 0))
+            self.assertTrue(scene.process_frame(current_time=0.0))
+        self.assertAlmostEqual(src.last_frame_pts, 1.0, delta=0.25)
+
+    class _LiveDemuxContainer(_FakeContainer):
+        """Records, at each seek, whether a demux() generator was still live."""
+
+        def __init__(self, packets: list[_FakePacket], flush: _FakePacket | None = None):
+            super().__init__(packets)
+            self._flush = flush if flush is not None else _FakePacket([])
+            self.reading = False
+            self.seeks: list[bool] = []
+
+        def demux(self):
+            self.reading = True
+            try:
+                yield from self._packets
+                yield self._flush  # PyAV's trailing flush packet
+            finally:
+                self.reading = False
+
+        def seek(self, offset_us: int) -> None:
+            self.seeks.append(self.reading)
+
+    def _run_demux_loop(self, src: AVFileSource) -> None:
+        worker = threading.Thread(target=src._demux_loop, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 5.0)
+        self.addCleanup(_signal_close, src)
+
+    def test_a_seek_after_eof_is_applied_inside_a_live_demux(self):
+        # PyAV arms a remote input's read timeout only while a demux()
+        # generator is alive, so a seek applied after one has finished waits
+        # forever on a server that stops answering the range request.
+        src = _make_demux_source_stub([])
+        container = self._LiveDemuxContainer([_FakePacket([_FakeFrame(0)])])
+        src.container = container
+        self._run_demux_loop(src)
+        self.assertTrue(_wait_until(lambda: src._eof), "demux loop never reached EOF")
+        src.request_seek(0.0)
+        self.assertTrue(_wait_until(lambda: container.seeks), "the seek was never applied")
+        self.assertEqual(container.seeks, [True])
+
+    def test_a_seek_landing_on_the_flush_packet_is_applied_inside_a_live_demux(self):
+        # The generator finishes right after its flush packet, so a seek
+        # requested while that packet decodes must wait for the next pass.
+        src = _make_demux_source_stub([])
+
+        class _SeekingPacket(_FakePacket):
+            requested = False
+
+            def decode(self):
+                if not self.requested:  # once: every pass yields this packet
+                    self.requested = True
+                    src.request_seek(0.0)
+                return []
+
+        container = self._LiveDemuxContainer(
+            [_FakePacket([_FakeFrame(0)])], flush=_SeekingPacket([])
+        )
+        src.container = container
+        self._run_demux_loop(src)
+        self.assertTrue(_wait_until(lambda: container.seeks), "the seek was never applied")
+        self.assertEqual(container.seeks, [True])
+
+    def test_the_restarted_pass_reaches_eof_again(self):
+        src = self._started_at_eof()
+        src.request_seek(2.5)
+        self.assertTrue(_wait_until(lambda: src.video_buffer_depth > 0))
+        self.assertTrue(_wait_until(lambda: src._eof))
+        while src.current_frame(10.0) is not None:
+            pass
+        self.assertTrue(src.finished)
 
 
 if __name__ == "__main__":

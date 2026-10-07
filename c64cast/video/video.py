@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import numpy as np
@@ -766,7 +766,13 @@ class AVFileSource:
         # PTS-sorted decoded video frames: (pts_seconds, BGR np.ndarray)
         self._video_buf: list[tuple[float, np.ndarray]] = []
         self._lock = threading.Lock()
+        # Wakes a demux thread parked at EOF (_await_seek_after_eof) when a
+        # seek is requested or the source closes.
+        self._wake = threading.Condition(self._lock)
         self._eof = False
+        # Set when the demux thread has returned for good (closed or crashed),
+        # so a seek requested after that cannot hold `finished` off forever.
+        self._demux_exited = False
         self._closed = False
         self._demux_poll: PollThread | None = None
         self._audio_push: Callable[[np.ndarray], object] | None = None
@@ -859,6 +865,7 @@ class AVFileSource:
         with self._lock:
             self._pending_seek = target_s
             self._video_buf.clear()
+            self._wake.notify_all()
 
     def set_muted(self, muted: bool) -> None:
         """Latch (or unlatch) audio output. While muted, `_emit_audio` drops
@@ -874,6 +881,14 @@ class AVFileSource:
         post-A audio) until the demuxer clears the pending slot."""
         with self._lock:
             return self._pending_seek is not None
+
+    @property
+    def accepts_seeks(self) -> bool:
+        """False once the demux thread has returned for good (closed or
+        crashed): a seek requested after that is never applied, so an A/B loop
+        wrap at EOF cannot restart playback."""
+        with self._lock:
+            return not self._demux_exited
 
     def _emit_audio(self, arr: np.ndarray) -> None:
         """Apply the noise gate + normalization gain to a mono int16 sample
@@ -939,14 +954,16 @@ class AVFileSource:
         with self._lock:
             target = self._pending_seek
             self._pending_seek = None
-        if target is None:
-            return False
+            if target is None:
+                return False
+            # In the same critical section that retires the request, or
+            # `finished` could see neither a pending seek nor a live pass.
+            self._eof = False
         self.container.seek(int(target * 1_000_000))
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
         if self._atempo_graph is not None:
             self._atempo_graph = _build_atempo_graph(self.target_sr, self._tempo_scale)
-        self._eof = False
         self._pts_offset = None
         self._pts_anchor_target = target
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
@@ -1066,36 +1083,70 @@ class AVFileSource:
             log.debug("demux: resampler flush failed: %s", e)
 
     def _demux_loop(self):
-        # "Container hit EOF" is expected and logs info; a mid-stream decode
-        # failure logs a full traceback.
+        """One demux pass per seek target: a pass that reaches EOF parks the
+        thread until a seek or close() arrives, and a seek starts the next
+        pass from the target. The demuxer reads ahead of playback, so it
+        reaches EOF while the scene still has seconds to show — and a seek
+        made in that window (a resume, an A/B loop wrap, a jog back) would be
+        lost with nothing left to apply it."""
+        # "Container hit EOF" is expected and logs debug; a mid-stream decode
+        # failure logs a full traceback and ends the thread.
+        try:
+            while (end := self._demux_pass()) != "closed":
+                if end == "eof":
+                    self._flush_resampler()
+                    self._flush_atempo()
+                    log.debug("demux %s: EOF", self.path)
+                    if not self._await_seek_after_eof():
+                        return
+        except Exception:
+            log.exception("demux %s crashed", self.path)
+        finally:
+            with self._lock:
+                self._eof = True
+                self._demux_exited = True
+
+    def _demux_pass(self) -> Literal["eof", "seek", "closed"]:
+        """Demux from the container's current position until EOF, an applied
+        seek, or close. A seek ends the pass rather than reading on through
+        the same `demux()`: once that generator has read EOF it yields only
+        flush packets, which would drain the decoders the seek just reset and
+        leave nothing to read from the target. Applying the seek inside a
+        live `demux()` is also what bounds it on a remote input — PyAV arms
+        the read timeout only for a generator's life — so a seek requested at
+        EOF is applied on the first (flush) packet of the next pass."""
         try:
             for packet in self.container.demux():
                 if self._closed:
-                    return
+                    return "closed"
                 if self._apply_pending_seek():
-                    continue
+                    return "seek"
                 if packet.stream.type == "video":
                     for frame in packet.decode():
                         img = self._frame_to_bgr(frame)
                         if not self._enqueue_frame(self._rebase_pts(frame), img):
-                            return
+                            return "closed"
                 elif (
                     packet.stream.type == "audio"
                     and self._resampler is not None
                     and self._audio_push is not None
                 ):
                     self._decode_audio_packet(packet)
-            self._flush_resampler()
-            self._flush_atempo()
-            log.debug("demux %s: EOF", self.path)
         except (EOFError, StopIteration):
-            self._flush_resampler()
-            self._flush_atempo()
-            log.debug("demux %s: EOF", self.path)
-        except Exception:
-            log.exception("demux %s crashed", self.path)
-        finally:
+            pass
+        # A seek requested after the last packet is not applied here, where
+        # the generator has finished and no longer bounds its reads:
+        # `_await_seek_after_eof` returns at once and the next pass applies it.
+        return "eof"
+
+    def _await_seek_after_eof(self) -> bool:
+        """Mark EOF and park until a seek is requested (True; the next pass
+        applies it) or the source closes (False)."""
+        with self._lock:
             self._eof = True
+            while self._pending_seek is None and not self._closed:
+                self._wake.wait()
+            return not self._closed
 
     def current_frame(self, audio_position_s: float) -> np.ndarray | None:
         """Return the latest video frame whose PTS ≤ audio_position_s.
@@ -1143,11 +1194,16 @@ class AVFileSource:
 
     @property
     def finished(self) -> bool:
+        """EOF with nothing left to show — unless a seek is still waiting
+        for a live demux thread to restart it."""
         with self._lock:
-            return self._eof and not self._video_buf
+            seek_outstanding = self._pending_seek is not None and not self._demux_exited
+            return self._eof and not self._video_buf and not seek_outstanding
 
     def close(self) -> None:
-        self._closed = True
+        with self._lock:
+            self._closed = True
+            self._wake.notify_all()
         if self._demux_poll is not None:
             self._demux_poll.stop()
             self._demux_poll = None

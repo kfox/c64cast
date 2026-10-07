@@ -320,6 +320,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   dropped in short crossfaded splices instead. `[audio].reu_pump_governor`
   (on by default) turns it off.
 
+- **Resuming a paused video near the end of its clip resumes it instead of
+  ending the scene.** The video decoder reads several seconds ahead and stopped
+  for good when it reached the end of the file, so a seek made after that was
+  never carried out. The same fix covers an A/B loop that wraps in those last
+  seconds, which used to hold a frozen frame, and a seek back from near the
+  end.
+
 - **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
   switched to the model the tune asks for.** The chip's model is a setting, but
   SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,

@@ -1669,8 +1669,13 @@ class VideoScene(MediaFileMixin, Scene):
 
     def process_frame(self, current_time: float) -> bool:
         # A source at EOF under an active A/B loop is about to wrap to A below,
-        # so it does not end the scene.
-        if self.source is None or (self.source.finished and self.transport.loop_state != "active"):
+        # so it does not end the scene — unless its demux thread is gone, when
+        # the wrap's seek would never land and the loop would hold its last
+        # frame for good.
+        if self.source is None or (
+            self.source.finished
+            and (self.transport.loop_state != "active" or not self.source.accepts_seeks)
+        ):
             # Clamps a sampler's position_seconds() to the pushed total; a
             # no-op for the DAC streamer, and idempotent.
             if self.audio is not None:
@@ -1686,9 +1691,8 @@ class VideoScene(MediaFileMixin, Scene):
             # domain on the resync tempo path, so compare against the scaled B.
             at_b = tr.loop_b is not None and clock_s >= tr.content_to_clock(tr.loop_b)
             if at_b or self.source.finished:
-                # On the resync path a source.finished wrap re-fires every frame
-                # until the demuxer clears _eof, and each re-fire would drop the
-                # first fresh post-A audio; flush and seek A exactly once.
+                # On the resync path a second wrap before the demuxer takes the
+                # seek would flush the first fresh post-A audio; seek A once.
                 if not (tr.resync and self.source.seek_pending):
                     tr.seek(tr.loop_a)
                 return True

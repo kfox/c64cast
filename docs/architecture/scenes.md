@@ -70,7 +70,7 @@ From then on `_clock_s()` free-runs from the anchor as `_wall_anchor_clock_s + (
 
 **`transport_loop_toggle()`** is a minimal 3-state cycle — mark A, mark B and start looping, clear — read by `process_frame`. Two things change there:
 
-* The EOF check becomes `source.finished and loop_state != "active"`, since an active loop is never "done".
+* The EOF check becomes `source.finished and (loop_state != "active" or not source.accepts_seeks)`, since an active loop is never "done" while the demux thread can still apply its wrap.
 * After computing `clock_s`, a loop-active scene checks `clock_s >= loop_b or source.finished` and seeks back to `loop_a` instead of rendering that tick.
 
 **Reset.** All transport state resets at the top of `setup()`, so a repeated or looped scene starts back on the audio-master clock, untouched.
@@ -114,7 +114,7 @@ It is used by `transport_seek`, the loop wrap, and resume-from-pause.
 * *Pause* — freeze the anchor, `source.set_muted(True)`, `audio.flush(silence_output=True)` for a fast mute.
 * *Resume* — `_splice(..., unmute=True)` back to the paused position: `request_seek`, **then** `set_muted(False)`, **then** the plain flush, which also restores the sampler's channel volume. The seek request comes first so the pending-seek guard holds back pre-seek audio, and whatever slips past it before the flush is retired by the flush epoch. The unmute comes before the flush because the demuxer can apply the seek and decode the target's first audio while the flush is still running. The sampler's cut-over waits on the ring writer and blanks the old lead, which takes tens of ms. A source still muted during that time dropped the audio, so the stream started past its target at the anchor, and on hardware the sound ran 50–200 ms ahead of the picture after a resume. A fake-link repro measured −163 to −256 ms with the old order and 0 ms with this one.
 
-**Loop-wrap re-fire guard.** The wrap adds `not (resync and source.seek_pending)`, so a `source.finished` wrap flushes and seeks A exactly once — not every frame until the demux clears `_eof`.
+**Loop-wrap re-fire guard.** The wrap adds `not (resync and source.seek_pending)`, so a wrap flushes and seeks A once even if another tick reaches the wrap before the demux thread takes the request. `finished` itself stays False while that seek is pending, so an EOF wrap does not re-fire on it. The wrap's seek reaches a demux thread that has already hit EOF, because that thread parks there rather than returning ([EOF handling](video-color.md#eof-handling)). A source whose demux thread has returned for good (`accepts_seeks` False) ends the scene at EOF even under an active loop, since the wrap's seek would never land.
 
 **The `tempo_scale` domain seam.** This is the bug hotspot. The internal clock stays in the scaled/PTS domain, while the transport *surface* — seek targets, loop A/B, OSD, `transport_position`, the frame-number label — speaks content seconds. `_clock_to_content` / `_content_to_clock` bridge them.
 
