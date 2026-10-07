@@ -852,7 +852,7 @@ class AVFileSource:
         waste CPU decoding + resampling audio just to discard it.
 
         ``audio_end`` is the sink's ``end_input``, called after the last push
-        of every pass that reaches EOF. Both sinks wait for a prebuffer before
+        of every pass that reaches EOF with no seek pending. Both sinks wait for a prebuffer before
         they play, and a clip whose audio is shorter than it never fills one.
         A seek after EOF starts pushing again, and the sink's next accepted
         push reopens its input, so the call is safe under an A/B loop."""
