@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import queue
+import sys
 import threading
 import time
 import unittest
@@ -66,6 +67,42 @@ class _SupersedeOnStompRead(AudioStreamer):
     @_stomp_requested.setter
     def _stomp_requested(self, value: bool) -> None:
         self.__dict__["_stomp_flag"] = value
+
+
+class _FlushDuringClaim(AudioStreamer):
+    """An AudioStreamer whose worker is flushed, from another thread, between
+    reading the flush epoch in ``_claim_ring_write`` and recording the chunk
+    as in flight: the window a check made outside ``_count_lock`` leaves open.
+    The flush gets 0.2 s to finish there; against the lock it blocks until the
+    claim is done."""
+
+    trigger_claim = 0
+    _claims = 0
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        self._epoch = 0
+        self.flusher: threading.Thread | None = None
+        self.anchors: list[float] = []
+        super().__init__(*a, **kw)
+
+    @property  # type: ignore[override]
+    def _flush_epoch(self) -> int:
+        in_claim = sys._getframe(1).f_code.co_name == "_claim_ring_write"
+        if in_claim and threading.current_thread().name == "test-worker":
+            self._claims += 1
+            if self._claims == self.trigger_claim:
+                value = self._epoch
+                self.flusher = threading.Thread(
+                    target=lambda: self.anchors.append(self.flush()), name="test-flusher"
+                )
+                self.flusher.start()
+                self.flusher.join(0.2)
+                return value
+        return self._epoch
+
+    @_flush_epoch.setter
+    def _flush_epoch(self, value: int) -> None:
+        self._epoch = value
 
 
 def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> AudioStreamer:
@@ -509,6 +546,79 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         _run_worker(s, until=lambda: s._queued_samples == 0, timeout=3.0)
         self.assertEqual(len(anchors), 1)
         return s, anchors[0]
+
+    def test_a_flush_in_the_claim_window_still_counts_the_chunk(self):
+        """The epoch check and the in-flight record are one step under
+        ``_count_lock``. A flush landing between them would anchor without a
+        chunk the worker then writes ahead of every post-splice sample."""
+        for claim in (1, PREBUFFER_CHUNKS + 2):
+            with self.subTest(claim=claim):
+                self._flush_in_claim_window(claim)
+
+    def _flush_in_claim_window(self, claim: int) -> None:
+        api = cast(Any, _make_worker_streamer(chunk_size=32).api)
+        s = _FlushDuringClaim(api, 64000, "NTSC")
+        s.chunk_size = 32
+        s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
+        s.trigger_claim = claim
+        for _ in range(PREBUFFER_CHUNKS + 3):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        _run_worker(s, until=lambda: s._queued_samples == 0 and bool(s.anchors))
+        flusher = s.flusher
+        assert flusher is not None
+        flusher.join(2.0)
+        self.assertFalse(flusher.is_alive())
+        self.assertEqual(len(s.anchors), 1)
+        landed = s._pushed_count - s._queued_samples
+        self.assertEqual(round(s.anchors[0] * s.effective_rate), landed)
+        self.assertGreater(landed, 0)
+
+    def test_a_splice_after_a_chunk_lands_does_not_count_it_twice(self):
+        """A landing clears the in-flight record. The worker next claims only
+        after its collect, so a flush in between anchored a chunk late
+        (the picture behind the sound) off a record that had already landed."""
+        for chunks in (1, PREBUFFER_CHUNKS + 1):
+            with self.subTest(landed_chunks=chunks):
+                s, landed, anchor = self._flush_in("_collect_until", after_chunks=chunks)
+                self.assertEqual(round(anchor * s.effective_rate), landed)
+
+    def test_a_splice_with_a_chunk_handed_off_does_not_count_it(self):
+        """A chunk handed off to the next iteration is claimed with 0 queued
+        samples in flight: it is not in the ring until that iteration writes
+        it, and a flush before then drops it. Counting it anchored a chunk
+        late."""
+        s, landed, anchor = self._flush_in("next_pace_increment", after_chunks=PREBUFFER_CHUNKS)
+        self.assertEqual(round(anchor * s.effective_rate), landed)
+
+    def _flush_in(self, name: str, *, after_chunks: int) -> tuple[AudioStreamer, int, float]:
+        """Run a worker over a full queue, flushing at the first call of the
+        worker's ``name`` once ``after_chunks`` chunks have landed; return the
+        streamer, the landed count at that moment and the anchor."""
+        s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+        for _ in range(PREBUFFER_CHUNKS + 3):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        flushes: list[tuple[int, float]] = []
+        owner = s.servo if name == "next_pace_increment" else s
+        real = getattr(owner, name)
+
+        def flush_then_call(*a, **kw):  # type: ignore[no-untyped-def]
+            # The worker's own call: a drip's interleaved collect runs before
+            # its chunk is counted landed.
+            from_worker = sys._getframe(1).f_code.co_name == "_worker"
+            if from_worker and not flushes and len(_written_stream(s)) // 32 >= after_chunks:
+                landed = s._pushed_count - s._queued_samples
+                flushes.append((landed, s.flush()))
+            return real(*a, **kw)
+
+        with mock.patch.object(owner, name, flush_then_call):
+            _run_worker(s, until=lambda: bool(flushes))
+        self.assertEqual(len(flushes), 1, "the worker never reached the flush point")
+        self.assertGreaterEqual(flushes[0][0], 32 * after_chunks)
+        return s, *flushes[0]
 
     def test_worker_exits_when_its_generation_is_superseded(self):
         """stop()'s join is bounded, so a worker parked in a ring write can
