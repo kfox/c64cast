@@ -896,6 +896,27 @@ def _validate_dac_curve_resolution(
         authoritative = dac_calibration_store.offline_key_is_authoritative(cfg)
         try:
             label, _ = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
+            declined = (
+                None
+                if label.startswith("calibrated:")
+                else _auto_declined_calibration(
+                    cfg, None, dac_calibration_store.resolve_calibration_key(cfg, None)
+                )
+            )
+            if declined is not None:
+                out.append(
+                    Diagnostic(
+                        level="ok",
+                        category="audio",
+                        subject=f"{name}/dac_curve",
+                        message=(
+                            f"a calibration measured on an {declined} applies, but 'auto' "
+                            f"resolves to {label!r} over it; set [audio].dac_curve = "
+                            "'calibrated' to play it."
+                        ),
+                    )
+                )
+                continue
             if not authoritative and not label.startswith("calibrated:"):
                 on_disk = dac_calibration_store.list_calibration_files(cfg.hardware.backend)
                 if on_disk:
@@ -2395,6 +2416,24 @@ def _probe_master_volume(name: str, cfg: Config, api: object) -> list[Diagnostic
     ]
 
 
+def _auto_declined_calibration(cfg: Config, api: object, key: str) -> str | None:
+    """The chip label of the calibration that ``"auto"`` resolved past for this
+    system (see ``dac_curve_resolve.auto_declined_chip``), or None when no
+    table applies or ``"auto"`` would play it. ``api`` is None offline."""
+    if cfg.audio.dac_curve != "auto" or cfg.audio.digi_boost:
+        return None
+    from c64cast.audio import dac_calibration_store, dac_curve_resolve
+
+    found, measured = dac_calibration_store.load_calibrated_table_and_chip(
+        cfg,
+        be=api,  # type: ignore[arg-type]
+        path=dac_calibration_store.path_for_key(cfg, key),
+    )
+    if found is None:
+        return None
+    return dac_curve_resolve.auto_declined_chip(measured)
+
+
 def _wants_dac_calibration_check(cfg: Config) -> bool:
     """The run wants a DAC calibration check when audio is enabled and
     [audio].dac_curve is a system-aware curve ('auto' or 'calibrated')."""
@@ -2436,15 +2475,7 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
             )
         ]
     key = dac_calibration_store.resolve_calibration_key(cfg, api)  # type: ignore[arg-type]
-    declined = None
-    if table is None and curve == "auto" and not cfg.audio.digi_boost:
-        found, measured = dac_calibration_store.load_calibrated_table_and_chip(
-            cfg,
-            be=api,  # type: ignore[arg-type]
-            path=dac_calibration_store.path_for_key(cfg, key),
-        )
-        if found is not None:
-            declined = dac_curve_resolve.auto_declined_chip(measured)
+    declined = None if table is not None else _auto_declined_calibration(cfg, api, key)
     if table is not None:
         message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
     elif curve == "auto" and cfg.audio.digi_boost:

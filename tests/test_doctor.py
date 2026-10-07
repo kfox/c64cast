@@ -1359,6 +1359,20 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
         self.assertIn("1 calibration file(s) on disk", diags[0].message)
         self.assertIn("--skip-probe", diags[0].hint or "")
 
+    def test_auto_over_an_armsid_table_names_the_table_it_declined(self):
+        path = Path(self._tmp.name) / "rig.json"
+        path.write_text(
+            '{"schema": 2, "d400_socket": 1, "sids": {"1": '
+            f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
+        )
+        loaded = self._loaded("auto", extra=f'dac_calibration_profile = "{path}"')
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+            diags = doctor._validate_dac_curve_resolution(loaded)
+        self.assertEqual(len(diags), 1)
+        self.assertIn("ARMSID 8580", diags[0].message)
+        self.assertIn("'calibrated'", diags[0].message)
+        self.assertNotIn("no calibration", diags[0].message)
+
     def test_calibrated_no_files_anywhere_is_still_a_hard_error(self):
         diags = doctor._validate_dac_curve_resolution(self._loaded("calibrated"))
         self.assertEqual(len(diags), 1)
