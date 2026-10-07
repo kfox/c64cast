@@ -25,6 +25,7 @@ from c64cast.video.video import (
     AVFileSource,
     _build_atempo_graph,
     _compute_normalization_gain,
+    _ContainerCloser,
     _is_remote_url,
     _plan_decode_size,
     _SampleProgressTap,
@@ -663,6 +664,7 @@ def _make_demux_source_stub(
     src.target_sr = 8000
     src.a_stream = None
     src.container = _FakeContainer(packets)
+    src._closer = _ContainerCloser(src.container)
     return src
 
 
@@ -2523,6 +2525,36 @@ class RemoteSeekBoundTest(unittest.TestCase):
             self.assertTrue(_wait_until(lambda: src._eof), "demuxer never reached EOF")
             src.request_seek(3.0)
             self.assertTrue(_wait_until(lambda: src.finished), "a stalled seek hung the source")
+
+    def test_close_during_a_transport_seek_leaves_the_container_to_it(self):
+        # close() joins the demux thread for 1 s, well inside the read bound,
+        # so it returns while the seek is still inside FFmpeg.
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 5.0))
+        server = _RangeHttpServer(Path(self.local).read_bytes(), serve=1)
+        self.addCleanup(server.close)
+        src = AVFileSource(server.url, target_sample_rate=8000, scan_audio_peak=False)
+        real = src.container
+        closed_by: list[str] = []
+
+        def close():
+            closed_by.append(threading.current_thread().name)
+            real.close()
+
+        src._closer._container = mock.Mock(close=close)
+        with self.assertLogs("c64cast", level="WARNING") as logs:
+            src.start(audio_push=None)
+            self.assertTrue(_wait_until(lambda: src._eof), "demuxer never reached EOF")
+            src.request_seek(3.0)
+            self.assertTrue(
+                _wait_until(lambda: any(t.name == "av-seek" for t in threading.enumerate()))
+            )
+            src.close()
+            self.assertEqual(closed_by, [], "close() freed the container under a live seek")
+            server.close()
+            self.assertTrue(_wait_until(lambda: closed_by), "the seek never closed the container")
+            self.assertTrue(_wait_until(lambda: src._demux_exited))
+        self.assertEqual(closed_by, ["av-seek"])
+        self.assertTrue(any("did not stop" in m for m in logs.output))
 
     def test_a_seek_after_a_long_pause_reaches_a_healthy_server(self):
         # Blocked on a full buffer, the demux thread holds its generator open

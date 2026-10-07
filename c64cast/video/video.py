@@ -14,7 +14,6 @@ See docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfile
 
 from __future__ import annotations
 
-import contextlib
 import itertools
 import logging
 import os
@@ -161,12 +160,59 @@ def av_open(path: str):
 class RemoteSeekStalled(RuntimeError):
     """A seek on a network input got no answer within the read bound.
 
-    The container now belongs to the abandoned seek: the worker still inside
-    FFmpeg closes it if the seek ever returns, and nothing else may touch it
-    — closing it from here would free the context that read is using."""
+    The container's close now waits on the abandoned seek: the worker still
+    inside FFmpeg closes it once the seek returns and the owner has released
+    it — closing it any sooner would free the context that read is using."""
 
 
-def _seek(container: Any, path: str, offset: int, **kwargs: Any) -> None:
+class _ContainerCloser:
+    """Closes a container once its owner has released it and no `_seek`
+    worker is inside it, whichever comes last.
+
+    An owner whose close can run while a seek is in flight on another thread
+    (`AVFileSource.close` against the demux thread's transport seek) releases
+    through this rather than closing directly, because that seek can outlive
+    any join the owner is willing to wait for."""
+
+    def __init__(self, container: Any) -> None:
+        self._container = container
+        self._lock = threading.Lock()
+        self._seeks = 0
+        self._released = False
+        self._closed = False
+
+    def enter(self) -> None:
+        with self._lock:
+            self._seeks += 1
+
+    def leave(self) -> None:
+        with self._lock:
+            self._seeks -= 1
+        self._close_if_done()
+
+    def release(self) -> None:
+        with self._lock:
+            self._released = True
+        self._close_if_done()
+
+    def _close_if_done(self) -> None:
+        with self._lock:
+            if self._closed or not self._released or self._seeks:
+                return
+            self._closed = True
+        try:
+            self._container.close()
+        except Exception as e:
+            log.debug("container close: %s", e)
+
+
+def _seek(
+    container: Any,
+    path: str,
+    offset: int,
+    closer: _ContainerCloser | None = None,
+    **kwargs: Any,
+) -> None:
     """``container.seek`` bounded by `_REMOTE_READ_TIMEOUT_S` for any input
     `av_open` bounds (see `_is_local_file`), raising `RemoteSeekStalled` past
     it.
@@ -176,13 +222,19 @@ def _seek(container: Any, path: str, offset: int, **kwargs: Any) -> None:
     cannot come from PyAV: a seek outside one waits forever on a server that
     stops answering the range request it opens, and one inside a generator
     held open by a paused scene fails at once against a healthy server. The
-    seek runs on a worker instead, which the caller abandons on a stall."""
+    seek runs on a worker instead, which the caller abandons on a stall.
+
+    ``closer`` is the owner's `_ContainerCloser` when another thread may close
+    the container while this seek runs; the owner then releases it as usual.
+    Without one, a stall releases the container here, so the caller must not
+    touch it again."""
     if _is_local_file(path):
         container.seek(offset, **kwargs)
         return
+    owned = closer is None
+    guard = closer if closer is not None else _ContainerCloser(container)
     outcome: list[BaseException | None] = []
-    abandoned = False
-    lock = threading.Lock()
+    guard.enter()
 
     def run() -> None:
         try:
@@ -190,21 +242,18 @@ def _seek(container: Any, path: str, offset: int, **kwargs: Any) -> None:
             result: BaseException | None = None
         except BaseException as e:  # noqa: BLE001 — handed to the caller
             result = e
-        with lock:
-            outcome.append(result)
-            if abandoned:
-                with contextlib.suppress(Exception):
-                    container.close()
+        outcome.append(result)
+        guard.leave()
 
     worker = threading.Thread(target=run, name="av-seek", daemon=True)
     worker.start()
     worker.join(_REMOTE_READ_TIMEOUT_S)
-    with lock:
-        if not outcome:
-            abandoned = True
-            raise RemoteSeekStalled(
-                f"the media server did not answer a seek within {_REMOTE_READ_TIMEOUT_S:g} s"
-            )
+    if not outcome:
+        if owned:
+            guard.release()
+        raise RemoteSeekStalled(
+            f"the media server did not answer a seek within {_REMOTE_READ_TIMEOUT_S:g} s"
+        )
     if outcome[0] is not None:
         raise outcome[0]
 
@@ -834,9 +883,9 @@ class AVFileSource:
         # Set when the demux thread has returned for good (closed or crashed),
         # so a seek requested after that cannot hold `finished` off forever.
         self._demux_exited = False
-        # Set when a transport seek stalled: the abandoned seek owns the
-        # container, so close() leaves it alone (RemoteSeekStalled).
-        self._container_abandoned = False
+        # close() releases the container through this, so a transport seek
+        # still inside FFmpeg closes it when it returns (RemoteSeekStalled).
+        self._closer = _ContainerCloser(self.container)
         self._closed = False
         self._demux_poll: PollThread | None = None
         self._audio_push: Callable[[np.ndarray], object] | None = None
@@ -1048,11 +1097,7 @@ class AVFileSource:
             # `finished` could see neither a pending seek nor a live pass.
             self._eof = False
             self._audio_end_sent = False
-        try:
-            _seek(self.container, self.path, int(target * 1_000_000))
-        except RemoteSeekStalled:
-            self._container_abandoned = True
-            raise
+        _seek(self.container, self.path, int(target * 1_000_000), closer=self._closer)
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
         if self._atempo_graph is not None:
@@ -1245,6 +1290,10 @@ class AVFileSource:
         decoders the seek just reset, and a seek inside one is timed against
         its last read (see `_seek`). The packet in flight when the seek
         arrived was read from the old position and is dropped."""
+        if self._closed:
+            # close() may have landed during the seek that ended the last
+            # pass, and that seek's worker has since closed the container.
+            return "closed"
         packets = self.container.demux()
         try:
             for packet in packets:
@@ -1340,9 +1389,4 @@ class AVFileSource:
         if self._demux_poll is not None:
             self._demux_poll.stop()
             self._demux_poll = None
-        if self._container_abandoned:
-            return
-        try:
-            self.container.close()
-        except Exception as e:
-            log.debug("container close: %s", e)
+        self._closer.release()
