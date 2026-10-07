@@ -1835,6 +1835,7 @@ class EndAudioInputSeekGuardTest(unittest.TestCase):
         src._end_audio_input()
         src._pending_seek = 1.0
         src.container = mock.MagicMock()
+        src._closer = _ContainerCloser(src.container)
         src.a_stream = None
         src._atempo_graph = None
         with self.assertLogs("c64cast.video.video", level="INFO"):
