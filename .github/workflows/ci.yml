@@ -131,10 +131,12 @@ jobs:
       - name: Warm node (timed)
         # The first node launch on a fresh Windows runner has outlasted the
         # suite's 20 s child bound (#616). Paying for it here keeps it out from
-        # under that bound, and `time` puts its cost in the log.
+        # under that bound, and `time` puts its cost in the log. `--version`
+        # would not do: node answers it before starting V8, so the cost the
+        # test's `node -e` pays would still land under the bound.
         shell: bash
         timeout-minutes: 5
-        run: time node --version
+        run: time node -e ""
 
       - name: Unit tests
         env:
