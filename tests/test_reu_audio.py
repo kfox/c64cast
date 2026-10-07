@@ -1811,6 +1811,39 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         self.assertEqual(fake.memories[f"{CIA1.ICR:04X}"], f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
         self.assertFalse(s._cia1_unmask_owed)
 
+    def test_an_arm_whose_owed_unmask_never_confirms_unwinds(self):
+        # The pump would sit on $0314 under a mask that keeps it from running;
+        # the unwind takes it off, and the unmask stays owed to stop().
+        icr, unmask = f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+        s = new_streamer(dither=False, use_reu_pump=True)
+        fake = cast(FakeAPI, s.api)
+        s._cia1_unmask_owed = True
+        dropping = self._drop_unmasks(fake)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+        self.assertTrue(s._cia1_unmask_owed)
+        dropping[0] = False
+        s.stop()
+        self.assertEqual(fake.memories[icr], unmask)
+        self.assertFalse(s._cia1_unmask_owed)
+
+    def test_a_dispatcher_entry_upload_pays_an_owed_unmask(self):
+        # The confirmed entry stage already unmasked CIA #1, so a second unmask
+        # at arm is one more write a lossy link could fail the install on.
+        icr, unmask = f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+        s = new_streamer(dither=False, use_reu_pump=True)
+        fake = cast(FakeAPI, s.api)
+        s._cia1_unmask_owed = True
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertFalse(s._cia1_unmask_owed)
+        self.assertEqual(fake.ops.count(("write_memory", icr, unmask)), 1)
+
     def test_a_lost_vector_restore_at_stop_is_resent(self):
         # stop()'s restore is the last write that can take an armed pump off
         # $0314; one lost on the link would leave it running past the scene.

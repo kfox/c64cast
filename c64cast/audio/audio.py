@@ -1880,6 +1880,10 @@ class AudioStreamer:
             except PumpInstallError:
                 self._park_tracked_pump(dispatcher_owns_irq, entry_may_be_up=stage == "entry")
                 raise
+        if dispatcher_owns_irq:
+            # Not left owed to _arm_installed_pump: the entry's confirmed unmask
+            # already held, and a second one lost there would unwind the pump.
+            self._cia1_unmask_owed = False
 
     def _write_pump_entry(self, code: bytes, *, dispatcher_owns_irq: bool) -> None:
         """Write ``code`` at the $C100 pump entry. Under a dispatcher, CIA #1 is
