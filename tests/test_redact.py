@@ -299,6 +299,8 @@ class RedactSecretsTest(unittest.TestCase):
             ('token=bU"secretvalue" more', 'token=REDACTED" more'),
             ("token=b'secretvalue", "token=REDACTED"),
             ("token=rb'secretvalue' x", "token=rb'REDACTED' x"),
+            ("token=rU'abc def' x", "token=REDACTED' x"),
+            ("Bearer rU'abc def' x", "Bearer REDACTED' x"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
@@ -308,6 +310,8 @@ class RedactSecretsTest(unittest.TestCase):
         inside JSON escapes its quotes more than once."""
         for line, want in (
             ("{'token' => 'abc'}", "{'token' => 'REDACTED'}"),
+            ("{'token'=>'abc'}", "{'token'=>'REDACTED'}"),
+            ("password=>abc123 x", "password=REDACTED x"),
             (
                 '"{\\\\\\"token\\\\\\": \\\\\\"abc\\\\\\"}"',
                 '"{\\\\\\"token\\\\\\": \\\\\\"REDACTED"}"',
@@ -365,6 +369,8 @@ class RedactSecretsTest(unittest.TestCase):
             ("{'Authorization': 's3cr3t def'}", "{'Authorization': 'REDACTED'}"),
             ("Authorization: SSWS s3cr3t", "Authorization: REDACTED"),
             ("Authorization: NEGOTIATE s3cr3t", "Authorization: NEGOTIATE REDACTED"),
+            ('Authorization: s3cr3t "" x', 'Authorization: REDACTED "" x'),
+            ("Authorization: s3cr3t ''", "Authorization: REDACTED ''"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)

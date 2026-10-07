@@ -94,7 +94,11 @@ _SHELL_PWD = ("PWD", "OLDPWD")
 
 #: What follows a key: an optional closing quote (escaped, once or more, in a
 #: rendering such as `{\'token\': …}`), then `=`, `:` or `=>`, then the value.
-_KEY_TAIL = re.compile(r"""\\* ["']? \s* (?P<sep> [=:] ) [=:>]* \s*""", re.VERBOSE)
+#: The `>` is the separator's only when a space or a quote follows it; glued to
+#: more text it is the value's first character, as in `password=>abc`.
+_KEY_TAIL = re.compile(
+    r"""\\* ["']? \s* (?P<sep> [=:] ) [=:]* (?: > (?= [\s"'\\] ) )? \s*""", re.VERBOSE
+)
 
 #: A quote that opens a value: single or triple, after an optional Python
 #: string prefix (`b'…'`) or backslashes (an escaped rendering, perhaps
@@ -402,19 +406,9 @@ def _names_no_password(text: str, s: int, end: int) -> bool:
     lo = s
     while lo > 0 and s - lo < _NOT_A_PASSWORD_REACH and _is_name_char(text[lo - 1]):
         lo -= 1
-    boundary = lo == 0 or not _is_name_char(text[lo - 1])
-    letters: list[str] = []
-    starts: set[int] = set()
-    for c in text[lo:end].lower():
-        if c in "_-":
-            boundary = True
-            continue
-        if boundary:
-            starts.add(len(letters))
-            boundary = False
-        letters.append(c)
-    run = "".join(letters)
-    return any(run.endswith(w) and len(run) - len(w) in starts for w in _NOT_A_PASSWORD)
+    parts = re.split(r"[_-]", text[lo:end].lower())
+    first = 0 if lo == 0 or not _is_name_char(text[lo - 1]) else 1
+    return any("".join(parts[i:]) in _NOT_A_PASSWORD for i in range(first, len(parts)))
 
 
 def _opener(text: str, p: int) -> re.Match[str] | None:
@@ -429,6 +423,13 @@ def _value(line: _Line, v: int, d: int, kind: str) -> Span | None:
     """The span of the value starting at `v`, quoted or not; an unquoted one
     ends at a `kind` stop no deeper than `d`, which is its separator's depth."""
     opener = _opener(line.text, v)
+    if opener is None and (shaped := _OPENER.match(line.text, v)) is not None:
+        # Letters no Python prefix spells, then a quote: the letters start the
+        # value, and the quote may still have opened it, so the mask runs to
+        # whichever end is later. Read as unquoted alone, `rU'abc def'` left
+        # `def'` in view.
+        quoted = _quoted_end(line, shaped, shaped.end())
+        return (v, max(quoted, line.stop(kind, v, d)))
     if opener is not None:
         start = opener.end()
         end = _quoted_end(line, opener, start)
@@ -470,7 +471,7 @@ def _credential(line: _Line, c: int, gap: str, d: int) -> Span | None:
     if c >= len(line.text):
         return None
     kind = "unquoted+" if "+" in gap else "unquoted"
-    if _opener(line.text, c) is not None:
+    if _OPENER.match(line.text, c) is not None:
         return _value(line, c, d, kind)
     return (c, line.stop(kind, c + 1, d))
 
@@ -515,9 +516,9 @@ def _past_scheme(line: _Line, v: int, span: Span | None) -> Span | None:
         return span
     gap_start, gap_end = scheme.span("gap")
     credential = _credential(line, gap_end, scheme.group("gap"), line.deepest(gap_start, gap_end))
-    if credential is None or _is_auth_scheme(scheme):
+    if _is_auth_scheme(scheme):
         return credential
-    return (v, credential[1])
+    return span if credential is None else (v, credential[1])
 
 
 def _is_auth_scheme(m: re.Match[str]) -> bool:
