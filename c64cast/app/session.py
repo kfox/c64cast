@@ -380,13 +380,15 @@ def _warn_if_menu_open(api: C64Backend) -> None:
         )
 
 
-def _build_audio(cfg: cfgmod.Config, api: C64Backend) -> AudioStreamer | None:
-    """The shared $D418 DAC streamer, or None with audio disabled. Resolves
-    the system-aware [audio].dac_curve ("auto"/"calibrated") to a concrete
-    (label, table) for this backend + any per-unit calibration first."""
-    dac_curve_label, dac_table = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
-    if cfg.audio.enabled and dac_curve_label != cfg.audio.dac_curve:
-        log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve_label)
+def _build_audio(
+    cfg: cfgmod.Config, api: C64Backend, dac_curve: dac_curve_resolve.DacCurve
+) -> AudioStreamer | None:
+    """The shared $D418 DAC streamer, or None with audio disabled, playing
+    through ``dac_curve`` — the system-aware [audio].dac_curve
+    ("auto"/"calibrated") already resolved for this backend + any per-unit
+    calibration."""
+    if cfg.audio.enabled and dac_curve.label != cfg.audio.dac_curve:
+        log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve.label)
     if not cfg.audio.enabled:
         return None
     return AudioStreamer(
@@ -395,8 +397,8 @@ def _build_audio(cfg: cfgmod.Config, api: C64Backend) -> AudioStreamer | None:
         cfg.ultimate64.system,
         dither=cfg.audio.dither,
         digi_boost=cfg.audio.digi_boost,
-        dac_curve=dac_curve_label,
-        dac_table=dac_table,
+        dac_curve=dac_curve.label,
+        dac_table=dac_curve.table,
         sid_filter_cutoff=cfg.audio.sid_filter_cutoff,
         use_reu_pump=cfg.audio.use_reu_pump,
         reu_pump_governor=cfg.audio.reu_pump_governor,
@@ -636,11 +638,12 @@ def _acquire_stack(
     )
     if video_output_restore is not None and api.profile.supports_reset:
         api.reset()
-    audio = _build_audio(cfg, api)
+    dac_curve = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
+    audio = _build_audio(cfg, api, dac_curve)
     if audio is not None:
         release_on_failure("audio shutdown", audio.close)
     dac_model_restore = (
-        dac_curve_resolve.provision_calibrated_chip_model(cfg, api, audio.dac_curve_name)
+        dac_curve_resolve.provision_calibrated_chip_model(api, dac_curve)
         if audio is not None and api.profile.supports_sid_config
         else None
     )
