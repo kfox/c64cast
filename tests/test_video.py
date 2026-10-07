@@ -1739,6 +1739,24 @@ class EndAudioInputSeekGuardTest(unittest.TestCase):
         src._end_audio_input()
         self.assertEqual(held, [True])
 
+    def test_a_demux_crash_ends_the_input(self):
+        # Nothing more is pushed after a crash, so a clip that pushed less
+        # than the prebuffer before it is played only if the input ends.
+        class _CrashingContainer:
+            def demux(self):
+                raise RuntimeError("decode failed")
+
+        ended: list[bool] = []
+        src = _make_demux_source_stub([])
+        src.container = _CrashingContainer()
+        src._audio_push = lambda arr: None
+        src._audio_end = lambda: ended.append(True)
+        with self.assertLogs("c64cast.video.video", level="ERROR") as logs:
+            src._demux_loop()
+        self.assertIn("crashed", logs.output[0])
+        self.assertEqual(ended, [True])
+        self.assertTrue(src._demux_exited)
+
 
 class VideoSceneProcessFrameLoopTest(unittest.TestCase):
     """process_frame's EOF check + loop-wrap: an active A/B loop neither

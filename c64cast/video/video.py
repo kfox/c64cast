@@ -852,7 +852,8 @@ class AVFileSource:
         waste CPU decoding + resampling audio just to discard it.
 
         ``audio_end`` is the sink's ``end_input``, called after the last push
-        of every pass that reaches EOF with no seek pending. Both sinks wait for a prebuffer before
+        of every pass that reaches EOF with no seek pending, and when the
+        demuxer crashes. Both sinks wait for a prebuffer before
         they play, and a clip whose audio is shorter than it never fills one.
         A seek after EOF starts pushing again, and the sink's next accepted
         push reopens its input, so the call is safe under an A/B loop."""
@@ -1114,6 +1115,9 @@ class AVFileSource:
                         return
         except Exception:
             log.exception("demux %s crashed", self.path)
+            # The crash is this input's end too: a clip that pushed less than
+            # the sink's prebuffer before it would otherwise never be played.
+            self._end_audio_input()
         finally:
             with self._lock:
                 self._eof = True
