@@ -1300,6 +1300,11 @@ class AudioStreamer:
             # activation's crash: clearing `running` would stop that one.
             if current():
                 self.running = False
+            # The chunk whose write raised never lands, so nothing would count
+            # it landed: left in flight, every later flush anchored it late.
+            with self._count_lock:
+                if generation == self._worker_generation:
+                    self._in_flight_samples = 0
 
     def _resync_after_stall(
         self, lag: float, generation: int, w_head: int

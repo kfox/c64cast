@@ -1038,6 +1038,51 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             s.running = False
         self.assertTrue(any("audio worker crashed" in m for m in cm.output))
 
+    def _crash_in_write(self, at: int, *, superseded: bool = False) -> AudioStreamer:
+        """Run a worker over a full queue until its ``at``-th ring write
+        (0-based) raises, and return the streamer after the worker died.
+        ``superseded`` bumps the generation and records a chunk in flight for
+        the next session first, as its worker's claim would."""
+        s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+        for _ in range(PREBUFFER_CHUNKS + 3):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+
+        def write(addr, data):  # type: ignore[no-untyped-def]
+            if len(api.writes) == at:
+                if superseded:
+                    s._worker_generation += 1  # the next scene's _start_worker
+                    with s._count_lock:
+                        s._in_flight_samples = 32  # its claim
+                raise RuntimeError("dma exploded")
+            real_write(addr, data)
+
+        api.write_memory_file = write
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s.running = True
+            t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+            t.start()
+            t.join(timeout=2.0)
+        self.assertFalse(t.is_alive())
+        return s
+
+    def test_a_worker_that_dies_in_a_ring_write_leaves_no_chunk_in_flight(self):
+        """The chunk a crashed write held never lands, and nothing will ever
+        count it landed. Left in flight, every later splice anchored that
+        chunk late, the picture one chunk behind the sound, until stop()."""
+        for at in (1, PREBUFFER_CHUNKS):
+            with self.subTest(write=at):
+                s = self._crash_in_write(at)
+                landed = s._pushed_count - s._queued_samples
+                self.assertEqual(round(s.flush() * s.effective_rate), landed)
+
+    def test_a_superseded_worker_dying_leaves_the_next_sessions_chunk_in_flight(self):
+        s = self._crash_in_write(1, superseded=True)
+        self.assertEqual(s._in_flight_samples, 32, "cleared the next session's claim")
+
 
 class PitchCompensationLatchTest(unittest.TestCase):
     """set_nmi_latch_for_mode converts a playback-rate multiplier into a CIA #2
