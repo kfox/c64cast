@@ -231,6 +231,14 @@ def _build_my_scene(ctx: _SceneBuildContext) -> Scene:
 Then add any custom config fields to `SceneCfg` (in `config.py`)
 so they round-trip through TOML.
 
+Give the type an entry in `_SCENE_TYPES` in
+[introspect.py](../c64cast/app/introspect.py) (its name, a one-line
+description, and the display modes it accepts) so `--list-scenes` and
+`--describe` know it, then run `make schema`: `SCENE_TYPES` is the `type`
+field's `choices`, so the committed schema changes with it.
+`tests/test_introspect.py` and `tests/test_schema.py` fail until all of
+these agree.
+
 ### Things to honor
 
 * `target_fps` — set in `__init__` if your scene can't sustain the
@@ -396,7 +404,7 @@ per surface, fakes at the top, three-to-six small `test_*` methods.
 | What you're adding         | Where it goes                                                | Wire-up                                                                 |
 |----------------------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
 | Overlay                    | [c64cast/scenes/overlays/yours.py](../c64cast/scenes/overlays/)        | `@register("yours")` + add to `_load_all()` in `overlays/__init__.py`   |
-| Scene                      | [c64cast/scenes/scenes.py](../c64cast/scenes/scenes.py) (or new file)  | `SCENE_TYPES` + `_VALIDATORS`/`_BUILDERS` entries in `scene_factory` + optional `SceneCfg` fields |
+| Scene                      | [c64cast/scenes/scenes.py](../c64cast/scenes/scenes.py) (or new file)  | `config.SCENE_TYPES` + `scene_factory._VALIDATORS`/`_BUILDERS` + `introspect._SCENE_TYPES` + `make schema` + optional `SceneCfg` fields |
 | DisplayMode                | [c64cast/video/modes/](../c64cast/video/modes/)                      | branch in `scene_factory._build_display_mode`                                  |
 | Background                 | [c64cast/scenes/backgrounds.py](../c64cast/scenes/backgrounds.py)      | `@register("yours")` decorator                                          |
 | CLI flag                   | [c64cast/app/cli.py](../c64cast/app/cli.py)                      | `default=None` + entry in `config.CLI_TO_CFG`                           |
