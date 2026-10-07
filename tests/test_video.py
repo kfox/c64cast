@@ -2051,8 +2051,12 @@ class SeekAfterEofTest(unittest.TestCase):
         self.assertTrue(
             _wait_until(lambda: src.video_buffer_depth > 0), "the seek was never applied"
         )
-        self.assertIsNotNone(src.current_frame(2.0))
-        self.assertAlmostEqual(src.last_frame_pts, 2.0, delta=0.25)
+        img = src.current_frame(2.0)
+        assert img is not None
+        # The PTS rebase stamps any first frame with the target, so the
+        # content decides: 2.0 s opens the blue third (BGR).
+        self.assertGreater(img[..., 0].mean(), 200)
+        self.assertLess(img[..., 2].mean(), 60)
 
     def test_a_pending_seek_after_eof_is_not_finished(self):
         # The scene polls `finished` every tick, and the request clears the
