@@ -295,6 +295,23 @@ class BuildSessionTest(unittest.TestCase):
         self.assertEqual(cm.exception.exit_code, 4)
         self.assertEqual(torn, ["b", "a"])
 
+    def test_any_exception_from_a_later_build_tears_down_what_came_up(self):
+        # A provisioning step raising an OSError or RuntimeError, or a Ctrl+C
+        # mid-build, leaves system a's socket and provisioning just as held.
+        for exc in (OSError("socket"), RuntimeError("streamer"), KeyboardInterrupt()):
+            loaded = _loaded(["a", "b", "c"], is_ensemble=True)
+            built = [fake_system_stack("a"), fake_system_stack("b")]
+            with (
+                self.subTest(exc=type(exc).__name__),
+                mock.patch.object(session, "build_stack", side_effect=[*built, exc]),
+                mock.patch.object(session, "teardown_stack") as teardown,
+            ):
+                with self.assertRaises(type(exc)) as cm:
+                    session.build_session(_args(), loaded, loaded.cfgs)
+                self.assertIs(cm.exception, exc)
+                torn = [c.args[0].name for c in teardown.call_args_list]
+                self.assertEqual(torn, ["b", "a"])
+
     def test_ensemble_mode_binds_every_playlist(self):
         loaded = _loaded(["a", "b"], is_ensemble=True)
         stacks = [fake_system_stack("a"), fake_system_stack("b")]

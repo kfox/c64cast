@@ -297,6 +297,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   scene ended could land in the queue after the scene's teardown had
   cleared it, so it played at the start of the next scene. This was rare.
 
+- **An ensemble whose second system fails to start no longer leaves the first
+  one held.** When a later system's setup failed with anything but c64cast's
+  own startup errors (an unexpected network error, say, or Ctrl+C during
+  startup), the systems already started kept their connection open and their
+  REU, sampler, master volume, video output and palette changes in place.
+
 - **An Ultimate's network dropping out for a few seconds no longer ends the
   scene.** A REU-staged video (`hires`, `mhires`, or a REU-staged character
   mode) whose link stayed down past one reconnect attempt stopped with

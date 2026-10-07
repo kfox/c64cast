@@ -1179,9 +1179,10 @@ def build_session(
     """Open every system's hardware and build its stack, wired to the shared
     stop_event (and to the Ensemble, in multi-system mode).
 
-    Call validate_configs first. On a StackBuildError the stacks that did come
-    up are torn down in reverse before the error propagates, so a partial
-    failure leaves no hardware held."""
+    Call validate_configs first. On any exception from a later build — a
+    StackBuildError or anything else a provisioning step raises, a Ctrl+C
+    included — the stacks that did come up are torn down in reverse before it
+    propagates, so a partial failure leaves no hardware held."""
     # Before the Playlists are constructed, so the module-global accessor is
     # right for the first frame's sub-stage timings. Process-wide, so an
     # ensemble's per-scene timings mix across systems.
@@ -1216,7 +1217,7 @@ def build_session(
                     config_path=sub_path,
                 )
             )
-    except StackBuildError:
+    except BaseException:
         for st in reversed(stacks):
             teardown_stack(st)
         raise
