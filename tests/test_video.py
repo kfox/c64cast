@@ -1730,6 +1730,15 @@ class EndAudioInputSeekGuardTest(unittest.TestCase):
         src._end_audio_input()
         self.assertEqual(ended, [])
 
+    def test_the_end_is_called_under_the_seek_lock(self):
+        # Checked and called outside the lock, a request_seek + flush landing
+        # between the two would still get the end marked after the flush.
+        held: list[bool] = []
+        src, _ = self._source(pending_seek=None)
+        src._audio_end = lambda: held.append(src._lock.locked())
+        src._end_audio_input()
+        self.assertEqual(held, [True])
+
 
 class VideoSceneProcessFrameLoopTest(unittest.TestCase):
     """process_frame's EOF check + loop-wrap: an active A/B loop neither

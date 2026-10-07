@@ -1123,15 +1123,19 @@ class AVFileSource:
         """Tell the sink this pass pushed its last sample (see `start`). Not
         when a seek is already pending: that pass is superseded and the next
         one ends the input at its own EOF, while a call here can land after
-        the splice's flush and mark the post-seek input ended."""
-        if (
-            self._audio_end is None
-            or self._audio_push is None
-            or self._closed
-            or self._pending_seek is not None
-        ):
-            return
-        self._audio_end()
+        the splice's flush and mark the post-seek input ended. The check and
+        the call share `_lock` with `request_seek`, because a seek landing
+        between them is that same late call: the splice flushes only after
+        `request_seek` returns, so a call that wins the lock lands before it."""
+        with self._lock:
+            if (
+                self._audio_end is None
+                or self._audio_push is None
+                or self._closed
+                or self._pending_seek is not None
+            ):
+                return
+            self._audio_end()
 
     def _demux_pass(self) -> Literal["eof", "seek", "closed"]:
         """Demux from the container's current position until EOF, an applied
