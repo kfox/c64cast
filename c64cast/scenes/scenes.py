@@ -1762,7 +1762,15 @@ class VideoScene(MediaFileMixin, Scene):
         self._last_osd_shown = osd_now
         self._last_render_epoch = epoch
         assert self.display_mode is not None
-        _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
+        try:
+            _render_with_overlays(
+                self.display_mode, self.api, img, self.overlays, current_time, self
+            )
+        except LinkError:
+            # The identity skip would otherwise count this frame as shown, and
+            # a paused one would stay unpainted until playback resumed.
+            self._last_render_epoch = None
+            raise
         return True
 
     def _record_av_lag(self, clock_s: float, current_time: float) -> None:

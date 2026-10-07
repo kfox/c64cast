@@ -1435,6 +1435,22 @@ class VideoSceneIdentitySkipTest(unittest.TestCase):
         api.delivery_epoch = 1
         self.assertEqual(self._renders(scene, 3), 1)
 
+    def test_a_frame_the_dead_link_dropped_is_rendered_again(self):
+        # A held frame whose push raised never reached the machine, so the
+        # identity skip must not count it as shown (c64cast#583).
+        from c64cast.hw.socket_dma import SocketDMAError
+
+        scene = _make_video_scene_stub(_StubSource())
+        api = cast(mock.MagicMock, scene.api)
+        api.delivery_epoch = 0
+        with (
+            mock.patch.object(scenes, "_render_with_overlays", side_effect=SocketDMAError("down")),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            self.assertRaises(SocketDMAError),
+        ):
+            scene.process_frame(0.0)
+        self.assertEqual(self._renders(scene, 3), 1)
+
 
 class VideoSceneLoopToggleTest(unittest.TestCase):
     """transport_loop_toggle's 3-state cycle (mark A -> mark B + active ->
