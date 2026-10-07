@@ -10,16 +10,17 @@ quantization), until the host laps the pump or the pump overtakes the host.
 
 Two collaborators of ``AudioStreamer`` close that loop:
 
-* ``MicLeadServo`` — a thread that reads the pump's src tracker at
-  ``$C200-$C202`` about once a second (REST, off the audio callback), turns
+* ``MicLeadServo`` — a thread that reads ``$C025-$C204`` about once a second
+  (REST, off the audio callback): the NMI read pointer and the pump's src and
+  dst trackers, in one read that both loops share (#603). It turns
   the lead error into a drop fraction through the shared ``pi_step``, asks for
   a re-anchor when the lead reads as overtaken or far past the target, and
   falls back to open loop — loudly — when the reads keep failing.
 * ``MicRingGovernor`` — the second stage (#580): the pump's lead over the
   NMI reader in the $4000 ring. The reader loses ticks to bus halts and the
   pump does not, so the pump laps it unless something slows the pump down.
-  Ticked from the servo's thread, it reads R and the pump's dst tracker in
-  one span read and trims the pump's CIA #1 latch through the shared
+  Ticked from the servo's thread with R and the pump's dst tracker from that
+  shared read, it trims the pump's CIA #1 latch through the shared
   ``pi_step``; the host loop above then follows the slower pump.
 * ``MicLeadShaper`` — callback-side, stateful: applies the drop fraction to
   the sample stream. Within ``±MIC_LEAD_RESAMPLE_MAX`` it resamples (single
@@ -45,12 +46,15 @@ import math
 import threading
 import time
 from collections.abc import Callable
+from typing import NamedTuple
 
 import numpy as np
 
 from c64cast.hw.c64 import CIA_TIMER_LATCH_MAX
 
 from .audio_handlers import (
+    READ_PTR_LO_ADDR,
+    REU_AUDIO_DST_TRACKER_ADDR,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
@@ -58,6 +62,8 @@ from .audio_handlers import (
     REU_MIC_RING_LEAD,
     REU_MIC_SIZE,
     REU_PUMP_CHUNK_SIZE,
+    RING_BUFFER_ADDR,
+    RING_BUFFER_END,
     RING_BUFFER_SIZE,
 )
 from .audio_servo import (
@@ -66,7 +72,7 @@ from .audio_servo import (
 
 log = logging.getLogger(__name__)
 
-# One tracker read pair per interval. The PI gains below are per interval.
+# One pump read per interval. The PI gains below are per interval.
 MIC_LEAD_SERVO_INTERVAL_S = 1.0
 # Proportional gain: the fraction of the lead error corrected per second.
 # The tracker reads quantize to the 128-byte pump chunk, so read jitter moves
@@ -90,15 +96,16 @@ MIC_LEAD_MAX_DROP = 0.35
 # and is re-anchored instead of steered: 8 KB is ~0.7 s at 12 kHz.
 MIC_LEAD_REANCHOR_ABOVE = REU_MIC_SIZE // 8
 # A re-anchor NEUTRAL-fills from this far short of the pump's estimated
-# position. The estimate is extrapolated from the midpoint of the second
-# tracker read, so its error is about half that read's round trip at the
+# position. The estimate is extrapolated from the midpoint of the read the
+# measurement used, so its error is about half that read's round trip at the
 # pump's rate: 256 B covers a round trip of ~40 ms at 12 kHz. Past that, an
 # estimate ahead of the pump leaves the pump that many bytes of the overtaken
 # or lapped ring to play before the fill.
 MIC_LEAD_REANCHOR_GUARD = 2 * REU_PUMP_CHUNK_SIZE
-# The two leads of one read pair must agree this closely, else one read came
-# back stale or garbled. A read that lands inside the pump's own lo/mi carry
-# is off by at most 256 B and passes; it costs ~128 B of lead error.
+# Two readings' tracker phases (``tracker_phase``) must agree this closely,
+# else one came back garbled. A read that lands inside the pump's own lo/mi
+# carry, or between its src and dst advances, is off by at most a chunk plus
+# 256 B and passes.
 MIC_LEAD_TORN_TOLERANCE = 1024
 # A re-anchor the callback has not claimed within this many intervals is
 # dropped (the first with a warning, later ones at debug), and measuring resumes: a callback that has stopped
@@ -106,9 +113,9 @@ MIC_LEAD_TORN_TOLERANCE = 1024
 MIC_LEAD_REANCHOR_CLAIM_INTERVALS = 3
 # Consecutive failed measurements before the loop opens (drop fraction 0).
 MIC_LEAD_OPEN_LOOP_AFTER = 3
-# Per tracker read. requests applies it to each phase (connect, then each
-# socket read), so one read can take about twice it. _measure skips its
-# second read once stop() is set, so the join waits for at most one read.
+# Per pump read. requests applies it to each phase (connect, then each
+# socket read), so one read can take about twice it. _measure skips a
+# confirming read once stop() is set, so the join waits for at most one read.
 MIC_LEAD_READ_TIMEOUT_S = 0.5
 MIC_LEAD_JOIN_TIMEOUT_S = 2 * MIC_LEAD_READ_TIMEOUT_S + 0.5
 # While the loop is open the interval doubles per failed measurement up to
@@ -151,6 +158,55 @@ class TrimWrite(enum.Enum):
     UNCONFIRMED = enum.auto()
     # The pump it governs is disarmed; the governor writes nothing more.
     REFUSED = enum.auto()
+
+
+# The one span read per interval: the NMI read pointer at $C025 through the
+# pump's src (LO/MI/HI) and dst (LO/HI) trackers at $C200-$C204, so all three
+# come from the same instant and their differences carry no round-trip skew.
+MIC_PUMP_SPAN_ADDR = READ_PTR_LO_ADDR
+MIC_PUMP_SPAN_LEN = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
+
+
+class MicPumpReading(NamedTuple):
+    """One span read of the mic pump's pointers."""
+
+    src: int  # the pump's src tracker, as an offset into the REU mic ring
+    r: int  # the NMI read pointer, a C64 address in the $4000 ring
+    w: int  # the pump's dst tracker, a C64 address in the $4000 ring
+
+
+def read_mic_pump(
+    read_memory: Callable[..., bytes | None], timeout: float
+) -> MicPumpReading | None:
+    """Read and decode ``$C025-$C204``, or None when the read fails (or the
+    backend raises, as one without reads does) or any pointer is outside its
+    ring. ``timeout`` is the backend's per-read bound."""
+    try:
+        raw = read_memory(MIC_PUMP_SPAN_ADDR, MIC_PUMP_SPAN_LEN, timeout=timeout)
+    except Exception as e:
+        log.debug("audio[reu mic]: pump pointer read failed: %s", e)
+        return None
+    if raw is None or len(raw) != MIC_PUMP_SPAN_LEN:
+        return None
+    trk = REU_AUDIO_SRC_TRACKER_ADDR - MIC_PUMP_SPAN_ADDR
+    r = raw[0] | (raw[1] << 8)
+    src = raw[trk] | (raw[trk + 1] << 8) | (raw[trk + 2] << 16)
+    w = raw[trk + 3] | (raw[trk + 4] << 8)
+    if not (
+        REU_MIC_BASE <= src <= REU_MIC_END
+        and RING_BUFFER_ADDR <= r < RING_BUFFER_END
+        and RING_BUFFER_ADDR <= w < RING_BUFFER_END
+    ):
+        return None
+    return MicPumpReading((src - REU_MIC_BASE) % REU_MIC_SIZE, r, w)
+
+
+def tracker_phase(reading: MicPumpReading) -> int:
+    """The src tracker's offset less the dst tracker's, modulo the $4000
+    ring. The pump advances both by one chunk per tick and the 64 KB mic ring
+    is a whole number of $4000 rings, so this holds still for a session while
+    nothing rewrites dst, and a reading whose phase moved came back garbled."""
+    return (reading.src - (reading.w - RING_BUFFER_ADDR)) % RING_BUFFER_SIZE
 
 
 def mic_lead_correction(
@@ -361,6 +417,14 @@ class MicLeadShaper:
         return out
 
 
+class _Measurement(NamedTuple):
+    """One pump read with the host's lead over it."""
+
+    lead: int  # the host write head's signed lead over the pump's src tracker
+    reading: MicPumpReading
+    at: float  # the servo clock at the middle of the read
+
+
 class MicLeadServo:
     """The 1 Hz closed loop on the host's lead over the REU mic pump."""
 
@@ -389,6 +453,8 @@ class MicLeadServo:
         self._fails = 0
         self._open_loop = False
         self._last_pump: tuple[int, float] | None = None
+        # The tracker phase of the last reading this servo trusted.
+        self._tracker_phase: int | None = None
         self._pump_rate = float(sample_rate)
         self.lead_min: int | None = None
         self.lead_max: int | None = None
@@ -428,19 +494,21 @@ class MicLeadServo:
     def _run(self) -> None:
         while not self._stop.wait(self._next_wait()):
             try:
-                self.tick()
+                ring = self.tick()
             except Exception:
                 # A defect here must not kill the thread silently or take the
                 # loop's last output with it: open the loop and say so.
                 self.drop_frac = 0.0
                 log.exception("audio[reu mic]: lead servo step failed; running open-loop")
                 return
-            self._tick_ring_governor()
+            self._tick_ring_governor(ring)
 
-    def _tick_ring_governor(self) -> None:
-        """Step the ring governor, if there is one and the loop is still
-        running. One that raises is retired at the latch it last wrote, which
-        holds the correction it had reached, and the host loop carries on.
+    def _tick_ring_governor(self, ring: tuple[int, int] | None) -> None:
+        """Step the ring governor on ``(R, W)`` from this interval's read
+        (None when it had no usable one), if there is a governor and the loop
+        is still running. One that raises is retired at the latch it last
+        wrote, which holds the correction it had reached, and the host loop
+        carries on.
 
         While this loop is open its wait backs off to as much as
         ``MIC_LEAD_OPEN_LOOP_MAX_WAIT_S``, and the governor's gains are per
@@ -451,7 +519,7 @@ class MicLeadServo:
         if gov is None or gov.retired or self._open_loop or self._stop.is_set():
             return
         try:
-            gov.tick()
+            gov.tick(ring)
         except Exception:
             gov.retired = True
             log.exception(
@@ -466,16 +534,21 @@ class MicLeadServo:
         ceiling = max(self._interval, MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
         return min(self._interval * 2.0**doublings, ceiling)
 
-    def tick(self) -> None:
-        """One measurement and decision. Public for the tests, which drive it
-        without the thread."""
+    def tick(self) -> tuple[int, int] | None:
+        """One measurement and decision. Returns ``(R, W)`` from the read for
+        the ring governor, or None when there was no usable read. The read is
+        made even while a re-anchor waits for the callback, which leaves the
+        host loop alone, because the governor steps on it. Public for the
+        tests, which drive it without the thread."""
+        steer = True
         with self._lock:
             pending = self._reanchor
             if pending is not None:
                 if self._clock() - pending[1] <= MIC_LEAD_REANCHOR_CLAIM_INTERVALS * self._interval:
-                    return  # the callback has not applied the last one yet
-                self._reanchor = None
-        if pending is not None:
+                    steer = False  # the callback has not applied the last one yet
+                else:
+                    self._reanchor = None
+        if pending is not None and steer:
             self.reanchors_dropped += 1
             (log.warning if self.reanchors_dropped == 1 else log.debug)(
                 "audio[reu mic]: the mic callback has not taken a re-anchor in %.0fs; "
@@ -486,8 +559,13 @@ class MicLeadServo:
         if m is None:
             if not self._stop.is_set():
                 self._note_failure()
-            return
-        lead, pump, at = m
+            return None
+        if steer:
+            self._steer(m)
+        return m.reading.r, m.reading.w
+
+    def _steer(self, m: _Measurement) -> None:
+        lead, pump, at = m.lead, m.reading.src, m.at
         self._note_success()
         last, self._last_pump = self._last_pump, (pump, at)
         # A re-anchor reseeds the loop from the fastest of three rates: the
@@ -538,47 +616,59 @@ class MicLeadServo:
         self.drop_frac, self._integ = mic_lead_correction(lead, self._integ, sample_rate=self._rate)
         log.debug("audio[reu mic]: lead %+d B → drop %.4f", lead, self.drop_frac)
 
-    def _read_pump(self) -> int | None:
-        try:
-            raw = self._read(REU_AUDIO_SRC_TRACKER_ADDR, 3, timeout=MIC_LEAD_READ_TIMEOUT_S)
-        except Exception as e:
-            # A backend that cannot read raises rather than returning None.
-            log.debug("audio[reu mic]: pump-tracker read failed: %s", e)
-            return None
-        if raw is None or len(raw) != 3:
-            return None
-        src = raw[0] | (raw[1] << 8) | (raw[2] << 16)
-        if not REU_MIC_BASE <= src <= REU_MIC_END:
-            return None
-        return (src - REU_MIC_BASE) % REU_MIC_SIZE
-
     def _host_between(self, before: int, after: int) -> int:
         return (before + ((after - before) % REU_MIC_SIZE) // 2) % REU_MIC_SIZE
 
-    def _measure(self) -> tuple[int, int, float] | None:
-        """Two tracker reads, each against the host position midway across
-        it; a pair that disagrees means a stale or garbled read and counts as a
-        failure."""
+    def _read_once(self) -> _Measurement | None:
+        """One span read, against the host position midway across it and
+        stamped at its middle: the pump position was sampled somewhere inside
+        the read, and the midpoint halves the worst-case error of stamping it
+        at either end."""
         h0 = self._write_pos()
-        p1 = self._read_pump()
-        h1 = self._write_pos()
-        if p1 is None or self._stop.is_set():
-            return None
+        t0 = self._clock()
+        reading = read_mic_pump(self._read, MIC_LEAD_READ_TIMEOUT_S)
         t1 = self._clock()
-        p2 = self._read_pump()
-        t2 = self._clock()
-        h2 = self._write_pos()
-        # p2 was sampled somewhere inside its read; the midpoint halves the
-        # worst-case error of stamping it at either end.
-        at = (t1 + t2) / 2
-        if p2 is None:
+        h1 = self._write_pos()
+        if reading is None:
             return None
-        lead1 = signed_ring_delta(self._host_between(h0, h1), p1)
-        lead2 = signed_ring_delta(self._host_between(h1, h2), p2)
-        if abs(lead1 - lead2) > MIC_LEAD_TORN_TOLERANCE:
-            log.debug("audio[reu mic]: torn tracker read (%+d vs %+d)", lead1, lead2)
+        lead = signed_ring_delta(self._host_between(h0, h1), reading.src)
+        return _Measurement(lead, reading, (t0 + t1) / 2)
+
+    def _phase_agrees(self, reading: MicPumpReading, phase: int | None) -> bool:
+        if phase is None:
+            return False
+        delta = signed_ring_delta(tracker_phase(reading), phase, RING_BUFFER_SIZE)
+        return abs(delta) <= MIC_LEAD_TORN_TOLERANCE
+
+    def _measure(self) -> _Measurement | None:
+        """One read, whose tracker phase must agree with the last trusted
+        reading's. With none trusted yet, or a reading that disagrees, a
+        second read is made at once and has to agree with the trusted phase
+        or with the first read, else the measurement is torn and counts as a
+        failure. Two reads that agree with each other but not with the
+        trusted phase replace it."""
+        m = self._read_once()
+        if m is None:
             return None
-        return (lead1 + lead2) // 2, p2, at
+        if not self._phase_agrees(m.reading, self._tracker_phase):
+            if self._stop.is_set():
+                return None
+            first = m
+            m = self._read_once()
+            if m is None:
+                return None
+            if not (
+                self._phase_agrees(m.reading, self._tracker_phase)
+                or self._phase_agrees(m.reading, tracker_phase(first.reading))
+            ):
+                log.debug(
+                    "audio[reu mic]: torn pump read (tracker phase %d vs %d)",
+                    tracker_phase(first.reading),
+                    tracker_phase(m.reading),
+                )
+                return None
+        self._tracker_phase = tracker_phase(m.reading)
+        return m
 
     def _note_failure(self) -> None:
         # The next good read must not measure the pump's rate across the gap:
@@ -607,7 +697,7 @@ class MicLeadServo:
 class MicRingGovernor:
     """The 1 Hz closed loop on the pump's lead over the NMI reader (#580).
 
-    ``read_phase`` returns ``(R, W)`` from one span read, or None.
+    ``tick`` takes ``(R, W)`` from the lead servo's read, or None.
     ``write_latch`` writes a CIA #1 latch and says what became of it
     (``TrimWrite``). Once it is refused, because the pump it governs has been
     disarmed, the governor writes nothing more: a write landing after the
@@ -618,12 +708,10 @@ class MicRingGovernor:
     def __init__(
         self,
         *,
-        read_phase: Callable[[], tuple[int, int] | None],
         write_latch: Callable[[int], TrimWrite],
         matched_latch: int,
         sample_rate: int,
     ) -> None:
-        self._read_phase = read_phase
         self._write_latch = write_latch
         self._matched = matched_latch
         self._rate = sample_rate
@@ -640,17 +728,16 @@ class MicRingGovernor:
         self.failed_reads = 0
         self.unconfirmed_trims = 0
 
-    def tick(self) -> None:
-        """One measurement and decision. A failed read holds the latch: the
-        integrator is the standing bus-halt correction, and dropping it would
-        hand back the drift that laps the ring."""
+    def tick(self, ring: tuple[int, int] | None) -> None:
+        """One decision on ``(R, W)``. A failed read (None) holds the latch:
+        the integrator is the standing bus-halt correction, and dropping it
+        would hand back the drift that laps the ring."""
         if self.retired:
             return
-        got = self._read_phase()
-        if got is None:
+        if ring is None:
             self.failed_reads += 1
             return
-        r, w = got
+        r, w = ring
         # Signed, so an overrun shows in the stop() summary as the negative
         # lead it is rather than as a near-full ring.
         lead = signed_ring_lead(w - r)

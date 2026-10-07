@@ -343,8 +343,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   skipped most of a second of audio. The pump's rate now follows the reader,
   steered from the measured ring lead about once a second; the excess input is
   dropped in short crossfaded splices instead, and a rate change the network
-  drops is sent again a second later. `[audio].reu_pump_governor` (on by
-  default) turns it off.
+  drops is sent again a second later. Both mic loops share one read of the
+  C64 a second, where they took up to three, since reading an Ultimate's memory
+  during playback is what risks wedging it. `[audio].reu_pump_governor` (on by
+  default) turns the rate steering off.
 
 - **A video streamed from a URL no longer hangs the show when the server stops
   answering a seek.** Starting at `start_s`, the loudness scan, the color

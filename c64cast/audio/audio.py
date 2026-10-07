@@ -119,11 +119,11 @@ from .audio_servo import (
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import (
-    MIC_LEAD_READ_TIMEOUT_S,
     MicLeadServo,
     MicLeadShaper,
     MicRingGovernor,
     TrimWrite,
+    read_mic_pump,
     reanchor_fill,
 )
 
@@ -2276,28 +2276,12 @@ class AudioStreamer:
         )
 
     def _read_mic_ring_phase(self, timeout: float = 1.0) -> tuple[int, int] | None:
-        """``(R, W)`` from one read spanning the NMI read pointer at $C025 and
-        the pump's dst tracker at $C203, so the two come from the same instant
-        and their difference carries no round-trip skew. None when the read
-        fails or either pointer is outside the ring. ``timeout`` is the
-        backend's per-read bound."""
-        span = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
-        try:
-            raw = self.api.read_memory(READ_PTR_LO_ADDR, span, timeout=timeout)
-        except Exception as e:
-            # A backend that cannot read raises rather than returning None.
-            log.debug("audio[reu mic]: ring pointer read failed: %s", e)
-            return None
-        if raw is None or len(raw) != span:
-            return None
-        w_off = REU_AUDIO_DST_TRACKER_ADDR - READ_PTR_LO_ADDR
-        r = raw[0] | (raw[1] << 8)
-        w = raw[w_off] | (raw[w_off + 1] << 8)
-        if not (
-            RING_BUFFER_ADDR <= r < RING_BUFFER_END and RING_BUFFER_ADDR <= w < RING_BUFFER_END
-        ):
-            return None
-        return r, w
+        """``(R, W)`` from the lead servo's span read (``read_mic_pump``), so
+        the two come from the same instant and their difference carries no
+        round-trip skew. None when the read fails or a pointer is outside its
+        ring. ``timeout`` is the backend's per-read bound."""
+        reading = read_mic_pump(self.api.read_memory, timeout)
+        return None if reading is None else (reading.r, reading.w)
 
     def _seed_mic_ring_lead(self) -> int | None:
         """Put the mic pump's write head ``REU_MIC_RING_LEAD`` ahead of the NMI
@@ -2383,8 +2367,6 @@ class AudioStreamer:
             self._pump_trim_token += 1
             token = self._pump_trim_token
         return MicRingGovernor(
-            # The lead servo's read bound, which its stop() join is sized from.
-            read_phase=functools.partial(self._read_mic_ring_phase, MIC_LEAD_READ_TIMEOUT_S),
             write_latch=functools.partial(self._write_mic_pump_latch, token),
             matched_latch=self._reu_cia1_latch_nominal,
             sample_rate=self.sample_rate,

@@ -464,6 +464,9 @@ class _RingPointers:
             r = RING_BUFFER_END
         raw[0:2] = r.to_bytes(2, "little")
         raw[off : off + 2] = w.to_bytes(2, "little")
+        # The src tracker the install seeded, which the span read also checks.
+        src_off = REU_AUDIO_SRC_TRACKER_ADDR - READ_PTR_LO_ADDR
+        raw[src_off : src_off + 3] = REU_MIC_BASE.to_bytes(3, "little")
         return bytes(raw)
 
     def lead(self) -> int:
@@ -1115,7 +1118,6 @@ class MicLeadServoWiringTest(unittest.TestCase):
     def test_stop_summarizes_the_ring_governor(self):
         s = _new_streamer()
         gov = MicRingGovernor(
-            read_phase=lambda: None,
             write_latch=lambda latch: TrimWrite.DELIVERED,
             matched_latch=10879,
             sample_rate=12000,
@@ -1222,9 +1224,12 @@ class MicRingGovernorWiringTest(unittest.TestCase):
             image[READ_PTR_LO_ADDR : READ_PTR_LO_ADDR + 2] = bytes([addr & 0xFF, addr >> 8])
 
         set_r(r)
-        fake.read_memory = (  # type: ignore[method-assign]
-            lambda address, length, timeout=1.0: bytes(image[address : address + length])
-        )
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            return bytes(image[address : address + length])
+
+        # The servo took the backend's read when it was built.
+        fake.read_memory = servo._read = read  # type: ignore[method-assign]
         lose_writes_to(fake, CIA1.TIMER_A_LO, times=1)
         waits: list[float] = []
 
@@ -1249,17 +1254,75 @@ class MicRingGovernorWiringTest(unittest.TestCase):
         self.assertNotEqual(gov.latch, s._reu_cia1_latch_nominal)
         self.assertEqual(fake.memories["DC04"], _packed_latch(gov.latch))
 
-    def test_the_governor_reads_both_pointers_at_the_servo_timeout(self):
+    def test_a_steady_interval_makes_one_read_for_both_loops(self):
+        # #603: the governor's span read covers the src tracker, which the
+        # lead servo also read twice an interval on its own: three REST reads
+        # a second during playback, where REST polling risks wedging the U64.
         s = self._start()
+        servo = s._mic_lead
+        assert servo is not None
+        servo.stop()
         fake = cast(FakeAPI, s.api)
+        image = bytearray(0x10000)
+        pump = [0]
+
+        def advance() -> None:
+            src = REU_MIC_BASE + pump[0] % REU_MIC_SIZE
+            w = RING_BUFFER_ADDR + (REU_MIC_RING_LEAD + pump[0]) % RING_BUFFER_SIZE
+            r = RING_BUFFER_ADDR + pump[0] % RING_BUFFER_SIZE
+            image[READ_PTR_LO_ADDR : READ_PTR_LO_ADDR + 2] = r.to_bytes(2, "little")
+            image[REU_AUDIO_SRC_TRACKER_ADDR : REU_AUDIO_SRC_TRACKER_ADDR + 5] = src.to_bytes(
+                3, "little"
+            ) + w.to_bytes(2, "little")
+            s._mic_reu_write_pos = (REU_MIC_BOOTSTRAP_BYTES + pump[0]) % REU_MIC_SIZE
+
+        reads: list[int] = []
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            reads[-1] += 1
+            return bytes(image[address : address + length])
+
+        # The servo took the backend's read when it was built.
+        fake.read_memory = servo._read = read  # type: ignore[method-assign]
+        advance()
+
+        class _Stop:
+            def wait(self, timeout: float) -> bool:
+                pump[0] += 12000
+                advance()
+                reads.append(0)
+                return len(reads) > 6
+
+            def is_set(self) -> bool:
+                return False
+
+        real_stop = servo._stop
+        servo._stop = _Stop()  # type: ignore[assignment]
+        try:
+            servo._run()
+        finally:
+            servo._stop = real_stop
+        # The first interval has nothing to check its reading against yet.
+        self.assertEqual(reads[1:6], [1] * 5)
+        gov = self._governor(s)
+        self.assertEqual(gov.failed_reads, 0)
+        self.assertEqual((gov.lead_min, gov.lead_max), (REU_MIC_RING_LEAD, REU_MIC_RING_LEAD))
+        self.assertEqual(servo._fails, 0)
+        self.assertEqual((servo.lead_min, servo.lead_max), (1600, 1600))
+
+    def test_the_shared_read_spans_both_pointers_at_the_servo_timeout(self):
+        s = self._start()
+        servo = s._mic_lead
+        assert servo is not None
+        servo.stop()
         calls: list[tuple[int, int, float]] = []
 
         def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
             calls.append((address, length, timeout))
             return None
 
-        fake.read_memory = read  # type: ignore[method-assign]
-        self._governor(s).tick()
+        servo._read = read
+        self.assertIsNone(servo.tick())
         span = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
         self.assertEqual(calls, [(READ_PTR_LO_ADDR, span, MIC_LEAD_READ_TIMEOUT_S)])
 

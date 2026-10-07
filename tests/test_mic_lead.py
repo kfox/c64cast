@@ -19,11 +19,27 @@ from c64cast.audio.audio_handlers import (
     REU_MIC_SIZE,
     REU_PUMP_CHUNK_SIZE,
     RING_BUFFER_ADDR,
+    RING_BUFFER_END,
     RING_BUFFER_SIZE,
 )
 from c64cast.hw.c64 import CIA_TIMER_LATCH_MAX
 
 RATE = 12000
+
+
+def _span(pump: int, *, garble: int = 0, ring_lead: int = REU_MIC_RING_LEAD) -> bytes:
+    """The $C025-$C204 span with the src tracker at ``pump``, the dst tracker
+    in lockstep with it as the pump keeps them, and the NMI read pointer
+    ``ring_lead`` behind the dst tracker. ``garble`` moves the src tracker
+    that far off that lockstep."""
+    raw = bytearray(ml.MIC_PUMP_SPAN_LEN)
+    src = REU_MIC_BASE + (pump + garble) % REU_MIC_SIZE
+    w = RING_BUFFER_ADDR + pump % RING_BUFFER_SIZE
+    r = RING_BUFFER_ADDR + (pump - ring_lead) % RING_BUFFER_SIZE
+    trk = REU_AUDIO_SRC_TRACKER_ADDR - ml.MIC_PUMP_SPAN_ADDR
+    raw[0:2] = r.to_bytes(2, "little")
+    raw[trk : trk + 5] = src.to_bytes(3, "little") + w.to_bytes(2, "little")
+    return bytes(raw)
 
 
 class _Rig:
@@ -37,7 +53,10 @@ class _Rig:
         self.t = 0.0
         self.fail_reads = 0
         self.raise_reads = False
-        self.torn = False
+        # How far each of the next reads garbles its src tracker, one per read.
+        self.garble: list[int] = []
+        # Supplies the ring governor's lead, when the cascade runs both loops.
+        self.ring: _RingRig | None = None
         self.reads = 0
         self.timeouts: list[float] = []
         self.servo = ml.MicLeadServo(
@@ -48,7 +67,7 @@ class _Rig:
         )
 
     def read(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
-        assert (address, length) == (REU_AUDIO_SRC_TRACKER_ADDR, 3)
+        assert (address, length) == (ml.MIC_PUMP_SPAN_ADDR, ml.MIC_PUMP_SPAN_LEN)
         self.reads += 1
         self.timeouts.append(timeout)
         if self.raise_reads:
@@ -57,10 +76,11 @@ class _Rig:
             self.fail_reads -= 1
             return None
         pump = int(self.pump) // REU_PUMP_CHUNK_SIZE * REU_PUMP_CHUNK_SIZE
-        if self.torn and self.reads % 2 == 0:
-            pump += 0x2000  # a carry the pump had not propagated yet
-        src = REU_MIC_BASE + pump % REU_MIC_SIZE
-        return bytes([src & 0xFF, (src >> 8) & 0xFF, (src >> 16) & 0xFF])
+        garble = self.garble.pop(0) if self.garble else 0
+        if self.ring is None:
+            return _span(pump, garble=garble)
+        ring_lead = int(self.ring.lead) // REU_PUMP_CHUNK_SIZE * REU_PUMP_CHUNK_SIZE
+        return _span(pump, garble=garble, ring_lead=ring_lead)
 
     @property
     def lead(self) -> float:
@@ -208,22 +228,26 @@ class MicLeadReanchorTest(unittest.TestCase):
         self.assertIn("too far ahead", cm.output[0])
         self.assertIsNotNone(rig.servo.take_reanchor())
 
-    def test_no_new_measurement_while_a_reanchor_is_unclaimed(self):
+    def test_no_steering_while_a_reanchor_is_unclaimed(self):
+        # The read is still made: the ring governor steps on it.
         rig = _Rig(drift=0.0, lead=-500)
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             rig.servo.tick()
-        reads = rig.reads
-        rig.servo.tick()
-        self.assertEqual(rig.reads, reads)
+        state = (rig.servo.drop_frac, rig.servo._integ, rig.servo.lead_min, rig.servo.reanchors)
+        self.assertIsNotNone(rig.servo.tick())
+        self.assertEqual(
+            (rig.servo.drop_frac, rig.servo._integ, rig.servo.lead_min, rig.servo.reanchors),
+            state,
+        )
 
     def test_an_unclaimed_reanchor_is_dropped_and_measuring_resumes(self):
         rig = _Rig(drift=0.0, lead=-500)
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             rig.servo.tick()
-        reads = rig.reads
         rig.t = ml.MIC_LEAD_REANCHOR_CLAIM_INTERVALS * ml.MIC_LEAD_SERVO_INTERVAL_S
         rig.servo.tick()  # still within the claim window
-        self.assertEqual(rig.reads, reads)
+        self.assertEqual(rig.servo.reanchors, 1)
+        reads = rig.reads
         rig.t += 0.5
         rig.pump += RATE // 2
         rig.host = rig.pump + REU_MIC_BOOTSTRAP_BYTES
@@ -497,13 +521,51 @@ class MicLeadOpenLoopTest(unittest.TestCase):
         self.assertEqual(rig.reads - reads, 1)
         self.assertEqual(rig.servo._fails, 1)
 
-    def test_a_torn_read_pair_is_not_used(self):
+    def test_a_steady_tick_makes_one_read(self):
         rig = self._closed()
-        rig.torn = True
-        drop = rig.servo.drop_frac
+        reads = rig.reads
+        rig.step()
+        self.assertEqual(rig.reads - reads, 1)
+
+    def test_a_torn_read_is_replaced_by_a_confirming_read(self):
+        rig = self._closed()
+        rig.garble = [0x0C00]
+        reads = rig.reads
         rig.servo.tick()
+        self.assertEqual(rig.reads - reads, 2)
+        self.assertEqual(rig.servo._fails, 0)
+        # The pump position steered on is the confirming read's, not the torn one's.
+        last = rig.servo._last_pump
+        assert last is not None
+        self.assertEqual(last[0], int(rig.pump) // REU_PUMP_CHUNK_SIZE * REU_PUMP_CHUNK_SIZE)
+
+    def test_a_torn_read_with_a_confirming_read_torn_too_is_not_used(self):
+        # Neither agrees with the phase the servo trusts nor with the other.
+        rig = self._closed()
+        rig.garble = [0x0C00, 0x1800]
+        drop = rig.servo.drop_frac
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG") as cm:
+            self.assertIsNone(rig.servo.tick())
+        self.assertTrue(any("torn" in m for m in cm.output), cm.output)
         self.assertEqual(rig.servo.drop_frac, drop)
         self.assertEqual(rig.servo._fails, 1)
+
+    def test_the_first_reading_is_confirmed_by_a_second(self):
+        rig = _Rig(drift=0.0)
+        rig.garble = [0x0C00, 0x1800]
+        self.assertIsNone(rig.servo.tick())
+        self.assertEqual((rig.reads, rig.servo._fails), (2, 1))
+        rig.servo.tick()
+        self.assertEqual((rig.reads, rig.servo._fails), (4, 0))
+
+    def test_a_pair_off_the_trusted_phase_but_agreeing_replaces_it(self):
+        # A reseeded dst tracker moves the phase for good; the servo follows
+        # it rather than failing every read after.
+        rig = self._closed()
+        rig.garble = [0x0C00, 0x0C00]
+        rig.servo.tick()
+        self.assertEqual(rig.servo._fails, 0)
+        self.assertEqual(rig.servo._tracker_phase, 0x0C00)
 
     def test_an_idle_pump_is_not_steered(self):
         rig = self._closed()
@@ -513,7 +575,7 @@ class MicLeadOpenLoopTest(unittest.TestCase):
 
     def test_a_tracker_outside_the_mic_ring_is_a_failed_read(self):
         servo = ml.MicLeadServo(
-            read_memory=lambda a, n, timeout=1.0: bytes([0, 0, 0x20]),
+            read_memory=lambda a, n, timeout=1.0: _span(0)[:-3] + bytes([0x20, 0, 0x40]),
             write_pos=lambda: 0,
             sample_rate=RATE,
         )
@@ -704,8 +766,8 @@ class MicLeadRingWrapTest(unittest.TestCase):
 
 
 class MicLeadReadGuardTest(unittest.TestCase):
-    """A tracker read that comes back unusable is a failed measurement; it
-    never raises out of tick(), which would end the servo thread for good."""
+    """A pump read that comes back unusable is a failed measurement; it never
+    raises out of tick(), which would end the servo thread for good."""
 
     def _servo(self, replies: list[bytes | None]) -> ml.MicLeadServo:
         it = iter(replies)
@@ -716,24 +778,34 @@ class MicLeadReadGuardTest(unittest.TestCase):
         )
 
     @staticmethod
-    def _src(offset: int) -> bytes:
-        src = REU_MIC_BASE + offset
-        return bytes([src & 0xFF, (src >> 8) & 0xFF, (src >> 16) & 0xFF])
+    def _with(span: bytes, addr: int, value: bytes) -> bytes:
+        raw = bytearray(span)
+        off = addr - ml.MIC_PUMP_SPAN_ADDR
+        raw[off : off + len(value)] = value
+        return bytes(raw)
 
-    def test_a_failed_second_read_is_a_failed_measurement(self):
-        servo = self._servo([self._src(0), None])
+    def test_a_failed_confirming_read_is_a_failed_measurement(self):
+        servo = self._servo([_span(0), None])
         servo.tick()
         self.assertEqual(servo._fails, 1)
 
     def test_a_short_read_is_a_failed_measurement(self):
-        servo = self._servo([self._src(0)[:2]])
+        servo = self._servo([_span(0)[:-1]])
         servo.tick()
         self.assertEqual(servo._fails, 1)
 
     def test_a_tracker_below_the_mic_ring_is_a_failed_read(self):
-        servo = self._servo([self._src(-1)] * 2)
+        below = (REU_MIC_BASE - REU_PUMP_CHUNK_SIZE).to_bytes(3, "little")
+        servo = self._servo([self._with(_span(0), REU_AUDIO_SRC_TRACKER_ADDR, below)] * 2)
         servo.tick()
         self.assertEqual(servo._fails, 1)
+
+    def test_a_ring_pointer_outside_the_ring_is_a_failed_read(self):
+        # The NMI read pointer, in the instant its HI byte sits at the ring end.
+        for addr in (ml.MIC_PUMP_SPAN_ADDR, REU_AUDIO_SRC_TRACKER_ADDR + 3):
+            with self.subTest(pointer=f"${addr:04X}"):
+                bad = self._with(_span(0), addr, RING_BUFFER_END.to_bytes(2, "little"))
+                self.assertIsNone(ml.read_mic_pump(lambda a, n, timeout=1.0, raw=bad: raw, 0.5))
 
     def test_each_read_carries_the_servo_timeout(self):
         # The join waits about two reads' worth; a backend left at its own
@@ -782,7 +854,15 @@ class MicLeadRateScalingTest(unittest.TestCase):
 class MicLeadTelemetryTest(unittest.TestCase):
     def test_lead_min_and_max_span_every_measurement(self):
         servo = _Rig(drift=0.0).servo
-        script = iter([(1600, 0, 0.0), (1200, 12000, 1.0), (2000, 24000, 2.0), (1500, 36000, 3.0)])
+        script = iter(
+            ml._Measurement(lead, ml.MicPumpReading(pump, RING_BUFFER_ADDR, RING_BUFFER_ADDR), at)
+            for lead, pump, at in [
+                (1600, 0, 0.0),
+                (1200, 12000, 1.0),
+                (2000, 24000, 2.0),
+                (1500, 36000, 3.0),
+            ]
+        )
         servo._measure = lambda: next(script)  # type: ignore[method-assign]
         for _ in range(4):
             servo.tick()
@@ -872,7 +952,6 @@ class _RingRig:
         self.accept_writes = True
         self.lose_writes = 0
         self.gov = ml.MicRingGovernor(
-            read_phase=self.read,
             write_latch=self.write,
             matched_latch=MATCHED,
             sample_rate=RATE,
@@ -901,8 +980,11 @@ class _RingRig:
     def pump_rate(self) -> float:
         return self.pump_matched * (MATCHED + 1) / (self.latch + 1)
 
+    def tick(self) -> None:
+        self.gov.tick(self.read())
+
     def step(self) -> None:
-        self.gov.tick()
+        self.tick()
         self.lead += self.pump_rate - self.reader
 
 
@@ -997,7 +1079,7 @@ class MicRingGovernorClosedLoopTest(unittest.TestCase):
         latch, writes = rig.latch, len(rig.writes)
         rig.fail_reads = 3
         for _ in range(3):
-            rig.gov.tick()
+            rig.tick()
         self.assertEqual((rig.latch, len(rig.writes)), (latch, writes))
         self.assertEqual(rig.gov.failed_reads, 3)
 
@@ -1006,15 +1088,15 @@ class MicRingGovernorClosedLoopTest(unittest.TestCase):
         # writing could land a trim after the kernal latch restore.
         rig = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 2000)
         rig.accept_writes = False
-        rig.gov.tick()
+        rig.tick()
         self.assertTrue(rig.gov.retired)
         rig.accept_writes = True
-        rig.gov.tick()
+        rig.tick()
         self.assertEqual(rig.writes, [])
 
     def test_an_overrun_is_recorded_as_a_negative_lead(self):
         rig = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=-200)
-        rig.gov.tick()
+        rig.tick()
         self.assertEqual((rig.gov.lead_min, rig.gov.lead_max), (-256, -256))
 
     def test_an_unconfirmed_trim_is_sent_again_though_the_latch_is_unchanged(self):
@@ -1024,12 +1106,12 @@ class MicRingGovernorClosedLoopTest(unittest.TestCase):
         chunk = REU_PUMP_CHUNK_SIZE
         rig = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 11 * chunk)
         rig.lose_writes = 1
-        rig.gov.tick()
+        rig.tick()
         first = rig.writes[-1]
         # e2 = e1·kp/(kp + ki) holds the PI output where e1 left it; whole
         # chunks, as the rig reads W.
         rig.lead = REU_MIC_RING_LEAD + 10 * chunk
-        rig.gov.tick()
+        rig.tick()
         self.assertEqual(rig.writes, [first, first])
         self.assertEqual(rig.latch, first)
         self.assertEqual(rig.gov.unconfirmed_trims, 1)
@@ -1048,11 +1130,12 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
     def _run(self, pump: float, reader: float, steps: int = 120) -> tuple[_Rig, _RingRig]:
         host = _Rig(drift=0.0)
         ring = _RingRig(pump, reader)
+        host.ring = ring
         host.servo.ring_governor = ring.gov
         host_leads, ring_leads = [], []
         for _ in range(steps):
-            host.servo.tick()
-            host.servo._tick_ring_governor()
+            # The governor steps on the servo's own read, as _run has it.
+            host.servo._tick_ring_governor(host.servo.tick())
             self.assertIsNone(host.servo.take_reanchor())
             host.t += 1.0
             host.pump += ring.pump_rate
@@ -1082,7 +1165,7 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
     def test_the_servo_thread_steps_the_governor_each_interval(self):
         ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
         servo = ml.MicLeadServo(
-            read_memory=lambda a, n, timeout=1.0: None,
+            read_memory=lambda a, n, timeout=1.0: _span(0, ring_lead=int(ring.lead)),
             write_pos=lambda: 0,
             sample_rate=RATE,
             ring_governor=ring.gov,
@@ -1099,8 +1182,18 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
 
         servo._stop = _Stop()  # type: ignore[assignment]
         servo._run()
-        # Two intervals ran; the lead servo's reads failing does not stop it.
+        # Two intervals ran on the servo's reads; an idle src tracker, which
+        # stops the host loop steering, does not stop the governor.
         self.assertEqual(len(ring.writes), 2)
+
+    def test_a_failed_read_holds_the_governor_too(self):
+        host = _Rig(drift=0.0)
+        ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
+        host.ring = ring
+        host.servo.ring_governor = ring.gov
+        host.fail_reads = 1
+        host.servo._tick_ring_governor(host.servo.tick())
+        self.assertEqual((ring.writes, ring.gov.failed_reads), ([], 1))
 
     def test_an_open_loop_holds_the_governor(self):
         # The open loop's backed-off wait would step the governor's per-second
@@ -1109,10 +1202,10 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
         ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
         host.servo.ring_governor = ring.gov
         host.servo._open_loop = True
-        host.servo._tick_ring_governor()
+        host.servo._tick_ring_governor(ring.read())
         self.assertEqual(ring.writes, [])
         host.servo._open_loop = False
-        host.servo._tick_ring_governor()
+        host.servo._tick_ring_governor(ring.read())
         self.assertEqual(len(ring.writes), 1)
 
     def test_a_stopped_servo_does_not_step_the_governor(self):
@@ -1120,16 +1213,15 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
         ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
         host.servo.ring_governor = ring.gov
         host.servo._stop.set()
-        host.servo._tick_ring_governor()
+        host.servo._tick_ring_governor(ring.read())
         self.assertEqual(ring.writes, [])
 
     def test_a_failing_governor_is_retired_and_the_host_loop_carries_on(self):
-        def boom() -> tuple[int, int] | None:
+        def boom(latch: int) -> ml.TrimWrite:
             raise ValueError("bug")
 
         gov = ml.MicRingGovernor(
-            read_phase=boom,
-            write_latch=lambda latch: ml.TrimWrite.DELIVERED,
+            write_latch=boom,
             matched_latch=MATCHED,
             sample_rate=RATE,
         )
@@ -1139,8 +1231,9 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
             sample_rate=RATE,
             ring_governor=gov,
         )
+        far_ahead = (RING_BUFFER_ADDR, RING_BUFFER_ADDR + REU_MIC_RING_LEAD + 3000)
         with self.assertLogs("c64cast.audio.mic_lead", "ERROR") as cm:
-            servo._tick_ring_governor()
+            servo._tick_ring_governor(far_ahead)
         self.assertTrue(gov.retired)
         self.assertIn("holding the pump", cm.output[0])
 
