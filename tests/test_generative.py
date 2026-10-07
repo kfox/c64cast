@@ -1467,6 +1467,41 @@ class AudioFileSourceEndTest(unittest.TestCase):
     def test_not_finished_before_decoding_ends(self):
         self.assertFalse(self._source(_FileSink()).finished)
 
+    def test_a_large_frame_reaches_the_sink_in_pieces_the_history_covers(self):
+        # The sampler's queue counts pushes, so the push size is what bounds
+        # how far ahead of the sound it holds: a whole 65535-sample FLAC frame
+        # per push let 256 of them hold minutes, past the analyzer's history.
+        from c64cast.audio import sampler
+
+        sink = _FileSink()
+        sink.sample_rate, sink.effective_rate = 44100, 44100.0
+        sizes: list[int] = []
+        push = sink.push_samples
+
+        def record(arr):
+            sizes.append(int(arr.size))
+            return push(arr)
+
+        sink.push_samples = record  # type: ignore[method-assign]
+        src = self._source(sink)
+        frame = SimpleNamespace(to_ndarray=lambda: np.zeros((1, 65535), dtype=np.int16))
+        self.assertEqual(src._push_frame(frame), 65535)
+        self.assertEqual(sum(sizes), 65535)
+        smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=44100)
+        held_s = smp._q.maxsize * max(sizes) / 44100 + sampler.DEFAULT_LEAD_SECONDS
+        self.assertLess(held_s, src._FEATURE_HISTORY_S)
+
+    def test_the_dac_keeps_the_history_its_lag_can_reach_and_not_30_s(self):
+        # The DAC holds at most its queue's soft cap, a push over it, the
+        # worker's chunks in hand and the ring unplayed: about 2 s at 12 kHz.
+        from c64cast.audio.audio_handlers import MAX_QUEUED_SAMPLES, RING_BUFFER_SIZE
+
+        sink = _FileSink()
+        sink.sample_rate, sink.effective_rate = 12000, 12032.0
+        history = self._source(sink)._feature_history_samples(12032.0)
+        self.assertGreater(history, MAX_QUEUED_SAMPLES + RING_BUFFER_SIZE)
+        self.assertLess(history / 12032.0, 6.0)
+
     def test_the_decoder_resamples_to_the_rate_the_sink_plays_at(self):
         # 44.1 kHz asked, 44 kHz achieved: 0.4 s is 17600 samples at the
         # achieved rate, or the clip plays 0.2 % long against its picture.

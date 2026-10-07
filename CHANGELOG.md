@@ -327,6 +327,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   seconds, which used to hold a frozen frame, and a seek back from near the
   end.
 
+- **Reactive visuals on a large-block FLAC file played through the sampler
+  keep following the music.** The decoder handed the sampler each decoded
+  frame whole, and the sampler's queue counts frames, so with frames of up to
+  65535 samples it ran minutes ahead of the sound, past the 30 s the analyzer
+  can look back; the visuals then went still. Frames are now pushed in pieces
+  of at most 0.1 s.
+
 - **DAC audio from a file or a video no longer loses a block at startup.** A
   decoder running ahead of real time filled the `$D418` DAC's queue at once,
   and its next block waited behind the worker's first chunks for longer than

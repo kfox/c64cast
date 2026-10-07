@@ -297,11 +297,16 @@ class AudioFileSource:
     # growth, and capped it cut that tail on a long slow stream.
     _MAX_COUNTED_LAG_S = 10.0
 
-    # How far behind the decoder the analyzer can read. The sampler's queue
-    # alone holds about 23 s of a 44 kHz WAV (above) plus its 1 s ring lead;
-    # the DAC's holds about 1.4 s plus its ring. Past this the analyzer reads
-    # silence and says so once, rather than audio from the wrong moment.
+    # How far behind the decoder the sampler's analyzer can read: its queue
+    # holds 256 pushes of at most _MAX_PUSH_S (25.6 s) plus its 1 s ring lead.
+    # Past this the analyzer reads silence and says so once, rather than audio
+    # from the wrong moment. The DAC's sizes itself (_feature_history_samples).
     _FEATURE_HISTORY_S = 30.0
+
+    # The longest single push. The sampler's queue counts pushes, not
+    # samples, and a decoded frame pushed whole (a large-block FLAC frame is
+    # up to 65535 samples) let it hold minutes, past the analyzer's history.
+    _MAX_PUSH_S = 0.1
 
     def __init__(
         self,
@@ -475,8 +480,8 @@ class AudioFileSource:
             return max(self._heard_seconds(), 0.0) * rate
 
         try:
-            history = int(rate * self._FEATURE_HISTORY_S)
-            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096, history))
+            history = self._feature_history_samples(rate)
+            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096, history + cfg.fft_size))
             stream = AudioFeatureStream(
                 tap,
                 self._audio.sample_rate,
@@ -496,6 +501,25 @@ class AudioFileSource:
             self._audio.analysis_sink = None
             return
         self._features = stream
+
+    def _feature_history_samples(self, rate: float) -> int:
+        """How many samples behind the newest push the analyzer may read.
+
+        The DAC's figure is twice what it can hold unplayed: its queue's soft
+        cap, one push over it, the worker's two chunks in hand, and the ring.
+        A flat _FEATURE_HISTORY_S kept 1.4 MB at 12 kHz for a lag that never
+        passes about 2 s."""
+        if self._is_sampler:
+            return int(rate * self._FEATURE_HISTORY_S)
+        from .audio_handlers import CHUNK_SIZE, MAX_QUEUED_SAMPLES, RING_BUFFER_SIZE
+
+        unplayed = (
+            MAX_QUEUED_SAMPLES + self._max_push_samples(rate) + 2 * CHUNK_SIZE + RING_BUFFER_SIZE
+        )
+        return 2 * unplayed
+
+    def _max_push_samples(self, rate: float) -> int:
+        return max(1, int(rate * self._MAX_PUSH_S))
 
     def _decode_loop(self) -> None:
         """Demux + resample the file to mono int16 at the DAC rate and feed
@@ -553,9 +577,13 @@ class AudioFileSource:
         import numpy as np
 
         arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
-        if not arr.size:
-            return 0
-        return int(self._audio.push_samples(arr))
+        step = self._max_push_samples(self._audio.effective_rate or self._audio.sample_rate)
+        accepted = 0
+        for start in range(0, arr.size, step):
+            if self._stop.is_set():
+                break
+            accepted += int(self._audio.push_samples(arr[start : start + step]))
+        return accepted
 
     def _mark_decode_done(self, pushed_samples: int) -> None:
         """Record the end of decoding: the length of the audio pushed, on the
