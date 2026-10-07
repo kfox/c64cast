@@ -500,6 +500,8 @@ class RedactSecretsTest(unittest.TestCase):
             ("a\\\\u0026key=abc123 rest", "a\\\\u0026key=REDACTED rest"),
             ("x\\u0061key=abc123 rest", "x\\u0061key=abc123 rest"),
             ("x\\u0026signal=1 rest", "x\\u0026signal=1 rest"),
+            ("x\\u005fkey=abc123 rest", "x\\u005fkey=REDACTED rest"),
+            ("x\\u002Dhmac=abc123 rest", "x\\u002Dhmac=REDACTED rest"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), expected)
@@ -523,6 +525,19 @@ class RedactSecretsTest(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), expected)
+
+    def test_a_json_escaped_separator_starts_an_exempt_word(self):
+        """The exempt words read the escape as the separator it spells, as the
+        short names do: `\\u0026bypass=` is `&bypass=`, not `u0026bypass=`."""
+        for line in (
+            "x\\u0026bypass=1 rest",
+            "x\\u0026high-pass=1 rest",
+            "x\\u0026PWD=/home/k rest",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+        self.assertNotIn("abc", redact_secrets("x\\u0061bypass=abc rest"))
+        self.assertNotIn("abc", redact_secrets("x\\u0061PWD=abc rest"))
 
     def test_an_akamai_token_loses_its_hmac(self):
         """Akamai signs a URL with `__token__=` or `hdnts=`, neither of which

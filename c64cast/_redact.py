@@ -388,13 +388,26 @@ def _secret_names(text: str, judge: str | None = None) -> Iterator[re.Match[str]
 _JSON_ESCAPE = re.compile(r"\\u(?P<hex>[0-9A-Fa-f]{4})\Z")
 
 
+def _char_before(text: str, s: int) -> str:
+    """The character before `s`, read through a JSON escape that ends there,
+    or "" at the start of `text`."""
+    if s == 0:
+        return ""
+    escape = _JSON_ESCAPE.search(text, max(0, s - 6), s)
+    return text[s - 1] if escape is None else chr(int(escape.group("hex"), 16))
+
+
+def _starts_word(text: str, s: int) -> bool:
+    """Whether no name character comes before `s`."""
+    c = _char_before(text, s)
+    return c == "" or not _is_name_char(c)
+
+
 def _is_glued(text: str, s: int) -> bool:
     """Whether the name at `s` continues a word, rather than following a
-    separator or a JSON escape of one."""
-    if s == 0 or not _is_name_char(text[s - 1]) or text[s - 1] in "_-":
-        return False
-    escape = _JSON_ESCAPE.search(text, max(0, s - 6), s)
-    return escape is None or _is_name_char(chr(int(escape.group("hex"), 16)))
+    separator, a `_` or `-`, or a JSON escape of any of them."""
+    c = _char_before(text, s)
+    return c != "" and _is_name_char(c) and c not in "_-"
 
 
 def _names_a_secret(text: str, m: re.Match[str]) -> bool:
@@ -408,7 +421,7 @@ def _names_a_secret(text: str, m: re.Match[str]) -> bool:
     if name == "pwd":
         for word in _SHELL_PWD:
             lo = m.end() - len(word)
-            if text[lo : m.end()] == word and (lo == 0 or not _is_name_char(text[lo - 1])):
+            if text[lo : m.end()] == word and _starts_word(text, lo):
                 return False
     return True
 
@@ -423,8 +436,12 @@ def _names_no_password(text: str, s: int, end: int) -> bool:
     lo = s
     while lo > 0 and s - lo < _NOT_A_PASSWORD_REACH and _is_name_char(text[lo - 1]):
         lo -= 1
-    parts = re.split(r"[_-]", text[lo:end].lower())
     first = 0 if lo == 0 or not _is_name_char(text[lo - 1]) else 1
+    if first == 0 and lo + 5 <= s and _starts_word(text, lo + 5):
+        # The run opens with the tail of a JSON escape of a separator: read
+        # as part of the key, the `u0026` of `\u0026bypass` hid the word.
+        lo += 5
+    parts = re.split(r"[_-]", text[lo:end].lower())
     return any("".join(parts[i:]) in _NOT_A_PASSWORD for i in range(first, len(parts)))
 
 
