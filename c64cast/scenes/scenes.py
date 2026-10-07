@@ -34,7 +34,7 @@ from c64cast.audio.audio_handlers import (
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw import machine_input
-from c64cast.hw.backend import C64Backend
+from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.modes_irq import reu_pump_skips_irq_hook
@@ -911,8 +911,19 @@ class BlankScene(Scene):
         # is_done back to False, and a scene that stopped rendering there would
         # freeze the screen mid-message.
         assert self.display_mode is not None
-        _render_with_overlays(self.display_mode, self.api, None, self.overlays, current_time, self)
-        return (current_time - self.start_time) < self.duration_s
+        active = (current_time - self.start_time) < self.duration_s
+        try:
+            _render_with_overlays(
+                self.display_mode, self.api, None, self.overlays, current_time, self
+            )
+        except LinkError:
+            # The playlist keeps a scene whose frame hit a dead link, so a
+            # re-raise past duration_s would hold this one until the link
+            # came back, or forever on a refusal that never clears.
+            if active:
+                raise
+            return False
+        return active
 
     def teardown(self) -> None:
         super().teardown()

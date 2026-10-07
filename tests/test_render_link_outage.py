@@ -255,6 +255,42 @@ class RenderLinkFailureTest(unittest.TestCase):
         self.assertIn("scene 'A'", logs.output[0])
 
 
+class BlankSceneEndsThroughOutageTest(unittest.TestCase):
+    """BlankScene decides its end after rendering, so a REU-staged blank
+    scene whose push hits a dead link still has to end at its duration."""
+
+    def test_a_reu_staged_blank_scene_ends_at_its_duration_while_the_link_is_down(self):
+        from unittest.mock import MagicMock
+
+        from c64cast.scenes.scenes import BlankScene
+        from c64cast.video.modes.blank import BlankDisplayMode
+
+        api = FakeApi()
+
+        def reu_write(reu_offset: int, data: bytes) -> None:
+            raise SocketDMAError("authentication was rejected on a previous attempt")
+
+        api.reu_write = reu_write
+        scene = BlankScene(api, None, BlankDisplayMode(use_reu_staged=True), MagicMock(), "Blank")
+        scene.duration_s = 60.0
+        scene.start_time = time.time()
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run_one_frame(scene, time.time())
+        self.assertFalse(scene.is_done, "an outage inside the duration ended the scene")
+
+        scene.start_time -= scene.duration_s
+        pl.run_one_frame(scene, time.time())
+        self.assertTrue(scene.is_done, "the dead link held the scene past its duration")
+
+
 class RenderLinkOutageLogTest(unittest.TestCase):
     """A long outage keeps saying so; a recovered one says how long it was."""
 
