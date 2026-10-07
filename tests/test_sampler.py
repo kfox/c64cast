@@ -685,10 +685,11 @@ class SamplerWriterFailureTest(unittest.TestCase):
                 self.assertTrue(self._wait(lambda: smp._failed), "the writer never gave up")
         self.assertEqual(api.mem_writes[-1], ("DF20", "00"), "the channel still loops stale audio")
         smp._q = s.queue.Queue(maxsize=1)
-        smp._q.put((smp._flush_epoch, b""))
-        t0 = time.monotonic()
-        smp.push_samples(self.TONE)  # a full queue nothing drains
-        self.assertLess(time.monotonic() - t0, 0.05, "the producer parked on a dead sampler")
+        smp._q.put((smp._flush_epoch, b""))  # a full queue nothing drains
+        smp._q.put = mock.Mock(  # type: ignore[method-assign]
+            side_effect=AssertionError("the producer parked on a dead sampler")
+        )
+        self.assertEqual(smp.push_samples(self.TONE), 0)
 
     def test_a_gate_off_lost_to_the_outage_is_sent_until_it_lands(self):
         # The gate-off travels the link that failed. Sent once and lost, the
@@ -741,13 +742,21 @@ class SamplerWriterFailureTest(unittest.TestCase):
     def test_a_producer_parked_when_the_writer_gives_up_is_released(self):
         smp = _make(_FakeBackend(), sample_rate=8000, bits=8, queue_max_chunks=1)
         smp._q.put((smp._flush_epoch, b""))
+        parked = threading.Event()
+        full_put = smp._q.put
+
+        def put(*a: Any, **kw: Any) -> None:
+            parked.set()
+            full_put(*a, **kw)
+
+        smp._q.put = put  # type: ignore[method-assign]
         t = threading.Thread(target=smp.push_samples, args=(self.TONE,))
         self.addCleanup(t.join, 1.0)
         self.addCleanup(setattr, smp, "_stopped", True)
         t.start()
-        time.sleep(0.02)  # parked in put(timeout=0.1)
+        self.assertTrue(parked.wait(2.0), "the producer never reached the full queue")
         smp._failed = True
-        t.join(timeout=0.5)
+        t.join(timeout=2.0)
         self.assertFalse(t.is_alive(), "the producer stays parked on a sampler that gave up")
 
     def test_a_write_head_the_reader_passed_skips_ahead_of_it(self):
