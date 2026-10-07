@@ -2754,6 +2754,14 @@ class SamplerFlushTests(unittest.TestCase):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, queue_max_chunks=1)
         smp._q.put((0, b"x"))  # fill and keep full
+        parked = threading.Event()
+        full_put = smp._q.put
+
+        def put(*a: Any, **kw: Any) -> None:
+            parked.set()
+            full_put(*a, **kw)
+
+        smp._q.put = put  # type: ignore[method-assign]
 
         def push():
             smp.push_samples(np.zeros(50, dtype=np.int16))
@@ -2768,7 +2776,7 @@ class SamplerFlushTests(unittest.TestCase):
 
         self.addCleanup(release)
         t.start()
-        time.sleep(0.02)  # let it park in the Full-retry loop
+        self.assertTrue(parked.wait(2.0), "the producer never reached the full queue")
         smp._flush_epoch += 1  # a concurrent flush bumped the epoch
         t.join(timeout=1.0)
         self.assertFalse(t.is_alive())
