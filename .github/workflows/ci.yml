@@ -128,6 +128,14 @@ jobs:
         # exercised.
         run: uv sync --frozen --no-default-groups --group dev --extra web
 
+      - name: Warm node (timed)
+        # The first node launch on a fresh Windows runner has outlasted the
+        # suite's 20 s child bound (#616). Paying for it here keeps it out from
+        # under that bound, and `time` puts its cost in the log.
+        shell: bash
+        timeout-minutes: 5
+        run: time node --version
+
       - name: Unit tests
         env:
           PYTHONPATH: tests
