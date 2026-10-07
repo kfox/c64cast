@@ -302,6 +302,21 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   sent until it lands, so a long outage leaves the rest of the scene silent
   rather than looping the ring's last lap of audio (about 12 s at 44.1 kHz).
 
+- **Seeking back once a video's sound has run out keeps the picture in step
+  with it on the Ultimate Audio sampler.** A seek, resume or A/B loop wrap
+  after the audio ended put the picture ahead of the sound by however long the
+  audio had been out.
+
+- **A seek, resume or A/B loop wrap on the 4-bit DAC no longer leaves the
+  picture up to a chunk of audio (about 85 ms) ahead of the sound** until the
+  next one.
+
+- **A seek, resume or A/B loop wrap on the 4-bit DAC can no longer leave the
+  audio clock behind the sound for the rest of the scene.** A splice that
+  caught a block of audio as it entered the queue dropped its samples from the
+  clock but kept them counted as waiting, so the picture lagged the sound by
+  that block until the scene ended.
+
 - **The Programmer's Reference memory map gives the REU pump's tracker its
   full size.** It listed `$C200` as a three-byte tracker; the tracker is five
   bytes (`$C200-$C204`) and the pump's tick counter follows at `$C205`, so data

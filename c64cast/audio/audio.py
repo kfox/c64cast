@@ -407,6 +407,11 @@ class AudioStreamer:
         # q.full() is unused because the cap below is in bytes, not items.
         self.q: queue.Queue[bytes] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
         self._queued_samples = 0
+        # Queued samples in the chunk the worker is writing to the ring: they
+        # passed its flush-epoch check, so they play ahead of any post-splice
+        # sample, and flush()'s anchor counts them until they land. Set by the
+        # worker and read by flush(), each with the epoch under _count_lock.
+        self._in_flight_samples = 0
         # flush() and stop() bump _flush_epoch; _encode_and_enqueue and _worker
         # each capture it and discard audio held across a change, so neither a
         # seek/loop/pause splice nor a scene cut-over can leak pre-splice samples
@@ -933,6 +938,8 @@ class AudioStreamer:
             self._worker_generation += 1
             generation = self._worker_generation
             self._clear_ring_clock_locked()
+        with self._count_lock:
+            self._in_flight_samples = 0
         self._input_ended = False
         thread = threading.Thread(
             target=self._worker,
@@ -956,6 +963,21 @@ class AudioStreamer:
             if generation != self._worker_generation:
                 return
             self._queued_samples = max(0, self._queued_samples - n)
+            self._in_flight_samples = 0
+
+    def _claim_ring_write(self, epoch: int, n: int, *, generation: int) -> bool:
+        """Whether a chunk captured at ``epoch`` may still go to the ring, and
+        if so record its ``n`` queued samples as in flight until
+        :meth:`_consume_queued` counts them landed. Under ``_count_lock``,
+        where flush() bumps the epoch and reads its anchor: a check made
+        unlocked could pass just before a flush that then anchored without
+        the chunk, one chunk ahead of where the target's first sample plays."""
+        with self._count_lock:
+            if self._flush_epoch != epoch:
+                return False
+            if generation == self._worker_generation:
+                self._in_flight_samples = n
+            return True
 
     def _discard_unpushed(self, n: int, *, generation: int | None = None) -> None:
         """Account for ``n`` bytes dropped before they reached the ring.
@@ -1060,7 +1082,9 @@ class AudioStreamer:
                 from_queue = 0
 
                 if prebuffered and pending is not None:
-                    if epoch != pending_epoch:
+                    if not self._claim_ring_write(
+                        pending_epoch, pending_from_queue, generation=generation
+                    ):
                         # Splice landed after this chunk left the queue: drop it
                         # unplayed, with the paired subtract used below.
                         self._discard_unpushed(pending_from_queue, generation=generation)
@@ -1170,7 +1194,11 @@ class AudioStreamer:
                 # A splice landed while this chunk was in hand: from_queue +
                 # leftover are pre-splice, so count them as never pushed (the
                 # paired subtract holds position) and skip the write and pace.
-                if self._flush_epoch != epoch:
+                # A chunk handed off below is claimed when it is written, at the
+                # top of the loop; a priming chunk is written here.
+                if not self._claim_ring_write(
+                    epoch, 0 if prebuffered else from_queue, generation=generation
+                ):
                     self._discard_unpushed(from_queue + len(leftover), generation=generation)
                     leftover = b""
                     continue
@@ -1580,17 +1608,35 @@ class AudioStreamer:
         # residual epoch-check→put window is µs against a user-rate flush.
         if self._flush_epoch != epoch:
             return 0
-        try:
-            if block_on_full:
-                self.q.put(payload, timeout=QUEUE_PUT_TIMEOUT_S)
-            else:
-                self.q.put_nowait(payload)
-        except queue.Full:
-            return 0
+        # Counted before the put: a blob in the queue without its count, taken
+        # by flush()'s drain or the worker, is subtracted from a queued count
+        # that clamps at zero, and the late add then leaves a phantom queued
+        # count the ring never consumes.
         with self._count_lock:
             self._queued_samples += n
             self._pushed_count += n
-        return n
+        # Polled rather than a blocking q.put(timeout=...): flush()'s and
+        # stop()'s drain frees the very slots a parked put waits on, so the
+        # pre-splice blob would land in the queue right after the drain. The
+        # check and the put share _count_lock with the epoch bump, so a put
+        # cannot pass its check before a bump and land after the drain.
+        put_deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S
+        while True:
+            with self._count_lock:
+                if self._flush_epoch != epoch:
+                    break
+                try:
+                    self.q.put_nowait(payload)
+                    return n
+                except queue.Full:
+                    pass
+            if not block_on_full or time.monotonic() >= put_deadline:
+                break
+            time.sleep(BACKPRESSURE_SPIN_S)
+        with self._count_lock:
+            self._queued_samples = max(0, self._queued_samples - n)
+            self._pushed_count = max(0, self._pushed_count - n)
+        return 0
 
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
         if status or not self.running:
@@ -1714,8 +1760,7 @@ class AudioStreamer:
             self._start_mic_for_reu_pump(device, skip_irq_vector_hook=skip_irq_vector_hook)
             return
         self._upload_nmi_and_buffers()
-        self._pushed_count = 0
-        self._reset_ring_clock()
+        self.reset_position()
         self.running = True
         self._worker_thread = self._start_worker()
         assert sd is not None
@@ -2518,8 +2563,7 @@ class AudioStreamer:
         via push_samples()."""
         self._listen_mode = False
         self._upload_nmi_and_buffers()
-        self._pushed_count = 0
-        self._reset_ring_clock()
+        self.reset_position()
         self.running = True
         self._worker_thread = self._start_worker()
         # Report the achieved rate too: CIA latch quantization separates them
@@ -2950,9 +2994,11 @@ class AudioStreamer:
         return 0.0
 
     def ring_lead_seconds(self) -> float:
-        """Audio landed in the C64 ring but not yet played. A splice anchors
-        on ``position_seconds() + ring_lead_seconds()``, where its first
-        sample lands, so the video waits until that sample is heard.
+        """Audio landed in the C64 ring but not yet played: a splice's first
+        sample is heard at ``position_seconds() + ring_lead_seconds()``, so
+        the video waits until then. The splice itself anchors on what
+        ``flush()`` returns, which also counts the chunk the worker is
+        writing, since it lands after this read.
 
         It is the landed content less what position_seconds() reports as
         heard, from one read of both, so the anchor is exactly the landed
@@ -3085,7 +3131,9 @@ class AudioStreamer:
         self._ring_landed_at = None
 
     def reset_position(self) -> None:
-        self._pushed_count = 0
+        with self._count_lock:
+            self._pushed_count = 0
+            self._in_flight_samples = 0
         self._reset_ring_clock()
 
     def _drain_queue_samples(self) -> int:
@@ -3101,11 +3149,14 @@ class AudioStreamer:
             drained += len(blob)
         return drained
 
-    def flush(self, *, silence_output: bool = False) -> None:
+    def flush(self, *, silence_output: bool = False) -> float:
         """Drop all queued (not-yet-ring-written) audio WITHOUT moving
         position_seconds(). Used by VideoScene's transport splice (seek / loop
         wrap / resume) so stale pre-splice audio doesn't play after the demuxer
-        re-seeks. ``silence_output`` additionally asks the worker to NEUTRAL-fill
+        re-seeks. Returns the splice anchor: the ``position_seconds()`` at
+        which the first sample pushed after the flush is heard: the landed
+        count plus the chunk the worker is writing, from one read of both.
+        ``silence_output`` additionally asks the worker to NEUTRAL-fill
         the unplayed ring region (pause fast mute) — the worker owns write_addr,
         so it executes the ring stomp, not this thread.
 
@@ -3117,8 +3168,20 @@ class AudioStreamer:
         ``position = pushed - queued`` unchanged.
         No-op in REU-pump mode (no host queue to flush)."""
         if self._reu_pump_armed:
-            return
-        self._flush_epoch += 1
+            return self.position_seconds()
+        rate = self.effective_rate
+        # The landed count, plus the chunk the worker is writing, which plays
+        # ahead of every post-splice sample but lands after this read. One
+        # read, under the lock the worker claims a ring write and counts a
+        # landing under, with the epoch bump: a chunk claimed before it is
+        # counted here, and one checked after it is dropped. The heard
+        # position never passes the landed count, so the landed count is
+        # where the first post-splice sample is heard. Draining the queue
+        # moves neither count.
+        with self._count_lock:
+            self._flush_epoch += 1
+            landed = max(0, self._pushed_count - self._queued_samples) + self._in_flight_samples
+        anchor = landed / rate if rate else 0.0
         # A pass that reached EOF before the seek was requested ended the
         # input, and the post-splice pass has yet to push: left ended, a
         # priming worker pads its prebuffer out with silence and a stall
@@ -3127,6 +3190,7 @@ class AudioStreamer:
         self._discard_unpushed(self._drain_queue_samples())
         if silence_output:
             self._stomp_requested = True
+        return anchor
 
     def _stomp_ring(self, write_addr: int, current: Callable[[], bool]) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the
@@ -3228,7 +3292,9 @@ class AudioStreamer:
         # Ahead of everything a producer could outlast: the push path's epoch
         # check is what drops a blob from a producer this clear just released,
         # and the drain at the bottom only catches one that beats it there.
-        self._flush_epoch += 1
+        # Under _count_lock, where the push path checks it and puts.
+        with self._count_lock:
+            self._flush_epoch += 1
         # No-op if the pump was never armed and no $0314 restore or CIA #1
         # unmask is owed. The video pumps' governor lives in the C64-side
         # handler, so disarming the IRQ vector stops it; the mic pump's
@@ -3262,8 +3328,13 @@ class AudioStreamer:
         # Drain so subsequent runs start clean. The epoch bumped above is what
         # covers a producer still between its own capture and its put.
         self._drain_queue_samples()
-        self._pushed_count = 0
-        self._queued_samples = 0
+        # Locked: a producer rolling back a blob the epoch bump refused does a
+        # read-modify-write under _count_lock, and an unlocked store here could
+        # land inside it and be overwritten with the pre-zero count.
+        with self._count_lock:
+            self._pushed_count = 0
+            self._queued_samples = 0
+            self._in_flight_samples = 0
         self._reset_ring_clock()
         self._stomp_requested = False
         # The streamer is reused across scenes: a total outliving its own scene

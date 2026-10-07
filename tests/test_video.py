@@ -9,13 +9,16 @@ import time
 import unittest
 from contextlib import ExitStack, suppress
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FrozenClock
+from _fakes import FakeAPI, FrozenClock
 
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.control.transport import LoopPresetStore, timecode
+from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
@@ -1043,10 +1046,11 @@ class _FakeSceneAudio:
     def ring_lead_seconds(self) -> float:
         return self.ring_lead
 
-    def flush(self, *, silence_output: bool = False) -> None:
+    def flush(self, *, silence_output: bool = False) -> float:
         self.flush_calls.append(silence_output)
         if self._events is not None:
             self._events.append(("flush", silence_output))
+        return self._position + self.ring_lead
 
 
 class _FakeSamplerAudio(_FakeSceneAudio):
@@ -1064,10 +1068,10 @@ class _FakeSamplerAudio(_FakeSceneAudio):
         self.lag_read_at.append(position)
         return self.lag
 
-    def flush(self, *, silence_output: bool = False) -> None:
+    def flush(self, *, silence_output: bool = False) -> float:
         # As the sampler's cut-over does: a splice clears the re-anchor lag.
-        super().flush(silence_output=silence_output)
         self.lag = 0.0
+        return super().flush(silence_output=silence_output)
 
 
 class EmitAudioSeekGuardTest(unittest.TestCase):
@@ -1135,7 +1139,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport.touch()
         self.assertTrue(scene.transport.resync)
         self.assertEqual(source.muted_calls, [])  # NOT muted
-        self.assertAlmostEqual(scene.transport.audio_anchor_pos, 7.0)
+        self.assertEqual(scene.transport.audio_anchor_pos, 7.0)
 
     def test_touch_with_mute_setting_is_verbatim_phase2(self):
         scene, source, _ = self._resync_scene(position=7.0)
@@ -1291,9 +1295,10 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport_pause()
         self.assertTrue(demux._muted)
 
-        def flush_while_the_demuxer_seeks(*, silence_output: bool = False) -> None:
+        def flush_while_the_demuxer_seeks(*, silence_output: bool = False) -> float:
             demux._pending_seek = None  # the demux thread applied the seek
             demux._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+            return 10.0
 
         audio.flush = flush_while_the_demuxer_seeks  # type: ignore[method-assign]
         scene.transport_resume()
@@ -1398,8 +1403,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport.loop_a = 0.0
         scene.transport.loop_b = 10.0
         scene.transport.loop_state = "active"
-        scene.transport.audio_anchor_clock_s = 0.0
-        scene.transport.audio_anchor_pos = 0.0
+        scene.transport.audio_anchor = (0.0, 0.0)
         source.seeks.clear()
         source.seek_pending = False  # transport_seek(100) set it; clear for wrap
         source.finished = False
@@ -1412,8 +1416,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         # (an inverted conversion would double the tempo error into the label).
         scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
         scene.transport.touch()
-        scene.transport.audio_anchor_clock_s = 88.0  # content 100 at s=0.88
-        scene.transport.audio_anchor_pos = 0.0
+        scene.transport.audio_anchor = (88.0, 0.0)  # content 100 at s=0.88
         audio._position = 0.0  # clock = 88.0
         scene.show_frame_numbers = True
         source.video_fps = 30.0
@@ -2624,6 +2627,123 @@ class RemoteSeekBoundTest(unittest.TestCase):
             _wait_until(lambda: src.video_buffer_depth > 0), "the seek never reached the server"
         )
         self.assertFalse(src.finished)
+
+
+class SpliceAnchorTest(unittest.TestCase):
+    """A resync splice anchors the clock where the sink's flush put the
+    target's first sample, read once and after the flush has cleared any
+    end-of-stream clamp."""
+
+    def _touched(self, audio: Any) -> VideoScene:
+        scene = _make_video_scene_stub(_StubSource(duration=100.0, a_stream=object()))
+        scene.audio = audio
+        scene.transport.loop_audio = "on"
+        scene.transport.touch()
+        self.assertTrue(scene.transport.resync)
+        return scene
+
+    def test_a_splice_after_the_samplers_eof_anchors_on_its_unclamped_clock(self):
+        # mark_eof clamps the sampler's clock to the pushed total while the
+        # wall runs on, and the flush clears the clamp: an anchor read before
+        # the flush put the picture the clamp's overrun ahead of the sound.
+        smp = UltimateAudioSampler(
+            cast(Any, mock.MagicMock()), sample_rate=2000, bits=8, ring_size=0x4000
+        )
+        smp._running = True
+        smp._gate_time = time.monotonic() - 5.0
+        smp._pushed_samples = 2000  # 1 s pushed, 5 s on the wall
+        smp.mark_eof()
+        scene = self._touched(smp)
+        scene.transport_seek(0.5)
+        self.assertAlmostEqual(scene.transport.clock_s(), 0.5 - smp.ring_lead_seconds(), delta=0.05)
+
+    def test_a_console_poll_during_the_flush_reads_the_target(self):
+        # The web console reads position() off the playlist thread; read
+        # against the previous anchor, a poll during the flush showed the
+        # target plus everything heard since then.
+        audio = _FakeSceneAudio(position=0.0)
+        scene = self._touched(audio)
+        audio._position = 40.0
+        polls: list[float] = []
+        flush = audio.flush
+
+        def flush_while_polled(*, silence_output: bool = False) -> float:
+            polls.append(scene.transport.position())
+            return flush(silence_output=silence_output)
+
+        with mock.patch.object(audio, "flush", side_effect=flush_while_polled):
+            scene.transport_seek(5.0)
+        self.assertEqual(polls, [5.0])
+
+    def test_a_console_poll_after_the_samplers_cut_over_reads_the_target(self):
+        # The cut-over clears mark_eof's clamp before flush() returns. Held on
+        # an estimate read while the clamp stood, a poll there read the target
+        # plus the clamp's overrun.
+        smp = UltimateAudioSampler(
+            cast(Any, mock.MagicMock()), sample_rate=2000, bits=8, ring_size=0x4000
+        )
+        smp._running = True
+        smp._gate_time = time.monotonic() - 5.0
+        smp._pushed_samples = 2000  # 1 s pushed, 5 s on the wall
+        smp.mark_eof()
+        scene = self._touched(smp)
+        polls: list[float] = []
+        cut_over = smp._cut_over
+
+        def cut_over_then_poll(*args: Any, **kwargs: Any) -> None:
+            cut_over(*args, **kwargs)
+            polls.append(scene.transport.position())
+
+        with mock.patch.object(smp, "_cut_over", side_effect=cut_over_then_poll):
+            scene.transport_seek(0.5)
+        self.assertEqual(polls, [0.5])
+
+    def test_a_flush_that_raises_leaves_the_clock_running(self):
+        # Held at the target until the flush returns, the clock would stay
+        # held for good after a flush that never does.
+        audio = _FakeSceneAudio(position=0.0)
+        scene = self._touched(audio)
+        audio._position = 40.0
+        with (
+            mock.patch.object(audio, "flush", side_effect=RuntimeError("link down")),
+            self.assertRaises(RuntimeError),
+        ):
+            scene.transport_seek(5.0)
+        audio._position = 41.0
+        self.assertAlmostEqual(scene.transport.clock_s(), 6.0 - audio.ring_lead)
+
+    def test_a_console_poll_during_a_resume_reads_the_paused_position(self):
+        # Unpaused before the splice stored its anchor, the clock read the
+        # paused position plus everything heard since the previous anchor.
+        audio = _FakeSceneAudio(position=0.0)
+        scene = self._touched(audio)
+        audio._position = 10.0
+        scene.transport.pause()
+        audio._position = 70.0
+        polls: list[float] = []
+        flush = audio.flush
+
+        def flush_while_polled(*, silence_output: bool = False) -> float:
+            polls.append(scene.transport.position())
+            return flush(silence_output=silence_output)
+
+        with mock.patch.object(audio, "flush", side_effect=flush_while_polled):
+            scene.transport.resume()
+        self.assertEqual(polls, [10.0])
+        self.assertFalse(scene.transport.is_paused())
+
+    def test_a_dac_splice_anchors_behind_the_chunk_in_flight(self):
+        # 1000 bytes landed and a 400-byte chunk on its way to the ring: the
+        # target's first sample is heard at 1400. A position and a lead read
+        # separately also paired two landed counts when a chunk landed
+        # between the reads.
+        dac = AudioStreamer(cast(Ultimate64API, FakeAPI()), 8000, "NTSC")
+        scene = self._touched(dac)
+        dac._pushed_count, dac._queued_samples, dac._in_flight_samples = 1800, 800, 400
+        scene.transport_seek(2.0)
+        pos = scene.transport.audio_anchor_pos
+        assert pos is not None
+        self.assertEqual(round(pos * dac.effective_rate, 6), 1400)
 
 
 if __name__ == "__main__":

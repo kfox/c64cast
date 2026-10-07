@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import queue
+import sys
 import threading
 import time
 import unittest
@@ -66,6 +67,45 @@ class _SupersedeOnStompRead(AudioStreamer):
     @_stomp_requested.setter
     def _stomp_requested(self, value: bool) -> None:
         self.__dict__["_stomp_flag"] = value
+
+
+class _FlushDuringClaim(AudioStreamer):
+    """An AudioStreamer whose worker is flushed, from another thread, between
+    reading the flush epoch in ``_claim_ring_write`` and recording the chunk
+    as in flight: the window a check made outside ``_count_lock`` leaves open.
+    With ``_count_lock`` free there, the flush runs to completion before the
+    claim goes on; against the lock it blocks until the claim is done."""
+
+    trigger_claim = 0
+    _claims = 0
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        self._epoch = 0
+        self.flusher: threading.Thread | None = None
+        self.anchors: list[float] = []
+        super().__init__(*a, **kw)
+
+    @property  # type: ignore[override]
+    def _flush_epoch(self) -> int:
+        in_claim = sys._getframe(1).f_code.co_name == "_claim_ring_write"
+        if in_claim and threading.current_thread().name == "test-worker":
+            self._claims += 1
+            if self._claims == self.trigger_claim:
+                value = self._epoch
+                self.flusher = threading.Thread(
+                    target=lambda: self.anchors.append(self.flush()), name="test-flusher"
+                )
+                self.flusher.start()
+                # Held, the lock blocks the flush until the claim is done, and
+                # any wait is only the window. Free, the flush runs through,
+                # so wait it out rather than race a slow start under load.
+                self.flusher.join(0.2 if self._count_lock.locked() else 5.0)
+                return value
+        return self._epoch
+
+    @_flush_epoch.setter
+    def _flush_epoch(self, value: int) -> None:
+        self._epoch = value
 
 
 def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> AudioStreamer:
@@ -474,6 +514,114 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             addr += len(data)
             if addr >= RING_BUFFER_END:
                 addr = RING_BUFFER_ADDR
+
+    def test_a_splice_during_a_ring_write_anchors_behind_that_chunk(self):
+        """A chunk the worker is writing when the flush lands is in the ring
+        ahead of every post-splice sample, so the anchor counts it. Read
+        before it was counted as landed, the anchor came out one chunk early
+        and the picture ran that far ahead of the sound until the next splice.
+        Both the priming write and the paced drip are covered."""
+        for flush_at in (1, PREBUFFER_CHUNKS + 1):
+            with self.subTest(write=flush_at):
+                s, anchor = self._flush_during_chunk(flush_at)
+                landed = s._pushed_count - s._queued_samples
+                self.assertEqual(round(anchor * s.effective_rate), landed)
+                self.assertEqual(landed, 32 * flush_at, "the splice dropped a chunk it wrote")
+
+    def _flush_during_chunk(self, chunk: int) -> tuple[AudioStreamer, float]:
+        """Run a worker over a full queue, flushing during the first ring
+        write of its ``chunk``-th chunk; return the streamer and the anchor."""
+        s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+        for _ in range(PREBUFFER_CHUNKS + 3):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        api = cast(Any, s.api)
+        real_write = api.write_memory_file
+        anchors: list[float] = []
+
+        def write_then_flush(addr, data):  # type: ignore[no-untyped-def]
+            if len(_written_stream(s)) // 32 + 1 == chunk and not anchors:
+                anchors.append(s.flush())
+            real_write(addr, data)
+
+        api.write_memory_file = write_then_flush
+        _run_worker(s, until=lambda: s._queued_samples == 0, timeout=3.0)
+        self.assertEqual(len(anchors), 1)
+        return s, anchors[0]
+
+    def test_a_flush_in_the_claim_window_still_counts_the_chunk(self):
+        """The epoch check and the in-flight record are one step under
+        ``_count_lock``. A flush landing between them would anchor without a
+        chunk the worker then writes ahead of every post-splice sample."""
+        for claim in (1, PREBUFFER_CHUNKS + 2):
+            with self.subTest(claim=claim):
+                self._flush_in_claim_window(claim)
+
+    def _flush_in_claim_window(self, claim: int) -> None:
+        api = cast(Ultimate64API, FakeAPI())
+        s = _FlushDuringClaim(api, 64000, "NTSC")
+        s.chunk_size = 32
+        s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
+        s.trigger_claim = claim
+        for _ in range(PREBUFFER_CHUNKS + 3):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        _run_worker(s, until=lambda: s._queued_samples == 0 and bool(s.anchors))
+        flusher = s.flusher
+        assert flusher is not None
+        flusher.join(2.0)
+        self.assertFalse(flusher.is_alive())
+        self.assertEqual(len(s.anchors), 1)
+        landed = s._pushed_count - s._queued_samples
+        self.assertEqual(round(s.anchors[0] * s.effective_rate), landed)
+        self.assertGreater(landed, 0)
+
+    def test_a_splice_after_a_chunk_lands_does_not_count_it_twice(self):
+        """A landing clears the in-flight record. The worker next claims only
+        after its collect, so a flush in between anchored a chunk late
+        (the picture behind the sound) off a record that had already landed."""
+        for chunks in (1, PREBUFFER_CHUNKS + 1):
+            with self.subTest(landed_chunks=chunks):
+                s, landed, anchor = self._flush_in("_collect_until", after_chunks=chunks)
+                self.assertEqual(round(anchor * s.effective_rate), landed)
+
+    def test_a_splice_with_a_chunk_handed_off_does_not_count_it(self):
+        """A chunk handed off to the next iteration is claimed with 0 queued
+        samples in flight: it is not in the ring until that iteration writes
+        it, and a flush before then drops it. Counting it anchored a chunk
+        late."""
+        s, landed, anchor = self._flush_in("next_pace_increment", after_chunks=PREBUFFER_CHUNKS)
+        self.assertEqual(round(anchor * s.effective_rate), landed)
+
+    def _flush_in(self, name: str, *, after_chunks: int) -> tuple[AudioStreamer, int, float]:
+        """Run a worker over a full queue, flushing at the first call of the
+        worker's ``name`` once ``after_chunks`` chunks have landed; return the
+        streamer, the landed count at that moment and the anchor."""
+        s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+        for _ in range(PREBUFFER_CHUNKS + 3):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        flushes: list[tuple[int, float]] = []
+        owner = s.servo if name == "next_pace_increment" else s
+        real = getattr(owner, name)
+
+        def flush_then_call(*a, **kw):  # type: ignore[no-untyped-def]
+            # The worker's own call: a drip's interleaved collect runs before
+            # its chunk is counted landed.
+            from_worker = sys._getframe(1).f_code.co_name == "_worker"
+            if from_worker and not flushes and len(_written_stream(s)) // 32 >= after_chunks:
+                landed = s._pushed_count - s._queued_samples
+                flushes.append((landed, s.flush()))
+            return real(*a, **kw)
+
+        with mock.patch.object(owner, name, flush_then_call):
+            _run_worker(s, until=lambda: bool(flushes))
+        self.assertEqual(len(flushes), 1, "the worker never reached the flush point")
+        self.assertGreaterEqual(flushes[0][0], 32 * after_chunks)
+        return s, *flushes[0]
 
     def test_worker_exits_when_its_generation_is_superseded(self):
         """stop()'s join is bounded, so a worker parked in a ring write can
@@ -2628,6 +2776,118 @@ class EncodeBackpressureTest(unittest.TestCase):
         s._queued_samples = 0  # but keep the sample cap clear
         n = s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0)
+        self.assertEqual((s._queued_samples, s._pushed_count), (0, 0))
+
+    def test_a_flush_that_drains_a_blob_just_put_keeps_the_landed_count(self):
+        # Drained before its count was added, the blob's subtract clamped at
+        # zero and the late add left a queued count the ring never consumes,
+        # with the landed count dropped by the blob.
+        s = _make()
+        s.running = True
+        s._pushed_count = 1000  # everything pushed so far has landed
+        # The put holds _count_lock, so a flush cannot run inside it; what the
+        # flush finds once it can is the blob in the queue with whatever
+        # counts were in place when it got there.
+        counts_at_put: list[tuple[int, int]] = []
+
+        class RecordCountsAtPut(queue.Queue):  # type: ignore[type-arg]
+            def put(self, item, block=True, timeout=None):  # type: ignore[no-untyped-def]
+                counts_at_put.append((s._pushed_count, s._queued_samples))
+                super().put(item, block, timeout)
+
+        s.q = RecordCountsAtPut(maxsize=s.q.maxsize)
+        self.assertEqual(s._encode_and_enqueue(np.zeros(200, dtype=np.float32), True), 200)
+        self.assertEqual(counts_at_put, [(1200, 200)])
+        anchor = s.flush()
+        self.assertEqual(round(anchor * s.effective_rate), 1000)
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
+
+    def _park_a_push_on_a_full_queue(
+        self, s: AudioStreamer
+    ) -> tuple[threading.Thread, dict[str, int]]:
+        # Every blob slot taken, the sample cap clear: the push gets past the
+        # backpressure spin and counts its blob, then waits for a slot. The
+        # wait outlasts the test, so the push cannot give up on its own and
+        # pass for a drop the flush or stop made.
+        patcher = mock.patch.object(audio_mod, "QUEUE_PUT_TIMEOUT_S", 30.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        s.running = True
+        s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
+        s.q = queue.Queue(maxsize=4)
+        for _ in range(4):
+            s.q.put(b"\x07" * 8)
+        with s._count_lock:
+            s._pushed_count = 1032
+            s._queued_samples = 32
+        out: dict[str, int] = {}
+
+        def push() -> None:
+            out["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
+
+        def release_and_join() -> None:
+            # A test that fails before its flush or stop would otherwise leave
+            # the push polling out the patched 30 s wait.
+            with s._count_lock:
+                s._flush_epoch += 1
+            t.join(2.0)
+
+        t = threading.Thread(target=push)
+        t.start()
+        self.addCleanup(release_and_join)
+        deadline = time.monotonic() + 2.0
+        while s._queued_samples != 132 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(s._queued_samples, 132)
+        return t, out
+
+    def test_a_flush_drops_a_push_parked_on_a_full_queue(self):
+        # The drain frees the slot the parked put waits for, so the pre-splice
+        # blob entered the queue behind the splice and played after it.
+        s = _make()
+        t, out = self._park_a_push_on_a_full_queue(s)
+        anchor = s.flush()
+        t.join(2.0)
+        self.assertEqual(out["n"], 0)
+        self.assertEqual(round(anchor * s.effective_rate), 1000)
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
+
+    def test_stop_drops_a_push_parked_on_a_full_queue(self):
+        # Landing after stop()'s drain, the blob sat in the queue for the next
+        # activation with its count already zeroed.
+        s = _make()
+        t, out = self._park_a_push_on_a_full_queue(s)
+        with quiet_logging():
+            s.stop()
+        t.join(2.0)
+        self.assertEqual(out["n"], 0)
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (0, 0, 0))
+
+    def test_a_flush_between_the_epoch_check_and_the_put_drains_the_blob(self):
+        # The check passed, then a flush bumped the epoch and drained the
+        # queue before the put: the pre-splice blob landed behind the drain.
+        s = _make()
+        s.running = True
+        flushed = threading.Event()
+
+        def flush() -> None:
+            s.flush()
+            flushed.set()
+
+        flusher = threading.Thread(target=flush)
+
+        class FlushBeforePut(queue.Queue):  # type: ignore[type-arg]
+            def put_nowait(self, item):  # type: ignore[no-untyped-def]
+                if not flusher.is_alive() and not flushed.is_set():
+                    flusher.start()
+                    flushed.wait(0.2)
+                super().put_nowait(item)
+
+        s.q = FlushBeforePut(maxsize=s.q.maxsize)
+        s._encode_and_enqueue(np.zeros(200, dtype=np.float32), True)
+        flusher.join(2.0)
+        self.assertTrue(flushed.is_set())
+        self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (0, 0, 0))
 
     def test_empty_input_returns_zero(self):
         s = _make()
@@ -3749,8 +4009,9 @@ class LifecycleTest(unittest.TestCase):
     def test_reset_position(self):
         s = _make()
         s._pushed_count = 1234
+        s._in_flight_samples = 32
         s.reset_position()
-        self.assertEqual(s._pushed_count, 0)
+        self.assertEqual((s._pushed_count, s._in_flight_samples), (0, 0))
 
     def test_stop_teardown_writes_and_logs_clean(self):
         s = _make()
