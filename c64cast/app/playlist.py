@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from c64cast.control.transport import LiveTuneTracker, TransportSession
 from c64cast.hw import hardware_palette
-from c64cast.hw.backend import C64Backend
+from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.scenes.scenes import Scene
 
 from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
@@ -38,6 +38,60 @@ FollowerSceneFactory = Callable[["SceneCfg"], Scene]
 # told about, so its adaptive NMI-rate loop re-arms its warm-up gate instead of
 # chasing the abnormal bus load. Routine 1-3 frame drops stay below it.
 _AUDIO_DISTURBANCE_DROP_S = 0.5
+
+# How often a render-path link outage that is still going repeats its WARNING.
+LINK_OUTAGE_REPORT_S = 10.0
+
+
+class RenderLinkOutage:
+    """Log for a render-path link outage: a WARNING when frames start failing
+    on a `LinkError`, another every `LINK_OUTAGE_REPORT_S` while they still
+    fail, and an INFO line when a frame renders again.
+
+    Skipping is silent otherwise, so a link that never comes back (a
+    rejected password, say) keeps saying so instead of going quiet after
+    one line."""
+
+    def __init__(self, log: logging.Logger, clock: Callable[[], float] = time.monotonic) -> None:
+        self._log = log
+        self._clock = clock
+        self._since: float | None = None
+        self._last_report = 0.0
+        self.skipped = 0
+
+    @property
+    def active(self) -> bool:
+        return self._since is not None
+
+    def failed(self, where: str, error: LinkError) -> None:
+        now = self._clock()
+        self.skipped += 1
+        if self._since is None:
+            self._since = self._last_report = now
+            self._log.warning(
+                "%s: the link to the machine failed (%s); skipping frames until it answers",
+                where,
+                error,
+            )
+        elif now - self._last_report >= LINK_OUTAGE_REPORT_S:
+            self._last_report = now
+            self._log.warning(
+                "link still down after %.0f s, %d frame(s) skipped (%s)",
+                now - self._since,
+                self.skipped,
+                error,
+            )
+
+    def recovered(self) -> None:
+        if self._since is None:
+            return
+        self._log.info(
+            "link back after %.1f s; %d frame(s) skipped",
+            self._clock() - self._since,
+            self.skipped,
+        )
+        self._since = None
+        self.skipped = 0
 
 
 class Playlist:
@@ -83,6 +137,7 @@ class Playlist:
         # end. A CTRL skip cancels both.
         self.fades = SceneFades(self, duration_s=fade_duration_s)
         self.api = api
+        self.link_outage = RenderLinkOutage(self.log)
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -753,13 +808,22 @@ class Playlist:
         the cpu_render profiler stage. Returns the scene's still-active flag
         (False also when process_frame raised — a crashing scene advances).
 
+        A `LinkError` is the exception: the link to the machine is down, not
+        the scene, so the frame is skipped and the scene stays active, and the
+        next frame tries the link again. An overlay that raises one is skipped
+        for this frame rather than disabled.
+
         Overlays with PAINTS_INTO_BUFFERS are skipped here: they were already
         composed into the scene's screen+color buffers during
         scene.process_frame — calling process_frame again would race the
         scene write."""
         with self.profiler.stage("cpu_render"):
+            link_failure: tuple[str, LinkError] | None = None
             try:
                 still_active = scene.process_frame(t0)
+            except LinkError as e:
+                link_failure = f"scene {scene.name!r}", e
+                still_active = True
             except Exception:
                 self.log.exception("scene %r raised; advancing", scene.name)
                 still_active = False
@@ -770,9 +834,16 @@ class Playlist:
                     continue
                 try:
                     ov.process_frame(self.api, scene, t0)
+                except LinkError as e:
+                    if link_failure is None:
+                        link_failure = f"overlay {ov.name!r} on {scene.name!r}", e
                 except Exception:
                     self.log.exception("overlay %r raised on %r — disabling", ov.name, scene.name)
                     ov.disabled = True
+            if link_failure is None:
+                self.link_outage.recovered()
+            else:
+                self.link_outage.failed(*link_failure)
         return still_active
 
     def _apply_frame_events(self, scene: Scene, still_active: bool) -> None:

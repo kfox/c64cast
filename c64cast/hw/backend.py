@@ -65,6 +65,17 @@ class BackendCapabilityError(RuntimeError):
         super().__init__(f"this hardware backend does not support {capability!r}")
 
 
+class LinkError(Exception):
+    """The link to the machine failed, so a command may never have reached it.
+
+    A backend's raising write paths (``reu_write`` on the Ultimate) raise a
+    subclass of this rather than a bare ``OSError``, so a caller can tell a
+    link that is down from a defect. The render loop treats it as transient:
+    it skips the frame and keeps the scene, and the next frame tries the link
+    again. ``_emit`` never raises it; its failures go through the escalating
+    log ladder instead."""
+
+
 class BackendSetupError(ValueError):
     """`make_backend` cannot build a backend from this configuration: an unknown
     backend or transport, a required host or serial port missing, or a URL
@@ -470,6 +481,9 @@ class C64Backend(ABC):
         raise BackendCapabilityError("dump_char_rom")
 
     def reu_write(self, reu_offset: int, data: bytes) -> None:
+        """Bus-clean write into REU SRAM. Gated by `supports_reu`. Unlike the
+        `write_memory*` family it raises when the link fails, as a `LinkError`,
+        because its callers retry, confirm or skip on that failure."""
         raise BackendCapabilityError("reu_write")
 
     def open_video_stream(self) -> Any:
