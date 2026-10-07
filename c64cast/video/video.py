@@ -14,6 +14,7 @@ See docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfile
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import logging
 import os
@@ -155,6 +156,57 @@ def av_open(path: str):
         )
     except av.error.HTTPClientError as e:
         raise RuntimeError(_remote_refusal_message(e)) from e
+
+
+class RemoteSeekStalled(RuntimeError):
+    """A seek on a network input got no answer within the read bound.
+
+    The container now belongs to the abandoned seek: the worker still inside
+    FFmpeg closes it if the seek ever returns, and nothing else may touch it
+    — closing it from here would free the context that read is using."""
+
+
+def _seek(container: Any, path: str, offset: int, **kwargs: Any) -> None:
+    """``container.seek`` bounded by `_REMOTE_READ_TIMEOUT_S` for any input
+    `av_open` bounds (see `_is_local_file`), raising `RemoteSeekStalled` past
+    it.
+
+    PyAV arms its read bound only while a ``demux()`` generator is live, and
+    times a seek inside one against that generator's last read, so the bound
+    cannot come from PyAV: a seek outside one waits forever on a server that
+    stops answering the range request it opens, and one inside a generator
+    held open by a paused scene fails at once against a healthy server. The
+    seek runs on a worker instead, which the caller abandons on a stall."""
+    if _is_local_file(path):
+        container.seek(offset, **kwargs)
+        return
+    outcome: list[BaseException | None] = []
+    abandoned = False
+    lock = threading.Lock()
+
+    def run() -> None:
+        try:
+            container.seek(offset, **kwargs)
+            result: BaseException | None = None
+        except BaseException as e:  # noqa: BLE001 — handed to the caller
+            result = e
+        with lock:
+            outcome.append(result)
+            if abandoned:
+                with contextlib.suppress(Exception):
+                    container.close()
+
+    worker = threading.Thread(target=run, name="av-seek", daemon=True)
+    worker.start()
+    worker.join(_REMOTE_READ_TIMEOUT_S)
+    with lock:
+        if not outcome:
+            abandoned = True
+            raise RemoteSeekStalled(
+                f"the media server did not answer a seek within {_REMOTE_READ_TIMEOUT_S:g} s"
+            )
+    if outcome[0] is not None:
+        raise outcome[0]
 
 
 def probe_container_title(path: str) -> str | None:
@@ -377,6 +429,7 @@ def _source_duration_s(container: Any, v_stream: Any) -> float | None:
 
 def _seek_sample_frames(
     container: Any,
+    path: str,
     v_stream: Any,
     accumulators: list[Any],
     max_samples: int,
@@ -403,7 +456,7 @@ def _seek_sample_frames(
         # can decode to nothing.
         target_s = (n + 0.5) / max_samples * duration_s
         ts = start_time + int(target_s / time_base)
-        container.seek(ts, stream=v_stream)  # backward=True (default) → keyframe ≤ ts
+        _seek(container, path, ts, stream=v_stream)  # backward=True (default) → keyframe ≤ ts
         frame = next(container.decode(v_stream), None)
         if frame is None:
             continue
@@ -510,6 +563,7 @@ def scan_video_samples(
                     seeked = (
                         _seek_sample_frames(
                             container,
+                            path,
                             v_stream,
                             accumulators,
                             max_samples,
@@ -518,6 +572,10 @@ def scan_video_samples(
                         )
                         > 0
                     )
+                except RemoteSeekStalled:
+                    # The abandoned seek owns the container now.
+                    container = None
+                    raise
                 except Exception as e:
                     # Non-seekable source: fall through to sequential decode.
                     log.debug(
@@ -535,7 +593,8 @@ def scan_video_samples(
                     container, v_stream, accumulators, max_samples, decode_target_size
                 )
         finally:
-            container.close()
+            if container is not None:
+                container.close()
     except Exception as e:
         log.warning("color pre-scan of %s failed (%s); skipping", path, e)
         return False
@@ -730,7 +789,9 @@ class AVFileSource:
         # early. Audio packets interleave near the same byte offset, so A/V stay
         # aligned once video PTS are rebased.
         if self.start_s > 0:
-            self.container.seek(int(self.start_s * 1_000_000))
+            # A stall raises out of here, leaving the container to the
+            # abandoned seek (RemoteSeekStalled).
+            _seek(self.container, path, int(self.start_s * 1_000_000))
             log.info("av %s: seek to start_s=%.3fs", os.path.basename(self.path), self.start_s)
 
         if self.a_stream is not None:
@@ -773,6 +834,9 @@ class AVFileSource:
         # Set when the demux thread has returned for good (closed or crashed),
         # so a seek requested after that cannot hold `finished` off forever.
         self._demux_exited = False
+        # Set when a transport seek stalled: the abandoned seek owns the
+        # container, so close() leaves it alone (RemoteSeekStalled).
+        self._container_abandoned = False
         self._closed = False
         self._demux_poll: PollThread | None = None
         self._audio_push: Callable[[np.ndarray], object] | None = None
@@ -827,7 +891,11 @@ class AVFileSource:
                 # With a start_s seek, normalize over [start_s, end] only, so
                 # the gain reflects what is actually heard.
                 if self.start_s > 0:
-                    container.seek(int(self.start_s * 1_000_000))
+                    try:
+                        _seek(container, self.path, int(self.start_s * 1_000_000))
+                    except RemoteSeekStalled:
+                        container = None
+                        raise
                 resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
                 for packet in container.demux(a_stream):
                     for frame in packet.decode():
@@ -838,7 +906,11 @@ class AVFileSource:
                                 if local_peak > peak:
                                     peak = local_peak
             finally:
-                container.close()
+                if container is not None:
+                    container.close()
+        except RemoteSeekStalled as e:
+            log.warning("av %s: audio peak scan skipped (%s); using unity gain", self.path, e)
+            return 0
         except Exception:
             log.exception("av %s: audio peak scan failed; using unity gain", self.path)
             return 0
@@ -976,7 +1048,11 @@ class AVFileSource:
             # `finished` could see neither a pending seek nor a live pass.
             self._eof = False
             self._audio_end_sent = False
-        self.container.seek(int(target * 1_000_000))
+        try:
+            _seek(self.container, self.path, int(target * 1_000_000))
+        except RemoteSeekStalled:
+            self._container_abandoned = True
+            raise
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
         if self._atempo_graph is not None:
@@ -1117,6 +1193,9 @@ class AVFileSource:
                     log.debug("demux %s: EOF", self.path)
                     if not self._await_seek_after_eof():
                         return
+                self._apply_pending_seek()
+        except RemoteSeekStalled as e:
+            log.error("demux %s: %s; ending playback", self.path, e)
         except Exception:
             log.exception("demux %s crashed", self.path)
             # The crash is this input's end too: a clip that pushed less than
@@ -1159,19 +1238,19 @@ class AVFileSource:
                 self._end_audio_input_locked()
 
     def _demux_pass(self) -> Literal["eof", "seek", "closed"]:
-        """Demux from the container's current position until EOF, an applied
-        seek, or close. A seek ends the pass rather than reading on through
-        the same `demux()`: once that generator has read EOF it yields only
-        flush packets, which would drain the decoders the seek just reset and
-        leave nothing to read from the target. Applying the seek inside a
-        live `demux()` is also what bounds it on a remote input — PyAV arms
-        the read timeout only for a generator's life — so a seek requested at
-        EOF is applied on the first (flush) packet of the next pass."""
+        """Demux from the container's current position until EOF, a pending
+        seek, or close. A seek ends the pass, and `_demux_loop` applies it
+        between passes, with no `demux()` generator live: once a generator
+        has read EOF it yields only flush packets, which would drain the
+        decoders the seek just reset, and a seek inside one is timed against
+        its last read (see `_seek`). The packet in flight when the seek
+        arrived was read from the old position and is dropped."""
+        packets = self.container.demux()
         try:
-            for packet in self.container.demux():
+            for packet in packets:
                 if self._closed:
                     return "closed"
-                if self._apply_pending_seek():
+                if self.seek_pending:
                     return "seek"
                 if packet.stream.type == "video":
                     for frame in packet.decode():
@@ -1186,13 +1265,15 @@ class AVFileSource:
                     self._decode_audio_packet(packet)
         except (EOFError, StopIteration):
             pass
-        # A seek requested after the last packet is not applied here, where
-        # the generator has finished and no longer bounds its reads:
-        # `_await_seek_after_eof` returns at once and the next pass applies it.
-        return "eof"
+        finally:
+            close = getattr(packets, "close", None)
+            if close is not None:
+                close()
+        # A seek requested after the last packet would otherwise park with it.
+        return "seek" if self.seek_pending else "eof"
 
     def _await_seek_after_eof(self) -> bool:
-        """Mark EOF and park until a seek is requested (True; the next pass
+        """Mark EOF and park until a seek is requested (True; `_demux_loop`
         applies it) or the source closes (False)."""
         with self._lock:
             self._eof = True
@@ -1259,6 +1340,8 @@ class AVFileSource:
         if self._demux_poll is not None:
             self._demux_poll.stop()
             self._demux_poll = None
+        if self._container_abandoned:
+            return
         try:
             self.container.close()
         except Exception as e:

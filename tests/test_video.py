@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import cast
 from unittest import mock
@@ -2297,10 +2297,10 @@ class SeekAfterEofTest(unittest.TestCase):
         self.addCleanup(worker.join, 5.0)
         self.addCleanup(_signal_close, src)
 
-    def test_a_seek_after_eof_is_applied_inside_a_live_demux(self):
-        # PyAV arms a remote input's read timeout only while a demux()
-        # generator is alive, so a seek applied after one has finished waits
-        # forever on a server that stops answering the range request.
+    def test_a_seek_after_eof_is_applied_with_no_demux_live(self):
+        # PyAV times a seek inside a live demux() against that generator's
+        # last read, which a paused scene leaves stale; `_seek` bounds it
+        # instead, between passes.
         src = _make_demux_source_stub([])
         container = self._LiveDemuxContainer([_FakePacket([_FakeFrame(0)])])
         src.container = container
@@ -2308,11 +2308,11 @@ class SeekAfterEofTest(unittest.TestCase):
         self.assertTrue(_wait_until(lambda: src._eof), "demux loop never reached EOF")
         src.request_seek(0.0)
         self.assertTrue(_wait_until(lambda: container.seeks), "the seek was never applied")
-        self.assertEqual(container.seeks, [True])
+        self.assertEqual(container.seeks, [False])
 
-    def test_a_seek_landing_on_the_flush_packet_is_applied_inside_a_live_demux(self):
-        # The generator finishes right after its flush packet, so a seek
-        # requested while that packet decodes must wait for the next pass.
+    def test_a_seek_landing_on_the_flush_packet_is_applied_with_no_demux_live(self):
+        # A seek requested while the last packet decodes is still applied,
+        # rather than parked with the EOF.
         src = _make_demux_source_stub([])
 
         class _SeekingPacket(_FakePacket):
@@ -2330,7 +2330,7 @@ class SeekAfterEofTest(unittest.TestCase):
         src.container = container
         self._run_demux_loop(src)
         self.assertTrue(_wait_until(lambda: container.seeks), "the seek was never applied")
-        self.assertEqual(container.seeks, [True])
+        self.assertEqual(container.seeks, [False])
 
     def test_the_restarted_pass_reaches_eof_again(self):
         src = self._started_at_eof()
@@ -2340,6 +2340,204 @@ class SeekAfterEofTest(unittest.TestCase):
         while src.current_frame(10.0) is not None:
             pass
         self.assertTrue(src.finished)
+
+
+class _RangeHttpServer:
+    """A loopback HTTP server that honors `Range` for `body` on its first
+    `serve` connections (every one when None) and accepts every later one
+    without ever answering: the shape of a server that goes silent once the
+    client seeks. `close()` releases every socket and joins its threads."""
+
+    def __init__(self, body: bytes, serve: int | None = None):
+        import socket
+
+        self._body = body
+        self._serve_n = serve
+        self.requests = 0
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(8)
+        self._srv.settimeout(0.05)
+        self.port = self._srv.getsockname()[1]
+        self._held: list = []
+        self._senders: list[threading.Thread] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/clip.mkv"
+
+    def _serve(self):
+        import re
+
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                continue
+            self._held.append(conn)
+            self.requests += 1
+            if self._serve_n is not None and self.requests > self._serve_n:
+                continue
+            conn.settimeout(2.0)
+            try:
+                request = conn.recv(4096)
+            except OSError:
+                continue
+            # Blocking from here: a client that stops reading for a while (a
+            # paused scene) must find the rest of the body still coming.
+            conn.settimeout(None)
+            m = re.search(rb"[Rr]ange: bytes=(\d+)-", request)
+            start = int(m.group(1)) if m else 0
+            part = self._body[start:]
+            head = (
+                b"HTTP/1.1 206 Partial Content\r\nConnection: close\r\nAccept-Ranges: bytes\r\n"
+                + f"Content-Range: bytes {start}-{len(self._body) - 1}/{len(self._body)}\r\n".encode()
+                + f"Content-Length: {len(part)}\r\n\r\n".encode()
+            )
+            sender = threading.Thread(target=self._send, args=(conn, head + part), daemon=True)
+            self._senders.append(sender)
+            sender.start()
+
+    def _send(self, conn, data: bytes) -> None:
+        with suppress(OSError):
+            conn.sendall(data)
+
+    def close(self):
+        self._stop.set()
+        self._thread.join(2.0)
+        for conn in self._held:
+            conn.close()
+        for sender in self._senders:
+            sender.join(2.0)
+        self._srv.close()
+
+
+def _write_av_mkv(path: str, *, seconds: int = 6, fps: int = 30, rate: int = 8000) -> None:
+    """A Matroska clip with noise video (so it is too large to arrive in one
+    read) and a tone on a PCM audio stream. Matroska keeps its seek index at
+    the end of the file, so every seek in it opens a new range request."""
+    import av
+
+    rng = np.random.default_rng(0)
+    container = av.open(path, "w", format="matroska")
+    try:
+        video = container.add_stream("mpeg4", rate=fps)
+        video.width, video.height = 64, 64
+        video.pix_fmt = "yuv420p"
+        video.gop_size = 6
+        video.bit_rate = 4_000_000
+        audio = container.add_stream("pcm_s16le", rate=rate)
+        audio.layout = "mono"
+        for _ in range(seconds * fps):
+            img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+            for packet in video.encode(av.VideoFrame.from_ndarray(img, "rgb24")):
+                container.mux(packet)
+        t = np.arange(seconds * rate) / rate
+        pcm = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16).reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
+        frame.sample_rate = rate
+        frame.pts = 0
+        for packet in audio.encode(frame):
+            container.mux(packet)
+        for stream in (video, audio):
+            for packet in stream.encode():
+                container.mux(packet)
+    finally:
+        container.close()
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class RemoteSeekBoundTest(unittest.TestCase):
+    """A seek on a remote input opens a new range request, which PyAV bounds
+    only while a `demux()` generator is live, and then against the clock of
+    that generator's last read. Every seek has to fail within the read bound
+    when the server goes silent — the start_s seek, the peak scan's, the
+    color pre-scan's and the demux thread's own — and none may fail a
+    healthy server because that clock went stale while playback was paused."""
+
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch("c64cast.video.video._REMOTE_OPEN_TIMEOUT_S", 0.5))
+        stack.enter_context(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 0.5))
+        # The reconnect backoff would keep an abandoned seek redialing the
+        # closed server for seconds, past the thread sandbox's grace.
+        stack.enter_context(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(path)
+        self.local = path
+
+    def _server(self, serve: int | None) -> str:
+        """A server for the clip; opening it takes the first connection."""
+        server = _RangeHttpServer(Path(self.local).read_bytes(), serve)
+        self.addCleanup(server.close)
+        return server.url
+
+    def _bounded(self, fn, limit_s: float = 10.0):
+        """`fn`'s result or what it raised; a worker still blocked after
+        `limit_s` fails the test (closing the server releases it)."""
+        box: list = []
+
+        def run():
+            try:
+                box.append(fn())
+            except Exception as e:  # noqa: BLE001 — the raise is the result
+                box.append(e)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(limit_s)
+        self.assertFalse(worker.is_alive(), f"still blocked after {limit_s}s")
+        return box[0]
+
+    def test_a_stalled_start_s_seek_fails_the_open(self):
+        url = self._server(serve=1)
+        outcome = self._bounded(
+            lambda: AVFileSource(url, target_sample_rate=8000, scan_audio_peak=False, start_s=3.0)
+        )
+        self.assertIsInstance(outcome, Exception)
+
+    def test_a_stalled_peak_scan_seek_falls_back_to_unity_gain(self):
+        src = AVFileSource(self.local, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src.path = self._server(serve=1)
+        src.start_s = 3.0
+        with self.assertLogs("c64cast.video.video", level="WARNING"):
+            self.assertEqual(self._bounded(src._scan_audio_peak), 0)
+
+    def test_a_stalled_color_prescan_seek_skips_the_scan(self):
+        url = self._server(serve=1)
+        with self.assertLogs("c64cast.video.video", level="WARNING"):
+            self.assertIs(self._bounded(lambda: scan_video_samples(url, [_RecordingAcc()])), False)
+
+    def test_a_stalled_transport_seek_ends_the_source(self):
+        src = AVFileSource(self._server(serve=1), target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        with self.assertLogs("c64cast.video.video", level="ERROR"):
+            src.start(audio_push=None)
+            self.assertTrue(_wait_until(lambda: src._eof), "demuxer never reached EOF")
+            src.request_seek(3.0)
+            self.assertTrue(_wait_until(lambda: src.finished), "a stalled seek hung the source")
+
+    def test_a_seek_after_a_long_pause_reaches_a_healthy_server(self):
+        # Blocked on a full buffer, the demux thread holds its generator open
+        # past the read bound, as a paused scene's does.
+        src = AVFileSource(self._server(serve=None), target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src.max_video_buffer = 5
+        src.start(audio_push=None)
+        self.assertTrue(_wait_until(lambda: src.video_buffer_depth == 5))
+        time.sleep(1.0)
+        src.request_seek(3.0)
+        self.assertTrue(
+            _wait_until(lambda: src.video_buffer_depth > 0), "the seek never reached the server"
+        )
+        self.assertFalse(src.finished)
 
 
 if __name__ == "__main__":

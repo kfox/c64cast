@@ -330,6 +330,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   dropped in short crossfaded splices instead. `[audio].reu_pump_governor`
   (on by default) turns it off.
 
+- **A video streamed from a URL no longer hangs the show when the server stops
+  answering a seek.** Starting at `start_s`, the loudness scan, the color
+  pre-scan and a seek from the transport controls all waited forever on a
+  silent server; each now gives up after the 30 s read timeout. A failed start
+  seek fails the scene, the loudness scan plays at unity gain, the color
+  pre-scan is skipped, and a failed transport seek ends the scene.
+
 - **A video clip shorter than about half a second now plays its sound and
   ends with the clip.** The audio waits for half a second of sound before it
   starts, so on the DAC such a clip never started at all and the scene did not
