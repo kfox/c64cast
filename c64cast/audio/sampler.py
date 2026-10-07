@@ -994,10 +994,18 @@ class UltimateAudioSampler:
         """One gate-off, and whether the link vouches it arrived: nothing it
         carried was counted lost (``delivery_epoch`` unmoved). A loss of some
         other thread's write in the same window reads as this one's, which
-        costs a repeat of an idempotent write."""
+        costs a repeat of an idempotent write.
+
+        The write is not flushed once ``delivery_epoch`` has moved: nothing
+        is left to confirm, and `flush` logs a warning per failure, which at
+        one retry every WRITER_BACKOFF_MAX_S floods the log for as long as
+        the outage lasts."""
         epoch = self.api.delivery_epoch
         try:
-            gate_off(self.api, self.channel)
+            self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
+            if self.api.delivery_epoch != epoch:
+                return False
+            self.api.flush()
         except Exception as e:  # the link is what failed
             log.debug("sampler: gate-off raised: %s", e)
             return False

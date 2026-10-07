@@ -530,8 +530,8 @@ class _FailingBackend(_FakeBackend):
 
 class _LossyGateOffBackend(_FailingBackend):
     """A link that stays down for REU writes and also loses the writer
-    thread's next ``lost`` register writes the way ``_emit`` loses one:
-    without raising, moving ``delivery_epoch``."""
+    thread's next ``lost`` register writes (negative: all of them) the way
+    ``_emit`` loses one: without raising, moving ``delivery_epoch``."""
 
     def __init__(self, lost: int) -> None:
         super().__init__(failures=-1)
@@ -608,6 +608,24 @@ class SamplerWriterFailureTest(unittest.TestCase):
         self.assertTrue(smp._failed)
         self.assertTrue(any("retrying until the link answers" in m for m in logs.output))
         self.assertTrue(any("channel gated off" in m for m in logs.output), logs.output)
+
+    def test_a_gate_off_the_link_lost_is_not_flushed(self):
+        # Ultimate64API.flush logs a warning per failure; flushing a retry the
+        # link already lost logged two a second for the whole outage.
+        api = _LossyGateOffBackend(lost=-1)
+        writer_flushes = []
+        api.flush = lambda: writer_flushes.append(threading.current_thread().name)  # type: ignore[method-assign]
+        with (
+            mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1),
+            mock.patch.object(s, "WRITER_BACKOFF_MAX_S", 0.01),
+            self.assertLogs("c64cast.audio.sampler", level="WARNING") as logs,
+        ):
+            self._started(api)
+            self.assertTrue(
+                self._wait(lambda: api.delivery_epoch >= 5), "the gate-off was not retried"
+            )
+        self.assertTrue(any("retrying until the link answers" in m for m in logs.output))
+        self.assertNotIn("uaudio-writer", writer_flushes)
 
     def test_push_samples_reports_what_it_accepted(self):
         # An audio-file scene waits for the sink's clock to reach what it
