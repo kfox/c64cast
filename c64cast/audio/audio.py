@@ -2871,9 +2871,12 @@ class AudioStreamer:
         if self._ring_landed_at is None:
             return 0.0
         elapsed = max(0.0, time.monotonic() - self._ring_landed_at)
-        span = min(elapsed * self.effective_rate, float(self.chunk_size), lead)
-        lo = self._ring_landed_total - lead
-        return span - self._pad_in(lo, lo + span)
+        # Whole bytes: the pad record is in whole bytes, so a span of nothing
+        # but pad then nets exactly 0. In fractional bytes it netted a few ULPs
+        # over, and the clock read content landed behind the pad as heard.
+        span = int(min(elapsed * self.effective_rate, float(self.chunk_size), lead))
+        lo = self._ring_landed_total - int(lead)
+        return float(span - self._pad_in(lo, lo + span))
 
     def _mark_ring_clock(self) -> None:
         """The consumer started: interpolate the clock from now."""

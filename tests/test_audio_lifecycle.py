@@ -3346,6 +3346,20 @@ class LifecycleTest(unittest.TestCase):
             clock.advance(1024 / s.effective_rate)
             self.assertEqual(s.position_seconds(), at_landing)
 
+    def test_a_fractional_gap_does_not_move_the_clock_over_pad(self):
+        # The smoothed gap is fractional; in fractional bytes the pad under a
+        # partial span netted a few ULPs short of the span, and the clock read
+        # that much content past the pad as heard. Read at the term itself: at
+        # a clock of a third of a second those ULPs round away, and early in a
+        # scene they did not.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "ppppc")
+        with mock.patch.object(audio_mod, "time", clock):
+            for _ in range(20):
+                clock.advance(0.037 * 1024 / s.effective_rate)
+                with s._ring_pad_lock:
+                    self.assertEqual(s._played_since_landing(4095.7), 0.0)
+
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between
         # two reads; the clock holds rather than reporting less than it did.
