@@ -1201,6 +1201,16 @@ class MicRingGovernorWiringTest(unittest.TestCase):
         self.assertIs(stale(11000), TrimWrite.REFUSED)
         self.assertIs(self._governor(s)._write_latch(11000), TrimWrite.DELIVERED)
 
+    def test_a_trim_the_link_refused_is_not_flushed(self):
+        # A flush over a link that refused the write warns outside the
+        # backend's failure ladder, and the governor resends every second.
+        s = self._start()
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, CIA1.TIMER_A_LO, times=1)
+        start = len(fake.ops)
+        self.assertIs(self._governor(s)._write_latch(11000), TrimWrite.UNCONFIRMED)
+        self.assertEqual(fake.ops[start:], [("lost", "DC04")])
+
     def test_a_trim_the_link_dropped_is_sent_again(self):
         # #602: the first trim is lost on the link. The second interval's
         # reading asks for the same latch, which the governor took as already
