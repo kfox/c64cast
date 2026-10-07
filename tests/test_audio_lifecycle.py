@@ -2596,6 +2596,26 @@ class EncodeBackpressureTest(unittest.TestCase):
             audio_mod.QUEUE_PUT_TIMEOUT_S = orig
         self.assertEqual(n, 0)
 
+    def test_a_decoder_ahead_of_real_time_loses_no_blob_at_startup(self):
+        # A decoder fills the queue at once, then waits for room behind a
+        # worker that frees it a chunk at a time, one chunk late: the first
+        # wait outlasted QUEUE_PUT_TIMEOUT_S and the blob was dropped. 1114
+        # samples is a 4096-sample 44.1 kHz WAV packet resampled to 12 kHz.
+        s = _make(sample_rate=12000)
+        s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
+        s.host_dma_servo = False
+        blob = np.zeros(1114, dtype=np.int16)
+        # Past the prebuffer the worker takes and the soft cap the queue holds.
+        prebuffer = PREBUFFER_CHUNKS * s.chunk_size
+        pushes = (s._max_queued_samples + prebuffer) // blob.size + 3
+        with quiet_logging():
+            s.start_for_external_source()
+            try:
+                accepted = [s.push_samples(blob) for _ in range(pushes)]
+            finally:
+                s.stop()
+        self.assertEqual(accepted, [blob.size] * pushes)
+
     def test_block_on_full_succeeds_when_capacity_frees(self):
         s = _make()
         s.running = True

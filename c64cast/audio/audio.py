@@ -1519,7 +1519,7 @@ class AudioStreamer:
         acquisitions/sec on a 44.1 kHz PyAV stream; this is one per
         producer call (~10-40/sec).
 
-        block_on_full: if True, block up to 200ms for queue capacity (used
+        block_on_full: if True, block for queue capacity, up to the drain bound (used
         by the PyAV push path so the demuxer naturally throttles). If
         False, drop the whole blob when full (mic path, where the
         sounddevice callback is real-time and can't block). Backpressure
@@ -1543,7 +1543,14 @@ class AudioStreamer:
             # monotonic, like every other deadline here: a wall-clock step would
             # either expire this wait instantly or park the PyAV demuxer thread
             # for the length of a backward step.
-            deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S
+            # The worker frees room a whole chunk at a time, one chunk behind
+            # its collect, so a live consumer needs up to two chunk periods
+            # beyond the blob's own length to make room for it. A flat
+            # QUEUE_PUT_TIMEOUT_S fell inside that at startup, while the first
+            # chunks after the prebuffer were still in hand, and dropped the
+            # producer's next blob (about 93 ms of a 44.1 kHz WAV at 12 kHz).
+            drain_s = (n + 2 * self.chunk_size) / (self.effective_rate or self.sample_rate)
+            deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S + drain_s
             # `self._queued_samples and` admits a blob bigger than the whole
             # cap once the queue drains. Without it the condition never clears
             # however empty the queue gets, and the caller returns 0 forever.
@@ -2798,7 +2805,8 @@ class AudioStreamer:
         sampler's is.
 
         Returns the samples enqueued: 0 once stopped, or when the queue stayed
-        full past ``QUEUE_PUT_TIMEOUT_S`` and the blob was dropped."""
+        full past ``QUEUE_PUT_TIMEOUT_S`` plus the worker's drain time for the
+        blob, and the blob was dropped."""
         if not self.running:
             return 0
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE

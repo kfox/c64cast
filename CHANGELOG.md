@@ -327,6 +327,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   seconds, which used to hold a frozen frame, and a seek back from near the
   end.
 
+- **DAC audio from a file or a video no longer loses a block at startup.** A
+  decoder running ahead of real time filled the `$D418` DAC's queue at once,
+  and its next block waited behind the worker's first chunks for longer than
+  the 200 ms put timeout, so about 93 ms of audio near the start was dropped.
+  The wait now allows for the time the worker takes to drain room for the
+  block.
+
 - **A `.sid` tune on an Ultimate 64 with an ARMSID now plays on the ARMSID,
   switched to the model the tune asks for.** The chip's model is a setting, but
   SID autoconfig compared the socket's `ARMSID` label against `6581`/`8580`,
