@@ -606,10 +606,12 @@ class _FakePacket:
 
 class _FakeContainer:
     def __init__(self, packets: list[_FakePacket]):
-        self._packets = packets
+        # One read head shared by every demux() call, as a real container's
+        # is: a pass that ends on a seek and the next pass read on from it.
+        self._packets = iter(packets)
 
     def demux(self):
-        return iter(self._packets)
+        return self._packets
 
     def seek(self, offset_us: int) -> None:
         # No-op by default (recording variants override this attribute
@@ -2077,6 +2079,45 @@ class SeekAfterEofTest(unittest.TestCase):
             self.assertTrue(_wait_until(lambda: src.video_buffer_depth > 0))
             self.assertTrue(scene.process_frame(current_time=0.0))
         self.assertAlmostEqual(src.last_frame_pts, 1.0, delta=0.25)
+
+    def test_a_seek_after_eof_is_applied_inside_a_live_demux(self):
+        # PyAV arms a remote input's read timeout only while a demux()
+        # generator is alive, so a seek applied after one has finished waits
+        # forever on a server that stops answering the range request.
+        class _TimedContainer(_FakeContainer):
+            def __init__(self, packets: list[_FakePacket]):
+                super().__init__(packets)
+                self.reading = False
+                self.seeks: list[bool] = []  # was a demux() live at each seek
+
+            def demux(self):
+                self.reading = True
+                try:
+                    yield from self._packets
+                    yield _FakePacket([])  # PyAV's trailing flush packet
+                finally:
+                    self.reading = False
+
+            def seek(self, offset_us: int) -> None:
+                self.seeks.append(self.reading)
+
+        src = _make_demux_source_stub([])
+        container = _TimedContainer([_FakePacket([_FakeFrame(0)])])
+        src.container = container
+
+        def close() -> None:
+            with src._lock:
+                src._closed = True
+                src._wake.notify_all()
+
+        worker = threading.Thread(target=src._demux_loop, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 5.0)
+        self.addCleanup(close)
+        self.assertTrue(_wait_until(lambda: src._eof), "demux loop never reached EOF")
+        src.request_seek(0.0)
+        self.assertTrue(_wait_until(lambda: container.seeks), "the seek was never applied")
+        self.assertEqual(container.seeks, [True])
 
     def test_the_restarted_pass_reaches_eof_again(self):
         src = self._started_at_eof()

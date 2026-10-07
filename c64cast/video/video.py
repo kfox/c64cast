@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import numpy as np
@@ -1084,12 +1084,13 @@ class AVFileSource:
         # "Container hit EOF" is expected and logs debug; a mid-stream decode
         # failure logs a full traceback and ends the thread.
         try:
-            while self._demux_to_eof():
-                self._flush_resampler()
-                self._flush_atempo()
-                log.debug("demux %s: EOF", self.path)
-                if not self._await_seek_after_eof():
-                    return
+            while (end := self._demux_pass()) != "closed":
+                if end == "eof":
+                    self._flush_resampler()
+                    self._flush_atempo()
+                    log.debug("demux %s: EOF", self.path)
+                    if not self._await_seek_after_eof():
+                        return
         except Exception:
             log.exception("demux %s crashed", self.path)
         finally:
@@ -1097,20 +1098,26 @@ class AVFileSource:
                 self._eof = True
                 self._demux_exited = True
 
-    def _demux_to_eof(self) -> bool:
-        """Demux from the container's current position until EOF. Returns
-        False only when the source closed mid-pass."""
+    def _demux_pass(self) -> Literal["eof", "seek", "closed"]:
+        """Demux from the container's current position until EOF, an applied
+        seek, or close. A seek ends the pass rather than reading on through
+        the same `demux()`: once that generator has read EOF it yields only
+        flush packets, which would drain the decoders the seek just reset and
+        leave nothing to read from the target. Applying the seek inside a
+        live `demux()` is also what bounds it on a remote input — PyAV arms
+        the read timeout only for a generator's life — so a seek requested at
+        EOF is applied on the first (flush) packet of the next pass."""
         try:
             for packet in self.container.demux():
                 if self._closed:
-                    return False
+                    return "closed"
                 if self._apply_pending_seek():
-                    continue
+                    return "seek"
                 if packet.stream.type == "video":
                     for frame in packet.decode():
                         img = self._frame_to_bgr(frame)
                         if not self._enqueue_frame(self._rebase_pts(frame), img):
-                            return False
+                            return "closed"
                 elif (
                     packet.stream.type == "audio"
                     and self._resampler is not None
@@ -1119,20 +1126,17 @@ class AVFileSource:
                     self._decode_audio_packet(packet)
         except (EOFError, StopIteration):
             pass
-        return True
+        # A seek requested after the last packet would otherwise park with it.
+        return "seek" if self._apply_pending_seek() else "eof"
 
     def _await_seek_after_eof(self) -> bool:
-        """Mark EOF and park until a seek is requested (True, with the seek
-        applied, so the next pass reads from the target) or the source
-        closes (False)."""
+        """Mark EOF and park until a seek is requested (True; the next pass
+        applies it) or the source closes (False)."""
         with self._lock:
             self._eof = True
             while self._pending_seek is None and not self._closed:
                 self._wake.wait()
-        if self._closed:
-            return False
-        self._apply_pending_seek()
-        return True
+            return not self._closed
 
     def current_frame(self, audio_position_s: float) -> np.ndarray | None:
         """Return the latest video frame whose PTS ≤ audio_position_s.
