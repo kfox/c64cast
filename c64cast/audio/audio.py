@@ -118,7 +118,13 @@ from .audio_servo import (
 )
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import INPUT_CEILING, AudioDSP, DSPParams
-from .mic_lead import MicLeadServo, MicLeadShaper, reanchor_fill
+from .mic_lead import (
+    MIC_LEAD_READ_TIMEOUT_S,
+    MicLeadServo,
+    MicLeadShaper,
+    MicRingGovernor,
+    reanchor_fill,
+)
 
 log = logging.getLogger(__name__)
 
@@ -326,8 +332,9 @@ class AudioStreamer:
         # Uploads the skip-when-ahead governor pump so it self-throttles with
         # zero host bus writes; False uploads the open-loop one, which drifts
         # into an echo. Applies to both the plain handler and the tracked
-        # $C180 body the bank-swap video path runs; the REU mic pump's $C180
-        # body has no governed variant.
+        # $C180 body the bank-swap video path runs. The REU mic pump's $C180
+        # body has no governed variant, so on that path the flag gates the
+        # host-side MicRingGovernor instead.
         self.reu_pump_governor = reu_pump_governor
         # Closed-loop pacing for the host-DMA worker: read R once per chunk and
         # run servo_period's PI controller on the sleep so the ring gap locks
@@ -367,6 +374,12 @@ class AudioStreamer:
         # callback. Both None outside a REU mic session.
         self._mic_lead: MicLeadServo | None = None
         self._mic_shaper: MicLeadShaper | None = None
+        # The fence on the mic ring governor's CIA #1 writes: a write goes out
+        # under the lock only while its token is current, and the pump disarm
+        # bumps the token under the same lock before it restores the kernal
+        # latch, so no trim can land after that restore.
+        self._pump_trim_lock = threading.Lock()
+        self._pump_trim_token = 0
         # Producer missed the pace deadline. full_underruns: the queue was
         # empty, so the whole chunk is NEUTRAL (an audible click at
         # chunk_period). partial_underruns: NEUTRAL padding at the tail only.
@@ -2162,14 +2175,15 @@ class AudioStreamer:
             1000 * (REU_MIC_BOOTSTRAP_BYTES + ring_bytes) / self.sample_rate,
         )
 
-    def _read_mic_ring_phase(self) -> tuple[int, int] | None:
+    def _read_mic_ring_phase(self, timeout: float = 1.0) -> tuple[int, int] | None:
         """``(R, W)`` from one read spanning the NMI read pointer at $C025 and
         the pump's dst tracker at $C203, so the two come from the same instant
         and their difference carries no round-trip skew. None when the read
-        fails or either pointer is outside the ring."""
+        fails or either pointer is outside the ring. ``timeout`` is the
+        backend's per-read bound."""
         span = REU_AUDIO_DST_TRACKER_ADDR + 2 - READ_PTR_LO_ADDR
         try:
-            raw = self.api.read_memory(READ_PTR_LO_ADDR, span)
+            raw = self.api.read_memory(READ_PTR_LO_ADDR, span, timeout=timeout)
         except Exception as e:
             # A backend that cannot read raises rather than returning None.
             log.debug("audio[reu mic]: ring pointer read failed: %s", e)
@@ -2255,8 +2269,40 @@ class AudioStreamer:
             read_memory=self.api.read_memory,
             write_pos=lambda: self._mic_reu_write_pos,
             sample_rate=self.sample_rate,
+            ring_governor=self._new_mic_ring_governor(),
         )
         self._mic_lead.start()
+
+    def _new_mic_ring_governor(self) -> MicRingGovernor | None:
+        """The closed loop on the pump's lead over the NMI reader (#580), or
+        None with ``reu_pump_governor`` off. Its latch writes are fenced to
+        this arm of the pump (see ``_write_mic_pump_latch``)."""
+        if not self.reu_pump_governor:
+            return None
+        with self._pump_trim_lock:
+            self._pump_trim_token += 1
+            token = self._pump_trim_token
+        return MicRingGovernor(
+            # The lead servo's read bound, which its stop() join is sized from.
+            read_phase=functools.partial(self._read_mic_ring_phase, MIC_LEAD_READ_TIMEOUT_S),
+            write_latch=functools.partial(self._write_mic_pump_latch, token),
+            matched_latch=self._reu_cia1_latch_nominal,
+            sample_rate=self.sample_rate,
+        )
+
+    def _write_mic_pump_latch(self, token: int, latch: int) -> bool:
+        """Write the governed pump's CIA #1 latch, or return False without
+        writing once the pump armed under ``token`` has been disarmed (or
+        rearmed for a later scene). A latch write takes effect at the next
+        underflow and does not restart the count, so a trim lands between two
+        pump ticks rather than inside one."""
+        with self._pump_trim_lock:
+            if token != self._pump_trim_token:
+                return False
+            self.api.write_memory(
+                f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+            )
+            return True
 
     def _stop_mic_lead_servo(self) -> None:
         lead, self._mic_lead = self._mic_lead, None
@@ -2264,6 +2310,21 @@ class AudioStreamer:
         if lead is None:
             return
         lead.stop()
+        gov = lead.ring_governor
+        if gov is not None and gov.lead_min is not None:
+            log.info(
+                "audio[reu mic]: C64 ring lead %d..%d B (target %d), pump slowed "
+                "%.2f..%.2f %%, last CIA #1 latch %d (matched %d), %d failed read(s)%s",
+                gov.lead_min,
+                gov.lead_max,
+                REU_MIC_RING_LEAD,
+                100.0 * (gov.slow_min or 0.0),
+                100.0 * (gov.slow_max or 0.0),
+                gov.latch,
+                self._reu_cia1_latch_nominal,
+                gov.failed_reads,
+                ", retired" if gov.retired else "",
+            )
         if lead.lead_min is None:
             return
         log.info(
@@ -2702,6 +2763,11 @@ class AudioStreamer:
         owed, so the shared streamer's next stop() writes it again."""
         if not (self._reu_pump_armed or self._irq_vector_restore_owed):
             return
+        # Retire the mic ring governor's latch writes first; one already in
+        # flight finishes before this returns, so it lands ahead of the
+        # restore below rather than after it.
+        with self._pump_trim_lock:
+            self._pump_trim_token += 1
         # Cleared by the confirmed restore only once it held.
         self._irq_vector_restore_owed = True
         run_teardown_steps(

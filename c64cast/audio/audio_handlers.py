@@ -964,8 +964,8 @@ REU_MIC_BOOTSTRAP_BYTES = 1600  # ~133 ms @ 12 kHz; tunes steady-state latency
 # the NMI armed, W led by a few hundred bytes, and R overtook it into lap-old
 # audio. 2 KB (~171 ms at 12 kHz) covers the bring-up's read-to-write lag and
 # the pump's per-frame burstiness under the bank-swap halts, and leaves 6 KB
-# before W could lap R. The mic pump has no governor, so the phase holds only
-# as well as the matched rates do.
+# before W could lap R. mic_lead.MicRingGovernor holds the phase here for the
+# rest of the session.
 REU_MIC_RING_LEAD = 2048
 # A seeded phase below this, read back after the write, means the write was
 # lost (the pump's own dst advance can overwrite it mid-tick) or the

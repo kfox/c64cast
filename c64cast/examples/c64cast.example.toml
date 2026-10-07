@@ -564,9 +564,13 @@ reu_pump_governor = true            # C64-side rate governor for the REU audio
                                     # host-side servo was tried first but its
                                     # CIA-latch writes audibly glitched the
                                     # pump). Covers char-mode and bitmap
-                                    # (REU bank-swap) video; the mic pump has
-                                    # no governor. On by default; set false to
-                                    # A/B the open-loop (drift/echo) behavior.
+                                    # (REU bank-swap) video. The mic pump has
+                                    # no room for that test, so there the host
+                                    # reads both pointers about once a second
+                                    # and trims the pump's CIA #1 rate to the
+                                    # reader instead. On by default; set false
+                                    # to A/B the open-loop (drift/echo)
+                                    # behavior.
 host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
                                     # audio worker (mic + videos, i.e.
                                     # use_reu_pump = false). That worker paces

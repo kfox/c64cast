@@ -360,7 +360,7 @@
         },
         "reu_pump_governor": {
           "type": "boolean",
-          "description": "C64-side rate governor for the REU audio pump: the pump runs faster than the reader and its IRQ skips a chunk when its write head is half a ring ahead, stopping drift/echo with no host writes. Video scenes with use_reu_pump only; the REU mic pump has no governor.",
+          "description": "C64-side rate governor for the REU audio pump: the pump runs faster than the reader and its IRQ skips a chunk when its write head is half a ring ahead, stopping drift/echo with no host writes. On the REU mic pump the host trims the pump's rate instead, from the measured lead about once a second. Only matters with use_reu_pump.",
           "default": true
         },
         "host_dma_servo": {

@@ -200,8 +200,9 @@ def pi_step(
     ``[out_min, out_max]``. Bounds that put ``ki·integ`` past the output clamp
     let the integrator wind up where the output cannot follow, so a caller with
     an asymmetric output range passes asymmetric integrator bounds. The host-DMA
-    pace servo (``servo_period``) and the REU mic lead servo
-    (``mic_lead.mic_lead_correction``) both run on it."""
+    pace servo (``servo_period``), the REU mic lead servo
+    (``mic_lead.mic_lead_correction``) and the mic ring governor
+    (``mic_lead.mic_ring_correction``) all run on it."""
     integ = max(integ_min, min(integ_max, integ + error))
     return max(out_min, min(out_max, kp * error + ki * integ)), integ
 
