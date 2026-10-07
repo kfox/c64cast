@@ -650,11 +650,9 @@ class MicLeadServo:
         failure. Two reads that agree with each other but not with the
         trusted phase replace it."""
         m = self._read_once()
-        if m is None:
+        if m is None or self._stop.is_set():
             return None
         if not self._phase_agrees(m.reading, self._tracker_phase):
-            if self._stop.is_set():
-                return None
             first = m
             m = self._read_once()
             if m is None:

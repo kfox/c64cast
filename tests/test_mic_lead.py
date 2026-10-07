@@ -623,6 +623,21 @@ class MicLeadThreadTest(unittest.TestCase):
         self.assertEqual(rig.reads, 1)
         self.assertEqual(rig.servo._fails, 0)  # a stop is not a failed read
 
+    def test_a_stop_during_a_read_that_needs_no_confirming_is_not_steered_on(self):
+        # The read can finish inside the teardown; a re-anchor posted from it
+        # is one the callback no longer takes.
+        rig = _Rig(drift=0.0, lead=-500)
+        rig.servo._tracker_phase = ml.tracker_phase(ml.MicPumpReading(0, 0, RING_BUFFER_ADDR))
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            rig.servo._stop.set()
+            return rig.read(address, length, timeout)
+
+        rig.servo._read = read
+        self.assertIsNone(rig.servo.tick())
+        self.assertEqual((rig.reads, rig.servo.reanchors), (1, 0))
+        self.assertIsNone(rig.servo.take_reanchor())
+
     def test_an_open_loop_backs_off_to_a_ceiling(self):
         servo = ml.MicLeadServo(
             read_memory=lambda a, n, timeout=1.0: None,
