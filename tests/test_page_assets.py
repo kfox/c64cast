@@ -168,13 +168,13 @@ class ScriptSyntaxTest(unittest.TestCase):
     def test_every_rendered_page_parses(self):
         scripts = []
         for name, render, _, _ in PAGES:
-            bodies = _inline_scripts(render())
             with self.subTest(page=name):
+                bodies = _inline_scripts(render())
                 self.assertTrue(bodies, "page serves no inline script")
-            scripts += [
-                {"page": name, "filename": f"{name} script {i}", "source": body}
-                for i, body in enumerate(bodies)
-            ]
+                scripts += [
+                    {"page": name, "filename": f"{name} script {i}", "source": body}
+                    for i, body in enumerate(bodies)
+                ]
 
         with tempfile.TemporaryDirectory() as tmp:
             manifest = os.path.join(tmp, "scripts.json")
