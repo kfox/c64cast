@@ -522,6 +522,10 @@ class RedactSecretsTest(unittest.TestCase):
             ("the password is hunter2", "the password is hunter2"),
             ("x --password-file path y", "x --password-file path y"),
             ("x --key 3.0:r y", "x --key 3.0:r y"),
+            ("set C=-key pause", "set C=-key pause"),
+            ("x --stream-key s3cret y", "x --stream-key REDACTED y"),
+            ("x --secret-key s3cret y", "x --secret-key REDACTED y"),
+            ("x --signing-key s3cret y", "x --signing-key REDACTED y"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), expected)
