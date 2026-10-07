@@ -519,7 +519,9 @@ def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
         if scheme is None or scheme.end() == span[1] or not _is_auth_scheme(scheme):
             return span
         return (scheme.end(), span[1])
-    scheme = _SCHEME_AND_GAP.match(text, v)
+    # Read from past a deep quote's prefix: from `v`, the `b` of `b%22Basic%22`
+    # is glued to the quote, no scheme matches, and the credential stays in view.
+    scheme = _SCHEME_AND_GAP.match(text, v if opener is None else opener.end("prefix"))
     if scheme is None or scheme.end() == len(text):
         return span
     gap_start, gap_end = scheme.span("gap")
