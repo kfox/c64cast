@@ -506,6 +506,9 @@ def _key_values(line: _Line) -> Iterator[Span]:
                     yield span
             continue
         if tail is None:
+            span = _flag_value(line, name)
+            if span is not None:
+                yield span
             continue
         v, d = tail.end(), line.depth(tail.start("sep"))
         span = _value(line, v, d, "unquoted")
@@ -513,6 +516,28 @@ def _key_values(line: _Line) -> Iterator[Span]:
             span = _past_scheme(line, v, d, span)
         if span is not None:
             yield span
+
+
+#: What separates a command-line flag from its value.
+_FLAG_GAP = re.compile(r"[ \t]+")
+
+
+def _flag_value(line: _Line, name: re.Match[str]) -> Span | None:
+    """The value after a flag such as `--password` or `--video-password` that
+    `name` ends, given as the next word: a logged command line (yt-dlp's, say)
+    spells it that way. A next word that is itself a flag is not a value, and
+    the short names are left out: `--key 3.0:…` is a keystroke and `C=-key
+    pause` prose."""
+    if name.group("short") is not None:
+        return None
+    text = line.text
+    run = name.start()
+    while run > 0 and _is_name_char(text[run - 1]):
+        run -= 1
+    gap = _FLAG_GAP.match(text, name.end())
+    if text[run] != "-" or gap is None or gap.end() == len(text) or text[gap.end()] == "-":
+        return None
+    return _value(line, gap.end(), line.deepest(*gap.span()), "unquoted")
 
 
 def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
@@ -609,7 +634,8 @@ def redact_secrets(text: str) -> str:
       is `key`, `sig`, `signature`, `hmac`, `auth` or `bearer`, so
       `signing_key` matches and `sortkey` does not, and a JSON escape of a
       separator (`\\u0026sig=`) counts as one. `=`, `:` or `=>`
-      separates them, with the key quoted or not;
+      separates them, with the key quoted or not, or, after a flag's dash
+      (`--password X`), a space or tab, except for the `_`/`-` names;
     * the credential after `Bearer` and a space, and in an `Authorization:`
       value, after a registered scheme (`Basic`, `token`, …) and any
       punctuation around it, which stay in view; a first word that is no

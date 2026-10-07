@@ -504,6 +504,26 @@ class RedactSecretsTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), expected)
 
+    def test_a_flag_spelled_with_a_space_masks_the_next_word(self):
+        """A logged command line gives a flag its value as the next word:
+        yt-dlp's `--password` and `--video-password`. A next word that is a
+        flag of its own is not the value, and a name that is no flag's keeps
+        what follows it."""
+        for line, expected in (
+            ("yt-dlp --password hunter2 --verbose", "yt-dlp --password REDACTED --verbose"),
+            ("x --video-password hunter2 y", "x --video-password REDACTED y"),
+            ("x -token hunter2 y", "x -token REDACTED y"),
+            ('x --password "a b" y', 'x --password "REDACTED" y'),
+            ("x --api-key\thunter2 y", "x --api-key\tREDACTED y"),
+            ("x --password --verbose", "x --password --verbose"),
+            ("x --password", "x --password"),
+            ("the password is hunter2", "the password is hunter2"),
+            ("x --password-file path y", "x --password-file path y"),
+            ("x --key 3.0:r y", "x --key 3.0:r y"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), expected)
+
     def test_an_akamai_token_loses_its_hmac(self):
         """Akamai signs a URL with `__token__=` or `hdnts=`, neither of which
         the key names reach (`__token__` has no word boundary after `token`).
@@ -719,6 +739,8 @@ class RedactSecretsTest(unittest.TestCase):
             "token%25253D" + "x%2526" * 32_000,
             "bypass=" * 32_000,
             "\\u0026sig=" * 20_000,
+            "--password " * 20_000,
+            "-" * 100_000 + "token x",
         ):
             with self.subTest(line=line[:24]):
                 start = time.perf_counter()
