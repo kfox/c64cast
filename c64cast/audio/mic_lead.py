@@ -189,6 +189,16 @@ def mic_lead_rate_seed(pump_rate: float, *, sample_rate: int) -> tuple[float, fl
     return need, need * rate / MIC_LEAD_KI
 
 
+def signed_ring_lead(lead: int) -> int:
+    """The pump's lead over the NMI reader, from its value modulo the ring:
+    one within ``MIC_RING_OVERRUN_WINDOW`` of a full ring is the reader past
+    the pump (negative), and any other is the pump that far ahead."""
+    lead %= RING_BUFFER_SIZE
+    if lead >= RING_BUFFER_SIZE - MIC_RING_OVERRUN_WINDOW:
+        lead -= RING_BUFFER_SIZE
+    return lead
+
+
 def mic_ring_correction(
     lead: int,
     integ: float,
@@ -198,16 +208,12 @@ def mic_ring_correction(
 ) -> tuple[float, float]:
     """One ring-governor decision: ``(slow_frac, new_integ)``.
 
-    ``lead`` is the pump's dst tracker less the NMI read pointer, modulo the
-    ring. A lead within ``MIC_RING_OVERRUN_WINDOW`` of a full ring is the
-    reader past the pump, short of the target; any other is the pump that far
-    ahead. A positive ``slow_frac`` stretches the pump's period by that
-    fraction (the pump is ahead); negative shortens it. Pure, for the tests."""
+    ``lead`` is the pump's dst tracker less the NMI read pointer, read as
+    ``signed_ring_lead`` does. A positive ``slow_frac`` stretches the pump's
+    period by that fraction (the pump is ahead); negative shortens it. Pure,
+    for the tests."""
     rate = float(sample_rate)
-    lead %= RING_BUFFER_SIZE
-    if lead >= RING_BUFFER_SIZE - MIC_RING_OVERRUN_WINDOW:
-        lead -= RING_BUFFER_SIZE
-    error = lead - target
+    error = signed_ring_lead(lead) - target
     return pi_step(
         error,
         integ,
@@ -628,7 +634,9 @@ class MicRingGovernor:
             self.failed_reads += 1
             return
         r, w = got
-        lead = (w - r) % RING_BUFFER_SIZE
+        # Signed, so an overrun shows in the stop() summary as the negative
+        # lead it is rather than as a near-full ring.
+        lead = signed_ring_lead(w - r)
         self.lead_min = lead if self.lead_min is None else min(self.lead_min, lead)
         self.lead_max = lead if self.lead_max is None else max(self.lead_max, lead)
         self.slow_frac, self._integ = mic_ring_correction(lead, self._integ, sample_rate=self._rate)

@@ -1008,6 +1008,11 @@ class MicRingGovernorClosedLoopTest(unittest.TestCase):
         rig.gov.tick()
         self.assertEqual(rig.writes, [])
 
+    def test_an_overrun_is_recorded_as_a_negative_lead(self):
+        rig = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=-200)
+        rig.gov.tick()
+        self.assertEqual((rig.gov.lead_min, rig.gov.lead_max), (-256, -256))
+
     def test_an_unchanged_latch_is_not_rewritten(self):
         rig = _RingRig(PETSCII_PUMP, PETSCII_PUMP)
         for _ in range(5):
