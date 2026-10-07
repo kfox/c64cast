@@ -178,6 +178,9 @@ class VideoTransportControls:
         if unmute:
             sc.source.set_muted(False)
         sc.audio.flush()
+        # The flush reopens the sink's input, and a post-seek pass can reach
+        # EOF and end it before the flush runs.
+        sc.source.restate_audio_end()
 
     def pause(self) -> None:
         sc = self._scene

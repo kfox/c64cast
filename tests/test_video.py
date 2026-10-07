@@ -652,6 +652,7 @@ def _make_demux_source_stub(
     src._resampler = None
     src._audio_push = None
     src._audio_end = None
+    src._audio_end_sent = False
     src._decode_target = decode_target
     src._decode_size = None
     src._decode_planned = False
@@ -677,6 +678,7 @@ def _make_emit_audio_stub(sink: list[np.ndarray], *, tempo_scale: float = 1.0) -
     src._pending_seek = None
     _arm_locks(src)
     src._audio_push = sink.append
+    src._audio_end_sent = False
     src.audio_noise_gate = 0
     src.audio_gain = 1.0
     src._tempo_scale = tempo_scale
@@ -839,6 +841,10 @@ class _StubSource:
         self.muted_calls.append(muted)
         if self._events is not None:
             self._events.append(("muted", muted))
+
+    def restate_audio_end(self) -> None:
+        if self._events is not None:
+            self._events.append(("restate", None))
 
     def close(self) -> None:
         pass
@@ -1235,7 +1241,9 @@ class VideoSceneSpliceTest(unittest.TestCase):
         events.clear()
         scene.transport_resume()
         self.assertFalse(scene.transport.paused)
-        self.assertEqual(events, [("seek", 10.0), ("muted", False), ("flush", False)])
+        self.assertEqual(
+            events, [("seek", 10.0), ("muted", False), ("flush", False), ("restate", None)]
+        )
 
     def test_audio_the_demuxer_decodes_during_the_resume_flush_reaches_the_sink(self):
         # Unmuting only after the flush dropped that audio at the source, so
@@ -1746,6 +1754,44 @@ class EndAudioInputSeekGuardTest(unittest.TestCase):
         src._closed = True
         src._end_audio_input()
         self.assertEqual(ended, [])
+
+    def test_an_end_before_the_splice_flush_is_restated_after_it(self):
+        # The post-seek pass can reach EOF and end the input between
+        # request_seek and the splice's flush, which reopens it: nothing
+        # else ends it again.
+        from _fakes import FakeAPI
+
+        from c64cast.audio.audio import AudioStreamer
+        from c64cast.hw.backend import C64Backend
+
+        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
+        dac.running = True
+        src = _make_emit_audio_stub([])
+        src._audio_end = dac.end_input
+        # The seek was requested and the demux thread has applied it.
+        src._end_audio_input()
+        dac.flush()
+        src.restate_audio_end()
+        self.assertTrue(dac._input_ended)
+
+    def test_a_pending_seek_keeps_the_pre_seek_end_from_being_restated(self):
+        src, ended = self._source(pending_seek=None)
+        src._end_audio_input()
+        src._pending_seek = 1.0
+        src.restate_audio_end()
+        self.assertEqual(ended, [True])
+
+    def test_an_applied_seek_keeps_the_pre_seek_end_from_being_restated(self):
+        src, ended = self._source(pending_seek=None)
+        src._end_audio_input()
+        src._pending_seek = 1.0
+        src.container = mock.MagicMock()
+        src.a_stream = None
+        src._atempo_graph = None
+        with self.assertLogs("c64cast.video.video", level="INFO"):
+            self.assertTrue(src._apply_pending_seek())
+        src.restate_audio_end()
+        self.assertEqual(ended, [True])
 
     def test_a_demux_crash_ends_the_input(self):
         # Nothing more is pushed after a crash, so a clip that pushed less

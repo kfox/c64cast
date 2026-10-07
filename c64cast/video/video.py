@@ -777,6 +777,9 @@ class AVFileSource:
         self._demux_poll: PollThread | None = None
         self._audio_push: Callable[[np.ndarray], object] | None = None
         self._audio_end: Callable[[], object] | None = None
+        # Under _lock: the current pass has ended the sink's input. Cleared
+        # when a seek starts the next pass; read by `restate_audio_end`.
+        self._audio_end_sent = False
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -972,6 +975,7 @@ class AVFileSource:
             # In the same critical section that retires the request, or
             # `finished` could see neither a pending seek nor a live pass.
             self._eof = False
+            self._audio_end_sent = False
         self.container.seek(int(target * 1_000_000))
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
@@ -1132,14 +1136,27 @@ class AVFileSource:
         between them is that same late call: the splice flushes only after
         `request_seek` returns, so a call that wins the lock lands before it."""
         with self._lock:
-            if (
-                self._audio_end is None
-                or self._audio_push is None
-                or self._closed
-                or self._pending_seek is not None
-            ):
-                return
-            self._audio_end()
+            self._end_audio_input_locked()
+
+    def _end_audio_input_locked(self) -> None:
+        if (
+            self._audio_end is None
+            or self._audio_push is None
+            or self._closed
+            or self._pending_seek is not None
+        ):
+            return
+        self._audio_end()
+        self._audio_end_sent = True
+
+    def restate_audio_end(self) -> None:
+        """Called by the splice after its flush, which reopens the sink's
+        input. A post-seek pass that reached EOF and ended the input before
+        that flush ran has nothing left to end it again, so it is ended here;
+        a seek still pending, or one applied since, leaves it open."""
+        with self._lock:
+            if self._audio_end_sent:
+                self._end_audio_input_locked()
 
     def _demux_pass(self) -> Literal["eof", "seek", "closed"]:
         """Demux from the container's current position until EOF, an applied
