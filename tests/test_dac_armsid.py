@@ -282,6 +282,23 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
             resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
         self.assertEqual(resolved.declined_chip, "ARMSID 6581")
 
+    def test_auto_playing_an_unlabeled_default_entry_states_the_assumption(self):
+        cfg = _cfg_with_calibration(None, socket="default")
+        cfg.hardware.backend = "teensyrom"
+        with self.assertLogs("c64cast.audio.dac_calibration_store", "INFO") as logs:
+            resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+        self.assertEqual(resolved.table, bytes(range(256)))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
+
+    def test_calibrated_playing_a_labeled_default_entry_states_the_assumption(self):
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.hardware.backend = "teensyrom"
+        cfg.audio.dac_curve = "calibrated"
+        with self.assertLogs("c64cast.audio.dac_calibration_store", "INFO") as logs:
+            resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+        self.assertEqual(resolved.table, bytes(range(256)))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
+
     def test_the_report_names_the_opt_in(self):
         result = CalibrationResult(
             sidtable=[0] * 256,
