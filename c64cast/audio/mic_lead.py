@@ -412,9 +412,15 @@ class MicLeadServo:
     def _tick_ring_governor(self) -> None:
         """Step the ring governor, if there is one and the loop is still
         running. One that raises is retired at the latch it last wrote, which
-        holds the correction it had reached, and the host loop carries on."""
+        holds the correction it had reached, and the host loop carries on.
+
+        While this loop is open its wait backs off to as much as
+        ``MIC_LEAD_OPEN_LOOP_MAX_WAIT_S``, and the governor's gains are per
+        ``interval_s``: stepped every 8 s they would correct eight intervals'
+        worth of lead per step and oscillate into a lap. So an open loop holds
+        the latch, as a failed read does."""
         gov = self.ring_governor
-        if gov is None or gov.retired or self._stop.is_set():
+        if gov is None or gov.retired or self._open_loop or self._stop.is_set():
             return
         try:
             gov.tick()

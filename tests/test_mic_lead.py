@@ -1069,6 +1069,19 @@ class MicLeadAndRingCascadeTest(unittest.TestCase):
         # Two intervals ran; the lead servo's reads failing does not stop it.
         self.assertEqual(len(ring.writes), 2)
 
+    def test_an_open_loop_holds_the_governor(self):
+        # The open loop's backed-off wait would step the governor's per-second
+        # gains across up to 8 s, which overshoots into a lap.
+        host = _Rig(drift=0.0)
+        ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)
+        host.servo.ring_governor = ring.gov
+        host.servo._open_loop = True
+        host.servo._tick_ring_governor()
+        self.assertEqual(ring.writes, [])
+        host.servo._open_loop = False
+        host.servo._tick_ring_governor()
+        self.assertEqual(len(ring.writes), 1)
+
     def test_a_stopped_servo_does_not_step_the_governor(self):
         host = _Rig(drift=0.0)
         ring = _RingRig(PETSCII_PUMP, PETSCII_READER, lead=REU_MIC_RING_LEAD + 3000)

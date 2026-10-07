@@ -1797,9 +1797,7 @@ class AudioStreamer:
                 CIA_TIMER_LATCH_MAX,
             )
         self._reu_cia1_latch_nominal = latch
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
-        )
+        self._write_cia1_timer_a_latch(latch)
         return latch
 
     def _install_tracked_pump(
@@ -2299,9 +2297,7 @@ class AudioStreamer:
         with self._pump_trim_lock:
             if token != self._pump_trim_token:
                 return False
-            self.api.write_memory(
-                f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
-            )
+            self._write_cia1_timer_a_latch(latch)
             return True
 
     def _stop_mic_lead_servo(self) -> None:
@@ -2781,15 +2777,19 @@ class AudioStreamer:
         )
         self._reu_pump_armed = False
 
+    def _write_cia1_timer_a_latch(self, latch: int) -> None:
+        """Write CIA #1 Timer A's 16-bit latch, LO then HI, in one DMA write."""
+        self.api.write_memory(
+            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+        )
+
     def _restore_cia1_latch(self) -> None:
         """Put CIA #1 Timer A back to this machine's kernal default, without
         which the jiffy clock, `SCNKEY` and the cursor blink stay at the REU
         pump's rate. Raises on a `system` that resolves to neither NTSC nor
         PAL."""
         latch = kernal_cia1_latch(self.system)
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
-        )
+        self._write_cia1_timer_a_latch(latch)
 
     def push_samples(self, samples_int16: np.ndarray) -> int:
         """Convert mono int16 → 4-bit volume codes and enqueue. Blocks
@@ -3147,8 +3147,9 @@ class AudioStreamer:
         # and the drain at the bottom only catches one that beats it there.
         self._flush_epoch += 1
         # No-op if the pump was never armed and no $0314 restore is owed. The
-        # governor lives entirely in the C64-side handler, so disarming the IRQ
-        # vector stops it.
+        # video pumps' governor lives in the C64-side handler, so disarming the
+        # IRQ vector stops it; the mic pump's host-side MicRingGovernor is
+        # fenced off by the disarm's trim-token bump.
         self._disarm_reu_pump()
         run_teardown_steps(log, type(self).__name__, self._hardware_teardown_steps())
         self.api.note_nmi_consumer(False)
