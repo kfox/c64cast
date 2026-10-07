@@ -1886,10 +1886,12 @@ class AudioStreamer:
             # already held, and a second one lost there would unwind the pump.
             self._cia1_unmask_owed = False
 
-    def _write_pump_entry(self, code: bytes, *, dispatcher_owns_irq: bool) -> None:
+    def _write_pump_entry(
+        self, code: bytes, *, dispatcher_owns_irq: bool, unmask: bool = True
+    ) -> None:
         """Write ``code`` at the $C100 pump entry. Under a dispatcher, CIA #1 is
         masked around it (see _install_tracked_pump), and nothing is written
-        when the mask did not confirm. Every call masks afresh: a retry follows
+        when the mask did not confirm; without ``unmask`` the mask stays. Every call masks afresh: a retry follows
         an attempt whose unmask may have landed even though its entry did not."""
         if dispatcher_owns_irq:
             epoch = self.api.delivery_epoch
@@ -1899,7 +1901,7 @@ class AudioStreamer:
                 return
             time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
         self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", code)
-        if dispatcher_owns_irq:
+        if dispatcher_owns_irq and unmask:
             self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
 
     def _require_confirmed(self, stage: str, write: Callable[[], None]) -> None:
@@ -2010,19 +2012,23 @@ class AudioStreamer:
                 "IRQ vector restore", lambda: self._write_irq_vector(KERNAL.IRQ_HANDLER)
             )
         except PumpInstallError:
-            self._stub_pump_entry()
+            # A mask already owed was not placed here, and $0314 may name a
+            # stale dispatcher rather than $C100, so the stub keeps it.
+            self._stub_pump_entry(unmask=not self._cia1_unmask_owed)
             raise
         self._irq_vector_restore_owed = False
 
-    def _stub_pump_entry(self) -> None:
+    def _stub_pump_entry(self, *, unmask: bool) -> None:
         """The JMP $EA31 stub at $C100, written under a CIA #1 mask as a
         dispatcher's entry is (an IRQ may be running the entry), then CIA #1
-        unmasked; each confirmed, and one that never confirms is logged."""
-        run_teardown_steps(
-            log, type(self).__name__, [self._entry_stub_step(), self._cia1_unmask_step()]
-        )
+        unmasked when ``unmask``; each confirmed, and one that never confirms
+        is logged. Without ``unmask`` the mask stays owed."""
+        steps = [self._entry_stub_step(unmask=unmask)]
+        if unmask:
+            steps.append(self._cia1_unmask_step())
+        run_teardown_steps(log, type(self).__name__, steps)
 
-    def _entry_stub_step(self) -> tuple[str, Callable[[], None]]:
+    def _entry_stub_step(self, *, unmask: bool = True) -> tuple[str, Callable[[], None]]:
         """The confirmed teardown step that puts the JMP $EA31 stub back at
         $C100 under a CIA #1 mask. The mask may land without the unmask that
         follows it, so the unmask is owed until `_cia1_unmask_step` holds."""
@@ -2031,7 +2037,9 @@ class AudioStreamer:
             self._cia1_unmask_owed = True
             self._require_confirmed(
                 "pump entry stub restore",
-                lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
+                lambda: self._write_pump_entry(
+                    REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True, unmask=unmask
+                ),
             )
 
         return ("pump entry stub restore", stub)

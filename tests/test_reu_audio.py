@@ -1795,6 +1795,34 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         unmasks = [i for i, o in enumerate(fake.ops) if o == ("write_memory", icr, unmask)]
         self.assertLess(restore, unmasks[-1])
 
+    def test_an_owed_unmask_stays_owed_when_the_stop_restore_is_lost(self):
+        # The failed restore stubs $C100, but $0314 may still name the stale
+        # dispatcher rather than $C100, so the stub's own unmask must not lift
+        # a mask the restore did not place.
+        icr, unmask = f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+        s = new_streamer(dither=False, use_reu_pump=True)
+        fake = cast(FakeAPI, s.api)
+        lose_writes_to(fake, REU_PUMP_HANDLER_ADDR, self.TRIES)
+        dropping = self._drop_unmasks(fake)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertTrue(s._cia1_unmask_owed)
+        fake.regs["0314"] = (0x00, 0xC5)
+        dropping[0] = False
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s.stop()
+        self.assertEqual(fake.regs["0314"], (0x00, 0xC5))
+        self.assertNotEqual(fake.memories[icr], unmask)
+        self.assertTrue(s._cia1_unmask_owed)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+        self.assertEqual(fake.memories[icr], unmask)
+        self.assertFalse(s._cia1_unmask_owed)
+
     def test_a_pump_armed_under_an_owed_unmask_unmasks_cia1(self):
         # Masked, CIA #1 raises no IRQ at all, so a pump armed on $0314
         # without the unmask never runs.
