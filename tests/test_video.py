@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -34,14 +35,53 @@ from c64cast.video.video import (
 )
 
 
+def _wait_until(predicate, limit_s: float = 5.0) -> bool:
+    """Poll `predicate` until it holds or `limit_s` passes; its last answer."""
+    deadline = time.monotonic() + limit_s
+    while not predicate():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.005)
+    return True
+
+
+def _arm_locks(src: AVFileSource) -> AVFileSource:
+    """The lock-side fields every `__new__` stub needs, in one place: the
+    buffer lock, the condition that wakes a demux thread parked at EOF, and
+    the thread-exited flag `finished` reads."""
+    src._lock = threading.Lock()
+    src._wake = threading.Condition(src._lock)
+    src._demux_exited = False
+    return src
+
+
+def _demux_until_parked(src: AVFileSource) -> None:
+    """Run the real `_demux_loop` until it parks at EOF waiting for a seek,
+    then close it the way `close()` does and join it. A loop that never
+    parks fails the test instead of hanging the run."""
+    worker = threading.Thread(target=src._demux_loop, daemon=True)
+    worker.start()
+    try:
+        if not _wait_until(lambda: src._eof or not worker.is_alive()):
+            raise AssertionError("demux loop never reached EOF")
+    finally:
+        with src._lock:
+            src._closed = True
+            src._wake.notify_all()
+        worker.join(5.0)
+    if worker.is_alive():
+        raise AssertionError("demux loop did not exit on close")
+
+
 def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> AVFileSource:
     """Build an AVFileSource without going through __init__ (which opens a
     real container via PyAV). Only the attributes touched by
     `current_frame` / `finished` are set; everything else stays unset."""
     src = AVFileSource.__new__(AVFileSource)
     src._video_buf = list(frames)
-    src._lock = threading.Lock()
+    _arm_locks(src)
     src._eof = eof
+    src._pending_seek = None
     return src
 
 
@@ -321,14 +361,14 @@ class ResamplerTailTest(unittest.TestCase):
         self.addCleanup(container.close)
         src.container = container
         src.path = "t.wav"
-        src._lock = threading.Lock()
+        _arm_locks(src)
         src._eof = False
         return src
 
     def test_the_demux_path_flushes_the_tail_at_eof(self):
         pushed: list[int] = []
         src = self._demux_source(pushed)
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertTrue(src._eof)
         self.assertEqual(sum(pushed), self.EXPECTED)
 
@@ -345,7 +385,7 @@ class ResamplerTailTest(unittest.TestCase):
                 raise EOFError
 
         src.container = _RaisesAtEof()
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertTrue(src._eof)
         self.assertEqual(sum(pushed), self.EXPECTED)
 
@@ -597,7 +637,8 @@ def _make_demux_source_stub(
     src._muted = False
     src.video_time_base = 1.0  # 1 PTS tick == 1 second
     src._video_buf = []
-    src._lock = threading.Lock()
+    _arm_locks(src)
+    src._eof = False
     src.max_video_buffer = 240
     src._resampler = None
     src._audio_push = None
@@ -624,7 +665,7 @@ def _make_emit_audio_stub(sink: list[np.ndarray], *, tempo_scale: float = 1.0) -
     src._closed = False
     src._muted = False
     src._pending_seek = None
-    src._lock = threading.Lock()
+    _arm_locks(src)
     src._audio_push = sink.append
     src.audio_noise_gate = 0
     src.audio_gain = 1.0
@@ -640,7 +681,7 @@ class DemuxRebaseTest(unittest.TestCase):
 
     def _run_demux(self, frame_ptss: list[int]) -> list[float]:
         src = _make_demux_source_stub([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
-        src._demux_loop()
+        _demux_until_parked(src)
         return [pts for pts, _ in src._video_buf]
 
     def test_seeked_source_rebases_to_zero(self):
@@ -727,7 +768,7 @@ class TransportSeekTest(unittest.TestCase):
         stale = _FakePacket([_FakeFrame(999)])
         real = [_FakePacket([_FakeFrame(p)]) for p in (50, 51, 52)]
         src.container = _FakeContainer([stale, *real])
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertEqual([pts for pts, _ in src._video_buf], [30.0, 31.0, 32.0])
         self.assertIsNone(src._pending_seek, "pending seek must be consumed")
         self.assertEqual(src._pts_anchor_target, 30.0)
@@ -736,12 +777,12 @@ class TransportSeekTest(unittest.TestCase):
         seeks: list[int] = []
         src = self._make_src([10], pending_seek=7.5)
         src.container.seek = seeks.append  # type: ignore[method-assign]
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertEqual(seeks, [7_500_000])
 
     def test_no_pending_seek_behaves_like_ordinary_start(self):
         src = self._make_src([0, 1, 2])
-        src._demux_loop()
+        _demux_until_parked(src)
         self.assertEqual([pts for pts, _ in src._video_buf], [0.0, 1.0, 2.0])
 
     def test_apply_pending_seek_returns_false_when_none_queued(self):
@@ -1757,7 +1798,7 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
     def _run(self, decode_target, src_w=3840, src_h=2160):
         frame = _FakeFrame(0, width=src_w, height=src_h)
         src = _make_demux_source_stub([_FakePacket([frame])], decode_target=decode_target)
-        src._demux_loop()
+        _demux_until_parked(src)
         return src, frame
 
     def test_reformats_to_planned_size(self):
@@ -1979,6 +2020,72 @@ class DurationSTest(unittest.TestCase):
             self.assertAlmostEqual(src.duration_s, 3.0, delta=0.5)
         finally:
             src.close()
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class SeekAfterEofTest(unittest.TestCase):
+    """The demuxer reads up to `max_video_buffer` frames ahead of playback, so
+    near the end of a clip it reaches EOF while the scene still has frames to
+    show — and a paused scene's frozen clock lets it run all the way there.
+    A seek requested after that (a resume, an A/B loop wrap, a jog back) has
+    to restart it at the target rather than end the scene."""
+
+    def _started_at_eof(self) -> AVFileSource:
+        fd, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        _write_synthetic_video(path, seconds=3, fps=30)
+        src = AVFileSource(path, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src.start(audio_push=None)
+        # 90 frames fit the read-ahead buffer, so the demuxer reaches EOF
+        # with no consumer at all.
+        self.assertTrue(_wait_until(lambda: src._eof), "demuxer never reached EOF")
+        return src
+
+    def test_a_seek_after_eof_is_applied(self):
+        src = self._started_at_eof()
+        src.request_seek(2.0)
+        self.assertTrue(
+            _wait_until(lambda: src.video_buffer_depth > 0), "the seek was never applied"
+        )
+        self.assertIsNotNone(src.current_frame(2.0))
+        self.assertAlmostEqual(src.last_frame_pts, 2.0, delta=0.25)
+
+    def test_a_pending_seek_after_eof_is_not_finished(self):
+        # The scene polls `finished` every tick, and the request clears the
+        # buffer at once: between the request and the demuxer applying it,
+        # an EOF source with an empty buffer must not read as done.
+        src = _make_av_source_stub([], eof=True)
+        src.request_seek(1.0)
+        self.assertFalse(src.finished)
+
+    def test_a_seek_no_thread_will_apply_does_not_hold_finished_off(self):
+        # A demux thread that crashed or closed has nothing left to apply it.
+        src = _make_av_source_stub([], eof=True)
+        src._demux_exited = True
+        src.request_seek(1.0)
+        self.assertTrue(src.finished)
+
+    def test_a_scene_seeking_back_after_eof_keeps_playing(self):
+        src = self._started_at_eof()
+        scene = _make_video_scene_stub(_StubSource(duration=3.0))
+        scene.source = src
+        with mock.patch.object(scenes, "_render_with_overlays"), _freeze_time(0.0):
+            scene.transport_seek(1.0)
+            self.assertTrue(scene.process_frame(current_time=0.0), "the seek ended the scene")
+            self.assertTrue(_wait_until(lambda: src.video_buffer_depth > 0))
+            self.assertTrue(scene.process_frame(current_time=0.0))
+        self.assertAlmostEqual(src.last_frame_pts, 1.0, delta=0.25)
+
+    def test_the_restarted_pass_reaches_eof_again(self):
+        src = self._started_at_eof()
+        src.request_seek(2.5)
+        self.assertTrue(_wait_until(lambda: src.video_buffer_depth > 0))
+        self.assertTrue(_wait_until(lambda: src._eof))
+        while src.current_frame(10.0) is not None:
+            pass
+        self.assertTrue(src.finished)
 
 
 if __name__ == "__main__":

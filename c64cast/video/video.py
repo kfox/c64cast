@@ -766,7 +766,13 @@ class AVFileSource:
         # PTS-sorted decoded video frames: (pts_seconds, BGR np.ndarray)
         self._video_buf: list[tuple[float, np.ndarray]] = []
         self._lock = threading.Lock()
+        # Wakes a demux thread parked at EOF (_await_seek_after_eof) when a
+        # seek is requested or the source closes.
+        self._wake = threading.Condition(self._lock)
         self._eof = False
+        # Set when the demux thread has returned for good (closed or crashed),
+        # so a seek requested after that cannot hold `finished` off forever.
+        self._demux_exited = False
         self._closed = False
         self._demux_poll: PollThread | None = None
         self._audio_push: Callable[[np.ndarray], object] | None = None
@@ -859,6 +865,7 @@ class AVFileSource:
         with self._lock:
             self._pending_seek = target_s
             self._video_buf.clear()
+            self._wake.notify_all()
 
     def set_muted(self, muted: bool) -> None:
         """Latch (or unlatch) audio output. While muted, `_emit_audio` drops
@@ -939,14 +946,16 @@ class AVFileSource:
         with self._lock:
             target = self._pending_seek
             self._pending_seek = None
-        if target is None:
-            return False
+            if target is None:
+                return False
+            # In the same critical section that retires the request, or
+            # `finished` could see neither a pending seek nor a live pass.
+            self._eof = False
         self.container.seek(int(target * 1_000_000))
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
         if self._atempo_graph is not None:
             self._atempo_graph = _build_atempo_graph(self.target_sr, self._tempo_scale)
-        self._eof = False
         self._pts_offset = None
         self._pts_anchor_target = target
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
@@ -1066,36 +1075,64 @@ class AVFileSource:
             log.debug("demux: resampler flush failed: %s", e)
 
     def _demux_loop(self):
-        # "Container hit EOF" is expected and logs info; a mid-stream decode
-        # failure logs a full traceback.
+        """One demux pass per seek target: a pass that reaches EOF parks the
+        thread until a seek or close() arrives, and a seek starts the next
+        pass from the target. The demuxer reads ahead of playback, so it
+        reaches EOF while the scene still has seconds to show — and a seek
+        made in that window (a resume, an A/B loop wrap, a jog back) would be
+        lost with nothing left to apply it."""
+        # "Container hit EOF" is expected and logs debug; a mid-stream decode
+        # failure logs a full traceback and ends the thread.
+        try:
+            while self._demux_to_eof():
+                self._flush_resampler()
+                self._flush_atempo()
+                log.debug("demux %s: EOF", self.path)
+                if not self._await_seek_after_eof():
+                    return
+        except Exception:
+            log.exception("demux %s crashed", self.path)
+        finally:
+            with self._lock:
+                self._eof = True
+                self._demux_exited = True
+
+    def _demux_to_eof(self) -> bool:
+        """Demux from the container's current position until EOF. Returns
+        False only when the source closed mid-pass."""
         try:
             for packet in self.container.demux():
                 if self._closed:
-                    return
+                    return False
                 if self._apply_pending_seek():
                     continue
                 if packet.stream.type == "video":
                     for frame in packet.decode():
                         img = self._frame_to_bgr(frame)
                         if not self._enqueue_frame(self._rebase_pts(frame), img):
-                            return
+                            return False
                 elif (
                     packet.stream.type == "audio"
                     and self._resampler is not None
                     and self._audio_push is not None
                 ):
                     self._decode_audio_packet(packet)
-            self._flush_resampler()
-            self._flush_atempo()
-            log.debug("demux %s: EOF", self.path)
         except (EOFError, StopIteration):
-            self._flush_resampler()
-            self._flush_atempo()
-            log.debug("demux %s: EOF", self.path)
-        except Exception:
-            log.exception("demux %s crashed", self.path)
-        finally:
+            pass
+        return True
+
+    def _await_seek_after_eof(self) -> bool:
+        """Mark EOF and park until a seek is requested (True, with the seek
+        applied, so the next pass reads from the target) or the source
+        closes (False)."""
+        with self._lock:
             self._eof = True
+            while self._pending_seek is None and not self._closed:
+                self._wake.wait()
+        if self._closed:
+            return False
+        self._apply_pending_seek()
+        return True
 
     def current_frame(self, audio_position_s: float) -> np.ndarray | None:
         """Return the latest video frame whose PTS ≤ audio_position_s.
@@ -1143,11 +1180,16 @@ class AVFileSource:
 
     @property
     def finished(self) -> bool:
+        """EOF with nothing left to show — unless a seek is still waiting
+        for a live demux thread to restart it."""
         with self._lock:
-            return self._eof and not self._video_buf
+            seek_outstanding = self._pending_seek is not None and not self._demux_exited
+            return self._eof and not self._video_buf and not seek_outstanding
 
     def close(self) -> None:
-        self._closed = True
+        with self._lock:
+            self._closed = True
+            self._wake.notify_all()
         if self._demux_poll is not None:
             self._demux_poll.stop()
             self._demux_poll = None
