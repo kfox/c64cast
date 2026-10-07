@@ -867,7 +867,7 @@ class UltimateAudioSampler:
         self.api.write_memory(f"{addr:04X}", f"{value & 0x3F:02X}")
         self.api.flush()
 
-    def flush(self, *, silence_output: bool = False) -> None:
+    def flush(self, *, silence_output: bool = False) -> float:
         """Cut the ring over to post-splice audio: retire everything queued
         (by bumping the flush epoch) and NEUTRAL-rewrite the unconsumed lead past a small guard margin, then pull
         the write head back to consumed+margin. The first post-splice sample is
@@ -878,19 +878,22 @@ class UltimateAudioSampler:
         ``position_seconds()`` (wall-based) is unaffected — the read head keeps
         advancing, we only change what it reads.
 
+        Returns the splice anchor: the ``position_seconds()`` at which the
+        first post-splice sample is heard, on the clock as it runs after the
+        flush, which clears ``mark_eof``'s clamp.
+
         ``silence_output`` (pause) additionally writes channel volume 0 for
         instant silence independent of ring content; the next plain ``flush()``
         (resume's splice) restores it. Present on the DAC's ``flush()`` too for
         signature parity — this ring cut-over already silences within
         ``FLUSH_GUARD_S`` regardless."""
         if not self._running:
-            return
-        # The post-splice anchor is the read head now, when the transport has
-        # just anchored the picture at position_seconds() + ring_lead_seconds().
-        # The volume write and the wait for _io_lock below (the writer holds it
-        # for a whole REU write, up to a slice, about 60 ms) come after, and an
-        # anchor taken past them would put the sound that much behind the
-        # picture. Audio whose slot that wait used up is dropped as late.
+            return self.position_seconds() + self.ring_lead_seconds()
+        # The post-splice anchor is the read head now. The volume write and
+        # the wait for _io_lock below (the writer holds it for a whole REU
+        # write, up to a slice, about 60 ms) come after, and an anchor taken
+        # past them would put the sound that much behind the picture. Audio
+        # whose slot that wait used up is dropped as late.
         anchor = self._read_consumed_bytes() + self._flush_margin
         # Not under _io_lock: the writer holds it for a whole REU write, and the
         # demuxer may apply the seek and push post-splice audio meanwhile, which
@@ -908,6 +911,7 @@ class UltimateAudioSampler:
             # No cut-over is coming: let the writer go on from where it was.
             self._cut_epoch = max(self._cut_epoch, epoch)
             raise
+        return anchor / self.bps / self._actual_rate
 
     def _cut_over(self, anchor: int, epoch: int, *, silence_output: bool) -> None:
         """flush() after its epoch bump: the volume write, then the ring

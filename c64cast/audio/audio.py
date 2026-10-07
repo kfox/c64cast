@@ -2950,9 +2950,10 @@ class AudioStreamer:
         return 0.0
 
     def ring_lead_seconds(self) -> float:
-        """Audio landed in the C64 ring but not yet played. A splice anchors
-        on ``position_seconds() + ring_lead_seconds()``, where its first
-        sample lands, so the video waits until that sample is heard.
+        """Audio landed in the C64 ring but not yet played: a splice's first
+        sample is heard at ``position_seconds() + ring_lead_seconds()``, so
+        the video waits until then. The splice itself anchors on what
+        ``flush()`` returns, the same sum from a single read.
 
         It is the landed content less what position_seconds() reports as
         heard, from one read of both, so the anchor is exactly the landed
@@ -3101,11 +3102,13 @@ class AudioStreamer:
             drained += len(blob)
         return drained
 
-    def flush(self, *, silence_output: bool = False) -> None:
+    def flush(self, *, silence_output: bool = False) -> float:
         """Drop all queued (not-yet-ring-written) audio WITHOUT moving
         position_seconds(). Used by VideoScene's transport splice (seek / loop
         wrap / resume) so stale pre-splice audio doesn't play after the demuxer
-        re-seeks. ``silence_output`` additionally asks the worker to NEUTRAL-fill
+        re-seeks. Returns the splice anchor: the ``position_seconds()`` at
+        which the first sample pushed after the flush is heard, which is the
+        landed count, from one read of the clock. ``silence_output`` additionally asks the worker to NEUTRAL-fill
         the unplayed ring region (pause fast mute) — the worker owns write_addr,
         so it executes the ring stomp, not this thread.
 
@@ -3117,7 +3120,11 @@ class AudioStreamer:
         ``position = pushed - queued`` unchanged.
         No-op in REU-pump mode (no host queue to flush)."""
         if self._reu_pump_armed:
-            return
+            return self.position_seconds()
+        rate = self.effective_rate
+        # A position and a lead read separately pair two landed counts when
+        # a chunk lands between the reads. Draining the queue moves neither.
+        anchor = max(self._host_clock_bytes()) / rate if rate else 0.0
         self._flush_epoch += 1
         # A pass that reached EOF before the seek was requested ended the
         # input, and the post-splice pass has yet to push: left ended, a
@@ -3127,6 +3134,7 @@ class AudioStreamer:
         self._discard_unpushed(self._drain_queue_samples())
         if silence_output:
             self._stomp_requested = True
+        return anchor
 
     def _stomp_ring(self, write_addr: int, current: Callable[[], bool]) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the

@@ -172,12 +172,17 @@ class VideoTransportControls:
         # The flush keeps what already sits in the C64 ring, so the target's
         # first sample is heard one ring lead from now, not at once. The raw
         # clock, not heard_seconds(): the splice clears a sampler's re-anchor
-        # lag, so after it the heard position is the clock.
+        # lag, so after it the heard position is the clock. This estimate
+        # only holds the clock below the target while the flush runs (the
+        # render thread reads it meanwhile); the anchor is what the flush
+        # returns, read once, on the clock as it runs after the flush — which
+        # clears a sampler's end-of-stream clamp, so an anchor read before it
+        # put the picture the clamp's overrun ahead of the sound.
         self.audio_anchor_pos = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
         sc.source.request_seek(target_s)
         if unmute:
             sc.source.set_muted(False)
-        sc.audio.flush()
+        self.audio_anchor_pos = sc.audio.flush()
         # The flush reopens the sink's input, and a post-seek pass can reach
         # EOF and end it before the flush runs.
         sc.source.restate_audio_end()

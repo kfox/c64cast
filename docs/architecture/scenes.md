@@ -106,7 +106,8 @@ On the resync path it does **not** mute, and seeds an **audio-anchored clock** �
 
 1. `source.request_seek(target_s)` — engaging `_emit_audio`'s pending-seek guard **first**.
 2. `audio.flush()` — retiring the queue (the DAC drains it; the sampler's writer drops it by epoch tag); the flush epoch handles a pusher already blocked inside `push_samples`.
-3. `source.restate_audio_end()` — the flush reopens the sink's input, and a post-seek pass that reached EOF before it would otherwise leave that input open with nothing left to end it ([audio.md](audio.md#audiopy--audiostreamer)).
+3. `_audio_anchor_pos = ` what the flush returned — where the target's first sample is heard on the sink's clock, read once, inside the flush. Until then the anchor is a `position_seconds() + ring_lead_seconds()` estimate that only holds the clock below the target, since the render thread reads it while the flush runs. Read before the flush, the anchor paired two clock reads on the DAC, and on the sampler sat on `mark_eof`'s clamped total, which the flush clears, so a splice after the clip's end put the picture ahead of the sound by however long the audio had been out.
+4. `source.restate_audio_end()` — the flush reopens the sink's input, and a post-seek pass that reached EOF before it would otherwise leave that input open with nothing left to end it ([audio.md](audio.md#audiopy--audiostreamer)).
 
 It is used by `transport_seek`, the loop wrap, and resume-from-pause.
 

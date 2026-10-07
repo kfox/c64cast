@@ -9,13 +9,16 @@ import time
 import unittest
 from contextlib import ExitStack, suppress
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FrozenClock
+from _fakes import FakeAPI, FrozenClock
 
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.control.transport import LoopPresetStore, timecode
+from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
@@ -1043,10 +1046,11 @@ class _FakeSceneAudio:
     def ring_lead_seconds(self) -> float:
         return self.ring_lead
 
-    def flush(self, *, silence_output: bool = False) -> None:
+    def flush(self, *, silence_output: bool = False) -> float:
         self.flush_calls.append(silence_output)
         if self._events is not None:
             self._events.append(("flush", silence_output))
+        return self._position + self.ring_lead
 
 
 class _FakeSamplerAudio(_FakeSceneAudio):
@@ -1064,10 +1068,10 @@ class _FakeSamplerAudio(_FakeSceneAudio):
         self.lag_read_at.append(position)
         return self.lag
 
-    def flush(self, *, silence_output: bool = False) -> None:
+    def flush(self, *, silence_output: bool = False) -> float:
         # As the sampler's cut-over does: a splice clears the re-anchor lag.
-        super().flush(silence_output=silence_output)
         self.lag = 0.0
+        return super().flush(silence_output=silence_output)
 
 
 class EmitAudioSeekGuardTest(unittest.TestCase):
@@ -1291,9 +1295,10 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport_pause()
         self.assertTrue(demux._muted)
 
-        def flush_while_the_demuxer_seeks(*, silence_output: bool = False) -> None:
+        def flush_while_the_demuxer_seeks(*, silence_output: bool = False) -> float:
             demux._pending_seek = None  # the demux thread applied the seek
             demux._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+            return 10.0
 
         audio.flush = flush_while_the_demuxer_seeks  # type: ignore[method-assign]
         scene.transport_resume()
@@ -2624,6 +2629,52 @@ class RemoteSeekBoundTest(unittest.TestCase):
             _wait_until(lambda: src.video_buffer_depth > 0), "the seek never reached the server"
         )
         self.assertFalse(src.finished)
+
+
+class SpliceAnchorTest(unittest.TestCase):
+    """A resync splice anchors the clock where the sink's flush put the
+    target's first sample, read once and after the flush has cleared any
+    end-of-stream clamp."""
+
+    def _touched(self, audio: Any) -> VideoScene:
+        scene = _make_video_scene_stub(_StubSource(duration=100.0, a_stream=object()))
+        scene.audio = audio
+        scene.transport.loop_audio = "on"
+        scene.transport.touch()
+        self.assertTrue(scene.transport.resync)
+        return scene
+
+    def test_a_splice_after_the_samplers_eof_anchors_on_its_unclamped_clock(self):
+        # mark_eof clamps the sampler's clock to the pushed total while the
+        # wall runs on, and the flush clears the clamp: an anchor read before
+        # the flush put the picture the clamp's overrun ahead of the sound.
+        smp = UltimateAudioSampler(
+            cast(Any, mock.MagicMock()), sample_rate=2000, bits=8, ring_size=0x4000
+        )
+        smp._running = True
+        smp._gate_time = time.monotonic() - 5.0
+        smp._pushed_samples = 2000  # 1 s pushed, 5 s on the wall
+        smp.mark_eof()
+        scene = self._touched(smp)
+        scene.transport_seek(0.5)
+        self.assertAlmostEqual(scene.transport.clock_s(), 0.5 - smp.ring_lead_seconds(), delta=0.05)
+
+    def test_a_dac_splice_anchors_on_one_read_of_its_clock(self):
+        # A chunk landing between two reads paired one read's heard position
+        # with the other's lead, an anchor no single landed count gives.
+        dac = AudioStreamer(cast(Ultimate64API, FakeAPI()), 8000, "NTSC")
+        scene = self._touched(dac)
+        landed: list[int] = []
+
+        def host_clock_bytes() -> tuple[int, float]:
+            # A 400-byte chunk lands between reads, and the ring gap moves.
+            landed.append(1000 + 400 * len(landed))
+            return landed[-1], landed[-1] - (100.0 if len(landed) % 2 else 300.0)
+
+        with mock.patch.object(dac, "_host_clock_bytes", side_effect=host_clock_bytes):
+            scene.transport_seek(2.0)
+        anchor_bytes = round(scene.transport.audio_anchor_pos * dac.effective_rate, 6)
+        self.assertIn(anchor_bytes, landed)
 
 
 if __name__ == "__main__":
