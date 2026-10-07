@@ -2677,6 +2677,50 @@ class SpliceAnchorTest(unittest.TestCase):
             scene.transport_seek(5.0)
         self.assertEqual(polls, [5.0])
 
+    def test_a_console_poll_while_the_estimate_is_read_shows_no_jump(self):
+        # The DAC's clock reads wait on its worker's locks; a poll there,
+        # with the target stored against the previous anchor, showed the
+        # target plus everything heard since then.
+        audio = _FakeSceneAudio(position=0.0)
+        scene = self._touched(audio)
+        audio._position = 40.0
+        polls: list[float] = []
+
+        def lead_while_polled() -> float:
+            polls.append(scene.transport.position())
+            return 0.0
+
+        with mock.patch.object(audio, "ring_lead_seconds", side_effect=lead_while_polled):
+            scene.transport_seek(5.0)
+        self.assertEqual(polls, [40.0])
+
+    def test_a_console_poll_during_a_resume_reads_the_paused_position(self):
+        # Unpaused before the splice stored its estimate, the clock read the
+        # paused position plus everything heard since the previous anchor.
+        audio = _FakeSceneAudio(position=0.0)
+        scene = self._touched(audio)
+        audio._position = 10.0
+        scene.transport.pause()
+        audio._position = 70.0
+        polls: list[float] = []
+        flush = audio.flush
+
+        def lead_while_polled() -> float:
+            polls.append(scene.transport.position())
+            return 0.0
+
+        def flush_while_polled(*, silence_output: bool = False) -> float:
+            polls.append(scene.transport.position())
+            return flush(silence_output=silence_output)
+
+        with (
+            mock.patch.object(audio, "ring_lead_seconds", side_effect=lead_while_polled),
+            mock.patch.object(audio, "flush", side_effect=flush_while_polled),
+        ):
+            scene.transport.resume()
+        self.assertEqual(polls, [10.0, 10.0])
+        self.assertFalse(scene.transport.is_paused())
+
     def test_a_dac_splice_anchors_on_one_read_of_its_clock(self):
         # A chunk landing between two reads paired one read's heard position
         # with the other's lead, an anchor no single landed count gives.

@@ -168,7 +168,6 @@ class VideoTransportControls:
         before the flush is retired by the flush epoch, as on a seek."""
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
-        self.audio_anchor_clock_s = self.content_to_clock(target_s)
         # The flush keeps what already sits in the C64 ring, so the target's
         # first sample is heard one ring lead from now, not at once. The raw
         # clock, not heard_seconds(): the splice clears a sampler's re-anchor
@@ -180,7 +179,12 @@ class VideoTransportControls:
         # returns, read once, on the clock as it runs after the flush — which
         # clears a sampler's end-of-stream clamp, so an anchor read before it
         # put the picture the clamp's overrun ahead of the sound.
-        self.audio_anchor_pos = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
+        # Read before the target is stored: the DAC's clock reads wait on its
+        # worker's locks, and a poll there paired the target with the previous
+        # anchor's position.
+        estimate = sc.audio.position_seconds() + sc.audio.ring_lead_seconds()
+        self.audio_anchor_clock_s = self.content_to_clock(target_s)
+        self.audio_anchor_pos = estimate
         sc.source.request_seek(target_s)
         if unmute:
             sc.source.set_muted(False)
@@ -219,9 +223,11 @@ class VideoTransportControls:
             # sampler's wall position kept advancing through the pause, and the
             # fresh audio_anchor_pos absorbs it (the DAC's position froze on
             # its own).
+            # `paused` flips after the splice: until its estimate is stored, an
+            # unpaused clock reads everything heard since the previous anchor.
             assert sc.source is not None
-            self.paused = False
             self._splice(self.clock_to_content(self.audio_anchor_clock_s), unmute=True)
+            self.paused = False
         else:
             self.paused = False
             self.wall_anchor_time = time.time()
