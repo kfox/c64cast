@@ -245,7 +245,7 @@ def _seek(
     cannot come from PyAV: a seek outside one waits on a server that stops
     answering the range request it opens until FFmpeg's own IO timeout
     (`_protocol_options`, twice the read bound per IO, retried by the
-    reconnect options) gives up, and one inside a generator
+    reconnect options on an http(s) input) gives up, and one inside a generator
     held open by a paused scene fails at once against a healthy server. The
     seek runs on a worker instead, which the caller abandons on a stall.
 
