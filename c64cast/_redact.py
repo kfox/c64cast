@@ -15,404 +15,447 @@ intact. Two other destinations carry the same line and should not:
 So both of those redact and the terminal does not. Redacting at the point of
 *output* rather than at the ``log.info`` call is what makes that split
 possible.
+
+:func:`redact_secrets` is a tokenizer rather than a set of patterns. Each line
+is percent-decoded to a fixed point, every character remembering how many
+decodings produced it (its *depth*) and which source characters it came from.
+The decoded line is read for three things — a secret-shaped key and its value,
+an auth scheme and its credential, and URL userinfo — each one found wherever
+it starts, including inside another one's value, and the union of what they
+cover is masked in the source text. A structure's own delimiters are the ones
+no deeper than it is: a value whose `=` was encoded once ends at a `%26` or a
+raw `&`, and keeps a `%2526`, which is an `&` inside the secret.
 """
 
 from __future__ import annotations
 
 import bisect
+import functools
 import re
-from collections.abc import Sequence
+from array import array
+from collections.abc import Iterator, Sequence
 
 #: What a redacted value is replaced with. Deliberately not the same length as
 #: any real token — a fixed-width mask invites the reader to guess.
 REDACTED = "REDACTED"
 
-#: The key names whose value is a secret, as a ``re.VERBOSE`` fragment shared
-#: by the value pattern and :func:`redact_source_line` — one spelling, so a
-#: name one of them recognizes the other does too.
-#:
-#: ``token``, ``password``, ``passwd``, ``passphrase``, ``passcode``,
-#: ``loginpas(s)``, ``pwd``, ``jwt``, ``secret`` and ``credential(s)`` take any
-#: prefix, glued or not, so ``viewer_token``, ``client_secret`` and
-#: ``dbpasswd`` match. ``loginpas`` is a generic IP camera's spelling of the
-#: same login a Foscam takes as ``pwd``:
-#: ``videostream.cgi?loginuse=admin&loginpas=…``. ``key``, ``sig``, ``signature``, ``hmac``, ``pass`` and ``auth`` are too
-#: short for that: a prefix has to end in ``_`` or ``-``,
-#: which is what makes the word its own component of the name rather than the
-#: tail of another one. So ``?key=``, ``api_key=``, ``signing-key=``, ``?sig=``
-#: ``X-Amz-Signature=`` and the ``hmac=`` inside an Akamai ``__token__=`` or
-#: ``hdnts=`` match — the spellings signed media and feed URLs use — as do a
-#: camera URL's ``?pass=`` and an ``X-Auth:`` header, while ``sortkey=``,
-#: ``hotkey=``, ``monkey=``, ``sig_level=``, ``sigma=``, ``bypass=``,
-#: ``compass=`` and ``oauth=`` do not.
-#:
-#: Every name must also end where the key does, so ``passes=``, ``author=``,
-#: ``pass_count=`` and ``jwt_expiry_s=`` keep their values: the trailing ``\b``
-#: does not fall inside a run of word characters. ``oauth_state=`` is kept for
-#: the same reason; an OAuth flow's credential travels as ``oauth_token=`` or
-#: ``access_token=``, which ``token`` already covers.
-#:
-#: The rule is positional and knows nothing about meaning, so a name whose last
-#: component happens to be one of the short names is masked whatever it holds:
-#: ``cache_key=`` loses its value. That direction is the cheap one — a
-#: diagnostic value goes missing from two destinations — and the reverse is a
-#: credential in a file that outlives the run.
-#:
-#: The prefixed form is tried only at the first word character of a run of name
-#: characters (`(?<![\w-]) -* \b`), not at every `\b`. A `-` puts a word
-#: boundary at every letter of `a-a-a-…`, and each of those used to scan
-#: `[\w-]*` to the end of the run — quadratic, so 10 KB of one took 1.5 s and
-#: 100 KB took 139 s on a log line. A prefixed match from later in the run is
-#: also one from that first character, since `[\w-]*` takes anything in
-#: between, so the same name is found and it ends in the same place. The open
-#: form is still tried at every `\b`, which costs one word each.
-#:
-#: It is also tried just after a percent-escape. A query value that is itself
-#: URL-encoded spells `&sig=` as `%26sig%3D` and Akamai's `~hmac=` as
-#: `%7Ehmac%3D`, and the escape's last hex digit is a word character, so no
-#: `\b` falls before the name. That start costs one scan per escape, and an
-#: escape ends the run before it, so the scan stays linear.
-#:
-#: A URL carried inside a parameter of a URL that is itself a parameter is
-#: encoded twice, and there `&sig=` is `%2526sig%253D`; one level deeper it is
-#: `%252526sig%25253D`. Each level puts one more `25` after every `%`, so the
-#: escape before the name and the separator after it are read as `%`, any run
-#: of `25`, then the escape's own digits. The run is taken possessively: given
-#: back one pair at a time, every pair would rescan the name characters after
-#: it, which is quadratic on a long run of `25`. A value encoded `n` times ends
-#: at an `&` of any shallower level — `%26`, `%2526`, … up to `n - 1` pairs of
-#: `25` — but not at one with `n` or more, which is a `%26` inside the secret
-#: itself: a once-encoded value keeps its `%2526`.
-#:
-#: `%3A` counts as a separator too, and an encoded quote may close the name, as
-#: their raw spellings do: a JSON document carried in a query parameter spells
-#: `"token":"v"` as `%22token%22%3A%22v%22`. Such a value has no encoded quote
-#: to end at, so it runs on to the `%26` or `&` and takes the closing quote and
-#: whatever follows with it.
-#:
-#: The open form appears in both branches, spliced from one spelling so a name
-#: added to it is found at a run's start and partway through it alike.
-_OPEN_SECRET_NAME = r"""\w* (?:
-    token | passw (?:or)? d | pass (?:phrase|code) | loginpass? | pwd | jwt | secret
-  | credentials? | api[_-]?key
-)"""
-_SECRET_KEY = r"""
+Span = tuple[int, int]
+
+#: A name a key ends with. `open` names take any prefix, glued or not
+#: (`viewer_token`, `dbpasswd`, `userpass`); the rest only a prefix that ends in
+#: `_` or `-`, because glued they are the tails of ordinary words: `sortkey`,
+#: `monkey`, `sigma`, `oauth`. The `(?![\w-])` makes the name end where the
+#: key does, so `passes=` and `jwt_expiry_s=` keep their values.
+_NAME = re.compile(
+    r"""
     (?:
-        (?: (?<![\w-]) -* \b | % (?:25)*+ (?:[0-9a-f]{2})? (?<=[0-9a-f]) ) (?:
-            {open}
-          | (?: [\w-]* [_-] )? (?: key | sig (?:nature)? | hmac | pass | auth )
+        (?P<open>
+            token | passw (?:or)? d | pass (?:phrase|code)? | loginpass? | pwd | jwt
+          | secret | credentials? | api [_-]? key
+          | (?: auth | priv (?:ate)? | access | secret | master | session | signing | stream ) key
         )
-      | \b {open}
-    ) \b
-""".replace("{open}", _OPEN_SECRET_NAME)
-
-# Spliced by `.replace` rather than by an f-string: the pattern's own `{3}`
-# repetition counts would have to be doubled to survive one.
-_SECRET_VALUE = re.compile(
-    r"""
-    (?P<kv_prefix>
-        {key} (?: ["'] | %(?:25)*+2[27] )? \s* (?: [=:] | (?P<pct> % (?P<enc> (?:25)*+ ) 3[ad] ) ) \s*
-        (?P<quote> ["]{3} | [']{3} | ["'] )?
-    )
-    (?P<kv_value>
-        (?(quote) (?: \\[^\r\n] | (?!(?P=quote)) [^\r\n] )+
-        | (?(pct) (?: (?! (?!%(?P=enc)25) %(?:25)*+26 ) [^\s&"',}] )+ | [^\s&"',}]+ ) )
-    )
-    """.replace("{key}", _SECRET_KEY),
-    re.IGNORECASE | re.VERBOSE,
-)
-
-#: `Bearer VALUE`, searched for on its own rather than as a third branch of
-#: :data:`_SECRET_VALUE`. One pattern's matches cannot overlap, so there an
-#: unquoted value ending at the space after `Bearer` took the word as the whole
-#: secret and hid the token behind it: `access_token: Bearer eyJ…` kept the
-#: `eyJ…`. The value is read inside a lookahead for the same reason, so the
-#: next search starts where it does: in `Bearer Bearer eyJ…` the second
-#: `Bearer` is the first one's value and the start of a match of its own. A
-#: value holds no whitespace and a match needs some after its `Bearer`, so no
-#: character is read as a value twice. That holds after a raw space or `+`, not
-#: after an encoded one: the match consumes the `%20`, and its hex digit is what
-#: a `Bearer` with no `\b` before it has to follow, so in `Bearer%20Bearer%20abc`
-#: the second `Bearer` starts no match and `abc` is kept. In a run of them only
-#: every other `Bearer` starts one.
-#:
-#: `Bearer` is also tried right after a percent-escape, as a name is: in
-#: `%22token%22%3ABearer abc` the escape's hex digit leaves no `\b` before it,
-#: and the `token` value ends at the space, so neither pattern reached `abc`.
-#: An encoded header spells the space `%20` or `+` (`Authorization%3A%20Bearer%20abc`).
-#: A value after an encoded space ends at the next one, which keeps the rule
-#: above: a value never holds the kind of space its `Bearer` was matched by.
-_BEARER_VALUE = re.compile(
-    r"""
-    (?: \b | % (?:25)*+ (?:[0-9a-f]{2})? (?<=[0-9a-f]) ) Bearer
-    (?: \s+ | (?P<enc> (?: \s | % (?:25)*+ 20 | \+ )+ ) )
-    (?= (?P<value> (?(enc) (?: (?! % (?:25)*+ 20 ) [^\s"',}+] )+ | [^\s"',}]+ ) ) )
+      | (?P<header> authorization )
+      | (?P<scheme> bearer )
+      | (?P<short> key | sig (?:nature)? | hmac | auth )
+    ) (?![\w-])
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
-#: :data:`_SECRET_VALUE` with `Bearer VALUE` back as a branch of its own, as it
-#: was before the two were searched apart: a Bearer value is stepped over whole,
-#: so no name starts inside it. Apart, a name can, and its quoted value can then
-#: close inside a later name's quoted value and hide that name: in
-#: `Bearer token=' x secret="a'bc"` the `token` value ends at the `'` inside
-#: `"a'bc"` and kept `bc`. What this finds is added to the other spans, never
-#: used in place of them, so it can only mask more.
-_SECRET_VALUE_PAST_BEARER = re.compile(
-    _SECRET_VALUE.pattern + r"""| \bBearer\s+[^\s"',}]+""",
-    re.IGNORECASE | re.VERBOSE,
+#: Words that end in `pass` and name no secret: audio filters, encoder passes,
+#: and the English words. Compared with `_` and `-` removed, so `high-pass` and
+#: `bypass_audio` are both read here.
+_NOT_A_PASSWORD = (
+    "allpass",
+    "bandpass",
+    "bypass",
+    "compass",
+    "encompass",
+    "firstpass",
+    "highpass",
+    "lowpass",
+    "multipass",
+    "onepass",
+    "overpass",
+    "secondpass",
+    "singlepass",
+    "surpass",
+    "trespass",
+    "twopass",
+    "underpass",
 )
+_NOT_A_PASSWORD_REACH = max(map(len, _NOT_A_PASSWORD)) * 2
 
-_SECRET_KEY_RE = re.compile(_SECRET_KEY, re.IGNORECASE | re.VERBOSE)
+#: The shell's working-directory variables, which the open `pwd` would mask.
+#: Matched case-sensitively: a camera URL's `pwd=` is lowercase.
+_SHELL_PWD = ("PWD", "OLDPWD")
 
-_TRIPLE = ('"""', "'''")
+#: What follows a key: an optional closing quote (escaped, in a rendering such
+#: as `{\'token\': …}`), then `=` or `:`, then the value.
+_KEY_TAIL = re.compile(r"""\\? ["']? \s* (?P<sep> [=:] ) [=:]* \s*""", re.VERBOSE)
 
-#: `scheme://` followed by anything up to an `@` that is still inside the
-#: netloc. Deliberately not `urlsplit`: a line the TOML parser rejected may
-#: hold no parseable URL at all, and the point is to spot the *shape* of
-#: userinfo without needing the line to be well formed. The netloc ends at the
-#: first `/`, `?` or `#`, so those bound the search and an `@` later in a path
-#: or query is not userinfo.
-#:
-#: A quote does not bound it, of either kind. RFC 3986 allows a `'` unencoded
-#: in userinfo, and `file = 'https://kelly:it's@cdn/a.mp4'` is a literal string
-#: that the `'` ends early, so the parser rejects exactly that line and it
-#: comes here. A `"` is the same shape in a basic string —
-#: `file = "https://kelly:it"s@cdn/a.mp4"`, or `it\"s` escaped on a line
-#: refused for something else — and a password does not have to be a legal URL
-#: to be a password. The cost is `x = ["tr://COM3", "me@host"]` cut at the
-#: scheme on a line the parser refused for some other reason.
-#:
-#: Whitespace deliberately does *not* bound it. A space is illegal in a URL, so
-#: reading one as the end of the netloc is defensible — but a passphrase with a
-#: space in it is precisely the malformed shape this runs on, and
-#: `u64://kelly:my pass@host` would otherwise come back whole.
-#:
-#: Both userinfo patterns are anchored on the literal `://` and only *look
-#: behind* it for a scheme character, rather than matching the scheme itself.
-#: A `[a-z][a-z0-9+.\-]*://` pattern is retried from every offset of a run of
-#: scheme characters and scans the rest of the run each time, which is
-#: quadratic: a 64 KB hex dump on one log line took 11 s to redact, and every
-#: line `--log-file` or the console's log buffer receives goes through it.
-#: :func:`_scheme_start` recovers where the scheme began when a caller needs it.
-_URL_USERINFO = re.compile(r"://(?<=[a-z0-9+.\-]://)[^/?#]*@", re.IGNORECASE)
+#: A quote that opens a value: single or triple, after an optional Python
+#: string prefix (`b'…'`) or a backslash (an escaped rendering).
+_OPENER = re.compile(r"""[bBrRuUfF]{0,2} (?P<esc> \\ )? (?P<q> "{3} | '{3} | ["'] )""", re.VERBOSE)
 
-#: The characters a URL scheme is spelled with (RFC 3986 §3.1).
-_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
+#: What separates an auth scheme from its credential: whitespace at any depth,
+#: or the `+` a form-encoded header spells a space with.
+_SCHEME_GAP = re.compile(r"[\s+]+")
 
+#: An `Authorization:` value that is a scheme and a credential.
+_SCHEME_AND_GAP = re.compile(r"\+* (?P<scheme> [\w.-]+ ) (?P<gap> [\s+]+ )", re.VERBOSE)
 
-#: Userinfo inside a well-formed URL on a log line: `scheme://user:pass@`. Unlike
-#: `_URL_USERINFO` (for malformed config lines) whitespace *does* bound it here:
-#: a URL a program opened has no raw space in it, and an unbounded match would
-#: run from `tr://COM3` across a whole sentence to someone's `me@example.com`.
-#: Greedy up to the netloc's last `@`, so a password holding a raw `@` goes too.
-#: A quote does not bound it: RFC 3986 allows a `'` unencoded in userinfo, so
-#: `https://user:it's@host` is well formed and its password has to go too, and
-#: `file = "https://user:it\"s@host/a.mp4"` parses to a URL FFmpeg quotes back
-#: with a raw `"` in the password.
-_INLINE_URL_USERINFO = re.compile(r"://(?<=[a-z0-9+.\-]://)[^\s/?#]*@", re.IGNORECASE)
+#: The `://` of a URL, after a scheme character. Anchored on the separator and
+#: only looking behind it: a pattern that matched the scheme itself is retried
+#: from every offset of a run of scheme characters, which is quadratic.
+_URL_SEPARATOR = re.compile(r"(?<=[A-Za-z0-9+.\-])://")
+
+#: Each kind of place a value can end, as a pattern over the decoded line. A
+#: quote or a `}` ends an unquoted value only when no letter or digit follows
+#: it — the `'` in `it's` is part of the password.
+_STOP_PATTERNS = {
+    "unquoted": re.compile(r"""[\s&,] | ["'}] (?!\w)""", re.VERBOSE),
+    "unquoted+": re.compile(r"""[\s&,+] | ["'}] (?!\w)""", re.VERBOSE),
+    "space": re.compile(r"\s"),
+    "netloc": re.compile(r"[\s/?#]"),
+    "@": re.compile(r"@"),
+}
+
+_QUOTES = ('"', "'", '"""', "'''")
 
 
-def _scheme_start(line: str, separator: int) -> int:
-    """The index in `line` where the scheme ending at the `://` found at
-    `separator` begins."""
-    i = separator
-    while i > 0 and line[i - 1] in _SCHEME_CHARS:
+@functools.cache
+def _stop_pattern(kind: str) -> re.Pattern[str]:
+    """The pattern for a stop `kind`. A quote kind is the quote itself, with a
+    leading backslash when a backslash does not escape it and a trailing `~`
+    when it closes whatever follows it; without the `~`, no letter or digit
+    may follow."""
+    quote = kind.lstrip("\\").rstrip("~")
+    if quote not in _QUOTES:
+        return _STOP_PATTERNS[kind]
+    return re.compile(re.escape(quote) + ("" if kind.endswith("~") else r"(?!\w)"))
+
+
+_LINE_BREAK = re.compile(r"[\r\n]")
+
+#: `%`, any run of `25`, then two hex digits: one source escape decoded as many
+#: times as it takes, in one step. Decoding a level at a time instead costs a
+#: pass over the line per level, and `%2525…` has as many levels as it has
+#: pairs.
+_ESCAPE_CHAIN = re.compile(r"%(?:25)*[0-9A-Fa-f]{2}")
+_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
+_HEX = frozenset("0123456789abcdefABCDEF")
+
+
+def _decode(line: str) -> tuple[str, array[int] | None, array[int] | None]:
+    """`line` percent-decoded to a fixed point, the source offset each decoded
+    character starts at (plus `len(line)` at the end), and the depth of each.
+    The two arrays are None when nothing decoded."""
+    if "%" not in line:
+        return line, None, None
+    parts: list[str] = []
+    starts: array[int] = array("q")
+    depth: array[int] = array("q")
+    done = 0
+    for m in _ESCAPE_CHAIN.finditer(line):
+        a, b = m.span()
+        if a > done:
+            parts.append(line[done:a])
+            starts.extend(range(done, a))
+            depth.extend(bytes(a - done))
+        parts.append(chr(int(line[b - 2 : b], 16)))
+        starts.append(a)
+        depth.append((b - a - 1) // 2)
+        done = b
+    if done == 0:
+        return line, None, None
+    parts.append(line[done:])
+    starts.extend(range(done, len(line)))
+    depth.extend(bytes(len(line) - done))
+    decoded = "".join(parts)
+    if _ESCAPE.search(decoded):
+        decoded, starts, depth = _reduce(decoded, starts, depth)
+    starts.append(len(line))
+    return decoded, starts, depth
+
+
+def _reduce(
+    decoded: str, starts: array[int], depth: array[int]
+) -> tuple[str, array[int], array[int]]:
+    """Decode the escapes a first decoding put together out of decoded
+    characters (`%25%34%31` is `%41`, then `A`), until none is left. Each
+    character is pushed once and each reduction pops three for one, so this
+    is linear however many levels the line nests."""
+    out: list[str] = []
+    out_starts: array[int] = array("q")
+    out_depth: array[int] = array("q")
+    for i, c in enumerate(decoded):
+        out.append(c)
+        out_starts.append(starts[i])
+        out_depth.append(depth[i])
+        while len(out) >= 3 and out[-3] == "%" and out[-2] in _HEX and out[-1] in _HEX:
+            c = chr(int(out[-2] + out[-1], 16))
+            d = max(out_depth[-3:]) + 1
+            start = out_starts[-3]
+            del out[-3:], out_starts[-3:], out_depth[-3:]
+            out.append(c)
+            out_starts.append(start)
+            out_depth.append(d)
+    return "".join(out), out_starts, out_depth
+
+
+#: A depth no query asks for, padding the tree past the last stop.
+_UNREACHABLE = 1 << 62
+
+
+class _Stops:
+    """The positions in a line where one kind of value can end, and the depth
+    of each, answering "the first at or after `p` no deeper than `d`" in
+    logarithmic time. A scan from each value's start would read the same
+    stretch once per value that starts in it: `token=token=…` is quadratic."""
+
+    def __init__(self, positions: list[int], depths: list[int] | None) -> None:
+        self._pos = positions
+        self._depth = depths
+        self._tree: list[int] | None = None
+        self._size = 0
+
+    def first(self, p: int, d: int) -> int | None:
+        i = bisect.bisect_left(self._pos, p)
+        if i == len(self._pos):
+            return None
+        if self._depth is None or self._depth[i] <= d:
+            return self._pos[i]
+        j = self._first_shallow(i, d)
+        return None if j is None else self._pos[j]
+
+    def last(self, lo: int, q: int, d: int) -> int | None:
+        """The last position in `[lo, q)` no deeper than `d`."""
+        i = bisect.bisect_left(self._pos, q) - 1
+        if i < 0 or self._pos[i] < lo:
+            return None
+        if self._depth is None or self._depth[i] <= d:
+            return self._pos[i]
+        j = self._last_shallow(i, d)
+        return None if j is None or self._pos[j] < lo else self._pos[j]
+
+    def _min_tree(self) -> list[int]:
+        if self._tree is None:
+            depths = self._depth or []
+            size = 1 << max(len(depths) - 1, 0).bit_length()
+            tree = [_UNREACHABLE] * (2 * size)
+            tree[size : size + len(depths)] = depths
+            for k in range(size - 1, 0, -1):
+                tree[k] = min(tree[2 * k], tree[2 * k + 1])
+            self._tree, self._size = tree, size
+        return self._tree
+
+    def _first_shallow(self, i: int, d: int) -> int | None:
+        tree = self._min_tree()
+        k = i + self._size
+        while tree[k] > d:
+            while k & 1:
+                k >>= 1
+            if k == 0:
+                return None
+            k += 1
+        while k < self._size:
+            k = 2 * k if tree[2 * k] <= d else 2 * k + 1
+        return k - self._size
+
+    def _last_shallow(self, i: int, d: int) -> int | None:
+        tree = self._min_tree()
+        k = i + self._size
+        while tree[k] > d:
+            while not k & 1:
+                k >>= 1
+            if k == 1:
+                return None
+            k -= 1
+        while k < self._size:
+            k = 2 * k + 1 if tree[2 * k + 1] <= d else 2 * k
+        return k - self._size
+
+
+class _Line:
+    """One decoded line, with the depth of each character and the stop sets
+    built from it on first use."""
+
+    def __init__(self, text: str, depth: array[int] | None) -> None:
+        self.text = text
+        self._depth = depth
+        self._stops: dict[str, _Stops] = {}
+
+    def depth(self, i: int) -> int:
+        return 0 if self._depth is None else self._depth[i]
+
+    def deepest(self, a: int, b: int) -> int:
+        return 0 if self._depth is None or a >= b else max(self._depth[a:b])
+
+    def stop(self, kind: str, p: int, d: int) -> int:
+        """Where a value of `kind` that starts at `p`, and is `d` deep, ends."""
+        found = self._stops_of(kind).first(p, d)
+        return len(self.text) if found is None else found
+
+    def stops(self, kind: str) -> _Stops:
+        return self._stops_of(kind)
+
+    def _stops_of(self, kind: str) -> _Stops:
+        stops = self._stops.get(kind)
+        if stops is None:
+            text = self.text
+            escapable = kind.rstrip("~") in _QUOTES
+            positions = [
+                m.start()
+                for m in _stop_pattern(kind).finditer(text)
+                if not (escapable and _is_escaped(text, m.start()))
+            ]
+            depths = None if self._depth is None else [self._depth[p] for p in positions]
+            stops = self._stops[kind] = _Stops(positions, depths)
+        return stops
+
+
+def _is_escaped(text: str, p: int) -> bool:
+    """Whether an odd run of backslashes ends just before `p`."""
+    i = p
+    while i > 0 and text[i - 1] == "\\":
         i -= 1
-    return i
+    return (p - i) % 2 == 1
 
 
-Span = tuple[int, int]
+def _is_name_char(c: str) -> bool:
+    return c.isalnum() or c in "_-"
 
 
-#: A separator as :data:`_SECRET_VALUE` reads one. `enc` is the run of `25`
-#: giving an encoded one's depth, and is None for a raw `=` or `:`.
-_SEPARATOR = re.compile(r"[=:] | % (?P<enc> (?:25)*+ ) 3[ad]", re.IGNORECASE | re.VERBOSE)
-
-#: An `&` at some depth of encoding — `%26`, `%2526`, … — which ends an
-#: encoded value whose separator is at least that deep.
-_ENCODED_AMP = re.compile(r"% (?P<enc> (?:25)*+ ) 26", re.IGNORECASE | re.VERBOSE)
-
-#: What may end an unquoted value: a character that ends every one, or an
-#: encoded `&`, which ends one only as :data:`_ENCODED_AMP` says.
-_UNQUOTED_STOP = re.compile(r"""[\s&"',}] | % (?P<enc> (?:25)*+ ) 26""", re.VERBOSE)
-
-#: The depth :func:`_hidden_values` gives a raw separator, which no encoded
-#: `&` ends, and the rank it gives a value that ended where every value does.
-_RAW, _EVERY = -1, -2
+def _secret_names(text: str) -> Iterator[re.Match[str]]:
+    """Each secret-shaped name in `text` that ends a run of name characters."""
+    pos = 0
+    while (m := _NAME.search(text, pos)) is not None:
+        if _names_a_secret(text, m):
+            yield m
+            pos = m.end()
+        else:
+            pos = m.start() + 1
 
 
-def _depth(m: re.Match[str]) -> int:
-    enc = m.group("enc")
-    return _RAW if enc is None else len(enc) // 2
+def _names_a_secret(text: str, m: re.Match[str]) -> bool:
+    s = m.start()
+    glued = s > 0 and _is_name_char(text[s - 1]) and text[s - 1] not in "_-"
+    if m.group("open") is None:
+        return not glued
+    name = m.group("open").lower()
+    if name == "pass":
+        lo = s
+        while lo > 0 and s - lo < _NOT_A_PASSWORD_REACH and _is_name_char(text[lo - 1]):
+            lo -= 1
+        run = text[lo : m.end()].lower().replace("_", "").replace("-", "")
+        return not run.endswith(_NOT_A_PASSWORD)
+    if name == "pwd":
+        for word in _SHELL_PWD:
+            lo = m.end() - len(word)
+            if text[lo : m.end()] == word and (lo == 0 or not _is_name_char(text[lo - 1])):
+                return False
+    return True
 
 
-def _is_name_char(c: str, *, dash: bool) -> bool:
-    return c.isalnum() or c == "_" or (dash and c == "-")
+def _value(line: _Line, v: int, d: int, kind: str) -> Span | None:
+    """The span of the value starting at `v`, quoted or not; an unquoted one
+    ends at a `kind` stop no deeper than `d`, which is its separator's depth."""
+    opener = _OPENER.match(line.text, v)
+    if opener is not None:
+        start = opener.end()
+        end = _quoted_end(line, opener, start)
+        return (start, end) if end > start else None
+    end = line.stop(kind, v, d)
+    return (v, end) if end > v else None
 
 
-def _back_over(text: str, lo: int, j: int, raw: str, hexes: tuple[str, ...]) -> int | None:
-    """Where a character of `raw`, or a percent-escape of one of `hexes` at
-    any depth, that ends at `j` begins — no earlier than `lo`; None if none
-    ends there."""
-    if j > lo and text[j - 1] in raw:
-        return j - 1
-    if j - 3 < lo or text[j - 2 : j].lower() not in hexes:
+def _quoted_end(line: _Line, opener: re.Match[str], start: int) -> int:
+    """Where the value `opener` opens ends: at its quote no deeper than the
+    opening one, with no letter or digit after it — `'it's@er2'` is one value.
+    Once the value has held whitespace, though, any such quote ends it: a
+    value is one word or it is prose, and in prose the `'` of a possessive
+    would otherwise carry the mask on to the next quote a space follows."""
+    q, k = opener.group("q"), line.depth(opener.start("q"))
+    kind = q if opener.group("esc") is None else "\\" + q
+    end = line.stop(kind, start, k)
+    space = line.stops("space").first(start, k)
+    if space is not None and space < end:
+        end = min(end, line.stop(kind + "~", space, k))
+    return end
+
+
+def _credential(line: _Line, c: int, gap: str, d: int) -> Span | None:
+    """The credential after an auth scheme, starting at `c`. Its first
+    character is always part of it, so `Bearer ,abc` keeps nothing, and it
+    ends at a `+` only when a `+` is what separated it from the scheme."""
+    if c >= len(line.text):
         return None
-    i = j - 2
-    while i > lo:
-        if text[i - 1] == "%":
-            return i - 1
-        if i - 2 < lo or text[i - 2 : i] != "25":
-            break
-        i -= 2
-    return None
+    if _OPENER.match(line.text, c) is not None:
+        return _value(line, c, d, "unquoted")
+    return (c, line.stop("unquoted+" if "+" in gap else "unquoted", c + 1, d))
 
 
-def _back_over_space(text: str, lo: int, j: int) -> int:
-    while j > lo and text[j - 1].isspace():
-        j -= 1
-    return j
+def _key_values(line: _Line) -> Iterator[Span]:
+    text = line.text
+    for name in _secret_names(text):
+        if name.group("scheme") is not None:
+            gap = _SCHEME_GAP.match(text, name.end())
+            if gap is not None:
+                span = _credential(line, gap.end(), gap.group(), line.deepest(*gap.span()))
+                if span is not None:
+                    yield span
+            continue
+        tail = _KEY_TAIL.match(text, name.end())
+        if tail is None:
+            continue
+        v, d = tail.end(), line.depth(tail.start("sep"))
+        span = _value(line, v, d, "unquoted")
+        if name.group("header") is not None:
+            span = _past_scheme(line, v, span)
+        if span is not None:
+            yield span
 
 
-def _name_starts(text: str, lo: int, k: int) -> list[int]:
-    """Where a name ending at `k` may begin, no earlier than `lo`: its run of
-    name characters, the percent-escape just before that run, and the last
-    word of the run, which is where an open name past a `-` starts."""
-    word = k
-    while word > lo and _is_name_char(text[word - 1], dash=False):
-        word -= 1
-    run = word
-    while run > lo and _is_name_char(text[run - 1], dash=True):
-        run -= 1
-    starts = [run, word]
-    if run > lo and text[run - 1] == "%":
-        starts.append(run - 1)
-    return starts
+def _past_scheme(line: _Line, v: int, span: Span | None) -> Span | None:
+    """The credential in an `Authorization` value at `v`, whose `span` is what
+    a value there would cover. The scheme before it is kept, as `Bearer` is."""
+    text = line.text
+    opener = _OPENER.match(text, v)
+    if opener is not None:
+        if span is None:
+            return None
+        scheme = _SCHEME_AND_GAP.match(text, span[0], span[1])
+        return span if scheme is None or scheme.end() == span[1] else (scheme.end(), span[1])
+    scheme = _SCHEME_AND_GAP.match(text, v)
+    if scheme is None or scheme.end() == len(text):
+        return span
+    gap_start, gap_end = scheme.span("gap")
+    return _credential(line, gap_end, scheme.group("gap"), line.deepest(gap_start, gap_end))
 
 
-def _unquoted_end(text: str, pos: int, depth: int) -> int:
-    """Where an unquoted value whose separator is at `depth` ends, given that
-    nothing before `pos` ends it."""
-    for stop in _UNQUOTED_STOP.finditer(text, pos):
-        if stop.group("enc") is None or _depth(stop) <= depth:
-            return stop.start()
-    return len(text)
+def _userinfo(line: _Line) -> Iterator[Span]:
+    """`user:pass` in `scheme://user:pass@host`, up to the netloc's last `@`,
+    so a password holding a raw `@` goes too. Whitespace ends the netloc — a
+    URL a program opened holds none, and an unbounded match would run from
+    `tr://COM3` across a sentence to an e-mail address — and a quote does not:
+    RFC 3986 allows a `'` in userinfo. An empty one is masked as well."""
+    for m in _URL_SEPARATOR.finditer(line.text):
+        p, d = m.end(), line.deepest(m.start(), m.end())
+        netloc_end = line.stop("netloc", p, d)
+        at = line.stops("@").last(p, netloc_end, d)
+        if at is not None:
+            yield (p, at)
 
 
-def _match_past(
-    text: str, lo: int, k: int, end: int, endpos: int | None = None
-) -> re.Match[str] | None:
-    """A :data:`_SECRET_VALUE` match for a name ending at `k` whose value runs
-    past `end`, reading `text` only as far as `endpos`."""
-    if k <= lo or not _is_name_char(text[k - 1], dash=False):
-        return None
-    for start in _name_starts(text, lo, k):
-        m = _SECRET_VALUE.match(text, start, len(text) if endpos is None else endpos)
-        if m is not None and m.end("kv_value") > end:
-            return m
-    return None
-
-
-def _hidden_values(text: str, outer: re.Match[str], reach: list[int]) -> list[Span]:
-    """The values of names inside `outer`'s value that run on past its end.
-
-    `finditer` resumes where a match ends, so a name inside a value never
-    starts a match of its own, and three shapes let that name's value outlast
-    the one it hides in. In `token%3Apassword =S3CR` the space ends the
-    `token` value and is also where `password`'s separator begins: the
-    prefix of the hidden match runs through the outer value's end. In
-    `token%3Apassword=a%26b` the `%26` ends the encoded `token` value but
-    not `password`'s, whose raw `=` makes a value that only whitespace, a
-    quote or a raw `&` ends. In `sig="x token:'a" S3CR'` the hidden value is
-    quoted with a kind the outer one is not, and runs to its own `'`.
-
-    Each is looked for only where it can be, so the search stays linear. A
-    prefix running through the end is found by stepping back from the end
-    over a space, a separator, a space and a closing quote, and a quoted
-    hidden value by the same steps back from each quote inside a quoted outer
-    one. No backslash precedes an opening quote, so a hidden value ends no
-    later than the next opening quote of its own kind and the values of one
-    kind are read without overlap. A shallower
-    separator matters only when an encoded `&` ended the outer value, and
-    only the shallowest one that names a secret, since its value ends no
-    earlier than any deeper one's. `reach` is the furthest such value found
-    so far and the depth of what ended it; a value inside it that the same
-    `&` would end is already masked, and is not read a second time. One that
-    runs past it does so through all of it, so it is read on from there:
-    each `&` takes a separator one level shallower to pass, and re-reading
-    the whole of each value made a line of `n` levels cost `n` passes. A value
-    an `&` ended is masked whole; what is lost is only the run of names past
-    it, which the rule cannot tell from more of the value."""
-    value_start, end = outer.span("kv_value")
-    lo = outer.start()
-    found: list[Span] = []
-    # Of the characters that end a value, only a space or a quote can also
-    # be part of a prefix.
-    crossable = end < len(text) and (text[end].isspace() or text[end] in "\"'")
-    prefix_ends = [end] if crossable else []
-    if outer.group("quote") is not None:
-        # A quoted value may hold a quote of another kind, and a name's value
-        # that one opens runs on to its own closing quote: in
-        # `sig="x token:'a" S3CR'` it outlasts the `"` ending `sig`'s. Only
-        # a prefix ending just before such a quote can open one.
-        prefix_ends += [j for j in range(value_start, end) if text[j] in "\"'"]
-    for prefix_end in prefix_ends:
-        after_sep = _back_over_space(text, value_start, prefix_end)
-        for before_sep in (after_sep, _back_over(text, value_start, after_sep, "=:", ("3a", "3d"))):
-            if before_sep is None:
-                continue
-            k = _back_over_space(text, value_start, before_sep)
-            for name_end in (k, _back_over(text, value_start, k, "\"'", ("22", "27"))):
-                if name_end is not None and (m := _match_past(text, lo, name_end, end)) is not None:
-                    found.append(m.span("kv_value"))
-    amp = _ENCODED_AMP.match(text, end)
-    if outer.group("pct") is None or amp is None:
-        return found
-    shallower = sorted(
-        (_depth(sep), sep.start())
-        for sep in _SEPARATOR.finditer(text, value_start, end)
-        if _depth(sep) < _depth(amp)
-    )
-    for depth, sep_start in shallower:
-        if end < reach[0] and reach[1] <= depth:
-            break
-        quote = _back_over(text, value_start, sep_start, "\"'", ("22", "27"))
-        for name_end in (sep_start, quote):
-            # The outer value holds no quote, no space and no `&` this
-            # separator stops at, and neither is `amp` one, so only the name
-            # needs reading: the value is unquoted, and runs past `end`.
-            if (
-                name_end is not None
-                and (m := _match_past(text, lo, name_end, end, end + 1)) is not None
-            ):
-                value_end = _unquoted_end(text, max(end, reach[0]), depth)
-                found.append((m.start("kv_value"), value_end))
-                stop = _ENCODED_AMP.match(text, value_end)
-                reach[:] = [value_end, _depth(stop) if stop is not None else _EVERY]
-                return found
-    return found
-
-
-def _value_spans(text: str) -> list[Span]:
-    """Where in `text` the name rule finds a secret value: each value a
-    :data:`_SECRET_VALUE` key names, each one a name inside that value names
-    (:func:`_hidden_values`), and each token :data:`_BEARER_VALUE` finds — plus,
-    where there is a Bearer, each value :data:`_SECRET_VALUE_PAST_BEARER` finds.
-    They may overlap."""
-    spans: list[Span] = []
-    reach = [0, _EVERY]
-    for m in _SECRET_VALUE.finditer(text):
-        spans.append(m.span("kv_value"))
-        spans += _hidden_values(text, m, reach)
-    bearers = [m.span("value") for m in _BEARER_VALUE.finditer(text)]
-    if bearers:
-        spans += [
-            m.span("kv_value")
-            for m in _SECRET_VALUE_PAST_BEARER.finditer(text)
-            if m.group("kv_prefix") is not None
-        ]
-    return spans + bearers
+def _line_spans(line: str) -> list[Span]:
+    """The source spans of `line` (no line break in it) that hold a secret."""
+    decoded, starts, depth = _decode(line)
+    view = _Line(decoded, depth)
+    spans = [*_key_values(view), *_userinfo(view)]
+    if starts is None:
+        return spans
+    return [(starts[a], starts[b]) for a, b in spans]
 
 
 def _splice(text: str, spans: Sequence[Span]) -> str:
@@ -438,81 +481,78 @@ def _merge(spans: list[Span]) -> list[Span]:
     return merged
 
 
-def _spliced_starts(userinfo: Sequence[Span]) -> list[int]:
-    """Where each of `userinfo`'s ``REDACTED`` begins once :func:`_splice` has
-    put it in."""
-    out_starts: list[int] = []
-    shift = 0
-    for start, end in userinfo:
-        out_starts.append(start + shift)
-        shift += len(REDACTED) - (end - start)
-    return out_starts
-
-
-def _source_span(span: Span, userinfo: Sequence[Span], out_starts: Sequence[int]) -> Span:
-    """`span`, found in the text `userinfo` was spliced out of, as a span of
-    the text before the splice; `out_starts` is :func:`_spliced_starts` of
-    `userinfo`. An end inside a ``REDACTED`` widens to the whole of the
-    userinfo it replaced."""
-
-    def back(p: int, *, is_end: bool) -> int:
-        i = (bisect.bisect_left if is_end else bisect.bisect_right)(out_starts, p) - 1
-        if i < 0:
-            return p
-        start, end = userinfo[i]
-        inside_end = out_starts[i] + len(REDACTED)
-        if (p <= inside_end) if is_end else (p < inside_end):
-            return end if is_end else start
-        return p - inside_end + end
-
-    return back(span[0], is_end=False), back(span[1], is_end=True)
-
-
 def redact_secrets(text: str) -> str:
-    """`text` with every recognized secret value reduced to ``REDACTED`` —
-    `token=VALUE`, `password: VALUE`, `secret=VALUE`, `api_key=VALUE`,
-    `passwd=VALUE`, `passphrase=VALUE`, `passcode=VALUE`, `loginpas(s)=VALUE`,
-    `pwd=VALUE`, `jwt=VALUE`, `credential(s)=VALUE`,
-    `key=VALUE`, `sig=VALUE`, `signature=VALUE`, `hmac=VALUE`, `pass=VALUE`,
-    `auth=VALUE` (`=` or `:`, and the first eleven
-    with any prefix, so `viewer_token` and `client_secret` match),
-    `Bearer VALUE`, and the userinfo of a URL (`https://user:pass@host` comes
-    back as `https://REDACTED@host`) — a private media file is legitimately
-    reached that way, and FFmpeg quotes the URL it failed on into its errors.
+    """`text` with every recognized secret reduced to ``REDACTED``:
 
-    The short names take a prefix only when a `_` or `-` separates it, so
-    `signing_key=` is covered and `sortkey=` and `bypass=` are left alone.
+    * the value of a key whose name ends in `token`, `password`, `passwd`,
+      `pass`, `passphrase`, `passcode`, `loginpas(s)`, `pwd`, `jwt`, `secret`,
+      `credential(s)` or `apikey` — glued to any prefix, so `viewer_token` and
+      `userpass` match, bar the words that end in `pass` and name nothing
+      secret (`bypass`, `highpass`) and the shell's `PWD` — or whose last
+      `_`/`-` component is `key`, `sig`, `signature`, `hmac` or `auth`, so
+      `signing_key` matches and `sortkey` does not. `=` or `:` separates them,
+      with the key quoted or not;
+    * the credential after `Bearer`, and after any scheme in an
+      `Authorization:` value (`Basic`, `token`, …);
+    * the userinfo of a URL (`https://user:pass@host` comes back as
+      `https://REDACTED@host`) — a private media file is legitimately reached
+      that way, and FFmpeg quotes the URL it failed on into its errors.
 
-    An unquoted value ends at whitespace, `&`, a comma, a quote, or a closing
-    brace. A name inside a URL-encoded value (`%26sig%3DVALUE`,
-    `%7Ehmac%3DVALUE`) is matched too, and its value also ends at `%26`; so
-    is one encoded twice (`%2526sig%253DVALUE`), whose value also ends at
-    `%2526` or `%26`, and so on for each further level. `%3A` and an encoded quote are read as their raw
-    spellings are, so `%22token%22%3AVALUE` is covered. A
-    quoted one — `'`, `"`, `'''` or `\"\"\"` — runs to the matching
-    quote that no backslash escapes, or to the end of the line, whichever comes
-    first: a value written across several lines is masked only as far as its
-    first newline, and one whose opening delimiter ends the line has nothing on
-    that line to mask.
+    Every shape is read after percent-decoding, so `%26sig%3DVALUE` and
+    `Bearer%20VALUE` are covered at any depth of encoding. An unquoted value
+    ends at whitespace, `&` or a comma no deeper than its separator, or at a
+    quote or `}` that no letter or digit follows. A quoted one — `'`, `"`,
+    `'''` or `\"\"\"`, perhaps `b`-prefixed or backslash-escaped — runs to the
+    matching quote that no backslash escapes and no letter or digit follows.
 
-    Masking a value means finding where it starts and ends, which a malformed
-    line does not offer — :func:`redact_source_line` is for the caller quoting
-    one of those.
+    Nothing crosses a line break: a value written across several lines is
+    masked only as far as its first one. Masking a value means finding where it
+    starts and ends, which a malformed line does not offer —
+    :func:`redact_source_line` is for the caller quoting one of those."""
+    spans: list[Span] = []
+    start = 0
+    for brk in [*_LINE_BREAK.finditer(text), None]:
+        end = len(text) if brk is None else brk.start()
+        if end > start:
+            spans += [(a + start, b + start) for a, b in _line_spans(text[start:end])]
+        start = end + 1
+    return _splice(text, _merge(spans)) if spans else text
 
-    The userinfo rule and the name rule are each applied to `text` as given,
-    and a character either one would mask is masked. Running one over the
-    other's output leaks: no quote bounds the userinfo, so on a whitespace-free
-    run such as `{"url":"u64://host","dma_password":"hunt@er2"}` it reaches
-    from one string into the next, swallows the key name, and the `er2` past
-    its `@` was left with nothing to name it a secret. The name rule is also
-    run over the userinfo-masked text, since a quote inside the userinfo can
-    end a value early that the masked text lets run on."""
-    userinfo = [(m.start() + 3, m.end() - 1) for m in _INLINE_URL_USERINFO.finditer(text)]
-    spans = userinfo + _value_spans(text)
-    if userinfo:
-        masked, out_starts = _splice(text, userinfo), _spliced_starts(userinfo)
-        spans += [_source_span(span, userinfo, out_starts) for span in _value_spans(masked)]
-    return _splice(text, _merge(spans))
+
+_TRIPLE = ('"""', "'''")
+
+#: `scheme://` followed by anything up to an `@` that is still inside the
+#: netloc, for a line a parser *rejected*. Deliberately not `urlsplit`: such a
+#: line may hold no parseable URL at all, and the point is to spot the *shape*
+#: of userinfo without needing the line to be well formed. The netloc ends at
+#: the first `/`, `?` or `#`, so those bound the search and an `@` later in a
+#: path or query is not userinfo.
+#:
+#: A quote does not bound it, of either kind. RFC 3986 allows a `'` unencoded
+#: in userinfo, and `file = 'https://kelly:it's@cdn/a.mp4'` is a literal string
+#: that the `'` ends early, so the parser rejects exactly that line and it
+#: comes here. A `"` is the same shape in a basic string —
+#: `file = "https://kelly:it"s@cdn/a.mp4"`, or `it\"s` escaped on a line
+#: refused for something else — and a password does not have to be a legal URL
+#: to be a password. The cost is `x = ["tr://COM3", "me@host"]` cut at the
+#: scheme on a line the parser refused for some other reason.
+#:
+#: Unlike :func:`_userinfo`, whitespace does *not* bound it. A passphrase with
+#: a space in it is precisely the malformed shape this runs on, and
+#: `u64://kelly:my pass@host` would otherwise come back whole.
+_URL_USERINFO = re.compile(r"://(?<=[a-z0-9+.\-]://)[^/?#]*@", re.IGNORECASE)
+
+#: The characters a URL scheme is spelled with (RFC 3986 §3.1).
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
+
+
+def _scheme_start(line: str, separator: int) -> int:
+    """The index in `line` where the scheme ending at the `://` found at
+    `separator` begins."""
+    i = separator
+    while i > 0 and line[i - 1] in _SCHEME_CHARS:
+        i -= 1
+    return i
 
 
 def _skip_quoted(line: str, start: int) -> int:
@@ -589,10 +629,11 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     Three rules replace that test, and all of them hold whatever the line is
     malformed into:
 
-    * A line naming a secret-shaped key keeps the name and loses everything
-      after it. The name is the whole diagnostic — it says which setting the
-      parser choked on — and no source text survives past it to be read.
-      Everything, that is, unless the userinfo rule below cuts earlier.
+    * A line naming a secret — any name :func:`redact_secrets` keys on, or an
+      auth scheme — keeps the name and loses everything after it. The name is
+      the whole diagnostic — it says which setting the parser choked on — and
+      no source text survives past it to be read. Everything, that is, unless
+      the userinfo rule below cuts earlier.
     * A line reached while a value is still open is dropped whole, since it may
       be that value. Applied to any open value — a `'''` or `\"\"\"` string, an
       array, an inline table — and secret-shaped or not: which key a
@@ -614,7 +655,7 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     if _value_open(lines, lineno):
         return REDACTED, False
     line = lines[lineno - 1]
-    key = _SECRET_KEY_RE.search(line)
+    key = next(_secret_names(line), None)
     userinfo = _URL_USERINFO.search(line)
     cut = _scheme_start(line, userinfo.start()) if userinfo is not None else None
     if cut is not None and (key is None or cut < key.end()):
