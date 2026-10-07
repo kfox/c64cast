@@ -47,7 +47,8 @@ class DacCurve:
 
     ``measured`` is the ``(socket, detected)`` of the calibrated entry whose
     table it read — the one ``table`` holds, or the one ``"auto"`` declined —
-    and None when it read no table or the entry names no socket and chip. A
+    and None when it read no table or the entry names no chip. Its socket is
+    None for a ``"default"`` entry, measured without isolating one. A
     consumer that needs the chip reads it here rather than from the file again:
     each read of the file makes its own socket-map read, and one that fails
     falls back to the file's recorded mapping, which can name the other
