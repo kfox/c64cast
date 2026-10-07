@@ -188,7 +188,12 @@ class ScriptSyntaxTest(unittest.TestCase):
                 check=False,
             )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        errors = json.loads(proc.stdout)
+        try:
+            errors = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            self.fail(
+                f"node printed no result list\nstdout: {proc.stdout!r}\nstderr: {proc.stderr}"
+            )
         self.assertEqual(len(errors), len(scripts), proc.stdout)
 
         for script, error in zip(scripts, errors, strict=True):
