@@ -261,6 +261,16 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
         self.assertIsNone(dac_curve_resolve.provision_calibrated_chip_model(api, resolved))
         self.assertEqual(api.config_puts, [])
 
+    def test_a_labeled_default_entry_still_states_the_one_sid_assumption(self):
+        # The probe names the chip answering $D400, not whether a second one is
+        # mirrored there, so the blend caveat holds for a labeled entry too.
+        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+        cfg.hardware.backend = "teensyrom"
+        with self.assertLogs("c64cast.audio.dac_calibration_store", "INFO") as logs:
+            table = dac_calibration_store.load_calibrated_table(cfg, be=FakeAPI())
+        self.assertEqual(table, bytes(range(256)))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
+
     def test_the_report_names_the_opt_in(self):
         result = CalibrationResult(
             sidtable=[0] * 256,

@@ -569,7 +569,7 @@ def _measure_one(
 def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tuple[int, str]]:
     """Which physical SID sockets report a detected chip, as (socket, type)
     pairs — empty on detection failure, which falls back to the single
-    unlabeled measurement."""
+    "default" measurement."""
     out: list[tuple[int, str]] = []
     try:
         s1, s2 = detect_sockets(be)

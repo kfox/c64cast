@@ -358,15 +358,15 @@ def _table_of(
         return None
     if (
         entry_key == "default"
-        and isinstance(entry, dict)
-        and entry.get("detected") is None
-        # Only on a link that *cannot* establish the identity; a backend with
-        # the socket map either resolved it or knowingly declined to.
+        # A chip label recorded by the $D400 ARMSID probe does not rule out a
+        # second chip mirrored there, so a labeled entry is no exception.
+        # Only on a link that *cannot* isolate a socket; a backend with the
+        # socket map either resolved it or knowingly declined to.
         and be is not None
         and not getattr(be.profile, "supports_sid_config", False)
     ):
         log.info(
-            "audio: this calibration was measured without identifying the SID at $D400 "
+            "audio: this calibration was measured without isolating a SID socket at $D400 "
             "(the %s link has no SID config query), so it assumes one SID. If this "
             "machine has a second SID or address mirroring, re-measure over a link "
             "that can isolate a socket, or set [audio].dac_curve explicitly.",
