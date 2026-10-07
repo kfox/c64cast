@@ -1475,6 +1475,33 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         self.assertIn("'calibrated'", diags[0].message)
         self.assertNotIn("no calibration applies", diags[0].message)
 
+    def test_auto_under_digi_boost_does_not_offer_the_armsid_table(self):
+        # digi_boost holds auto on linear before any table is read, and
+        # 'calibrated' is mutually exclusive with it, so the opt-in hint would
+        # send the user to a config that fails validation.
+        cfg = self._cfg("auto")
+        cfg.audio.digi_boost = True
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "cal.json"
+        path.write_text(
+            '{"schema": 2, "d400_socket": 1, "sids": {"1": '
+            f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
+        )
+        cfg.audio.dac_calibration_profile = str(path)
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
+        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D400"}
+        api.config_store["SID Sockets Configuration"] = {
+            "SID Socket 1": "Enabled",
+            "SID Detected Socket 1": "ARMSID",
+        }
+        diags = doctor._probe_dac_calibration_status("sys", cfg, api)
+        self.assertEqual(len(diags), 1)
+        self.assertNotIn("'calibrated'", diags[0].message)
+
     def test_calibrated_missing_is_error_with_hint(self):
         cfg = self._cfg("calibrated")
         api = FakeAPI()

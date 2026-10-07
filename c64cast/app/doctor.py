@@ -2437,7 +2437,7 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
         ]
     key = dac_calibration_store.resolve_calibration_key(cfg, api)  # type: ignore[arg-type]
     declined = None
-    if table is None and curve == "auto":
+    if table is None and curve == "auto" and not cfg.audio.digi_boost:
         found, measured = dac_calibration_store.load_calibrated_table_and_chip(
             cfg,
             be=api,  # type: ignore[arg-type]
