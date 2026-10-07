@@ -2533,7 +2533,7 @@ class RemoteSeekBoundTest(unittest.TestCase):
         outcome = self._bounded(
             lambda: AVFileSource(url, target_sample_rate=8000, scan_audio_peak=False, start_s=3.0)
         )
-        self.assertIsInstance(outcome, Exception)
+        self.assertIsInstance(outcome, RemoteSeekStalled)
 
     def test_an_abandoned_seek_returns_while_the_server_holds_the_socket(self):
         # Nothing interrupts the seek a caller gave up on, so only FFmpeg's
@@ -2554,22 +2554,30 @@ class RemoteSeekBoundTest(unittest.TestCase):
         self.addCleanup(src.close)
         src.path = self._server(serve=1)
         src.start_s = 3.0
-        with self.assertLogs("c64cast.video.video", level="WARNING"):
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
             self.assertEqual(self._bounded(src._scan_audio_peak), 0)
+        # A read that fails after the seek also falls back to unity gain, but
+        # as "failed": only the seek's own bound logs "skipped".
+        self.assertTrue(any("peak scan skipped" in m for m in logs.output), logs.output)
 
     def test_a_stalled_color_prescan_seek_skips_the_scan(self):
         url = self._server(serve=1)
-        with self.assertLogs("c64cast.video.video", level="WARNING"):
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
             self.assertIs(self._bounded(lambda: scan_video_samples(url, [_RecordingAcc()])), False)
+        # The sequential fallback's reopen fails against the same server, so
+        # only the message tells the seek's bound from that open's.
+        self.assertTrue(any("did not answer a seek" in m for m in logs.output), logs.output)
 
     def test_a_stalled_transport_seek_ends_the_source(self):
         src = AVFileSource(self._server(serve=1), target_sample_rate=8000, scan_audio_peak=False)
         self.addCleanup(src.close)
-        with self.assertLogs("c64cast.video.video", level="ERROR"):
+        with self.assertLogs("c64cast.video.video", level="ERROR") as logs:
             src.start(audio_push=None)
             self.assertTrue(_wait_until(lambda: src._eof), "demuxer never reached EOF")
             src.request_seek(3.0)
             self.assertTrue(_wait_until(lambda: src.finished), "a stalled seek hung the source")
+        # A read that stalls after the seek ends the source too, as a crash.
+        self.assertTrue(any("ending playback" in m for m in logs.output), logs.output)
 
     def test_close_during_a_transport_seek_leaves_the_container_to_it(self):
         # close() joins the demux thread for 1 s, well inside the read bound,
