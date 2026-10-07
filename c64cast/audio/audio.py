@@ -2846,7 +2846,10 @@ class AudioStreamer:
             if lead < 0:
                 return consumed, 0.0
             content_lead = max(0.0, lead - self._unplayed_pad(lead))
-            played = self._played_since_landing(lead)
+            # Capped rather than trusted to come out under: the gap's content
+            # counts from the fractional front and the played span from a whole
+            # byte, so with pad across the front they differ by a few ULPs.
+            played = min(self._played_since_landing(lead), content_lead)
             heard = max(self._position_floor, consumed - content_lead + played)
             self._position_floor = heard
         return consumed, heard

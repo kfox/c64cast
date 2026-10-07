@@ -3360,6 +3360,29 @@ class LifecycleTest(unittest.TestCase):
                 with s._ring_pad_lock:
                     self.assertEqual(s._played_since_landing(4095.7), 0.0)
 
+    def test_the_clock_between_landings_stops_at_the_landed_content(self):
+        # With pad across a fractional gap's front, the content in the gap is
+        # counted from the fractional front and the content played since the
+        # landing from a whole byte, and they came out a few ULPs apart: once
+        # the interpolation reached the last content byte, the clock read
+        # past everything landed.
+        clock = FrozenClock(100.0, "monotonic")
+        s = _make(sample_rate=12000)
+        s.chunk_size = 1024
+        with mock.patch.object(audio_mod, "time", clock):
+            s._pushed_count += 64
+            s._note_ring_landed(s._worker_generation, 64, 0)
+            s.servo.reset_for_consumer_start(64)
+            s._mark_ring_clock()
+            s._pushed_count += 1024 - 600
+            s._note_ring_landed(s._worker_generation, 1024, 600)
+            s._pushed_count += 300
+            s._note_ring_landed(s._worker_generation, 300, 0)
+            s.servo.ring_lead = 301.4
+            clock.advance(1.0)
+            consumed, heard = s._host_clock_bytes()
+        self.assertEqual(heard, consumed)
+
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between
         # two reads; the clock holds rather than reporting less than it did.
