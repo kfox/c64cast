@@ -358,7 +358,8 @@ class AudioStreamer:
         # it even though no pump armed (_unwind_pump_install).
         self._irq_vector_restore_owed = False
         # A CIA #1 unmask that never confirmed after a masked $C100 write: the
-        # next pump arm or stop() owes it (_cia1_unmask_step).
+        # next dispatcher entry upload, pump arm or stop() owes it
+        # (_cia1_unmask_step).
         self._cia1_unmask_owed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
@@ -2038,7 +2039,9 @@ class AudioStreamer:
     def _cia1_unmask_step(self) -> tuple[str, Callable[[], None]]:
         """The confirmed teardown step that unmasks CIA #1 Timer A; the debt
         (`_cia1_unmask_owed`) clears only once it held, and the next
-        `_arm_installed_pump` or `_disarm_reu_pump` writes it again until then.
+        `_arm_installed_pump` or `_disarm_reu_pump` writes it again until then
+        (a dispatcher's confirmed entry upload in `_install_tracked_pump`
+        unmasks too, and pays it).
         A mask left in place stops the kernal's jiffy IRQ outright, SCNKEY
         included, and a pump armed under it never runs."""
 
