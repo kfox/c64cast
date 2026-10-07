@@ -357,6 +357,9 @@ class AudioStreamer:
         # A failed install's $0314 restore that never confirmed: stop() owes
         # it even though no pump armed (_unwind_pump_install).
         self._irq_vector_restore_owed = False
+        # A CIA #1 unmask that never confirmed after a masked $C100 write:
+        # stop() owes it, since no later write on these paths unmasks CIA #1.
+        self._cia1_unmask_owed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
         # The matched CIA #1 pump latch this run derived; 0 before any pump
@@ -2009,29 +2012,37 @@ class AudioStreamer:
         dispatcher's entry is (an IRQ may be running the entry), then CIA #1
         unmasked; each confirmed, and one that never confirms is logged."""
         run_teardown_steps(
-            log,
-            type(self).__name__,
-            [
-                (
-                    "pump entry stub",
-                    lambda: self._require_confirmed(
-                        "pump entry stub",
-                        lambda: self._write_pump_entry(
-                            REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True
-                        ),
-                    ),
-                ),
-                (
-                    "CIA #1 unmask",
-                    lambda: self._require_confirmed(
-                        "CIA #1 unmask",
-                        lambda: self.api.write_memory(
-                            f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
-                        ),
-                    ),
-                ),
-            ],
+            log, type(self).__name__, [self._entry_stub_step(), self._cia1_unmask_step()]
         )
+
+    def _entry_stub_step(self) -> tuple[str, Callable[[], None]]:
+        """The confirmed teardown step that puts the JMP $EA31 stub back at
+        $C100 under a CIA #1 mask. The mask may land without the unmask that
+        follows it, so the unmask is owed until `_cia1_unmask_step` holds."""
+
+        def stub() -> None:
+            self._cia1_unmask_owed = True
+            self._require_confirmed(
+                "pump entry stub restore",
+                lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
+            )
+
+        return ("pump entry stub restore", stub)
+
+    def _cia1_unmask_step(self) -> tuple[str, Callable[[], None]]:
+        """The confirmed teardown step that unmasks CIA #1 Timer A; the debt
+        (`_cia1_unmask_owed`) clears only once it held, and `_disarm_reu_pump`
+        writes it again until then. A mask left in place stops the kernal's
+        jiffy IRQ outright, SCNKEY included, and nothing else here unmasks."""
+
+        def unmask() -> None:
+            self._require_confirmed(
+                "CIA #1 unmask",
+                lambda: self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"),
+            )
+            self._cia1_unmask_owed = False
+
+        return ("CIA #1 unmask", unmask)
 
     def _write_confirmed(self, write: Callable[[], None]) -> bool:
         """``delivery.write_confirmed`` at TRACKED_PUMP_INSTALL_TRIES tries."""
@@ -2066,21 +2077,9 @@ class AudioStreamer:
             )
         ]
         if dispatcher_owns_irq and entry_may_be_up:
-            steps.append(
-                confirmed(
-                    "pump entry stub restore",
-                    lambda: self._write_pump_entry(REU_PUMP_HANDLER_STUB, dispatcher_owns_irq=True),
-                )
-            )
+            steps.append(self._entry_stub_step())
         if dispatcher_owns_irq:
-            steps.append(
-                confirmed(
-                    "CIA #1 unmask",
-                    lambda: self.api.write_memory(
-                        f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
-                    ),
-                )
-            )
+            steps.append(self._cia1_unmask_step())
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _abandon_pump_bring_up(self, err: PumpInstallError) -> None:
@@ -2791,25 +2790,41 @@ class AudioStreamer:
         The vector restore is confirmed like the unwind's: this is the last
         write that can take the pump off $0314, and one lost on a lossy link
         leaves it running for every scene after. One that never confirms stays
-        owed, so the shared streamer's next stop() writes it again."""
-        if not (self._reu_pump_armed or self._irq_vector_restore_owed):
+        owed, so the shared streamer's next stop() writes it again.
+
+        A CIA #1 unmask that never confirmed after a masked $C100 write
+        (`_cia1_unmask_owed`) is written again here the same way, once no
+        vector restore is owed: a restore that fails has just written the
+        stub and its unmask itself."""
+        restore = self._reu_pump_armed or self._irq_vector_restore_owed
+        if not (restore or self._cia1_unmask_owed):
             return
         # Retire the mic ring governor's latch writes first; one already in
         # flight finishes before this returns, so it lands ahead of the
         # restore below rather than after it.
         with self._pump_trim_lock:
             self._pump_trim_token += 1
-        # Cleared by the confirmed restore only once it held.
-        self._irq_vector_restore_owed = True
-        run_teardown_steps(
-            log,
-            type(self).__name__,
-            [
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if restore:
+            # Cleared by the confirmed restore only once it held.
+            self._irq_vector_restore_owed = True
+            steps += [
                 ("IRQ vector restore", self._restore_irq_vector_confirmed),
                 ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
-                ("REU pump disarm flush", self.api.flush),
-            ],
-        )
+            ]
+        unmask_label, unmask = self._cia1_unmask_step()
+        steps += [
+            (
+                unmask_label,
+                lambda: (
+                    unmask()
+                    if self._cia1_unmask_owed and not self._irq_vector_restore_owed
+                    else None
+                ),
+            ),
+            ("REU pump disarm flush", self.api.flush),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
         self._reu_pump_armed = False
 
     def _write_cia1_timer_a_latch(self, latch: int) -> None:
@@ -3182,10 +3197,11 @@ class AudioStreamer:
         # check is what drops a blob from a producer this clear just released,
         # and the drain at the bottom only catches one that beats it there.
         self._flush_epoch += 1
-        # No-op if the pump was never armed and no $0314 restore is owed. The
-        # video pumps' governor lives in the C64-side handler, so disarming the
-        # IRQ vector stops it; the mic pump's host-side MicRingGovernor is
-        # fenced off by the disarm's trim-token bump.
+        # No-op if the pump was never armed and no $0314 restore or CIA #1
+        # unmask is owed. The video pumps' governor lives in the C64-side
+        # handler, so disarming the IRQ vector stops it; the mic pump's
+        # host-side MicRingGovernor is fenced off by the disarm's trim-token
+        # bump.
         self._disarm_reu_pump()
         run_teardown_steps(log, type(self).__name__, self._hardware_teardown_steps())
         self.api.note_nmi_consumer(False)

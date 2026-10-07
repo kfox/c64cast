@@ -1680,6 +1680,14 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
         self.assertEqual(fake.regs["0314"], self.PUMP_IRQ)
         self.assertEqual(fake.mem_files["C100"], REU_PUMP_HANDLER_STUB)
         self.assertEqual(fake.memories[f"{CIA1.ICR:04X}"], f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+        # Under a mask: an IRQ may be fetching the entry the stub replaces.
+        stub = max(
+            i
+            for i, o in enumerate(fake.ops)
+            if o == ("write_memory_file", "C100", REU_PUMP_HANDLER_STUB)
+        )
+        icr = [o[2] for o in fake.ops[:stub] if o[:2] == ("write_memory", f"{CIA1.ICR:04X}")]
+        self.assertEqual(icr[-1], f"{CIA1.ICR_DISABLE_ALL:02X}")
 
     def test_an_unwind_whose_vector_restore_never_lands_stubs_the_entry(self):
         s = _new_streamer()
@@ -1712,6 +1720,34 @@ class StagedPumpInstallDeliveryTest(unittest.TestCase):
             s.stop()
         self.assertTrue(s._irq_vector_restore_owed)
         self._assert_entry_stubbed(fake)
+
+    def test_an_unmask_lost_after_the_entry_stub_is_owed_to_stop(self):
+        # The stub's mask lands and every unmask after it is lost, so CIA #1
+        # is left masked: no kernal jiffy IRQ at all. The next stop() lands
+        # the vector restore, which alone would not unmask, so the unmask is
+        # owed beside it.
+        s, fake = self._start(0x0000, 0)
+        lose_writes_to(fake, VECTORS.IRQ, self.TRIES)
+        icr, unmask = f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"
+        real_memory = fake.write_memory
+        lost_unmasks = [2 * self.TRIES]
+
+        def write_memory(addr, data_hex):
+            if str(addr).upper() == icr and data_hex == unmask and lost_unmasks[0]:
+                lost_unmasks[0] -= 1
+                fake.delivery_epoch += 1
+                return
+            real_memory(addr, data_hex)
+
+        fake.write_memory = write_memory  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s.stop()
+        self.assertEqual(fake.memories[icr], f"{CIA1.ICR_DISABLE_ALL:02X}")
+        self.assertTrue(s._cia1_unmask_owed)
+        s.stop()
+        self.assertEqual(fake.regs["0314"], self.KERNAL_IRQ)
+        self.assertEqual(fake.memories[icr], unmask)
+        self.assertFalse(s._cia1_unmask_owed)
 
     def test_a_lost_vector_restore_at_stop_is_resent(self):
         # stop()'s restore is the last write that can take an armed pump off
