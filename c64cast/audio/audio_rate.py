@@ -34,6 +34,7 @@ from c64cast.hw.c64 import (
     CIA_TIMER_LATCH_MAX,
     NMI_CEILING_LATCH,
     VECTORS,
+    clamp_nmi_latch,
     cpu_clock,
     nearest_latch,
     nmi_latch_for_rate,
@@ -123,7 +124,7 @@ class NmiTimer:
 
     def clamp_latch(self, latch: int) -> int:
         """`latch` held to what the handler budget and the 16-bit timer allow."""
-        return max(self.ceiling_latch(), min(CIA_TIMER_LATCH_MAX, latch))
+        return clamp_nmi_latch(latch, ceiling=self.ceiling_latch())
 
     @property
     def effective_rate(self) -> float:

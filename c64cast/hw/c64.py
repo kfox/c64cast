@@ -498,13 +498,23 @@ NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY
 NMI_CEILING_LATCH: Final = max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
 
 
+def clamp_nmi_latch(latch: int, *, ceiling: int = NMI_CEILING_LATCH) -> int:
+    """`latch` held to [``ceiling``, ``CIA_TIMER_LATCH_MAX``]: the handler
+    budget and the 16-bit Timer A."""
+    return max(ceiling, min(CIA_TIMER_LATCH_MAX, latch))
+
+
 def nmi_latch_for_rate(rate_hz: float, system: str, *, ceiling: int = NMI_CEILING_LATCH) -> int:
     """The CIA #2 Timer A latch the $D418 DAC's NMI arms for ``rate_hz``:
     :func:`nearest_latch` held to [``ceiling``, ``CIA_TIMER_LATCH_MAX``].
 
     ``NmiTimer.nominal_latch`` is this. A probe of rates past the handler
-    budget passes ``ceiling=1`` to arm the latch it asked for."""
-    return max(ceiling, min(CIA_TIMER_LATCH_MAX, nearest_latch(rate_hz, system)))
+    budget passes ``ceiling=1`` to arm the latch it asked for. Raises
+    ValueError for a rate that is not positive, which no clamp could make
+    meaningful."""
+    if not rate_hz > 0:
+        raise ValueError(f"rate must be positive, got {rate_hz}")
+    return clamp_nmi_latch(nearest_latch(rate_hz, system), ceiling=ceiling)
 
 
 # A host DMAWRITE halts the 6510 for the whole transfer, and CIA #2 is

@@ -52,7 +52,7 @@ from c64cast.audio.audio_handlers import (
 from c64cast.audio.dac_curves import resolve_dac_curve
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+from c64cast.hw.c64 import CIA2, nmi_latch_for_rate
 from c64cast.sid.sid_hw_config import restore_sid_config, snapshot_sid_config
 
 # Tone cycles per ring: an integer, so the ring tiles seamlessly and the NMI
@@ -138,8 +138,7 @@ def main() -> int:
         )
         st.running = True
         st._upload_nmi_and_buffers()  # installs the Mahoney SID env
-        clock = CLOCK_NTSC if args.system == "NTSC" else CLOCK_PAL
-        latch = max(1, round(clock / dsr.NMI_RATE) - 1)
+        latch = nmi_latch_for_rate(dsr.NMI_RATE, args.system)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
