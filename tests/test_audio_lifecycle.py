@@ -2825,9 +2825,16 @@ class EncodeBackpressureTest(unittest.TestCase):
         def push() -> None:
             out["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
 
+        def release_and_join() -> None:
+            # A test that fails before its flush or stop would otherwise leave
+            # the push polling out the patched 30 s wait.
+            with s._count_lock:
+                s._flush_epoch += 1
+            t.join(2.0)
+
         t = threading.Thread(target=push)
         t.start()
-        self.addCleanup(t.join, 2.0)
+        self.addCleanup(release_and_join)
         deadline = time.monotonic() + 2.0
         while s._queued_samples != 132 and time.monotonic() < deadline:
             time.sleep(0.001)
