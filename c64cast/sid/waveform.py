@@ -405,6 +405,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # prepare_next() already picked+loaded this iteration's tune, so setup()
         # skips the re-pick. See VideoScene._prepared.
         self._prepared = False
+        # Whether the loaded tune is a pick a re-run setup() may keep; a failed
+        # re-pick leaves the previous tune loaded, which is rolled again.
+        self._pick_held = True
 
         # Default target_fps: HALF the video rate, and an exact submultiple of it
         # so the wallclock phase-lock stays clean. It halves the per-frame DMA
@@ -792,11 +795,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         basename fallback) to reflect it. Returns False if every candidate
         was rejected / the directory is now empty."""
         self._adopt_live_duration()
+        self._pick_held = False
         try:
             self._pick_and_load_sid()
         except ValueError as e:
             log.error("waveform: %s", e)
             return False
+        self._pick_held = True
         self._set_derived_duration(float(self._resolve_duration_for_current_sid()))
         name = self.header.name.strip() or os.path.splitext(os.path.basename(self._sid_file))[0]
         self.name = f"SID: {name} #{self.song}"
@@ -809,6 +814,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         loaded twice."""
         if len(self._candidates) > 1 and self._repick_sid():
             self._prepared = True
+
+    def keep_pick_for_resetup(self) -> None:
+        self._prepared = self._pick_held
 
     def setup(self):
         self.is_done = False

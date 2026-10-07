@@ -417,6 +417,12 @@ class Scene:
         content (and so the pick isn't deferred to setup(), which runs
         after the card is already on screen). Default: no-op."""
 
+    def keep_pick_for_resetup(self) -> None:
+        """Called by the Playlist before it tears a scene down to run its
+        setup() again (a setup the link failed), so the next setup() keeps
+        the file this one picked rather than rolling a new one, which the
+        "UP NEXT" card would not have named. Default: no-op."""
+
     def setup(self) -> None:
         self.is_done = False
         self.prev_frame = None
@@ -938,6 +944,9 @@ class MediaFileMixin:
     ``MEDIA_EXTS``/``MEDIA_LABEL`` and provides the annotated instance
     attrs."""
 
+    # Whether the last pick succeeded; a failed one is rolled again.
+    _pick_held: bool = False
+
     MEDIA_EXTS: ClassVar[tuple[str, ...]] = ()
     MEDIA_LABEL: ClassVar[str] = ""
 
@@ -972,6 +981,7 @@ class MediaFileMixin:
         refresh self.name to the picked file (extension stripped) so the
         interstitial card + heartbeat log show it. Returns False if the spec
         no longer resolves to anything."""
+        self._pick_held = False
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
@@ -983,6 +993,7 @@ class MediaFileMixin:
             )
             return False
         self.filepath = random.choice(candidates)
+        self._pick_held = True
         self.name = f"{self.MEDIA_LABEL.title()}: {self._display_name_for(self.filepath)}"
         if len(candidates) > 1:
             log.info(
@@ -999,6 +1010,9 @@ class MediaFileMixin:
         pick. setup() consumes this pick (skips re-rolling)."""
         if self._pick_filepath():
             self._prepared = True
+
+    def keep_pick_for_resetup(self) -> None:
+        self._prepared = self._pick_held
 
 
 class SlideshowScene(MediaFileMixin, Scene):
@@ -1156,6 +1170,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         """Reset the shuffle bag and load the opening slide (updating
         self.name to it, extension stripped). Returns False if the file
         spec no longer resolves to anything."""
+        self._pick_held = False
         self._maybe_rebuild_display_mode()
         self._shuffle_bag = []
         self._current_path = None
@@ -1166,6 +1181,7 @@ class SlideshowScene(MediaFileMixin, Scene):
             log.error("slideshow: file spec %r failed to resolve at setup: %s", self.file_spec, e)
             return False
         self._advance_image()
+        self._pick_held = self._current_img is not None
         return True
 
     def prepare_next(self) -> None:

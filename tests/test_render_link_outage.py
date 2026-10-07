@@ -7,12 +7,15 @@ pulled cable costs frames rather than the show (c64cast#583)."""
 from __future__ import annotations
 
 import logging
+import os
+import random
 import struct
+import tempfile
 import threading
 import time
 import unittest
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from test_playlist import FakeApi, FakeScene, _transition_factory
 from test_socket_dma import _IDENT_REPLY, FakeSocket
@@ -446,6 +449,7 @@ class SetupThroughOutageTest(unittest.TestCase):
         self.assertEqual(api.probes, 5, "the setup did not wait for the link")
         self.assertEqual(scene.setup_count, 2)
         self.assertEqual(scene.teardown_count, 1, "the failed setup was not torn down first")
+        self.assertEqual(scene.keep_pick_count, 1, "the retry did not keep the scene's pick")
         warnings = [line for line in logs.output if line.startswith("WARNING")]
         self.assertEqual(len(warnings), 1, logs.output)
         self.assertIn("setup of 'B'", warnings[0])
@@ -493,6 +497,130 @@ class SetupThroughOutageTest(unittest.TestCase):
         self.assertEqual(scene.setup_count, 1)
         self.assertEqual(scene.frame_count, 0, "a scene that never set up rendered a frame")
         self.assertEqual(scene.teardown_count, 1, "the run's teardown missed the scene")
+
+    def test_a_lossy_retry_waits_before_it_sets_up_again(self):
+        api = _OutageApi(down_probes=0)
+        scene = _LossySetupScene(api, lossy_setups=10_000)
+        pl = self._playlist(api, scene)
+        with (
+            patch.object(pl.stop_event, "wait", wraps=pl.stop_event.wait) as wait,
+            self.assertLogs("c64cast.app.playlist", level="WARNING"),
+        ):
+            pl.safe_setup(scene)
+        self.assertEqual(scene.setup_count, 3)
+        self.assertEqual(wait.call_count, 2, "a lossy retry ran without waiting")
+
+    def test_a_stop_before_a_lossy_retry_ends_the_setup(self):
+        api = _OutageApi(down_probes=0)
+        scene = _LossySetupScene(api, lossy_setups=10_000)
+        pl = self._playlist(api, scene)
+        pl.stop_event.set()
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            set_up = pl._setup_through_outage(scene)
+        self.assertFalse(set_up)
+        self.assertEqual((scene.setup_count, scene.teardown_count), (1, 0))
+
+
+class SetupRetryKeepsThePickTest(unittest.TestCase):
+    """A setup run again after the link cost it writes plays the file the
+    "UP NEXT" card named, not a new random pick (c64cast#609)."""
+
+    def setUp(self) -> None:
+        p = patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0)
+        p.start()
+        self.addCleanup(p.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _files(self, ext: str, n: int = 16) -> None:
+        for i in range(n):
+            open(os.path.join(self.tmp.name, f"f{i:02d}{ext}"), "wb").close()
+
+    def test_a_slideshow_set_up_again_opens_on_the_slide_the_card_named(self):
+        import cv2
+        import numpy as np
+
+        from c64cast.scenes.scenes import SlideshowScene
+
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        for i in range(16):
+            cv2.imwrite(os.path.join(self.tmp.name, f"s{i:02d}.png"), img)
+        mode = MagicMock()
+        mode.default_target_fps = None
+        scene = SlideshowScene(MagicMock(), mode, self.tmp.name)
+        random.seed(609)
+        scene.prepare_next()
+        card = scene._current_path
+        api = _OutageApi(down_probes=0)
+        real_setup = scene.setup
+        opened: list[str | None] = []
+
+        def setup_losing_the_first() -> None:
+            real_setup()
+            opened.append(scene._current_path)
+            if len(opened) == 1:
+                api.delivery_epoch += 1
+                api.stats["errors"] += 1
+
+        scene.setup = setup_losing_the_first  # type: ignore[method-assign]
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: 0.0)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            self.assertTrue(pl._setup_through_outage(scene))
+        self.assertEqual(opened, [card, card])
+
+    def test_a_video_keeps_its_pick_and_rolls_again_after_a_failed_one(self):
+        from c64cast.scenes.scenes import VideoScene
+
+        self._files(".mp4")
+        scene = VideoScene(MagicMock(), None, MagicMock(), self.tmp.name)
+        scene.prepare_next()
+        scene._prepared = False  # what setup() does with the pick
+        scene.keep_pick_for_resetup()
+        self.assertTrue(scene._prepared)
+        for name in os.listdir(self.tmp.name):
+            os.remove(os.path.join(self.tmp.name, name))
+        with self.assertLogs("c64cast.scenes.scenes", level="ERROR"):
+            self.assertFalse(scene._pick_filepath())
+        scene.keep_pick_for_resetup()
+        self.assertFalse(scene._prepared)
+
+    def test_a_sid_scene_keeps_its_tune_and_rolls_again_after_a_failed_pick(self):
+        from _fakes import bare_waveform_scene
+
+        header = MagicMock(name="hdr")
+        header.name = "Tune"
+        scene = bare_waveform_scene(
+            _candidates=["a.sid", "b.sid"],
+            _prepared=False,
+            song=1,
+            header=header,
+            _sid_file="a.sid",
+            _explicit_duration_s=None,
+        )
+        scene._adopt_live_duration = lambda: None  # type: ignore[method-assign]
+        scene._pick_and_load_sid = lambda: None  # type: ignore[method-assign]
+        scene._resolve_duration_for_current_sid = lambda: 42.0  # type: ignore[method-assign]
+        self.assertTrue(scene._repick_sid())
+        scene.keep_pick_for_resetup()
+        self.assertTrue(scene._prepared)
+
+        def no_tune_loads() -> None:
+            raise ValueError("no candidate could be loaded")
+
+        scene._prepared = False
+        scene._pick_and_load_sid = no_tune_loads  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.sid.waveform", level="ERROR"):
+            self.assertFalse(scene._repick_sid())
+        scene.keep_pick_for_resetup()
+        self.assertFalse(scene._prepared)
 
 
 class _Flaky(_Link):

@@ -66,6 +66,7 @@ class FakeScene:
         # built right after reflects the pick.
         self.prepare_renames_to = prepare_renames_to
         self.prepare_next_count = 0
+        self.keep_pick_count = 0
         # A real Scene always has one (scenes.py), and `safe_setup` re-stamps
         # the run's performance-mode gate onto it every lap.
         self.osd = OsdState()
@@ -74,6 +75,9 @@ class FakeScene:
         self.prepare_next_count += 1
         if self.prepare_renames_to is not None:
             self.name = self.prepare_renames_to
+
+    def keep_pick_for_resetup(self):
+        self.keep_pick_count += 1
 
     def setup(self):
         if self.raise_on_setup:
