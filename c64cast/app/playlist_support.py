@@ -147,12 +147,19 @@ class SceneFades:
             if pl.skip_event.is_set():
                 pl.skip_event.clear()  # satisfied by ending the fade early
                 break
+            push_start = pl.link_outage.now()
             try:
                 dm.repush_faded(pl.api, 1.0 - i / n)
             except LinkError as e:
                 # A dead link, not a defect: reported through the playlist's
                 # throttled outage log rather than as a traceback per scene end.
-                pl.link_outage.failed(f"fade-out of {scene.name!r}", e, pl.api.stats["writes"])
+                pl.link_outage.failed(
+                    f"fade-out of {scene.name!r}",
+                    e,
+                    pl.api.stats["writes"],
+                    started=push_start,
+                    frame_time=frame_time,
+                )
                 break
             except Exception:
                 pl.log.exception("fade-out push failed on %r — ending fade", scene.name)

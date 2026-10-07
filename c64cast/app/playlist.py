@@ -57,7 +57,12 @@ class RenderLinkOutage:
 
     Skipping is silent otherwise, so a link that never comes back (a
     rejected password, say) keeps saying so instead of going quiet after
-    one line."""
+    one line.
+
+    The clock and the skipped-frame count run from the start of the failing
+    work, not from its raise: the first write to a machine that has gone
+    away blocks for the whole connect timeout before it raises, and that is
+    the longest frozen stretch of a short outage."""
 
     def __init__(self, log: logging.Logger, clock: Callable[[], float] = time.monotonic) -> None:
         self._log = log
@@ -71,14 +76,30 @@ class RenderLinkOutage:
     def active(self) -> bool:
         return self._since is not None
 
-    def failed(self, where: str, error: LinkError, writes: int) -> None:
-        """Count a skipped frame. `writes` is the backend's successful-write
-        count once the failed frame is over."""
+    def now(self) -> float:
+        """This log's clock, for a caller timing the work it reports."""
+        return self._clock()
+
+    def failed(
+        self,
+        where: str,
+        error: LinkError,
+        writes: int,
+        *,
+        started: float | None = None,
+        frame_time: float = 0.0,
+    ) -> None:
+        """Count the frames the failed work cost. `writes` is the backend's
+        successful-write count once it is over; `started` is when it began on
+        `now()`'s clock (default: now), and the work is charged one frame per
+        `frame_time` it held, at least one. An outage it opens is timed from
+        `started`."""
         now = self._clock()
+        started = now if started is None else min(started, now)
         self._writes_at_failure = writes
-        self.skipped += 1
+        self.skipped += max(1, round((now - started) / frame_time)) if frame_time > 0 else 1
         if self._since is None:
-            self._since = self._last_report = now
+            self._since = self._last_report = started
             self._log.warning(
                 "%s: the link to the machine failed (%s); skipping frames until it answers",
                 where,
@@ -795,11 +816,17 @@ class Playlist:
             if self._tempo_audio_drive:
                 self._drive_tempo_from_audio(scene, t0)
 
+            render_start = self.link_outage.now()
             still_active, link_failure = self._render_scene_frame(scene, t0)
 
             stats_after = self.api.stats
             if link_failure is not None:
-                self.link_outage.failed(*link_failure, stats_after["writes"])
+                self.link_outage.failed(
+                    *link_failure,
+                    stats_after["writes"],
+                    started=render_start,
+                    frame_time=frame_time,
+                )
             else:
                 self.link_outage.frame_ok(stats_after["writes"])
             self.profiler.record_counts(

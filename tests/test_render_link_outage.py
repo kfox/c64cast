@@ -335,6 +335,39 @@ class BlankSceneEndsThroughOutageTest(unittest.TestCase):
         self.assertTrue(scene.is_done, "the dead link held the scene past its duration")
 
 
+class BlockedConnectCountsTest(unittest.TestCase):
+    """The first write to a machine that has gone away blocks for the connect
+    timeout before it raises; that stretch is part of the outage (c64cast#618)."""
+
+    def test_the_outage_is_timed_from_the_start_of_the_blocked_frame(self):
+        now = [100.0]
+
+        class BlockingScene(FakeScene):
+            def process_frame(self, current_time: float) -> bool:
+                self.frame_count += 1
+                if self.frame_count == 1:
+                    now[0] += 5.0  # the redial's connect timeout
+                    raise SocketDMAError("did not answer the last redial")
+                self.api.stats["writes"] += 1
+                return True
+
+        scene = BlockingScene("Video", frames_until_done=10_000)
+        pl = Playlist(
+            [scene],
+            FakeApi(),
+            target_fps=10.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        scene.api = pl.api  # type: ignore[attr-defined]
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: now[0])
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.run_one_frame(scene, time.time())
+            pl.run_one_frame(scene, time.time())
+        self.assertIn("link back after 5.0 s; 50 frame(s) skipped", logs.output[-1])
+
+
 class RenderLinkOutageLogTest(unittest.TestCase):
     """A long outage keeps saying so; a recovered one says how long it was."""
 
