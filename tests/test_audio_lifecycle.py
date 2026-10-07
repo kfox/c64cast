@@ -559,7 +559,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
                 self._flush_in_claim_window(claim)
 
     def _flush_in_claim_window(self, claim: int) -> None:
-        api = cast(Any, _make_worker_streamer(chunk_size=32).api)
+        api = cast(Ultimate64API, FakeAPI())
         s = _FlushDuringClaim(api, 64000, "NTSC")
         s.chunk_size = 32
         s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
