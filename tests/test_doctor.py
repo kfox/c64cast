@@ -1365,7 +1365,7 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
             '{"schema": 2, "d400_socket": 1, "sids": {"1": '
             f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
         )
-        loaded = self._loaded("auto", extra=f"dac_calibration_profile = '{path}'")
+        loaded = self._loaded("auto", extra=f"dac_calibration_profile = {ser._fmt_str(str(path))}")
         with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
             diags = doctor._validate_dac_curve_resolution(loaded)
         self.assertEqual(len(diags), 1)

@@ -29,7 +29,7 @@ from unittest import mock
 from _fakes import MachineSettingsIsolation, tmp_cwd
 
 from c64cast.app import config as cfgmod
-from c64cast.app import config_store, paths
+from c64cast.app import config_serialize, config_store, paths
 
 # Every read and patch measures against the machine-settings layer, so
 # a real settings file on the developer's machine would change what
@@ -872,7 +872,10 @@ class MediaWarningTest(StoreTestCase):
         return self.store.validate_text(text, "shows/gig.toml")["warnings"]
 
     def _video(self, spec: str) -> str:
-        return f'[audio]\nenabled = false\n\n[[scenes]]\ntype = "video"\nfile = "{spec}"\n'
+        return (
+            '[audio]\nenabled = false\n\n[[scenes]]\ntype = "video"\n'
+            f"file = {config_serialize._fmt_str(spec)}\n"
+        )
 
     def test_a_missing_file_is_reported_without_refusing_the_config(self):
         report = self.store.validate_text(self._video("/nope/missing.mp4"), "shows/gig.toml")
@@ -885,7 +888,9 @@ class MediaWarningTest(StoreTestCase):
     def test_a_file_that_is_there_says_nothing(self):
         clip = self.tmp / "clip.mp4"
         clip.write_bytes(b"")
-        self.assertEqual(self._check(self._video(str(clip))), [])
+        report = self.store.validate_text(self._video(str(clip)), "shows/gig.toml")
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(report["warnings"], [])
 
     def test_a_url_is_not_a_local_path(self):
         self.assertEqual(self._check(self._video("https://example.invalid/clip.mp4")), [])
