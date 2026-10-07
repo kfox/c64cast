@@ -1138,6 +1138,19 @@ class BringUpTeardownTest(unittest.TestCase):
         finally:
             p.stop()
 
+    def test_a_retune_after_teardown_leaves_the_kernal_latch(self):
+        # A reader abandoned by its bounded join can still deliver a 0x31 after
+        # stop() restored the kernal latch; nothing would restore it again.
+        from c64cast.hw.c64 import kernal_cia1_latch
+
+        p, api = self._player()
+        p.start(60.0)
+        p.stop()
+        p.set_frame_rate(960.0)
+        self.assertEqual(
+            api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"], _packed_latch(kernal_cia1_latch("NTSC"))
+        )
+
     def test_a_hostile_speed_message_cannot_set_an_arbitrary_rate(self):
         # frame_delta_us = 1 → 1 MHz. Unclamped this became CIA latch 1, i.e.
         # _rate 511,364 Hz: an IRQ every 2 cycles on the C64 and a permanently

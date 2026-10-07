@@ -975,15 +975,20 @@ class AsidRingPlayer:
                 self._prebuffer_target = max(
                     1, min(int(rate * self._prebuffer_seconds), self._lead_target)
                 )
-        # Takes effect at the vector swap if not armed. Pre-arm, the vector
-        # isn't hooked yet, so the handler can be rebuilt in place and its tick
-        # divider matches the real rate before it runs. `armed` came from the
-        # locked read above, so this cannot race an arm. Confirmed like the
-        # install, which this rewrite supersedes before _try_arm runs it.
-        if not write_confirmed(
-            self.api,
-            functools.partial(self._write_rate, latch, divider, rebuild_handler=not armed),
-        ):
+            if not self._installed:
+                # Teardown has already restored the kernal latch, or no player
+                # was ever installed: a latch written now nothing would put back.
+                return
+            # Written under the lock: released first, _try_arm could hook $0314
+            # between the read of `armed` and the in-place rebuild below, and a
+            # teardown could restore the kernal latch before a retry re-sent ours.
+            # Pre-arm the handler is rebuilt so its tick divider matches the real
+            # rate before it runs; confirmed like the install it supersedes.
+            confirmed = write_confirmed(
+                self.api,
+                functools.partial(self._write_rate, latch, divider, rebuild_handler=not armed),
+            )
+        if not confirmed:
             log.error(
                 "asid_player: the retune to %.1f Hz was not confirmed delivered after %d "
                 "attempts; the C64 may still run the previous rate",
