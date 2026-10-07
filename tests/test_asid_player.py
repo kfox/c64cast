@@ -841,6 +841,49 @@ class BringUpTeardownTest(unittest.TestCase):
         finally:
             p.stop()
 
+    def _lose_reu_writes(self, api: Any, times: int) -> None:
+        """The next ``times`` REU writes (-1 = every one) land nowhere and
+        move ``delivery_epoch``, as on a lossy redial."""
+        real = api.reu_write
+        left = [times]
+
+        def reu_write(offset, data):
+            if left[0]:
+                left[0] -= 1 if left[0] > 0 else 0
+                api.delivery_epoch += 1
+                return
+            real(offset, data)
+
+        api.reu_write = reu_write
+
+    def test_a_lost_ring_prefill_slice_is_sent_again(self):
+        # A ring slot the prefill missed keeps what the last session left,
+        # possibly at another slot size, which misaligns the player's reads.
+        p, api = self._player(prebuffer_seconds=0.0)
+        self._lose_reu_writes(api, times=1)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        try:
+            total = ap.RING_SLOTS * p.slot_size
+            landed = sum(len(d) for o, d in api.socket_dma.reuwrites if o < ap.RING_BASE + total)
+            self.assertGreaterEqual(landed, total)
+            self.assertTrue(p._armed)
+        finally:
+            p.stop()
+
+    def test_a_ring_prefill_that_never_lands_keeps_the_player_out(self):
+        p, api = self._player(prebuffer_seconds=0.0)
+        self._lose_reu_writes(api, times=-1)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        with self.assertLogs("c64cast.sid.asid_player", "ERROR"):
+            p.start(60.0)
+        try:
+            self.assertNotIn(f"{ap.HANDLER_ADDR:04X}", api.mem_files)
+            self.assertNotIn("0314", api.regs)
+            self.assertFalse(p._armed)
+        finally:
+            p.stop()
+
     def test_stop_restores_vector_and_latch(self):
         # The latch half is the one guard on a CHANGELOG-recorded regression:
         # writing PAL's $4025 back on an NTSC machine ran the jiffy clock ~3.8%

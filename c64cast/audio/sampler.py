@@ -31,6 +31,7 @@ import numpy as np
 from c64cast._pollthread import PollThread
 from c64cast.hw.backend import ULTIMATE_PROFILE, HardwareProfile
 from c64cast.hw.c64 import ULTIMATE_AUDIO
+from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
@@ -672,7 +673,7 @@ class UltimateAudioSampler:
         head = min(len(prebuf), self._lead_target)
         with self._io_lock:
             if head:
-                self._write_wrapped(0, prebuf[:head])
+                self._confirm("prebuffer write", lambda: self._write_wrapped(0, prebuf[:head]))
             self._written = head
             self._content_pos = head
         if len(prebuf) > head:
@@ -719,10 +720,26 @@ class UltimateAudioSampler:
 
     def _prefill_neutral(self) -> None:
         block = self._neutral_unit * (REU_WRITE_SLICE // self.bps)
-        for off in range(0, self.ring_size, len(block)):
-            n = min(len(block), self.ring_size - off)
-            self.api.reu_write(self.ring_base + off, block[:n])
-        self.api.flush()
+
+        def prefill() -> None:
+            for off in range(0, self.ring_size, len(block)):
+                n = min(len(block), self.ring_size - off)
+                self.api.reu_write(self.ring_base + off, block[:n])
+
+        self._confirm("ring prefill", prefill)
+
+    def _confirm(self, what: str, write: Callable[[], None]) -> None:
+        """``write``, confirmed delivered (``delivery.write_confirmed``). One
+        that never confirms is logged and playback goes on: the channel reads
+        whatever the REU held there until the writer passes it, which on a
+        reused ring is the previous scene's audio."""
+        if not write_confirmed(self.api, write):
+            log.warning(
+                "sampler: the %s was not confirmed delivered after %d attempts; "
+                "stale REU audio may play until the writer reaches it",
+                what,
+                CONFIRM_TRIES,
+            )
 
     def _collect_prebuffer(self, want_bytes: int, timeout: float) -> bytes:
         """Drain at least ``want_bytes`` of queued PCM, blocking up to

@@ -8,6 +8,7 @@ import random
 import threading
 import time
 import unittest
+from collections.abc import Callable
 from typing import Any, cast
 from unittest import mock
 
@@ -135,6 +136,8 @@ class PureHelperTest(unittest.TestCase):
 class _FakeBackend:
     """Records the writes a UltimateAudioSampler issues (reu_write / write_regs /
     write_memory / flush). No socket, no REST."""
+
+    delivery_epoch = 0
 
     def __init__(self) -> None:
         self.reu_writes: list[tuple[int, int]] = []  # (offset, length)
@@ -3294,6 +3297,68 @@ class SamplerStartProgramTest(unittest.TestCase):
         # before the gate starts the FPGA reading.
         self.assertIn(("flush",), api.ops[last_prefill:first_reg])
         self.assertIn(("flush",), api.ops[last_reg:gate])
+
+
+class _LossyBringUpBackend(_FakeBackend):
+    """Loses the bring-up's REU writes (those not from the writer thread)
+    that ``lose`` picks, ``times`` of them (-1 = every one): nothing lands and
+    ``delivery_epoch`` moves, the way a lossy redial drops a write."""
+
+    def __init__(self, lose: Callable[[bytes], bool], times: int) -> None:
+        super().__init__()
+        self.lose = lose
+        self.times = times
+
+    def reu_write(self, offset: int, data: bytes) -> None:
+        on_writer = threading.current_thread().name == "uaudio-writer"
+        if self.times and not on_writer and self.lose(data):
+            self.times -= 1 if self.times > 0 else 0
+            self.delivery_epoch += 1
+            return
+        super().reu_write(offset, data)
+
+
+class SamplerBringUpDeliveryTest(unittest.TestCase):
+    """The ring the FPGA loops over is seeded once, at start(). A slice of it
+    lost to the link stays whatever the REU last held there, which on a ring
+    the previous scene used is its audio, until the writer passes it."""
+
+    RING = 8192
+    BASE = 0x200000
+
+    def _start(self, api: _FakeBackend, pushed: np.ndarray | None = None) -> s.UltimateAudioSampler:
+        smp = _make(api, sample_rate=8000, bits=8, ring_base=self.BASE, ring_size=self.RING)
+        if pushed is not None:
+            smp.push_samples(pushed)
+            smp.end_input()
+        smp.start(prebuffer_timeout=0.01)
+
+        def stop() -> None:
+            with quiet_logging():  # the idle writer's pads are not the subject
+                smp.stop()
+
+        self.addCleanup(stop)
+        return smp
+
+    def test_a_lost_prefill_slice_is_sent_again(self):
+        api = _LossyBringUpBackend(lambda data: True, times=1)
+        smp = self._start(api)
+        self.assertNotIn(0xFF, api.reu_bytes(self.BASE, self.RING))
+        self.assertTrue(smp._running)
+
+    def test_a_prefill_that_never_lands_is_logged_and_playback_goes_on(self):
+        api = _LossyBringUpBackend(lambda data: True, times=-1)
+        with self.assertLogs("c64cast.audio.sampler", "WARNING") as logs:
+            smp = self._start(api)
+        self.assertIn("ring prefill was not confirmed", logs.output[0])
+        self.assertTrue(smp._running)
+
+    def test_a_lost_prebuffer_write_is_sent_again(self):
+        tone = np.full(512, 8000, dtype=np.int16)
+        api = _LossyBringUpBackend(lambda data: any(data), times=1)
+        self._start(api, pushed=tone)
+        head = api.reu_bytes(self.BASE, tone.size)
+        self.assertEqual(set(head), set(s.pack_pcm(tone, 8)))
 
 
 class SamplerPushTest(unittest.TestCase):

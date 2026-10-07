@@ -55,6 +55,7 @@ from c64cast.hw.c64 import (
     cpu_clock,
     kernal_cia1_latch,
 )
+from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
 from .asid import _ASID_REG_TO_OFFSET
 
@@ -756,8 +757,16 @@ class AsidRingPlayer:
         )
         self._divider = tick_divider_for_rate(self._rate)
 
-        # So the first laps read silence, not uninitialized REU.
-        self._prefill_holds()
+        # So the first laps read silence, not uninitialized REU. A ring left
+        # by a session at another slot size misaligns the player's slot reads
+        # (see _take_slot), so a prefill that never lands keeps the player out.
+        if not write_confirmed(self.api, self._prefill_holds):
+            log.error(
+                "asid_player: the ring prefill was not confirmed delivered after %d "
+                "attempts; the buffered path stays down for this activation",
+                CONFIRM_TRIES,
+            )
+            return
 
         # Upload the player, seed the tracker + counters + CIA latch. The vector
         # swap is deferred to _try_arm (the CIA keeps running the kernal tail at
@@ -869,7 +878,6 @@ class AsidRingPlayer:
         for off in range(0, total, len(block)):
             n = min(len(block), total - off)
             self.api.reu_write(self.ring_base + off, block[:n])
-        self.api.flush()
 
     def push_frame(self, slot_bytes: bytes) -> None:
         """Enqueue one serialized frame-slot. Never blocks the reader thread: the

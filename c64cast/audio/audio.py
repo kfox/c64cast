@@ -42,7 +42,7 @@ from c64cast.hw.c64 import (
     halt_quantum_bytes,
     kernal_cia1_latch,
 )
-from c64cast.hw.socket_dma import SocketDMAError
+from c64cast.hw.delivery import write_confirmed
 
 from .audio_handlers import (
     AUDIO_HEALTH_LOG_INTERVAL_S,
@@ -1990,24 +1990,8 @@ class AudioStreamer:
         self._irq_vector_restore_owed = False
 
     def _write_confirmed(self, write: Callable[[], None]) -> bool:
-        """Run ``write`` and flush until a run leaves ``delivery_epoch``
-        unmoved, at most TRACKED_PUMP_INSTALL_TRIES times. True once one did.
-
-        A run whose ``write`` raises a transport error counts as unconfirmed:
-        ``reu_write`` is not routed through ``_emit`` and raises when a redial
-        fails or is refused under backoff, which leaves ``delivery_epoch``
-        unmoved although nothing was sent."""
-        for _ in range(TRACKED_PUMP_INSTALL_TRIES):
-            epoch = self.api.delivery_epoch
-            try:
-                write()
-            except (OSError, SocketDMAError) as e:
-                log.debug("audio: pump install write raised: %s", e)
-                continue
-            self.api.flush()
-            if self.api.delivery_epoch == epoch:
-                return True
-        return False
+        """``delivery.write_confirmed`` at TRACKED_PUMP_INSTALL_TRIES tries."""
+        return write_confirmed(self.api, write, tries=TRACKED_PUMP_INSTALL_TRIES)
 
     def _park_tracked_pump(self, dispatcher_owns_irq: bool, *, entry_may_be_up: bool) -> None:
         """Best-effort safe state after a failed tracked-pump install: an RTS at

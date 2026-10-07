@@ -1406,6 +1406,8 @@ class _SamplerSink(_FileSink):
 class _SamplerLink:
     """The write surface `UltimateAudioSampler` drives, recording nothing."""
 
+    delivery_epoch = 0
+
     def reu_write(self, offset: int, data: bytes) -> None:
         pass
 
