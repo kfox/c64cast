@@ -55,7 +55,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+from c64cast.hw.c64 import CIA2, actual_rate_for_latch, nmi_latch_for_rate
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -168,12 +168,11 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dsr.Slot
         )
         st.running = True
         st._upload_nmi_and_buffers()
-        clock = CLOCK_NTSC if args.system == "NTSC" else CLOCK_PAL
-        latch = max(1, round(clock / dsr.NMI_RATE) - 1)
+        latch = nmi_latch_for_rate(dsr.NMI_RATE, args.system)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
-        print(f"[hw] NMI armed, latch {latch} → {clock / (latch + 1):.2f} Hz")
+        print(f"[hw] NMI armed, latch {latch} → {actual_rate_for_latch(latch, args.system):.2f} Hz")
 
         print("[cap] settling HDMI + re-initializing PortAudio…")
         time.sleep(3.0)

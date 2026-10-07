@@ -85,7 +85,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+from c64cast.hw.c64 import CIA2, nmi_latch_for_rate
 
 CAP_SR = 48000
 OUT = Path(__file__).resolve().parent / "out"
@@ -128,11 +128,6 @@ def tone_amplitude(cap: np.ndarray, sr: int, freq: float) -> float:
     return peak * 2.0 / win.sum()
 
 
-def latch_for(rate: int, system: str) -> int:
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    return max(1, round(clock / rate) - 1)
-
-
 def write_mahoney_env(be) -> None:
     """Set up the one-time Mahoney SID environment (all 3 voices as DC sources,
     voices 1+2 through the filter). Replaces the usual digi-boost env."""
@@ -161,7 +156,7 @@ def setup(be, system: str) -> None:
     st._upload_nmi_and_buffers()  # handler + neutral ring + NMI vector
     write_mahoney_env(be)
     # Arm the NMI once; the rate never changes, only the ring contents do.
-    latch = latch_for(NMI_RATE, system)
+    latch = nmi_latch_for_rate(NMI_RATE, system)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)

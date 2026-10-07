@@ -83,23 +83,17 @@ from c64cast.audio.audio_servo import (
 )
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+from c64cast.hw.c64 import CIA2, actual_rate_for_latch, nmi_latch_for_rate
 
 CHUNK_SIZE = 1024  # audio.py AudioStreamer.chunk_size
 QUANTUM = 128  # audio.py halt_quantum_bytes at the 12 kHz NTSC default
 SENTINEL = 0xFF  # prefill: "no lap has written this slot yet"
 
 
-def latch_for(rate: int, system: str) -> int:
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    return max(1, round(clock / rate) - 1)
-
-
 def effective_rate(rate: int, system: str) -> float:
     """The rate the CIA latch grid actually yields — the consumer's real byte
     rate, and what the worker paces against."""
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    return clock / (latch_for(rate, system) + 1)
+    return actual_rate_for_latch(nmi_latch_for_rate(rate, system), system)
 
 
 def setup(be, system: str) -> None:
@@ -128,7 +122,7 @@ def setup(be, system: str) -> None:
 
 
 def arm(be, rate: int, system: str) -> None:
-    latch = latch_for(rate, system)
+    latch = nmi_latch_for_rate(rate, system)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)

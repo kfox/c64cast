@@ -60,7 +60,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+from c64cast.hw.c64 import CIA2, nmi_latch_for_rate
 
 CAP_SR = 48000
 OUT = Path(__file__).resolve().parent / "out"
@@ -103,15 +103,6 @@ def measured_pitch(cap: np.ndarray, sr: int, lo: float, hi: float) -> float:
     return float(f[k] + delta * df)
 
 
-def latch_for(rate: int, system: str) -> int:
-    """CIA #2 Timer A latch (period = latch+1 cycles) for `rate`: the rounding of
-    ``c64.nearest_latch``, floored at 1. ``NmiTimer.nominal_latch`` instead clamps
-    to [``ceiling_latch``, 0xFFFF], so a rate past the production ceiling arms here
-    at its own latch where the streamer would hold it at the ceiling."""
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    return max(1, round(clock / rate) - 1)
-
-
 def setup(be, system: str) -> None:
     """One-time C64 bring-up: reset, running IRQ clear loop, upload the NMI
     handler + tiled tone ring + NMI vector + digi-boost. Reset happens ONCE
@@ -136,7 +127,9 @@ def setup(be, system: str) -> None:
 
 def arm(be, rate: int, system: str) -> None:
     """(Re)arm the NMI at `rate`: disarm, set the Timer A latch, enable."""
-    latch = latch_for(rate, system)
+    # ceiling=1: this probe finds where the handler budget lies, so it arms
+    # rates past the ceiling production holds them to.
+    latch = nmi_latch_for_rate(rate, system, ceiling=1)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
