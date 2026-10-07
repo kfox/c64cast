@@ -23,6 +23,7 @@ from c64cast.video.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
     AVFileSource,
+    RemoteSeekStalled,
     _build_atempo_graph,
     _compute_normalization_gain,
     _ContainerCloser,
@@ -2503,6 +2504,20 @@ class RemoteSeekBoundTest(unittest.TestCase):
             lambda: AVFileSource(url, target_sample_rate=8000, scan_audio_peak=False, start_s=3.0)
         )
         self.assertIsInstance(outcome, Exception)
+
+    def test_an_abandoned_seek_returns_while_the_server_holds_the_socket(self):
+        # Nothing interrupts the seek a caller gave up on, so only FFmpeg's
+        # own IO timeout ends it; without one its worker, socket and
+        # container last as long as the server keeps the connection open.
+        url = self._server(serve=1)
+        with self.assertRaises(RemoteSeekStalled):
+            AVFileSource(url, target_sample_rate=8000, scan_audio_peak=False, start_s=3.0)
+        self.assertTrue(
+            _wait_until(
+                lambda: not any(t.name == "av-seek" for t in threading.enumerate()), limit_s=10.0
+            ),
+            "the abandoned seek is still blocked",
+        )
 
     def test_a_stalled_peak_scan_seek_falls_back_to_unity_gain(self):
         src = AVFileSource(self.local, target_sample_rate=8000, scan_audio_peak=False)

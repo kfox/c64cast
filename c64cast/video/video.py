@@ -71,6 +71,17 @@ _REMOTE_OPEN_TIMEOUT_S = 20.0
 _REMOTE_READ_TIMEOUT_S = 30.0
 
 
+def _protocol_options() -> dict[str, str]:
+    """FFmpeg's own per-IO ``rw_timeout`` (microseconds) for a network input.
+
+    PyAV's bound is an interrupt callback it arms only inside ``demux()``, so
+    a seek `_seek` abandons has no bound of its own and would hold its
+    worker, socket and container for as long as the server holds the
+    connection. Twice the read bound, so inside ``demux()`` PyAV's bound still
+    fires first and playback behaves as before."""
+    return {"rw_timeout": str(int(_REMOTE_READ_TIMEOUT_S * 2 * 1_000_000))}
+
+
 def _is_remote_url(path: str) -> bool:
     """True for http(s) inputs, which get the FFmpeg reconnect options."""
     return path.startswith(("http://", "https://"))
@@ -146,11 +157,15 @@ def av_open(path: str):
     if not _is_remote_url(path):
         # A non-http network protocol: no reconnect options (they are
         # http-only), but the same bound on a peer that goes silent.
-        return av.open(path, timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S))
+        return av.open(
+            path,
+            options=_protocol_options(),
+            timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S),
+        )
     try:
         return av.open(
             path,
-            options=_HTTP_RECONNECT_OPTIONS,
+            options={**_HTTP_RECONNECT_OPTIONS, **_protocol_options()},
             timeout=(_REMOTE_OPEN_TIMEOUT_S, _REMOTE_READ_TIMEOUT_S),
         )
     except av.error.HTTPClientError as e:
