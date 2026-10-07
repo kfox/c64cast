@@ -217,6 +217,7 @@ class RenderLinkFailureTest(unittest.TestCase):
         scene = SkippingScene("Video", frames_until_done=10_000)
         pl = self._playlist(scene)
         scene.api = pl.api  # type: ignore[attr-defined]
+        pl.api.stats["writes"] = 100  # the link was up before the outage
         with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
             for _ in range(6):
                 pl.run_one_frame(scene, time.time())
@@ -229,6 +230,49 @@ class RenderLinkFailureTest(unittest.TestCase):
             pl.run_one_frame(scene, time.time())
         self.assertIn("link back after", logs.output[-1])
         self.assertIn("3 frame(s) skipped", logs.output[-1])
+        self.assertFalse(pl.link_outage.active)
+
+    def test_a_frame_whose_writes_all_failed_does_not_end_the_outage(self):
+        # `_emit` swallows a failed write: errors move, writes do not.
+        class EmitFailScene(FakeScene):
+            def process_frame(self, current_time: float) -> bool:
+                self.frame_count += 1
+                if self.frame_count == 1:
+                    raise SocketDMAError("did not answer the last redial")
+                self.api.stats["errors"] += 1
+                self.api.stats["bytes"] += 1000
+                return True
+
+        scene = EmitFailScene("Picture", frames_until_done=10_000)
+        pl = self._playlist(scene)
+        scene.api = pl.api  # type: ignore[attr-defined]
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            for _ in range(3):
+                pl.run_one_frame(scene, time.time())
+        self.assertEqual(len(logs.output), 1, logs.output)
+        self.assertTrue(pl.link_outage.active, "a frame whose writes all failed ended the outage")
+
+    def test_a_write_that_lands_between_frames_ends_the_outage(self):
+        # The next scene's setup() runs in _advance, outside any frame, and a
+        # static scene's frames can then all hit the dirty cache.
+        class Scene(FakeScene):
+            fail = True
+
+            def process_frame(self, current_time: float) -> bool:
+                self.frame_count += 1
+                if self.fail:
+                    raise SocketDMAError("did not answer the last redial")
+                return True
+
+        scene = Scene("Video", frames_until_done=10_000)
+        pl = self._playlist(scene)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run_one_frame(scene, time.time())
+        scene.fail = False
+        pl.api.stats["writes"] += 5  # the next scene's setup writes landed
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.run_one_frame(scene, time.time())
+        self.assertIn("link back after", logs.output[-1])
         self.assertFalse(pl.link_outage.active)
 
     def test_a_frame_where_scene_and_overlay_both_fail_counts_once(self):
@@ -299,14 +343,16 @@ class RenderLinkOutageLogTest(unittest.TestCase):
         outage = RenderLinkOutage(logging.getLogger("c64cast.app.playlist.t"), lambda: now[0])
         err = SocketDMAError("down")
         with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
-            outage.failed("scene 'A'", err)
+            outage.failed("scene 'A'", err, 7)
             now[0] += LINK_OUTAGE_REPORT_S - 0.1
-            outage.failed("scene 'A'", err)
+            outage.failed("scene 'A'", err, 7)
             now[0] += 0.2
-            outage.failed("scene 'A'", err)
+            outage.failed("scene 'A'", err, 7)
             now[0] += 5.0
-            outage.recovered()
-            outage.recovered()  # nothing more once it has ended
+            outage.frame_ok(7)  # nothing landed since the last failure
+            self.assertTrue(outage.active)
+            outage.frame_ok(8)
+            outage.frame_ok(9)  # nothing more once it has ended
         self.assertEqual(len(logs.output), 3, logs.output)
         self.assertIn("WARNING", logs.output[0])
         self.assertIn("still down after 10 s, 3 frame(s) skipped", logs.output[1])

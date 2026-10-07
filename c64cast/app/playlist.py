@@ -46,7 +46,14 @@ LINK_OUTAGE_REPORT_S = 10.0
 class RenderLinkOutage:
     """Log for a render-path link outage: a WARNING when frames start failing
     on a `LinkError`, another every `LINK_OUTAGE_REPORT_S` while they still
-    fail, and an INFO line when a frame lands a write again.
+    fail, and an INFO line once a frame raises nothing and the backend has
+    landed a write since the last failure.
+
+    Recovery is judged against the write count at the last failure rather
+    than a single frame's own writes, because a frame can send nothing (a
+    video tick between source frames, a static scene whose regions all hit
+    the dirty cache), and the write that proves the link may land outside a
+    frame altogether: the next scene's `setup()` runs in `_advance`.
 
     Skipping is silent otherwise, so a link that never comes back (a
     rejected password, say) keeps saying so instead of going quiet after
@@ -57,14 +64,18 @@ class RenderLinkOutage:
         self._clock = clock
         self._since: float | None = None
         self._last_report = 0.0
+        self._writes_at_failure = 0
         self.skipped = 0
 
     @property
     def active(self) -> bool:
         return self._since is not None
 
-    def failed(self, where: str, error: LinkError) -> None:
+    def failed(self, where: str, error: LinkError, writes: int) -> None:
+        """Count a skipped frame. `writes` is the backend's successful-write
+        count once the failed frame is over."""
         now = self._clock()
+        self._writes_at_failure = writes
         self.skipped += 1
         if self._since is None:
             self._since = self._last_report = now
@@ -82,8 +93,10 @@ class RenderLinkOutage:
                 error,
             )
 
-    def recovered(self) -> None:
-        if self._since is None:
+    def frame_ok(self, writes: int) -> None:
+        """A frame raised nothing; the outage ends if the backend's
+        successful-write count has moved since the last failure."""
+        if self._since is None or writes <= self._writes_at_failure:
             return
         self._log.info(
             "link back after %.1f s; %d frame(s) skipped",
@@ -782,9 +795,13 @@ class Playlist:
             if self._tempo_audio_drive:
                 self._drive_tempo_from_audio(scene, t0)
 
-            still_active = self._render_scene_frame(scene, t0)
+            still_active, link_failure = self._render_scene_frame(scene, t0)
 
             stats_after = self.api.stats
+            if link_failure is not None:
+                self.link_outage.failed(*link_failure, stats_after["writes"])
+            else:
+                self.link_outage.frame_ok(stats_after["writes"])
             self.profiler.record_counts(
                 writes=stats_after["writes"] - stats_before["writes"],
                 bytes_=stats_after["bytes"] - stats_before["bytes"],
@@ -803,18 +820,22 @@ class Playlist:
 
         return self._advance_deadline(scene, next_deadline, frame_time)
 
-    def _render_scene_frame(self, scene: Scene, t0: float) -> bool:
+    def _render_scene_frame(
+        self, scene: Scene, t0: float
+    ) -> tuple[bool, tuple[str, LinkError] | None]:
         """Render one frame of `scene` plus its direct-write overlays, under
         the cpu_render profiler stage. Returns the scene's still-active flag
-        (False also when process_frame raised — a crashing scene advances).
+        (False also when process_frame raised — a crashing scene advances)
+        and the frame's first link failure, if any.
 
         A `LinkError` is the exception: the link to the machine is down, not
         the scene, so the frame is skipped and the scene stays active, and the
         next frame tries the link again. An overlay that raises one is skipped
-        for this frame rather than disabled. The outage ends only on a frame
-        that raised nothing and landed a write: a frame that sent nothing
-        (a video tick between source frames) says nothing about the link, and
-        an `_emit` failure is swallowed rather than raised.
+        for this frame rather than disabled. `run_one_frame` hands the failure
+        to `RenderLinkOutage`, which ends the outage only once a frame raises
+        nothing and a write has landed since the last failure: a frame that
+        sent nothing says nothing about the link, and an `_emit` failure is
+        swallowed rather than raised.
 
         Overlays with PAINTS_INTO_BUFFERS are skipped here: they were already
         composed into the scene's screen+color buffers during
@@ -822,7 +843,6 @@ class Playlist:
         scene write."""
         with self.profiler.stage("cpu_render"):
             link_failure: tuple[str, LinkError] | None = None
-            writes_before = self.api.stats["writes"] if self.link_outage.active else None
             try:
                 still_active = scene.process_frame(t0)
             except LinkError as e:
@@ -844,11 +864,7 @@ class Playlist:
                 except Exception:
                     self.log.exception("overlay %r raised on %r — disabling", ov.name, scene.name)
                     ov.disabled = True
-            if link_failure is not None:
-                self.link_outage.failed(*link_failure)
-            elif writes_before is not None and self.api.stats["writes"] > writes_before:
-                self.link_outage.recovered()
-        return still_active
+        return still_active, link_failure
 
     def _apply_frame_events(self, scene: Scene, still_active: bool) -> None:
         """Resolve the scene's is_done for this frame, then honor the skip and
