@@ -181,6 +181,20 @@ def _make(api: _FakeBackend, **kw) -> s.UltimateAudioSampler:
     return s.UltimateAudioSampler(cast(Any, api), **kw)
 
 
+def _signal_on_put(smp: s.UltimateAudioSampler) -> threading.Event:
+    """An event set when anything next calls ``smp._q.put``, just before the
+    put itself runs."""
+    parked = threading.Event()
+    full_put = smp._q.put
+
+    def put(*a: Any, **kw: Any) -> None:
+        parked.set()
+        full_put(*a, **kw)
+
+    smp._q.put = put  # type: ignore[method-assign]
+    return parked
+
+
 def _outlasting(wait_s: float, sample_rate: int = 8000) -> np.ndarray:
     """A tone that plays on past a test's wait for it to reach the ring. The
     writer drops audio whose slot the wall-clock read head has passed, so a
@@ -742,14 +756,7 @@ class SamplerWriterFailureTest(unittest.TestCase):
     def test_a_producer_parked_when_the_writer_gives_up_is_released(self):
         smp = _make(_FakeBackend(), sample_rate=8000, bits=8, queue_max_chunks=1)
         smp._q.put((smp._flush_epoch, b""))
-        parked = threading.Event()
-        full_put = smp._q.put
-
-        def put(*a: Any, **kw: Any) -> None:
-            parked.set()
-            full_put(*a, **kw)
-
-        smp._q.put = put  # type: ignore[method-assign]
+        parked = _signal_on_put(smp)
         t = threading.Thread(target=smp.push_samples, args=(self.TONE,))
         self.addCleanup(t.join, 1.0)
         self.addCleanup(setattr, smp, "_stopped", True)
@@ -2754,14 +2761,7 @@ class SamplerFlushTests(unittest.TestCase):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, queue_max_chunks=1)
         smp._q.put((0, b"x"))  # fill and keep full
-        parked = threading.Event()
-        full_put = smp._q.put
-
-        def put(*a: Any, **kw: Any) -> None:
-            parked.set()
-            full_put(*a, **kw)
-
-        smp._q.put = put  # type: ignore[method-assign]
+        parked = _signal_on_put(smp)
 
         def push():
             smp.push_samples(np.zeros(50, dtype=np.int16))
