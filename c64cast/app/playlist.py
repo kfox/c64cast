@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from c64cast.control.transport import LiveTuneTracker, TransportSession
 from c64cast.hw import hardware_palette
-from c64cast.hw.backend import C64Backend
+from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.scenes.scenes import Scene
 
 from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
@@ -38,6 +38,94 @@ FollowerSceneFactory = Callable[["SceneCfg"], Scene]
 # told about, so its adaptive NMI-rate loop re-arms its warm-up gate instead of
 # chasing the abnormal bus load. Routine 1-3 frame drops stay below it.
 _AUDIO_DISTURBANCE_DROP_S = 0.5
+
+# How often a render-path link outage that is still going repeats its WARNING.
+LINK_OUTAGE_REPORT_S = 10.0
+
+
+class RenderLinkOutage:
+    """Log for a render-path link outage: a WARNING when frames start failing
+    on a `LinkError`, another every `LINK_OUTAGE_REPORT_S` while they still
+    fail, and an INFO line once a frame raises nothing and the backend has
+    landed a write since the last failure.
+
+    Recovery is judged against the write count at the last failure rather
+    than a single frame's own writes, because a frame can send nothing (a
+    video tick between source frames, a static scene whose regions all hit
+    the dirty cache), and the write that proves the link may land outside a
+    frame altogether: the next scene's `setup()` runs in `_advance`.
+
+    Skipping is silent otherwise, so a link that never comes back (a
+    rejected password, say) keeps saying so instead of going quiet after
+    one line.
+
+    The clock and the skipped-frame count run from the start of the failing
+    work, not from its raise: the first write to a machine that has gone
+    away blocks for the whole connect timeout before it raises, and that is
+    the longest frozen stretch of a short outage."""
+
+    def __init__(self, log: logging.Logger, clock: Callable[[], float] = time.monotonic) -> None:
+        self._log = log
+        self._clock = clock
+        self._since: float | None = None
+        self._last_report = 0.0
+        self._writes_at_failure = 0
+        self.skipped = 0
+
+    @property
+    def active(self) -> bool:
+        return self._since is not None
+
+    def now(self) -> float:
+        """This log's clock, for a caller timing the work it reports."""
+        return self._clock()
+
+    def failed(
+        self,
+        where: str,
+        error: LinkError,
+        writes: int,
+        *,
+        started: float | None = None,
+        frame_time: float = 0.0,
+    ) -> None:
+        """Count the frames the failed work cost. `writes` is the backend's
+        successful-write count once it is over; `started` is when it began on
+        `now()`'s clock (default: now), and the work is charged one frame per
+        `frame_time` it held, at least one. An outage it opens is timed from
+        `started`."""
+        now = self._clock()
+        started = now if started is None else min(started, now)
+        self._writes_at_failure = writes
+        self.skipped += max(1, round((now - started) / frame_time)) if frame_time > 0 else 1
+        if self._since is None:
+            self._since = self._last_report = started
+            self._log.warning(
+                "%s: the link to the machine failed (%s); skipping frames until it answers",
+                where,
+                error,
+            )
+        elif now - self._last_report >= LINK_OUTAGE_REPORT_S:
+            self._last_report = now
+            self._log.warning(
+                "link still down after %.0f s, %d frame(s) skipped (%s)",
+                now - self._since,
+                self.skipped,
+                error,
+            )
+
+    def frame_ok(self, writes: int) -> None:
+        """A frame raised nothing; the outage ends if the backend's
+        successful-write count has moved since the last failure."""
+        if self._since is None or writes <= self._writes_at_failure:
+            return
+        self._log.info(
+            "link back after %.1f s; %d frame(s) skipped",
+            self._clock() - self._since,
+            self.skipped,
+        )
+        self._since = None
+        self.skipped = 0
 
 
 class Playlist:
@@ -83,6 +171,7 @@ class Playlist:
         # end. A CTRL skip cancels both.
         self.fades = SceneFades(self, duration_s=fade_duration_s)
         self.api = api
+        self.link_outage = RenderLinkOutage(self.log)
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -727,9 +816,19 @@ class Playlist:
             if self._tempo_audio_drive:
                 self._drive_tempo_from_audio(scene, t0)
 
-            still_active = self._render_scene_frame(scene, t0)
+            render_start = self.link_outage.now()
+            still_active, link_failure = self._render_scene_frame(scene, t0)
 
             stats_after = self.api.stats
+            if link_failure is not None:
+                self.link_outage.failed(
+                    *link_failure,
+                    stats_after["writes"],
+                    started=render_start,
+                    frame_time=frame_time,
+                )
+            else:
+                self.link_outage.frame_ok(stats_after["writes"])
             self.profiler.record_counts(
                 writes=stats_after["writes"] - stats_before["writes"],
                 bytes_=stats_after["bytes"] - stats_before["bytes"],
@@ -748,18 +847,34 @@ class Playlist:
 
         return self._advance_deadline(scene, next_deadline, frame_time)
 
-    def _render_scene_frame(self, scene: Scene, t0: float) -> bool:
+    def _render_scene_frame(
+        self, scene: Scene, t0: float
+    ) -> tuple[bool, tuple[str, LinkError] | None]:
         """Render one frame of `scene` plus its direct-write overlays, under
         the cpu_render profiler stage. Returns the scene's still-active flag
-        (False also when process_frame raised — a crashing scene advances).
+        (False also when process_frame raised — a crashing scene advances)
+        and the frame's first link failure, if any.
+
+        A `LinkError` is the exception: the link to the machine is down, not
+        the scene, so the frame is skipped and the scene stays active, and the
+        next frame tries the link again. An overlay that raises one is skipped
+        for this frame rather than disabled. `run_one_frame` hands the failure
+        to `RenderLinkOutage`, which ends the outage only once a frame raises
+        nothing and a write has landed since the last failure: a frame that
+        sent nothing says nothing about the link, and an `_emit` failure is
+        swallowed rather than raised.
 
         Overlays with PAINTS_INTO_BUFFERS are skipped here: they were already
         composed into the scene's screen+color buffers during
         scene.process_frame — calling process_frame again would race the
         scene write."""
         with self.profiler.stage("cpu_render"):
+            link_failure: tuple[str, LinkError] | None = None
             try:
                 still_active = scene.process_frame(t0)
+            except LinkError as e:
+                link_failure = f"scene {scene.name!r}", e
+                still_active = True
             except Exception:
                 self.log.exception("scene %r raised; advancing", scene.name)
                 still_active = False
@@ -770,10 +885,13 @@ class Playlist:
                     continue
                 try:
                     ov.process_frame(self.api, scene, t0)
+                except LinkError as e:
+                    if link_failure is None:
+                        link_failure = f"overlay {ov.name!r} on {scene.name!r}", e
                 except Exception:
                     self.log.exception("overlay %r raised on %r — disabling", ov.name, scene.name)
                     ov.disabled = True
-        return still_active
+        return still_active, link_failure
 
     def _apply_frame_events(self, scene: Scene, still_active: bool) -> None:
         """Resolve the scene's is_done for this frame, then honor the skip and

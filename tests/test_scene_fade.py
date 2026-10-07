@@ -330,6 +330,48 @@ class PlaylistFadeOutTest(unittest.TestCase):
         self.assertEqual(len(s.display_mode.repush_calls), 2)
         self.assertFalse(pl.skip_event.is_set(), "skip must be consumed by the aborted fade")
 
+    def test_a_dead_link_ends_the_fade_through_the_outage_log(self):
+        from c64cast.hw.socket_dma import SocketDMAError
+
+        s = _FakeScene()
+        pl = _playlist(s)
+
+        def dead(api, alpha):
+            s.display_mode.repush_calls.append(alpha)
+            raise SocketDMAError("authentication was rejected on a previous attempt")
+
+        s.display_mode.repush_faded = dead
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.fades.fade_out(s)
+        self.assertEqual(len(s.display_mode.repush_calls), 1)
+        self.assertEqual([r.levelname for r in logs.records], ["WARNING"], logs.output)
+        self.assertIn("fade-out of 'A'", logs.output[0])
+        self.assertTrue(pl.link_outage.active)
+        self.assertEqual(s.display_mode.fade_alpha, 1.0)
+
+    def test_a_fade_push_that_blocked_on_a_dead_link_counts_from_its_start(self):
+        from c64cast.app.playlist import RenderLinkOutage
+        from c64cast.hw.socket_dma import SocketDMAError
+
+        s = _FakeScene()
+        pl = _playlist(s)
+        now = [50.0]
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: now[0])
+        frame_time = pl.frame_time_for(s)
+
+        def dead(api, alpha):
+            now[0] += 5.0  # the redial's connect timeout
+            raise SocketDMAError("did not answer the last redial")
+
+        s.display_mode.repush_faded = dead
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.fades.fade_out(s)
+            pl.link_outage.frame_ok(pl.api.stats["writes"] + 1)
+        self.assertIn(
+            f"link back after 5.0 s; {round(5.0 / frame_time)} frame(s) skipped",
+            logs.output[-1],
+        )
+
     def test_fade_out_noop_without_rendered_frame(self):
         s = _FakeScene()
         s.display_mode.last_buffers = None

@@ -29,6 +29,8 @@ import threading
 import time
 from collections import deque
 
+from .backend import LinkError
+
 log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 64
@@ -91,7 +93,7 @@ REDIAL_BACKOFF_MAX_S = 8.0
 _MAX_COMMAND_PAYLOAD = 0xFFFF
 
 
-class SocketDMAError(Exception):
+class SocketDMAError(LinkError):
     """Raised when the DMA service can't be reached, refuses authentication,
     or otherwise responds in a way that prevents normal operation. Caller
     (typically the CLI) is expected to surface a user-actionable message."""
@@ -529,7 +531,9 @@ class SocketDMAClient:
         backend.py's `_note_emit_failure`, so logging it at warning would be
         the *only* place that event is visible, at the wrong level. A
         failure that survives the retry is the one worth a warning, since
-        by then the caller is about to see the exception anyway."""
+        by then the caller is about to see the exception anyway. It is
+        raised as a `SocketDMAError`, never a bare `OSError`, so a caller
+        can tell a dead link from a defect."""
         with self._lock:
             self._ensure_live_locked()
             try:
@@ -547,7 +551,7 @@ class SocketDMAClient:
                     log.warning(
                         "socket dma: send failed again after reconnect (%s) — giving up", e2
                     )
-                    raise
+                    raise SocketDMAError(f"send failed again after reconnect: {e2}") from e2
             self._latencies.append(time.perf_counter() - t0)
             self._last_send = time.monotonic()
             self._unconfirmed = True

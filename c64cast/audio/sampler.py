@@ -547,6 +547,14 @@ class UltimateAudioSampler:
         # still waiting on the queue when stop() and the next start() land
         # cannot write into the new activation's ring.
         self._writer_gen = 0
+        # The generation whose writer gave up on the link. That writer touches
+        # no ring state, only the channel control register, so a later
+        # activation need not refuse while it lingers in a link call.
+        self._gave_up_gen: int | None = None
+        # Held across the give-up writer's gate-off and start()'s gate-on, so
+        # a gate-off still in flight from a retired writer cannot land after
+        # the next activation's gate-on and silence it.
+        self._gate_lock = threading.Lock()
 
         self._underrun_pads = 0
         self._lead_min: int | None = None
@@ -593,7 +601,9 @@ class UltimateAudioSampler:
 
         Raises RuntimeError while the last activation's writer is still alive
         (it outlived stop()'s bounded join), since two writers would share the
-        ring and the write head."""
+        ring and the write head. A writer that had given up on the link is
+        let go instead: it no longer touches the ring, and `_gate_lock` keeps
+        its last gate-off from landing after the next gate-on."""
         self._refuse_if_writer_survives()
         self._flush_epoch += 1
         while True:
@@ -640,7 +650,7 @@ class UltimateAudioSampler:
         writer = self._writer
         if writer is None:
             return
-        if writer.is_running():
+        if writer.is_running() and self._gave_up_gen != self._writer_gen:
             raise RuntimeError(
                 "sampler: the previous writer thread is still running; refusing to start another"
             )
@@ -658,7 +668,10 @@ class UltimateAudioSampler:
         while the runtime lead stays deep enough to ride out decode stalls.
 
         Raises RuntimeError on a sampler that is already running, or whose
-        last writer is still alive."""
+        last writer is still alive and had not given up on the link. The
+        gate-on waits for a given-up writer's gate-off still in flight, which
+        is one write and its flush, each bounded by the transport's own
+        timeouts."""
         if self._running:
             raise RuntimeError("sampler is already started")
         self._refuse_if_writer_survives()
@@ -679,24 +692,25 @@ class UltimateAudioSampler:
         if len(prebuf) > head:
             self._carry = (self._flush_epoch, memoryview(prebuf)[head:])
 
-        program_channel(
-            self.api,
-            self.channel,
-            reu_offset=self.ring_base,
-            length=self.ring_size,
-            rate=self._actual_rate,
-            bits=self.bits,
-            volume=self._volume,
-            pan=self._pan,
-            repeat=True,
-            repeat_a=0,
-            repeat_b=self.ring_size,
-            gate=True,
-            ref_clock=self._ref_clock,
-        )
+        with self._gate_lock:
+            self._writer_gen += 1
+            gen = self._writer_gen
+            program_channel(
+                self.api,
+                self.channel,
+                reu_offset=self.ring_base,
+                length=self.ring_size,
+                rate=self._actual_rate,
+                bits=self.bits,
+                volume=self._volume,
+                pan=self._pan,
+                repeat=True,
+                repeat_a=0,
+                repeat_b=self.ring_size,
+                gate=True,
+                ref_clock=self._ref_clock,
+            )
         self._gate_time = time.monotonic()
-        self._writer_gen += 1
-        gen = self._writer_gen
         self._running = True
         # The loop stops on self._running and its generation, not the PollThread
         # event; the poll supplies only the daemon-thread start/join lifecycle.
@@ -934,7 +948,8 @@ class UltimateAudioSampler:
         retried after a doubling back-off rather than ending the thread: a
         dead writer leaves the channel gated, looping the ring's stale audio
         while the producer parks on a queue nothing drains. Past
-        WRITER_GIVE_UP_S of unbroken failure it gates the channel off."""
+        WRITER_GIVE_UP_S of unbroken failure it gates the channel off, and
+        stays to retry that until it lands."""
         failing_since: float | None = None
         backoff = 0.0
         while self._running and gen == self._writer_gen:
@@ -946,7 +961,7 @@ class UltimateAudioSampler:
                     failing_since = now
                     log.warning("sampler: ring write failed (%s); retrying", e)
                 elif now - failing_since >= WRITER_GIVE_UP_S:
-                    self._give_up(e)
+                    self._give_up(e, gen)
                     return
                 backoff = min(WRITER_BACKOFF_MAX_S, max(WRITER_BACKOFF_MIN_S, backoff * 2))
                 time.sleep(backoff)
@@ -959,17 +974,64 @@ class UltimateAudioSampler:
                 failing_since = None
                 backoff = 0.0
 
-    def _give_up(self, error: Exception) -> None:
+    def _give_up(self, error: Exception, gen: int) -> None:
+        """Stop taking audio, and gate the channel off once the link carries
+        the write.
+
+        The gate-off goes over the link that just failed, and `write_memory`
+        does not raise when a write is lost, so it is confirmed against
+        `delivery_epoch` and sent again every WRITER_BACKOFF_MAX_S until it
+        lands or the writer is stopped or superseded. Sent once, it was lost
+        to the outage it answered, and the ring went on looping stale audio
+        after the link came back, under a scene that survives the outage."""
         self._failed = True
+        self._gave_up_gen = gen
         log.error(
             "sampler: ring writes failing for %.0f s (%s); gating the channel off",
             WRITER_GIVE_UP_S,
             error,
         )
-        try:
-            gate_off(self.api, self.channel)
-        except Exception as e:  # the link is what failed; nothing more to try
-            log.error("sampler: gate-off after giving up failed too: %s", e)
+        retrying = False
+        while True:
+            landed = self._gate_off_landed(gen)
+            if landed is None:
+                return
+            if landed:
+                if retrying:
+                    log.info("sampler: the link is back; channel gated off")
+                return
+            if not retrying:
+                retrying = True
+                log.warning(
+                    "sampler: the gate-off did not reach the machine; "
+                    "retrying until the link answers"
+                )
+            time.sleep(WRITER_BACKOFF_MAX_S)
+
+    def _gate_off_landed(self, gen: int) -> bool | None:
+        """One gate-off, and whether the link vouches it arrived: nothing it
+        carried was counted lost (``delivery_epoch`` unmoved). A loss of some
+        other thread's write in the same window reads as this one's, which
+        costs a repeat of an idempotent write. None, with nothing sent, once
+        the writer is stopped or superseded.
+
+        The write is not flushed once ``delivery_epoch`` has moved: nothing
+        is left to confirm, and `flush` logs a warning per failure, which at
+        one retry every WRITER_BACKOFF_MAX_S floods the log for as long as
+        the outage lasts."""
+        with self._gate_lock:
+            if not (self._running and gen == self._writer_gen):
+                return None
+            epoch = self.api.delivery_epoch
+            try:
+                self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
+                if self.api.delivery_epoch != epoch:
+                    return False
+                self.api.flush()
+            except Exception as e:  # the link is what failed
+                log.debug("sampler: gate-off raised: %s", e)
+                return False
+            return self.api.delivery_epoch == epoch
 
     def _writer_step(self, gen: int) -> bool:
         """One writer pass: sleep while far enough ahead, else write the next
@@ -1589,7 +1651,8 @@ class UltimateAudioSampler:
 
         A writer that outlives the bounded join (wedged in a REU write on a
         stalled link) stays referenced, so the next arm()/start() refuses
-        rather than run a second writer beside it. With `_running` cleared,
+        rather than run a second writer beside it, unless it had given up on
+        the link (see `arm`). With `_running` cleared,
         it writes nothing more once that write returns."""
         self._stopped = True
         self._running = False

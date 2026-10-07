@@ -18,6 +18,7 @@ import unittest
 from collections import deque
 from unittest.mock import patch
 
+from c64cast.hw.backend import LinkError
 from c64cast.hw.socket_dma import (
     CMD_AUTHENTICATE,
     CMD_DMAWRITE,
@@ -466,8 +467,12 @@ class ReconnectTest(unittest.TestCase):
         fake2 = FailSecondSendSocket([_IDENT_REPLY])
         with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
             with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
-                with self.assertRaises(OSError):
+                with self.assertRaises(SocketDMAError) as raised:
                     c.dmawrite(0xD020, b"\x0e")
+        # A link error, not a bare OSError: the render loop skips a frame on
+        # one and would end the scene on the other.
+        self.assertIsInstance(raised.exception, LinkError)
+        self.assertIsInstance(raised.exception.__cause__, BrokenPipeError)
         self.assertIsNone(c._sock)
         self.assertTrue(fake2.closed)
 

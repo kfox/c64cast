@@ -19,6 +19,8 @@ import contextlib
 import time
 from typing import TYPE_CHECKING
 
+from c64cast.hw.backend import LinkError
+
 if TYPE_CHECKING:
     from c64cast.scenes.scenes import Scene
     from c64cast.video.modes import DisplayMode
@@ -125,9 +127,10 @@ class SceneFades:
         """Freeze the scene's last composed frame and dim it to black over the
         fade window, then leave the mode at full brightness for the next scene.
         Aborts immediately on a CTRL skip (consuming the event so it doesn't
-        also skip the next scene) or a stop request. No-op when fades are off,
-        the scene ended via skip, the mode can't compose, or nothing was
-        rendered yet."""
+        also skip the next scene), a stop request, or a dead link (a
+        `LinkError`, which goes to the playlist's outage log). No-op when
+        fades are off, the scene ended via skip, the mode can't compose, or
+        nothing was rendered yet."""
         pl = self._pl
         if self.ended_via_skip:
             return
@@ -144,8 +147,20 @@ class SceneFades:
             if pl.skip_event.is_set():
                 pl.skip_event.clear()  # satisfied by ending the fade early
                 break
+            push_start = pl.link_outage.now()
             try:
                 dm.repush_faded(pl.api, 1.0 - i / n)
+            except LinkError as e:
+                # A dead link, not a defect: reported through the playlist's
+                # throttled outage log rather than as a traceback per scene end.
+                pl.link_outage.failed(
+                    f"fade-out of {scene.name!r}",
+                    e,
+                    pl.api.stats["writes"],
+                    started=push_start,
+                    frame_time=frame_time,
+                )
+                break
             except Exception:
                 pl.log.exception("fade-out push failed on %r — ending fade", scene.name)
                 break
