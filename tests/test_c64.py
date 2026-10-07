@@ -11,11 +11,15 @@ from __future__ import annotations
 import unittest
 
 from c64cast.hw.c64 import (
+    CIA_TIMER_LATCH_MAX,
+    NMI_CEILING_LATCH,
     actual_rate_for_latch,
     cia1_latch_for_rate,
+    clamp_nmi_latch,
     cpu_clock,
     frame_rate,
     kernal_cia1_latch,
+    nmi_latch_for_rate,
 )
 
 
@@ -68,6 +72,30 @@ class Cia1LatchForRateTest(unittest.TestCase):
 
     def test_never_returns_a_latch_below_one(self):
         self.assertGreaterEqual(cia1_latch_for_rate(1e9, "NTSC"), 1)
+
+
+class NmiLatchForRateTest(unittest.TestCase):
+    def test_rejects_a_non_positive_rate(self):
+        for rate in (0, -1.0, -8000.0, float("nan")):
+            with self.subTest(rate=rate), self.assertRaises(ValueError):
+                nmi_latch_for_rate(rate, "NTSC")
+
+    def test_holds_a_rate_past_the_handler_budget_at_the_ceiling(self):
+        self.assertEqual(nmi_latch_for_rate(44100.0, "NTSC"), NMI_CEILING_LATCH)
+
+    def test_an_explicit_ceiling_arms_the_requested_latch(self):
+        self.assertEqual(nmi_latch_for_rate(44100.0, "NTSC", ceiling=1), 22)
+
+    def test_holds_a_very_low_rate_at_the_16_bit_maximum(self):
+        self.assertEqual(nmi_latch_for_rate(1.0, "NTSC"), CIA_TIMER_LATCH_MAX)
+
+
+class ClampNmiLatchTest(unittest.TestCase):
+    def test_bounds_and_pass_through(self):
+        self.assertEqual(clamp_nmi_latch(0), NMI_CEILING_LATCH)
+        self.assertEqual(clamp_nmi_latch(-5, ceiling=1), 1)
+        self.assertEqual(clamp_nmi_latch(CIA_TIMER_LATCH_MAX + 1), CIA_TIMER_LATCH_MAX)
+        self.assertEqual(clamp_nmi_latch(127), 127)
 
 
 class ActualRateForLatchTest(unittest.TestCase):

@@ -133,7 +133,7 @@ class NmiTimer:
         full timebase rationale."""
         if not self._st.sample_rate:
             # Callers read a falsy rate as "no audio clock" (position_seconds);
-            # nominal_latch would divide by zero.
+            # nominal_latch would raise ValueError.
             return 0.0
         clock = cpu_clock(self._st.system)
         return clock / (self.nominal_latch() + 1)
