@@ -148,6 +148,17 @@ class RedactSecretsTest(unittest.TestCase):
             '{"password": "REDACTED", "x": 1}',
         )
 
+    def test_an_escaped_quote_followed_by_a_non_word_does_not_close_the_value(self):
+        """The quote after a letter never closes a value anyway, so the escape
+        only matters where a space, comma or brace follows it."""
+        for line, want in (
+            ('password="ab\\" cd"', 'password="REDACTED"'),
+            ("token='a\\' b'", "token='REDACTED'"),
+            ('{"password": "ab\\", cd", "x": 1}', '{"password": "REDACTED", "x": 1}'),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
     def test_a_password_or_api_key_value_is_covered(self):
         self.assertNotIn("hunter2", redact_secrets("password=hunter2"))
         self.assertNotIn("abc123", redact_secrets("api_key=abc123"))
@@ -807,6 +818,17 @@ class RedactUrlUserinfoTest(unittest.TestCase):
         """Read as given, the `'` in the password closes the token's value;
         once the userinfo is masked the value runs on to its real quote."""
         self.assertEqual(redact_secrets("token='https://u:it's@h/a.mp4'"), "token='REDACTED'")
+
+    def test_the_last_at_sign_is_found_past_deeper_ones(self):
+        """Percent-encoded `@`s after the netloc's last raw one sit deeper than
+        the URL, so the lookup has to step over them to the raw one: the mask
+        runs to it, and a `b` before it must not stay in view."""
+        for line, want in (
+            ("https://a:p@b@c%40d%40e/", "https://REDACTED@c%40d%40e/"),
+            ("https://a@b@c%40d%40e%40f/z", "https://REDACTED@c%40d%40e%40f/z"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
 
     def test_a_long_run_of_scheme_characters_is_redacted_in_linear_time(self):
         """Every line `--log-file` and the console's log tail receive goes
