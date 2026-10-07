@@ -2813,7 +2813,8 @@ class AudioStreamer:
         A CIA #1 unmask that never confirmed after a masked $C100 write
         (`_cia1_unmask_owed`) is written again here the same way, and only
         behind a $0314 restore that confirmed: a restore that fails has just
-        written the stub and its unmask itself. Unmasking without one would
+        written the stub, and an unmask already owed keeps its mask there.
+        Unmasking without one would
         undo the mask `uninstall_bank_swap_irq` leaves when its own restore is
         lost, and vector every jiffy IRQ through the stale in-RAM dispatcher."""
         if not (self._reu_pump_armed or self._irq_vector_restore_owed or self._cia1_unmask_owed):
