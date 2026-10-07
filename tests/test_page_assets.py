@@ -9,6 +9,7 @@ actually receive it, and that neither has quietly grown its own again.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -127,34 +128,78 @@ def _inline_scripts(html: str) -> list[str]:
     return [body for body in parser.bodies if body.strip()]
 
 
+# Compiles each script in the JSON manifest named by argv[1] and prints one
+# result per script, in order: null when it parses, else the error's
+# `filename:line`, the offending line, a caret and the message. A classic
+# `vm.Script` rather than a CommonJS module, because a browser runs an inline
+# `<script>` as a classic script.
+_PARSE_ALL_JS = r"""
+const fs = require('fs');
+const vm = require('vm');
+const scripts = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const results = scripts.map(({filename, source}) => {
+  try {
+    new vm.Script(source, {filename});
+    return null;
+  } catch (err) {
+    return String(err && err.stack || err).split('\n    at ')[0];
+  }
+});
+process.stdout.write(JSON.stringify(results));
+"""
+
+
 class ScriptSyntaxTest(unittest.TestCase):
     """The splice is a textual replace into each page's *existing* `<script>`
     scope, so a top-level name the shared client defines colliding with one the
     page defines is a whole-script SyntaxError — every control on the page goes
     dead, not just the socket, and the page still renders looking live. Nothing
-    else in CI parses these pages."""
+    else in CI parses these pages.
+
+    Every script goes to one `node` process rather than one each. The first
+    `node` launch on a fresh Windows runner can outlast the 20 s child bound
+    (#616), so the test starts as few as it can.
+    """
 
     def setUp(self):
         if shutil.which("node") is None:
             self.skipTest("node not on PATH")
 
     def test_every_rendered_page_parses(self):
+        scripts = []
         for name, render, _, _ in PAGES:
             with self.subTest(page=name):
                 bodies = _inline_scripts(render())
                 self.assertTrue(bodies, "page serves no inline script")
-                with tempfile.TemporaryDirectory() as tmp:
-                    for i, body in enumerate(bodies):
-                        path = os.path.join(tmp, f"{i}.js")
-                        with open(path, "w", encoding="utf-8") as fh:
-                            fh.write(body)
-                        proc = run_bounded(
-                            ["node", "--check", path],
-                            capture_output=True,
-                            text=True,
-                            check=False,
-                        )
-                        self.assertEqual(proc.returncode, 0, proc.stderr)
+                scripts += [
+                    {"page": name, "filename": f"{name} script {i}", "source": body}
+                    for i, body in enumerate(bodies)
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, "scripts.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                json.dump(scripts, fh)
+            proc = run_bounded(
+                ["node", "-e", _PARSE_ALL_JS, manifest],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        try:
+            errors = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            self.fail(
+                f"node printed no result list\nstdout: {proc.stdout!r}\nstderr: {proc.stderr}"
+            )
+        self.assertEqual(len(errors), len(scripts), proc.stdout)
+
+        for script, error in zip(scripts, errors, strict=True):
+            with self.subTest(page=script["page"], script=script["filename"]):
+                if error is not None:
+                    self.fail(error)
 
 
 if __name__ == "__main__":
