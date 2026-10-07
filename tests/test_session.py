@@ -476,7 +476,7 @@ class BuildStackHardwarePaletteTest(unittest.TestCase):
         with (
             mock.patch.object(session, "_open_backend", return_value=api),
             mock.patch.object(session, "hw_provision"),
-            mock.patch.object(session, "_build_audio", return_value=None),
+            mock.patch.object(session, "_build_audio", return_value=mock.MagicMock(name="audio")),
             mock.patch.object(session, "_resolve_reu_available", return_value=False),
             mock.patch.object(session, "_resolve_sampler_available", return_value=False),
             mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]),
@@ -524,7 +524,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
         with (
             mock.patch.object(session, "_open_backend", return_value=api),
             mock.patch.object(session, "hw_provision"),
-            mock.patch.object(session, "_build_audio", return_value=None),
+            mock.patch.object(session, "_build_audio", return_value=mock.MagicMock(name="audio")),
             mock.patch.object(session.dac_curve_resolve, "resolve_dac_curve_for_backend", resolve),
             mock.patch.object(session, "_resolve_reu_available", return_value=False),
             mock.patch.object(session, "_resolve_sampler_available", return_value=False),
