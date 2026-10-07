@@ -356,6 +356,7 @@ class ResamplerTailTest(unittest.TestCase):
 
         src = AVFileSource.__new__(AVFileSource)
         src._audio_push = lambda arr: pushed.append(int(arr.size))
+        src._audio_end = None
         src._resampler = av.AudioResampler(format="s16", layout="mono", rate=44000)
         src._atempo_graph = None
         src._closed = False
@@ -650,6 +651,7 @@ def _make_demux_source_stub(
     src.max_video_buffer = 240
     src._resampler = None
     src._audio_push = None
+    src._audio_end = None
     src._decode_target = decode_target
     src._decode_size = None
     src._decode_planned = False
@@ -1665,6 +1667,45 @@ class VideoSceneRecordBorderTeardownTest(unittest.TestCase):
         scene._av_lag_count = 0
         scene.teardown()
         scene.api.write_regs.assert_not_called()  # type: ignore[attr-defined]
+
+
+class VideoSceneEndsAudioInputTest(unittest.TestCase):
+    """setup() hands the demuxer the sink's `end_input` along with its
+    `push_samples` on both push paths, so a clip shorter than the sink's
+    prebuffer still starts it."""
+
+    def _setup(self, audio) -> mock.MagicMock:
+        scene = VideoScene(
+            api=mock.MagicMock(),
+            audio=audio,
+            display_mode=mock.MagicMock(frame_target_size=None),
+            file=STUB_VIDEO_URL,
+            setup_progress=False,
+        )
+        with (
+            mock.patch.object(scenes, "ensure_pyav", return_value=True),
+            mock.patch.object(scenes, "AVFileSource") as source_cls,
+        ):
+            scene.setup()
+        return source_cls.return_value
+
+    def test_the_dac_path_passes_end_input(self):
+        from c64cast.audio.audio import AudioStreamer
+
+        audio = mock.MagicMock(spec=AudioStreamer, effective_rate=8000.0, use_reu_pump=False)
+        source = self._setup(audio)
+        source.start.assert_called_once_with(
+            audio_push=audio.push_samples, audio_end=audio.end_input
+        )
+
+    def test_the_sampler_path_passes_end_input(self):
+        from c64cast.audio.sampler import UltimateAudioSampler
+
+        audio = mock.MagicMock(spec=UltimateAudioSampler, effective_rate=8000.0)
+        source = self._setup(audio)
+        source.start.assert_called_once_with(
+            audio_push=audio.push_samples, audio_end=audio.end_input
+        )
 
 
 class VideoSceneProcessFrameLoopTest(unittest.TestCase):

@@ -1505,7 +1505,9 @@ class VideoScene(MediaFileMixin, Scene):
                 self._audio_set_aside, self.audio = self.audio, None
                 self.source.start(audio_push=None)
             else:
-                self.source.start(audio_push=self.audio.push_samples)
+                self.source.start(
+                    audio_push=self.audio.push_samples, audio_end=self.audio.end_input
+                )
                 self.audio.start()
             progress.complete("audio-start")
         elif has_audio and getattr(self.audio, "use_reu_pump", False):
@@ -1546,7 +1548,7 @@ class VideoScene(MediaFileMixin, Scene):
         elif has_audio:
             assert isinstance(self.audio, AudioStreamer)
             self.audio.start_for_external_source()
-            self.source.start(audio_push=self.audio.push_samples)
+            self.source.start(audio_push=self.audio.push_samples, audio_end=self.audio.end_input)
         else:
             self.source.start(audio_push=None)
         progress.finish()

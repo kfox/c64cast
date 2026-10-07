@@ -795,14 +795,18 @@ class UltimateAudioSampler:
             return 0
         accepted = int(samples_int16.shape[0])
         self._pushed_samples += accepted
+        # A video's demuxer ends its input at every EOF and pushes again after
+        # a seek back (an A/B loop wrap, a resume near the end).
+        self._input_ended = False
         self._push_to_analysis(raw)
         return accepted
 
     def end_input(self) -> None:
         """The ``push_samples`` producer has ended: ``start()`` gates the ring
         on what it pushed rather than waiting out the prebuffer timeout for
-        audio that will not come. Call it after the last push returns. Leaves
-        ``position_seconds`` alone, unlike ``mark_eof``."""
+        audio that will not come. Call it after the last push returns, and
+        again after a later push: the next accepted push reopens the input.
+        Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
         self._input_ended = True
 
     def mark_eof(self) -> None:

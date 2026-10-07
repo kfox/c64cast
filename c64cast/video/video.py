@@ -776,6 +776,7 @@ class AVFileSource:
         self._closed = False
         self._demux_poll: PollThread | None = None
         self._audio_push: Callable[[np.ndarray], object] | None = None
+        self._audio_end: Callable[[], object] | None = None
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -840,12 +841,23 @@ class AVFileSource:
             return 0
         return peak
 
-    def start(self, audio_push: Callable[[np.ndarray], object] | None):
+    def start(
+        self,
+        audio_push: Callable[[np.ndarray], object] | None,
+        audio_end: Callable[[], object] | None = None,
+    ):
         """Start the demuxer thread. ``audio_push=None`` skips audio decode
         entirely — used by the REU-staged audio path where the soundtrack
         has already been pre-decoded into REU and the demuxer shouldn't
-        waste CPU decoding + resampling audio just to discard it."""
+        waste CPU decoding + resampling audio just to discard it.
+
+        ``audio_end`` is the sink's ``end_input``, called after the last push
+        of every pass that reaches EOF. Both sinks wait for a prebuffer before
+        they play, and a clip whose audio is shorter than it never fills one.
+        A seek after EOF starts pushing again, and the sink's next accepted
+        push reopens its input, so the call is safe under an A/B loop."""
         self._audio_push = audio_push
+        self._audio_end = audio_end
         # The loop's stop signal is self._closed, read by the seek/emit paths
         # too, so the PollThread event goes unused; the poll supplies only the
         # daemon-thread start/join lifecycle.
@@ -1096,6 +1108,7 @@ class AVFileSource:
                 if end == "eof":
                     self._flush_resampler()
                     self._flush_atempo()
+                    self._end_audio_input()
                     log.debug("demux %s: EOF", self.path)
                     if not self._await_seek_after_eof():
                         return
@@ -1105,6 +1118,12 @@ class AVFileSource:
             with self._lock:
                 self._eof = True
                 self._demux_exited = True
+
+    def _end_audio_input(self) -> None:
+        """Tell the sink this pass pushed its last sample (see `start`)."""
+        if self._audio_end is None or self._audio_push is None or self._closed:
+            return
+        self._audio_end()
 
     def _demux_pass(self) -> Literal["eof", "seek", "closed"]:
         """Demux from the container's current position until EOF, an applied

@@ -2810,6 +2810,9 @@ class AudioStreamer:
         # the sound.
         accepted = self._encode_and_enqueue(floats, block_on_full=True)
         if accepted:
+            # A video's demuxer ends its input at every EOF and pushes again
+            # after a seek back (an A/B loop wrap, a resume near the end).
+            self._input_ended = False
             self._push_to_analysis(floats)
         return accepted
 
@@ -2817,7 +2820,8 @@ class AudioStreamer:
         """The ``push_samples`` producer has ended: start the consumer on what
         it pushed even when that is short of the prebuffer, which otherwise
         never fills and leaves a short clip unplayed. Call it after the last
-        push returns. Cleared when the next worker starts."""
+        push returns. Cleared when the next worker starts, and by the next
+        accepted push."""
         self._input_ended = True
         # An empty blob wakes a worker parked in a priming collect, which
         # would otherwise wait out its chunk period for samples that will not
