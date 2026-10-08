@@ -1595,12 +1595,15 @@ class AlignedAudioBranchesTest(unittest.TestCase):
     def test_a_trimmed_frame_goes_through_the_atempo_graph_under_tempo_compensation(self):
         sink: list[np.ndarray] = []
         src = self._graph_stub(sink)
-        src._audio_trim = 1000
+        # A trim this long moves the output well past the graph's tolerance,
+        # so a trim that is counted but not cut fails here too.
+        trim = 4 * self.RATE
+        src._audio_trim = trim
         pcm = np.full(10 * self.RATE, 700, dtype=np.int16)
         src._emit_resampled(SimpleNamespace(to_ndarray=lambda: pcm.reshape(1, -1)))
         src._flush_atempo()
         fed = sum(a.size for a in sink)
-        self.assertAlmostEqual(fed, 0.5 * (pcm.size - 1000), delta=800)
+        self.assertAlmostEqual(fed, 0.5 * (pcm.size - trim), delta=800)
         self.assertEqual(src._audio_trim, 0)
 
     def test_a_trim_longer_than_one_resampled_frame_carries_to_the_next(self):
