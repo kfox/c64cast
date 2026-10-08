@@ -42,6 +42,12 @@ _AUDIO_DISTURBANCE_DROP_S = 0.5
 # How often a render-path link outage that is still going repeats its WARNING.
 LINK_OUTAGE_REPORT_S = 10.0
 
+# How often a scene setup the link failed asks the link whether it answers.
+SETUP_RETRY_S = 0.5
+# Setups in a row that may lose writes while the link still answers before the
+# scene is kept as the last one left it; an outage waits without a bound.
+SETUP_LOSSY_TRIES = 3
+
 
 class RenderLinkOutage:
     """Log for a render-path link outage: a WARNING when frames start failing
@@ -661,7 +667,7 @@ class Playlist:
         self._safe_prepare_next(nxt)
         self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
         self.current = self.interstitial_factory(nxt.name)
-        self.safe_setup(self.current)
+        self.safe_setup(self.current, announcing=nxt)
         self.transitioning = True
 
     def _safe_prepare_next(self, scene: Scene) -> None:
@@ -676,12 +682,16 @@ class Playlist:
                 "prepare_next failed on %r — interstitial will show a stale name", scene.name
             )
 
-    def safe_setup(self, scene: Scene) -> None:
+    def safe_setup(self, scene: Scene, *, announcing: Scene | None = None) -> None:
+        """Set `scene` up for its first frame. `announcing` is the upcoming
+        scene when `scene` is its "UP NEXT" card: the ensemble audio slot
+        claimed for that scene is the one a link outage in this setup
+        releases and claims back."""
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
-        hardware_palette.settle_for(self.api, scene)
-        scene.setup()
+        if not self._setup_through_outage(scene, announcing):
+            return
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
         if self.user_dim < 1.0:
@@ -714,6 +724,112 @@ class Playlist:
                 self.log.exception("overlay %r setup failed on %r — disabling", ov.name, scene.name)
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
+
+    def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
+        """Set `scene` up, and again once the link answers when the link
+        cost the setup a write. False when `stop_event` fired while waiting:
+        a stop while waiting for the link leaves the scene as its last setup
+        left it, and a stop while waiting to claim the ensemble audio slot
+        back leaves it already torn down. Either way the caller's teardown
+        still runs on it.
+
+        A setup lost a write when it raised a `LinkError` or moved the
+        backend's `delivery_epoch` by the end of a `flush()` after it. Most setup steps swallow a dead link
+        rather than raise it (`_emit`, `write_confirmed`, a scene that ends
+        itself when its SID player cannot start), so a raise alone would
+        let a setup that never reached the machine play as if it had: a
+        silent clip, an IRQ that was never installed, a skipped scene.
+
+        While the link does not answer the setup waits, and the time counts
+        as skipped frames in `link_outage`, without a bound, like a frame
+        the render path skips. A setup that lost writes on a link that
+        answers again at once is retried `SETUP_RETRY_S` later, up to
+        `SETUP_LOSSY_TRIES` setups in all, then kept, so a link that drops
+        writes without going down cannot hold the playlist. Every retry
+        keeps the file the scene picked (`keep_pick_for_resetup`), which
+        the "UP NEXT" card has already named."""
+        where = f"setup of {scene.name!r}"
+        lossy_tries = 0
+        while True:
+            claimant: Scene | None = None
+            started = self.link_outage.now()
+            epoch = self.api.delivery_epoch
+            error: LinkError | None = None
+            try:
+                hardware_palette.settle_for(self.api, scene)
+                scene.setup()
+                # Until a round trip drains them, the setup's last writes can
+                # still be lost to a reset that has not reached the epoch.
+                self.api.flush()
+            except LinkError as e:
+                error = e
+            if error is None and self.api.delivery_epoch == epoch:
+                self.link_outage.frame_ok(self.api.stats["writes"])
+                return True
+            if error is None:
+                error = LinkError("a write during setup may not have reached the machine")
+            frame_time = self.frame_time_for(scene)
+            self.link_outage.failed(
+                where, error, self.api.stats["writes"], started=started, frame_time=frame_time
+            )
+            if self.api.link_answers():
+                lossy_tries += 1
+                if lossy_tries >= SETUP_LOSSY_TRIES:
+                    self.log.warning(
+                        "%s lost writes %d times on a link that answers; keeping it as set up",
+                        where,
+                        lossy_tries,
+                    )
+                    return True
+                if self.stop_event.wait(SETUP_RETRY_S):
+                    return False
+            else:
+                claimant = self._release_audio_for_wait(scene, announcing, where)
+                if not self._wait_for_link(where, error, frame_time):
+                    return False
+            scene.keep_pick_for_resetup()
+            try:
+                scene.teardown()
+            except Exception:
+                self.log.exception("teardown of %r before its setup retry failed", scene.name)
+            # Not before the teardown: a half-set-up scene the link reaches
+            # again can sound (a MIDI scene's reader drives the SID) while
+            # another system holds the slot.
+            if claimant is not None and not self.ensemble_coord.wait_for_audio_claim(claimant):
+                return False
+
+    def _release_audio_for_wait(
+        self, scene: Scene, announcing: Scene | None, where: str
+    ) -> Scene | None:
+        """Release the ensemble audio slot held for `scene`, or for the
+        scene it is `announcing` as an interstitial (`audio_claimant`), and
+        return the scene to claim it back for. The wait for the link has no
+        bound, and holding the slot through it would skip another system's
+        audio-bearing scenes, or hold a single-scene one, for as long as
+        this machine is unplugged. Claiming it back can wait on the system
+        that took it meanwhile."""
+        claimant = self.ensemble_coord.audio_claimant(scene, announcing)
+        if claimant is None or not self.ensemble_coord.release_audio_claim(claimant):
+            return None
+        self.log.info("%s: releasing the ensemble audio slot until the link answers", where)
+        return claimant
+
+    def _wait_for_link(self, where: str, error: LinkError, frame_time: float) -> bool:
+        """Ask the link every `SETUP_RETRY_S` until it answers (True) or
+        `stop_event` fires (False), charging the wait to `link_outage`."""
+        while True:
+            waited_from = self.link_outage.now()
+            if self.stop_event.wait(SETUP_RETRY_S):
+                return False
+            if self.api.link_answers():
+                return True
+            self.link_outage.failed(
+                where,
+                error,
+                self.api.stats["writes"],
+                started=waited_from,
+                frame_time=frame_time,
+            )
 
     def _log_scene_recording_metadata(self, scene: Scene) -> None:
         """Log a SCENE_CONFIG_JSON snapshot of this scene's coalesced
@@ -1040,8 +1156,10 @@ class Playlist:
                     self.log.exception("playlist advance failed; aborting")
                     break
                 # loop=False end-of-playlist: `_advance` has torn down the last
-                # scene, cleared `current` and set `stop_event`.
-                if self.current is None:
+                # scene, cleared `current` and set `stop_event`. A stop while a
+                # setup waited on the link leaves a scene that never finished
+                # setting up, which must not render.
+                if self.current is None or self.stop_event.is_set():
                     break
 
                 self.menu.service()
