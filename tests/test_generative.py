@@ -2520,6 +2520,18 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         self.assertAlmostEqual(pcm.size / self.RATE, 43.0, delta=0.03)
         self.assertAlmostEqual(self._sound(pcm[40 * self.RATE :])[0], 0.0, delta=0.03)
 
+    def test_one_packet_stamped_far_behind_does_not_shift_the_rest_of_the_preload(self):
+        # Following on past the stray packet, without coming back once the
+        # stamps return, put the rest of the track that far behind its picture.
+        from c64cast.video.video import decode_audio_full
+
+        clip = self._clip(((0.0, 40.0), (2.0, 0.1), (41.0, 1.0)))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            pcm = decode_audio_full(clip, self.RATE)
+        self.assertEqual(len(logs.records), 1)
+        self.assertAlmostEqual(pcm.size / self.RATE, 42.0, delta=0.03)
+        self.assertAlmostEqual(self._sound(pcm[int(40.5 * self.RATE) :])[0], 0.5, delta=0.03)
+
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AudioFileSourceFeatureSyncTest(unittest.TestCase):

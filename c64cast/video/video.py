@@ -595,18 +595,25 @@ def decode_audio_full(
                     if origin_s is None:
                         origin_s = pts_s
                     start = pts_s - origin_s - shift
+                    jump = 0.0
                     if is_audio_discontinuity(start, fed, None):
+                        jump = start - fed
+                    elif shift < 0 and start - fed > AUDIO_DISCONTINUITY_S:
+                        # Back on the stamps a backward jump left: undo that
+                        # shift, but never place a frame before its own stamp.
+                        jump = min(start - fed, -shift)
+                    if jump:
                         if not warned:
                             warned = True
                             log.warning(
                                 "av %s: audio timestamps jump %+.1fs at %.1fs in the preload; "
                                 "following on from the audio before them",
                                 os.path.basename(path),
-                                start - fed,
+                                jump,
                                 fed,
                             )
-                        shift += start - fed
-                        start = fed
+                        shift += jump
+                        start -= jump
                 silence, cut, fed = place_audio_frame(start, duration, fed, target_sample_rate)
                 trim += cut
                 silence = min(silence, room)
