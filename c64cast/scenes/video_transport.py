@@ -85,14 +85,24 @@ class VideoTransportControls:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
         Identity except on the resync path over the DAC+bitmap tempo scale:
         there the clock advances at s×content-seconds, so divide by s to recover
-        content seconds for the transport surface (seek targets, loop A/B, OSD)."""
-        if self.touched and self.resync and self._scene.tempo_scale != 1.0:
-            return clk / self._scene.tempo_scale
+        content seconds for the transport surface (seek targets, loop A/B, OSD).
+
+        Before the touch the clock is the PTS timeline the source rebased to 0
+        at start_s and scaled by the tempo, so it is unscaled and offset back
+        to a file position: a jog or the web console reads ``position()``
+        here, before anything has touched transport."""
+        sc = self._scene
+        if not self.touched:
+            return clk / (sc.tempo_scale or 1.0) + sc.start_s
+        if self.resync and sc.tempo_scale != 1.0:
+            return clk / sc.tempo_scale
         return clk
 
     def content_to_clock(self, s: float) -> float:
         """Inverse of clock_to_content: content seconds → internal clock domain."""
-        if self.touched and self.resync and self._scene.tempo_scale != 1.0:
+        if not self.touched:
+            return (s - self._scene.start_s) * (self._scene.tempo_scale or 1.0)
+        if self.resync and self._scene.tempo_scale != 1.0:
             return s * self._scene.tempo_scale
         return s
 

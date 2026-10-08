@@ -2572,6 +2572,20 @@ class VideoSceneFrameNumberLabelTest(unittest.TestCase):
         label = self._run(scene)
         self.assertEqual(label, f"{timecode(60.0)} f{round(60.0 * 30)}")
 
+    def test_a_jog_before_the_touch_steps_from_the_file_position(self):
+        # The first FF/RW step and the web console read position() before
+        # anything has touched transport; at 8.8 s of a 0.88-scaled clock past
+        # start_s=50, +10 lands at 70, not at 18.8.
+        source = _StubSource(duration=200.0)
+        scene = _make_video_scene_stub(source, start_s=50.0)
+        scene.tempo_scale = 0.88
+        scene.wall_start_time = -8.8
+        with _freeze_time(0.0):
+            self.assertAlmostEqual(scene.transport_position(), 60.0)
+            scene.transport_seek(scene.transport_position() + 10.0)
+        self.assertEqual(len(source.seeks), 1)
+        self.assertAlmostEqual(source.seeks[0], 70.0)
+
     def test_touched_does_not_double_count_start_s(self):
         source = _StubSource(duration=None)
         scene = _make_video_scene_stub(source, start_s=50.0)

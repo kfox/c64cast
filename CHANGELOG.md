@@ -432,6 +432,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   bitmap display.** There the playback clock runs slower than the file, and
   the label showed that clock as it was: 12% short of the frame on screen.
 
+- **The first fast-forward, rewind or jog in a video steps from where it is
+  playing.** Before any transport control, a video with a `start_s`, or one
+  on the 4-bit DAC with a bitmap display, reported a position short of the
+  frame on screen, so that first step jumped backward from it, and the web
+  console's scrub bar showed the same short position.
+
 - **A seek, A/B loop wrap or resume in a video keeps the start of the sound
   it lands on.** The decoder can reach the new position and hand over its
   first sound before the old sound has been cleared out, and that sound was
