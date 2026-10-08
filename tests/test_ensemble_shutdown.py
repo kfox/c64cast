@@ -265,12 +265,112 @@ class TeardownStackOrderTest(unittest.TestCase):
             order, ["preview", "recorder", "reset", "stream_off", "api_close", "source"]
         )
 
+    def test_a_ctrl_c_in_one_step_still_runs_the_steps_under_it(self):
+        # ReleaseInterrupts.step swallows Exception only; a Ctrl+C mid-step
+        # must not cost the machine its reset or the link its close.
+        st, order = self._record_order()
+
+        def interrupted():
+            order.append("audio")
+            raise KeyboardInterrupt
+
+        st.audio.close.side_effect = interrupted
+        with self.assertLogs("c64cast", "WARNING") as logs, self.assertRaises(KeyboardInterrupt):
+            teardown_stack(st)
+        self.assertEqual(
+            order,
+            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+        )
+        self.assertIn("interrupt again to stop at once", logs.output[0])
+
+    def test_a_ctrl_c_while_logging_a_failed_step_still_runs_the_steps_under_it(self):
+        st, order = self._record_order()
+
+        def failed():
+            order.append("audio")
+            raise RuntimeError("boom")
+
+        st.audio.close.side_effect = failed
+        with (
+            unittest.mock.patch.object(session.log, "exception", side_effect=KeyboardInterrupt),
+            self.assertLogs("c64cast", "WARNING") as logs,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            teardown_stack(st)
+        self.assertEqual(
+            order,
+            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+        )
+        self.assertIn("interrupt again to stop at once", logs.output[0])
+
+    def test_a_ctrl_c_while_the_hurry_warning_is_logged_is_the_hard_stop(self):
+        release = session.ReleaseInterrupts()
+        second = KeyboardInterrupt("second")
+        ran: list[str] = []
+
+        def hurry():
+            raise KeyboardInterrupt("hurry")
+
+        with (
+            unittest.mock.patch.object(session.log, "warning", side_effect=second),
+            self.assertRaises(KeyboardInterrupt) as raised,
+        ):
+            release.step("a", "audio shutdown", hurry)
+        self.assertIs(raised.exception, second)
+        release.step("b", "U64 reset", lambda: ran.append("reset"))
+        self.assertEqual(ran, [])
+        release.raise_pending()
+
+    def test_a_second_ctrl_c_stops_at_once(self):
+        # The hard stop: whatever is left is skipped, and the interrupt that
+        # asked for it is the one that propagates.
+        st, order = self._record_order()
+        hard_stop = KeyboardInterrupt("hard stop")
+
+        def interrupted(step: str, exc: BaseException):
+            def run():
+                order.append(step)
+                raise exc
+
+            return run
+
+        st.audio.close.side_effect = interrupted("audio", KeyboardInterrupt("hurry"))
+        st.api.reset.side_effect = interrupted("reset", hard_stop)
+        with (
+            self.assertLogs("c64cast", "WARNING") as logs,
+            self.assertRaises(KeyboardInterrupt) as raised,
+        ):
+            teardown_stack(st)
+        self.assertEqual(order, ["preview", "recorder", "audio", "reset"])
+        self.assertIs(raised.exception, hard_stop)
+        self.assertIn("stopping now", logs.output[-1])
+
     def test_missing_optional_resources_skipped(self):
         # framebuffer / preview_window / recorder are all None by default.
         st = fake_system_stack("only")
         teardown_stack(st)
         st.api.reset.assert_called_once()
         st.api.close.assert_called_once()
+
+
+class RunSessionStopHandlerGapTest(unittest.TestCase):
+    """cli._run_session installs its stop handler after build_session returns;
+    a Ctrl+C in between still reaches the default handler, as a
+    KeyboardInterrupt, and must not leave every built stack held."""
+
+    def test_a_ctrl_c_before_the_stop_handler_is_installed_still_tears_down(self):
+        from c64cast.app import cli
+
+        sess = MagicMock(name="sess")
+        with (
+            unittest.mock.patch.object(session, "validate_configs"),
+            unittest.mock.patch.object(session, "build_session", return_value=sess),
+            unittest.mock.patch.object(cli.signal, "signal", side_effect=KeyboardInterrupt),
+            unittest.mock.patch.object(session, "teardown_session") as teardown,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            cli._run_session(argparse.Namespace(), MagicMock(name="loaded"), [])
+        teardown.assert_called_once_with(sess)
 
 
 if __name__ == "__main__":

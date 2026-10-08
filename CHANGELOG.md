@@ -297,6 +297,35 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   scene ended could land in the queue after the scene's teardown had
   cleared it, so it played at the start of the next scene. This was rare.
 
+- **A Ctrl+C in the instant between startup finishing and the show
+  beginning no longer leaves the machine held.** c64cast now releases it the
+  same way it does at the end of a show.
+
+- **Pressing Ctrl+C again while c64cast is releasing the machine after a
+  failed start now finishes the job instead of abandoning it.** The release
+  steps that were left (the reset, closing the connection, putting back the
+  REU, sampler, volume, video output and palette settings) still run, and
+  c64cast exits once they are done. Press Ctrl+C once more to stop at once
+  and skip what is left.
+
+- **A Ctrl+C that lands while a write to a slow machine is stuck part way no
+  longer garbles the commands after it.** The steps that still run after it
+  used to go out on the same connection, where the machine read them as the
+  rest of the cut write. On an Ultimate the connection is now dropped and
+  reopened; on a TeensyROM+ the next command first waits about a second and a
+  half for the cartridge to give up on the cut one.
+
+- **An ensemble whose second system fails to start no longer leaves the first
+  one held.** When a later system's setup failed with anything but c64cast's
+  own startup errors (an unexpected network error, say, or Ctrl+C during
+  startup), the systems already started kept their connection open and their
+  REU, sampler, master volume, video output and palette changes in place.
+
+- **`[audio].dac_curve = "calibrated"` with no calibration now fails before
+  touching the machine.** It could first switch the Ultimate's video output
+  (making a capture device re-lock), reset the C64 and change its REU and audio
+  settings, then put them all back and exit.
+
 - **An Ultimate's network dropping out for a few seconds no longer ends the
   scene.** A REU-staged video (`hires`, `mhires`, or a REU-staged character
   mode) whose link stayed down past one reconnect attempt stopped with

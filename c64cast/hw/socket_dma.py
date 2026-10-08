@@ -28,6 +28,7 @@ import struct
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
 
 from .backend import LinkError
 
@@ -286,7 +287,10 @@ class SocketDMAClient:
             if self.password is not None:
                 self._authenticate_locked()
             self.product = self._identify_locked()
-        except Exception:
+        except BaseException:
+            # BaseException: a KeyboardInterrupt between AUTHENTICATE's send
+            # and its read leaves the reply unread on a socket no wire call
+            # was cut on.
             self._close_locked()
             raise
         self._note_answered_locked()
@@ -322,9 +326,13 @@ class SocketDMAClient:
 
     def _identify_roundtrip_locked(self) -> bytes:
         """Send IDENTIFY and return the reply's payload."""
-        self._send_cmd_locked(CMD_IDENTIFY, b"")
-        length = self._recv_exact_locked(1)[0]
-        return self._recv_exact_locked(length)
+        # Guarded whole, not only per wire call: an interrupt landing between
+        # the send and the reads leaves the reply in flight, and the next
+        # flush() would read it as its own.
+        with self._whole_frame_locked(sending=False):
+            self._send_cmd_locked(CMD_IDENTIFY, b"")
+            length = self._recv_exact_locked(1)[0]
+            return self._recv_exact_locked(length)
 
     def _identify_locked(self) -> str:
         assert self._sock is not None
@@ -377,7 +385,11 @@ class SocketDMAClient:
                 f"{_MAX_COMMAND_PAYLOAD}-byte wire length field"
             )
         header = struct.pack("<HH", opcode, len(payload))
-        self._sock.sendall(header + payload)
+        # IDENTIFY and AUTHENTICATE leave C64 memory alone, so a cut one
+        # loses nothing.
+        changes_memory = opcode not in (CMD_IDENTIFY, CMD_AUTHENTICATE)
+        with self._whole_frame_locked(sending=changes_memory):
+            self._sock.sendall(header + payload)
 
     def _recv_exact_locked(self, n: int) -> bytes:
         """Read exactly `n` bytes, bounded by one `io_timeout` total rather
@@ -386,23 +398,49 @@ class SocketDMAClient:
         would otherwise keep this loop (and the process-wide lock it runs
         under) spinning indefinitely."""
         assert self._sock is not None
+        sock = self._sock
         deadline = time.monotonic() + self.io_timeout
         buf = bytearray()
-        try:
-            while len(buf) < n:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(f"timed out waiting for {n} bytes ({len(buf)} received)")
-                self._sock.settimeout(remaining)
-                chunk = self._sock.recv(n - len(buf))
-                if not chunk:
-                    raise ConnectionError("socket closed mid-read")
-                buf.extend(chunk)
-        finally:
-            # Restore the steady-state per-call timeout so the next command's
-            # sendall doesn't inherit this read's remaining deadline.
-            self._sock.settimeout(self.io_timeout)
+        with self._whole_frame_locked(sending=False):
+            try:
+                while len(buf) < n:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"timed out waiting for {n} bytes ({len(buf)} received)")
+                    sock.settimeout(remaining)
+                    chunk = sock.recv(n - len(buf))
+                    if not chunk:
+                        raise ConnectionError("socket closed mid-read")
+                    buf.extend(chunk)
+            finally:
+                # Restore the steady-state per-call timeout so the next command's
+                # sendall doesn't inherit this read's remaining deadline.
+                sock.settimeout(self.io_timeout)
         return bytes(buf)
+
+    @contextlib.contextmanager
+    def _whole_frame_locked(self, *, sending: bool) -> Iterator[None]:
+        """Abandon the connection when anything but an ``OSError`` leaves a
+        send or a read part way through: a ``KeyboardInterrupt`` raised by the
+        signal handler inside a blocked ``sendall`` or ``recv``, typically.
+
+        The server cannot tell where the cut fell, so the next command on this
+        connection would be read as the rest of the cut one, its header
+        landing in C64 memory as payload and its payload parsed as headers;
+        the next reply read would be the tail of the cut one. An ``OSError``
+        is left to the caller, which already maps each one to a redial, a
+        close or a ``SocketDMAError``. A cut send counts as unconfirmed when
+        ``sending``, so the abandonment is a possible loss even if nothing
+        else was."""
+        try:
+            yield
+        except OSError:
+            raise
+        except BaseException:
+            if sending:
+                self._unconfirmed = True
+            self._abandon_locked("a command was cut part way through")
+            raise
 
     def _note_answered_locked(self) -> None:
         """Record an answered round trip: every command sent on this

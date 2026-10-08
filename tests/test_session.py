@@ -287,13 +287,119 @@ class BuildSessionTest(unittest.TestCase):
                 session, "build_stack", side_effect=[*built, session.StackBuildError(4)]
             ),
             mock.patch.object(
-                session, "teardown_stack", side_effect=lambda st: torn.append(st.name)
+                session, "teardown_stack", side_effect=lambda st, _interrupts: torn.append(st.name)
             ),
         ):
             with self.assertRaises(session.StackBuildError) as cm:
                 session.build_session(_args(), loaded, loaded.cfgs)
         self.assertEqual(cm.exception.exit_code, 4)
         self.assertEqual(torn, ["b", "a"])
+
+    def test_any_exception_from_a_later_build_tears_down_what_came_up(self):
+        # A provisioning step raising an OSError or RuntimeError, or a Ctrl+C
+        # mid-build, leaves system a's socket and provisioning just as held.
+        for exc in (OSError("socket"), RuntimeError("streamer"), KeyboardInterrupt()):
+            loaded = _loaded(["a", "b", "c"], is_ensemble=True)
+            built = [fake_system_stack("a"), fake_system_stack("b")]
+            with (
+                self.subTest(exc=type(exc).__name__),
+                mock.patch.object(session, "build_stack", side_effect=[*built, exc]),
+                mock.patch.object(session, "teardown_stack") as teardown,
+            ):
+                with self.assertRaises(type(exc)) as cm:
+                    session.build_session(_args(), loaded, loaded.cfgs)
+                self.assertIs(cm.exception, exc)
+                torn = [c.args[0].name for c in teardown.call_args_list]
+                self.assertEqual(torn, ["b", "a"])
+
+    def test_a_teardown_that_raises_still_tears_down_the_stacks_under_it(self):
+        # A second Ctrl+C while system b's teardown runs must not strand a.
+        loaded = _loaded(["a", "b", "c"], is_ensemble=True)
+        built = [fake_system_stack("a"), fake_system_stack("b")]
+        torn: list[str] = []
+
+        def teardown(st, _interrupts):
+            torn.append(st.name)
+            if st.name == "b":
+                raise KeyboardInterrupt
+
+        with (
+            mock.patch.object(
+                session, "build_stack", side_effect=[*built, session.StackBuildError(4)]
+            ),
+            mock.patch.object(session, "teardown_stack", side_effect=teardown),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                session.build_session(_args(), loaded, loaded.cfgs)
+        self.assertEqual(torn, ["b", "a"])
+
+    def test_a_failure_wiring_the_ensemble_tears_down_every_stack(self):
+        loaded = _loaded(["a", "b"], is_ensemble=True)
+        built = [fake_system_stack("a"), fake_system_stack("b")]
+        built[1].playlist.bind_ensemble.side_effect = KeyboardInterrupt
+        with (
+            mock.patch.object(session, "build_stack", side_effect=built),
+            mock.patch.object(session, "teardown_stack") as teardown,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                session.build_session(_args(), loaded, loaded.cfgs)
+        torn = [c.args[0].name for c in teardown.call_args_list]
+        self.assertEqual(torn, ["b", "a"])
+
+    def test_a_successful_build_tears_nothing_down(self):
+        loaded = _loaded(["a", "b"], is_ensemble=True)
+        built = [fake_system_stack("a"), fake_system_stack("b")]
+        with (
+            mock.patch.object(session, "build_stack", side_effect=built),
+            mock.patch.object(session, "teardown_stack") as teardown,
+        ):
+            session.build_session(_args(), loaded, loaded.cfgs)
+        teardown.assert_not_called()
+
+    def _unwind_with_interrupts(self, b_steps: dict[str, BaseException]):
+        """build_session with a and b built and c failing; each of b's named
+        steps (``audio`` / ``reset``) raises its interrupt. Returns a, b and
+        what propagated."""
+        loaded = _loaded(["a", "b", "c"])
+        a, b = fake_system_stack("a"), fake_system_stack("b")
+        for st in (a, b):
+            st.audio = mock.MagicMock(name=f"audio-{st.name}")
+        if "audio" in b_steps:
+            b.audio.close.side_effect = b_steps["audio"]
+        if "reset" in b_steps:
+            b.api.reset.side_effect = b_steps["reset"]
+        with (
+            mock.patch.object(
+                session, "build_stack", side_effect=[a, b, session.StackBuildError(4)]
+            ),
+            self.assertLogs("c64cast", "WARNING"),
+            self.assertRaises(BaseException) as raised,
+        ):
+            session.build_session(_args(), loaded, loaded.cfgs)
+        return a, b, raised.exception
+
+    def test_a_ctrl_c_during_the_unwind_still_releases_every_stack(self):
+        # "Hurry": b finishes its steps, a is still released, and the
+        # interrupt propagates once they are done.
+        hurry = KeyboardInterrupt("hurry")
+        a, b, raised = self._unwind_with_interrupts({"audio": hurry})
+        self.assertIs(raised, hurry)
+        b.api.reset.assert_called_once()
+        b.api.close.assert_called_once()
+        a.audio.close.assert_called_once()
+        a.api.reset.assert_called_once()
+        a.api.close.assert_called_once()
+
+    def test_a_second_ctrl_c_during_the_unwind_stops_every_stack_at_once(self):
+        hard_stop = KeyboardInterrupt("hard stop")
+        a, b, raised = self._unwind_with_interrupts(
+            {"audio": KeyboardInterrupt("hurry"), "reset": hard_stop}
+        )
+        self.assertIs(raised, hard_stop)
+        b.api.close.assert_not_called()
+        a.audio.close.assert_not_called()
+        a.api.reset.assert_not_called()
+        a.api.close.assert_not_called()
 
     def test_ensemble_mode_binds_every_playlist(self):
         loaded = _loaded(["a", "b"], is_ensemble=True)
@@ -517,13 +623,14 @@ class BuildStackDacCurveTest(unittest.TestCase):
     build_session tears down the stacks that did come up."""
 
     def _build(self, cfg: cfgmod.Config, resolve: mock.MagicMock) -> None:
-        api = mock.MagicMock(name="api")
+        api = self.api = mock.MagicMock(name="api")
         api.profile.max_fps = None
         api.disable_case_switch.side_effect = session.StackBuildError(4)
         api.read_menu_screen.return_value = None
+        self.hw_provision = mock.MagicMock(name="hw_provision")
         with (
             mock.patch.object(session, "_open_backend", return_value=api),
-            mock.patch.object(session, "hw_provision"),
+            mock.patch.object(session, "hw_provision", self.hw_provision),
             mock.patch.object(session, "_build_audio", return_value=mock.MagicMock(name="audio")),
             mock.patch.object(session.dac_curve_resolve, "resolve_dac_curve_for_backend", resolve),
             mock.patch.object(session, "_resolve_reu_available", return_value=False),
@@ -548,6 +655,24 @@ class BuildStackDacCurveTest(unittest.TestCase):
             self._build(cfg, resolve)
         self.assertEqual(raised.exception.exit_code, 3)
         self.assertIn("no usable calibration", "\n".join(cm.output))
+
+    def test_a_missing_calibration_fails_before_the_machine_is_touched(self):
+        # Master volume, the HDMI mode switch (a capture device re-locks on it)
+        # and the reset would all happen only to be reverted by the unwind.
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        resolve = mock.MagicMock(side_effect=ValueError("no usable calibration"))
+        with (
+            self.assertLogs("c64cast", "ERROR"),
+            self.assertRaises(session.StackBuildError),
+        ):
+            self._build(cfg, resolve)
+        resolve.assert_called_once()
+        self.assertEqual(
+            [c[0] for c in self.hw_provision.mock_calls if c[0].startswith("provision_")], []
+        )
+        self.api.reset.assert_not_called()
+        self.api.close.assert_called_once()
 
     def test_a_run_without_audio_resolves_no_curve(self):
         cfg = cfgmod.Config()
@@ -607,6 +732,59 @@ class StartServicesTest(unittest.TestCase):
         start.assert_not_called()
 
 
+class BuildStackReleaseInterruptTest(unittest.TestCase):
+    """build_stack called on its own owns the Ctrl+C count for its failure
+    ladder: a "hurry" finishes the ladder and then replaces the build error, a
+    second one stops it at once. (Under build_session the caller owns both.)"""
+
+    def _build_that_fails(self, **restore_effects: BaseException) -> None:
+        api = mock.MagicMock(name="api")
+        api.profile.max_fps = None
+        api.disable_case_switch.side_effect = session.StackBuildError(4)
+        api.read_menu_screen.return_value = None
+        hw = mock.MagicMock(name="hw_provision")
+        for restore, exc in restore_effects.items():
+            getattr(hw, restore).side_effect = exc
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        cfg.audio.enabled = False
+        with (
+            mock.patch.object(session, "_open_backend", return_value=api),
+            mock.patch.object(session, "hw_provision", hw),
+            mock.patch.object(session.dac_curve_resolve, "resolve_dac_curve_for_backend"),
+            mock.patch.object(session, "_resolve_reu_available", return_value=False),
+            mock.patch.object(session, "_resolve_sampler_available", return_value=False),
+            mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]),
+            mock.patch.object(session.char_rom, "ensure_installed"),
+            mock.patch.object(session.time, "sleep"),
+            mock.patch.object(session.hardware_palette, "provision_hardware_palette"),
+            self.assertLogs("c64cast", "WARNING"),
+            self.assertRaises(BaseException) as raised,
+        ):
+            session.build_stack(
+                cfg, "a", stop_event=threading.Event(), profiler=mock.MagicMock(name="profiler")
+            )
+        self.raised = raised.exception
+        self.hw = hw
+        self.api = api
+
+    def test_a_ctrl_c_in_the_failure_ladder_finishes_it_and_replaces_the_build_error(self):
+        hurry = KeyboardInterrupt("hurry")
+        self._build_that_fails(restore_sampler=hurry)
+        self.assertIs(self.raised, hurry)
+        self.hw.restore_reu.assert_called_once()
+        self.api.close.assert_called_once()
+
+    def test_a_second_ctrl_c_in_the_failure_ladder_stops_it_at_once(self):
+        hard_stop = KeyboardInterrupt("hard stop")
+        self._build_that_fails(
+            restore_master_volume=KeyboardInterrupt("hurry"), restore_sampler=hard_stop
+        )
+        self.assertIs(self.raised, hard_stop)
+        self.hw.restore_reu.assert_not_called()
+        self.api.close.assert_not_called()
+
+
 class TeardownSessionTest(unittest.TestCase):
     def test_order_is_inputs_then_servers_then_stacks_reversed(self):
         sess = _session("a", "b")
@@ -618,10 +796,70 @@ class TeardownSessionTest(unittest.TestCase):
         sess.control_server = mock.MagicMock()
         sess.control_server.stop.side_effect = lambda: order.append("control")
         with mock.patch.object(
-            session, "teardown_stack", side_effect=lambda st: order.append(f"stack-{st.name}")
+            session,
+            "teardown_stack",
+            side_effect=lambda st, _interrupts: order.append(f"stack-{st.name}"),
         ):
             session.teardown_session(sess, save_live_tune=False)
         self.assertEqual(order, ["midi", "wled", "control", "stack-b", "stack-a"])
+
+    def test_a_teardown_that_raises_still_tears_down_the_stacks_under_it(self):
+        # A second Ctrl+C while system b's teardown runs must not cost a its
+        # final reset.
+        sess = _session("a", "b")
+        torn: list[str] = []
+
+        def teardown(st, _interrupts):
+            torn.append(st.name)
+            if st.name == "b":
+                raise KeyboardInterrupt
+
+        with mock.patch.object(session, "teardown_stack", side_effect=teardown):
+            with self.assertRaises(KeyboardInterrupt):
+                session.teardown_session(sess, save_live_tune=False)
+        self.assertEqual(torn, ["b", "a"])
+
+    def _teardown_with_interrupts(self, b_steps: dict[str, BaseException]):
+        """teardown_session over real teardown_stack calls, a and b built; each
+        of b's named steps (``audio`` / ``reset``) raises its interrupt. Returns
+        a, b and what propagated."""
+        sess = _session("a", "b")
+        a, b = sess.stacks
+        for st in (a, b):
+            st.audio = mock.MagicMock(name=f"audio-{st.name}")
+        if "audio" in b_steps:
+            b.audio.close.side_effect = b_steps["audio"]
+        if "reset" in b_steps:
+            b.api.reset.side_effect = b_steps["reset"]
+        with (
+            self.assertLogs("c64cast", "WARNING"),
+            self.assertRaises(BaseException) as raised,
+        ):
+            session.teardown_session(sess, save_live_tune=False)
+        return a, b, raised.exception
+
+    def test_a_ctrl_c_in_one_stack_still_releases_every_stack_then_propagates(self):
+        # "Hurry", counted across stacks: b finishes its steps, a is released,
+        # and the interrupt is raised once they are done.
+        hurry = KeyboardInterrupt("hurry")
+        a, b, raised = self._teardown_with_interrupts({"audio": hurry})
+        self.assertIs(raised, hurry)
+        b.api.reset.assert_called_once()
+        b.api.close.assert_called_once()
+        a.audio.close.assert_called_once()
+        a.api.reset.assert_called_once()
+        a.api.close.assert_called_once()
+
+    def test_a_second_ctrl_c_stops_every_stack_at_once(self):
+        hard_stop = KeyboardInterrupt("hard stop")
+        a, b, raised = self._teardown_with_interrupts(
+            {"audio": KeyboardInterrupt("hurry"), "reset": hard_stop}
+        )
+        self.assertIs(raised, hard_stop)
+        b.api.close.assert_not_called()
+        a.audio.close.assert_not_called()
+        a.api.reset.assert_not_called()
+        a.api.close.assert_not_called()
 
     def test_the_playlists_are_stopped_and_drained_before_the_stacks(self):
         # teardown_stack closes audio, resets and closes the API. Running that
@@ -639,7 +877,7 @@ class TeardownSessionTest(unittest.TestCase):
         t.start()
         sess.threads = [t]
         with mock.patch.object(
-            session, "teardown_stack", side_effect=lambda st: order.append("stack")
+            session, "teardown_stack", side_effect=lambda st, _interrupts: order.append("stack")
         ):
             session.teardown_session(sess, save_live_tune=False)
         self.assertEqual(order, ["thread", "stack"])

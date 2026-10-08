@@ -1258,5 +1258,129 @@ class RedialBackoffTest(unittest.TestCase):
         self.assertGreater(api.delivery_epoch, before)
 
 
+class _CutSocket(FakeSocket):
+    """A connection whose next send or read is cut part way by an interrupt,
+    the way the signal handler raises out of a blocked sendall or recv."""
+
+    def __init__(self, replies: list[bytes] | None = None):
+        super().__init__(replies)
+        self.cut_next_send = False
+        self.cut_next_recv = False
+
+    def sendall(self, data: bytes) -> None:
+        if self.cut_next_send:
+            self.cut_next_send = False
+            self.sent.extend(data[:3])
+            raise KeyboardInterrupt
+        super().sendall(data)
+
+    def recv(self, n: int, flags: int = 0) -> bytes:
+        if self.cut_next_recv and not flags & socket.MSG_PEEK:
+            self.cut_next_recv = False
+            out = super().recv(1)
+            if out:
+                raise KeyboardInterrupt
+            return out
+        return super().recv(n, flags)
+
+
+class CutCommandTest(unittest.TestCase):
+    """A command cut part way leaves the server reading the next one as its
+    remainder, so the connection is abandoned and the next command redials."""
+
+    _WRITE = b"\x06\xff\x03\x00\x20\xd0\x0e"
+
+    def _next_write_redials(self, fake1: _CutSocket, c: SocketDMAClient) -> FakeSocket:
+        self.assertIsNone(c._sock)
+        self.assertTrue(fake1.closed)
+        sent_before = bytes(fake1.sent)
+        fake2 = FakeSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD020, b"\x0e")
+        self.assertEqual(bytes(fake1.sent), sent_before)
+        self.assertTrue(bytes(fake2.sent).endswith(self._WRITE))
+        return fake2
+
+    def test_a_write_cut_mid_send_abandons_the_connection(self):
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            c.dmawrite(0xD020, b"\x0e")
+        fake2 = self._next_write_redials(fake1, c)
+        # The cut write may not have run, so the next flush says so once.
+        self.assertEqual(c.possible_loss_count, 1)
+        fake2._replies.extend([_IDENT_REPLY, _IDENT_REPLY])
+        with self.assertRaises(ConnectionError):
+            c.flush()
+        c.flush()
+
+    def test_a_flush_cut_mid_reply_abandons_the_connection(self):
+        fake1 = _CutSocket([_IDENT_REPLY, _IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.cut_next_recv = True
+        with self.assertRaises(KeyboardInterrupt):
+            c.flush()
+        self._next_write_redials(fake1, c)
+        # Nothing went out unconfirmed, so nothing counts as lost.
+        self.assertEqual(c.possible_loss_count, 0)
+
+    def test_a_handshake_cut_mid_reply_leaves_no_socket_behind(self):
+        fake1 = _CutSocket([_IDENT_REPLY])
+        fake1.cut_next_recv = True
+        c = _client_with(fake1, connect=False)
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake1):
+            with self.assertRaises(KeyboardInterrupt):
+                c.connect()
+        self.assertIsNone(c._sock)
+        self.assertTrue(fake1.closed)
+
+    def test_a_flush_cut_between_send_and_reply_abandons_the_connection(self):
+        # The interrupt lands after IDENTIFY went out and before its read
+        # began, so neither wire call saw it; the reply is still owed.
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        with patch.object(c, "_recv_exact_locked", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                c.flush()
+        self._next_write_redials(fake1, c)
+        self.assertEqual(c.possible_loss_count, 0)
+
+    def test_a_cut_identify_send_counts_no_loss(self):
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            c.flush()
+        fake2 = self._next_write_redials(fake1, c)
+        self.assertEqual(c.possible_loss_count, 0)
+        fake2._replies.append(_IDENT_REPLY)
+        c.flush()
+
+    def test_a_handshake_cut_between_send_and_reply_closes_the_socket(self):
+        fake1 = _CutSocket([b"\x01", _IDENT_REPLY])
+        c = _client_with(fake1, password="hunter2", connect=False)
+        with (
+            patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake1),
+            patch.object(c, "_recv_exact_locked", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            c.connect()
+        self.assertIsNone(c._sock)
+        self.assertTrue(fake1.closed)
+
+    def test_an_os_error_keeps_its_own_handling(self):
+        # The send-failure path still redials and retries on the same call.
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.fail_sendalls_remaining = 1
+        fake2 = FakeSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD020, b"\x0e")
+        self.assertTrue(bytes(fake2.sent).endswith(self._WRITE))
+
+
 if __name__ == "__main__":
     unittest.main()
