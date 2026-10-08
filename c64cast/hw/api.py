@@ -1778,6 +1778,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     def _possible_loss_count(self) -> int:
         return self.socket_dma.check_for_loss()
 
+    @property
+    def link_generation(self) -> int:
+        return self.socket_dma.reconnect_count
+
     def _emit(self, addr: int, payload: bytes) -> None:
         """Route a write through Socket DMA. On OSError or SocketDMAError
         (server died completely, reconnect failed, or mid-handshake

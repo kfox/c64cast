@@ -11,15 +11,21 @@ behavior, log lines and event semantics are unchanged.
   config save-back flow.
 * ``EnsembleCoordinator`` — everything multi-system: audio-slot gating,
   conductor install/release, and the broadcast-follower interlude.
+* ``MachineRestartWatch`` — tells a machine that restarted under a running
+  scene from a link that only dropped out.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
+import os
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from c64cast.hw.backend import LinkError
+from c64cast.hw.backend import C64Backend, LinkError
+from c64cast.hw.delivery import write_confirmed
 
 if TYPE_CHECKING:
     from c64cast.scenes.scenes import Scene
@@ -533,3 +539,100 @@ class EnsembleCoordinator:
         # `_advance()` re-sets-up the scene at `playlist.index` on the next
         # iteration, so the broadcast's exit pins it back.
         pl.index = saved_idx
+
+
+# Eight bytes the KERNAL leaves unused and its RAMTAS zeroes on every reset,
+# power-on included. The rest of page 3 holds the vectors a restart rewrites
+# anyway, and RAM from $0400 up survives a reset's memory test.
+RESTART_SENTINEL_ADDR = 0x0334
+RESTART_SENTINEL_LEN = 8
+# The fewest seconds between two sentinel reads while the link keeps changing.
+RESTART_CHECK_MIN_S = 2.0
+
+
+class MachineRestartWatch:
+    """Tells a machine that restarted under a running scene (a power blip, a
+    firmware crash) from a link that only dropped out. At the socket the two
+    look the same, but a restart loses everything the scene's setup put on
+    the machine, and the live+volatile configuration `hw_provision` set.
+
+    `arm()` writes a per-run nonce where a C64 reset zeroes it. After a
+    frame whose writes landed, `after_frame()` reads it back over REST,
+    but only once the backend's `delivery_epoch` or `link_generation` has
+    moved since the last look, and at most every `RESTART_CHECK_MIN_S`: a
+    machine reached on the same connection, losing nothing, has not
+    restarted. A periodic read was rejected because REST polling during
+    playback is what wedges the Ultimate. A read that fails is tried again
+    later rather than taken as a restart.
+
+    A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
+    nonce too, so the backend's reset listener re-arms it after the next
+    frame. Only a backend that reads memory and reports its own resets
+    (`add_reset_listener`) is watched."""
+
+    def __init__(
+        self,
+        api: C64Backend,
+        log: logging.Logger,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._api = api
+        self._log = log
+        self._clock = clock
+        add_listener = getattr(api, "add_reset_listener", None)
+        profile = getattr(api, "profile", None)
+        self.enabled = getattr(profile, "supports_read", False) is True and callable(add_listener)
+        self._nonce = bytes(b | 0x01 for b in os.urandom(RESTART_SENTINEL_LEN))
+        self._armed = False
+        self._rearm = False
+        self._marks = (0, 0)
+        self._next_check = 0.0
+        if self.enabled:
+            assert add_listener is not None
+            add_listener(self._after_reset)
+
+    def _after_reset(self) -> None:
+        self._rearm = True
+
+    def _current_marks(self) -> tuple[int, int]:
+        return self._api.delivery_epoch, self._api.link_generation
+
+    def arm(self) -> None:
+        """Write the nonce, after a setup or a reset c64cast issued. One the
+        link loses leaves the watch disarmed, so a lost write is never read
+        back as a restart."""
+        if not self.enabled:
+            return
+        self._rearm = False
+        self._armed = write_confirmed(
+            self._api,
+            lambda: self._api.write_memory_file(f"{RESTART_SENTINEL_ADDR:04X}", self._nonce),
+        )
+        self._marks = self._current_marks()
+
+    def after_frame(self, landed: bool) -> bool:
+        """True when the machine restarted since the nonce was written.
+        `landed`: the frame raised no link error and the backend's write
+        count moved, so the link reaches the machine now."""
+        if not self.enabled:
+            return False
+        if self._rearm:
+            self.arm()
+            return False
+        if not self._armed or not landed:
+            return False
+        marks = self._current_marks()
+        if marks == self._marks:
+            return False
+        now = self._clock()
+        if now < self._next_check:
+            return False
+        self._next_check = now + RESTART_CHECK_MIN_S
+        seen = self._api.read_memory(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        if seen is None:
+            return False
+        self._marks = marks
+        if seen == self._nonce:
+            return False
+        self._armed = False
+        return True

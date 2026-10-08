@@ -578,6 +578,42 @@ class ReleaseInterrupts:
             raise self._pending
 
 
+def _restore_after_machine_restart(
+    cfg: cfgmod.Config,
+    api: C64Backend,
+    dac_curve: dac_curve_resolve.DacCurve | None,
+) -> None:
+    """Put back what a restart of the machine mid-run took from it: the
+    live+volatile configuration `build_stack` provisioned and the idle BASIC
+    loop. The originals the run restores at teardown were recorded before
+    the restart, and a restart reverts the machine to the same saved
+    values, so what each provisioner returns here is not kept. Each step is
+    best-effort, as at startup."""
+    steps: tuple[tuple[str, Callable[[], object]], ...] = (
+        ("REU", lambda: hw_provision.provision_reu(api, cfg)),
+        ("sampler", lambda: hw_provision.provision_sampler(api, cfg)),
+        ("master volume", lambda: hw_provision.provision_master_volume(api, cfg)),
+        ("video output", lambda: hw_provision.provision_video_output(api, cfg)),
+        (
+            "DAC chip model",
+            lambda: (
+                dac_curve_resolve.provision_calibrated_chip_model(api, dac_curve)
+                if dac_curve is not None
+                else None
+            ),
+        ),
+        # The clear loop's run_prg resets the machine itself, which also re-runs
+        # the KERNAL's PAL/NTSC detection against any video timing set above.
+        ("BASIC clear loop", api.run_basic_clear_loop),
+        ("case switch", api.disable_case_switch),
+    )
+    for label, fn in steps:
+        try:
+            fn()
+        except Exception:
+            log.exception("[machine restart] %s failed", label)
+
+
 def build_stack(
     cfg: cfgmod.Config,
     name: str,
@@ -814,6 +850,8 @@ def _acquire_stack(
     # api/audio/source/cfg because the playlist cannot build scenes itself. Called
     # on a background thread during the count-in; `setup()` runs later, on the
     # playlist thread, at the swap.
+    playlist.on_machine_restart = lambda: _restore_after_machine_restart(cfg, api, dac_curve)
+
     playlist.build_performance_scene = _performance_scene_factory(
         cfg,
         api,

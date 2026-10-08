@@ -21,7 +21,12 @@ from c64cast.hw import hardware_palette
 from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.scenes.scenes import Scene
 
-from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
+from .playlist_support import (
+    EnsembleCoordinator,
+    MachineRestartWatch,
+    PlaylistMenu,
+    SceneFades,
+)
 from .profiler import FrameProfiler, NullProfiler
 
 if TYPE_CHECKING:
@@ -178,6 +183,13 @@ class Playlist:
         self.fades = SceneFades(self, duration_s=fade_duration_s)
         self.api = api
         self.link_outage = RenderLinkOutage(self.log)
+        self.restart_watch = MachineRestartWatch(api, self.log)
+        # Puts back what a machine restart lost before the scene sets up again:
+        # the run's live+volatile config and the idle BASIC loop. The session
+        # wires it, because only it holds the config those came from.
+        self.on_machine_restart: Callable[[], None] | None = None
+        # Whether the last frame raised no link error and landed a write.
+        self._frame_landed = False
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -692,6 +704,7 @@ class Playlist:
         scene.clock_modulation = self._clock_modulation
         if not self._setup_through_outage(scene, announcing):
             return
+        self.restart_watch.arm()
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
         if self.user_dim < 1.0:
@@ -724,6 +737,32 @@ class Playlist:
                 self.log.exception("overlay %r setup failed on %r — disabling", ov.name, scene.name)
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
+
+    def _set_up_again_after_restart(self) -> None:
+        """The machine restarted under the current scene, so what its setup
+        put there is gone. Put back the run's machine state, then tear the
+        scene down and set it up again, keeping its pick, the way
+        single-scene looping does. Ending the scene instead was rejected:
+        with `loop = false` a one-scene show would stop on a power blip."""
+        scene = self.current
+        if scene is None:
+            return
+        self.log.warning(
+            "the machine restarted during %r, losing what its setup put there; setting it up again",
+            scene.name,
+        )
+        if self.on_machine_restart is not None:
+            try:
+                self.on_machine_restart()
+            except Exception:
+                self.log.exception("restoring the machine's state after its restart failed")
+        scene.keep_pick_for_resetup()
+        self.safe_teardown(scene)
+        if not self.ensemble_coord.wait_for_audio_claim(scene):
+            self.current = None
+            return
+        self.safe_setup(scene)
+        scene.is_done = False
 
     def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
         """Set `scene` up, and again once the link answers when the link
@@ -921,7 +960,8 @@ class Playlist:
                     self.stop_event.wait(timeout=next_deadline - t0)
                 t0 = time.time()
 
-            stats_before = self.api.stats
+            # A copy: a backend may hand back its live dict.
+            stats_before = dict(self.api.stats)
 
             # Before the scene composes, so the opening frames render
             # progressively brighter over live playback.
@@ -936,6 +976,9 @@ class Playlist:
             still_active, link_failure = self._render_scene_frame(scene, t0)
 
             stats_after = self.api.stats
+            self._frame_landed = (
+                link_failure is None and stats_after["writes"] > stats_before["writes"]
+            )
             if link_failure is not None:
                 self.link_outage.failed(
                     *link_failure,
@@ -1171,6 +1214,9 @@ class Playlist:
                     continue
                 self.menu.repaint = False
                 next_deadline = self.run_one_frame(self.current, next_deadline)
+                if self.restart_watch.after_frame(self._frame_landed):
+                    self._set_up_again_after_restart()
+                    next_deadline = time.time()
         except KeyboardInterrupt:
             self.log.info("interrupted")
         finally:

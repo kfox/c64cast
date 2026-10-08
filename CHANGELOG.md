@@ -341,6 +341,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   (making a capture device re-lock), reset the C64 and change its REU and audio
   settings, then put them all back and exit.
 
+- **A scene now recovers when the Ultimate restarts under it** (a power blip
+  or a firmware crash). It used to keep running against a machine that had
+  lost its picture setup, its audio setup and the REU and sampler settings
+  c64cast had turned on, so the rest of the scene showed the BASIC screen.
+  Now c64cast notices the restart once the link answers again, logs it, puts
+  those settings back and starts the scene over.
+
 - **A network dropout on an Ultimate that spans a scene change no longer
   spoils the next scene.** A scene that started while the link was down used
   to play as if its setup had reached the machine: a video's audio stayed
