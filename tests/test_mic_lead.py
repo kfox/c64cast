@@ -595,6 +595,29 @@ class MicLeadOpenLoopTest(unittest.TestCase):
         self.assertEqual(rig.reads - reads, 2)
         self.assertEqual(rig.servo.reanchors, 1)
 
+    def test_a_reread_off_the_trusted_phase_is_torn(self):
+        # The re-read's (R, W) goes to the ring governor, so its dst tracker
+        # has to pass the same lockstep check as any other trusted reading.
+        rig = self._closed()
+        rig.host += ml.MIC_LEAD_REANCHOR_ABOVE
+        trk = REU_AUDIO_SRC_TRACKER_ADDR - ml.MIC_PUMP_SPAN_ADDR
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            raw = rig.read(address, length, timeout)
+            if raw is None or rig.reads != 2:
+                return raw
+            garbled = bytearray(raw)
+            w = int.from_bytes(raw[trk + 3 : trk + 5], "little") - RING_BUFFER_ADDR
+            w = RING_BUFFER_ADDR + (w + 0x0C00) % RING_BUFFER_SIZE
+            garbled[trk + 3 : trk + 5] = w.to_bytes(2, "little")
+            return bytes(garbled)
+
+        rig.reads = 0
+        rig.servo._read = read
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG"):
+            self.assertIsNone(rig.servo.tick())
+        self.assertEqual((rig.reads, rig.servo.reanchors, rig.servo._fails), (2, 0, 1))
+
     def test_a_lap_on_a_stalled_pump_with_slow_reads_is_reanchored(self):
         # The pump halts and the host keeps writing, so the lead grows by
         # the host's rate across the two reads: 1800 B for 0.15 s reads. That

@@ -670,7 +670,7 @@ class MicLeadServo:
         the lead 8 KB high or low: past the re-anchor limits either way. So a
         lead that would re-anchor is read once more and must agree within
         ``MIC_LEAD_TORN_TOLERANCE`` plus the host's rate times the gap between
-        the reads, else the measurement is torn. That costs
+        the reads, and keep the trusted phase, else the measurement is torn. That costs
         a read only when the host has really lapped or been overtaken."""
         m = self._read_once()
         if m is None or self._stop.is_set():
@@ -697,6 +697,13 @@ class MicLeadServo:
             return None
         check = self._read_once()
         if check is None:
+            return None
+        if not self._phase_agrees(check.reading, self._tracker_phase):
+            log.debug(
+                "audio[reu mic]: torn pump read (tracker phase %d vs %d on the re-read)",
+                self._tracker_phase,
+                tracker_phase(check.reading),
+            )
             return None
         # The lead moves between the reads by the host's advance less the
         # pump's, up to the host's rate on a stalled pump, so the tolerance
