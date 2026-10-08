@@ -47,6 +47,7 @@ from c64cast.video.palette import (
 )
 from c64cast.video.rolling_palette import RollingForcePalette
 from c64cast.video.video import (
+    TEMPO_SCALE_MIN,
     AVFileSource,
     WebcamSource,
     _compute_normalization_gain,
@@ -83,6 +84,15 @@ _C64_ASPECT = 320 / 200
 ONLINE_FIT_WARMUP_FRAMES = 48
 
 AV_LAG_LOG_INTERVAL_S = 2.0
+# Following the measured drain with the bitmap+DAC tempo compensation
+# (VideoScene._follow_drain): the drain is clock/wall over the last
+# TEMPO_FOLLOW_WINDOW_S of displayed frames, read from TEMPO_FOLLOW_WARMUP_S
+# after the scene starts (the prebuffer and the start's catch-up read as a
+# drain that is not there), and the compensation is retuned when it is
+# TEMPO_FOLLOW_DEADBAND or more off it.
+TEMPO_FOLLOW_WARMUP_S = 5.0
+TEMPO_FOLLOW_WINDOW_S = 4.0
+TEMPO_FOLLOW_DEADBAND = 0.01
 
 # Defined here, not in scene_factory (which imports this module); scene_factory
 # re-exports them to the app layer.
@@ -1286,6 +1296,7 @@ class VideoScene(MediaFileMixin, Scene):
         tempo_scale: float = 1.0,
         loop_audio: str = "on",
         setup_progress: bool = True,
+        tempo_follow: bool = False,
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
@@ -1321,6 +1332,15 @@ class VideoScene(MediaFileMixin, Scene):
         # tempo_scale, canceling the bitmap+DAC slowdown. Resolved in
         # scene_factory.build_scene.
         self.tempo_scale = tempo_scale
+        # Retune that compensation to the drain measured while the scene plays
+        # (`_follow_drain`), from tempo_scale as the starting point. Off for a
+        # configured value, which is what the operator measured.
+        self.tempo_follow = tempo_follow and tempo_scale < 1.0
+        # (wall, clock) at the displayed frames in the drain window, and the
+        # last drain followed, which the next run of the scene starts from:
+        # the link and the clip are the same, so it is the better guess.
+        self._drain_marks: deque[tuple[float, float]] = deque()
+        self._followed_tempo: float | None = None
         self._last_rendered_img: np.ndarray | None = None
         # The OSD text baked into the last rendered frame; compared each tick so
         # a post or expiry busts the identity-skip for one render.
@@ -1423,7 +1443,7 @@ class VideoScene(MediaFileMixin, Scene):
                 scan_audio_peak=will_push_audio,
                 start_s=self.start_s,
                 decode_target_size=decode_target,
-                tempo_scale=self.tempo_scale,
+                tempo_scale=self._followed_tempo or self.tempo_scale,
             )
         except PermissionError as e:
             log.error("video: permission denied opening %s (%s)", self.filepath, e)
@@ -1451,6 +1471,7 @@ class VideoScene(MediaFileMixin, Scene):
         self._av_lag_count = 0
         self._av_buf_min = math.inf
         self._av_last_log_t = 0.0
+        self._drain_marks.clear()
         self._hw_palette = _scene_hardware_palette(self.api, c, self.display_mode)
         if self.display_mode is not None:
             if c.force_palette or self._hw_palette is not None:
@@ -1768,6 +1789,7 @@ class VideoScene(MediaFileMixin, Scene):
             # hold's length as lag on every seek and every loop lap.
             if frame_clock_s == clock_s:
                 self._record_av_lag(clock_s, current_time)
+                self._follow_drain(clock_s, current_time)
         img = _crop_to_aspect(img)
         # Before annotation, so the debug digits stay out of the
         # contrast/saturation stats.
@@ -1878,6 +1900,32 @@ class VideoScene(MediaFileMixin, Scene):
         self._last_rendered_img = None
         self._last_osd_shown = None
         self._last_render_epoch = None
+
+    def _follow_drain(self, clock_s: float, current_time: float) -> None:
+        """Retune the bitmap+DAC tempo compensation to the drain measured
+        over the last `TEMPO_FOLLOW_WINDOW_S`: clock/wall, the fraction of real
+        time the audio clock advances at. The fixed starting figure was
+        measured at one commit rate, and the drain moves with it: about 0.89
+        of real time at ten committed frames a second, about 0.79 at twenty,
+        where the fixed 0.88 played the content about 10% slow. Stops once
+        transport is touched: the clock is a transport anchor from then on."""
+        source = self.source
+        if not self.tempo_follow or source is None or self.transport.touched:
+            return
+        marks = self._drain_marks
+        if current_time - self.wall_start_time < TEMPO_FOLLOW_WARMUP_S:
+            marks.clear()
+            return
+        marks.append((current_time, clock_s))
+        while len(marks) > 2 and marks[1][0] <= current_time - TEMPO_FOLLOW_WINDOW_S:
+            marks.popleft()
+        (w0, c0), (w1, c1) = marks[0], marks[-1]
+        if w1 - w0 < 0.75 * TEMPO_FOLLOW_WINDOW_S:
+            return
+        drain = min(1.0, max(TEMPO_SCALE_MIN, (c1 - c0) / (w1 - w0)))
+        if abs(drain - source.tempo_scale) >= TEMPO_FOLLOW_DEADBAND:
+            source.request_tempo_scale(drain)
+            self._followed_tempo = drain
 
     def _log_av_lag_summary(self) -> None:
         if not self._av_lag_count:

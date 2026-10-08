@@ -102,14 +102,18 @@ class VideoTransportControls:
         an absolute file position."""
         sc = self._scene
         if self._clock_scaled():
-            clk /= sc.tempo_scale or 1.0
+            # The source's own map once there is one: a retune of the tempo
+            # (VideoScene._follow_drain) moves it off a plain ratio.
+            clk = sc.source.clock_to_content(clk) if sc.source else clk / (sc.tempo_scale or 1.0)
         return clk + (sc.start_s if self.rebased else 0.0)
 
     def content_to_clock(self, s: float) -> float:
         """Inverse of clock_to_content: content seconds → internal clock domain."""
         sc = self._scene
         s -= sc.start_s if self.rebased else 0.0
-        return s * (sc.tempo_scale or 1.0) if self._clock_scaled() else s
+        if not self._clock_scaled():
+            return s
+        return sc.source.content_to_clock(s) if sc.source else s * (sc.tempo_scale or 1.0)
 
     def _clock_scaled(self) -> bool:
         """Whether the clock runs at tempo_scale x content seconds: the

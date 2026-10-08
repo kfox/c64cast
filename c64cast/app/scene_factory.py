@@ -2305,11 +2305,18 @@ def _video_tempo_scale(
     stretch (``dac_audio`` False covers sampler and muted)."""
     if not dac_audio or cfg.audio.use_reu_pump or not isinstance(mode, BitmapDisplayMode):
         return 1.0
+    configured = _video_tempo_configured(cfg, mode)
     multicolor = isinstance(mode, MultiHiresDisplayMode)
-    configured = (
-        cfg.audio.dac_bitmap_tempo_mhires if multicolor else cfg.audio.dac_bitmap_tempo_hires
-    )
     return api.dac_bitmap_tempo(multicolor) if configured is None else configured
+
+
+def _video_tempo_configured(cfg: Config, mode: DisplayMode) -> float | None:
+    """The ``[audio].dac_bitmap_tempo_*`` value set for ``mode``, or None when
+    unset: then the scene starts from the backend's figure and follows the
+    drain it measures (VideoScene._follow_drain)."""
+    if isinstance(mode, MultiHiresDisplayMode):
+        return cfg.audio.dac_bitmap_tempo_mhires
+    return cfg.audio.dac_bitmap_tempo_hires
 
 
 def _clean_scene_name(title: str) -> str:
@@ -2435,6 +2442,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         tempo_scale=_video_tempo_scale(cfg, mode, ctx.api, dac_audio=has_dac_audio),
         loop_audio=cfg.midi_control.loop_audio,
         setup_progress=cfg.video.setup_progress_bar,
+        tempo_follow=_video_tempo_configured(cfg, mode) is None,
     )
     if video_name:
         scene.name = video_name

@@ -341,6 +341,21 @@ class InterleavedVideoWiringTest(unittest.TestCase):
             self.assertTrue(v.show_frame_numbers)
             self.assertEqual(getattr(v._cfg, "type", None), "video")
 
+    def test_an_unset_tempo_compensation_follows_the_measured_drain(self):
+        videos = self._interleaved(Config(), cast(object, object()))
+        self.assertTrue(videos)
+        for v in videos:
+            self.assertTrue(v.tempo_follow)
+
+    def test_a_configured_tempo_compensation_stays_where_it_was_set(self):
+        cfg = Config()
+        cfg.audio.dac_bitmap_tempo_hires = 0.9
+        videos = self._interleaved(cfg, cast(object, object()))
+        self.assertTrue(videos)
+        for v in videos:
+            self.assertEqual(v.tempo_scale, 0.9)
+            self.assertFalse(v.tempo_follow)
+
     def test_a_muted_interleaved_video_gets_no_tempo_compensation(self):
         videos = self._interleaved(Config(), None)
         self.assertTrue(videos)

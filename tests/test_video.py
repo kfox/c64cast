@@ -934,6 +934,19 @@ class _StubSource:
     def video_buffer_depth(self) -> int:
         return 0
 
+    # The real source's tempo map at its starting point, a plain ratio: the
+    # scale is the scene's tempo_scale, which the tests set on the scene.
+    scene: VideoScene | None = None
+
+    def _scale(self) -> float:
+        return (self.scene.tempo_scale if self.scene is not None else 1.0) or 1.0
+
+    def clock_to_content(self, clock_s: float) -> float:
+        return clock_s / self._scale()
+
+    def content_to_clock(self, content_s: float) -> float:
+        return content_s * self._scale()
+
 
 def _freeze_time(t: float) -> ExitStack:
     """Freeze `time` in BOTH namespaces the video clock reads it from —
@@ -965,6 +978,7 @@ def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> Vide
         start_s=start_s,
     )
     scene.source = source  # type: ignore[assignment]  # duck-typed stub, not a real AVFileSource
+    source.scene = scene
     return scene
 
 
@@ -3597,6 +3611,164 @@ class SpliceAnchorTest(unittest.TestCase):
         pos = scene.transport.audio_anchor_pos
         assert pos is not None
         self.assertEqual(round(pos * dac.effective_rate, 6), 1400)
+
+
+class TempoRetuneTest(unittest.TestCase):
+    """`AVFileSource.request_tempo_scale` / `_apply_pending_tempo`: a retune of
+    the bitmap+DAC tempo compensation mid-stream. The clock stamp of the
+    content the audio has reached stays put, stamps after it follow the new
+    ratio, and the atempo filter compresses at it."""
+
+    SR = 8000
+
+    def _source(self, sink: list[np.ndarray], tempo_scale: float = 0.88) -> AVFileSource:
+        src = _make_emit_audio_stub(sink, tempo_scale=tempo_scale)
+        src._atempo_graph, src._atempo_filter = video_mod._build_atempo(self.SR, tempo_scale)
+        src._audio_fed_s = None
+        src._video_read_s = None
+        return src
+
+    def _feed(self, src: AVFileSource, total_samples: int) -> None:
+        import av
+
+        rng = np.random.default_rng(0)
+        for _ in range(0, total_samples, 1024):
+            arr = rng.integers(-2000, 2000, 1024).astype(np.int16).reshape(1, -1)
+            frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
+            frame.sample_rate = self.SR
+            src._atempo_graph.push(frame)
+            src._drain_atempo()
+
+    def test_a_retune_keeps_the_stamp_of_the_audio_reached_and_changes_the_ratio(self):
+        src = self._source([])
+        src._audio_fed_s = 10.0
+        before = src.content_to_clock(10.0)
+        src.request_tempo_scale(0.8)
+        with self.assertLogs("c64cast.video.video", level="INFO"):
+            src._apply_pending_tempo()
+        self.assertAlmostEqual(src.tempo_scale, 0.8)
+        self.assertAlmostEqual(src.content_to_clock(10.0), before)
+        self.assertAlmostEqual(src.content_to_clock(12.0) - src.content_to_clock(10.0), 1.6)
+        self.assertAlmostEqual(src.clock_to_content(src.content_to_clock(12.0)), 12.0)
+
+    def test_a_retune_restamps_the_picture_decoded_after_it(self):
+        src = self._source([])
+        src._audio_fed_s = 10.0
+        src._pts_offset = 0.0
+        src._pts_anchor_target = 0.0
+        src.request_tempo_scale(0.8)
+        with self.assertLogs("c64cast.video.video", level="INFO"):
+            src._apply_pending_tempo()
+        frame = _FakeFrame(12)
+        src.video_time_base = 1.0
+        self.assertAlmostEqual(src._rebase_pts(frame), 10.0 * 0.88 + 2.0 * 0.8)
+
+    def test_a_retune_changes_the_ratio_the_audio_is_compressed_at(self):
+        sink: list[np.ndarray] = []
+        src = self._source(sink, tempo_scale=0.88)
+        src.request_tempo_scale(0.6)
+        with self.assertLogs("c64cast.video.video", level="INFO"):
+            src._apply_pending_tempo()
+        self._feed(src, 400_000)
+        src._flush_atempo()
+        self.assertAlmostEqual(sum(a.size for a in sink) / 400_000, 0.6, delta=0.01)
+
+    def test_a_source_with_no_compensation_ignores_a_retune(self):
+        src = _make_emit_audio_stub([], tempo_scale=1.0)
+        src.request_tempo_scale(0.8)
+        self.assertIsNone(src._pending_tempo)
+        self.assertEqual(src.tempo_scale, 1.0)
+
+    def test_a_retune_past_one_atempo_stage_is_refused(self):
+        src = self._source([])
+        with self.assertRaises(ValueError):
+            src.request_tempo_scale(0.4)
+
+
+class _TempoStubSource(_StubSource):
+    """A `_StubSource` that records the tempo retunes a scene asks for."""
+
+    def __init__(self, tempo_scale: float):
+        super().__init__(duration=100.0)
+        self.tempo_scale = tempo_scale
+        self.requests: list[float] = []
+
+    def request_tempo_scale(self, tempo_scale: float) -> None:
+        self.requests.append(tempo_scale)
+
+
+class FollowDrainTest(unittest.TestCase):
+    """`VideoScene._follow_drain`: the bitmap+DAC tempo compensation follows
+    clock/wall measured over the last few seconds of displayed frames."""
+
+    def _scene(self, *, follow: bool = True) -> tuple[VideoScene, _TempoStubSource]:
+        source = _TempoStubSource(0.88)
+        scene = _make_video_scene_stub(source)
+        scene.tempo_follow = follow
+        scene.wall_start_time = 100.0
+        return scene, source
+
+    def _play(self, scene: VideoScene, drain: float, until: float, start: float = 100.0) -> None:
+        t = start
+        while t <= until:
+            scene._follow_drain((t - 100.0) * drain, t)
+            t += 0.05
+
+    def test_the_compensation_follows_the_measured_drain(self):
+        scene, source = self._scene()
+        self._play(scene, 0.79, 110.0)
+        self.assertTrue(source.requests)
+        self.assertAlmostEqual(source.requests[-1], 0.79, places=3)
+
+    def test_the_next_run_starts_from_the_drain_followed(self):
+        scene, _ = self._scene()
+        self._play(scene, 0.79, 110.0)
+        self.assertAlmostEqual(scene._followed_tempo or 0.0, 0.79, places=3)
+
+    def test_setup_opens_the_next_run_at_the_drain_followed(self):
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=None,
+                display_mode=mock.MagicMock(),
+                file="https://stub.invalid/clip.mp4",
+                tempo_scale=0.88,
+                setup_progress=False,
+                tempo_follow=True,
+            )
+            scene._followed_tempo = 0.79
+            scene.setup()
+            scene.teardown()
+        self.assertEqual(source_cls.call_args.kwargs["tempo_scale"], 0.79)
+
+    def test_the_first_seconds_are_not_measured(self):
+        scene, source = self._scene()
+        self._play(scene, 0.5, 100.0 + scenes.TEMPO_FOLLOW_WARMUP_S - 0.1)
+        self.assertEqual(source.requests, [])
+
+    def test_a_drain_inside_the_deadband_asks_for_nothing(self):
+        scene, source = self._scene()
+        self._play(scene, 0.875, 115.0)
+        self.assertEqual(source.requests, [])
+
+    def test_a_configured_compensation_is_not_followed(self):
+        scene, source = self._scene(follow=False)
+        self._play(scene, 0.79, 110.0)
+        self.assertEqual(source.requests, [])
+
+    def test_a_touched_transport_stops_the_following(self):
+        scene, source = self._scene()
+        scene.transport.touched = True
+        self._play(scene, 0.79, 110.0)
+        self.assertEqual(source.requests, [])
+
+    def test_the_drain_is_held_inside_one_atempo_stage(self):
+        scene, source = self._scene()
+        self._play(scene, 0.3, 110.0)
+        self.assertAlmostEqual(source.requests[-1], video_mod.TEMPO_SCALE_MIN)
 
 
 if __name__ == "__main__":

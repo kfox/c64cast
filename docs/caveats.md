@@ -111,7 +111,7 @@ time domain by the inverse factor** so it nets to real time. `[audio].
 dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` drive it. Unset (the
 default), each resolves to the speed fraction `s` measured for the connected
 hardware: **0.89 hires / 0.88 mhires** on a U64-II NTSC and on a TeensyROM
-writing unsliced, **0.97** on a TeensyROM+ with sliced DMA writes: for the gated bitmap+DAC path,
+writing unsliced, **0.97** on a TeensyROM+ with sliced DMA writes, and from a few seconds in the scene follows the `s` it measures (clock/wall) unless the field is set: for the gated bitmap+DAC path,
 `AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
 `atempo` filter graph and multiplies each video PTS by `s`. The existing
 drain-clock A/V sync (which reads ≈`s`) then lands both content streams at real
