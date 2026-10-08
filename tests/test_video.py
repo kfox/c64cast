@@ -903,6 +903,11 @@ class _StubSource:
         self.seek_pending = False
         self._events = events
         self._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+        # How many seeks had been requested at each `freeze_tempo` call.
+        self.freezes: list[int] = []
+
+    def freeze_tempo(self) -> None:
+        self.freezes.append(len(self.seeks))
 
     def request_seek(
         self,
@@ -3626,6 +3631,7 @@ class TempoRetuneTest(unittest.TestCase):
         src._atempo_graph, src._atempo_filter = video_mod._build_atempo(self.SR, tempo_scale)
         src._audio_fed_s = None
         src._video_read_s = None
+        src._pts_anchor_target = 0.0
         return src
 
     def _feed(self, src: AVFileSource, total_samples: int) -> None:
@@ -3683,6 +3689,66 @@ class TempoRetuneTest(unittest.TestCase):
         src = self._source([])
         with self.assertRaises(ValueError):
             src.request_tempo_scale(0.4)
+
+    def _open(self, tempo_scale: float, *, tempo_follow: bool) -> AVFileSource:
+        """A real `AVFileSource.__init__` over a fake container with one
+        video and one audio stream."""
+        container = SimpleNamespace(
+            streams=SimpleNamespace(
+                video=[SimpleNamespace(average_rate=30, time_base=Fraction(1, 30))],
+                audio=[object()],
+            ),
+            duration=None,
+        )
+        with mock.patch("c64cast.video.video.av_open", return_value=container):
+            return AVFileSource(
+                STUB_VIDEO_URL,
+                self.SR,
+                scan_audio_peak=False,
+                tempo_scale=tempo_scale,
+                tempo_follow=tempo_follow,
+            )
+
+    def test_a_following_source_opened_at_one_can_still_be_retuned(self):
+        with self.assertLogs("c64cast.video.video", level="INFO"):
+            src = self._open(1.0, tempo_follow=True)
+        src.request_tempo_scale(0.85)
+        self.assertEqual(src._pending_tempo, 0.85)
+
+    def test_a_source_opened_at_one_without_following_has_no_compensation(self):
+        src = self._open(1.0, tempo_follow=False)
+        self.assertIsNone(src._atempo_graph)
+
+    def test_a_seek_drops_a_retune_not_yet_applied(self):
+        src = self._source([])
+        src.request_tempo_scale(0.8)
+        src.request_seek(60.0)
+        self.assertIsNone(src._pending_tempo)
+
+    def test_a_frozen_source_drops_a_pending_retune_and_refuses_later_ones(self):
+        src = self._source([])
+        src.request_tempo_scale(0.8)
+        src.freeze_tempo()
+        self.assertIsNone(src._pending_tempo)
+        src.request_tempo_scale(0.7)
+        self.assertIsNone(src._pending_tempo)
+        self.assertEqual(src.tempo_scale, 0.88)
+
+    def test_a_retune_before_anything_is_read_pivots_at_the_pass_anchor(self):
+        src = self._source([])
+        src._pts_anchor_target = 60.0
+        before = src.content_to_clock(60.0)
+        src.request_tempo_scale(0.8)
+        with self.assertLogs("c64cast.video.video", level="INFO"):
+            src._apply_pending_tempo()
+        self.assertAlmostEqual(src.content_to_clock(60.0), before)
+
+    def test_the_first_transport_touch_freezes_the_map_before_it_seeks(self):
+        source = _StubSource(duration=100.0)
+        scene = _make_video_scene_stub(source)
+        scene.transport.seek(10.0)
+        scene.transport.seek(20.0)
+        self.assertEqual(source.freezes, [0])
 
 
 class _TempoStubSource(_StubSource):
@@ -3743,6 +3809,8 @@ class FollowDrainTest(unittest.TestCase):
             scene.setup()
             scene.teardown()
         self.assertEqual(source_cls.call_args.kwargs["tempo_scale"], 0.79)
+        # So a run opened at a followed 1.0 still has a graph to retune.
+        self.assertIs(source_cls.call_args.kwargs["tempo_follow"], True)
 
     def test_the_first_seconds_are_not_measured(self):
         scene, source = self._scene()

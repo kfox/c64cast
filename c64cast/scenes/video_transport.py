@@ -166,6 +166,8 @@ class VideoTransportControls:
         if self.touched:
             return
         sc = self._scene
+        if sc.source is not None:
+            sc.source.freeze_tempo()
         # BEFORE the flag flip: clock_s() branches on `touched`, so a read taken
         # after it returns the anchor's own unseeded default.
         clock_s = self.clock_s()

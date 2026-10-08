@@ -1444,6 +1444,7 @@ class VideoScene(MediaFileMixin, Scene):
                 start_s=self.start_s,
                 decode_target_size=decode_target,
                 tempo_scale=self._followed_tempo or self.tempo_scale,
+                tempo_follow=self.tempo_follow,
             )
         except PermissionError as e:
             log.error("video: permission denied opening %s (%s)", self.filepath, e)

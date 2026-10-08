@@ -533,8 +533,8 @@ def _build_atempo(target_sample_rate: int, tempo_scale: float) -> tuple[Any, Any
     the abuffer format is fixed. Used by the bitmap+DAC tempo-compensation path
     (see AVFileSource + the `video.py` note in docs/architecture.md).
 
-    Callers keep ``tempo_scale`` in (0, 1) (validate_dac_bitmap_tempo_cfg bounds
-    it to 0.5..1.0), so ``1/tempo_scale`` lands in (1.0, 2.0] — inside atempo's
+    Callers keep ``tempo_scale`` in 0.5..1.0 (validate_dac_bitmap_tempo_cfg,
+    TEMPO_SCALE_MIN), so ``1/tempo_scale`` lands in 1.0..2.0 — inside atempo's
     single-stage 0.5..2.0 range. Requires PyAV (`ensure_pyav()` first).
 
     Returns the graph and its `atempo` filter, whose ``tempo`` command
@@ -979,6 +979,7 @@ class AVFileSource:
     # demux thread at its next packet, and the atempo filter it retunes.
     _tempo_offset = 0.0
     _pending_tempo: float | None = None
+    _tempo_frozen = False
     _atempo_filter: Any = None
 
     def __init__(
@@ -991,7 +992,11 @@ class AVFileSource:
         start_s: float = 0.0,
         decode_target_size: tuple[int, int] | None = None,
         tempo_scale: float = 1.0,
+        tempo_follow: bool = False,
     ):
+        """``tempo_follow`` builds the atempo graph even at ``tempo_scale``
+        1.0, so `request_tempo_scale` can retune it: a scene following the
+        drain may start a run from a followed 1.0."""
         if not ensure_pyav():
             raise RuntimeError(
                 "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
@@ -1073,7 +1078,7 @@ class AVFileSource:
         # because `av` is a lazily-imported module-global (`av: Any`), so
         # `av.filter.Graph` is not usable as a static type here.
         self._atempo_graph: Any = None
-        if self.a_stream is not None and tempo_scale < 1.0:
+        if self.a_stream is not None and (tempo_scale < 1.0 or tempo_follow):
             self._atempo_graph, self._atempo_filter = _build_atempo(target_sample_rate, tempo_scale)
             log.info(
                 "av %s: bitmap+DAC tempo compensation ON (s=%.4f → atempo=%.4f)",
@@ -1263,6 +1268,9 @@ class AVFileSource:
         target_s = max(0.0, target_s)
         with self._lock:
             self._pending_seek = target_s
+            # The caller converted target_s with the map in force; a retune
+            # applied after the seek would stamp the target off it.
+            self._pending_tempo = None
             self._video_buf.clear()
             if unmute:
                 self._muted = False
@@ -1459,12 +1467,25 @@ class AVFileSource:
         """Retune the tempo compensation to ``tempo_scale``, which the demux
         thread applies at its next packet. A no-op without an atempo graph:
         compensation that was off at the start stays off, since nothing
-        compresses the audio there to retune."""
+        compresses the audio there to retune. A no-op too once
+        `freeze_tempo` has run."""
         if not TEMPO_SCALE_MIN <= tempo_scale <= 1.0:
             raise ValueError(f"tempo_scale must be in {TEMPO_SCALE_MIN}..1.0, got {tempo_scale!r}")
         with self._lock:
-            if self._atempo_graph is not None:
+            if self._atempo_graph is not None and not self._tempo_frozen:
                 self._pending_tempo = tempo_scale
+
+    def freeze_tempo(self) -> None:
+        """Fix the tempo map for the rest of this source's life: drop a
+        retune not yet applied and refuse later ones. The transport calls it
+        before it converts its first position through the map, since a seek
+        target converted with one map and stamped with another puts the
+        picture `target × change` seconds off the sound. A retune the demux
+        thread is applying finishes under the lock first, so every
+        conversion after this returns reads the final map."""
+        with self._lock:
+            self._tempo_frozen = True
+            self._pending_tempo = None
 
     def _apply_pending_tempo(self) -> None:
         """Demux-thread-only: apply a retune `request_tempo_scale` asked for.
@@ -1482,7 +1503,11 @@ class AVFileSource:
                 return
             pivot = self._audio_fed_s
             if pivot is None:
-                pivot = self._video_read_s if self._video_read_s is not None else 0.0
+                pivot = (
+                    self._video_read_s
+                    if self._video_read_s is not None
+                    else self._pts_anchor_target
+                )
             old = self._tempo_scale
             self._tempo_offset += (old - new) * pivot
             self._tempo_scale = new
