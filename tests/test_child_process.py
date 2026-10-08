@@ -118,8 +118,10 @@ class RunBoundedTest(unittest.TestCase):
         self.assertNotIn("stdout:", str(caught.exception))
 
     def test_a_long_stream_is_tailed_rather_than_dumped(self):
+        # Past the 500-character tail, and under the 4 KiB a Windows pipe
+        # holds before the gate lets anything read it.
         with (
-            _hangs_after_writing("sys.stdout.write('x' * 5000)") as argv,
+            _hangs_after_writing("sys.stdout.write('x' * 2000)") as argv,
             self.assertRaises(AssertionError) as caught,
         ):
             run_bounded(

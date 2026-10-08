@@ -221,6 +221,10 @@ def communicate_once_ready(ready: str) -> Iterator[None]:
     bound covers only the wait the test is about, and the output is already in
     the pipe when it starts.
 
+    Nothing reads the pipes until then, so what the child writes before
+    `ready` has to fit in a pipe's buffer, which is 4 KiB on Windows. More
+    blocks the child's write, and it never gets to create `ready`.
+
     A child that exits without creating `ready` releases the wait at once. One
     that never creates it is killed after :data:`_READY_S` and fails the test
     with :class:`ChildProcessHung`.
