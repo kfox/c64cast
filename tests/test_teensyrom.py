@@ -15,7 +15,7 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-from _fakes import FakeTime, make_psid
+from _fakes import FakeTime, SleepDrivenClock, make_psid
 
 from c64cast.app import config as cfgmod
 from c64cast.hw import api
@@ -987,18 +987,25 @@ class BackendTest(unittest.TestCase):
 class _FakeSerial:
     """Minimal stand-in for pyserial's Serial, enough for SerialTransport's
     recv_exact/drain_text. `chunks` is popped one per read() call; once
-    exhausted, read() returns b"" (idle, matching a real .timeout expiry)."""
+    exhausted, read() returns b"" (idle, matching a real .timeout expiry).
+    Each read() sleeps `delay_s` on `clock`, the host's when none is given."""
 
-    def __init__(self, chunks: list[bytes] | None = None, delay_s: float = 0.0):
+    def __init__(
+        self,
+        chunks: list[bytes] | None = None,
+        delay_s: float = 0.0,
+        clock: SleepDrivenClock | None = None,
+    ):
         self.timeout = 2.0
         self.timeouts_seen: list[float] = []
         self._chunks = list(chunks or [])
         self._delay_s = delay_s
+        self._sleep = time.sleep if clock is None else clock.sleep
 
     def read(self, n: int) -> bytes:
         self.timeouts_seen.append(self.timeout)
         if self._delay_s:
-            time.sleep(self._delay_s)
+            self._sleep(self._delay_s)
         return self._chunks.pop(0) if self._chunks else b""
 
     def write(self, data: bytes) -> None: ...
@@ -1010,8 +1017,8 @@ class _FakeSerial:
 
 class SerialTransportDeadlineTest(unittest.TestCase):
     """SerialTransport.recv_exact/drain_text against a fake pyserial object —
-    no real hardware, no real elapsed-time waiting beyond the short sleeps
-    a couple of tests use to force real wall-clock progress."""
+    no real hardware. The deadline tests run the transport's clock from the
+    fake's reads, so they count reads rather than time them."""
 
     def test_drain_text_overrides_ser_timeout_to_quiet_s_and_restores_it(self):
         # Without this, read(64) blocks up to the fixed io_timeout (2s) waiting for
@@ -1031,24 +1038,30 @@ class SerialTransportDeadlineTest(unittest.TestCase):
         self.assertEqual(transport.drain_text(quiet_s=0.05), "ABCD[31m")
 
     def test_drain_text_hard_cap_stops_a_device_that_never_goes_quiet(self):
+        clock = SleepDrivenClock()
         transport = SerialTransport("COM_FAKE")
-        transport._ser = _FakeSerial([b"x"] * 10_000, delay_s=0.01)
-        with mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_S", 0.05):
-            with self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"):
-                start = time.monotonic()
-                transport.drain_text(quiet_s=10.0)  # would never go quiet on its own
-                elapsed = time.monotonic() - start
-        self.assertLess(elapsed, 2.0)
+        fake = _FakeSerial([b"x"] * 10_000, delay_s=0.01, clock=clock)
+        transport._ser = fake
+        with (
+            mock.patch.object(tr_dma, "time", clock),
+            mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_S", 0.05),
+            self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"),
+        ):
+            transport.drain_text(quiet_s=10.0)  # would never go quiet on its own
+        # The cap is a handful of reads on the fake's clock; uncapped, the
+        # drain reads all 10,000 chunks.
+        self.assertLess(len(fake.timeouts_seen), 10)
 
     def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
         # Checking the deadline only when read() returns nothing means a link that
         # delivers >=1 byte per call never trips it, holding TRClient._lock forever.
+        clock = SleepDrivenClock()
         transport = SerialTransport("COM_FAKE", io_timeout=0.05)
-        transport._ser = _FakeSerial([b"x"] * 10_000, delay_s=0.01)
-        start = time.monotonic()
-        with self.assertRaises(TRError):
+        fake = _FakeSerial([b"x"] * 10_000, delay_s=0.01, clock=clock)
+        transport._ser = fake
+        with mock.patch.object(tr_dma, "time", clock), self.assertRaises(TRError):
             transport.recv_exact(1000)
-        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertLess(len(fake.timeouts_seen), 10)
 
     def test_serial_number_delegates_to_usb_serial_number(self):
         transport = SerialTransport("/dev/cu.usbmodemABC")
@@ -1059,12 +1072,20 @@ class SerialTransportDeadlineTest(unittest.TestCase):
 
 class _FakeSocket:
     """Minimal stand-in for a connected socket, enough for TcpTransport's
-    recv_exact/drain_text."""
+    recv_exact/drain_text. Each recv() sleeps `delay_s` on `clock`, the host's
+    when none is given."""
 
-    def __init__(self, chunks: list[bytes] | None = None, delay_s: float = 0.0):
+    def __init__(
+        self,
+        chunks: list[bytes] | None = None,
+        delay_s: float = 0.0,
+        clock: SleepDrivenClock | None = None,
+    ):
         self._timeout: float | None = None
         self._chunks = list(chunks or [])
         self._delay_s = delay_s
+        self._sleep = time.sleep if clock is None else clock.sleep
+        self.recvs = 0
 
     def gettimeout(self) -> float | None:
         return self._timeout
@@ -1073,8 +1094,9 @@ class _FakeSocket:
         self._timeout = value
 
     def recv(self, n: int) -> bytes:
+        self.recvs += 1
         if self._delay_s:
-            time.sleep(self._delay_s)
+            self._sleep(self._delay_s)
         if not self._chunks:
             raise TimeoutError("no more fake data")
         return self._chunks.pop(0)
@@ -1089,24 +1111,28 @@ class TcpTransportDeadlineTest(unittest.TestCase):
         self.assertEqual(transport.drain_text(quiet_s=0.05), "ABCD[31m")
 
     def test_drain_text_hard_cap_stops_a_device_that_never_goes_quiet(self):
+        clock = SleepDrivenClock()
         transport = TcpTransport("host")
-        transport._sock = _FakeSocket([b"x"] * 10_000, delay_s=0.01)  # type: ignore[assignment]
-        with mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_S", 0.05):
-            with self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"):
-                start = time.monotonic()
-                transport.drain_text(quiet_s=10.0)  # would never go quiet on its own
-                elapsed = time.monotonic() - start
-        self.assertLess(elapsed, 2.0)
+        sock = _FakeSocket([b"x"] * 10_000, delay_s=0.01, clock=clock)
+        transport._sock = sock  # type: ignore[assignment]
+        with (
+            mock.patch.object(tr_dma, "time", clock),
+            mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_S", 0.05),
+            self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"),
+        ):
+            transport.drain_text(quiet_s=10.0)  # would never go quiet on its own
+        self.assertLess(sock.recvs, 10)
 
     def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
         # Without a tracked deadline, every recv() gets a fresh per-call timeout
         # budget, so a trickling peer never trips anything.
+        clock = SleepDrivenClock()
         transport = TcpTransport("host", io_timeout=0.05)
-        transport._sock = _FakeSocket([b"x"] * 10_000, delay_s=0.01)  # type: ignore[assignment]
-        start = time.monotonic()
-        with self.assertRaises(TRError):
+        sock = _FakeSocket([b"x"] * 10_000, delay_s=0.01, clock=clock)
+        transport._sock = sock  # type: ignore[assignment]
+        with mock.patch.object(tr_dma, "time", clock), self.assertRaises(TRError):
             transport.recv_exact(1000)
-        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertLess(sock.recvs, 10)
 
     def test_has_no_serial_number(self):
         transport = TcpTransport("host")
