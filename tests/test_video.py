@@ -3743,6 +3743,48 @@ class TempoRetuneTest(unittest.TestCase):
             src._apply_pending_tempo()
         self.assertAlmostEqual(src.content_to_clock(60.0), before)
 
+    def _retuned(self, sink: list[np.ndarray]) -> AVFileSource:
+        """A source retuned from 0.88 to 0.8 at content 10 s: the map is
+        clock = 0.8 + 0.8 × content, which no plain ratio reproduces."""
+        src = _aligned_stub(sink, rate=self.SR)
+        src._tempo_scale = 0.8
+        src._tempo_offset = (0.88 - 0.8) * 10.0
+        return src
+
+    def test_the_transport_converts_through_the_retuned_map(self):
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        scene.tempo_scale = 0.88
+        scene.source = self._retuned([])  # type: ignore[assignment]  # not a full source
+        # Content 12 s is clock 0.8 + 0.8 × 12; the starting ratio would say
+        # 12 × 0.88 and 10.4 / 0.88.
+        self.assertAlmostEqual(scene.transport.content_to_clock(12.0), 10.4)
+        self.assertAlmostEqual(scene.transport.clock_to_content(10.4), 12.0)
+
+    def test_the_picture_read_position_follows_the_retuned_map(self):
+        src = self._retuned([])
+        src.max_video_buffer = 4
+        self.assertTrue(src._enqueue_frame(10.4, np.zeros((2, 2, 3), dtype=np.uint8)))
+        self.assertAlmostEqual(cast(float, src._video_read_s), 12.0)
+
+    def test_the_fill_reads_the_buffer_through_the_retuned_map(self):
+        sink: list[np.ndarray] = []
+        src = self._retuned(sink)
+        # Stamp 7.2 is content 8.0 here; the starting ratio would say 9.0.
+        src._fill_dry_stretch(0.8, 7.2)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 7.5)
+
+    def test_the_demux_loop_applies_a_pending_retune(self):
+        src = _make_demux_source_stub([_FakePacket([_FakeFrame(0)])])
+        src._tempo_scale = 0.88
+        src._atempo_graph = object()
+        atempo = mock.MagicMock()
+        src._atempo_filter = atempo
+        src.request_tempo_scale(0.8)
+        with self.assertLogs("c64cast.video.video", level="INFO"):
+            _demux_until_parked(src)
+        self.assertEqual(src.tempo_scale, 0.8)
+        atempo.process_command.assert_called_once_with("tempo", "1.250000")
+
     def test_the_first_transport_touch_freezes_the_map_before_it_seeks(self):
         source = _StubSource(duration=100.0)
         scene = _make_video_scene_stub(source)
@@ -3843,6 +3885,41 @@ class FollowDrainTest(unittest.TestCase):
         self.assertEqual(source_cls.call_args.kwargs["tempo_scale"], 0.79)
         # So a run opened at a followed 1.0 still has a graph to retune.
         self.assertIs(source_cls.call_args.kwargs["tempo_follow"], True)
+
+    def test_setup_arms_the_following_clock_on_the_monotonic_clock(self):
+        clock = FrozenClock(1000.0, "time", monotonic=777.0)
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource"),
+            mock.patch.object(scenes, "time", clock),
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=None,
+                display_mode=mock.MagicMock(),
+                file="https://stub.invalid/clip.mp4",
+                tempo_scale=0.88,
+                setup_progress=False,
+                tempo_follow=True,
+            )
+            scene.setup()
+            scene.teardown()
+        self.assertEqual(scene._follow_start, 777.0)
+
+    def test_a_shown_frame_is_measured_at_the_monotonic_time(self):
+        scene, _ = self._scene()
+        scene.audio = None
+        asked: list[float] = []
+        with (
+            mock.patch.object(scenes, "time", FrozenClock(1000.0, "time", monotonic=777.0)),
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(
+                scene, "_follow_drain", side_effect=lambda clock_s, now: asked.append(now)
+            ),
+        ):
+            scene.process_frame(1000.0)
+        self.assertEqual(asked, [777.0])
 
     def test_the_first_seconds_are_not_measured(self):
         scene, source = self._scene()
