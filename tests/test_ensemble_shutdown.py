@@ -303,6 +303,24 @@ class TeardownStackOrderTest(unittest.TestCase):
         )
         self.assertIn("interrupt again to stop at once", logs.output[0])
 
+    def test_a_ctrl_c_while_the_hurry_warning_is_logged_is_the_hard_stop(self):
+        release = session.ReleaseInterrupts()
+        second = KeyboardInterrupt("second")
+        ran: list[str] = []
+
+        def hurry():
+            raise KeyboardInterrupt("hurry")
+
+        with (
+            unittest.mock.patch.object(session.log, "warning", side_effect=second),
+            self.assertRaises(KeyboardInterrupt) as raised,
+        ):
+            release.step("a", "audio shutdown", hurry)
+        self.assertIs(raised.exception, second)
+        release.step("b", "U64 reset", lambda: ran.append("reset"))
+        self.assertEqual(ran, [])
+        release.raise_pending()
+
     def test_a_second_ctrl_c_stops_at_once(self):
         # The hard stop: whatever is left is skipped, and the interrupt that
         # asked for it is the one that propagates.

@@ -534,6 +534,17 @@ class ReleaseInterrupts:
         it can't strand the steps under it."""
         if self._stopped:
             return
+        # Whatever interrupt leaves a step is the hard stop, including one that
+        # lands while the "hurry" warning is being logged: marked anywhere
+        # narrower, that one escaped unmarked, so the stacks under it still
+        # ran every step and raise_pending hid it behind the older interrupt.
+        try:
+            self._run(name, label, fn)
+        except KeyboardInterrupt:
+            self._stopped = True
+            raise
+
+    def _run(self, name: str, label: str, fn: Callable[[], object]) -> None:
         # Nested so a Ctrl+C that lands while a failure is being logged is
         # counted like one inside fn(); as a sibling handler it would escape
         # uncounted and end teardown_stack's loop.
@@ -544,7 +555,6 @@ class ReleaseInterrupts:
                 log.exception("[%s] %s failed", name, label)
         except KeyboardInterrupt as e:
             if self._pending is not None:
-                self._stopped = True
                 log.warning(
                     "[%s] interrupted again during %s; stopping now, without the "
                     "remaining release steps",
