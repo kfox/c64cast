@@ -254,7 +254,9 @@ NTSC Ultimate 64-II and on a TeensyROM writing unsliced (the default), 0.97 on a
 TeensyROM+ whose `[teensyrom].dma_slicing` is turned on and whose firmware
 slices its DMA writes. A few seconds in, the scene measures how fast its audio
 is actually playing and follows that, because the slowdown also depends on how
-many frames a second the scene sends. A value you set stays fixed. They apply
+many frames a second the scene sends. It follows no further than 0.15 below
+the starting value, and while the link stalls or the video's audio arrives too
+slowly to keep playing it keeps the speed it has. A value you set stays fixed. They apply
 only to the DAC backend under a bitmap mode; the sampler, the character modes
 and a muted scene all pass through untouched.
 

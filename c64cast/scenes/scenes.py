@@ -16,7 +16,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
 
 import cv2
 import numpy as np
@@ -90,9 +90,25 @@ AV_LAG_LOG_INTERVAL_S = 2.0
 # after the scene starts (the prebuffer and the start's catch-up read as a
 # drain that is not there), and the compensation is retuned when it is
 # TEMPO_FOLLOW_DEADBAND or more off it.
+#
+# The DAC clock also stops when nothing lands in the ring: a stalled link, or
+# a producer that ran dry. Clock/wall over such a window is not the drain, and
+# following it is self-reinforcing for a source that supplies content no
+# faster than real time (a live stream): each lower s asks it for more
+# content, so it runs dry again. A window therefore restarts at an underrun,
+# at a delivery_epoch move, and at a pair of frames TEMPO_FOLLOW_STALL_S or
+# more apart across which the clock ran at under half the tempo in force.
+# What gets past those is bounded: one retune moves s by TEMPO_FOLLOW_MAX_STEP
+# at most, TEMPO_FOLLOW_RETUNE_S after the last, and s stays within
+# TEMPO_FOLLOW_MAX_DROP of the starting figure (U64 mhires drains ≈0.79
+# against its 0.88 start).
 TEMPO_FOLLOW_WARMUP_S = 5.0
 TEMPO_FOLLOW_WINDOW_S = 4.0
 TEMPO_FOLLOW_DEADBAND = 0.01
+TEMPO_FOLLOW_STALL_S = 0.1
+TEMPO_FOLLOW_MAX_STEP = 0.05
+TEMPO_FOLLOW_RETUNE_S = 1.0
+TEMPO_FOLLOW_MAX_DROP = 0.15
 
 # Defined here, not in scene_factory (which imports this module); scene_factory
 # re-exports them to the app layer.
@@ -1341,6 +1357,11 @@ class VideoScene(MediaFileMixin, Scene):
         # the link and the clip are the same, so it is the better guess.
         self._drain_marks: deque[tuple[float, float]] = deque()
         self._followed_tempo: float | None = None
+        # The window's trust stamp (underruns, delivery_epoch), the monotonic
+        # time following was armed at, and the last retune's.
+        self._drain_trust: tuple[int, int] | None = None
+        self._follow_start = 0.0
+        self._last_retune_t = -math.inf
         self._last_rendered_img: np.ndarray | None = None
         # The OSD text baked into the last rendered frame; compared each tick so
         # a post or expiry busts the identity-skip for one render.
@@ -1473,6 +1494,8 @@ class VideoScene(MediaFileMixin, Scene):
         self._av_buf_min = math.inf
         self._av_last_log_t = 0.0
         self._drain_marks.clear()
+        self._drain_trust = None
+        self._last_retune_t = -math.inf
         self._hw_palette = _scene_hardware_palette(self.api, c, self.display_mode)
         if self.display_mode is not None:
             if c.force_palette or self._hw_palette is not None:
@@ -1612,6 +1635,9 @@ class VideoScene(MediaFileMixin, Scene):
             self.source.start(audio_push=None)
         progress.finish()
         self.wall_start_time = time.time()
+        # `_follow_drain` measures on this clock rather than the wall's, which
+        # an NTP step or a sleep moves without the drain moving.
+        self._follow_start = time.monotonic()
 
     def _setup_segments(self) -> list[tuple[str, float]]:
         """The SegmentedProgress weights for this scene's blocking setup
@@ -1790,7 +1816,7 @@ class VideoScene(MediaFileMixin, Scene):
             # hold's length as lag on every seek and every loop lap.
             if frame_clock_s == clock_s:
                 self._record_av_lag(clock_s, current_time)
-                self._follow_drain(clock_s, current_time)
+                self._follow_drain(clock_s, time.monotonic())
         img = _crop_to_aspect(img)
         # Before annotation, so the debug digits stay out of the
         # contrast/saturation stats.
@@ -1902,31 +1928,57 @@ class VideoScene(MediaFileMixin, Scene):
         self._last_osd_shown = None
         self._last_render_epoch = None
 
-    def _follow_drain(self, clock_s: float, current_time: float) -> None:
+    def _follow_drain(self, clock_s: float, now: float) -> None:
         """Retune the bitmap+DAC tempo compensation to the drain measured
         over the last `TEMPO_FOLLOW_WINDOW_S`: clock/wall, the fraction of real
         time the audio clock advances at. The fixed starting figure was
         measured at one commit rate, and the drain moves with it: about 0.89
         of real time at ten committed frames a second, about 0.79 at twenty,
         where the fixed 0.88 played the content about 10% slow. Stops once
-        transport is touched: the clock is a transport anchor from then on."""
+        transport is touched: the clock is a transport anchor from then on.
+
+        ``now`` is monotonic. A window the clock may have stopped in for some
+        other reason than the drain restarts, and the tempo in force stays
+        (see TEMPO_FOLLOW_STALL_S): a sink without underrun telemetry is
+        never followed, since none of its windows can be trusted."""
         source = self.source
         if not self.tempo_follow or source is None or self.transport.touched:
             return
         marks = self._drain_marks
-        if current_time - self.wall_start_time < TEMPO_FOLLOW_WARMUP_S:
+        stats = getattr(self.audio, "stats", None)
+        if now - self._follow_start < TEMPO_FOLLOW_WARMUP_S or not callable(stats):
             marks.clear()
             return
-        marks.append((current_time, clock_s))
-        while len(marks) > 2 and marks[1][0] <= current_time - TEMPO_FOLLOW_WINDOW_S:
+        counts = cast("dict[str, int | float]", stats())
+        trust = (
+            int(counts["full_underruns"]) + int(counts["partial_underruns"]),
+            self.api.delivery_epoch,
+        )
+        tempo = source.tempo_scale
+        if marks:
+            w_prev, c_prev = marks[-1]
+            gap = now - w_prev
+            stalled = gap >= TEMPO_FOLLOW_STALL_S and clock_s - c_prev < 0.5 * tempo * gap
+            if stalled or trust != self._drain_trust:
+                marks.clear()
+        self._drain_trust = trust
+        marks.append((now, clock_s))
+        while len(marks) > 2 and marks[1][0] <= now - TEMPO_FOLLOW_WINDOW_S:
             marks.popleft()
         (w0, c0), (w1, c1) = marks[0], marks[-1]
-        if w1 - w0 < 0.75 * TEMPO_FOLLOW_WINDOW_S:
+        if (
+            w1 - w0 < 0.75 * TEMPO_FOLLOW_WINDOW_S
+            or now - self._last_retune_t < TEMPO_FOLLOW_RETUNE_S
+        ):
             return
-        drain = min(1.0, max(TEMPO_SCALE_MIN, (c1 - c0) / (w1 - w0)))
-        if abs(drain - source.tempo_scale) >= TEMPO_FOLLOW_DEADBAND:
-            source.request_tempo_scale(drain)
-            self._followed_tempo = drain
+        floor = max(TEMPO_SCALE_MIN, self.tempo_scale - TEMPO_FOLLOW_MAX_DROP)
+        drain = min(1.0, max(floor, (c1 - c0) / (w1 - w0)))
+        if abs(drain - tempo) < TEMPO_FOLLOW_DEADBAND:
+            return
+        retuned = min(tempo + TEMPO_FOLLOW_MAX_STEP, max(tempo - TEMPO_FOLLOW_MAX_STEP, drain))
+        source.request_tempo_scale(retuned)
+        self._followed_tempo = retuned
+        self._last_retune_t = now
 
     def _log_av_lag_summary(self) -> None:
         if not self._av_lag_count:

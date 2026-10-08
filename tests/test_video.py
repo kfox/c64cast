@@ -3752,7 +3752,8 @@ class TempoRetuneTest(unittest.TestCase):
 
 
 class _TempoStubSource(_StubSource):
-    """A `_StubSource` that records the tempo retunes a scene asks for."""
+    """A `_StubSource` that records the tempo retunes a scene asks for and
+    applies each at once, as the demux thread does at its next packet."""
 
     def __init__(self, tempo_scale: float):
         super().__init__(duration=100.0)
@@ -3761,6 +3762,18 @@ class _TempoStubSource(_StubSource):
 
     def request_tempo_scale(self, tempo_scale: float) -> None:
         self.requests.append(tempo_scale)
+        self.tempo_scale = tempo_scale
+
+
+class _UnderrunStubAudio:
+    """The underrun half of `AudioStreamer.stats()`, which `_follow_drain`
+    reads to tell a dry producer from a slower drain."""
+
+    def __init__(self) -> None:
+        self.underruns = 0
+
+    def stats(self) -> dict[str, int]:
+        return {"full_underruns": self.underruns, "partial_underruns": 0}
 
 
 class FollowDrainTest(unittest.TestCase):
@@ -3771,24 +3784,43 @@ class FollowDrainTest(unittest.TestCase):
         source = _TempoStubSource(0.88)
         scene = _make_video_scene_stub(source)
         scene.tempo_follow = follow
-        scene.wall_start_time = 100.0
+        scene.tempo_scale = 0.88
+        scene.audio = _UnderrunStubAudio()  # type: ignore[assignment]  # duck-typed stats()
+        cast(Any, scene.api).delivery_epoch = 0
+        scene._follow_start = 100.0
         return scene, source
 
-    def _play(self, scene: VideoScene, drain: float, until: float, start: float = 100.0) -> None:
-        t = start
+    def _play(
+        self,
+        scene: VideoScene,
+        drain: float,
+        until: float,
+        *,
+        frozen: tuple[float, float] | None = None,
+        each: Callable[[float], None] | None = None,
+    ) -> None:
+        """Show a frame every 50 ms from t=100 to ``until`` with the clock
+        running at ``drain``. Inside ``frozen`` (start, end) the clock stops
+        and no frame is shown, as on a stalled link."""
+        t, clock = 100.0, 0.0
         while t <= until:
-            scene._follow_drain((t - 100.0) * drain, t)
+            stopped = frozen is not None and frozen[0] <= t < frozen[1]
+            if not stopped:
+                scene._follow_drain(clock, t)
+                clock += drain * 0.05
+            if each is not None:
+                each(t)
             t += 0.05
 
     def test_the_compensation_follows_the_measured_drain(self):
         scene, source = self._scene()
-        self._play(scene, 0.79, 110.0)
+        self._play(scene, 0.79, 112.0)
         self.assertTrue(source.requests)
         self.assertAlmostEqual(source.requests[-1], 0.79, places=3)
 
     def test_the_next_run_starts_from_the_drain_followed(self):
         scene, _ = self._scene()
-        self._play(scene, 0.79, 110.0)
+        self._play(scene, 0.79, 112.0)
         self.assertAlmostEqual(scene._followed_tempo or 0.0, 0.79, places=3)
 
     def test_setup_opens_the_next_run_at_the_drain_followed(self):
@@ -3833,10 +3865,63 @@ class FollowDrainTest(unittest.TestCase):
         self._play(scene, 0.79, 110.0)
         self.assertEqual(source.requests, [])
 
-    def test_the_drain_is_held_inside_one_atempo_stage(self):
+    def test_the_drain_is_held_within_the_largest_drop_from_the_start(self):
         scene, source = self._scene()
-        self._play(scene, 0.3, 110.0)
-        self.assertAlmostEqual(source.requests[-1], video_mod.TEMPO_SCALE_MIN)
+        self._play(scene, 0.3, 120.0)
+        self.assertAlmostEqual(source.requests[-1], 0.88 - scenes.TEMPO_FOLLOW_MAX_DROP)
+
+    def test_a_retune_moves_one_step_at_most_and_waits_before_the_next(self):
+        scene, source = self._scene()
+        times: list[float] = []
+
+        def note(t: float) -> None:
+            if len(source.requests) > len(times):
+                times.append(t)
+
+        self._play(scene, 0.79, 112.0, each=note)
+        self.assertAlmostEqual(source.requests[0], 0.88 - scenes.TEMPO_FOLLOW_MAX_STEP)
+        gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+        self.assertTrue(gaps)
+        self.assertGreaterEqual(min(gaps), scenes.TEMPO_FOLLOW_RETUNE_S - 1e-9)
+
+    def test_a_stalled_clock_is_not_read_as_drain(self):
+        scene, source = self._scene()
+        self._play(scene, 0.88, 130.0, frozen=(115.0, 117.0))
+        self.assertEqual(source.requests, [])
+
+    def test_a_short_stall_is_not_read_as_drain(self):
+        scene, source = self._scene()
+        self._play(scene, 0.88, 130.0, frozen=(115.0, 115.25))
+        self.assertEqual(source.requests, [])
+
+    def test_a_dry_producer_is_not_read_as_drain(self):
+        # The clock stops while the producer is dry, so starvation reads as
+        # a slow drain; each underrun restarts the window.
+        scene, source = self._scene()
+        audio = cast(_UnderrunStubAudio, scene.audio)
+
+        def starve(t: float) -> None:
+            if t >= 106.0 and round(t * 20) % 40 == 0:
+                audio.underruns += 1
+
+        self._play(scene, 0.6, 130.0, each=starve)
+        self.assertEqual(source.requests, [])
+
+    def test_a_delivery_epoch_move_restarts_the_window(self):
+        scene, source = self._scene()
+
+        def lose_writes(t: float) -> None:
+            if round(t * 20) % 40 == 0:
+                cast(Any, scene.api).delivery_epoch += 1
+
+        self._play(scene, 0.6, 130.0, each=lose_writes)
+        self.assertEqual(source.requests, [])
+
+    def test_a_sink_without_underrun_telemetry_is_not_followed(self):
+        scene, source = self._scene()
+        scene.audio = None
+        self._play(scene, 0.79, 112.0)
+        self.assertEqual(source.requests, [])
 
 
 if __name__ == "__main__":
