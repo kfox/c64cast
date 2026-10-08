@@ -978,9 +978,9 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             s._worker_generation += 1  # the next scene's _start_worker
             landed_at_fill.append(len(landed))
 
-        def spying_landed(generation: int, n: int, pad: int) -> None:
+        def spying_landed(generation: int, n: int, pad: int, *, paced: bool = True) -> None:
             landed.append((n, pad))
-            real_landed(generation, n, pad)
+            real_landed(generation, n, pad, paced=paced)
 
         s._neutral_fill_ring = superseding_fill  # type: ignore[method-assign]
         s._note_ring_landed = spying_landed  # type: ignore[method-assign]
