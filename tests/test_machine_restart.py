@@ -198,6 +198,26 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.assertFalse(self.watch.after_frame(False))
         self.assertNotIn(0, bytes(self.api.ram[_SENTINEL]), "a static scene was never re-armed")
 
+    def test_a_lost_rearm_is_not_retried_by_time_on_a_link_that_is_down(self):
+        self.api.c64cast_reset()
+        self.api.drop_writes = True
+        self.assertFalse(self.watch.after_frame(False))
+        errors = self.api.stats["errors"]
+        self.api.delivery_epoch += 1  # the frame's own writes fail too
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.assertFalse(self.watch.after_frame(False))
+        self.assertEqual(self.api.stats["errors"], errors, "retried on a dead link")
+
+    def test_a_nonce_arm_lost_is_retried_on_a_scene_that_lands_no_frames(self):
+        api = _Machine()
+        api.drop_writes = True
+        watch = MachineRestartWatch(api, MagicMock(), lambda: self.now[0])
+        watch.arm()
+        api.drop_writes = False
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.assertFalse(watch.after_frame(False))
+        self.assertNotIn(0, bytes(api.ram[_SENTINEL]), "the lost setup nonce was not retried")
+
     def test_a_nonce_the_link_lost_is_never_read_back_as_a_restart(self):
         api = _Machine()
         api.drop_writes = True

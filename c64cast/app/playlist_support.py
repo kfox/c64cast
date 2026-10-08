@@ -599,10 +599,11 @@ class MachineRestartWatch:
     frame; a restart that comes after such a reset and before the re-arm
     leaves nothing to tell it from that reset. A re-arm, or a nonce `arm()`
     wrote, that the link loses is written again after each later landed
-    frame, or every `RESTART_CHECK_MIN_S` on a scene that lands none,
-    until it lands. `suspend()` stands the watch down while a launched
-    program owns the machine, whose RAM the nonce must not touch. Only a backend that reads memory and reports its
-    own resets (`add_reset_listener`) is watched."""
+    frame, or every `RESTART_CHECK_MIN_S` on a scene that lands none while
+    the link marks stay put, until it lands. `suspend()` stands the watch
+    down while a launched program owns the machine, whose RAM the nonce
+    must not touch. Only a backend that reads memory and reports its own
+    resets (`add_reset_listener`) is watched."""
 
     def __init__(
         self,
@@ -619,9 +620,10 @@ class MachineRestartWatch:
         self._nonce = bytes(b | 0x01 for b in os.urandom(RESTART_SENTINEL_LEN))
         self._armed = False
         self._rearm = False
-        # The last re-arm the link lost, so the next waits for a landed frame.
+        # The last nonce write the link lost, so the next waits as
+        # `after_frame` describes.
         self._rearm_lost = False
-        # When a lost write is retried on a frame that landed nothing.
+        # When a lost write is retried on a scene that lands nothing.
         self._next_rearm = 0.0
         self._suspended = False
         self._marks = (0, 0)
@@ -701,10 +703,13 @@ class MachineRestartWatch:
             return False
         if self._rearm:
             # A retry waits for a landed frame, or for RESTART_CHECK_MIN_S on
-            # a scene that sends nothing: on a link that is down, a confirmed
-            # write every frame spends up to three flushes a frame.
-            if self._rearm_lost and not landed and self._clock() < self._next_rearm:
-                return False
+            # a scene that sends nothing and so moves no link mark: on a link
+            # that is down, a confirmed write every frame spends up to three
+            # flushes a frame.
+            if self._rearm_lost and not landed:
+                idle = self._current_marks() == self._marks
+                if not idle or self._clock() < self._next_rearm:
+                    return False
             self._write_nonce()
             self._retry_if_lost()
             return False
