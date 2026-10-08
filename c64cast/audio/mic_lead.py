@@ -578,7 +578,7 @@ class MicLeadServo:
                 "dropping it and measuring again",
                 MIC_LEAD_REANCHOR_CLAIM_INTERVALS * self._interval,
             )
-        m = self._measure()
+        m = self._measure(confirm_reanchor=steer)
         # A read that finished inside the teardown, the confirming one or the
         # re-anchor's re-read included, is discarded: a re-anchor posted from
         # it is one the callback no longer takes. A stop is not a failure.
@@ -669,7 +669,7 @@ class MicLeadServo:
         delta = signed_ring_delta(tracker_phase(reading), phase, RING_BUFFER_SIZE)
         return abs(delta) <= MIC_LEAD_TORN_TOLERANCE
 
-    def _measure(self) -> _Measurement | None:
+    def _measure(self, *, confirm_reanchor: bool = True) -> _Measurement | None:
         """One read, whose tracker phase must agree with the last trusted
         reading's. With none trusted yet, or a reading that disagrees, a
         second read is made at once and has to agree with the trusted phase
@@ -686,7 +686,10 @@ class MicLeadServo:
         tolerance, and no other value a whole number of $4000 rings away may
         fall in that window too; and it must
         keep the trusted phase, else the measurement is torn. That costs
-        a read only when the host has really lapped or been overtaken."""
+        a read only when the host has really lapped or been overtaken, and
+        none with ``confirm_reanchor`` off: a tick that will not steer posts
+        no re-anchor, and the governor's R and W are not what the re-read
+        checks."""
         m = self._read_once()
         if m is None or self._stop.is_set():
             return None
@@ -706,7 +709,7 @@ class MicLeadServo:
                 )
                 return None
         self._tracker_phase = tracker_phase(m.reading)
-        if mic_lead_in_range(m.lead):
+        if not confirm_reanchor or mic_lead_in_range(m.lead):
             return m
         if self._stop.is_set():
             return None

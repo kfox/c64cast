@@ -241,6 +241,16 @@ class MicLeadReanchorTest(unittest.TestCase):
             state,
         )
 
+    def test_a_tick_that_waits_on_a_reanchor_makes_one_read(self):
+        # The lead still reads overtaken, but a tick that will not steer posts
+        # no re-anchor, so the re-read that would confirm one is a wasted read.
+        rig = _Rig(drift=0.0, lead=-500)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        before = rig.reads
+        self.assertIsNotNone(rig.servo.tick())
+        self.assertEqual(rig.reads - before, 1)
+
     def test_a_good_read_while_a_reanchor_waits_resets_the_failure_count(self):
         # fail, good, fail is not two failures in a row, whether or not the
         # good read steered.
@@ -1169,7 +1179,7 @@ class MicLeadTelemetryTest(unittest.TestCase):
                 (1500, 36000, 3.0),
             ]
         )
-        servo._measure = lambda: next(script)  # type: ignore[method-assign]
+        servo._measure = lambda **_: next(script)  # type: ignore[method-assign]
         for _ in range(4):
             servo.tick()
         self.assertEqual((servo.lead_min, servo.lead_max), (1200, 2000))
