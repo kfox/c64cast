@@ -253,6 +253,14 @@ TRACKED_PUMP_INSTALL_TRIES = 3
 # the $C100 stub) before the entry bytes replace it.
 TRACKED_PUMP_ENTRY_DRAIN_S = 0.03
 
+# The DAC clock runs between chunk landings at the pace chunks land, measured
+# as an EMA over landings with this weight (about five landings, half a second
+# at 12 kHz). A landing more than LANDING_PACE_MAX_PERIODS nominal chunk
+# periods after the one before it measures a stall rather than the pace, and
+# is left out.
+LANDING_PACE_ALPHA = 0.2
+LANDING_PACE_MAX_PERIODS = 3.0
+
 
 class PumpInstallError(RuntimeError):
     """The tracked REU pump could not be installed with every write confirmed
@@ -468,6 +476,10 @@ class AudioStreamer:
         # When the clock's last landed count was taken (monotonic): the
         # consumer's start, then each landing. None until the consumer starts.
         self._ring_landed_at: float | None = None
+        # Bytes per second the ring's content lands at once the consumer has
+        # started (an EMA over landings): the speed the clock runs at between
+        # landings. None until the consumer starts.
+        self._landing_pace: float | None = None
         # One record per interval however often the link stalls.
         self._stall_log = LogThrottle(log)
 
@@ -3120,7 +3132,9 @@ class AudioStreamer:
         never reached the onset threshold; video slaved to it moved in the
         same steps.
 
-        What the NMI plays next is the front of the gap, so pad there moves
+        It runs at the pace chunks land (``_note_landing_pace_locked``),
+        which is the speed the NMI drains them at. What the NMI plays next is
+        the front of the gap, so pad there moves
         nothing: content landed behind a dry stretch is not heard until the
         stretch has played. At most one chunk, the next landing's worth, so a
         link that stalls holds the clock rather than running it past what
@@ -3131,14 +3145,37 @@ class AudioStreamer:
         # Whole bytes: the pad record is in whole bytes, so a span of nothing
         # but pad then nets exactly 0. In fractional bytes it netted a few ULPs
         # over, and the clock read content landed behind the pad as heard.
-        span = int(min(elapsed * self.effective_rate, float(self.chunk_size), lead))
+        pace = self._landing_pace or self.effective_rate
+        span = int(min(elapsed * pace, float(self.chunk_size), lead))
         lo = self._ring_landed_total - int(lead)
         return float(span - self._pad_in(lo, lo + span))
 
     def _mark_ring_clock(self) -> None:
-        """The consumer started: interpolate the clock from now."""
+        """The consumer started: interpolate the clock from now, at the
+        nominal rate until landings measure the pace."""
         with self._ring_pad_lock:
             self._ring_landed_at = time.monotonic()
+            self._landing_pace = float(self.effective_rate)
+
+    def _note_landing_pace_locked(self, nbytes: int, interval: float) -> None:
+        """Fold one landing into ``_landing_pace``. Caller holds
+        ``_ring_pad_lock``.
+
+        The worker lands a chunk as fast as the NMI drains one, so the pace
+        is the speed the sound is heard at, and the clock between landings
+        runs at it. Run at the nominal rate instead, the clock reached the
+        next chunk early whenever bus halts slowed the NMI, then held until
+        the landing: under bitmap video it moved in bursts and holds, and
+        video slaved to it skipped and froze frames. Capped at the nominal
+        rate, which the NMI cannot beat; a landing that comes a stall late
+        measures the stall, not the pace."""
+        rate = self.effective_rate
+        if self._landing_pace is None or not rate or interval <= 0:
+            return
+        if interval > LANDING_PACE_MAX_PERIODS * nbytes / rate:
+            return
+        sample = min(nbytes / interval, rate)
+        self._landing_pace += LANDING_PACE_ALPHA * (sample - self._landing_pace)
 
     def _unplayed_pad(self, lead: float) -> float:
         """The pad bytes among the last ``lead`` bytes landed in the ring.
@@ -3174,7 +3211,9 @@ class AudioStreamer:
                 return
             self._ring_landed_total += nbytes
             if self._ring_landed_at is not None:
-                self._ring_landed_at = time.monotonic()
+                now = time.monotonic()
+                self._note_landing_pace_locked(nbytes, now - self._ring_landed_at)
+                self._ring_landed_at = now
             total = self._ring_landed_total
             if pad > 0:
                 self._ring_pads.append((total, pad))
@@ -3193,6 +3232,7 @@ class AudioStreamer:
         self._ring_pads.clear()
         self._position_floor = 0.0
         self._ring_landed_at = None
+        self._landing_pace = None
 
     def reset_position(self) -> None:
         with self._count_lock:

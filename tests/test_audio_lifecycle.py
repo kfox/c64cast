@@ -3871,6 +3871,55 @@ class LifecycleTest(unittest.TestCase):
             consumed, heard = s._host_clock_bytes()
         self.assertEqual(heard, consumed)
 
+    def _landing_at_pace(self, clock: FrozenClock, s: AudioStreamer, interval: float, n: int):
+        """Land ``n`` 1024-byte content chunks ``interval`` seconds apart."""
+        with mock.patch.object(audio_mod, "time", clock):
+            for _ in range(n):
+                clock.advance(interval)
+                s._note_ring_landed(s._worker_generation, 1024, 0)
+                s._pushed_count += 1024
+
+    def test_the_clock_between_landings_runs_at_the_landing_pace(self):
+        # Bus halts slow the NMI, so chunks land slower than the nominal rate.
+        # Run at the nominal rate, the clock reached the next chunk early and
+        # held until it landed, and video slaved to it moved in bursts.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        pace = 0.8 * s.effective_rate
+        interval = 1024 / pace
+        self._landing_at_pace(clock, s, interval, 40)
+        with mock.patch.object(audio_mod, "time", clock):
+            clock.advance(interval / 2)
+            with s._ring_pad_lock:
+                played = s._played_since_landing(4096.0)
+        self.assertAlmostEqual(played, 512, delta=2)
+
+    def test_a_stalled_landing_does_not_slow_the_landing_pace(self):
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        self._landing_at_pace(clock, s, period, 5)
+        self._landing_at_pace(clock, s, 10 * period, 1)
+        self.assertAlmostEqual(s._landing_pace or 0.0, s.effective_rate, places=6)
+
+    def test_the_landing_pace_never_runs_past_the_nominal_rate(self):
+        # A catch-up burst lands faster than the NMI can play; the clock would
+        # run ahead of the sound at that pace.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        self._landing_at_pace(clock, s, 0.25 * 1024 / s.effective_rate, 20)
+        self.assertAlmostEqual(s._landing_pace or 0.0, s.effective_rate, places=6)
+
+    def test_a_new_consumer_start_measures_the_landing_pace_afresh(self):
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        self._landing_at_pace(clock, s, 1024 / (0.7 * s.effective_rate), 40)
+        s._reset_ring_clock()
+        self.assertIsNone(s._landing_pace)
+        with mock.patch.object(audio_mod, "time", clock):
+            s._mark_ring_clock()
+        self.assertEqual(s._landing_pace, s.effective_rate)
+
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between
         # two reads; the clock holds rather than reporting less than it did.
