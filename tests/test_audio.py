@@ -520,6 +520,36 @@ class EffectiveRateTest(unittest.TestCase):
         self.assertFalse(t.is_alive())
         self.assertEqual(result["n"], 0, "a push released by stop() landed its blob")
 
+    def test_a_push_past_its_running_check_when_stop_lands_is_dropped(self):
+        """A stop() that runs whole between push_samples' running check and the
+        encode bumps the epoch ahead of any capture taken after the check."""
+        s = new_streamer()
+        s.running = True
+        real = AudioStreamer._encode_and_enqueue
+
+        def stop_first(self: AudioStreamer, *args: Any, **kwargs: Any) -> int:
+            self.stop()
+            return real(self, *args, **kwargs)
+
+        with patch.object(AudioStreamer, "_encode_and_enqueue", stop_first):
+            n = s.push_samples(np.zeros(100, dtype=np.int16))
+        self.assertEqual(n, 0)
+        self.assertTrue(s.q.empty(), "the blob landed behind stop()'s drain")
+
+    def test_a_mic_block_past_its_running_check_when_stop_lands_is_dropped(self):
+        """The mic callback's running check has the same window as push_samples'."""
+        s = new_streamer()
+        s.running = True
+        real = AudioStreamer._encode_and_enqueue
+
+        def stop_first(self: AudioStreamer, *args: Any, **kwargs: Any) -> int:
+            self.stop()
+            return real(self, *args, **kwargs)
+
+        with patch.object(AudioStreamer, "_encode_and_enqueue", stop_first):
+            s._mic_callback(np.zeros((100, 1), dtype=np.float32), 100, None, None)
+        self.assertTrue(s.q.empty(), "the blob landed behind stop()'s drain")
+
     def test_stop_still_drains_and_zeroes(self):
         # stop() routes its drain through _drain_queue_samples; the queue must
         # still empty and the counters reset.
