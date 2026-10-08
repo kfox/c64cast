@@ -211,6 +211,10 @@ def communicate_once_ready(ready: str) -> Iterator[None]:
     A child that exits without creating `ready` releases the wait at once. One
     that never creates it fails the test after :data:`_READY_S`.
     """
+    if not _armed:
+        # The gate replaces what the armed `communicate` calls, so unarmed it
+        # would do nothing and the bound would start at the call again.
+        raise AssertionError("communicate_once_ready needs the clamp armed; arm() has not run")
     communicate = _ORIGINAL_COMMUNICATE
 
     def gated(popen: subprocess.Popen[Any], input: Any = None, timeout: float | None = None) -> Any:
