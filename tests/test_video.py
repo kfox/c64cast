@@ -9,7 +9,9 @@ import time
 import unittest
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
+from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
@@ -24,6 +26,7 @@ from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
+from c64cast.video import video as video_mod
 from c64cast.video.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
@@ -382,6 +385,15 @@ class ResamplerTailTest(unittest.TestCase):
         src._audio_push = lambda arr: pushed.append(int(arr.size))
         src._audio_end = None
         src._audio_epoch = None
+        src._audio_fed_s = None
+        src._audio_trim = 0
+        src._video_read_s = None
+        src._audio_lag_s = 0.0
+        src._dry_stalled = False
+        src._pts_offset = None
+        src._pts_anchor_target = 0.0
+        src._tempo_scale = 1.0
+        src.target_sr = 44000
         src._resampler = av.AudioResampler(format="s16", layout="mono", rate=44000)
         src._atempo_graph = None
         src._closed = False
@@ -678,6 +690,11 @@ def _make_demux_source_stub(
     src._audio_push = None
     src._audio_end = None
     src._audio_epoch = None
+    src._audio_fed_s = None
+    src._audio_trim = 0
+    src._video_read_s = None
+    src._audio_lag_s = 0.0
+    src._dry_stalled = False
     src._decode_target = decode_target
     src._decode_size = None
     src._decode_planned = False
@@ -705,6 +722,7 @@ def _make_emit_audio_stub(sink: list[np.ndarray], *, tempo_scale: float = 1.0) -
     _arm_locks(src)
     src._audio_push = sink.append
     src._audio_epoch = None
+    src._audio_trim = 0
     src._video_buf = []
     src.audio_noise_gate = 0
     src.audio_gain = 1.0
@@ -1267,6 +1285,187 @@ class SpliceKeepsPostSeekAudioTest(unittest.TestCase):
                 src._emit_audio(np.full(64, 1000, dtype=np.int16))
                 queued = sink._queued_samples if name == "dac" else sink._q.qsize()
                 self.assertEqual(queued, 0, "pre-seek audio was kept past the cut")
+
+
+def _aligned_stub(sink: list[np.ndarray], *, rate: int = 8000) -> AVFileSource:
+    """An emit stub with the audio-timeline state `_align_audio_frame` and
+    `_fill_dry_stretch` read, on a content timeline that starts at 0."""
+    src = _make_emit_audio_stub(sink)
+    src.target_sr = rate
+    src._pts_offset = 0.0
+    src._pts_anchor_target = 0.0
+    src._audio_fed_s = None
+    src._video_read_s = None
+    src._audio_lag_s = 0.0
+    src._dry_stalled = False
+    src._resampler = object()  # only tested for None: an audio stream is open
+    return src
+
+
+def _audio_frame(start_s: float | None, seconds: float, rate: int = 8000) -> Any:
+    return SimpleNamespace(
+        pts=None if start_s is None else round(start_s * rate),
+        time_base=Fraction(1, rate),
+        sample_rate=rate,
+        samples=round(seconds * rate),
+    )
+
+
+class AlignedAudioTest(unittest.TestCase):
+    """The demuxer feeds audio on the picture's timeline (#606). The sink's
+    clock counts samples played and the picture follows it, so audio fed
+    back to back put a sound that starts late, or comes back after a gap,
+    up to a whole video buffer ahead of its picture, and a stretch with no
+    audio stopped the clock with the demuxer waiting on a full buffer."""
+
+    RATE = 8000
+
+    def _fed(self, sink: list[np.ndarray]) -> tuple[int, bool]:
+        """Samples fed, and whether every one was silence."""
+        return sum(a.size for a in sink), all(not a.any() for a in sink)
+
+    def test_a_sound_that_starts_late_is_preceded_by_silence_up_to_its_start(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._align_audio_frame(_audio_frame(2.0, 0.5))
+        self.assertEqual(self._fed(sink), (2 * self.RATE, True))
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 2.5)
+
+    def test_a_frame_within_the_tolerance_follows_on(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._audio_fed_s = 1.0
+        src._align_audio_frame(_audio_frame(1.02, 0.5))
+        self.assertEqual(sink, [])
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.52)
+
+    def test_a_frame_with_no_timestamp_follows_on(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._audio_fed_s = 3.0
+        src._align_audio_frame(_audio_frame(None, 0.5))
+        self.assertEqual((sink, src._audio_trim), ([], 0))
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 3.5)
+
+    def test_the_part_of_a_frame_the_audio_fed_already_covers_is_trimmed(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._audio_fed_s = 2.0
+        src._align_audio_frame(_audio_frame(1.5, 1.0))
+        self.assertEqual(src._audio_trim, self.RATE // 2)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 2.5)
+        pcm = np.arange(1, self.RATE + 1, dtype=np.int16)
+        src._emit_resampled(SimpleNamespace(to_ndarray=lambda: pcm.reshape(1, -1)))
+        self.assertEqual(len(sink), 1)
+        np.testing.assert_array_equal(sink[0], pcm[self.RATE // 2 :])
+        self.assertEqual(src._audio_trim, 0)
+
+    def test_a_sound_that_starts_after_its_picture_keeps_that_distance(self):
+        # The picture's first timestamp sets the origin both streams share;
+        # an origin per stream pulled the sound to the front.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._pts_offset = None
+        self.assertEqual(src._content_time(5.0), 0.0)
+        src._align_audio_frame(_audio_frame(7.0, 0.5))
+        self.assertEqual(self._fed(sink), (2 * self.RATE, True))
+
+    def test_a_sound_read_before_its_picture_sets_the_shared_origin(self):
+        # Left to the picture, the origin put a sound read first that far
+        # behind silence.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._pts_offset = None
+        src._align_audio_frame(_audio_frame(10.0, 0.5))
+        self.assertEqual(sink, [])
+        self.assertEqual(src._content_time(12.0), 2.0)
+
+    def test_a_full_buffer_with_no_audio_is_filled_short_of_its_newest_frame(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._fill_dry_stretch(0.0, 8.0)
+        self.assertEqual(self._fed(sink), (round(7.5 * self.RATE), True))
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 7.5)
+
+    def test_the_fill_keeps_back_as_far_as_the_file_writes_audio_late(self):
+        # Audio the file has been seen to write 2 s behind its picture may
+        # still come for that stretch; filled, it would be trimmed away.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._audio_lag_s = 2.0
+        src._fill_dry_stretch(0.0, 8.0)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 5.97)
+
+    def test_a_stalled_picture_takes_the_sinks_lead_past_its_oldest_frame(self):
+        # In a buffer spanning less than the sink holds back, a fill short of
+        # the newest frame never brings the clock to the oldest.
+        for stalled, expected in ((False, 0.5), (True, 1.0)):
+            with self.subTest(stalled=stalled):
+                sink: list[np.ndarray] = []
+                src = _aligned_stub(sink)
+                src._dry_stalled = stalled
+                src._fill_dry_stretch(0.0, 1.0)
+                self.assertAlmostEqual(cast(float, src._audio_fed_s), expected)
+
+    def test_no_fill_while_the_audio_fed_reaches_the_target(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._audio_fed_s = 7.49
+        src._fill_dry_stretch(0.0, 8.0)
+        self.assertEqual(sink, [])
+
+    def test_no_fill_without_an_audio_stream(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._resampler = None
+        src._fill_dry_stretch(0.0, 8.0)
+        self.assertEqual((sink, src._audio_fed_s), ([], None))
+
+    def _enqueue_blocked(self, *, draining: bool) -> AVFileSource:
+        """Block `_enqueue_frame` on a full buffer for about 3 s of a clock
+        that steps 0.3 s a reading, the oldest frame held or draining."""
+        src = _aligned_stub([])
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        src.max_video_buffer = 2
+        src._video_buf = [(0.0, img), (1.0, img)]
+        calls = [0]
+
+        def fill(_oldest: float, _newest: float) -> None:
+            calls[0] += 1
+            if draining:
+                src._video_buf[0] = (calls[0] * 0.01, img)
+            if calls[0] >= 10:
+                src._closed = True
+
+        src._fill_dry_stretch = fill  # type: ignore[method-assign]
+        with mock.patch.object(video_mod, "time", FrozenClock(0.0, "monotonic", 0.3, sleep=None)):
+            self.assertFalse(src._enqueue_frame(2.0, img))
+        return src
+
+    def test_a_picture_held_on_one_frame_latches_the_stall(self):
+        self.assertTrue(self._enqueue_blocked(draining=False)._dry_stalled)
+
+    def test_a_draining_picture_does_not_latch_the_stall(self):
+        self.assertFalse(self._enqueue_blocked(draining=True)._dry_stalled)
+
+    def test_audio_coming_again_releases_the_stall(self):
+        src = _aligned_stub([])
+        src._dry_stalled = True
+        src._align_audio_frame(_audio_frame(0.0, 0.1))
+        self.assertFalse(src._dry_stalled)
+
+    def test_a_seek_starts_the_audio_timeline_over(self):
+        # Kept, the fed position of the old pass put the target's first audio
+        # behind it: trimmed away on a seek back, or behind silence on one
+        # forward.
+        src = _make_demux_source_stub([], pending_seek=3.0)
+        src._audio_fed_s, src._audio_trim = 40.0, 123
+        src._video_read_s, src._dry_stalled = 41.0, True
+        self.assertTrue(src._apply_pending_seek())
+        self.assertEqual(
+            (src._audio_fed_s, src._audio_trim, src._video_read_s, src._dry_stalled),
+            (None, 0, None, False),
+        )
 
 
 class VideoSceneSpliceTest(unittest.TestCase):

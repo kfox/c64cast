@@ -423,6 +423,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   picture to its end on the 4-bit DAC.** The picture follows the sound, so it
   froze on the frame where the sound ran out and the scene never ended.
 
+- **A video whose sound starts late, stops for a while, or ends long before
+  its picture now plays in sync to its end.** The sound played as soon as it
+  was read, up to several seconds ahead of its picture, and a silent stretch
+  longer than a few seconds froze the picture for good.
+
 - **A seek, A/B loop wrap or resume in a video keeps the start of the sound
   it lands on.** The decoder can reach the new position and hand over its
   first sound before the old sound has been cleared out, and that sound was

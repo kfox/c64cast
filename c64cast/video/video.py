@@ -34,6 +34,29 @@ from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulato
 
 _T = TypeVar("_T")
 
+# Audio is fed toward the sink on the picture's timeline: a packet that starts
+# later than the audio fed so far is preceded by silence, and one that starts
+# earlier is trimmed. Within this much either way it is fed as it is, so the
+# few samples a resampler holds back or a muxer rounds do not split a packet.
+AUDIO_ALIGN_TOLERANCE_S = 0.03
+# A full video buffer with no audio coming is fed silence up to its newest
+# frame less this much, or less the furthest the file has been seen to write
+# audio behind its picture if that is more: audio for anything earlier would
+# already have been read.
+DRY_FILL_INTERLEAVE_S = 0.5
+# ... and, once the oldest frame has waited `DRY_FILL_STALL_S` for the clock,
+# never less than this far past it. Each sink holds audio back before its
+# clock moves (the DAC's prebuffer and ring lead, about 1.1 s; the sampler's
+# 1.0 s lead), so in a buffer spanning less than that plus the allowance, a
+# fill short of the newest frame never brings the clock to the oldest. Only a
+# stall takes this lead: a file that writes its audio late in a short buffer
+# otherwise has it covered by silence and trimmed.
+DRY_FILL_MIN_LEAD_S = 1.5
+DRY_FILL_STALL_S = 1.0
+# Silence goes out in pieces no larger than this, so each one fits the sink's
+# backpressure bound and a seek or close is seen between them.
+SILENCE_PIECE_SAMPLES = 1024
+
 log = logging.getLogger(__name__)
 
 # Peak-normalization for video-scene audio. The SID volume DAC is 4-bit and
@@ -918,6 +941,24 @@ class AVFileSource:
         self._audio_push: Callable[..., object] | None = None
         self._audio_end: Callable[[], object] | None = None
         self._audio_epoch: Callable[[], int] | None = None
+        # Where on the content timeline (rebased, unscaled seconds) the audio
+        # this pass has fed toward the sink ends, sound and silence alike; None
+        # until the pass feeds its first. Demux-thread state, reset by a seek.
+        # See `_align_audio_frame`.
+        self._audio_fed_s: float | None = None
+        # Resampled samples still to drop from the front of the next audio:
+        # the part of a packet that overlaps audio already fed.
+        self._audio_trim = 0
+        # Content time of the newest decoded picture this pass, reset by a
+        # seek; and the furthest behind it the file has written a packet of
+        # audio, kept for the file. See `_fill_dry_stretch`.
+        self._video_read_s: float | None = None
+        self._audio_lag_s = 0.0
+        # Set once the picture has stalled on a dry stretch, until audio
+        # comes again or a seek: the fill keeps its lead over the sink's
+        # buffering for the rest of that stretch, instead of stalling again
+        # each time a frame drains.
+        self._dry_stalled = False
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -1162,6 +1203,10 @@ class AVFileSource:
             self._atempo_graph = _build_atempo_graph(self.target_sr, self._tempo_scale)
         self._pts_offset = None
         self._pts_anchor_target = target
+        self._audio_fed_s = None
+        self._audio_trim = 0
+        self._video_read_s = None
+        self._dry_stalled = False
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 
@@ -1213,12 +1258,20 @@ class AVFileSource:
         1/tempo_scale-compressed audio (both then net to real time under the
         ~tempo_scale drain-clock slowdown). No-op when tempo_scale == 1.0."""
         pts = float(frame.pts * self.video_time_base) if frame.pts is not None else 0.0
-        if self._pts_offset is None:
-            self._pts_offset = pts - self._pts_anchor_target
-        pts -= self._pts_offset
+        pts = self._content_time(pts)
         if self._tempo_scale != 1.0:
             pts *= self._tempo_scale
         return pts
+
+    def _content_time(self, pts_s: float) -> float:
+        """A stream timestamp (seconds) on the content timeline: rebased,
+        unscaled. The pass's first timestamp from either stream sets the
+        offset, so audio and picture share one origin; a sound that starts
+        after its picture keeps that distance instead of being pulled to the
+        front."""
+        if self._pts_offset is None:
+            self._pts_offset = pts_s - self._pts_anchor_target
+        return pts_s - self._pts_offset
 
     def _enqueue_frame(self, pts: float, img: np.ndarray) -> bool:
         """Append (pts, img) to the video buffer, blocking while it is full.
@@ -1235,6 +1288,9 @@ class AVFileSource:
         in playback for a long time, then "catches up" near the end. Blocking
         the demuxer until the consumer drains is correct in both modes;
         host-DMA just doesn't hit the wait."""
+        self._video_read_s = pts / (self._tempo_scale or 1.0)
+        waiting_on: float | None = None
+        since = 0.0
         while True:
             if self._closed:
                 return False
@@ -1247,7 +1303,42 @@ class AVFileSource:
                 if len(self._video_buf) < self.max_video_buffer:
                     self._video_buf.append((pts, img))
                     return True
+                oldest, newest = self._video_buf[0][0], self._video_buf[-1][0]
+            now = time.monotonic()
+            if oldest != waiting_on:
+                waiting_on, since = oldest, now
+            elif now - since >= DRY_FILL_STALL_S:
+                self._dry_stalled = True
+            self._fill_dry_stretch(oldest, newest)
             time.sleep(0.005)
+
+    def _fill_dry_stretch(self, oldest_pts: float, newest_pts: float) -> None:
+        """The video buffer is full, and the sink's clock is what drains it.
+        With no audio coming for the buffered stretch (a sound that ended, or
+        starts late, or has a gap longer than the buffer), that clock stops
+        and the demuxer waits on it for good. Feed silence up to
+        `DRY_FILL_INTERLEAVE_S` short of the newest buffered frame (or as far
+        short as this file has written audio behind its picture); once the
+        oldest frame has waited `DRY_FILL_STALL_S` (`_dry_stalled`, until
+        audio comes again), at least `DRY_FILL_MIN_LEAD_S` past the oldest;
+        never past the newest.
+        The clock then runs on through the buffer. Audio that does come
+        is aligned as usual: later than the fill, it follows it; inside it,
+        the covered part is trimmed. A no-op without an audio sink, or while
+        the audio fed already reaches that far."""
+        if self._resampler is None or self._audio_push is None:
+            return
+        scale = self._tempo_scale or 1.0
+        oldest, newest = oldest_pts / scale, newest_pts / scale
+        margin = max(DRY_FILL_INTERLEAVE_S, self._audio_lag_s + AUDIO_ALIGN_TOLERANCE_S)
+        target = newest - margin
+        if self._dry_stalled:
+            target = max(target, oldest + DRY_FILL_MIN_LEAD_S)
+        target = min(target, newest)
+        fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
+        if target - fed > AUDIO_ALIGN_TOLERANCE_S:
+            self._audio_fed_s = target
+            self._feed_silence(target - fed)
 
     def _decode_audio_packet(self, packet: Any) -> None:
         """Resample an audio packet and emit it — through the atempo graph
@@ -1255,10 +1346,72 @@ class AVFileSource:
         graph buffers, so one input frame yields 0..N output frames)."""
         assert self._resampler is not None  # caller checks (audio-branch gate)
         for frame in packet.decode():
+            self._align_audio_frame(frame)
             for resampled in self._resampler.resample(frame):
                 self._emit_resampled(resampled)
 
+    def _align_audio_frame(self, frame: Any) -> None:
+        """Place a decoded audio frame on the picture's timeline before it is
+        fed. The sink's clock counts the samples it plays, and the picture
+        follows that clock, so audio fed back to back drifts from the picture
+        by every stretch the file leaves silent: a sound that starts late, or
+        comes back after a gap, played as soon as it was read, up to a whole
+        video buffer early. A frame that starts after the audio fed so far is
+        preceded by silence up to its start, and one that starts before it
+        (audio a dry-stretch fill already covered, or a muxer's overlap) loses
+        that overlap. A frame with no timestamp follows on."""
+        self._dry_stalled = False
+        rate = frame.sample_rate or self.target_sr
+        duration = frame.samples / rate if rate else 0.0
+        if frame.pts is None or frame.time_base is None:
+            start = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
+        else:
+            start = self._content_time(float(frame.pts * frame.time_base))
+            if self._video_read_s is not None:
+                self._audio_lag_s = max(self._audio_lag_s, self._video_read_s - start)
+        fed = self._audio_fed_s
+        if fed is None:
+            fed = self._pts_anchor_target
+        gap = start - fed
+        if gap > AUDIO_ALIGN_TOLERANCE_S:
+            self._feed_silence(gap)
+        elif gap < -AUDIO_ALIGN_TOLERANCE_S:
+            self._audio_trim += round(min(-gap, duration) * self.target_sr)
+        self._audio_fed_s = max(fed, start + duration)
+
+    def _feed_silence(self, seconds: float) -> None:
+        """Feed ``seconds`` of content-timeline silence the way audio goes,
+        through the atempo graph when tempo compensation is on, in pieces a
+        sink's backpressure takes one at a time. Stops early on a seek or a
+        close, which retire it anyway."""
+        remaining = round(seconds * self.target_sr)
+        while remaining > 0 and not self._closed and not self.seek_pending:
+            n = min(remaining, SILENCE_PIECE_SAMPLES)
+            remaining -= n
+            zeros = np.zeros(n, dtype=np.int16)
+            if self._atempo_graph is not None:
+                frame = av.AudioFrame.from_ndarray(
+                    zeros.reshape(1, -1), format="s16", layout="mono"
+                )
+                frame.sample_rate = self.target_sr
+                self._atempo_graph.push(frame)
+                self._drain_atempo()
+            else:
+                self._emit_audio(zeros)
+
     def _emit_resampled(self, resampled: Any) -> None:
+        if self._audio_trim:
+            arr = resampled.to_ndarray().reshape(-1)
+            cut = min(self._audio_trim, arr.size)
+            self._audio_trim -= cut
+            arr = arr[cut:]
+            if not arr.size:
+                return
+            if self._atempo_graph is None:
+                self._emit_audio(arr)
+                return
+            resampled = av.AudioFrame.from_ndarray(arr.reshape(1, -1), format="s16", layout="mono")
+            resampled.sample_rate = self.target_sr
         if self._atempo_graph is not None:
             self._atempo_graph.push(resampled)
             self._drain_atempo()

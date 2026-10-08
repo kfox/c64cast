@@ -2318,6 +2318,86 @@ class VideoSoundShorterThanPictureTest(unittest.TestCase):
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
+    """A silent stretch longer than the video buffer: a sound that starts
+    late or comes back after a gap (#606). Fed back to back, the sound
+    played as soon as it was read, a buffer ahead of its picture, and with
+    no audio coming for the buffered stretch the DAC's clock stopped and the
+    demuxer waited on a full buffer for good. Real time, through the DAC."""
+
+    VIDEO_S = 4.0
+    BUFFER = 60  # frames: two seconds at 30 fps
+    SLACK_S = 1.5
+    RATE = 8000
+    TOLERANCE_S = 0.1
+
+    def _play(self, audio: tuple[tuple[float, float], ...]) -> tuple[bool, float | None]:
+        """Play a clip with sound at the ``audio`` spans the way VideoScene
+        does. Return whether it finished in time, and where on the fed
+        timeline the first sound sample went."""
+        import tempfile
+
+        from _fakes import FakeAPI, quiet_logging
+
+        from c64cast.audio.audio_source import heard_seconds
+        from c64cast.video.video import AVFileSource
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(clip, self.VIDEO_S, rate=self.RATE, audio=audio)
+        api = FakeAPI()
+        dac = AudioStreamer(cast(C64Backend, api), self.RATE, "NTSC")
+        link = _ConsumerLink(FakeAPI(), dac.effective_rate)
+        api.read_memory = link.read_memory  # type: ignore[method-assign]
+        start_nmi = dac.nmi.start
+        fed = [0]
+        first_sound: list[float] = []
+
+        def started(*args, **kwargs):
+            link.started_at = time.monotonic()
+            return start_nmi(*args, **kwargs)
+
+        def push(samples: np.ndarray, **kwargs) -> int:
+            loud = np.flatnonzero(samples)
+            if loud.size and not first_sound:
+                first_sound.append((fed[0] + int(loud[0])) / self.RATE)
+            fed[0] += samples.size
+            return dac.push_samples(samples, **kwargs)
+
+        with quiet_logging(), mock.patch.object(dac.nmi, "start", side_effect=started):
+            dac.start_for_external_source()
+            try:
+                src = AVFileSource(
+                    clip,
+                    target_sample_rate=self.RATE,
+                    scan_audio_peak=False,
+                    max_video_buffer=self.BUFFER,
+                )
+                self.addCleanup(src.close)
+                src.start(audio_push=push, audio_end=dac.end_input)
+                deadline = time.monotonic() + self.VIDEO_S + self.SLACK_S
+                while not src.finished and time.monotonic() < deadline:
+                    src.current_frame(heard_seconds(dac))
+                    time.sleep(0.01)
+                finished = src.finished
+                src.close()
+            finally:
+                dac.stop()
+        return finished, first_sound[0] if first_sound else None
+
+    def test_a_sound_that_starts_after_the_buffer_plays_with_its_picture(self):
+        finished, first = self._play(((3.0, 0.5),))
+        self.assertTrue(finished, "the picture stalled before the sound started")
+        self.assertIsNotNone(first)
+        self.assertAlmostEqual(cast(float, first), 3.0, delta=self.TOLERANCE_S)
+
+    def test_a_sound_back_after_a_gap_longer_than_the_buffer_plays_with_its_picture(self):
+        finished, first = self._play(((0.0, 0.3), (3.0, 0.5)))
+        self.assertTrue(finished, "the picture stalled in the gap")
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AudioFileSourceFeatureSyncTest(unittest.TestCase):
     """A reactive file scene pulses with the click the listener hears, not the
     one the decoder has just reached. Both sinks keep a queue and a ring of
