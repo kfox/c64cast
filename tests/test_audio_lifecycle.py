@@ -4031,6 +4031,26 @@ class LifecycleTest(unittest.TestCase):
         self._landing_at_pace(clock, s, period, 1)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
+    def test_a_stall_left_unanchored_does_not_slow_the_landing_pace(self):
+        # With R unread the schedule restarts from now and nothing catches up
+        # on the stall, so its long interval would read the pace slow.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        self._landing_at_pace(clock, s, period, 5)
+        self._landing_at_pace(clock, s, 0.5, 1)
+        s.running = True
+        with (
+            mock.patch.object(s.servo, "read_r_promptly", return_value=None),
+            self.assertLogs(audio_mod.log, level="WARNING") as cm,
+        ):
+            self.assertIsNone(
+                s._resync_after_stall(0.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+            )
+        self.assertIn("could not be re-anchored", cm.output[0])
+        self._landing_at_pace(clock, s, period, 3)
+        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between
         # two reads; the clock holds rather than reporting less than it did.

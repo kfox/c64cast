@@ -1473,6 +1473,11 @@ class AudioStreamer:
                 lag,
             )
             self.servo.note_disturbance()
+            # The schedule restarts from now, so nothing catches up on the
+            # stall's long interval: left in the pace window, it read the
+            # pace slow for a window.
+            with self._ring_pad_lock:
+                self._landings.clear()
             return None
         anchor = stall_reanchor(r_addr, self.chunk_size)
         self._stomp_from(r_addr, anchor, current)
