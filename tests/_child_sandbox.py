@@ -243,7 +243,11 @@ def communicate_once_ready(ready: str) -> Iterator[None]:
                 # degrade through `except Exception`, as `ChildProcessHung`
                 # explains. Killed first for the reason `_hung` gives.
                 _kill_and_reap(popen)
-                raise ChildProcessHung(f"the child never created {ready}: {popen.args!r}")
+                raise ChildProcessHung(
+                    f"the child never created {ready}: {popen.args!r}\n"
+                    "nothing reads its pipes until it does, so a child that "
+                    "writes more than a pipe holds first blocks here"
+                )
             time.sleep(0.01)
         return communicate(popen, input, timeout)
 
