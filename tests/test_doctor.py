@@ -1512,10 +1512,9 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         self.assertEqual(len(diags), 1)
         self.assertIn("resolves to 'calibrated:cal'", diags[0].message)
 
-    def test_auto_under_digi_boost_does_not_offer_the_armsid_table(self):
+    def test_auto_under_digi_boost_names_digi_boost_over_an_armsid_table(self):
         # digi_boost holds auto on linear before any table is read, and
-        # 'calibrated' is mutually exclusive with it, so the opt-in hint would
-        # send the user to a config that fails validation.
+        # 'calibrated' is mutually exclusive with it.
         cfg = self._cfg("auto")
         cfg.audio.digi_boost = True
         tmp = tempfile.TemporaryDirectory()
