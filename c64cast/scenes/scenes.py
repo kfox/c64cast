@@ -1358,8 +1358,8 @@ class VideoScene(MediaFileMixin, Scene):
         # (wall, clock) at the displayed frames in the drain window, and the
         # last drain followed with the file it was followed on. The next run
         # starts from it when it picks that file again: the drain moves with
-        # the commit rate, which the content decides, so a clip a spec picked at random would start from
-        # another clip's drain.
+        # how much of each committed frame the content changes, so a clip a
+        # spec picked at random would start from another clip's drain.
         self._drain_marks: deque[tuple[float, float]] = deque()
         self._followed_tempo: float | None = None
         self._followed_file: str | None = None
