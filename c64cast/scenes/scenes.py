@@ -1356,10 +1356,13 @@ class VideoScene(MediaFileMixin, Scene):
         # configured value, which is what the operator measured.
         self.tempo_follow = tempo_follow and tempo_scale < 1.0
         # (wall, clock) at the displayed frames in the drain window, and the
-        # last drain followed, which the next run of the scene starts from:
-        # the link and the clip are the same, so it is the better guess.
+        # last drain followed with the file it was followed on. The next run
+        # starts from it when it picks that file again: the drain moves with
+        # the content, so a clip a spec picked at random would start from
+        # another clip's drain.
         self._drain_marks: deque[tuple[float, float]] = deque()
         self._followed_tempo: float | None = None
+        self._followed_file: str | None = None
         # The window's trust stamp (underruns, delivery_epoch), the monotonic
         # time following was armed at, and the last retune's.
         self._drain_trust: tuple[int, int] | None = None
@@ -1472,7 +1475,9 @@ class VideoScene(MediaFileMixin, Scene):
                 start_s=self.start_s,
                 decode_target_size=decode_target,
                 tempo_scale=(
-                    self.tempo_scale if self._followed_tempo is None else self._followed_tempo
+                    self._followed_tempo
+                    if self._followed_tempo is not None and self._followed_file == self.filepath
+                    else self.tempo_scale
                 ),
                 tempo_follow=self.tempo_follow,
             )
@@ -2005,6 +2010,7 @@ class VideoScene(MediaFileMixin, Scene):
         retuned = min(tempo + TEMPO_FOLLOW_MAX_STEP, max(tempo - TEMPO_FOLLOW_MAX_STEP, drain))
         source.request_tempo_scale(retuned)
         self._followed_tempo = retuned
+        self._followed_file = self.filepath
         self._last_retune_t = now
 
     def _log_av_lag_summary(self) -> None:

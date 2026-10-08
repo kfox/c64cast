@@ -3871,8 +3871,11 @@ class FollowDrainTest(unittest.TestCase):
         scene, _ = self._scene()
         self._play(scene, 0.79, 112.0)
         self.assertAlmostEqual(scene._followed_tempo or 0.0, 0.79, places=3)
+        self.assertEqual(scene._followed_file, scene.filepath)
 
-    def test_setup_opens_the_next_run_at_the_drain_followed(self):
+    def _setup_after_following(self, followed_file: str) -> Any:
+        """The source kwargs a run opens with after a drain of 0.79 was
+        followed on ``followed_file``."""
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
@@ -3887,11 +3890,20 @@ class FollowDrainTest(unittest.TestCase):
                 tempo_follow=True,
             )
             scene._followed_tempo = 0.79
+            scene._followed_file = followed_file
             scene.setup()
             scene.teardown()
-        self.assertEqual(source_cls.call_args.kwargs["tempo_scale"], 0.79)
+        return source_cls.call_args.kwargs
+
+    def test_setup_opens_the_next_run_at_the_drain_followed(self):
+        kwargs = self._setup_after_following("https://stub.invalid/clip.mp4")
+        self.assertEqual(kwargs["tempo_scale"], 0.79)
         # So a run opened at a followed 1.0 still has a graph to retune.
-        self.assertIs(source_cls.call_args.kwargs["tempo_follow"], True)
+        self.assertIs(kwargs["tempo_follow"], True)
+
+    def test_a_run_on_another_file_starts_from_the_hardware_figure(self):
+        kwargs = self._setup_after_following("https://stub.invalid/other.mp4")
+        self.assertEqual(kwargs["tempo_scale"], 0.88)
 
     def test_setup_arms_the_following_clock_on_the_monotonic_clock(self):
         clock = FrozenClock(1000.0, "time", monotonic=777.0)
