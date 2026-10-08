@@ -886,6 +886,35 @@ class SetupOutageReleasesTheEnsembleAudioSlotTest(unittest.TestCase):
         self.assertTrue(upcoming.__dict__.get("_audio_lock_held"))
         self.assertEqual(card.setup_count, 2)
 
+    def test_the_half_set_up_scene_is_torn_down_before_it_waits_for_the_slot(self):
+        api = _OutageApi(down_probes=2)
+        scene = _AudioScene(api, lossy_setups=1)
+        pl, ens = self._ensemble_playlist(api, scene)
+
+        def other_takes_it() -> None:
+            if api.probes == 2:
+                self.assertTrue(ens.try_claim_audio("other"))
+
+        claim = ens.try_claim_audio
+        teardowns_at_refusal: list[int] = []
+
+        def other_lets_go_once_refused(name: str) -> bool:
+            won = claim(name)
+            if not won:
+                teardowns_at_refusal.append(scene.teardown_count)
+                ens.release_audio("other")
+            return won
+
+        api.on_probe = other_takes_it
+        ens.try_claim_audio = other_lets_go_once_refused
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.safe_setup(scene)
+        self.assertEqual(
+            teardowns_at_refusal, [1], "the scene stayed set up while another system had the slot"
+        )
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertEqual(scene.setup_count, 2)
+
     def test_a_stop_while_reclaiming_a_slot_taken_meanwhile_ends_the_setup(self):
         api = _OutageApi(down_probes=2)
         scene = _AudioScene(api, lossy_setups=1)
