@@ -3166,6 +3166,7 @@ class AudioStreamer:
             self._ring_landed_at = time.monotonic()
             self._landings.clear()
             self._landing_pace = float(self.effective_rate)
+            self._landing_pace_before_last = self._landing_pace
 
     def _armed_rate(self) -> float:
         """The rate the CIA #2 latch now armed fires at: above
@@ -3236,8 +3237,8 @@ class AudioStreamer:
         """Start the pace window afresh. Caller holds ``_ring_pad_lock``.
 
         The pace that stands until the window fills again is the one that
-        stood before the window's last landing: after a stall that landing is
-        the late one, and the pace it measured, standing, ran the clock at
+        stood before the window's last landing: after a stall in the ring
+        write that landing is the late one, and the pace it measured, standing, ran the clock at
         about half speed for the two to three landings the window takes to
         refill. Re-measuring the window without it would leave that pace
         standing when the late landing is the one that filled the window."""
@@ -3310,6 +3311,7 @@ class AudioStreamer:
         self._ring_landed_at = None
         self._landings.clear()
         self._landing_pace = 0.0
+        self._landing_pace_before_last = 0.0
 
     def reset_position(self) -> None:
         with self._count_lock:
