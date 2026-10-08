@@ -568,7 +568,7 @@ class BackendLinkAnswersTest(unittest.TestCase):
     def test_a_backend_with_no_round_trip_of_its_own_says_the_link_answers(self):
         from c64cast.hw.teensyrom_api import TeensyROMBackend
 
-        self.assertTrue(TeensyROMBackend.link_answers(MagicMock()))
+        self.assertIs(TeensyROMBackend.link_answers(MagicMock()), True)
 
 
 class SetupRetryKeepsThePickTest(unittest.TestCase):
