@@ -502,18 +502,21 @@ class SetupThroughOutageTest(unittest.TestCase):
         api = _OutageApi(down_probes=0)
         scene = _LossySetupScene(api, lossy_setups=10_000)
         pl = self._playlist(api, scene)
+        real_wait = pl.stop_event.wait
+        timeouts: list[float | None] = []
+
+        def wait(timeout: float | None = None) -> bool:
+            timeouts.append(timeout)
+            return real_wait(timeout)
+
         with (
             patch("c64cast.app.playlist.SETUP_RETRY_S", 0.001),
-            patch.object(pl.stop_event, "wait", wraps=pl.stop_event.wait) as wait,
+            patch.object(pl.stop_event, "wait", side_effect=wait),
             self.assertLogs("c64cast.app.playlist", level="WARNING"),
         ):
             pl.safe_setup(scene)
         self.assertEqual(scene.setup_count, 3)
-        self.assertEqual(
-            [c.args for c in wait.call_args_list],
-            [(0.001,), (0.001,)],
-            "a lossy retry did not wait SETUP_RETRY_S",
-        )
+        self.assertEqual(timeouts, [0.001, 0.001], "a lossy retry did not wait SETUP_RETRY_S")
 
     def test_a_stop_before_a_lossy_retry_ends_the_setup(self):
         api = _OutageApi(down_probes=0)
