@@ -521,11 +521,6 @@ def ensure_pyav() -> bool:
     return PYAV_AVAILABLE
 
 
-def _build_atempo_graph(target_sample_rate: int, tempo_scale: float):
-    """The graph half of :func:`_build_atempo`."""
-    return _build_atempo(target_sample_rate, tempo_scale)[0]
-
-
 def _build_atempo(target_sample_rate: int, tempo_scale: float) -> tuple[Any, Any]:
     """Build a one-stage `atempo` filter graph that time-compresses mono/s16
     audio (pitch-preserving) by ``1 / tempo_scale``. Fed the s16/mono/

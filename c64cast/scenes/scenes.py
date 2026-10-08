@@ -1464,7 +1464,9 @@ class VideoScene(MediaFileMixin, Scene):
                 scan_audio_peak=will_push_audio,
                 start_s=self.start_s,
                 decode_target_size=decode_target,
-                tempo_scale=self._followed_tempo or self.tempo_scale,
+                tempo_scale=(
+                    self.tempo_scale if self._followed_tempo is None else self._followed_tempo
+                ),
                 tempo_follow=self.tempo_follow,
             )
         except PermissionError as e:

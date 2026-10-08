@@ -40,7 +40,7 @@ from c64cast.video.video import (
     SILENCE_PIECE_SAMPLES,
     AVFileSource,
     RemoteSeekStalled,
-    _build_atempo_graph,
+    _build_atempo,
     _compute_normalization_gain,
     _ContainerCloser,
     _is_remote_url,
@@ -1801,7 +1801,7 @@ class AlignedAudioBranchesTest(unittest.TestCase):
     def _graph_stub(self, sink: list[np.ndarray], tempo_scale: float = 0.5) -> AVFileSource:
         src = _aligned_stub(sink, rate=self.RATE)
         src._tempo_scale = tempo_scale
-        src._atempo_graph = _build_atempo_graph(self.RATE, tempo_scale)
+        src._atempo_graph = _build_atempo(self.RATE, tempo_scale)[0]
         return src
 
     @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
@@ -2934,7 +2934,7 @@ class AtempoTempoCompensationTest(unittest.TestCase):
 
     def _stub(self, tempo_scale: float, sink) -> AVFileSource:
         src = _make_emit_audio_stub(sink, tempo_scale=tempo_scale)
-        src._atempo_graph = _build_atempo_graph(self.SR, tempo_scale)
+        src._atempo_graph = _build_atempo(self.SR, tempo_scale)[0]
         return src
 
     def _feed(self, src: AVFileSource, total_samples: int, frame_len: int = 1024) -> None:
