@@ -707,27 +707,29 @@ def _run_session(
     except StackBuildError as e:
         return e.exit_code
 
-    # SIGINT/SIGTERM -> graceful shutdown, SIGHUP -> reload the sections
-    # `config.RELOADABLE_SECTIONS` names plus the scene list. Installed here and
-    # not in session.py because `signal.signal` raises off the main thread, so a
-    # session built from a worker must not inherit handler installation. The
-    # three-strike shape is in docs/architecture/config.md#clipy.
-    _on_stop_signal = session.make_stop_signal_handler(sess.stop_event.set, verb="stopping")
-
-    def _on_sighup(_signum, _frame):
-        log.info("SIGHUP received")
-        session.reload_all(sess)
-
-    signal.signal(signal.SIGTERM, _on_stop_signal)
-    signal.signal(signal.SIGINT, _on_stop_signal)
-    # Windows has no SIGHUP (POST /reload is the portable equivalent). The
-    # getattr stays: naming the attribute fails pyright when it runs *on*
-    # Windows, where a `hasattr` guard does not narrow it either.
-    sighup = getattr(signal, "SIGHUP", None)
-    if sighup is not None:
-        signal.signal(sighup, _on_sighup)
-
+    # The try opens before the handlers go in: until they do, a Ctrl+C is
+    # Python's KeyboardInterrupt, and every built stack would be left held.
     try:
+        # SIGINT/SIGTERM -> graceful shutdown, SIGHUP -> reload the sections
+        # `config.RELOADABLE_SECTIONS` names plus the scene list. Installed here and
+        # not in session.py because `signal.signal` raises off the main thread, so a
+        # session built from a worker must not inherit handler installation. The
+        # three-strike shape is in docs/architecture/config.md#clipy.
+        _on_stop_signal = session.make_stop_signal_handler(sess.stop_event.set, verb="stopping")
+
+        def _on_sighup(_signum, _frame):
+            log.info("SIGHUP received")
+            session.reload_all(sess)
+
+        signal.signal(signal.SIGTERM, _on_stop_signal)
+        signal.signal(signal.SIGINT, _on_stop_signal)
+        # Windows has no SIGHUP (POST /reload is the portable equivalent). The
+        # getattr stays: naming the attribute fails pyright when it runs *on*
+        # Windows, where a `hasattr` guard does not narrow it either.
+        sighup = getattr(signal, "SIGHUP", None)
+        if sighup is not None:
+            signal.signal(sighup, _on_sighup)
+
         session.start_services(sess)
         session.run_foreground(sess)
     finally:

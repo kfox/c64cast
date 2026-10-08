@@ -353,5 +353,25 @@ class TeardownStackOrderTest(unittest.TestCase):
         st.api.close.assert_called_once()
 
 
+class RunSessionStopHandlerGapTest(unittest.TestCase):
+    """cli._run_session installs its stop handler after build_session returns;
+    a Ctrl+C in between still reaches the default handler, as a
+    KeyboardInterrupt, and must not leave every built stack held."""
+
+    def test_a_ctrl_c_before_the_stop_handler_is_installed_still_tears_down(self):
+        from c64cast.app import cli
+
+        sess = MagicMock(name="sess")
+        with (
+            unittest.mock.patch.object(session, "validate_configs"),
+            unittest.mock.patch.object(session, "build_session", return_value=sess),
+            unittest.mock.patch.object(cli.signal, "signal", side_effect=KeyboardInterrupt),
+            unittest.mock.patch.object(session, "teardown_session") as teardown,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            cli._run_session(argparse.Namespace(), MagicMock(name="loaded"), [])
+        teardown.assert_called_once_with(sess)
+
+
 if __name__ == "__main__":
     unittest.main()

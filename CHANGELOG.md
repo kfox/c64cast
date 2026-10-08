@@ -297,6 +297,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   scene ended could land in the queue after the scene's teardown had
   cleared it, so it played at the start of the next scene. This was rare.
 
+- **A Ctrl+C in the instant between startup finishing and the show
+  beginning no longer leaves the machine held.** c64cast now releases it the
+  same way it does at the end of a show.
+
 - **Pressing Ctrl+C again while c64cast is releasing the machine after a
   failed start now finishes the job instead of abandoning it.** The release
   steps that were left (the reset, closing the connection, putting back the
