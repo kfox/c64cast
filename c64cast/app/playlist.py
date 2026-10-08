@@ -701,11 +701,14 @@ class Playlist:
                 "prepare_next failed on %r — interstitial will show a stale name", scene.name
             )
 
-    def safe_setup(self, scene: Scene, *, announcing: Scene | None = None) -> None:
+    def safe_setup(
+        self, scene: Scene, *, announcing: Scene | None = None, after_restart: bool = False
+    ) -> None:
         """Set `scene` up for its first frame. `announcing` is the upcoming
         scene when `scene` is its "UP NEXT" card: the ensemble audio slot
         claimed for that scene is the one a link outage in this setup
-        releases and claims back."""
+        releases and claims back. `after_restart`: a machine restart under
+        `scene` called for this setup (`MachineRestartWatch.arm`)."""
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
@@ -714,7 +717,7 @@ class Playlist:
         if getattr(scene, "HANDS_OVER_MACHINE", False):
             self.restart_watch.suspend()
         else:
-            self.restart_watch.arm(scene)
+            self.restart_watch.arm(after_restart=after_restart)
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
         if self.user_dim < 1.0:
@@ -777,7 +780,7 @@ class Playlist:
         if self.stop_event.is_set() or not self.ensemble_coord.wait_for_audio_claim(scene):
             self.current = None
             return
-        self.safe_setup(scene, announcing=announcing)
+        self.safe_setup(scene, announcing=announcing, after_restart=True)
         scene.is_done = False
 
     def _put_machine_back(self, message: str, scene_name: str) -> None:

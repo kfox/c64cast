@@ -583,8 +583,9 @@ class MachineRestartWatch:
     clearing page 3) reads exactly like a reset, and since the scene sets up
     again after one, it would restart the scene over and over. So a restart
     counts as unconfirmed until a read finds the nonce re-written, and after
-    `RESTART_UNCONFIRMED_LIMIT` unconfirmed ones in a row in the same
-    scene the watch stands down until a different scene arms it.
+    `RESTART_UNCONFIRMED_LIMIT` unconfirmed ones in a row, each answered by
+    setting the same scene up again, the watch stands down until a scene
+    sets up for any other reason.
 
     A restart a scene outlives, with the link down until the next setup,
     leaves no landed frame to look after, so `restarted_before_setup()`
@@ -625,8 +626,6 @@ class MachineRestartWatch:
         # Restarts since a read last found the nonce in place.
         self._unconfirmed_restarts = 0
         self._stood_down = False
-        # The scene the last arm was for; the unconfirmed count is per scene.
-        self._scene: object | None = None
         if self.enabled:
             assert add_listener is not None
             add_listener(self._after_reset)
@@ -646,19 +645,24 @@ class MachineRestartWatch:
     def _current_marks(self) -> tuple[int, int]:
         return self._api.delivery_epoch, self._api.link_generation
 
-    def arm(self, scene: object | None = None) -> None:
-        """Write the nonce, after a setup or a reset c64cast issued. One the
-        link loses leaves the watch disarmed, so a lost write is never read
-        back as a restart. `scene` is the scene that set up; a different one
-        from the last clears a stand-down."""
+    def arm(self, *, after_restart: bool = False) -> None:
+        """Write the nonce, after a scene sets up. `after_restart`: the setup
+        is the one a restart found under that scene called for, so restarts
+        not yet confirmed still count; any other setup, a one-scene loop's
+        next lap included, starts the count over and ends a stand-down."""
         if not self.enabled:
             return
-        self._rearm = self._rearm_lost = False
-        self._suspended = False
-        if scene is not None and scene is not self._scene:
-            self._scene = scene
+        if not after_restart:
             self._unconfirmed_restarts = 0
             self._stood_down = False
+        self._write_nonce()
+
+    def _write_nonce(self) -> None:
+        """Write the nonce, unless the watch stood down. One the link loses
+        leaves the watch disarmed, so a lost write is never read back as a
+        restart."""
+        self._rearm = self._rearm_lost = False
+        self._suspended = False
         if self._stood_down:
             self._armed = False
             return
@@ -681,7 +685,7 @@ class MachineRestartWatch:
             # confirmed write every frame spends up to three flushes a frame.
             if self._rearm_lost and not landed:
                 return False
-            self.arm()
+            self._write_nonce()
             # A re-arm the link lost is tried again after a later frame:
             # leaving it off would stop watching for the rest of the scene.
             self._rearm = self._rearm_lost = not self._armed
@@ -758,7 +762,7 @@ class MachineRestartWatch:
             self._log.warning(
                 "the restart check found $%04X-$%04X zeroed %d times with the nonce "
                 "never read back in between; something on the machine stores zeros "
-                "there, so not watching for a machine restart until another scene "
+                "there, so not watching for a machine restart until the next scene "
                 "sets up",
                 RESTART_SENTINEL_ADDR,
                 RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,

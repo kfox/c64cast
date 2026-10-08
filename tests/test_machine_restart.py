@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from _fakes import quiet_logging
 from test_playlist import FakeApi, FakeScene, _transition_factory
 
 from c64cast.app import config as cfgmod
@@ -350,29 +351,25 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         return self.watch.after_frame(True)
 
     def test_zeros_never_read_back_as_the_nonce_stand_the_watch_down(self):
-        scene = object()
-        self.watch.arm(scene)
         for _ in range(RESTART_UNCONFIRMED_LIMIT - 1):
             self.assertTrue(self._restart_seen())
-            self.watch.arm(scene)
+            self.watch.arm(after_restart=True)
         self.assertFalse(self._restart_seen(), "zeros every time kept restarting the scene")
         self.watch._log.warning.assert_called_once()
-        self.watch.arm(scene)
+        self.watch.arm(after_restart=True)
         self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
         self.api.c64cast_reset()
         self.assertFalse(self.watch.after_frame(True))
         self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
-        self.watch.arm(object())
-        self.assertTrue(self._restart_seen(), "another scene's arm did not end the stand-down")
+        self.watch.arm()
+        self.assertTrue(self._restart_seen(), "the next setup's arm did not end the stand-down")
 
     def test_a_nonce_read_back_between_restarts_keeps_the_watch_up(self):
-        scene = object()
-        self.watch.arm(scene)
         for _ in range(RESTART_UNCONFIRMED_LIMIT + 1):
             self.poller._read_modifiers()
             self.assertFalse(self.watch.after_frame(True))
             self.assertTrue(self._restart_seen())
-            self.watch.arm(scene)
+            self.watch.arm(after_restart=True)
         self.watch._log.warning.assert_not_called()
 
     def test_a_watch_that_is_not_enabled_leaves_the_poller_alone(self):
@@ -483,6 +480,57 @@ class ZeroingWriterTest(unittest.TestCase):
         self.assertEqual(
             sum(f"zeroed {RESTART_UNCONFIRMED_LIMIT} times" in line for line in logs.output), 1
         )
+
+    def test_the_next_lap_of_a_one_scene_loop_watches_again(self):
+        api = _Machine()
+        stop = threading.Event()
+        poller = CommodoreKeyPoller(api)
+        scene = _ZeroingLapThenAReset(api, poller, stop)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            key_poller=poller,
+        )
+        pl.on_machine_restart = lambda: None
+        with quiet_logging():
+            pl.run()
+        self.assertEqual(
+            scene.setup_count,
+            _ZeroingLapThenAReset.RESET_LAP + 1,
+            "a reset on a later lap went unnoticed",
+        )
+
+
+class _ZeroingLapThenAReset(FakeScene):
+    """A one-scene loop whose first lap plays a tune that zeroes
+    `$0334-$033B` every frame (set up again once, then stood down), and
+    whose next lap plays one that leaves it alone, under which the C64 is
+    reset from outside."""
+
+    LAP_FRAMES = 20
+    RESET_LAP = RESTART_UNCONFIRMED_LIMIT + 1
+
+    def __init__(self, api: _Machine, poller: CommodoreKeyPoller, stop: threading.Event) -> None:
+        super().__init__("Sid", frames_until_done=self.LAP_FRAMES)
+        self.api = api
+        self.poller = poller
+        self.stop = stop
+
+    def process_frame(self, current_time: float) -> bool:
+        playing = super().process_frame(current_time)
+        if self.setup_count < self.RESET_LAP:
+            self.api.ram[_SENTINEL] = bytes(RESTART_SENTINEL_LEN)
+        elif self.setup_count == self.RESET_LAP and self.frame_count == 3:
+            self.api.external_reset()
+        elif self.setup_count > self.RESET_LAP or self.frame_count >= self.LAP_FRAMES - 1:
+            self.stop.set()
+        self.poller._read_modifiers()
+        self.api.stats["writes"] += 1
+        return playing
 
 
 class _PaintingScene(FakeScene):
