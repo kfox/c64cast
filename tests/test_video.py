@@ -3680,12 +3680,6 @@ class TempoRetuneTest(unittest.TestCase):
         src._flush_atempo()
         self.assertAlmostEqual(sum(a.size for a in sink) / 400_000, 0.6, delta=0.01)
 
-    def test_a_source_with_no_compensation_ignores_a_retune(self):
-        src = _make_emit_audio_stub([], tempo_scale=1.0)
-        src.request_tempo_scale(0.8)
-        self.assertIsNone(src._pending_tempo)
-        self.assertEqual(src.tempo_scale, 1.0)
-
     def test_a_retune_past_one_atempo_stage_is_refused(self):
         src = self._source([])
         with self.assertRaises(ValueError):
@@ -3743,6 +3737,21 @@ class TempoRetuneTest(unittest.TestCase):
         with self.assertLogs("c64cast.video.video", level="INFO"):
             src._apply_pending_tempo()
         self.assertAlmostEqual(src.content_to_clock(60.0), before)
+
+
+class TempoRetuneMapTest(unittest.TestCase):
+    """The parts of a retune that build no atempo graph and open no source,
+    so they run without PyAV: the retuned tempo map where it is read, a
+    retune a source with no compensation ignores, and the freeze the
+    transport's first touch asks for."""
+
+    SR = 8000
+
+    def test_a_source_with_no_compensation_ignores_a_retune(self):
+        src = _make_emit_audio_stub([], tempo_scale=1.0)
+        src.request_tempo_scale(0.8)
+        self.assertIsNone(src._pending_tempo)
+        self.assertEqual(src.tempo_scale, 1.0)
 
     def _retuned(self, sink: list[np.ndarray]) -> AVFileSource:
         """A source retuned from 0.88 to 0.8 at content 10 s: the map is
