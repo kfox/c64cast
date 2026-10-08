@@ -504,7 +504,7 @@ class _ResetUnderneath(FakeScene):
             self.api.external_reset()
         if self.setup_count == 1 and n >= 200:
             self.stop.set()
-        if self.setup_count == 2 and n == 3:
+        if self.setup_count >= 2 and n == 3:
             self.stop.set()
         self.poller._read_modifiers()
         self.api.stats["writes"] += 1
@@ -534,6 +534,34 @@ class ResetWithoutALinkChangeTest(unittest.TestCase):
         self.assertEqual(restores, [1])
         self.assertEqual(scene.frames_by_setup[1], 3, "the reset was not caught on its frame")
         self.assertEqual(sum("machine restarted" in line for line in logs.output), 1)
+
+    def test_a_restore_loss_found_at_the_next_flush_does_not_retry_the_re_setup(self):
+        api = _Machine()
+        stop = threading.Event()
+        poller = CommodoreKeyPoller(api)
+        scene = _ResetUnderneath(api, poller, reset_at=3, stop=stop)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            key_poller=poller,
+        )
+        pending: list[int] = []
+
+        def flush() -> None:
+            # As the socket does: a loss surfaces at the round trip after it.
+            if pending:
+                pending.clear()
+                api.delivery_epoch += 1
+
+        api.flush = flush
+        pl.on_machine_restart = lambda: pending.append(1)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        self.assertEqual(scene.setup_count, 2, "the restore's loss retried the re-setup")
 
 
 class _ZeroingTune(FakeScene):

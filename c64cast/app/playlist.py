@@ -795,11 +795,17 @@ class Playlist:
         self._restore_machine()
 
     def _restore_machine(self) -> None:
+        """Run `on_machine_restart`, then drain it with a round trip: every
+        caller sets a scene up next, and a write the restore lost that
+        surfaced only at that setup's flush would be charged to the setup."""
         if self.on_machine_restart is not None:
             try:
                 self.on_machine_restart()
             except Exception:
                 self.log.exception("restoring the machine's state after its restart failed")
+            # A link error here is the setup's to meet.
+            with contextlib.suppress(LinkError):
+                self.api.flush()
 
     def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
         """Set `scene` up, and again once the link answers when the link
@@ -838,9 +844,6 @@ class Playlist:
                     "the machine restarted before %r set up; putting its state back first",
                     scene.name,
                 )
-                # A link error here is the setup's to meet and be judged by.
-                with contextlib.suppress(LinkError):
-                    self.api.flush()
             started = self.link_outage.now()
             epoch = self.api.delivery_epoch
             error: LinkError | None = None
