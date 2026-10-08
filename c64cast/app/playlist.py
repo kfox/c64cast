@@ -1276,7 +1276,15 @@ class Playlist:
                         )
                         self._restore_after_teardown = True
                     else:
-                        self._set_up_again_after_restart()
+                        # Ends the run as a setup failing in `_advance` does.
+                        try:
+                            self._set_up_again_after_restart()
+                        except Exception:
+                            self.log.exception(
+                                "setting the scene up again after the machine restarted "
+                                "failed; aborting"
+                            )
+                            break
                     next_deadline = time.time()
         except KeyboardInterrupt:
             self.log.info("interrupted")

@@ -915,6 +915,30 @@ class RestoreFailureTest(unittest.TestCase):
         self.assertTrue(any("restoring the machine's state" in line for line in lines), lines)
 
 
+class SetupFailureAfterRestartTest(unittest.TestCase):
+    def test_a_setup_that_raises_after_a_restart_ends_the_run_with_a_log_line(self):
+        api = _Machine()
+        stop = threading.Event()
+        scene = _PaintingScene(api, restart_at=3, stop=stop)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+
+        def restore() -> None:
+            scene.raise_on_setup = True
+
+        pl.on_machine_restart = restore
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as logs:
+            pl.run()
+        self.assertTrue(any("failed; aborting" in line for line in logs.output), logs.output)
+        self.assertEqual(scene.teardown_count, 2, "the scene the setup left was not torn down")
+
+
 class StopDuringRestoreTest(unittest.TestCase):
     def test_a_stop_during_the_restore_neither_sets_up_again_nor_tears_down_twice(self):
         api = _Machine()
