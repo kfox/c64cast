@@ -3618,6 +3618,7 @@ class SpliceAnchorTest(unittest.TestCase):
         self.assertEqual(round(pos * dac.effective_rate, 6), 1400)
 
 
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class TempoRetuneTest(unittest.TestCase):
     """`AVFileSource.request_tempo_scale` / `_apply_pending_tempo`: a retune of
     the bitmap+DAC tempo compensation mid-stream. The clock stamp of the
