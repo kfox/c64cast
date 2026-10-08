@@ -74,9 +74,13 @@ Blind spots worth knowing:
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
+import time
 import weakref
+from collections.abc import Iterator
 from typing import Any
+from unittest import mock
 
 import _child_process
 
@@ -185,3 +189,37 @@ def _note(requested: float | None, bound: float) -> str:
         f"{bound:g}s, so a command that wedges is named here rather than "
         f"reported later as the per-test cap's 'no progress'"
     )
+
+
+#: Seconds :func:`communicate_once_ready` waits for a child to signal. Its own
+#: number rather than `BOUND_S`, which the tests using it patch down to a
+#: fraction of a second.
+_READY_S = 20.0
+
+
+@contextlib.contextmanager
+def communicate_once_ready(ready: str) -> Iterator[None]:
+    """Start each `communicate` only once the file `ready` exists.
+
+    For a test whose assertion is about what a killed child wrote. Its bound
+    otherwise starts at the `communicate` call, while the child may not yet have
+    started, and a short one can expire on a loaded machine before the child
+    wrote anything. Held until the child creates `ready` after its writes, the
+    bound covers only the wait the test is about, and the output is already in
+    the pipe when it starts.
+
+    A child that exits without creating `ready` releases the wait at once. One
+    that never creates it fails the test after :data:`_READY_S`.
+    """
+    communicate = _ORIGINAL_COMMUNICATE
+
+    def gated(popen: subprocess.Popen[Any], input: Any = None, timeout: float | None = None) -> Any:
+        deadline = time.monotonic() + _READY_S
+        while not os.path.exists(ready) and popen.poll() is None:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"the child never created {ready}: {popen.args!r}")
+            time.sleep(0.01)
+        return communicate(popen, input, timeout)
+
+    with mock.patch(f"{__name__}._ORIGINAL_COMMUNICATE", gated):
+        yield

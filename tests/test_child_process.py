@@ -11,42 +11,58 @@ was found by CI on Windows rather than by anything here.
 from __future__ import annotations
 
 import ast
+import contextlib
+import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import textwrap
 import unittest
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
 import _child_process
+import _child_sandbox
 import _timeout_sandbox
 from _child_process import BOUND_S, run_bounded
 
 #: Short enough that driving a real expiry costs a fraction of a second.
 _TEST_BOUND_S = 0.3
 
-#: The bound for an expiry whose assertion is about what the child wrote.
-#: Those tests need the child to reach its `print` before it is killed, and
-#: `_TEST_BOUND_S` does not clear interpreter startup with a margin: starting
-#: `sys.executable` with `PYTHONPATH=tests` measures ~0.1 s on a warm
-#: workstation and several times that on a loaded Windows runner, which is the
-#: machine this whole module exists because of.
-_PRINTED_BOUND_S = 2.0
 
-
-def _hangs_after(statement: str = "pass") -> list[str]:
+def _hangs_after(statement: str = "pass", *, ready: str | None = None) -> list[str]:
     """A child that runs `statement`, flushes, and then never exits.
+
+    Given `ready`, it creates that file once it has flushed, for
+    :func:`_child_sandbox.communicate_once_ready`.
 
     300 s rather than a bare block: if the bound under test ever stopped
     working, this fails the per-test cap in a minute instead of holding the
     worker until CI gives up on the whole job.
     """
+    signal = "" if ready is None else f"open({ready!r}, 'w').close(); "
     return [
         sys.executable,
         "-c",
-        f"import sys, time; {statement}; sys.stdout.flush(); sys.stderr.flush(); time.sleep(300)",
+        f"import sys, time; {statement}; sys.stdout.flush(); sys.stderr.flush(); "
+        f"{signal}time.sleep(300)",
     ]
+
+
+@contextlib.contextmanager
+def _hangs_after_writing(statement: str) -> Iterator[list[str]]:
+    """`_hangs_after(statement)`, with the bound held until it has written.
+
+    The assertions on these are about what the child wrote. Starting
+    `sys.executable` with `PYTHONPATH=tests` takes ~0.1 s on a warm workstation
+    and several times that on a loaded Windows runner, so a bound that started
+    with the interpreter could expire before the write.
+    """
+    ready = os.path.join(tempfile.mkdtemp(), "ready")
+    with _child_sandbox.communicate_once_ready(ready):
+        yield _hangs_after(statement, ready=ready)
 
 
 class RunBoundedTest(unittest.TestCase):
@@ -84,14 +100,17 @@ class RunBoundedTest(unittest.TestCase):
     def test_what_the_killed_child_wrote_is_in_the_failure(self):
         # The stream it died holding is usually why: a child that hung after
         # printing hung on the last thing it said.
-        with self.assertRaises(AssertionError) as caught:
+        with (
+            _hangs_after_writing("print('reached step 3')") as argv,
+            self.assertRaises(AssertionError) as caught,
+        ):
             run_bounded(
-                _hangs_after("print('reached step 3')"),
-                timeout=_PRINTED_BOUND_S,
+                argv,
+                timeout=_TEST_BOUND_S,
                 capture_output=True,
                 text=True,
             )
-        self.assertIn("reached step 3", str(caught.exception))
+        self.assertIn("stdout: reached step 3", str(caught.exception))
 
     def test_a_child_that_wrote_nothing_adds_no_empty_section(self):
         with self.assertRaises(AssertionError) as caught:
@@ -99,10 +118,13 @@ class RunBoundedTest(unittest.TestCase):
         self.assertNotIn("stdout:", str(caught.exception))
 
     def test_a_long_stream_is_tailed_rather_than_dumped(self):
-        with self.assertRaises(AssertionError) as caught:
+        with (
+            _hangs_after_writing("sys.stdout.write('x' * 5000)") as argv,
+            self.assertRaises(AssertionError) as caught,
+        ):
             run_bounded(
-                _hangs_after("sys.stdout.write('x' * 5000)"),
-                timeout=_PRINTED_BOUND_S,
+                argv,
+                timeout=_TEST_BOUND_S,
                 capture_output=True,
                 text=True,
             )
@@ -110,13 +132,16 @@ class RunBoundedTest(unittest.TestCase):
         self.assertLess(len(str(caught.exception)), 1200)
 
     def test_bytes_from_an_uncaptured_text_child_still_render(self):
-        with self.assertRaises(AssertionError) as caught:
+        with (
+            _hangs_after_writing("sys.stderr.buffer.write(b'\\xff bad')") as argv,
+            self.assertRaises(AssertionError) as caught,
+        ):
             run_bounded(
-                _hangs_after("sys.stderr.buffer.write(b'\\xff bad')"),
-                timeout=_PRINTED_BOUND_S,
+                argv,
+                timeout=_TEST_BOUND_S,
                 capture_output=True,
             )
-        self.assertIn("bad", str(caught.exception))
+        self.assertIn("stderr: � bad", str(caught.exception))
 
 
 class HungMessageNamesEveryArgvSpellingTest(unittest.TestCase):

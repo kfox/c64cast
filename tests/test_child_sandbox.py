@@ -44,24 +44,25 @@ def _hangs() -> list[str]:
     return [sys.executable, "-c", "import time; time.sleep(300)"]
 
 
-def _wedge_on_path(name: str, says: str) -> str:
+def _wedge_on_path(name: str, says: str) -> tuple[str, str]:
     """Put a `name` on PATH that writes `says` to stderr and never returns.
 
-    Returns the directory to prepend. A shell `echo` rather than a Python
-    one-liner, so the write lands in milliseconds and `_TEST_BOUND_S` covers
-    it without the interpreter-startup margin `tests/test_child_process.py`
-    has to leave. `exec` so the process the suite kills is the one sleeping —
-    a wrapper that forked would leave the sleeper behind, which is the shape
-    these tests are about.
+    Returns the directory to prepend and the file the stand-in creates once it
+    has written, for :func:`_child_sandbox.communicate_once_ready`. `exec` so
+    the process the suite kills is the one sleeping — a wrapper that forked
+    would leave the sleeper behind, which is the shape these tests are about.
     """
     directory = tempfile.mkdtemp()
+    ready = os.path.join(directory, "ready")
     launcher = os.path.join(directory, name)
     with open(launcher, "w", encoding="utf-8") as handle:
-        handle.write(f"#!/bin/sh\necho {shlex.quote(says)} >&2\nexec sleep 300\n")
+        handle.write(
+            f"#!/bin/sh\necho {shlex.quote(says)} >&2\n: > {shlex.quote(ready)}\nexec sleep 300\n"
+        )
     # Owner only: the test is the only thing that runs this, and 0o755 puts a
     # world-executable file on a PATH the suite then prepends.
     os.chmod(launcher, 0o700)
-    return directory
+    return directory, ready
 
 
 def _first_on_path(directory: str) -> Any:
@@ -214,9 +215,10 @@ class ProductionChildTest(unittest.TestCase):
         # number as the per-test cap — and catches the expiry into a `warn`
         # Diagnostic, so before the clamp a wedged `uv` cost 60 s and reported
         # either "no progress" or "could not check", never the command.
-        directory = _wedge_on_path("uv", "Resolving dependencies")
+        directory, ready = _wedge_on_path("uv", "Resolving dependencies")
         with (
             _first_on_path(directory),
+            _child_sandbox.communicate_once_ready(ready),
             mock.patch.object(_child_process, "BOUND_S", _TEST_BOUND_S),
             self.assertRaises(ChildProcessHung) as caught,
         ):
@@ -230,7 +232,7 @@ class ProductionChildTest(unittest.TestCase):
         # The second site with the same shape: `_DIFF_TIMEOUT_S` is 60 as
         # well, and the expiry is caught into an empty result.
         lint_comments = _load_script("lint_comments")
-        directory = _wedge_on_path("git", "Enumerating objects")
+        directory, _ = _wedge_on_path("git", "Enumerating objects")
         with (
             _first_on_path(directory),
             mock.patch.object(_child_process, "BOUND_S", _TEST_BOUND_S),
