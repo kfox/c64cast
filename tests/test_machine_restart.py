@@ -180,6 +180,18 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.assertFalse(watch.after_frame(True))
         self.assertEqual(api.reads, 0)
 
+    def test_a_nonce_the_link_lost_at_setup_is_written_after_a_later_landed_frame(self):
+        api = _Machine()
+        api.drop_writes = True
+        watch = MachineRestartWatch(api, MagicMock(), lambda: self.now[0])
+        watch.arm()
+        self.assertFalse(watch.after_frame(False))
+        api.drop_writes = False
+        self.assertFalse(watch.after_frame(True))
+        self.assertNotIn(0, bytes(api.ram[_SENTINEL]), "the lost nonce was not written again")
+        api.restart()
+        self.assertTrue(watch.after_frame(True), "the rest of the play went unwatched")
+
     def test_bytes_written_over_the_nonce_are_not_a_restart(self):
         self.api.ram[_SENTINEL] = bytes(range(1, RESTART_SENTINEL_LEN + 1))
         self.api.link_generation += 1

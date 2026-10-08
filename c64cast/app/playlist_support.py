@@ -598,7 +598,8 @@ class MachineRestartWatch:
     nonce too, so the backend's reset listener re-arms it after the next
     frame, and after each later landed one until that write lands; a
     restart that comes after such a reset and before the re-arm leaves
-    nothing to tell it from that reset. `suspend()` stands the watch down
+    nothing to tell it from that reset. A nonce `arm()` loses is written
+    again after each later landed frame until it lands. `suspend()` stands the watch down
     while a launched program owns the machine, whose RAM the nonce must
     not touch. Only a backend that reads memory and reports its
     own resets (`add_reset_listener`) is watched."""
@@ -659,6 +660,8 @@ class MachineRestartWatch:
             self._restarts = 0
             self._stood_down = False
         self._write_nonce()
+        # Retried as a lost re-arm is: left off, the play would go unwatched.
+        self._rearm = self._rearm_lost = not self._armed and not self._stood_down
 
     def _write_nonce(self) -> None:
         """Write the nonce, unless the watch stood down. One the link loses
