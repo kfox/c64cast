@@ -549,10 +549,10 @@ RESTART_SENTINEL_ADDR = 0x0334
 RESTART_SENTINEL_LEN = 8
 # The fewest seconds between two sentinel reads while the link keeps changing.
 RESTART_CHECK_MIN_S = 2.0
-# Restarts in one scene with the nonce never read back in between, after
-# which the watch stands down: a reset the machine really took re-arms to a
-# readable nonce, so zeros every time are something storing zeros there.
-RESTART_UNCONFIRMED_LIMIT = 2
+# Restarts in one play of a scene after which the watch stands down. Clearing
+# the count when a read finds the nonce was rejected: a tune that zeroes it
+# only now and then is read back in between, and would restart forever.
+RESTART_LIMIT_PER_PLAY = 2
 
 
 class MachineRestartWatch:
@@ -581,15 +581,16 @@ class MachineRestartWatch:
 
     Something on the machine that stores zeros over the nonce (a tune
     clearing page 3) reads exactly like a reset, and since the scene sets up
-    again after one, it would restart the scene over and over. So a restart
-    counts as unconfirmed until a read finds the nonce re-written, and after
-    `RESTART_UNCONFIRMED_LIMIT` unconfirmed ones in a row, each answered by
-    setting the same scene up again, the watch stands down until a scene
-    sets up for any other reason.
+    again after one, it would restart the scene over and over. So after
+    `RESTART_LIMIT_PER_PLAY` restarts in one play of a scene (each answered
+    by setting it up again), the watch stands down until a scene sets up for
+    any other reason.
 
     A restart a scene outlives, with the link down until the next setup,
     leaves no landed frame to look after, so `restarted_before_setup()`
-    takes the same look before each setup attempt, unthrottled.
+    takes the same look before each setup attempt, unthrottled. That setup
+    starts a new play, so a restart found there neither counts toward the
+    limit nor is held back by it.
 
     A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
     nonce too, so the backend's reset listener re-arms it after the next
@@ -623,8 +624,8 @@ class MachineRestartWatch:
         self._poller: CommodoreKeyPoller | None = None
         # The poller's read count once the nonce landed: later reads see it.
         self._poller_mark = 0
-        # Restarts since a read last found the nonce in place.
-        self._unconfirmed_restarts = 0
+        # Restarts found in this play of the scene.
+        self._restarts = 0
         self._stood_down = False
         if self.enabled:
             assert add_listener is not None
@@ -647,13 +648,13 @@ class MachineRestartWatch:
 
     def arm(self, *, after_restart: bool = False) -> None:
         """Write the nonce, after a scene sets up. `after_restart`: the setup
-        is the one a restart found under that scene called for, so restarts
-        not yet confirmed still count; any other setup, a one-scene loop's
+        is the one a restart found under that scene called for, so the play
+        and its restart count go on; any other setup, a one-scene loop's
         next lap included, starts the count over and ends a stand-down."""
         if not self.enabled:
             return
         if not after_restart:
-            self._unconfirmed_restarts = 0
+            self._restarts = 0
             self._stood_down = False
         self._write_nonce()
 
@@ -717,7 +718,7 @@ class MachineRestartWatch:
         marks = self._current_marks()
         if marks == self._marks:
             return False
-        return self._look(marks)
+        return self._look(marks, counted=False)
 
     def suspend(self) -> None:
         """Stand the watch down until the next `arm()`: a launched program
@@ -727,25 +728,25 @@ class MachineRestartWatch:
         self._rearm = self._rearm_lost = False
         self._suspended = True
 
-    def _look(self, marks: tuple[int, int]) -> bool:
+    def _look(self, marks: tuple[int, int], *, counted: bool = True) -> bool:
         """Read the nonce back. True, and disarmed, only when a reset
         cleared it to zeros. A read that fails or comes back the wrong
         length leaves the watch armed and `marks` unrecorded, so the next
         look tries again. Other bytes there mean something on the machine
         wrote over it, and taking that for a restart would reset the
         machine under the writer at every link change, so the watch stands
-        down until the next scene arms it."""
+        down until the next scene arms it. `counted`: a restart found counts
+        toward `RESTART_LIMIT_PER_PLAY`."""
         seen = self._api.read_memory(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
         if seen is None or len(seen) != RESTART_SENTINEL_LEN:
             return False
         self._marks = marks
-        return self._judge(seen)
+        return self._judge(seen, counted=counted)
 
-    def _judge(self, seen: bytes) -> bool:
+    def _judge(self, seen: bytes, *, counted: bool = True) -> bool:
         """The verdict on bytes read back from where the nonce was written,
         as `_look` describes it."""
         if seen == self._nonce:
-            self._unconfirmed_restarts = 0
             return False
         self._armed = False
         if any(seen):
@@ -756,17 +757,18 @@ class MachineRestartWatch:
                 RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,
             )
             return False
-        self._unconfirmed_restarts += 1
-        if self._unconfirmed_restarts >= RESTART_UNCONFIRMED_LIMIT:
+        if not counted:
+            return True
+        self._restarts += 1
+        if self._restarts >= RESTART_LIMIT_PER_PLAY:
             self._stood_down = True
             self._log.warning(
-                "the restart check found $%04X-$%04X zeroed %d times with the nonce "
-                "never read back in between; something on the machine stores zeros "
-                "there, so not watching for a machine restart until the next scene "
-                "sets up",
+                "the restart check found $%04X-$%04X zeroed %d times in one play of "
+                "the scene; something on the machine may store zeros there, so not "
+                "watching for a machine restart until the next scene sets up",
                 RESTART_SENTINEL_ADDR,
                 RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,
-                self._unconfirmed_restarts,
+                self._restarts,
             )
             return False
         return True

@@ -22,9 +22,9 @@ from c64cast.app import session
 from c64cast.app.playlist import Playlist
 from c64cast.app.playlist_support import (
     RESTART_CHECK_MIN_S,
+    RESTART_LIMIT_PER_PLAY,
     RESTART_SENTINEL_ADDR,
     RESTART_SENTINEL_LEN,
-    RESTART_UNCONFIRMED_LIMIT,
     MachineRestartWatch,
 )
 from c64cast.control.keyboard import ADDR_MODIFIERS, CommodoreKeyPoller
@@ -351,7 +351,7 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         return self.watch.after_frame(True)
 
     def test_zeros_never_read_back_as_the_nonce_stand_the_watch_down(self):
-        for _ in range(RESTART_UNCONFIRMED_LIMIT - 1):
+        for _ in range(RESTART_LIMIT_PER_PLAY - 1):
             self.assertTrue(self._restart_seen())
             self.watch.arm(after_restart=True)
         self.assertFalse(self._restart_seen(), "zeros every time kept restarting the scene")
@@ -364,12 +364,23 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         self.watch.arm()
         self.assertTrue(self._restart_seen(), "the next setup's arm did not end the stand-down")
 
-    def test_a_nonce_read_back_between_restarts_keeps_the_watch_up(self):
-        for _ in range(RESTART_UNCONFIRMED_LIMIT + 1):
+    def test_zeros_now_and_then_also_stand_the_watch_down(self):
+        for _ in range(RESTART_LIMIT_PER_PLAY - 1):
             self.poller._read_modifiers()
             self.assertFalse(self.watch.after_frame(True))
             self.assertTrue(self._restart_seen())
             self.watch.arm(after_restart=True)
+        self.poller._read_modifiers()
+        self.assertFalse(self.watch.after_frame(True))
+        self.assertFalse(self._restart_seen(), "a nonce read in between reset the count")
+        self.watch._log.warning.assert_called_once()
+
+    def test_a_restart_found_before_a_setup_is_not_held_back_by_the_limit(self):
+        for _ in range(RESTART_LIMIT_PER_PLAY - 1):
+            self.assertTrue(self._restart_seen())
+            self.watch.arm(after_restart=True)
+        self.api.restart()
+        self.assertTrue(self.watch.restarted_before_setup())
         self.watch._log.warning.assert_not_called()
 
     def test_a_watch_that_is_not_enabled_leaves_the_poller_alone(self):
@@ -474,11 +485,11 @@ class ZeroingWriterTest(unittest.TestCase):
         pl.on_machine_restart = lambda: restores.append(1)
         with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
             pl.run()
-        self.assertEqual(scene.setup_count, RESTART_UNCONFIRMED_LIMIT)
-        self.assertEqual(len(restores), RESTART_UNCONFIRMED_LIMIT - 1)
+        self.assertEqual(scene.setup_count, RESTART_LIMIT_PER_PLAY)
+        self.assertEqual(len(restores), RESTART_LIMIT_PER_PLAY - 1)
         self.assertEqual(scene.frames, 200, "the scene stopped playing")
         self.assertEqual(
-            sum(f"zeroed {RESTART_UNCONFIRMED_LIMIT} times" in line for line in logs.output), 1
+            sum(f"zeroed {RESTART_LIMIT_PER_PLAY} times" in line for line in logs.output), 1
         )
 
     def test_the_next_lap_of_a_one_scene_loop_watches_again(self):
@@ -512,7 +523,7 @@ class _ZeroingLapThenAReset(FakeScene):
     reset from outside."""
 
     LAP_FRAMES = 20
-    RESET_LAP = RESTART_UNCONFIRMED_LIMIT + 1
+    RESET_LAP = RESTART_LIMIT_PER_PLAY + 1
 
     def __init__(self, api: _Machine, poller: CommodoreKeyPoller, stop: threading.Event) -> None:
         super().__init__("Sid", frames_until_done=self.LAP_FRAMES)
