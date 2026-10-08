@@ -46,8 +46,9 @@ AUDIO_ALIGN_TOLERANCE_S = 0.03
 DRY_FILL_INTERLEAVE_S = 0.5
 # ... and, once the oldest frame has waited `DRY_FILL_STALL_S` for the clock,
 # never less than this far past it. Each sink holds audio back before its
-# clock moves (the DAC's prebuffer and ring lead, about 1.1 s; the sampler's
-# 1.0 s lead), so in a buffer spanning less than that plus the allowance, a
+# clock moves (the DAC's 6 x 1024 B prebuffer plus a ring lead of at most
+# 4096 B: 0.85 s at its 12 kHz default, 1.28 s at 8 kHz; the sampler's 1.0 s
+# lead), so in a buffer spanning less than that plus the allowance, a
 # fill short of the newest frame never brings the clock to the oldest. Only a
 # stall takes this lead: a file that writes its audio late in a short buffer
 # otherwise has it covered by silence and trimmed.
