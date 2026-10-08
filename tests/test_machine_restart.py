@@ -337,6 +337,12 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         watch.arm()
         self.assertFalse(watch.after_frame(True))
 
+    def test_before_setup_a_reset_the_poller_saw_is_found_without_a_link_change(self):
+        self.api.external_reset()
+        self.poller._read_modifiers()
+        self.assertTrue(self.watch.restarted_before_setup())
+        self.assertEqual(self.api.reads, 1, "the watch read on its own")
+
     def test_a_suspended_watch_ignores_the_polls(self):
         self.watch.suspend()
         self.api.external_reset()

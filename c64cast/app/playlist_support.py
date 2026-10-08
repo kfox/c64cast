@@ -698,12 +698,8 @@ class MachineRestartWatch:
             # leaving it off would stop watching for the rest of the scene.
             self._rearm = self._rearm_lost = not self._armed
             return False
-        if self._armed and self._poller is not None:
-            sample = self._poller.watched_since(self._poller_mark)
-            if sample is not None:
-                self._poller_mark = sample[0]
-                if self._judge(sample[1], counted=counted):
-                    return True
+        if self._judge_poll(counted=counted):
+            return True
         if not self._armed or not landed:
             return False
         marks = self._current_marks()
@@ -718,14 +714,31 @@ class MachineRestartWatch:
     def restarted_before_setup(self) -> bool:
         """True when the machine restarted since the nonce was written,
         asked before a scene sets up, without the frame path's spacing.
-        Looks only while armed, with no reset of c64cast's own pending
-        re-arm, and once the link has changed since the last look."""
+        Judges the poller's newest sample, which sees a reset that leaves
+        the link alone, then reads over REST once the link has changed
+        since the last look; both only while armed, with no reset of
+        c64cast's own pending re-arm."""
         if not self.enabled or not self._armed or self._rearm:
+            return False
+        if self._judge_poll(counted=False):
+            return True
+        if not self._armed:
             return False
         marks = self._current_marks()
         if marks == self._marks:
             return False
         return self._look(marks, counted=False)
+
+    def _judge_poll(self, *, counted: bool) -> bool:
+        """Judge the poller's newest sample since the last one judged, if
+        the watch is armed and has one."""
+        if not self._armed or self._poller is None:
+            return False
+        sample = self._poller.watched_since(self._poller_mark)
+        if sample is None:
+            return False
+        self._poller_mark = sample[0]
+        return self._judge(sample[1], counted=counted)
 
     def suspend(self) -> None:
         """Stand the watch down until the next `arm()`: a launched program
