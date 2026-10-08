@@ -1482,11 +1482,12 @@ class AlignedAudioTest(unittest.TestCase):
         src._fill_dry_stretch(0.0, 8.0)
         self.assertEqual((sink, src._audio_fed_s), ([], None))
 
-    def _enqueue_blocked(self, *, drain_s: float) -> AVFileSource:
+    def _enqueue_blocked(self, *, drain_s: float, tempo_scale: float = 1.0) -> AVFileSource:
         """Block `_enqueue_frame` on a full buffer for about 3 s of a clock
-        that steps 0.3 s a reading, the oldest frame moving `drain_s` a
-        reading."""
+        that steps 0.3 s a reading, the oldest frame's stamp moving `drain_s`
+        a reading."""
         src = _aligned_stub([])
+        src._tempo_scale = tempo_scale
         img = np.zeros((2, 2, 3), dtype=np.uint8)
         src.max_video_buffer = 2
         src._video_buf = [(0.0, img), (1.0, img)]
@@ -1516,6 +1517,16 @@ class AlignedAudioTest(unittest.TestCase):
 
     def test_a_picture_draining_in_real_time_does_not_raise_the_stall(self):
         self.assertEqual(self._enqueue_blocked(drain_s=0.3)._dry_stall_level, 0)
+
+    def test_pace_under_tempo_compensation_is_judged_on_the_content(self):
+        # The stamps run at tempo_scale (0.5 is a valid setting) while the
+        # content plays in real time, so a picture playing at 80 % of real
+        # time moves its stamps under half a second a second.
+        scale = 0.6
+        healthy = self._enqueue_blocked(drain_s=0.3 * 0.8 * scale, tempo_scale=scale)
+        self.assertEqual(healthy._dry_stall_level, 0)
+        held = self._enqueue_blocked(drain_s=0.0, tempo_scale=scale)
+        self.assertEqual(held._dry_stall_level, 2)
 
     def test_audio_coming_again_releases_the_stall(self):
         src = _aligned_stub([])

@@ -1092,7 +1092,8 @@ class AVFileSource:
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
         # Steps of stall lead the dry fill takes, raised each time the picture
-        # is too slow over a `_dry_window` (wall time, oldest frame's stamp)
+        # is too slow over a `_dry_window` (wall time, oldest frame's content
+        # time)
         # and kept until audio comes again or a seek: the fill keeps its lead
         # over the sink's buffering for the rest of that stretch, instead of
         # stalling again each time a frame drains.
@@ -1475,16 +1476,19 @@ class AVFileSource:
         rather than per frame: a fill that keeps the clock just short of what
         the sink holds back drains a frame now and then, and the picture
         crawls without any one frame waiting long. The window spans calls,
-        and audio coming again or a seek closes it."""
+        and audio coming again or a seek closes it. Judged on the content
+        timeline rather than the stamps, which under tempo compensation run
+        at `tempo_scale` of real time in healthy playback."""
+        oldest = oldest_pts / (self._tempo_scale or 1.0)
         if self._dry_window is None:
-            self._dry_window = (now, oldest_pts)
+            self._dry_window = (now, oldest)
             return
-        since, from_pts = self._dry_window
+        since, from_s = self._dry_window
         if now - since < DRY_FILL_STALL_S:
             return
-        if oldest_pts - from_pts < DRY_FILL_STALL_PACE * (now - since):
+        if oldest - from_s < DRY_FILL_STALL_PACE * (now - since):
             self._dry_stall_level += 1
-        self._dry_window = (now, oldest_pts)
+        self._dry_window = (now, oldest)
 
     def _fill_dry_stretch(self, oldest_pts: float, newest_pts: float) -> None:
         """The video buffer is full, and the sink's clock is what drains it.
