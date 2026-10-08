@@ -466,12 +466,13 @@ class SetupThroughOutageTest(unittest.TestCase):
         api = _OutageApi(down_probes=0)
         scene = _LossySetupScene(api, lossy_setups=0)
         pl = self._playlist(api, scene)
-        flushes = [0]
+        drained = [0]
 
         def flush() -> None:
-            # The reset the setup's last write drew surfaces at the drain.
-            flushes[0] += 1
-            if flushes[0] == 1:
+            # The reset the first setup's last write drew surfaces at the
+            # drain, so a flush issued before that setup ran drains nothing.
+            if scene.setup_count == 1 and not drained[0]:
+                drained[0] = 1
                 api.delivery_epoch += 1
 
         api.flush = flush  # type: ignore[method-assign]
