@@ -3907,6 +3907,19 @@ class LifecycleTest(unittest.TestCase):
         self._landing_at_pace(clock, s, 10 * period, 1)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
+    def test_the_catch_up_after_a_stall_does_not_speed_the_landing_pace(self):
+        # After a stalled landing the worker drips the chunks it owes back to
+        # back. Counted, they pulled the pace up to the cap, and the clock
+        # reached each next chunk early under bus halts and held.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        drain = 0.79 * s.effective_rate
+        interval = 1024 / drain
+        self._landing_at_pace(clock, s, interval, 40)
+        self._landing_at_pace(clock, s, 3.5 * 1024 / s.effective_rate, 1)
+        self._landing_at_pace(clock, s, 0.04, 2)
+        self.assertAlmostEqual(self._pace(s), drain, delta=0.01 * drain)
+
     def test_the_landing_pace_never_runs_past_the_armed_nmi_rate(self):
         # A catch-up burst lands faster than the NMI can play; the clock would
         # run ahead of the sound at that pace.
