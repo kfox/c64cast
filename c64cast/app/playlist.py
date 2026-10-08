@@ -730,9 +730,11 @@ class Playlist:
 
     def _setup_through_outage(self, scene: Scene) -> bool:
         """Set `scene` up, and again once the link answers when the link
-        cost the setup a write. False when `stop_event` fired while waiting;
-        the scene is then left as its last setup left it, for the caller's
-        teardown.
+        cost the setup a write. False when `stop_event` fired while waiting:
+        a stop while waiting for the link leaves the scene as its last setup
+        left it, and a stop while waiting to claim the ensemble audio slot
+        back leaves it already torn down. Either way the caller's teardown
+        still runs on it.
 
         A setup lost a write when it raised a `LinkError` or moved the
         backend's `delivery_epoch`. Most setup steps swallow a dead link
