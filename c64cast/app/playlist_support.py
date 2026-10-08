@@ -600,7 +600,7 @@ class MachineRestartWatch:
     leaves nothing to tell it from that reset. A re-arm, or a nonce `arm()`
     wrote, that the link loses is written again after each later landed
     frame, or on a scene that lands none, after each `RESTART_CHECK_MIN_S`
-    in which the link marks stay put, until it lands. `suspend()` stands the watch
+    in which the delivery epoch stays put, until it lands. `suspend()` stands the watch
     down while a launched program owns the machine, whose RAM the nonce
     must not touch. Only a backend that reads memory and reports its own
     resets (`add_reset_listener`) is watched."""
@@ -623,8 +623,10 @@ class MachineRestartWatch:
         # The last nonce write the link lost, so the next waits as
         # `after_frame` describes.
         self._rearm_lost = False
-        # When a lost write is retried on a scene that lands nothing.
+        # When a lost write is retried on a scene that lands nothing, and the
+        # delivery epoch that wait started from.
         self._next_rearm = 0.0
+        self._rearm_epoch = 0
         self._suspended = False
         self._marks = (0, 0)
         self._next_check = 0.0
@@ -689,6 +691,7 @@ class MachineRestartWatch:
         )
         self._marks = self._current_marks()
         if not self._armed:
+            self._rearm_epoch = self._api.delivery_epoch
             self._next_rearm = self._clock() + RESTART_CHECK_MIN_S
         if self._poller is not None:
             self._poller_mark = self._poller.reads_started
@@ -702,15 +705,15 @@ class MachineRestartWatch:
         if not self.enabled:
             return False
         if self._rearm:
-            # A retry waits for a landed frame, or for RESTART_CHECK_MIN_S on
-            # a scene that sends nothing and so moves no link mark: on a link
-            # that is down, a confirmed write every frame spends up to three
-            # flushes a frame.
+            # A retry waits for a landed frame, or for RESTART_CHECK_MIN_S in
+            # which no write was lost: on a link that is down, a confirmed
+            # write every frame spends up to three flushes a frame. Only the
+            # epoch counts, since `link_generation` also moves when a quiet
+            # link is redialed after the firmware's idle close.
             if self._rearm_lost and not landed:
-                marks = self._current_marks()
-                if marks != self._marks:
-                    # Waits for one interval in which the marks stay put.
-                    self._marks = marks
+                epoch = self._api.delivery_epoch
+                if epoch != self._rearm_epoch:
+                    self._rearm_epoch = epoch
                     self._next_rearm = self._clock() + RESTART_CHECK_MIN_S
                     return False
                 if self._clock() < self._next_rearm:

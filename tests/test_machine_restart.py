@@ -216,10 +216,24 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.api.delivery_epoch += 1  # one blip, then nothing moves the marks
         self.now[0] += RESTART_CHECK_MIN_S
         self.assertFalse(self.watch.after_frame(False))
-        self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
-        self.now[0] += RESTART_CHECK_MIN_S
+        self.now[0] += RESTART_CHECK_MIN_S / 2
+        self.assertFalse(self.watch.after_frame(False))
+        self.assertEqual(
+            bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN), "the blip did not wait"
+        )
+        self.now[0] += RESTART_CHECK_MIN_S / 2
         self.assertFalse(self.watch.after_frame(False))
         self.assertNotIn(0, bytes(self.api.ram[_SENTINEL]), "one blip stopped the retries")
+
+    def test_a_quiet_redial_does_not_hold_back_a_lost_rearm(self):
+        self.api.c64cast_reset()
+        self.api.drop_writes = True
+        self.assertFalse(self.watch.after_frame(False))
+        self.api.drop_writes = False
+        self.api.link_generation += 1  # an idle close redialed, nothing lost
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.assertFalse(self.watch.after_frame(False))
+        self.assertNotIn(0, bytes(self.api.ram[_SENTINEL]), "a quiet redial delayed the retry")
 
     def test_a_nonce_arm_lost_is_retried_on_a_scene_that_lands_no_frames(self):
         api = _Machine()
