@@ -795,8 +795,8 @@ class Playlist:
         self._restore_machine()
 
     def _restore_machine(self) -> None:
-        """Run `on_machine_restart`, then drain it with a round trip: every
-        caller sets a scene up next, and a write the restore lost that
+        """Run `on_machine_restart`, then drain it with a round trip: a
+        scene usually sets up next, and a write the restore lost that
         surfaced only at that setup's flush would be charged to the setup."""
         if self.on_machine_restart is not None:
             try:

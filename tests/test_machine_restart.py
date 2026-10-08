@@ -822,6 +822,41 @@ class RestartOnTheLastFrameTest(unittest.TestCase):
         self.assertEqual(following.teardown_count, 1, "the run never reached the next scene")
         self.assertEqual(restores, [(1, 0)], "not restored once, between the two scenes")
 
+    def test_a_restore_loss_found_at_the_next_flush_does_not_retry_the_next_setup(self):
+        api = _Machine()
+        stop = threading.Event()
+        ended = _EndsAsItRestarts(api, frames=3)
+        following = _StopOnSetup("Next", stop)
+        cards: list[FakeScene] = []
+
+        def card(name: str) -> FakeScene:
+            cards.append(FakeScene(f"trans:{name}", frames_until_done=1))
+            return cards[-1]
+
+        pl = Playlist(
+            [ended, following],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=card,
+        )
+        pending: list[int] = []
+
+        def flush() -> None:
+            # As the socket does: a loss surfaces at the round trip after it.
+            if pending:
+                pending.clear()
+                api.delivery_epoch += 1
+
+        api.flush = flush
+        pl.on_machine_restart = lambda: pending.append(1)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        # The "UP NEXT" card is the setup that follows the teardown.
+        next_setups = [c.setup_count for c in cards if c.name == "trans:Next"]
+        self.assertEqual(next_setups, [1], "the restore's loss retried the next setup")
+
 
 class _ResetMidPlayAndAtTheEnd(FakeScene):
     """Reset from outside at frame 2 of its first setup, and again on the
