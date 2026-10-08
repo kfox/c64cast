@@ -308,6 +308,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   c64cast exits once they are done. Press Ctrl+C once more to stop at once
   and skip what is left.
 
+- **A Ctrl+C that lands while a write to a slow machine is stuck part way no
+  longer garbles the commands after it.** The steps that still run after it
+  used to go out on the same connection, where the machine read them as the
+  rest of the cut write. On an Ultimate the connection is now dropped and
+  reopened; on a TeensyROM+ the next command first waits about a second and a
+  half for the cartridge to give up on the cut one.
+
 - **An ensemble whose second system fails to start no longer leaves the first
   one held.** When a later system's setup failed with anything but c64cast's
   own startup errors (an unexpected network error, say, or Ctrl+C during

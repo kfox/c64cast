@@ -49,7 +49,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -502,6 +502,8 @@ class TRClient:
         self._lock = threading.Lock()
         self._latencies: deque[float] = deque(maxlen=256)
         self.firmware = "unknown"  # "full" | "minimal" | "unknown"
+        # Set when a command was cut part way; see _command.
+        self._cut = False
 
     def connect(self) -> None:
         """Open the transport and best-effort probe the firmware type.
@@ -523,6 +525,34 @@ class TRClient:
     def close(self) -> None:
         with self._lock:
             self.transport.close()
+
+    @contextlib.contextmanager
+    def _command(self) -> Iterator[None]:
+        """Hold the lock for one command, and resynchronize first when the
+        previous one was cut part way.
+
+        Anything but an ``OSError`` or a ``TRError`` leaving a command — a
+        ``KeyboardInterrupt`` raised by the signal handler inside a blocked
+        write or read, typically — may leave the firmware owed bytes or a
+        reply unread, so the next command would be read as the rest of the
+        cut one, or would read its reply. The next command therefore waits
+        out ``_SPANS_RECOVER_QUIET_S`` first, the silence after which the
+        firmware has given up on a sender and finished discarding, draining
+        whatever arrives meanwhile. Closing and reopening the link was not
+        used instead: nothing shows the firmware's parser starts over when the
+        host drops a TCP connection or a USB serial port, while its own
+        timeout is what ``_recover_spans`` already relies on."""
+        with self._lock:
+            try:
+                if self._cut:
+                    self.transport.drain_text(_SPANS_RECOVER_QUIET_S)
+                    self._cut = False
+                yield
+            except (OSError, TRError):
+                raise
+            except BaseException:
+                self._cut = True
+                raise
 
     # Wire byte order is asymmetric, confirmed on hardware (TeensyROM+
     # v0.7.2.4) and in the firmware source: the TR *reads* command tokens and
@@ -594,7 +624,7 @@ class TRClient:
         frame = (
             self._u16(TOK_WRITE_C64_MEM) + self._u16(addr & 0xFFFF) + self._u16(len(data)) + data
         )
-        with self._lock:
+        with self._command():
             t0 = time.perf_counter()
             self.transport.send_all(frame)
             self._expect_ack(f"WriteC64Mem ${addr:04X}")
@@ -624,7 +654,7 @@ class TRClient:
         )
         payload = b"".join(data for _, data in spans)
         first = spans[0][0]
-        with self._lock:
+        with self._command():
             t0 = time.perf_counter()
             try:
                 self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
@@ -683,7 +713,7 @@ class TRClient:
         Support is an ack to the token, a FailToken to it (the command exists
         but REU emulation or a pause holds the bus), or — when chatter hid the
         reply — the refusal's own text."""
-        with self._lock:
+        with self._command():
             self._drain_stale()
             self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
             try:
@@ -704,7 +734,7 @@ class TRClient:
         tell"). Bound `length` to MAX_SEGMENT_BYTES; chunk larger reads above
         this in the caller."""
         frame = self._u16(TOK_READ_C64_MEM) + self._u16(addr & 0xFFFF) + self._u16(length)
-        with self._lock:
+        with self._command():
             self.transport.send_all(frame)
             self._expect_ack(f"ReadC64Mem ${addr:04X}")
             return self.transport.recv_exact(length)
@@ -713,7 +743,7 @@ class TRClient:
         """Reset the C64 (boots to the TR menu). The firmware answers with a
         text line ("Reset cmd received"), NOT a binary ack — drain it so it
         doesn't pollute the next command's reply."""
-        with self._lock:
+        with self._command():
             self.transport.send_all(self._u16(TOK_RESET_C64))
             line = self.transport.drain_text()
             if "Reset" not in line:
@@ -725,7 +755,7 @@ class TRClient:
         lock has already been released (e.g. waiting out LaunchFile's
         post-launch console text) — see the class docstring's note on why
         the per-command lock alone doesn't cover asynchronous chatter."""
-        with self._lock:
+        with self._command():
             return self.transport.drain_text(quiet_s)
 
     def delete_file(self, path: str, drive: int = DRIVE_SD) -> None:
@@ -735,7 +765,7 @@ class TRClient:
         also (see `_encode_path`) if `path` is non-ASCII or contains an
         embedded NUL."""
         payload = bytes([drive & 0xFF]) + _encode_path(path)
-        with self._lock:
+        with self._command():
             self._drain_stale()
             self.transport.send_all(self._u16(TOK_DELETE_FILE))
             self._expect_ack("DeleteFile (open)")
@@ -763,7 +793,7 @@ class TRClient:
         checksum = sum(data) & 0xFFFF
         path_bytes = _encode_path(dest_path)
         header = self._u32(len(data)) + self._u16(checksum) + bytes([drive & 0xFF]) + path_bytes
-        with self._lock:
+        with self._command():
             self._drain_stale()  # clear post-reset/menu boot chatter
             self.transport.send_all(self._u16(TOK_POST_FILE))
             self._expect_ack("PostFile (open)")
@@ -777,7 +807,7 @@ class TRClient:
         drive(1)+path\\0 -> ack -> C64 launches. Raises TRError (see
         `_encode_path`) if `path` is non-ASCII or contains an embedded NUL."""
         path_bytes = bytes([drive & 0xFF]) + _encode_path(path)
-        with self._lock:
+        with self._command():
             self._drain_stale()  # clear post-reset/menu boot chatter
             self.transport.send_all(self._u16(TOK_LAUNCH_FILE))
             self._expect_ack("LaunchFile (open)")
@@ -786,7 +816,7 @@ class TRClient:
 
     def ping(self) -> str:
         """Liveness check. The firmware answers with a text status line."""
-        with self._lock:
+        with self._command():
             self.transport.send_all(self._u16(TOK_PING))
             return self.transport.drain_text().strip()
 

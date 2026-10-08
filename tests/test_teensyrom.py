@@ -1297,5 +1297,125 @@ class MakeBackendTest(unittest.TestCase):
             make_backend(cfg)
 
 
+class _CutLoopback(_SpansLoopback):
+    """A loopback whose next send or read can be cut part way by an interrupt,
+    the way the signal handler raises out of a blocked write or read. `events`
+    records each send and each quiet wait, in order."""
+
+    def __init__(self):
+        super().__init__()
+        self.cut_next_send = False
+        self.cut_next_recv = False
+        self.events: list[tuple[str, object]] = []
+
+    def send_all(self, data: bytes) -> None:
+        if self.cut_next_send:
+            self.cut_next_send = False
+            super().send_all(data[:3])
+            raise KeyboardInterrupt
+        self.events.append(("send", bytes(data)))
+        super().send_all(data)
+
+    def recv_exact(self, n: int) -> bytes:
+        if self.cut_next_recv:
+            self.cut_next_recv = False
+            raise KeyboardInterrupt
+        return super().recv_exact(n)
+
+    def drain_text(self, quiet_s: float = 0.2) -> str:
+        self.events.append(("quiet", quiet_s))
+        return super().drain_text(quiet_s)
+
+
+class CutCommandTest(unittest.TestCase):
+    """A command cut part way (an interrupt raised out of the transport) leaves
+    the firmware owed bytes or a reply unread, so the next command waits out
+    the firmware's discard before it sends anything."""
+
+    _FRAME = TRClient._u16(0x64FB) + bytes([0xD0, 0x20, 0x00, 0x01, 0x0E])
+
+    def setUp(self):
+        self.t = _CutLoopback()
+        self.c = TRClient(self.t)
+
+    def _next_write_resyncs_first(self) -> None:
+        self.t.events.clear()
+        self.t.queue_token(TOK_ACK)
+        self.c.write_segment(0xD020, b"\x0e")
+        self.assertEqual(
+            self.t.events,
+            [("quiet", tr_dma._SPANS_RECOVER_QUIET_S), ("send", self._FRAME)],
+        )
+
+    def test_a_write_cut_mid_send_resyncs_before_the_next_command(self):
+        self.t.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.c.write_segment(0xD020, b"\x0e")
+        self._next_write_resyncs_first()
+
+    def test_a_read_cut_before_its_reply_resyncs_before_the_next_command(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.cut_next_recv = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.c.read_segment(0x0400, 4)
+        self._next_write_resyncs_first()
+
+    def test_a_cut_resync_is_retried_when_it_is_cut_too(self):
+        self.t.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.c.write_segment(0xD020, b"\x0e")
+        with mock.patch.object(self.t, "drain_text", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.c.write_segment(0xD020, b"\x0e")
+        self._next_write_resyncs_first()
+
+    def test_the_resync_runs_once(self):
+        self.t.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.c.write_segment(0xD020, b"\x0e")
+        self._next_write_resyncs_first()
+        self.t.events.clear()
+        self.t.queue_token(TOK_ACK)
+        self.c.write_segment(0xD020, b"\x0e")
+        self.assertEqual(self.t.events, [("send", self._FRAME)])
+
+    def test_a_link_error_does_not_add_a_resync(self):
+        # A TRError leaves recovery to the command that raised it, as before.
+        with self.assertRaises(TRError):
+            self.c.write_segment(0xD020, b"\x0e")  # no ack queued: underflow
+        self.t.events.clear()
+        self.t.queue_token(TOK_ACK)
+        self.c.write_segment(0xD020, b"\x0e")
+        self.assertEqual(self.t.events, [("send", self._FRAME)])
+
+    def test_both_transports_resync_after_a_cut_write(self):
+        class _CutSerial(_FakeSerial):
+            def write(self, data: bytes) -> None:
+                raise KeyboardInterrupt
+
+        class _CutSocket(_FakeSocket):
+            def sendall(self, data: bytes) -> None:
+                raise KeyboardInterrupt
+
+        serial_t = SerialTransport("COM_FAKE")
+        serial_t._ser = _CutSerial()
+        tcp_t = TcpTransport("host")
+        tcp_t._sock = _CutSocket()  # type: ignore[assignment]
+        for transport in (serial_t, tcp_t):
+            with self.subTest(transport=transport.description):
+                client = TRClient(transport)
+                with self.assertRaises(KeyboardInterrupt):
+                    client.write_segment(0xD020, b"\x0e")
+                with (
+                    mock.patch.object(transport, "drain_text", return_value="") as drain,
+                    mock.patch.object(transport, "send_all"),
+                    mock.patch.object(
+                        transport, "recv_exact", return_value=bytes([TOK_ACK & 0xFF, TOK_ACK >> 8])
+                    ),
+                ):
+                    client.write_segment(0xD020, b"\x0e")
+                drain.assert_called_once_with(tr_dma._SPANS_RECOVER_QUIET_S)
+
+
 if __name__ == "__main__":
     unittest.main()
