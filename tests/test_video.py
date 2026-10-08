@@ -1555,7 +1555,10 @@ class AlignedAudioTest(unittest.TestCase):
 
         src._fill_dry_stretch = fill  # type: ignore[method-assign]
         with mock.patch.object(video_mod, "time", FrozenClock(0.0, "monotonic", 0.3, sleep=None)):
-            src._enqueue_frame(2.0, img)
+            appended = src._enqueue_frame(2.0, img)
+        # Only a level past the first grows the buffer; below it the frame
+        # waits until the source closes.
+        self.assertEqual(appended, src._dry_stall_level >= 2)
         return src
 
     def test_a_picture_held_on_one_frame_raises_the_stall_each_second(self):
