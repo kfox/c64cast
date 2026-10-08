@@ -230,12 +230,16 @@ class WatchEnabledTest(unittest.TestCase):
 
 class _PaintingScene(FakeScene):
     """A scene whose every frame lands a write; the machine restarts at
-    frame `restart_at` of its first setup."""
+    frame `restart_at` of its first setup, and `stop` is set once the first
+    setup has run `STRANDED_AFTER` frames."""
 
-    def __init__(self, api: _Machine, restart_at: int) -> None:
+    STRANDED_AFTER = 200
+
+    def __init__(self, api: _Machine, restart_at: int, stop: threading.Event) -> None:
         super().__init__("Video", frames_until_done=10_000)
         self.api = api
         self.restart_at = restart_at
+        self.stop = stop
         self.frames_by_setup: dict[int, int] = {}
 
     def process_frame(self, current_time: float) -> bool:
@@ -244,6 +248,10 @@ class _PaintingScene(FakeScene):
         self.frames_by_setup[self.setup_count] = n
         if self.setup_count == 1 and n == self.restart_at:
             self.api.restart()
+        if self.setup_count == 1 and n >= self.STRANDED_AFTER:
+            # A scene never set up again would otherwise run until the suite's
+            # per-test cap, reported as a hang instead of the caller's assertion.
+            self.stop.set()
         self.api.stats["writes"] += 1
         return True
 
@@ -251,8 +259,8 @@ class _PaintingScene(FakeScene):
 class PlaylistSetsUpAgainAfterRestartTest(unittest.TestCase):
     def test_the_scene_is_set_up_again_after_the_machine_state_is_put_back(self):
         api = _Machine()
-        scene = _PaintingScene(api, restart_at=3)
         stop = threading.Event()
+        scene = _PaintingScene(api, restart_at=3, stop=stop)
         pl = Playlist(
             [scene],
             api,
@@ -398,8 +406,8 @@ def _run_restart_show(test: unittest.TestCase, on_restart: Any) -> tuple[_Painti
     scene has been set up a second time; returns the scene and the WARNING+
     log lines."""
     api = _Machine()
-    scene = _PaintingScene(api, restart_at=3)
     stop = threading.Event()
+    scene = _PaintingScene(api, restart_at=3, stop=stop)
     pl = Playlist(
         [scene],
         api,
@@ -410,22 +418,13 @@ def _run_restart_show(test: unittest.TestCase, on_restart: Any) -> tuple[_Painti
     )
     pl.on_machine_restart = on_restart
     original_setup = scene.setup
-    original_process_frame = scene.process_frame
 
     def setup() -> None:
         original_setup()
         if scene.setup_count == 2:
             threading.Timer(0.05, stop.set).start()
 
-    def process_frame(current_time: float) -> bool:
-        # A scene never set up again would otherwise run until the suite's
-        # per-test cap, reported as a hang instead of the caller's assertion.
-        if scene.setup_count == 1 and scene.frames_by_setup.get(1, 0) >= 200:
-            stop.set()
-        return original_process_frame(current_time)
-
     scene.setup = setup  # type: ignore[method-assign]
-    scene.process_frame = process_frame  # type: ignore[method-assign]
     with test.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
         pl.run()
     return scene, logs.output
