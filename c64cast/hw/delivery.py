@@ -35,13 +35,20 @@ def write_confirmed(
     A run whose ``write`` raises a transport error counts as unconfirmed:
     ``reu_write`` is not routed through ``_emit`` and raises when a redial
     fails or is refused under backoff, which leaves ``delivery_epoch``
-    unmoved although nothing was sent."""
+    unmoved although nothing was sent.
+
+    A run whose ``write`` already moved the epoch is not flushed: no flush
+    can confirm it, and a flush over a link that just refused the write
+    logs a warning outside the backend's failure ladder, once per run for a
+    caller that retries every second."""
     for _ in range(tries):
         epoch = api.delivery_epoch
         try:
             write()
         except (OSError, SocketDMAError) as e:
             log.debug("confirmed write raised: %s", e)
+            continue
+        if api.delivery_epoch != epoch:
             continue
         api.flush()
         if api.delivery_epoch == epoch:
