@@ -53,10 +53,21 @@ _SCALE = 4
 _TRIES = 3
 
 
+#: CPU seconds a measurement runs `work` for before dividing by the runs. A
+#: single call is not timed alone: Windows advances a thread's CPU clock once
+#: per 15.6 ms tick, so a call of a few milliseconds reads as zero there.
+_MEASURE_S = 0.1
+
+
 def _cpu_seconds(work: Callable[[str], object], line: str) -> float:
+    runs = 0
     started = time.thread_time()
-    work(line)
-    return time.thread_time() - started
+    while True:
+        work(line)
+        runs += 1
+        spent = time.thread_time() - started
+        if spent >= _MEASURE_S:
+            return spent / runs
 
 
 def _redacts_both_ways(line: str) -> None:
