@@ -640,6 +640,32 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(s._pushed_count, 32, "the post-splice audio was dropped")
         self.assertEqual(s._pushed_count - s._queued_samples, 32)
 
+    def test_a_collect_crossing_a_cut_does_not_count_its_pad_as_silence(self):
+        """The worker reads the end of the input before its collect. A cut
+        that lands during the collect reopens the input, and the post-splice
+        audio the collect then takes is not followed by silence: its pad
+        counted as played put the clock that far ahead of the sound."""
+        s = _make(sample_rate=64000, dither=False)
+        s.chunk_size = 32
+        s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
+        s.running = True
+        s._input_ended = True  # the pre-splice pass reached its end
+        real_get_nowait = s.q.get_nowait
+        gets = 0
+
+        def get_nowait() -> Any:
+            nonlocal gets
+            gets += 1
+            if gets == 1:
+                s.flush()
+                s.push_samples(np.full(16, -1000, dtype=np.int16))  # post-splice
+            return real_get_nowait()
+
+        s.q.get_nowait = get_nowait  # type: ignore[method-assign]
+        _run_worker(s, until=lambda: len(_written_stream(s)) >= 32, timeout=3.0)
+        self.assertEqual(s._pushed_count, 16, "the pad after the post-splice audio was counted")
+        self.assertEqual(s._pushed_count - s._queued_samples, 16)
+
     def test_a_flush_in_the_claim_window_still_counts_the_chunk(self):
         """The epoch check and the in-flight record are one step under
         ``_count_lock``. A flush landing between them would anchor without a

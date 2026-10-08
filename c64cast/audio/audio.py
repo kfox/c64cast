@@ -1166,8 +1166,11 @@ class AudioStreamer:
 
                 # Read before the collect: end_input() follows the producer's
                 # last push, so a collect that comes back empty after it was
-                # seen leaves nothing behind in the queue.
-                input_ended = self._input_ended
+                # seen leaves nothing behind in the queue. Read with the epoch
+                # it belongs to, under the lock cut() clears it under.
+                with self._count_lock:
+                    input_ended = self._input_ended
+                    ended_epoch = self._flush_epoch
                 if pending is None and n < self.chunk_size:
                     # Priming, or the drip's interleaved slots did not fill the
                     # chunk: fall back to a blocking collect on the same deadline.
@@ -1184,6 +1187,10 @@ class AudioStreamer:
 
                 if not current():
                     break
+                # A collect that crossed a cut holds the post-splice input, and
+                # the end read before it was the pre-splice one: its pad
+                # counted as silence put the clock that far ahead of the sound.
+                input_ended = input_ended and epoch == ended_epoch
                 # Everything collected so far is queued audio; pad comes next.
                 from_queue = n
 
@@ -3193,7 +3200,8 @@ class AudioStreamer:
 
     def _drain_queue_samples(self) -> int:
         """get_nowait-drain self.q; return the total samples dropped (each blob
-        is one byte per sample, see the q comment in __init__). Used by stop()."""
+        is one byte per sample, see the q comment in __init__). Used by stop()
+        and the mic path's stall re-anchor."""
         drained = 0
         while True:
             try:
