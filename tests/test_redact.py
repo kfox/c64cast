@@ -861,7 +861,10 @@ def _linear_time_tests(
             def test(self: unittest.TestCase, make: Callable[[int], str] = make) -> None:
                 _assert_linear_time(self, make, work)
 
-            test.__name__ = test.__qualname__ = f"test_{name}"
+            test.__name__ = f"test_{name}"
+            test.__qualname__ = f"{cls.__qualname__}.{test.__name__}"
+            if hasattr(cls, test.__name__):
+                raise TypeError(f"{cls.__qualname__} already has {test.__name__}")
             setattr(cls, test.__name__, test)
         return cls
 
