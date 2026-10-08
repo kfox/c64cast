@@ -483,6 +483,8 @@ class AudioStreamer:
         # restarted window fills. The speed the clock runs at between landings.
         self._landings: deque[tuple[float, int]] = deque(maxlen=LANDING_PACE_MAX_LANDINGS)
         self._landing_pace = 0.0
+        # The pace that stood before the window's last landing measured it.
+        self._landing_pace_before_last = 0.0
         # One record per interval however often the link stalls.
         self._stall_log = LogThrottle(log)
 
@@ -3209,6 +3211,7 @@ class AudioStreamer:
         if not paced:
             self._restart_landing_pace_locked()
             return
+        self._landing_pace_before_last = self._landing_pace
         marks.append((now, self._ring_landed_total))
         while (
             len(marks) > LANDING_PACE_MIN_INTERVALS + 1
@@ -3231,15 +3234,15 @@ class AudioStreamer:
     def _restart_landing_pace_locked(self) -> None:
         """Start the pace window afresh. Caller holds ``_ring_pad_lock``.
 
-        The pace that stands until the window fills again is measured
-        without its last landing: after a stall that is the late one, and
-        the pace it measured, standing, ran the clock at about half speed
-        for the two to three landings the window takes to refill."""
+        The pace that stands until the window fills again is the one that
+        stood before the window's last landing: after a stall that landing is
+        the late one, and the pace it measured, standing, ran the clock at
+        about half speed for the two to three landings the window takes to
+        refill. Re-measuring the window without it would leave that pace
+        standing when the late landing is the one that filled the window."""
         marks = self._landings
-        if len(marks) > LANDING_PACE_MIN_INTERVALS + 1:
-            (t0, b0), (t1, b1) = marks[0], marks[-2]
-            if t1 > t0:
-                self._landing_pace = (b1 - b0) / (t1 - t0)
+        if marks:
+            self._landing_pace = self._landing_pace_before_last
         marks.clear()
 
     def _unplayed_pad(self, lead: float) -> float:

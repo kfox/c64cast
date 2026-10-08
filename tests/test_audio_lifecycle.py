@@ -4055,6 +4055,24 @@ class LifecycleTest(unittest.TestCase):
             self._landing_at_pace(clock, s, period, 1)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
+    def test_a_stall_unanchored_as_the_window_first_fills_does_not_slow_the_pace(self):
+        # Two landings into a fresh window, the stall's landing is the one
+        # that fills it: there is no window without it to re-measure.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        self._landing_at_pace(clock, s, period, 2)
+        self._landing_at_pace(clock, s, 0.5, 1)
+        s.running = True
+        with (
+            mock.patch.object(s.servo, "read_r_promptly", return_value=None),
+            self.assertLogs(audio_mod.log, level="WARNING"),
+        ):
+            s._resync_after_stall(0.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        for _ in range(3):
+            self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+            self._landing_at_pace(clock, s, period, 1)
+
     def test_a_stall_left_unanchored_by_a_superseded_worker_keeps_the_next_window(self):
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
