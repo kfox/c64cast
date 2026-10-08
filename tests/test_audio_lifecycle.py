@@ -4048,8 +4048,20 @@ class LifecycleTest(unittest.TestCase):
                 s._resync_after_stall(0.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
             )
         self.assertIn("could not be re-anchored", cm.output[0])
-        self._landing_at_pace(clock, s, period, 3)
+        # The stall's landing measured the pace as it landed, and that pace
+        # stands until the window refills.
+        for _ in range(3):
+            self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+            self._landing_at_pace(clock, s, period, 1)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+
+    def test_a_stall_left_unanchored_by_a_superseded_worker_keeps_the_next_window(self):
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        self._landing_at_pace(clock, s, 1024 / s.effective_rate, 5)
+        marks = list(s._landings)
+        s._restart_landing_pace(s._worker_generation - 1)
+        self.assertEqual(list(s._landings), marks)
 
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between

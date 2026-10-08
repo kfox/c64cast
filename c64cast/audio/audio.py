@@ -1476,8 +1476,7 @@ class AudioStreamer:
             # The schedule restarts from now, so nothing catches up on the
             # stall's long interval: left in the pace window, it read the
             # pace slow for a window.
-            with self._ring_pad_lock:
-                self._landings.clear()
+            self._restart_landing_pace(generation)
             return None
         anchor = stall_reanchor(r_addr, self.chunk_size)
         self._stomp_from(r_addr, anchor, current)
@@ -3208,7 +3207,7 @@ class AudioStreamer:
         for one chunk."""
         marks = self._landings
         if not paced:
-            marks.clear()
+            self._restart_landing_pace_locked()
             return
         marks.append((now, self._ring_landed_total))
         while (
@@ -3220,6 +3219,28 @@ class AudioStreamer:
             (t0, b0), (t1, b1) = marks[0], marks[-1]
             if t1 > t0:
                 self._landing_pace = (b1 - b0) / (t1 - t0)
+
+    def _restart_landing_pace(self, generation: int) -> None:
+        """:meth:`_restart_landing_pace_locked` for the worker started as
+        ``generation``; a superseded worker leaves the next session's window
+        alone."""
+        with self._ring_pad_lock:
+            if generation == self._worker_generation:
+                self._restart_landing_pace_locked()
+
+    def _restart_landing_pace_locked(self) -> None:
+        """Start the pace window afresh. Caller holds ``_ring_pad_lock``.
+
+        The pace that stands until the window fills again is measured
+        without its last landing: after a stall that is the late one, and
+        the pace it measured, standing, ran the clock at about half speed
+        for the two to three landings the window takes to refill."""
+        marks = self._landings
+        if len(marks) > LANDING_PACE_MIN_INTERVALS + 1:
+            (t0, b0), (t1, b1) = marks[0], marks[-2]
+            if t1 > t0:
+                self._landing_pace = (b1 - b0) / (t1 - t0)
+        marks.clear()
 
     def _unplayed_pad(self, lead: float) -> float:
         """The pad bytes among the last ``lead`` bytes landed in the ring.
