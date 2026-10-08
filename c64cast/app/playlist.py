@@ -319,6 +319,9 @@ class Playlist:
         )
         self.build_performance_scene: Callable[[dict[str, Any]], Scene] | None = None
         self.transitioning = False
+        # The "UP NEXT" card `_enter_interstitial` last set up: a clip launched
+        # over it leaves `transitioning` on without being the card.
+        self._card: Scene | None = None
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
         # Set on SIGHUP; the run loop finishes the current frame, then swaps in
@@ -678,7 +681,7 @@ class Playlist:
         # the "UP NEXT" card names the real upcoming content.
         self._safe_prepare_next(nxt)
         self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
-        self.current = self.interstitial_factory(nxt.name)
+        self.current = self._card = self.interstitial_factory(nxt.name)
         self.safe_setup(self.current, announcing=nxt)
         self.transitioning = True
 
@@ -756,7 +759,7 @@ class Playlist:
         )
         # The card's slot is held for the scene it announces, which a link
         # outage in this setup has to release.
-        announcing = self.scenes[self.index] if self.transitioning else None
+        announcing = self.scenes[self.index] if self.transitioning and scene is self._card else None
         scene.keep_pick_for_resetup()
         self.safe_teardown(scene)
         if not self.ensemble_coord.wait_for_audio_claim(scene):

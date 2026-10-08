@@ -545,7 +545,7 @@ class InterstitialResetupTest(unittest.TestCase):
             interstitial_factory=_transition_factory()[0],
         )
         pl.index = 1
-        pl.current = FakeScene("trans:Next")
+        pl.current = pl._card = FakeScene("trans:Next")
         pl.transitioning = True
         with (
             patch.object(pl, "safe_setup") as setup,
@@ -553,6 +553,26 @@ class InterstitialResetupTest(unittest.TestCase):
         ):
             pl._set_up_again_after_restart()
         self.assertIs(setup.call_args.kwargs["announcing"], nxt)
+
+    def test_a_clip_launched_over_the_card_announces_nothing(self):
+        api = _Machine()
+        pl = Playlist(
+            [FakeScene("First"), FakeScene("Next")],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.index = 1
+        pl._card = FakeScene("trans:Next")
+        pl.current = FakeScene("Clip")
+        pl.transitioning = True
+        with (
+            patch.object(pl, "safe_setup") as setup,
+            self.assertLogs("c64cast.app.playlist", level="WARNING"),
+        ):
+            pl._set_up_again_after_restart()
+        self.assertIsNone(setup.call_args.kwargs["announcing"])
 
 
 class RestoreAfterMachineRestartTest(unittest.TestCase):
