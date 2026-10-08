@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 import threading
@@ -1452,24 +1453,59 @@ class AlignedAudioTest(unittest.TestCase):
 
     def test_a_stalled_picture_takes_the_sinks_lead_past_its_oldest_frame(self):
         # In a buffer spanning less than the sink holds back, a fill short of
-        # the newest frame never brings the clock to the oldest. The first
-        # level stays within the frames read; each one past it, the sink
-        # holding back more than the buffer spans, goes a step past the newest.
-        step = DRY_FILL_PAST_NEWEST_STEP_S
-        for level, expected in ((0, 0.5), (1, 1.0), (2, 1.0 + step), (3, 1.0 + 2 * step)):
+        # the newest frame never brings the clock to the oldest. Every level
+        # stays within the frames read while the buffer can grow to cover it.
+        for level, expected in ((0, 0.5), (1, 1.0), (2, 1.0), (3, 1.0)):
             with self.subTest(level=level):
                 sink: list[np.ndarray] = []
                 src = _aligned_stub(sink)
+                src.max_video_buffer = 240
                 src._dry_stall_level = level
                 src._fill_dry_stretch(0.0, 1.0)
                 self.assertAlmostEqual(cast(float, src._audio_fed_s), expected)
 
+    def test_a_stall_reaching_past_the_newest_frame_grows_the_buffer_to_cover_it(self):
+        # Silence past the newest frame covers sound not yet read, and a
+        # sound coming back there was trimmed by as much. Frames read
+        # further ahead let the fill reach as far without passing them.
+        src = _aligned_stub([])
+        src.max_video_buffer = 240
+        step = DRY_FILL_PAST_NEWEST_STEP_S * src.video_fps
+        for level, extra in ((0, 0), (1, 0), (2, math.ceil(step)), (3, math.ceil(2 * step))):
+            with self.subTest(level=level):
+                src._dry_stall_level = level
+                self.assertEqual(src._dry_extra_frames(), extra)
+
+    def test_the_buffer_grows_no_more_than_twice_its_size(self):
+        # Past that the fill goes past the newest frame by what the frames
+        # do not cover.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src.max_video_buffer = 2
+        src._dry_stall_level = 3
+        self.assertEqual(src._dry_extra_frames(), 2)
+        src._fill_dry_stretch(0.0, 1.0)
+        past = 2 * DRY_FILL_PAST_NEWEST_STEP_S - 2 / src.video_fps
+        # To the sample: the fill places whole samples.
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.0 + past, places=3)
+
+    def test_a_grown_buffer_takes_frames_past_its_size(self):
+        src = _aligned_stub([])
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        src.max_video_buffer = 2
+        src._video_buf = [(0.0, img), (1.0, img)]
+        src._dry_stall_level = 2
+        self.assertTrue(src._enqueue_frame(2.0, img))
+        self.assertEqual(len(src._video_buf), 3)
+
     def test_the_stall_lead_stops_growing_at_its_ceiling(self):
         sink: list[np.ndarray] = []
         src = _aligned_stub(sink)
+        src.max_video_buffer = 2
         src._dry_stall_level = 1000
         src._fill_dry_stretch(0.0, 1.0)
-        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.0 + DRY_FILL_MAX_PAST_NEWEST_S)
+        past = DRY_FILL_MAX_PAST_NEWEST_S - 2 / src.video_fps
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.0 + past, places=3)
 
     def test_a_held_picture_stops_raising_the_stall_at_its_ceiling(self):
         at_ceiling = 1 + round(DRY_FILL_MAX_PAST_NEWEST_S / DRY_FILL_PAST_NEWEST_STEP_S)
@@ -1519,7 +1555,7 @@ class AlignedAudioTest(unittest.TestCase):
 
         src._fill_dry_stretch = fill  # type: ignore[method-assign]
         with mock.patch.object(video_mod, "time", FrozenClock(0.0, "monotonic", 0.3, sleep=None)):
-            self.assertFalse(src._enqueue_frame(2.0, img))
+            src._enqueue_frame(2.0, img)
         return src
 
     def test_a_picture_held_on_one_frame_raises_the_stall_each_second(self):
@@ -1803,8 +1839,9 @@ class AlignedAudioBranchesTest(unittest.TestCase):
 
     def test_the_stall_lead_exceeds_what_each_sink_holds_back(self):
         # A retune of either sink that grows its hold-back past the first
-        # step of the stall lead costs every stall at its default settings
-        # another second before the picture moves. The DAC holds back its
+        # level of the stall lead costs every stall at its default settings
+        # another window before the picture moves for each step that level
+        # then has to take. The DAC holds back its
         # prebuffer and a ring lead the servo steers toward its target gap;
         # 8 kHz is the slowest rate it has shipped at (12 kHz is the default).
         dac_s = (PREBUFFER_CHUNKS * CHUNK_SIZE + HOST_DMA_SERVO_TARGET_GAP) / 8000

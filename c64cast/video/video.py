@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 import os
 import re
 import sys
@@ -1469,7 +1470,7 @@ class AVFileSource:
                     # frame predates it. The pass ends at its next packet
                     # and _demux_loop applies the seek between passes.
                     return True
-                if len(self._video_buf) < self.max_video_buffer:
+                if len(self._video_buf) < self.max_video_buffer + self._dry_extra_frames():
                     self._video_buf.append((pts, img))
                     return True
                 oldest, newest = self._video_buf[0][0], self._video_buf[-1][0]
@@ -1545,9 +1546,21 @@ class AVFileSource:
             self._dry_stall_level += 1
 
     def _past_newest_s(self) -> float:
-        """How far past the newest frame read the stall level fills."""
+        """How far past the newest frame of a full buffer the stall level
+        reaches."""
         steps = max(0, self._dry_stall_level - 1)
         return min(steps * DRY_FILL_PAST_NEWEST_STEP_S, DRY_FILL_MAX_PAST_NEWEST_S)
+
+    def _dry_extra_frames(self) -> int:
+        """Frames the video buffer takes past `max_video_buffer` so the stall
+        level's reach past the newest frame is frames read rather than
+        silence: silence there covers sound not yet read, and a sound coming
+        back was trimmed by as much. Up to as many again, which bounds the
+        memory; past that the fill goes past the newest frame."""
+        if self._dry_stall_level < 2:
+            return 0
+        wanted = math.ceil(self._past_newest_s() * self.video_fps - 1e-9)
+        return min(self.max_video_buffer, max(0, wanted))
 
     def _fill_dry_stretch(self, oldest_pts: float, newest_pts: float) -> None:
         """The video buffer is full, and the sink's clock is what drains it.
@@ -1573,7 +1586,8 @@ class AVFileSource:
         if self._dry_stall_level:
             target = max(target, min(oldest + DRY_FILL_MIN_LEAD_S, newest))
         if self._dry_stall_level > 1:
-            target = max(target, newest + self._past_newest_s())
+            covered = self._dry_extra_frames() / self.video_fps
+            target = max(target, newest + max(0.0, self._past_newest_s() - covered))
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
         silence, _, self._audio_fed_s = place_audio_frame(target, 0.0, fed, self.target_sr)
         self._feed_silence(silence)

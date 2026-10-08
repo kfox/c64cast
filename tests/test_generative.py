@@ -2420,12 +2420,12 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
     def test_a_sink_holding_back_more_than_the_buffer_spans_still_plays_through(self):
         # At 4 kHz the DAC's prebuffer alone is 1.5 s of audio, more than a
         # 30-frame buffer spans: silence up to the newest frame read never
-        # starts its clock. Silence past it covers sound not yet read, so the
-        # sound coming back loses its front, but no more than the clock
-        # needed to start.
-        finished, _ = self._play(((0.0, 0.3), (2.5, 1.5)), rate=4000, buffer=30, slack_s=5.0)
+        # starts its clock. Silence past it would cover sound not yet read;
+        # the buffer reads further ahead instead, so the sound coming back
+        # plays whole.
+        finished, _ = self._play(((0.0, 0.3), (3.0, 0.5)), rate=4000, buffer=30, slack_s=5.0)
         self.assertTrue(finished, "the picture stalled in the gap")
-        self.assertGreater(self.sound_after_2s, 0.7)
+        self.assertGreater(self.sound_after_2s, 0.45)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
