@@ -687,6 +687,51 @@ class MicLeadOpenLoopTest(unittest.TestCase):
                     self.assertIsNone(rig.servo.tick())
                 self.assertEqual((rig.servo.reanchors, rig.servo._fails), (0, 1))
 
+    def test_a_running_pumps_lap_on_slow_reads_is_reanchored(self):
+        # 0.7 s across both reads: the window spans a whole ring, but the
+        # pump's ~4 KB advance has no other value in it a garble could make.
+        rig = self._lapped_with_reads_of(0.35, pump_rate=RATE, host_rate=RATE)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual((rig.servo.reanchors, rig.servo._fails), (1, 0))
+
+    def test_a_running_pumps_reread_off_by_a_whole_ring_is_torn_on_slow_reads(self):
+        for garble in (RING_BUFFER_SIZE, -RING_BUFFER_SIZE):
+            with self.subTest(garble=garble):
+                rig = self._lapped_with_reads_of(0.35, pump_rate=RATE, host_rate=RATE)
+                rig.garble = [0, garble]
+                with self.assertLogs("c64cast.audio.mic_lead", "DEBUG"):
+                    self.assertIsNone(rig.servo.tick())
+                self.assertEqual((rig.servo.reanchors, rig.servo._fails), (0, 1))
+
+    def test_a_reread_a_ring_off_is_torn_where_chunks_carry_the_advance_past_rate(self):
+        # Sampled at the far ends of reads spanning 0.59 s, the pump's chunk
+        # steps carry its advance to 7168 B, past the 7100 B the rate allows;
+        # garbled back a ring, the re-read lands on the window's floor.
+        rig = self._closed()
+        rig.pump = 51071.0
+        rig.host = rig.pump + ml.MIC_LEAD_REANCHOR_ABOVE + 1000
+
+        def advance() -> None:
+            rig.t += 7100 / 2 / RATE
+            rig.pump += 7100 / 2
+            rig.host += 7100 / 2
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            if rig.reads == 0:
+                raw = rig.read(address, length, timeout)
+                advance()
+                return raw
+            advance()
+            return rig.read(address, length, timeout)
+
+        rig.reads = 0
+        rig.servo._read = read
+        rig.garble = [0, -RING_BUFFER_SIZE]
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG"):
+            self.assertIsNone(rig.servo.tick())
+        self.assertEqual((rig.reads, rig.servo.reanchors, rig.servo._fails), (2, 0, 1))
+
     def test_a_lap_on_a_stalled_pump_is_reanchored_up_to_the_reach_a_garble_is_told_in(self):
         rig = self._lapped_with_reads_of(0.25, pump_rate=0.0, host_rate=RATE)
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):

@@ -673,7 +673,8 @@ class MicLeadServo:
         lead that would re-anchor is read once more. Its src must have moved
         on from the first read's by no less than ``-MIC_LEAD_TORN_TOLERANCE``
         and no more than the sample rate allows across both reads plus that
-        tolerance, a reach that must stay short of a $4000 ring; and it must
+        tolerance, and no other value a whole number of $4000 rings away may
+        fall in that window too; and it must
         keep the trusted phase, else the measurement is torn. That costs
         a read only when the host has really lapped or been overtaken."""
         m = self._read_once()
@@ -715,9 +716,14 @@ class MicLeadServo:
         # for both took in a stalled pump's re-read with its src 8 KB off. The
         # pump was sampled somewhere inside each read, so the span it can
         # advance over runs from the first read's start to the re-read's end.
+        # A garble moves src by whole $4000 rings, so the advance is told only
+        # when it is the one value of its class modulo that ring in the window:
+        # tearing every pair whose window spans a ring tore a running pump's
+        # lap on slow reads, whose advance has no other plausible value.
         advanced = signed_ring_delta(check.reading.src, m.reading.src)
         reach = MIC_LEAD_TORN_TOLERANCE + round(self._rate * max(0.0, check.ended - m.begun))
-        if reach >= RING_BUFFER_SIZE or not -MIC_LEAD_TORN_TOLERANCE <= advanced <= reach:
+        lowest = (advanced + MIC_LEAD_TORN_TOLERANCE) % RING_BUFFER_SIZE - MIC_LEAD_TORN_TOLERANCE
+        if not lowest == advanced <= reach < lowest + RING_BUFFER_SIZE:
             log.debug(
                 "audio[reu mic]: torn pump read (pump %+d B in %.2fs on the re-read)",
                 advanced,
