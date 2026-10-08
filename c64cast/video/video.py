@@ -1570,7 +1570,7 @@ class AVFileSource:
         level's reach past the newest frame is frames read rather than
         silence: silence there covers sound not yet read, and a sound coming
         back was trimmed by as much. Up to as many again, which bounds the
-        memory; past that the fill goes past the newest frame. None while
+        memory; past that the fill goes past the newest frame. Zero while
         the fill does not apply: a level kept until the next full wait resets
         it would let a muted demuxer refill the grown buffer first."""
         if self._dry_stall_level < 2 or not self._dry_fill_applies():
