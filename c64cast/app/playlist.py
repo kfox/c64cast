@@ -824,17 +824,19 @@ class Playlist:
         lossy_tries = 0
         while True:
             claimant: Scene | None = None
-            started = self.link_outage.now()
-            epoch = self.api.delivery_epoch
-            error: LinkError | None = None
             # Before the attempt: a restart the last scene outlived on a dead
             # link left no landed frame to notice it, and a SID scene's setup
-            # resets the machine itself, which would hide it afterwards.
+            # resets the machine itself, which would hide it afterwards. Before
+            # the epoch is taken, too, so a write the restore loses is not
+            # charged to the setup.
             if self.restart_watch.restarted_before_setup():
                 self._put_machine_back(
                     "the machine restarted before %r set up; putting its state back first",
                     scene.name,
                 )
+            started = self.link_outage.now()
+            epoch = self.api.delivery_epoch
+            error: LinkError | None = None
             try:
                 hardware_palette.settle_for(self.api, scene)
                 scene.setup()
