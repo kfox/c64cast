@@ -266,7 +266,7 @@ class TeardownStackOrderTest(unittest.TestCase):
         )
 
     def test_a_ctrl_c_in_one_step_still_runs_the_steps_under_it(self):
-        # _release_step swallows Exception only; a second Ctrl+C mid-step
+        # ReleaseInterrupts.step swallows Exception only; a Ctrl+C mid-step
         # must not cost the machine its reset or the link its close.
         st, order = self._record_order()
 
