@@ -588,6 +588,31 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(len(anchors), 1)
         return s, anchors[0]
 
+    def test_a_retired_blobs_leftover_is_not_written_after_the_splice(self):
+        """The rest of a blob split across chunks is its epoch's. A flush
+        landing after the chunk is handed off must drop it, not claim it
+        under the current epoch and play it after the splice."""
+        for blob in (40, 48, 56):
+            with self.subTest(blob=blob):
+                s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+                for _ in range(PREBUFFER_CHUNKS + 10):
+                    s.q.put((s._flush_epoch, bytes([3] * blob)))
+                    s._queued_samples += blob
+                    s._pushed_count += blob
+                flushed: list[float] = []
+                real_health = s._maybe_log_health
+
+                def flush_once(now, real_health=real_health, s=s, flushed=flushed):
+                    if not flushed and len(cast(Any, s.api).writes) >= 2 * PREBUFFER_CHUNKS:
+                        flushed.append(s.flush())
+                    real_health(now)
+
+                s._maybe_log_health = flush_once  # type: ignore[method-assign]
+                _run_worker(s, until=lambda s=s: s._queued_samples == 0, timeout=3.0)
+                self.assertEqual(len(flushed), 1)
+                landed = s._pushed_count - s._queued_samples
+                self.assertEqual(landed, round(flushed[0] * s.effective_rate))
+
     def test_a_collect_straddling_a_flush_keeps_what_it_took_after_it(self):
         """A collect that takes pre-splice audio, sees a flush, then takes
         post-splice audio holds both. Judged by an epoch read once per
@@ -2888,8 +2913,8 @@ class EncodeBackpressureTest(unittest.TestCase):
         self.assertEqual(n, 0)
         self.assertEqual((s._queued_samples, s._pushed_count), (0, 0))
 
-    def test_a_flush_that_drains_a_blob_just_put_keeps_the_landed_count(self):
-        # Drained before its count was added, the blob's subtract clamped at
+    def test_a_blob_just_put_keeps_the_landed_count_once_the_worker_discards_it(self):
+        # Discarded before its count was added, the blob's subtract clamped at
         # zero and the late add left a queued count the ring never consumes,
         # with the landed count dropped by the blob.
         s = _make()
@@ -2988,9 +3013,9 @@ class EncodeBackpressureTest(unittest.TestCase):
         discard_retired(s)
         self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
 
-    def test_a_flush_between_the_epoch_check_and_the_put_drains_the_blob(self):
-        # The check passed, then a flush bumped the epoch and drained the
-        # queue before the put: the pre-splice blob landed behind the drain.
+    def test_a_blob_put_after_a_flush_past_its_epoch_check_is_discarded_by_the_worker(self):
+        # The check passed, then a flush bumped the epoch before the put:
+        # the pre-splice blob lands carrying the retired epoch.
         s = _make()
         s.running = True
         flushed = threading.Event()

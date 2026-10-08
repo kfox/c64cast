@@ -825,11 +825,11 @@ Re-confirmed on firmware 3.15a (FPGA `125`, core `1.50`, U64-II, 2026-10-03), wh
 
 Re-measure and bump `SAMPLER_REF_CLOCK_DEFAULT` after any firmware release that changes sampler timing; the diag prints the new value. Hardware or firmware that clocks the sampler correctly can set `[audio].sampler_clock_hz` back to 6.25 MHz.
 
-### `flush(*, silence_output=False)` — transport resync
+### `cut()` / `flush(*, silence_output=False, cut=None)` — transport resync
 
-Added for MIDI live-tune Phase 4. Cuts the ring over to post-splice audio:
+Added for MIDI live-tune Phase 4. Cuts the ring over to post-splice audio. Steps 1 and 2 are `cut()`, which the splice takes under `AVFileSource.request_seek`'s lock; steps 3 and 4 are `flush(cut=...)`, which follows it (a bare `flush()` takes its own cut first):
 
-1. Take the post-splice anchor, `consumed + FLUSH_GUARD_S·rate`, from the read head at entry. That is the moment the transport anchored the picture. Taking it later, after the pause-restore volume write and the wait for `_io_lock` (the writer holds it for a whole REU write, up to a 32 KB slice, about 60 ms on the Ultimate), put the sound that much behind the picture.
+1. Take the post-splice anchor, `consumed + FLUSH_GUARD_S·rate`, from the read head at the cut. That is the moment the transport anchored the picture. Taking it later, after the pause-restore volume write and the wait for `_io_lock` (the writer holds it for a whole REU write, up to a 32 KB slice, about 60 ms on the Ultimate), put the sound that much behind the picture.
 2. Bump `_flush_epoch`, without waiting on `_io_lock`. That retires everything queued: the writer and the prebuffer drop a chunk whose tag is stale.
 3. Under `_io_lock`, NEUTRAL-rewrite the unconsumed lead from `consumed + FLUSH_GUARD_S·rate` up to the old `_written`, and pull `_written` back to that point and `_content_pos` back to the anchor. Post-splice audio whose slot falls between the two is dropped as late. One formula covers both the normal rewrite-the-lead case and the rare lead < margin case, which blanks the lap-stale skip region. The rewrite never reaches behind the read head and never spans more than one ring.
 4. Clear the `_eof` latch.

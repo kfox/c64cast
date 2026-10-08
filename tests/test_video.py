@@ -1206,6 +1206,34 @@ class SpliceKeepsPostSeekAudioTest(unittest.TestCase):
         )
         self.assertEqual(seen, [(True, 42.0)])
 
+    def test_a_cut_that_raises_still_wakes_a_demuxer_parked_at_eof(self):
+        # The seek stays pending; unwoken, the parked demuxer never applies
+        # it, and the picture holds on the buffer the request cleared.
+        src = _make_emit_audio_stub([])
+        src._pending_seek = None
+        parked, woke = threading.Event(), threading.Event()
+
+        def park() -> None:
+            with src._lock:
+                parked.set()
+                while src._pending_seek is None:
+                    if not src._wake.wait(timeout=2.0):
+                        return
+                woke.set()
+
+        demux = threading.Thread(target=park)
+        demux.start()
+        self.addCleanup(demux.join)
+        self.assertTrue(parked.wait(2.0))
+
+        def cut() -> None:
+            raise RuntimeError("link down")
+
+        with self.assertRaises(RuntimeError):
+            src.request_seek(42.0, on_request=cut)
+        demux.join(3.0)
+        self.assertTrue(woke.is_set(), "the parked demuxer was not woken")
+
     def test_the_audio_epoch_is_read_under_the_seek_lock(self):
         # Read outside it, a splice landing between the pending-seek check
         # and the read tags pre-seek audio with the post-splice epoch.
@@ -2822,6 +2850,20 @@ class SpliceAnchorTest(unittest.TestCase):
         audio._position = 40.0
         with (
             mock.patch.object(audio, "flush", side_effect=RuntimeError("link down")),
+            self.assertRaises(RuntimeError),
+        ):
+            scene.transport_seek(5.0)
+        audio._position = 41.0
+        self.assertAlmostEqual(scene.transport.clock_s(), 6.0 - audio.ring_lead)
+
+    def test_a_cut_that_raises_leaves_the_clock_running(self):
+        # The cut runs inside the seek request (a link read on the sampler):
+        # raising there must take the same fallback as a raising flush.
+        audio = _FakeSceneAudio(position=0.0)
+        scene = self._touched(audio)
+        audio._position = 40.0
+        with (
+            mock.patch.object(audio, "cut", side_effect=RuntimeError("link down")),
             self.assertRaises(RuntimeError),
         ):
             scene.transport_seek(5.0)

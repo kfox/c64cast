@@ -531,8 +531,8 @@ class UltimateAudioSampler:
         self._lag_seq = 0
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
-        # flush() bumps _flush_epoch and then rewrites the lead under _io_lock,
-        # and the writer compares a chunk's tag against it under that lock, so
+        # cut() bumps _flush_epoch and flush() then rewrites the lead under
+        # _io_lock, and the writer compares a chunk's tag against it under that lock, so
         # a chunk pushed before a splice is discarded or overwritten instead of
         # played past the cut-over. _io_lock
         # also serializes the {_write_wrapped, _written} read-modify-write
@@ -844,8 +844,8 @@ class UltimateAudioSampler:
         """The ``push_samples`` producer has ended: ``start()`` gates the ring
         on what it pushed rather than waiting out the prebuffer timeout for
         audio that will not come. Call it after the last push returns, and
-        again after a later push: the next accepted push, or a flush(),
-        reopens the input. Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
+        again after a later push: the next accepted push, or a splice's
+        cut(), reopens the input. Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
         self._input_ended = True
 
     def mark_eof(self) -> None:

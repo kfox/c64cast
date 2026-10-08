@@ -1054,9 +1054,13 @@ class AVFileSource:
             self._video_buf.clear()
             if unmute:
                 self._muted = False
-            result = on_request() if on_request is not None else None
-            self._wake.notify_all()
-        return result
+            try:
+                return on_request() if on_request is not None else None
+            finally:
+                # The seek stands whether or not the cut raised (the splice
+                # falls back to a fresh anchor), so a demuxer parked at EOF
+                # still has to be woken to apply it.
+                self._wake.notify_all()
 
     def set_muted(self, muted: bool) -> None:
         """Latch (or unlatch) audio output. While muted, `_emit_audio` drops
