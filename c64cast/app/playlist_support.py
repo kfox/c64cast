@@ -581,10 +581,10 @@ class MachineRestartWatch:
 
     Something on the machine that stores zeros over the nonce (a tune
     clearing page 3) reads exactly like a reset, and since the scene sets up
-    again after one, it would restart the scene over and over. So after
-    `RESTART_LIMIT_PER_PLAY` restarts in one play of a scene (each answered
-    by setting it up again), the watch stands down until a scene sets up for
-    any other reason.
+    again after one, it would restart the scene over and over. So the
+    restart that makes `RESTART_LIMIT_PER_PLAY` in one play of a scene is
+    not answered by setting it up again: the watch stands down instead,
+    until a scene sets up for any other reason.
 
     A restart a scene outlives, with the link down until the next setup,
     leaves no landed frame to look after, so `restarted_before_setup()`
@@ -596,12 +596,12 @@ class MachineRestartWatch:
 
     A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
     nonce too, so the backend's reset listener re-arms it after the next
-    frame, and after each later landed one until that write lands; a
-    restart that comes after such a reset and before the re-arm leaves
-    nothing to tell it from that reset. A nonce `arm()` loses is written
-    again after each later landed frame until it lands. `suspend()` stands the watch down
-    while a launched program owns the machine, whose RAM the nonce must
-    not touch. Only a backend that reads memory and reports its
+    frame; a restart that comes after such a reset and before the re-arm
+    leaves nothing to tell it from that reset. A re-arm, or a nonce `arm()`
+    wrote, that the link loses is written again after each later landed
+    frame, or every `RESTART_CHECK_MIN_S` on a scene that lands none,
+    until it lands. `suspend()` stands the watch down while a launched
+    program owns the machine, whose RAM the nonce must not touch. Only a backend that reads memory and reports its
     own resets (`add_reset_listener`) is watched."""
 
     def __init__(
@@ -621,6 +621,8 @@ class MachineRestartWatch:
         self._rearm = False
         # The last re-arm the link lost, so the next waits for a landed frame.
         self._rearm_lost = False
+        # When a lost write is retried on a frame that landed nothing.
+        self._next_rearm = 0.0
         self._suspended = False
         self._marks = (0, 0)
         self._next_check = 0.0
@@ -677,6 +679,8 @@ class MachineRestartWatch:
             lambda: self._api.write_memory_file(f"{RESTART_SENTINEL_ADDR:04X}", self._nonce),
         )
         self._marks = self._current_marks()
+        if not self._armed:
+            self._next_rearm = self._clock() + RESTART_CHECK_MIN_S
         if self._poller is not None:
             self._poller_mark = self._poller.reads_started
 
@@ -689,9 +693,10 @@ class MachineRestartWatch:
         if not self.enabled:
             return False
         if self._rearm:
-            # A retry waits for a landed frame: on a link that is down, a
-            # confirmed write every frame spends up to three flushes a frame.
-            if self._rearm_lost and not landed:
+            # A retry waits for a landed frame, or for RESTART_CHECK_MIN_S on
+            # a scene that sends nothing: on a link that is down, a confirmed
+            # write every frame spends up to three flushes a frame.
+            if self._rearm_lost and not landed and self._clock() < self._next_rearm:
                 return False
             self._write_nonce()
             # A re-arm the link lost is tried again after a later frame:
