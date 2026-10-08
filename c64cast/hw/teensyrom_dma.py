@@ -545,7 +545,7 @@ class TRClient:
         with self._lock:
             try:
                 if self._cut:
-                    self.transport.drain_text(_SPANS_RECOVER_QUIET_S)
+                    self._drain_stale(_SPANS_RECOVER_QUIET_S)
                     self._cut = False
                 yield
             except (OSError, TRError):

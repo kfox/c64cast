@@ -287,7 +287,10 @@ class SocketDMAClient:
             if self.password is not None:
                 self._authenticate_locked()
             self.product = self._identify_locked()
-        except Exception:
+        except BaseException:
+            # BaseException: a KeyboardInterrupt between AUTHENTICATE's send
+            # and its read leaves the reply unread on a socket no wire call
+            # was cut on.
             self._close_locked()
             raise
         self._note_answered_locked()
@@ -323,9 +326,13 @@ class SocketDMAClient:
 
     def _identify_roundtrip_locked(self) -> bytes:
         """Send IDENTIFY and return the reply's payload."""
-        self._send_cmd_locked(CMD_IDENTIFY, b"")
-        length = self._recv_exact_locked(1)[0]
-        return self._recv_exact_locked(length)
+        # Guarded whole, not only per wire call: an interrupt landing between
+        # the send and the reads leaves the reply in flight, and the next
+        # flush() would read it as its own.
+        with self._whole_frame_locked(sending=False):
+            self._send_cmd_locked(CMD_IDENTIFY, b"")
+            length = self._recv_exact_locked(1)[0]
+            return self._recv_exact_locked(length)
 
     def _identify_locked(self) -> str:
         assert self._sock is not None
@@ -378,7 +385,10 @@ class SocketDMAClient:
                 f"{_MAX_COMMAND_PAYLOAD}-byte wire length field"
             )
         header = struct.pack("<HH", opcode, len(payload))
-        with self._whole_frame_locked(sending=True):
+        # IDENTIFY and AUTHENTICATE leave C64 memory alone, so a cut one
+        # loses nothing.
+        changes_memory = opcode not in (CMD_IDENTIFY, CMD_AUTHENTICATE)
+        with self._whole_frame_locked(sending=changes_memory):
             self._sock.sendall(header + payload)
 
     def _recv_exact_locked(self, n: int) -> bytes:
@@ -419,8 +429,9 @@ class SocketDMAClient:
         landing in C64 memory as payload and its payload parsed as headers;
         the next reply read would be the tail of the cut one. An ``OSError``
         is left to the caller, which already maps each one to a redial, a
-        close or a ``SocketDMAError``. A cut send counts as unconfirmed, so
-        the abandonment is a possible loss even if nothing else was."""
+        close or a ``SocketDMAError``. A cut send counts as unconfirmed when
+        ``sending``, so the abandonment is a possible loss even if nothing
+        else was."""
         try:
             yield
         except OSError:

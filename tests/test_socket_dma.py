@@ -1336,6 +1336,40 @@ class CutCommandTest(unittest.TestCase):
         self.assertIsNone(c._sock)
         self.assertTrue(fake1.closed)
 
+    def test_a_flush_cut_between_send_and_reply_abandons_the_connection(self):
+        # The interrupt lands after IDENTIFY went out and before its read
+        # began, so neither wire call saw it; the reply is still owed.
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        with patch.object(c, "_recv_exact_locked", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                c.flush()
+        self._next_write_redials(fake1, c)
+        self.assertEqual(c.possible_loss_count, 0)
+
+    def test_a_cut_identify_send_counts_no_loss(self):
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            c.flush()
+        fake2 = self._next_write_redials(fake1, c)
+        self.assertEqual(c.possible_loss_count, 0)
+        fake2._replies.append(_IDENT_REPLY)
+        c.flush()
+
+    def test_a_handshake_cut_between_send_and_reply_closes_the_socket(self):
+        fake1 = _CutSocket([b"\x01", _IDENT_REPLY])
+        c = _client_with(fake1, password="hunter2", connect=False)
+        with (
+            patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake1),
+            patch.object(c, "_recv_exact_locked", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            c.connect()
+        self.assertIsNone(c._sock)
+        self.assertTrue(fake1.closed)
+
     def test_an_os_error_keeps_its_own_handling(self):
         # The send-failure path still redials and retries on the same call.
         fake1 = _CutSocket([_IDENT_REPLY])
