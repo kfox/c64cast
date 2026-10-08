@@ -737,7 +737,7 @@ class BuildStackReleaseInterruptTest(unittest.TestCase):
     ladder: a "hurry" finishes the ladder and then replaces the build error, a
     second one stops it at once. (Under build_session the caller owns both.)"""
 
-    def _build_that_fails(self, **restore_effects: BaseException) -> mock.MagicMock:
+    def _build_that_fails(self, **restore_effects: BaseException) -> None:
         api = mock.MagicMock(name="api")
         api.profile.max_fps = None
         api.disable_case_switch.side_effect = session.StackBuildError(4)
@@ -767,7 +767,6 @@ class BuildStackReleaseInterruptTest(unittest.TestCase):
         self.raised = raised.exception
         self.hw = hw
         self.api = api
-        return api
 
     def test_a_ctrl_c_in_the_failure_ladder_finishes_it_and_replaces_the_build_error(self):
         hurry = KeyboardInterrupt("hurry")
