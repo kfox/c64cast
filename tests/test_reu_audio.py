@@ -1452,7 +1452,9 @@ class ReuPreencodeOriginTest(unittest.TestCase):
         ):
             scene._preencode_audio_for_reu()
         scene.source.pin_timeline_origin.assert_called_once_with()
-        self.assertEqual(decode.call_args.kwargs, {"origin_s": 2.5})
+        self.assertEqual(
+            decode.call_args.kwargs, {"origin_s": 2.5, "max_samples": REU_AUDIO_MAX_BYTES}
+        )
 
 
 class ReuPreencodeMarkerTest(unittest.TestCase):

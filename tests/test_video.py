@@ -30,6 +30,7 @@ from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.video import video as video_mod
 from c64cast.video.video import (
+    AUDIO_DISCONTINUITY_S,
     DRY_FILL_MIN_LEAD_S,
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
@@ -393,6 +394,8 @@ class ResamplerTailTest(unittest.TestCase):
         src._audio_trim = 0
         src._video_read_s = None
         src._audio_lag_s = 0.0
+        src._audio_shift_s = 0.0
+        src._audio_jump_warned = False
         src._dry_stalled = False
         src._pts_offset = None
         src._pts_anchor_target = 0.0
@@ -698,6 +701,8 @@ def _make_demux_source_stub(
     src._audio_trim = 0
     src._video_read_s = None
     src._audio_lag_s = 0.0
+    src._audio_shift_s = 0.0
+    src._audio_jump_warned = False
     src._dry_stalled = False
     src._decode_target = decode_target
     src._decode_size = None
@@ -1301,6 +1306,8 @@ def _aligned_stub(sink: list[np.ndarray], *, rate: int = 8000) -> AVFileSource:
     src._audio_fed_s = None
     src._video_read_s = None
     src._audio_lag_s = 0.0
+    src._audio_shift_s = 0.0
+    src._audio_jump_warned = False
     src._dry_stalled = False
     src._resampler = object()  # only tested for None: an audio stream is open
     return src
@@ -1501,11 +1508,63 @@ class AlignedAudioTest(unittest.TestCase):
         src = _make_demux_source_stub([], pending_seek=3.0)
         src._audio_fed_s, src._audio_trim = 40.0, 123
         src._video_read_s, src._dry_stalled = 41.0, True
+        src._audio_shift_s, src._audio_jump_warned = 1e6, True
         self.assertTrue(src._apply_pending_seek())
         self.assertEqual(
             (src._audio_fed_s, src._audio_trim, src._video_read_s, src._dry_stalled),
             (None, 0, None, False),
         )
+        # A jump the old pass followed on from is no part of the new pass's
+        # timeline, and the new pass warns of its own.
+        self.assertEqual((src._audio_shift_s, src._audio_jump_warned), (0.0, False))
+
+    def _jumped(
+        self, frames: list[tuple[float, float]], at: float
+    ) -> tuple[AVFileSource, list[np.ndarray], int]:
+        """Align ``frames`` (start, length) after audio and picture both
+        reached ``at``. Return the source, what it fed, and how many
+        warnings it logged."""
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._audio_fed_s = src._video_read_s = at
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            for start, length in frames:
+                src._align_audio_frame(_audio_frame(start, length))
+        return src, sink, len(logs.records)
+
+    def test_an_audio_timestamp_far_past_the_picture_follows_on(self):
+        # Fed as silence up to its stamp, one packet at 1e6 s held the scene
+        # for that long at the sink's pace.
+        src, sink, warned = self._jumped([(1e6, 0.1)], 2.0)
+        self.assertEqual((sink, warned), ([], 1))
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 2.1)
+        self.assertEqual(src._audio_lag_s, 0.0)
+
+    def test_a_walk_of_jumps_each_under_the_bound_feeds_no_more_than_the_bound(self):
+        # Each packet 9.9 s past the last: a bound measured from the audio
+        # fed is never tripped, and the silence adds up without end.
+        walk = [(2.0 + 9.9 * k, 0.01) for k in range(1, 200)]
+        _, sink, warned = self._jumped(walk, 2.0)
+        self.assertLessEqual(sum(a.size for a in sink), AUDIO_DISCONTINUITY_S * self.RATE)
+        self.assertEqual(warned, 1, "warned more than once a pass")
+
+    def test_an_audio_timestamp_far_behind_the_audio_fed_follows_on(self):
+        # Trimmed against the audio fed, every frame after it was cut whole
+        # and the rest of the pass was mute.
+        src, sink, warned = self._jumped([(10.0, 0.5), (10.5, 0.5)], 100.0)
+        self.assertEqual((sink, src._audio_trim, warned), ([], 0, 1))
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 101.0)
+        self.assertEqual(src._audio_lag_s, 0.0)
+
+    def test_a_sound_the_picture_has_been_read_up_to_still_waits_for_it(self):
+        # A sound that starts long after its picture is no discontinuity:
+        # the picture is read up to it first.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._video_read_s = 40.0
+        src._align_audio_frame(_audio_frame(40.0, 0.5))
+        self.assertEqual(self._fed(sink), (40 * self.RATE, True))
+        self.assertEqual(src._audio_shift_s, 0.0)
 
 
 class AlignedAudioBranchesTest(unittest.TestCase):

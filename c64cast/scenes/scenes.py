@@ -28,6 +28,7 @@ from c64cast.app.profiler import get_profiler
 from c64cast.audio.audio import AudioInputDeviceError, AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     INT16_FULL_SCALE,
+    REU_AUDIO_MAX_BYTES,
     REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
     encode_floats_to_dac,
 )
@@ -1625,7 +1626,9 @@ class VideoScene(MediaFileMixin, Scene):
         # The picture's origin, pinned before the demuxer starts, so a sound
         # that starts after its picture keeps that distance in the REU too.
         origin = self.source.pin_timeline_origin() if self.source is not None else None
-        int16 = decode_audio_full(self.filepath, sr, origin_s=origin)
+        int16 = decode_audio_full(
+            self.filepath, sr, origin_s=origin, max_samples=REU_AUDIO_MAX_BYTES
+        )
         if int16.size == 0:
             log.warning("video: empty audio track after decode; REU pump will play silence")
             return b""

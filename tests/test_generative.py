@@ -2316,6 +2316,12 @@ class VideoSoundShorterThanPictureTest(unittest.TestCase):
         finished = self._play(((0.0, 1.0),))
         self.assertTrue(finished, "the picture never got past the sound's end")
 
+    def test_an_audio_packet_stamped_far_past_the_picture_does_not_hold_the_scene(self):
+        # Placed at its stamp, the packet was preceded by a million seconds
+        # of silence fed at the DAC's pace.
+        finished = self._play(((0.0, self.VIDEO_S), (1e6, 0.1)))
+        self.assertTrue(finished, "the scene waited out the jump in the audio timestamps")
+
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
@@ -2443,6 +2449,16 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         # ... and the sound three seconds after it.
         pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
         self.assertAlmostEqual(self._sound(pcm)[0], 3.0, delta=0.03)
+
+    def test_the_preload_is_capped_however_far_a_packet_is_stamped(self):
+        # The silence ahead of a packet grows with its stamp: one at 1e6 s
+        # asked for 24 GB at the DAC's 12 kHz default.
+        from c64cast.video.video import decode_audio_full
+
+        cap = 4 * self.RATE
+        pcm = decode_audio_full(self._clip(((0.0, 0.3), (1000.0, 0.5))), self.RATE, max_samples=cap)
+        self.assertEqual(pcm.size, cap)
+        self.assertAlmostEqual(self._sound(pcm)[0], 0.0, delta=0.03)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")

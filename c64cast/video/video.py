@@ -18,6 +18,7 @@ import itertools
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -39,6 +40,19 @@ _T = TypeVar("_T")
 # earlier is trimmed. Within this much either way it is fed as it is, so the
 # few samples a resampler holds back or a muxer rounds do not split a packet.
 AUDIO_ALIGN_TOLERANCE_S = 0.03
+# An audio timestamp this far past the newest picture read, or this far behind
+# the audio fed, is a discontinuity in the file's timestamps rather than a
+# silence it means: the frame follows on and the rest of the pass is shifted
+# by the jump. Unbounded, one packet stamped hours ahead fed that much silence
+# at the sink's real-time pace, and the scene never ended; one stamped behind
+# had every later frame trimmed whole. A muxer interleaves its streams well
+# inside this, while a sound that starts late or comes back after a gap has
+# its picture read up to it first, so only a stamp the picture never reaches
+# trips it. Measured from the picture rather than from the audio fed, so a
+# file that steps each packet a little under the bound past the last still
+# never has its silence take the audio fed more than the bound past the
+# picture.
+AUDIO_DISCONTINUITY_S = 30.0
 # A full video buffer with no audio coming is fed silence up to its newest
 # frame less this much, or less the furthest the file has been seen to write
 # audio behind its picture if that is more: audio for anything earlier would
@@ -493,7 +507,11 @@ def _build_atempo_graph(target_sample_rate: int, tempo_scale: float):
 
 
 def decode_audio_full(
-    path: str, target_sample_rate: int, *, origin_s: float | None = None
+    path: str,
+    target_sample_rate: int,
+    *,
+    origin_s: float | None = None,
+    max_samples: int | None = None,
 ) -> np.ndarray:
     """Decode the entire audio track of ``path`` to mono int16 at
     ``target_sample_rate``. Returns a single contiguous np.ndarray.
@@ -504,6 +522,11 @@ def decode_audio_full(
     timestamps — the picture's origin, from
     `AVFileSource.pin_timeline_origin` — or, without one, the first audio
     timestamp.
+
+    ``max_samples`` caps the result, and decoding stops once it is reached:
+    the silence a placed frame is preceded by grows with the timestamp a file
+    claims, so without a cap a single packet stamped far ahead asks for an
+    allocation that size.
 
     Blocking — call before scene paint starts. Used by the REU-staged audio
     path in VideoScene where the whole track must be preloaded into
@@ -524,11 +547,14 @@ def decode_audio_full(
         a_stream = container.streams.audio[0]
         resampler = av.AudioResampler(format="s16", layout="mono", rate=target_sample_rate)
         chunks: list[np.ndarray] = []
+        room = max_samples if max_samples is not None else sys.maxsize
         fed = 0.0
         trim = 0
         frames = (f for packet in container.demux(a_stream) for f in packet.decode())
         # The trailing None flushes the filter tail the resampler holds back.
         for frame in itertools.chain(frames, [None]):
+            if room <= 0:
+                break
             if frame is not None:
                 rate = frame.sample_rate or target_sample_rate
                 duration = frame.samples / rate if rate else 0.0
@@ -540,15 +566,18 @@ def decode_audio_full(
                     start = pts_s - origin_s
                 silence, cut, fed = place_audio_frame(start, duration, fed, target_sample_rate)
                 trim += cut
+                silence = min(silence, room)
                 if silence:
                     chunks.append(np.zeros(silence, dtype=np.int16))
+                    room -= silence
             for resampled in resampler.resample(frame):
                 arr = resampled.to_ndarray().reshape(-1)
                 cut = min(trim, arr.size)
                 trim -= cut
-                arr = arr[cut:]
+                arr = arr[cut : cut + room]
                 if arr.size:
                     chunks.append(arr.astype(np.int16, copy=False))
+                    room -= arr.size
     finally:
         container.close()
     if not chunks:
@@ -1007,6 +1036,11 @@ class AVFileSource:
         # audio, kept for the file. See `_fill_dry_stretch`.
         self._video_read_s: float | None = None
         self._audio_lag_s = 0.0
+        # How far this pass's audio timestamps are shifted to follow on past
+        # a discontinuity, and whether it has been warned of; reset by a seek.
+        # See `_audio_frame_start`.
+        self._audio_shift_s = 0.0
+        self._audio_jump_warned = False
         # Set once the picture has stalled on a dry stretch, until audio
         # comes again or a seek: the fill keeps its lead over the sink's
         # buffering for the rest of that stretch, instead of stalling again
@@ -1260,6 +1294,8 @@ class AVFileSource:
         self._audio_trim = 0
         self._video_read_s = None
         self._dry_stalled = False
+        self._audio_shift_s = 0.0
+        self._audio_jump_warned = False
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 
@@ -1440,12 +1476,38 @@ class AVFileSource:
         if frame.pts is None or frame.time_base is None:
             start = fed
         else:
-            start = self._content_time(float(frame.pts * frame.time_base))
+            start = self._audio_frame_start(float(frame.pts * frame.time_base), fed)
             if self._video_read_s is not None:
                 self._audio_lag_s = max(self._audio_lag_s, self._video_read_s - start)
         silence, trim, self._audio_fed_s = place_audio_frame(start, duration, fed, self.target_sr)
         self._audio_trim += trim
         self._feed_silence(silence)
+
+    def _audio_frame_start(self, pts_s: float, fed_s: float) -> float:
+        """Where on the content timeline an audio frame stamped ``pts_s``
+        (stream seconds) starts, given the audio fed so far ends at
+        ``fed_s``. A stamp past `AUDIO_DISCONTINUITY_S` beyond the newest
+        picture read (or the pass's anchor, before one is read), or that far
+        behind the audio fed, is a jump in the file's timestamps: the frame
+        follows on, and the pass's later frames are shifted by the same jump."""
+        start = self._content_time(pts_s) - self._audio_shift_s
+        horizon = self._video_read_s if self._video_read_s is not None else self._pts_anchor_target
+        ahead = start - fed_s > AUDIO_ALIGN_TOLERANCE_S and start - horizon > AUDIO_DISCONTINUITY_S
+        behind = fed_s - start > AUDIO_DISCONTINUITY_S
+        if not (ahead or behind):
+            return start
+        jump = start - fed_s
+        self._audio_shift_s += jump
+        if not self._audio_jump_warned:
+            self._audio_jump_warned = True
+            log.warning(
+                "av %s: audio timestamps jump %+.1fs at %.1fs; following on from the audio "
+                "before them (further jumps this pass are not logged)",
+                os.path.basename(self.path),
+                jump,
+                fed_s,
+            )
+        return fed_s
 
     def _feed_silence(self, samples: int) -> None:
         """Feed ``samples`` (at ``target_sr``) of content-timeline silence the
