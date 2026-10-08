@@ -350,7 +350,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   those settings back and starts the scene over. A restart while the link is
   still down at the end of a scene is caught before the next one starts. A
   program the launcher started owns the machine, so c64cast does not watch
-  for a restart under it.
+  for a restart under it. A tune that clears the memory c64cast checks looks
+  like a reset, so after starting such a scene over once, c64cast logs a
+  warning and stops checking until the next scene.
 
 - **A network dropout on an Ultimate that spans a scene change no longer
   spoils the next scene.** A scene that started while the link was down used

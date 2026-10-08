@@ -549,6 +549,10 @@ RESTART_SENTINEL_ADDR = 0x0334
 RESTART_SENTINEL_LEN = 8
 # The fewest seconds between two sentinel reads while the link keeps changing.
 RESTART_CHECK_MIN_S = 2.0
+# Restarts in one scene with the nonce never read back in between, after
+# which the watch stands down: a reset the machine really took re-arms to a
+# readable nonce, so zeros every time are something storing zeros there.
+RESTART_UNCONFIRMED_LIMIT = 2
 
 
 class MachineRestartWatch:
@@ -574,6 +578,13 @@ class MachineRestartWatch:
     is seen within a poll. Only a sample from a read issued after the
     nonce was written counts, so one that predates the write is not taken
     for a cleared nonce.
+
+    Something on the machine that stores zeros over the nonce (a tune
+    clearing page 3) reads exactly like a reset, and since the scene sets up
+    again after one, it would restart the scene over and over. So a restart
+    counts as unconfirmed until a read finds the nonce re-written, and after
+    `RESTART_UNCONFIRMED_LIMIT` unconfirmed ones in a row in the same
+    scene the watch stands down until a different scene arms it.
 
     A restart a scene outlives, with the link down until the next setup,
     leaves no landed frame to look after, so `restarted_before_setup()`
@@ -611,12 +622,17 @@ class MachineRestartWatch:
         self._poller: CommodoreKeyPoller | None = None
         # The poller's read count once the nonce landed: later reads see it.
         self._poller_mark = 0
+        # Restarts since a read last found the nonce in place.
+        self._unconfirmed_restarts = 0
+        self._stood_down = False
+        # The scene the last arm was for; the unconfirmed count is per scene.
+        self._scene: object | None = None
         if self.enabled:
             assert add_listener is not None
             add_listener(self._after_reset)
 
     def _after_reset(self) -> None:
-        if not self._suspended:
+        if not self._suspended and not self._stood_down:
             self._rearm = True
 
     def attach_poller(self, poller: CommodoreKeyPoller) -> None:
@@ -625,18 +641,27 @@ class MachineRestartWatch:
             return
         poller.watch_bytes(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
         self._poller = poller
+        self._poller_mark = poller.reads_started
 
     def _current_marks(self) -> tuple[int, int]:
         return self._api.delivery_epoch, self._api.link_generation
 
-    def arm(self) -> None:
+    def arm(self, scene: object | None = None) -> None:
         """Write the nonce, after a setup or a reset c64cast issued. One the
         link loses leaves the watch disarmed, so a lost write is never read
-        back as a restart."""
+        back as a restart. `scene` is the scene that set up; a different one
+        from the last clears a stand-down."""
         if not self.enabled:
             return
         self._rearm = self._rearm_lost = False
         self._suspended = False
+        if scene is not None and scene is not self._scene:
+            self._scene = scene
+            self._unconfirmed_restarts = 0
+            self._stood_down = False
+        if self._stood_down:
+            self._armed = False
+            return
         self._armed = write_confirmed(
             self._api,
             lambda: self._api.write_memory_file(f"{RESTART_SENTINEL_ADDR:04X}", self._nonce),
@@ -718,6 +743,7 @@ class MachineRestartWatch:
         if len(seen) != RESTART_SENTINEL_LEN:
             return False
         if seen == self._nonce:
+            self._unconfirmed_restarts = 0
             return False
         self._armed = False
         if any(seen):
@@ -726,6 +752,19 @@ class MachineRestartWatch:
                 "not watching for a machine restart until the next scene sets up",
                 RESTART_SENTINEL_ADDR,
                 RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,
+            )
+            return False
+        self._unconfirmed_restarts += 1
+        if self._unconfirmed_restarts >= RESTART_UNCONFIRMED_LIMIT:
+            self._stood_down = True
+            self._log.warning(
+                "the restart check found $%04X-$%04X zeroed %d times with the nonce "
+                "never read back in between; something on the machine stores zeros "
+                "there, so not watching for a machine restart until another scene "
+                "sets up",
+                RESTART_SENTINEL_ADDR,
+                RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,
+                self._unconfirmed_restarts,
             )
             return False
         return True

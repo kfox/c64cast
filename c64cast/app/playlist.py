@@ -714,7 +714,7 @@ class Playlist:
         if getattr(scene, "HANDS_OVER_MACHINE", False):
             self.restart_watch.suspend()
         else:
-            self.restart_watch.arm()
+            self.restart_watch.arm(scene)
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
         if self.user_dim < 1.0:

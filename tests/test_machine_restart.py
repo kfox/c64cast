@@ -23,6 +23,7 @@ from c64cast.app.playlist_support import (
     RESTART_CHECK_MIN_S,
     RESTART_SENTINEL_ADDR,
     RESTART_SENTINEL_LEN,
+    RESTART_UNCONFIRMED_LIMIT,
     MachineRestartWatch,
 )
 from c64cast.control.keyboard import ADDR_MODIFIERS, CommodoreKeyPoller
@@ -313,6 +314,37 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         watch.arm()
         self.assertFalse(watch.after_frame(True))
 
+    def _restart_seen(self) -> bool:
+        self.api.external_reset()
+        self.poller._read_modifiers()
+        return self.watch.after_frame(True)
+
+    def test_zeros_never_read_back_as_the_nonce_stand_the_watch_down(self):
+        scene = object()
+        self.watch.arm(scene)
+        for _ in range(RESTART_UNCONFIRMED_LIMIT - 1):
+            self.assertTrue(self._restart_seen())
+            self.watch.arm(scene)
+        self.assertFalse(self._restart_seen(), "zeros every time kept restarting the scene")
+        self.watch._log.warning.assert_called_once()
+        self.watch.arm(scene)
+        self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
+        self.api.c64cast_reset()
+        self.assertFalse(self.watch.after_frame(True))
+        self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
+        self.watch.arm(object())
+        self.assertTrue(self._restart_seen(), "another scene's arm did not end the stand-down")
+
+    def test_a_nonce_read_back_between_restarts_keeps_the_watch_up(self):
+        scene = object()
+        self.watch.arm(scene)
+        for _ in range(RESTART_UNCONFIRMED_LIMIT + 1):
+            self.poller._read_modifiers()
+            self.assertFalse(self.watch.after_frame(True))
+            self.assertTrue(self._restart_seen())
+            self.watch.arm(scene)
+        self.watch._log.warning.assert_not_called()
+
     def test_a_watch_that_is_not_enabled_leaves_the_poller_alone(self):
         api = FakeApi()
         poller = CommodoreKeyPoller(api)
@@ -372,6 +404,55 @@ class ResetWithoutALinkChangeTest(unittest.TestCase):
         self.assertEqual(restores, [1])
         self.assertEqual(scene.frames_by_setup[1], 3, "the reset was not caught on its frame")
         self.assertEqual(sum("machine restarted" in line for line in logs.output), 1)
+
+
+class _ZeroingTune(FakeScene):
+    """A scene whose player zeroes `$0334-$033B` every frame, as a tune that
+    keeps its variables there would; the key poller ticks once a frame."""
+
+    def __init__(self, api: _Machine, poller: CommodoreKeyPoller, stop: threading.Event) -> None:
+        super().__init__("Sid", frames_until_done=10_000)
+        self.api = api
+        self.poller = poller
+        self.stop = stop
+        self.frames = 0
+
+    def process_frame(self, current_time: float) -> bool:
+        super().process_frame(current_time)
+        self.frames += 1
+        self.api.ram[_SENTINEL] = bytes(RESTART_SENTINEL_LEN)
+        self.poller._read_modifiers()
+        self.api.stats["writes"] += 1
+        if self.frames >= 200:
+            self.stop.set()
+        return True
+
+
+class ZeroingWriterTest(unittest.TestCase):
+    def test_a_tune_that_zeroes_the_nonce_is_set_up_again_once_not_forever(self):
+        api = _Machine()
+        stop = threading.Event()
+        poller = CommodoreKeyPoller(api)
+        scene = _ZeroingTune(api, poller, stop)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            key_poller=poller,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(1)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+            pl.run()
+        self.assertEqual(scene.setup_count, RESTART_UNCONFIRMED_LIMIT)
+        self.assertEqual(len(restores), RESTART_UNCONFIRMED_LIMIT - 1)
+        self.assertEqual(scene.frames, 200, "the scene stopped playing")
+        self.assertEqual(
+            sum(f"zeroed {RESTART_UNCONFIRMED_LIMIT} times" in line for line in logs.output), 1
+        )
 
 
 class _PaintingScene(FakeScene):
