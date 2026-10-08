@@ -761,12 +761,15 @@ class Playlist:
         # The card's slot is held for the scene it announces, which a link
         # outage in this setup has to release.
         announcing = self.scenes[self.index] if self.transitioning and scene is self._card else None
-        scene.keep_pick_for_resetup()
-        self.safe_teardown(scene)
-        self._put_machine_back(
+        # Before the teardown, whose own failures on the reset machine would
+        # otherwise reach the log ahead of their cause.
+        self.log.warning(
             "the machine restarted during %r, losing what its setup put there; setting it up again",
             scene.name,
         )
+        scene.keep_pick_for_resetup()
+        self.safe_teardown(scene)
+        self._restore_machine()
         if not self.ensemble_coord.wait_for_audio_claim(scene):
             self.current = None
             return
