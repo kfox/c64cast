@@ -423,6 +423,26 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   picture to its end on the 4-bit DAC.** The picture follows the sound, so it
   froze on the frame where the sound ran out and the scene never ended.
 
+- **A video whose sound starts late, stops for a while, or ends long before
+  its picture now plays in sync to its end.** The sound played as soon as it
+  was read, up to several seconds ahead of its picture, and a silent stretch
+  longer than a few seconds froze the picture for good.
+
+- **`--frame-numbers` shows the video's true position on the 4-bit DAC with a
+  bitmap display.** There the playback clock runs slower than the file, and
+  the label showed that clock as it was: 12% short of the frame on screen.
+
+- **The first fast-forward, rewind or jog in a video steps from where it is
+  playing.** Before any transport control, a video with a `start_s`, or one
+  on the 4-bit DAC with a bitmap display, reported a position short of the
+  frame on screen, so that first step jumped backward from it, and the web
+  console's scrub bar showed the same short position.
+
+- **A pause, or an A/B loop marked before any seek, in a video with a
+  `start_s` keeps its place in the file.** The resume jumped back by
+  `start_s`, and loop A was marked that far short, so the loop wrapped to the
+  wrong place.
+
 - **A seek, A/B loop wrap or resume in a video keeps the start of the sound
   it lands on.** The decoder can reach the new position and hand over its
   first sound before the old sound has been cleared out, and that sound was

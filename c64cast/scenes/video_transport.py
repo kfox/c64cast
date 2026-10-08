@@ -61,6 +61,12 @@ class VideoTransportControls:
         self.wall_anchor_clock_s = 0.0
         self.wall_anchor_time = 0.0
         self.resync = False
+        # True until a seek is requested: the clock is still the PTS timeline
+        # the source rebased to 0 at start_s, which a touch alone does not
+        # change. A pause or a loop mark between the touch and the first seek
+        # reads it, so the offset back to a file position goes with the
+        # rebase rather than with the touch.
+        self.rebased = True
         # The resync path's post-touch clock, in the scaled/PTS domain:
         # clock + (heard_seconds(audio) - pos) for an anchor (clock, pos),
         # held at clock while paused or while pos is None (a splice waiting on
@@ -83,18 +89,32 @@ class VideoTransportControls:
 
     def clock_to_content(self, clk: float) -> float:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
-        Identity except on the resync path over the DAC+bitmap tempo scale:
-        there the clock advances at s×content-seconds, so divide by s to recover
-        content seconds for the transport surface (seek targets, loop A/B, OSD)."""
-        if self.touched and self.resync and self._scene.tempo_scale != 1.0:
-            return clk / self._scene.tempo_scale
-        return clk
+        After the first seek it is the identity except on the resync path over
+        the DAC+bitmap tempo scale: there the clock advances at
+        s×content-seconds, so divide by s to recover content seconds for the
+        transport surface (seek targets, loop A/B, OSD).
+
+        Before the touch the clock is the PTS timeline the source rebased to 0
+        at start_s and scaled by the tempo, so it is unscaled and offset back
+        to a file position: a jog or the web console reads ``position()``
+        here, before anything has touched transport. The start_s offset
+        stays until the first seek (`rebased`), which re-anchors the clock to
+        an absolute file position."""
+        sc = self._scene
+        if self._clock_scaled():
+            clk /= sc.tempo_scale or 1.0
+        return clk + (sc.start_s if self.rebased else 0.0)
 
     def content_to_clock(self, s: float) -> float:
         """Inverse of clock_to_content: content seconds → internal clock domain."""
-        if self.touched and self.resync and self._scene.tempo_scale != 1.0:
-            return s * self._scene.tempo_scale
-        return s
+        sc = self._scene
+        s -= sc.start_s if self.rebased else 0.0
+        return s * (sc.tempo_scale or 1.0) if self._clock_scaled() else s
+
+    def _clock_scaled(self) -> bool:
+        """Whether the clock runs at tempo_scale x content seconds: the
+        audio clock before the touch, and the resync path's after it."""
+        return not self.touched or (self.resync and self._scene.tempo_scale != 1.0)
 
     def clock_s(self) -> float:
         """The playback clock: the free-running audio position — or the wall
@@ -190,6 +210,7 @@ class VideoTransportControls:
         # estimate read before the flush paired a clamped position with the
         # unclamped clock the flush leaves, and the web console's poll read
         # the target plus the clamp's overrun.
+        self.rebased = False
         clock = self.content_to_clock(target_s)
         self.audio_anchor = (clock, None)
         try:
@@ -260,6 +281,7 @@ class VideoTransportControls:
         if self.resync:
             self._splice(target_s)
         else:
+            self.rebased = False
             self.wall_anchor_clock_s = target_s
             self.wall_anchor_time = time.time()
             if sc.source is not None:
@@ -390,7 +412,7 @@ class VideoTransportControls:
     def position(self) -> float:
         """The playback position in content seconds, which is what the whole
         transport surface speaks; the internal clock is in the scaled/PTS
-        domain on the resync tempo path, and identical elsewhere.
+        domain, offset by start_s until the first seek (see clock_to_content).
 
         On the resync path a splice holds the clock below its target until the
         target is heard; this reports the target through that hold, because a

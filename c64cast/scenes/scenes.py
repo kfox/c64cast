@@ -28,6 +28,7 @@ from c64cast.app.profiler import get_profiler
 from c64cast.audio.audio import AudioInputDeviceError, AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     INT16_FULL_SCALE,
+    REU_AUDIO_MAX_BYTES,
     REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
     encode_floats_to_dac,
 )
@@ -1622,7 +1623,12 @@ class VideoScene(MediaFileMixin, Scene):
         # consumer, so it drains at the *achieved* rate; pre-encoding at the
         # requested one would play the clip off-speed.
         sr = int(round(self.audio.effective_rate))
-        int16 = decode_audio_full(self.filepath, sr)
+        # The picture's origin, pinned before the demuxer starts, so a sound
+        # that starts after its picture keeps that distance in the REU too.
+        origin = self.source.pin_timeline_origin() if self.source is not None else None
+        int16 = decode_audio_full(
+            self.filepath, sr, origin_s=origin, max_samples=REU_AUDIO_MAX_BYTES
+        )
         if int16.size == 0:
             log.warning("video: empty audio track after decode; REU pump will play silence")
             return b""
@@ -1773,12 +1779,7 @@ class VideoScene(MediaFileMixin, Scene):
             self.display_mode.set_color_fit(self._online_fit.result())
         if self.show_frame_numbers:
             fps = self.source.video_fps or 30.0
-            # clock_s is rebased to 0 at start_s, so add it back for the true
-            # offset into the file — unless transport has been touched, past
-            # which clock_s is already an absolute file position.
-            file_s = (
-                tr.clock_to_content(frame_clock_s) if tr.touched else frame_clock_s + self.start_s
-            )
+            file_s = tr.clock_to_content(frame_clock_s)
             label = f"{timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
         if osd_now:

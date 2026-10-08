@@ -2145,10 +2145,12 @@ def _write_av_clip(
     fps: int = 30,
     rate: int = 8000,
     audio: tuple[tuple[float, float], ...] | None = None,
+    video_start_s: float = 0.0,
 ) -> None:
-    """A tiny Matroska clip with a video stream `seconds` long and a tone on
-    a PCM audio stream: the whole length, or the `(start_s, length_s)` spans
-    in `audio`, with nothing between them."""
+    """A tiny Matroska clip with a video stream `seconds` long, its first
+    frame stamped `video_start_s`, and a tone on a PCM audio stream: the whole
+    length, or the `(start_s, length_s)` spans in `audio`, with nothing
+    between them."""
     import av
 
     spans = audio if audio is not None else ((0.0, seconds),)
@@ -2161,8 +2163,11 @@ def _write_av_clip(
         sound = container.add_stream("pcm_s16le", rate=rate)
         sound.layout = "mono"
         grey = np.full((64, 64, 3), 128, dtype=np.uint8)
-        for _ in range(int(seconds * fps)):
-            for packet in video.encode(av.VideoFrame.from_ndarray(grey, "rgb24")):
+        first = round(video_start_s * fps)
+        for i in range(int(seconds * fps)):
+            picture = av.VideoFrame.from_ndarray(grey, "rgb24")
+            picture.pts = first + i
+            for packet in video.encode(picture):
                 container.mux(packet)
         for start_s, length_s in spans:
             t = np.arange(int(length_s * rate)) / rate
@@ -2315,6 +2320,222 @@ class VideoSoundShorterThanPictureTest(unittest.TestCase):
     def test_a_sound_longer_than_the_prebuffer_plays_out_a_longer_picture(self):
         finished = self._play(((0.0, 1.0),))
         self.assertTrue(finished, "the picture never got past the sound's end")
+
+    def test_an_audio_packet_stamped_far_past_the_picture_does_not_hold_the_scene(self):
+        # Placed at its stamp, the packet was preceded by a million seconds
+        # of silence fed at the DAC's pace.
+        finished = self._play(((0.0, self.VIDEO_S), (1e6, 0.1)))
+        self.assertTrue(finished, "the scene waited out the jump in the audio timestamps")
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
+    """A silent stretch longer than the video buffer: a sound that starts
+    late or comes back after a gap (#606). Fed back to back, the sound
+    played as soon as it was read, a buffer ahead of its picture, and with
+    no audio coming for the buffered stretch the DAC's clock stopped and the
+    demuxer waited on a full buffer for good. Real time, through the DAC."""
+
+    VIDEO_S = 4.0
+    BUFFER = 60  # frames: two seconds at 30 fps
+    SLACK_S = 1.5
+    RATE = 8000
+    TOLERANCE_S = 0.1
+
+    def _play(
+        self,
+        audio: tuple[tuple[float, float], ...],
+        *,
+        rate: int = RATE,
+        buffer: int = BUFFER,
+        slack_s: float = SLACK_S,
+    ) -> tuple[bool, float | None]:
+        """Play a clip with sound at the ``audio`` spans the way VideoScene
+        does, through a DAC at ``rate`` behind a ``buffer``-frame picture
+        buffer. Return whether it finished in time, and where on the fed
+        timeline the first sound sample went."""
+        import tempfile
+
+        from _fakes import FakeAPI, quiet_logging
+
+        from c64cast.audio.audio_source import heard_seconds
+        from c64cast.video.video import AVFileSource
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(clip, self.VIDEO_S, rate=rate, audio=audio)
+        api = FakeAPI()
+        dac = AudioStreamer(cast(C64Backend, api), rate, "NTSC")
+        link = _ConsumerLink(FakeAPI(), dac.effective_rate)
+        api.read_memory = link.read_memory  # type: ignore[method-assign]
+        start_nmi = dac.nmi.start
+        fed = [0]
+        first_sound: list[float] = []
+        self.sound_after_2s = 0.0
+
+        def started(*args, **kwargs):
+            link.started_at = time.monotonic()
+            return start_nmi(*args, **kwargs)
+
+        def push(samples: np.ndarray, **kwargs) -> int:
+            loud = np.flatnonzero(samples)
+            if loud.size and not first_sound:
+                first_sound.append((fed[0] + int(loud[0])) / rate)
+            self.sound_after_2s += int(np.count_nonzero(fed[0] + loud >= 2 * rate)) / rate
+            fed[0] += samples.size
+            return dac.push_samples(samples, **kwargs)
+
+        with quiet_logging(), mock.patch.object(dac.nmi, "start", side_effect=started):
+            dac.start_for_external_source()
+            try:
+                src = AVFileSource(
+                    clip,
+                    target_sample_rate=rate,
+                    scan_audio_peak=False,
+                    max_video_buffer=buffer,
+                )
+                self.addCleanup(src.close)
+                src.start(audio_push=push, audio_end=dac.end_input)
+                deadline = time.monotonic() + self.VIDEO_S + slack_s
+                while not src.finished and time.monotonic() < deadline:
+                    src.current_frame(heard_seconds(dac))
+                    time.sleep(0.01)
+                finished = src.finished
+                src.close()
+            finally:
+                dac.stop()
+        return finished, first_sound[0] if first_sound else None
+
+    def test_a_sound_that_starts_after_the_buffer_plays_with_its_picture(self):
+        finished, first = self._play(((3.0, 0.5),))
+        self.assertTrue(finished, "the picture stalled before the sound started")
+        self.assertIsNotNone(first)
+        self.assertAlmostEqual(cast(float, first), 3.0, delta=self.TOLERANCE_S)
+
+    def test_a_sound_back_after_a_gap_longer_than_the_buffer_plays_with_its_picture(self):
+        finished, first = self._play(((0.0, 0.3), (3.0, 0.5)))
+        self.assertTrue(finished, "the picture stalled in the gap")
+
+    def test_a_sink_holding_back_more_than_the_buffer_spans_still_plays_through(self):
+        # At 4 kHz the DAC's prebuffer alone is 1.5 s of audio, more than a
+        # 30-frame buffer spans: silence up to the newest frame read never
+        # starts its clock. Silence past it would cover sound not yet read;
+        # the buffer reads further ahead instead, so the sound coming back
+        # plays whole.
+        finished, _ = self._play(((0.0, 0.3), (3.0, 0.5)), rate=4000, buffer=30, slack_s=5.0)
+        self.assertTrue(finished, "the picture stalled in the gap")
+        self.assertGreater(self.sound_after_2s, 0.45)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
+    """The REU-staged preload decodes the whole soundtrack up front, and the
+    pump plays it from the picture's clock 0. Concatenated back to back, a
+    sound that starts late or comes back after a gap played early, as the
+    demuxer's feed did before #606."""
+
+    RATE = 8000
+
+    def _clip(self, audio: tuple[tuple[float, float], ...], *, video_start_s: float = 0.0) -> str:
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(clip, 4.0, rate=self.RATE, audio=audio, video_start_s=video_start_s)
+        return clip
+
+    def _sound(self, pcm: np.ndarray) -> list[float]:
+        """Where each stretch of sound starts, in seconds."""
+        loud = np.flatnonzero(np.abs(pcm) > 1000)
+        starts = [loud[0], *loud[np.flatnonzero(np.diff(loud) > self.RATE // 10) + 1]]
+        return [int(s) / self.RATE for s in starts]
+
+    def test_a_sound_back_after_a_gap_keeps_the_gap(self):
+        from c64cast.video.video import decode_audio_full
+
+        pcm = decode_audio_full(self._clip(((0.0, 0.3), (3.0, 0.5))), self.RATE)
+        starts = self._sound(pcm)
+        self.assertEqual(len(starts), 2)
+        self.assertAlmostEqual(starts[0], 0.0, delta=0.03)
+        self.assertAlmostEqual(starts[1], 3.0, delta=0.03)
+
+    def test_a_sound_that_starts_after_its_picture_keeps_that_distance(self):
+        from c64cast.video.video import AVFileSource, decode_audio_full
+
+        clip = self._clip(((3.0, 0.5),))
+        src = AVFileSource(clip, target_sample_rate=self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        origin = src.pin_timeline_origin()
+        self.assertIsNotNone(origin)
+        # The picture's first frame sits at the clock's 0 ...
+        self.assertAlmostEqual(src._content_time(0.0), 0.0)
+        # ... and the sound three seconds after it.
+        pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
+        self.assertAlmostEqual(self._sound(pcm)[0], 3.0, delta=0.03)
+
+    def test_a_picture_that_starts_after_its_sound_keeps_that_distance(self):
+        # The demuxer decodes no audio under the REU pump, so unpinned it took
+        # the first picture's stamp as the origin and showed it at the clock's
+        # 0, half a second ahead of the sound placed under it.
+        from c64cast.video.video import AVFileSource, decode_audio_full
+
+        clip = self._clip(((0.0, 1.0),), video_start_s=0.5)
+        src = AVFileSource(clip, target_sample_rate=self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        origin = src.pin_timeline_origin()
+        self.assertIsNotNone(origin)
+        self.assertAlmostEqual(src._content_time(cast(float, origin) + 0.5), 0.5)
+        pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
+        self.assertAlmostEqual(self._sound(pcm)[0], 0.0, delta=0.03)
+
+    def test_nothing_is_pinned_under_a_start_offset(self):
+        from c64cast.video.video import AVFileSource
+
+        src = AVFileSource(
+            self._clip(((0.0, 4.0),)),
+            target_sample_rate=self.RATE,
+            scan_audio_peak=False,
+            start_s=1.0,
+        )
+        self.addCleanup(src.close)
+        self.assertIsNone(src.pin_timeline_origin())
+        self.assertIsNone(src._pts_offset)
+
+    def test_the_preload_is_capped_however_far_a_packet_is_stamped(self):
+        # The silence ahead of a packet grows with its stamp: one at 1e6 s
+        # asked for 24 GB at the DAC's 12 kHz default.
+        from c64cast.video.video import decode_audio_full
+
+        cap = 4 * self.RATE
+        pcm = decode_audio_full(self._clip(((0.0, 0.3), (1000.0, 0.5))), self.RATE, max_samples=cap)
+        self.assertEqual(pcm.size, cap)
+        self.assertAlmostEqual(self._sound(pcm)[0], 0.0, delta=0.03)
+
+    def test_a_packet_stamped_far_behind_the_preload_follows_on(self):
+        # Trimmed against the audio placed, the sound after the jump was cut
+        # whole and the rest of the preload was mute.
+        from c64cast.video.video import decode_audio_full
+
+        clip = self._clip(((0.0, 40.0), (2.0, 3.0)))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            pcm = decode_audio_full(clip, self.RATE)
+        self.assertEqual(len(logs.records), 1)
+        self.assertAlmostEqual(pcm.size / self.RATE, 43.0, delta=0.03)
+        self.assertAlmostEqual(self._sound(pcm[40 * self.RATE :])[0], 0.0, delta=0.03)
+
+    def test_one_packet_stamped_far_behind_does_not_shift_the_rest_of_the_preload(self):
+        # Following on past the stray packet, without coming back once the
+        # stamps return, put the rest of the track that far behind its picture.
+        from c64cast.video.video import decode_audio_full
+
+        clip = self._clip(((0.0, 40.0), (2.0, 0.1), (41.0, 1.0)))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            pcm = decode_audio_full(clip, self.RATE)
+        self.assertEqual(len(logs.records), 1)
+        self.assertAlmostEqual(pcm.size / self.RATE, 42.0, delta=0.03)
+        self.assertAlmostEqual(self._sound(pcm[int(40.5 * self.RATE) :])[0], 0.5, delta=0.03)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
