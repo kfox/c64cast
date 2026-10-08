@@ -1033,6 +1033,42 @@ class MicLeadRingWrapTest(unittest.TestCase):
         self.assertEqual(servo._host_between(REU_MIC_SIZE - 100, 100), 0)
 
 
+class PumpAdvanceUnambiguousTest(unittest.TestCase):
+    """The re-read tear test at each edge of its window: an advance is
+    accepted only inside ``[-TOL, reach]`` and only while no other value a
+    whole $4000 ring away is inside it too."""
+
+    TOL = ml.MIC_LEAD_TORN_TOLERANCE
+
+    def _assert_told(self, cases: list[tuple[int, int, bool]]) -> None:
+        for advanced, reach, told in cases:
+            with self.subTest(advanced=advanced, reach=reach):
+                self.assertIs(ml.pump_advance_unambiguous(advanced, reach), told)
+
+    def test_the_floor_is_minus_the_tolerance_inclusive(self):
+        self._assert_told([(-self.TOL, self.TOL, True), (-self.TOL - 1, self.TOL, False)])
+
+    def test_the_ceiling_is_the_reach_inclusive(self):
+        self._assert_told([(5000, 5000, True), (5001, 5000, False)])
+
+    def test_a_reach_onto_the_next_ring_alias_tears(self):
+        top = -self.TOL + RING_BUFFER_SIZE
+        self._assert_told(
+            [
+                (-self.TOL, top - 1, True),
+                (-self.TOL, top, False),
+                (4000, 4000 + RING_BUFFER_SIZE - 1, True),
+                (4000, 4000 + RING_BUFFER_SIZE, False),
+            ]
+        )
+
+    def test_an_advance_whose_lower_alias_is_in_the_window_tears(self):
+        self._assert_told([(4000 + RING_BUFFER_SIZE, 4000 + RING_BUFFER_SIZE, False)])
+
+    def test_a_reach_below_the_floor_tells_nothing(self):
+        self._assert_told([(-self.TOL, -self.TOL - 1, False)])
+
+
 class MicLeadReadGuardTest(unittest.TestCase):
     """A pump read that comes back unusable is a failed measurement; it never
     raises out of tick(), which would end the servo thread for good."""

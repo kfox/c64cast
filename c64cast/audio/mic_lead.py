@@ -329,6 +329,16 @@ def signed_ring_delta(a: int, b: int, ring: int = REU_MIC_SIZE) -> int:
     return d - ring if d >= ring // 2 else d
 
 
+def pump_advance_unambiguous(advanced: int, reach: int) -> bool:
+    """True when ``advanced``, the pump's src advance between two reads, is
+    the only value of its class modulo the $4000 ring (``RING_BUFFER_SIZE``)
+    in ``[-MIC_LEAD_TORN_TOLERANCE, reach]``. A garble moves src by whole
+    rings, so a second value of the class in that window could be the real
+    advance."""
+    lowest = (advanced + MIC_LEAD_TORN_TOLERANCE) % RING_BUFFER_SIZE - MIC_LEAD_TORN_TOLERANCE
+    return lowest == advanced <= reach < lowest + RING_BUFFER_SIZE
+
+
 def best_splice_cut(buf: np.ndarray, fade: int, cut_min: int, cut_max: int) -> int:
     """The cut length in ``[cut_min, cut_max]`` whose landing window best
     matches ``buf[:fade]`` (normalized cross-correlation), so the crossfade
@@ -722,8 +732,7 @@ class MicLeadServo:
         # lap on slow reads, whose advance has no other plausible value.
         advanced = signed_ring_delta(check.reading.src, m.reading.src)
         reach = MIC_LEAD_TORN_TOLERANCE + round(self._rate * max(0.0, check.ended - m.begun))
-        lowest = (advanced + MIC_LEAD_TORN_TOLERANCE) % RING_BUFFER_SIZE - MIC_LEAD_TORN_TOLERANCE
-        if not lowest == advanced <= reach < lowest + RING_BUFFER_SIZE:
+        if not pump_advance_unambiguous(advanced, reach):
             log.debug(
                 "audio[reu mic]: torn pump read (pump %+d B in %.2fs on the re-read)",
                 advanced,
