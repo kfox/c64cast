@@ -315,9 +315,6 @@ class Playlist:
         self._pending_scenes: list[Scene] | None = None
         self._pending_interstitial: InterstitialFactory | None = None
         self._reload_lock = threading.Lock()
-        # The upcoming scene while its "UP NEXT" card is being set up, whose
-        # audio slot a link outage in that setup releases and claims back.
-        self._announcing: Scene | None = None
         # None in single-system mode. When `_broadcast_interrupt` fires, the run
         # loop tears down the current scene, runs a follower scene driven by
         # `ensemble.active_orchestrator`, and resumes the saved index.
@@ -670,11 +667,7 @@ class Playlist:
         self._safe_prepare_next(nxt)
         self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
         self.current = self.interstitial_factory(nxt.name)
-        self._announcing = nxt
-        try:
-            self.safe_setup(self.current)
-        finally:
-            self._announcing = None
+        self.safe_setup(self.current, announcing=nxt)
         self.transitioning = True
 
     def _safe_prepare_next(self, scene: Scene) -> None:
@@ -689,11 +682,15 @@ class Playlist:
                 "prepare_next failed on %r — interstitial will show a stale name", scene.name
             )
 
-    def safe_setup(self, scene: Scene) -> None:
+    def safe_setup(self, scene: Scene, *, announcing: Scene | None = None) -> None:
+        """Set `scene` up for its first frame. `announcing` is the upcoming
+        scene when `scene` is its "UP NEXT" card: the ensemble audio slot
+        claimed for that scene is the one a link outage in this setup
+        releases and claims back."""
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
-        if not self._setup_through_outage(scene):
+        if not self._setup_through_outage(scene, announcing):
             return
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
@@ -728,7 +725,7 @@ class Playlist:
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
 
-    def _setup_through_outage(self, scene: Scene) -> bool:
+    def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
         """Set `scene` up, and again once the link answers when the link
         cost the setup a write. False when `stop_event` fired while waiting:
         a stop while waiting for the link leaves the scene as its last setup
@@ -784,7 +781,7 @@ class Playlist:
                 if self.stop_event.wait(SETUP_RETRY_S):
                     return False
             else:
-                claimant = self._release_audio_for_wait(scene, where)
+                claimant = self._release_audio_for_wait(scene, announcing, where)
                 if not self._wait_for_link(where, error, frame_time):
                     return False
             scene.keep_pick_for_resetup()
@@ -798,15 +795,17 @@ class Playlist:
             if claimant is not None and not self.ensemble_coord.wait_for_audio_claim(claimant):
                 return False
 
-    def _release_audio_for_wait(self, scene: Scene, where: str) -> Scene | None:
+    def _release_audio_for_wait(
+        self, scene: Scene, announcing: Scene | None, where: str
+    ) -> Scene | None:
         """Release the ensemble audio slot held for `scene`, or for the
-        scene an interstitial `scene` announces (`audio_claimant`), and
+        scene it is `announcing` as an interstitial (`audio_claimant`), and
         return the scene to claim it back for. The wait for the link has no
         bound, and holding the slot through it would skip another system's
         audio-bearing scenes, or hold a single-scene one, for as long as
         this machine is unplugged. Claiming it back can wait on the system
         that took it meanwhile."""
-        claimant = self.ensemble_coord.audio_claimant(scene, self._announcing)
+        claimant = self.ensemble_coord.audio_claimant(scene, announcing)
         if claimant is None or not self.ensemble_coord.release_audio_claim(claimant):
             return None
         self.log.info("%s: releasing the ensemble audio slot until the link answers", where)
