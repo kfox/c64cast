@@ -71,12 +71,14 @@ DRY_FILL_INTERLEAVE_S = 0.5
 DRY_FILL_MIN_LEAD_S = 1.5
 DRY_FILL_STALL_S = 1.0
 DRY_FILL_STALL_PACE = 0.5
-# ... and past the newest frame by this much more for each further
-# `DRY_FILL_STALL_S` the picture does not move at all, up to
+# ... and past the newest frame of a full buffer by this much more for each
+# further `DRY_FILL_STALL_S` the picture does not move at all, up to
 # `DRY_FILL_MAX_PAST_NEWEST_S`: a sink can hold back more than the whole
-# buffer spans (the DAC's prebuffer alone is 1.5 s at 4 kHz). Small steps,
-# stopping once the clock moves, because silence past the newest frame covers
-# sound not yet read, and a sound coming back there is trimmed by as much.
+# buffer spans (the DAC's prebuffer alone is 1.5 s at 4 kHz). The buffer reads
+# that far ahead (`_dry_extra_frames`, up to its size again) so the fill stays
+# within frames read; past that bound it covers sound not yet read, and a
+# sound coming back there is trimmed by as much. Small steps, stopping once
+# the clock moves.
 DRY_FILL_PAST_NEWEST_STEP_S = 0.25
 DRY_FILL_MAX_PAST_NEWEST_S = 20.0
 # Silence goes out in pieces no larger than this, so each one fits the sink's
@@ -1496,14 +1498,15 @@ class AVFileSource:
         (`taken`, a running count). Under `DRY_FILL_STALL_PACE` of the
         file's frame rate, `_dry_stall_level` goes to 1, the lead within the
         frames read; taking none at all after that, with the clock not
-        moving either, it goes up a step past the newest frame
-        (`_fill_dry_stretch`), up to the ceiling. Measured
+        moving either, it goes up a step past the newest frame of a full
+        buffer (`_dry_extra_frames`, `_fill_dry_stretch`), up to the
+        ceiling. Measured
         over frames rather than per frame: a fill that keeps the clock just
         short of what the sink holds back drains a frame now and then, and
         the picture crawls without any one frame waiting long. Past the
         newest only while the picture is held outright, because once the
-        clock moves the step is enough, and each more one trims a returning
-        sound further. A clock that moves without reaching a frame is a
+        clock moves the step is enough, and each more one holds more frames
+        and, past the buffer's bound, trims a returning sound further. A clock that moves without reaching a frame is a
         low frame rate or a sparse stretch of a variable one, not a hold,
         and a consumer that stalls mid-window leaves a clock read that moved.
 
@@ -1572,7 +1575,9 @@ class AVFileSource:
         picture has stalled (`_dry_stall_level`, until audio comes again), at
         least `DRY_FILL_MIN_LEAD_S` past the oldest but not past the newest,
         and from the second level `DRY_FILL_PAST_NEWEST_STEP_S` per level
-        past the newest.
+        past the newest frame of a full buffer: up to the newest frame of
+        the grown one (`_dry_extra_frames`), and past it only by what the
+        extra frames do not cover.
         The clock then runs on through the buffer. Audio that does come
         is aligned as usual: later than the fill, it follows it; inside it,
         the covered part is trimmed. A no-op without an audio sink, or while
