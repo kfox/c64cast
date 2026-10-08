@@ -532,15 +532,28 @@ class SetupThroughOutageTest(unittest.TestCase):
         api = _OutageApi(down_probes=4)
         scene = _LossySetupScene(api, lossy_setups=1)
         pl = self._playlist(api, scene)
-        ticks = iter(range(1000))
-        pl.link_outage = RenderLinkOutage(pl.log, lambda: 10.0 * next(ticks))
+        # The clock moves only while a setup or an ask is under way, so the
+        # count is the time that work held, wherever the clock is read.
+        now = [0.0]
+
+        def hold_10_s() -> None:
+            now[0] += 10.0
+
+        real_setup = scene.setup
+
+        def setup() -> None:
+            hold_10_s()
+            real_setup()
+
+        scene.setup = setup  # type: ignore[method-assign]
+        api.on_probe = hold_10_s
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: now[0])
         pl.frame_time_for = lambda _scene: 1.0  # type: ignore[method-assign]
         with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
             pl.safe_setup(scene)
         skipped = int(logs.output[-1].split("; ")[1].split(" ")[0])
-        # The clock moves 10 s per read and a frame is 1 s: the failed attempt
-        # holds 10 frames, and each of the three waits that end in an
-        # unanswered ask holds 10 more.
+        # A frame is 1 s: the failed attempt holds 10 frames, and each of the
+        # three unanswered asks inside the wait holds 10 more.
         self.assertEqual(skipped, 40, logs.output)
 
     def test_a_teardown_that_raises_before_the_retry_does_not_end_the_setup(self):
