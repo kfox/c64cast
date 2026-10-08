@@ -1096,12 +1096,13 @@ class AVFileSource:
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
         # The stall lead the dry fill takes (`_watch_dry_pace`), judged over a
-        # `_dry_window` (wall time, frames taken by then) and kept
+        # `_dry_window` (wall time, frames taken by then, the clock's last
+        # read position by then) and kept
         # until audio comes again or a seek: the fill keeps its lead
         # over the sink's buffering for the rest of that stretch, instead of
         # stalling again each time a frame drains.
         self._dry_stall_level = 0
-        self._dry_window: tuple[float, int] | None = None
+        self._dry_window: tuple[float, int, float | None] | None = None
         # What the consumer has done, for `_watch_dry_pace`: frames it took
         # off the buffer, and its last clock read (wall time, position).
         self._frames_taken = 0
@@ -1472,16 +1473,20 @@ class AVFileSource:
                     self._video_buf.append((pts, img))
                     return True
                 oldest, newest = self._video_buf[0][0], self._video_buf[-1][0]
-                next_pts = self._video_buf[1][0] if len(self._video_buf) > 1 else None
+                # The stamp the clock must reach for the picture to move:
+                # the frame after the one shown, or the oldest itself while
+                # the clock is short of it, which on a file whose stamps step
+                # back can be the later of the two.
+                due_pts = max(oldest, self._video_buf[1][0]) if len(self._video_buf) > 1 else None
                 taken, clock_read = self._frames_taken, self._clock_read
-            self._watch_dry_pace(time.monotonic(), next_pts, taken, clock_read)
+            self._watch_dry_pace(time.monotonic(), due_pts, taken, clock_read)
             self._fill_dry_stretch(oldest, newest)
             time.sleep(0.005)
 
     def _watch_dry_pace(
         self,
         now: float,
-        next_pts: float | None,
+        due_pts: float | None,
         taken: int,
         clock_read: tuple[float, float] | None,
     ) -> None:
@@ -1489,18 +1494,21 @@ class AVFileSource:
         coming, each `DRY_FILL_STALL_S`, by the frames the consumer took
         (`taken`, a running count). Under `DRY_FILL_STALL_PACE` of the
         file's frame rate, `_dry_stall_level` goes to 1, the lead within the
-        frames read; taking none at all after that, it goes up a step past
-        the newest frame (`_fill_dry_stretch`), up to the ceiling. Measured
+        frames read; taking none at all after that, with the clock not
+        moving either, it goes up a step past the newest frame
+        (`_fill_dry_stretch`), up to the ceiling. Measured
         over frames rather than per frame: a fill that keeps the clock just
         short of what the sink holds back drains a frame now and then, and
         the picture crawls without any one frame waiting long. Past the
         newest only while the picture is held outright, because once the
         clock moves the step is enough, and each more one trims a returning
-        sound further.
+        sound further. A clock that moves without reaching a frame is a
+        low frame rate or a sparse stretch of a variable one, not a hold,
+        and a consumer that stalls mid-window leaves a clock read that moved.
 
         Only the sink's stall is judged: the consumer read the clock during
         the window (`clock_read`, wall time and position) and it was still
-        short of the next frame. A consumer that stopped asking (a stalled
+        short of `due_pts`. A consumer that stopped asking (a stalled
         render) or a clock already past the next frame is not the sink
         holding audio back, and a lead taken for it would only trim the next
         sound. Counted in frames rather than read off the stamps, which
@@ -1509,26 +1517,31 @@ class AVFileSource:
         without an audio sink to fill."""
         if self._resampler is None or self._audio_push is None:
             return
+        clock_at = clock_read[1] if clock_read is not None else None
         if self._dry_window is None:
-            self._dry_window = (now, taken)
+            self._dry_window = (now, taken, clock_at)
             return
-        since, taken_from = self._dry_window
+        since, taken_from, clock_from = self._dry_window
         if now - since < DRY_FILL_STALL_S:
             return
-        self._dry_window = (now, taken)
-        held_by_sink = (
-            clock_read is not None
-            and clock_read[0] >= since
-            and next_pts is not None
-            and clock_read[1] < next_pts
-        )
-        if not held_by_sink:
+        self._dry_window = (now, taken, clock_at)
+        if (
+            clock_read is None
+            or clock_read[0] < since
+            or due_pts is None
+            or clock_read[1] >= due_pts
+        ):
             return
         took = taken - taken_from
         if self._dry_stall_level == 0:
             if took < DRY_FILL_STALL_PACE * (now - since) * self.video_fps:
                 self._dry_stall_level = 1
-        elif took == 0 and self._past_newest_s() < DRY_FILL_MAX_PAST_NEWEST_S:
+        elif (
+            took == 0
+            and clock_from is not None
+            and clock_read[1] <= clock_from
+            and self._past_newest_s() < DRY_FILL_MAX_PAST_NEWEST_S
+        ):
             self._dry_stall_level += 1
 
     def _past_newest_s(self) -> float:
