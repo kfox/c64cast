@@ -2460,6 +2460,18 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         self.assertEqual(pcm.size, cap)
         self.assertAlmostEqual(self._sound(pcm)[0], 0.0, delta=0.03)
 
+    def test_a_packet_stamped_far_behind_the_preload_follows_on(self):
+        # Trimmed against the audio placed, the sound after the jump was cut
+        # whole and the rest of the preload was mute.
+        from c64cast.video.video import decode_audio_full
+
+        clip = self._clip(((0.0, 40.0), (2.0, 3.0)))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            pcm = decode_audio_full(clip, self.RATE)
+        self.assertEqual(len(logs.records), 1)
+        self.assertAlmostEqual(pcm.size / self.RATE, 43.0, delta=0.03)
+        self.assertAlmostEqual(self._sound(pcm[40 * self.RATE :])[0], 0.0, delta=0.03)
+
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AudioFileSourceFeatureSyncTest(unittest.TestCase):

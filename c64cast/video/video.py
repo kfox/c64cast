@@ -97,6 +97,23 @@ def place_audio_frame(
     return 0, 0, fed_s + duration_s
 
 
+def is_audio_discontinuity(start_s: float, fed_s: float, horizon_s: float | None) -> bool:
+    """Whether an audio frame starting at ``start_s``, with the audio fed so
+    far ending at ``fed_s``, is a jump in the file's timestamps (see
+    `AUDIO_DISCONTINUITY_S`): more than the bound behind the audio fed, or
+    starting after it and more than the bound past ``horizon_s``, the newest
+    picture read. ``horizon_s`` None (no picture to measure from) checks the
+    backward bound only, because a forward bound measured from the audio fed
+    would pull a sound that starts late to the front."""
+    if fed_s - start_s > AUDIO_DISCONTINUITY_S:
+        return True
+    return (
+        horizon_s is not None
+        and start_s - fed_s > AUDIO_ALIGN_TOLERANCE_S
+        and start_s - horizon_s > AUDIO_DISCONTINUITY_S
+    )
+
+
 log = logging.getLogger(__name__)
 
 # Peak-normalization for video-scene audio. The SID volume DAC is 4-bit and
@@ -550,6 +567,8 @@ def decode_audio_full(
         room = max_samples if max_samples is not None else sys.maxsize
         fed = 0.0
         trim = 0
+        shift = 0.0
+        warned = False
         frames = (f for packet in container.demux(a_stream) for f in packet.decode())
         # The trailing None flushes the filter tail the resampler holds back.
         for frame in itertools.chain(frames, [None]):
@@ -563,7 +582,19 @@ def decode_audio_full(
                     pts_s = float(frame.pts * frame.time_base)
                     if origin_s is None:
                         origin_s = pts_s
-                    start = pts_s - origin_s
+                    start = pts_s - origin_s - shift
+                    if is_audio_discontinuity(start, fed, None):
+                        if not warned:
+                            warned = True
+                            log.warning(
+                                "av %s: audio timestamps jump %+.1fs at %.1fs in the preload; "
+                                "following on from the audio before them",
+                                os.path.basename(path),
+                                start - fed,
+                                fed,
+                            )
+                        shift += start - fed
+                        start = fed
                 silence, cut, fed = place_audio_frame(start, duration, fed, target_sample_rate)
                 trim += cut
                 silence = min(silence, room)
@@ -1492,9 +1523,7 @@ class AVFileSource:
         follows on, and the pass's later frames are shifted by the same jump."""
         start = self._content_time(pts_s) - self._audio_shift_s
         horizon = self._video_read_s if self._video_read_s is not None else self._pts_anchor_target
-        ahead = start - fed_s > AUDIO_ALIGN_TOLERANCE_S and start - horizon > AUDIO_DISCONTINUITY_S
-        behind = fed_s - start > AUDIO_DISCONTINUITY_S
-        if not (ahead or behind):
+        if not is_audio_discontinuity(start, fed_s, horizon):
             return start
         jump = start - fed_s
         self._audio_shift_s += jump
