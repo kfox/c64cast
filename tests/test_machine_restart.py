@@ -410,13 +410,22 @@ def _run_restart_show(test: unittest.TestCase, on_restart: Any) -> tuple[_Painti
     )
     pl.on_machine_restart = on_restart
     original_setup = scene.setup
+    original_process_frame = scene.process_frame
 
     def setup() -> None:
         original_setup()
         if scene.setup_count == 2:
             threading.Timer(0.05, stop.set).start()
 
+    def process_frame(current_time: float) -> bool:
+        # A scene never set up again would otherwise run until the suite's
+        # per-test cap, reported as a hang instead of the caller's assertion.
+        if scene.setup_count == 1 and scene.frames_by_setup.get(1, 0) >= 200:
+            stop.set()
+        return original_process_frame(current_time)
+
     scene.setup = setup  # type: ignore[method-assign]
+    scene.process_frame = process_frame  # type: ignore[method-assign]
     with test.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
         pl.run()
     return scene, logs.output
