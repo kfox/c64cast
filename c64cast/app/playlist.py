@@ -201,6 +201,8 @@ class Playlist:
         self.stop_event = stop_event or threading.Event()
         self.interstitial_factory = interstitial_factory or self._default_interstitial_factory()
         self.key_poller = key_poller
+        if key_poller is not None:
+            self.restart_watch.attach_poller(key_poller)
         # A second, camera-driven control surface setting the same
         # pause/resume/skip/cycle events as the keyboard poller, started and
         # stopped alongside it. None unless [vision].enabled.

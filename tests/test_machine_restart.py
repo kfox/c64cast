@@ -25,6 +25,7 @@ from c64cast.app.playlist_support import (
     RESTART_SENTINEL_LEN,
     MachineRestartWatch,
 )
+from c64cast.control.keyboard import ADDR_MODIFIERS, CommodoreKeyPoller
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.backend import LinkError
 
@@ -69,6 +70,11 @@ class _Machine(FakeApi):
         reaches it over a new connection."""
         self.ram[0x0002:0x0400] = bytes(0x03FE)
         self.link_generation += 1
+
+    def external_reset(self) -> None:
+        """A C64 reset from outside c64cast (the front-panel button, a REST
+        machine:reset): RAMTAS zeroes page 3 and the link is untouched."""
+        self.ram[0x0002:0x0400] = bytes(0x03FE)
 
     def c64cast_reset(self) -> None:
         """A reset c64cast issues itself (a SID scene's run_prg)."""
@@ -243,6 +249,129 @@ class WatchEnabledTest(unittest.TestCase):
             self.assertFalse(watch.after_frame(True))
         self.assertEqual(no_read.reads, 0)
         self.assertEqual(no_read.stats["writes"], 0)
+
+
+class KeyPollerTapTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.api = _Machine()
+        self.poller = CommodoreKeyPoller(self.api)
+
+    def test_one_read_covers_the_modifiers_and_the_watched_bytes(self):
+        self.api.ram[_SENTINEL] = bytes(range(1, RESTART_SENTINEL_LEN + 1))
+        self.api.ram[ADDR_MODIFIERS] = 0x02
+        self.poller.watch_bytes(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        self.assertEqual(self.poller._read_modifiers(), 0x02)
+        self.assertEqual(self.api.reads, 1)
+        self.assertEqual(
+            self.poller.watched_since(0), (1, bytes(range(1, RESTART_SENTINEL_LEN + 1)))
+        )
+
+    def test_a_sample_from_an_earlier_read_is_not_handed_out(self):
+        self.poller.watch_bytes(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        self.poller._read_modifiers()
+        self.assertIsNone(self.poller.watched_since(self.poller.reads_started))
+
+    def test_a_failed_read_leaves_no_new_sample(self):
+        self.poller.watch_bytes(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        self.poller._read_modifiers()
+        self.api.rest_down = True
+        self.assertIsNone(self.poller._read_modifiers())
+        self.assertIsNone(self.poller.watched_since(1))
+
+    def test_a_range_at_or_below_the_modifiers_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.poller.watch_bytes(ADDR_MODIFIERS, 1)
+
+
+class RestartSeenByThePollerTest(unittest.TestCase):
+    """A C64 reset leaves the link alone, so only the poller's reads see it."""
+
+    def setUp(self) -> None:
+        self.api = _Machine()
+        self.poller = CommodoreKeyPoller(self.api)
+        self.watch = MachineRestartWatch(self.api, MagicMock(), lambda: 100.0)
+        self.watch.attach_poller(self.poller)
+        self.watch.arm()
+
+    def test_a_reset_that_leaves_the_link_alone_is_found_from_the_next_poll(self):
+        self.api.external_reset()
+        self.assertFalse(self.watch.after_frame(True), "found before any poll")
+        self.poller._read_modifiers()
+        self.assertTrue(self.watch.after_frame(True))
+        self.assertEqual(self.api.reads, 1, "the watch read on its own")
+
+    def test_a_poll_that_sees_the_nonce_is_not_a_restart(self):
+        self.poller._read_modifiers()
+        self.assertFalse(self.watch.after_frame(True))
+
+    def test_a_poll_issued_before_the_nonce_was_written_does_not_count(self):
+        api = _Machine()
+        poller = CommodoreKeyPoller(api)
+        watch = MachineRestartWatch(api, MagicMock(), lambda: 100.0)
+        watch.attach_poller(poller)
+        poller._read_modifiers()  # page 3 still zero: no nonce written yet
+        watch.arm()
+        self.assertFalse(watch.after_frame(True))
+
+    def test_a_watch_that_is_not_enabled_leaves_the_poller_alone(self):
+        api = FakeApi()
+        poller = CommodoreKeyPoller(api)
+        MachineRestartWatch(api, MagicMock()).attach_poller(poller)
+        self.assertIsNone(poller._watched)
+
+
+class _ResetUnderneath(FakeScene):
+    """Every frame lands a write and the key poller ticks once; the C64 is
+    reset from outside at frame `reset_at` of the first setup."""
+
+    def __init__(
+        self, api: _Machine, poller: CommodoreKeyPoller, reset_at: int, stop: threading.Event
+    ) -> None:
+        super().__init__("Video", frames_until_done=10_000)
+        self.api = api
+        self.poller = poller
+        self.reset_at = reset_at
+        self.stop = stop
+        self.frames_by_setup: dict[int, int] = {}
+
+    def process_frame(self, current_time: float) -> bool:
+        super().process_frame(current_time)
+        n = self.frames_by_setup.get(self.setup_count, 0) + 1
+        self.frames_by_setup[self.setup_count] = n
+        if self.setup_count == 1 and n == self.reset_at:
+            self.api.external_reset()
+        if self.setup_count == 1 and n >= 200:
+            self.stop.set()
+        if self.setup_count == 2 and n == 3:
+            self.stop.set()
+        self.poller._read_modifiers()
+        self.api.stats["writes"] += 1
+        return True
+
+
+class ResetWithoutALinkChangeTest(unittest.TestCase):
+    def test_a_reset_from_outside_sets_the_scene_up_again(self):
+        api = _Machine()
+        stop = threading.Event()
+        poller = CommodoreKeyPoller(api)
+        scene = _ResetUnderneath(api, poller, reset_at=3, stop=stop)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            key_poller=poller,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(scene.teardown_count)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+            pl.run()
+        self.assertEqual(scene.setup_count, 2, "the reset went unnoticed")
+        self.assertEqual(restores, [1])
+        self.assertEqual(scene.frames_by_setup[1], 3, "the reset was not caught on its frame")
+        self.assertEqual(sum("machine restarted" in line for line in logs.output), 1)
 
 
 class _PaintingScene(FakeScene):

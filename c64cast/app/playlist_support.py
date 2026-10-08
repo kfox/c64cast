@@ -28,6 +28,7 @@ from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.hw.delivery import write_confirmed
 
 if TYPE_CHECKING:
+    from c64cast.control.keyboard import CommodoreKeyPoller
     from c64cast.scenes.scenes import Scene
     from c64cast.video.modes import DisplayMode
 
@@ -565,6 +566,15 @@ class MachineRestartWatch:
     playback is what wedges the Ultimate. A read that fails is tried again
     later rather than taken as a restart.
 
+    A C64 reset leaves the link alone (the front-panel button, a REST
+    `machine:reset` from anywhere else), so the link marks never move for
+    it. With `attach_poller()`, the Commodore-key poller's 10 Hz read of
+    `$028D` is widened to cover the nonce, and `after_frame()` judges each
+    fresh sample as well: it costs no REST request of its own, and a reset
+    is seen within a poll. Only a sample from a read issued after the
+    nonce was written counts, so one that predates the write is not taken
+    for a cleared nonce.
+
     A restart a scene outlives, with the link down until the next setup,
     leaves no landed frame to look after, so `restarted_before_setup()`
     takes the same look before each setup attempt, unthrottled.
@@ -598,6 +608,9 @@ class MachineRestartWatch:
         self._suspended = False
         self._marks = (0, 0)
         self._next_check = 0.0
+        self._poller: CommodoreKeyPoller | None = None
+        # The poller's read count once the nonce landed: later reads see it.
+        self._poller_mark = 0
         if self.enabled:
             assert add_listener is not None
             add_listener(self._after_reset)
@@ -605,6 +618,13 @@ class MachineRestartWatch:
     def _after_reset(self) -> None:
         if not self._suspended:
             self._rearm = True
+
+    def attach_poller(self, poller: CommodoreKeyPoller) -> None:
+        """Judge the nonce from `poller`'s own reads as well."""
+        if not self.enabled:
+            return
+        poller.watch_bytes(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        self._poller = poller
 
     def _current_marks(self) -> tuple[int, int]:
         return self._api.delivery_epoch, self._api.link_generation
@@ -622,6 +642,8 @@ class MachineRestartWatch:
             lambda: self._api.write_memory_file(f"{RESTART_SENTINEL_ADDR:04X}", self._nonce),
         )
         self._marks = self._current_marks()
+        if self._poller is not None:
+            self._poller_mark = self._poller.reads_started
 
     def after_frame(self, landed: bool) -> bool:
         """True when the machine restarted since the nonce was written.
@@ -639,6 +661,12 @@ class MachineRestartWatch:
             # leaving it off would stop watching for the rest of the scene.
             self._rearm = self._rearm_lost = not self._armed
             return False
+        if self._armed and self._poller is not None:
+            sample = self._poller.watched_since(self._poller_mark)
+            if sample is not None:
+                self._poller_mark = sample[0]
+                if self._judge(sample[1]):
+                    return True
         if not self._armed or not landed:
             return False
         marks = self._current_marks()
@@ -682,6 +710,13 @@ class MachineRestartWatch:
         if seen is None or len(seen) != RESTART_SENTINEL_LEN:
             return False
         self._marks = marks
+        return self._judge(seen)
+
+    def _judge(self, seen: bytes) -> bool:
+        """The verdict on bytes read back from where the nonce was written,
+        as `_look` describes it."""
+        if len(seen) != RESTART_SENTINEL_LEN:
+            return False
         if seen == self._nonce:
             return False
         self._armed = False
