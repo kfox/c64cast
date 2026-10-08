@@ -438,6 +438,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   frame on screen, so that first step jumped backward from it, and the web
   console's scrub bar showed the same short position.
 
+- **A pause, or an A/B loop marked before any seek, in a video with a
+  `start_s` keeps its place in the file.** The resume jumped back by
+  `start_s`, and loop A was marked that far short, so the loop wrapped to the
+  wrong place.
+
 - **A seek, A/B loop wrap or resume in a video keeps the start of the sound
   it lands on.** The decoder can reach the new position and hand over its
   first sound before the old sound has been cleared out, and that sound was

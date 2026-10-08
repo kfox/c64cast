@@ -1942,6 +1942,18 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio._position = 3.34 + 1.0
         self.assertAlmostEqual(scene.transport_position(), 43.02)
 
+    def test_a_resume_before_any_seek_splices_back_to_the_file_position(self):
+        # The pause touches transport without seeking, so the clock is still
+        # rebased to 0 at start_s: 7 s in, at 0.88, is 50 + 7 / 0.88 into the
+        # file, and the resume splices there rather than start_s short of it.
+        scene, source, _ = self._resync_scene(position=7.0, tempo_scale=0.88)
+        scene.start_s = 50.0
+        scene.transport_pause()
+        self.assertAlmostEqual(scene.transport_position(), 50.0 + 7.0 / 0.88)
+        scene.transport_resume()
+        self.assertAlmostEqual(source.seeks[-1], 50.0 + 7.0 / 0.88)
+        self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, (50.0 + 7.0 / 0.88) * 0.88)
+
     def test_pause_inside_the_ring_lead_freezes_at_the_seek_target(self):
         scene, source, audio = self._resync_scene(position=3.0)
         audio.ring_lead = 0.34
@@ -2726,11 +2738,28 @@ class VideoSceneFrameNumberLabelTest(unittest.TestCase):
         scene = _make_video_scene_stub(source, start_s=50.0)
         scene.show_frame_numbers = True
         scene.transport.touched = True
+        scene.transport.rebased = False  # a seek re-anchored the clock
         scene.transport.wall_anchor_clock_s = 80.0  # already an absolute file position
         scene.transport.wall_anchor_time = 0.0
         label = self._run(scene)
         self.assertIn(timecode(80.0), label)
         self.assertNotIn(timecode(130.0), label)  # the double-counted (wrong) value
+
+    def test_a_touch_without_a_seek_keeps_the_file_position(self):
+        # A pause or a loop mark touches transport without seeking, so the
+        # clock is still rebased to 0 at start_s: 10 s in is 60 s into the
+        # file, before and after the touch, and a loop wrap to A seeks there.
+        source = _StubSource(duration=200.0)
+        scene = _make_video_scene_stub(source, start_s=50.0)
+        scene.wall_start_time = -10.0
+        with _freeze_time(0.0):
+            self.assertAlmostEqual(scene.transport_position(), 60.0)
+            scene.transport.loop_toggle()
+            self.assertAlmostEqual(cast(float, scene.transport.loop_a), 60.0)
+            self.assertAlmostEqual(scene.transport_position(), 60.0)
+            scene.transport_seek(cast(float, scene.transport.loop_a))
+            self.assertAlmostEqual(scene.transport_position(), 60.0)
+        self.assertEqual(source.seeks, [60.0])
 
 
 class PlanDecodeSizeTest(unittest.TestCase):

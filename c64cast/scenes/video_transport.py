@@ -61,6 +61,12 @@ class VideoTransportControls:
         self.wall_anchor_clock_s = 0.0
         self.wall_anchor_time = 0.0
         self.resync = False
+        # True until a seek is requested: the clock is still the PTS timeline
+        # the source rebased to 0 at start_s, which a touch alone does not
+        # change. A pause or a loop mark between the touch and the first seek
+        # reads it, so the offset back to a file position goes with the
+        # rebase rather than with the touch.
+        self.rebased = True
         # The resync path's post-touch clock, in the scaled/PTS domain:
         # clock + (heard_seconds(audio) - pos) for an anchor (clock, pos),
         # held at clock while paused or while pos is None (a splice waiting on
@@ -90,21 +96,24 @@ class VideoTransportControls:
         Before the touch the clock is the PTS timeline the source rebased to 0
         at start_s and scaled by the tempo, so it is unscaled and offset back
         to a file position: a jog or the web console reads ``position()``
-        here, before anything has touched transport."""
+        here, before anything has touched transport. The start_s offset
+        stays until the first seek (`rebased`), which re-anchors the clock to
+        an absolute file position."""
         sc = self._scene
-        if not self.touched:
-            return clk / (sc.tempo_scale or 1.0) + sc.start_s
-        if self.resync and sc.tempo_scale != 1.0:
-            return clk / sc.tempo_scale
-        return clk
+        if self._clock_scaled():
+            clk /= sc.tempo_scale or 1.0
+        return clk + (sc.start_s if self.rebased else 0.0)
 
     def content_to_clock(self, s: float) -> float:
         """Inverse of clock_to_content: content seconds → internal clock domain."""
-        if not self.touched:
-            return (s - self._scene.start_s) * (self._scene.tempo_scale or 1.0)
-        if self.resync and self._scene.tempo_scale != 1.0:
-            return s * self._scene.tempo_scale
-        return s
+        sc = self._scene
+        s -= sc.start_s if self.rebased else 0.0
+        return s * (sc.tempo_scale or 1.0) if self._clock_scaled() else s
+
+    def _clock_scaled(self) -> bool:
+        """Whether the clock runs at tempo_scale x content seconds: the
+        audio clock before the touch, and the resync path's after it."""
+        return not self.touched or (self.resync and self._scene.tempo_scale != 1.0)
 
     def clock_s(self) -> float:
         """The playback clock: the free-running audio position — or the wall
@@ -200,6 +209,7 @@ class VideoTransportControls:
         # estimate read before the flush paired a clamped position with the
         # unclamped clock the flush leaves, and the web console's poll read
         # the target plus the clamp's overrun.
+        self.rebased = False
         clock = self.content_to_clock(target_s)
         self.audio_anchor = (clock, None)
         try:
@@ -270,6 +280,7 @@ class VideoTransportControls:
         if self.resync:
             self._splice(target_s)
         else:
+            self.rebased = False
             self.wall_anchor_clock_s = target_s
             self.wall_anchor_time = time.time()
             if sc.source is not None:
