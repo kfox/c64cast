@@ -1561,10 +1561,18 @@ class AlignedAudioTest(unittest.TestCase):
         self.assertEqual(appended, src._dry_stall_level >= 2)
         return src
 
-    def test_a_picture_held_on_one_frame_raises_the_stall_each_second(self):
-        # About 3 s held: a step each DRY_FILL_STALL_S, so a lead too short
-        # for the sink grows until it is not.
+    def test_a_picture_held_on_one_frame_raises_the_stall_until_the_buffer_grows(self):
+        # A step each DRY_FILL_STALL_S: the second grows the buffer, which
+        # takes the blocked frame.
         self.assertEqual(self._enqueue_blocked(take=0)._dry_stall_level, 2)
+
+    def test_a_picture_still_held_raises_the_stall_again(self):
+        # A lead too short for the sink grows a step each window until it is
+        # not.
+        src = _aligned_stub([])
+        src._dry_stall_level, src._dry_window = 2, (0.0, 0, 0.0)
+        src._watch_dry_pace(1.5, 1.0, 0, (1.4, 0.0))
+        self.assertEqual(src._dry_stall_level, 3)
 
     def test_a_picture_crawling_through_its_buffer_takes_the_lead_within_it(self):
         # A fill that keeps the clock just short of what the sink holds back
