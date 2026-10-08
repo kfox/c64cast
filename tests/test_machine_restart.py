@@ -150,6 +150,41 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.assertFalse(watch.after_frame(True))
         self.assertEqual(api.reads, 0)
 
+    def test_before_setup_a_restart_is_found_without_waiting_for_a_landed_frame(self):
+        self.api.restart()
+        self.assertTrue(self.watch.restarted_before_setup())
+        self.assertFalse(self.watch.restarted_before_setup(), "a disarmed watch reported again")
+
+    def test_before_setup_nothing_is_read_while_the_link_has_not_changed(self):
+        self.assertFalse(self.watch.restarted_before_setup())
+        self.assertEqual(self.api.reads, 0)
+
+    def test_before_setup_an_unanswered_read_leaves_the_watch_armed(self):
+        self.api.restart()
+        self.api.rest_down = True
+        self.assertFalse(self.watch.restarted_before_setup())
+        self.api.rest_down = False
+        self.assertTrue(self.watch.restarted_before_setup())
+
+    def test_before_setup_a_reset_c64cast_issued_is_not_a_restart(self):
+        self.api.c64cast_reset()
+        self.api.link_generation += 1
+        self.assertFalse(self.watch.restarted_before_setup())
+        self.assertEqual(self.api.reads, 0)
+
+    def test_a_suspended_watch_neither_writes_nor_reads_until_armed_again(self):
+        program = bytes(range(1, 9))
+        self.watch.suspend()
+        self.api.c64cast_reset()
+        self.api.ram[_SENTINEL] = program
+        self.api.link_generation += 1
+        self.assertFalse(self.watch.after_frame(True))
+        self.assertFalse(self.watch.restarted_before_setup())
+        self.assertEqual(bytes(self.api.ram[_SENTINEL]), program)
+        self.assertEqual(self.api.reads, 0)
+        self.watch.arm()
+        self.assertNotEqual(bytes(self.api.ram[_SENTINEL]), program)
+
 
 class WatchEnabledTest(unittest.TestCase):
     def test_a_backend_that_cannot_read_or_report_its_resets_is_not_watched(self):
@@ -221,6 +256,130 @@ class PlaylistSetsUpAgainAfterRestartTest(unittest.TestCase):
         self.assertEqual(len(warnings), 1, logs.output)
         self.assertIn("'Video'", warnings[0])
         self.assertNotIn(0, bytes(api.ram[_SENTINEL]), "the second setup did not re-arm")
+
+
+class _OutlivedRestartScene(FakeScene):
+    """A scene the machine restarts under at frame `restart_at`, whose time
+    runs out while the link is still down: `_emit` swallows the failures, so
+    no frame after the restart raises or lands a write."""
+
+    def __init__(self, api: _Machine, restart_at: int, frames: int) -> None:
+        super().__init__("Video", frames_until_done=frames)
+        self.api = api
+        self.restart_at = restart_at
+
+    def process_frame(self, current_time: float) -> bool:
+        still_active = super().process_frame(current_time)
+        if self.frame_count == self.restart_at:
+            self.api.restart()
+        if self.frame_count < self.restart_at:
+            self.api.stats["writes"] += 1
+        else:
+            self.api.stats["errors"] += 1
+            self.api.delivery_epoch += 1
+        return still_active
+
+
+class _StopOnSetup(FakeScene):
+    def __init__(self, name: str, stop: threading.Event) -> None:
+        super().__init__(name, frames_until_done=10_000)
+        self.stop = stop
+
+    def setup(self) -> None:
+        super().setup()
+        self.stop.set()
+
+
+class RestartBeforeTheNextSetupTest(unittest.TestCase):
+    def test_a_restart_the_scene_outlived_is_put_back_before_the_next_setup(self):
+        api = _Machine()
+        stop = threading.Event()
+        pl = Playlist(
+            [_OutlivedRestartScene(api, restart_at=3, frames=10), _StopOnSetup("Next", stop)],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            loop=False,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(1)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+            pl.run()
+        self.assertEqual(len(restores), 1, "the restart went unnoticed")
+        warnings = [line for line in logs.output if "machine restarted" in line]
+        self.assertEqual(len(warnings), 1, logs.output)
+        self.assertIn("trans:Next", warnings[0])
+
+
+class _Launcher(FakeScene):
+    """Like LauncherScene: its setup runs a program of the user's, here one
+    living at $0334, through a runner that resets the machine."""
+
+    HANDS_OVER_MACHINE = True
+    PROGRAM = bytes(range(0xA0, 0xA8))
+
+    def __init__(self, api: _Machine, stop: threading.Event) -> None:
+        super().__init__("Launcher", frames_until_done=10_000)
+        self.api = api
+        self.stop = stop
+
+    def setup(self) -> None:
+        super().setup()
+        self.api.ram[_SENTINEL] = self.PROGRAM
+        for callback in self.api.reset_listeners:
+            callback()
+
+    def process_frame(self, current_time: float) -> bool:
+        super().process_frame(current_time)
+        self.api.stats["writes"] += 1
+        self.api.link_generation += 1
+        if self.frame_count == 5:
+            self.stop.set()
+        return True
+
+
+class LauncherProgramUntouchedTest(unittest.TestCase):
+    def test_a_launched_program_keeps_its_bytes_and_is_never_taken_for_a_restart(self):
+        api = _Machine()
+        stop = threading.Event()
+        pl = Playlist(
+            [_Launcher(api, stop)],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(1)
+        with self.assertNoLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        self.assertEqual(bytes(api.ram[_SENTINEL]), _Launcher.PROGRAM)
+        self.assertEqual(api.reads, 0)
+        self.assertEqual(restores, [])
+
+
+class InterstitialResetupTest(unittest.TestCase):
+    def test_a_card_set_up_again_names_the_scene_it_announces(self):
+        api = _Machine()
+        nxt = FakeScene("Next")
+        pl = Playlist(
+            [FakeScene("First"), nxt],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.index = 1
+        pl.current = FakeScene("trans:Next")
+        pl.transitioning = True
+        with (
+            patch.object(pl, "safe_setup") as setup,
+            self.assertLogs("c64cast.app.playlist", level="WARNING"),
+        ):
+            pl._set_up_again_after_restart()
+        self.assertIs(setup.call_args.kwargs["announcing"], nxt)
 
 
 class RestoreAfterMachineRestartTest(unittest.TestCase):

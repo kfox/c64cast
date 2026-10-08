@@ -290,6 +290,9 @@ class Scene:
     # Consulted by the Playlist's ensemble audio lock before setup; ignored
     # entirely in single-system mode.
     WANTS_AUDIO_LOCK: bool = False
+    # True for a scene that hands the machine to a program of the user's, so
+    # the playlist keeps c64cast's own bytes out of that program's RAM.
+    HANDS_OVER_MACHINE: bool = False
     # The `duration_s` this scene last set through _set_derived_duration: one
     # derived from its content (an audio pick, a SID's song length), or a
     # waveform cycle's re-applied explicit one; None while it has set none.
@@ -1957,6 +1960,7 @@ class LauncherScene(MediaFileMixin, Scene):
     """
 
     WANTS_AUDIO_LOCK = True
+    HANDS_OVER_MACHINE = True
     MEDIA_EXTS = PROGRAM_EXTS
     MEDIA_LABEL = "launcher"
 

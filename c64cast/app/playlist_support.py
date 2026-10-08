@@ -565,10 +565,17 @@ class MachineRestartWatch:
     playback is what wedges the Ultimate. A read that fails is tried again
     later rather than taken as a restart.
 
+    A restart a scene outlives, with the link down until the next setup,
+    leaves no landed frame to look after, so `restarted_before_setup()`
+    takes the same look before each setup attempt, unthrottled.
+
     A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
     nonce too, so the backend's reset listener re-arms it after the next
-    frame. Only a backend that reads memory and reports its own resets
-    (`add_reset_listener`) is watched."""
+    frame; a restart that comes after such a reset and before the re-arm
+    leaves nothing to tell it from that reset. `suspend()` stands the
+    watch down while a launched program owns the machine, whose RAM the
+    nonce must not touch. Only a backend that reads memory and reports its
+    own resets (`add_reset_listener`) is watched."""
 
     def __init__(
         self,
@@ -585,6 +592,7 @@ class MachineRestartWatch:
         self._nonce = bytes(b | 0x01 for b in os.urandom(RESTART_SENTINEL_LEN))
         self._armed = False
         self._rearm = False
+        self._suspended = False
         self._marks = (0, 0)
         self._next_check = 0.0
         if self.enabled:
@@ -592,7 +600,8 @@ class MachineRestartWatch:
             add_listener(self._after_reset)
 
     def _after_reset(self) -> None:
-        self._rearm = True
+        if not self._suspended:
+            self._rearm = True
 
     def _current_marks(self) -> tuple[int, int]:
         return self._api.delivery_epoch, self._api.link_generation
@@ -604,6 +613,7 @@ class MachineRestartWatch:
         if not self.enabled:
             return
         self._rearm = False
+        self._suspended = False
         self._armed = write_confirmed(
             self._api,
             lambda: self._api.write_memory_file(f"{RESTART_SENTINEL_ADDR:04X}", self._nonce),
@@ -628,6 +638,32 @@ class MachineRestartWatch:
         if now < self._next_check:
             return False
         self._next_check = now + RESTART_CHECK_MIN_S
+        return self._look(marks)
+
+    def restarted_before_setup(self) -> bool:
+        """True when the machine restarted since the nonce was written,
+        asked before a scene sets up, without the frame path's spacing.
+        Looks only while armed, with no reset of c64cast's own pending
+        re-arm, and once the link has changed since the last look."""
+        if not self.enabled or not self._armed or self._rearm:
+            return False
+        marks = self._current_marks()
+        if marks == self._marks:
+            return False
+        return self._look(marks)
+
+    def suspend(self) -> None:
+        """Stand the watch down until the next `arm()`: a launched program
+        owns the machine, so the nonce is neither written nor read, and its
+        resets are not re-armed."""
+        self._armed = False
+        self._rearm = False
+        self._suspended = True
+
+    def _look(self, marks: tuple[int, int]) -> bool:
+        """Read the nonce back. True, and disarmed, when it is gone. A read
+        that fails leaves the watch armed and `marks` unrecorded, so the
+        next look tries again."""
         seen = self._api.read_memory(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
         if seen is None:
             return False

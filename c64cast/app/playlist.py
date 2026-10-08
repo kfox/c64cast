@@ -704,7 +704,10 @@ class Playlist:
         scene.clock_modulation = self._clock_modulation
         if not self._setup_through_outage(scene, announcing):
             return
-        self.restart_watch.arm()
+        if getattr(scene, "HANDS_OVER_MACHINE", False):
+            self.restart_watch.suspend()
+        else:
+            self.restart_watch.arm()
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
         if self.user_dim < 1.0:
@@ -747,22 +750,31 @@ class Playlist:
         scene = self.current
         if scene is None:
             return
-        self.log.warning(
+        self._put_machine_back(
             "the machine restarted during %r, losing what its setup put there; setting it up again",
             scene.name,
         )
-        if self.on_machine_restart is not None:
-            try:
-                self.on_machine_restart()
-            except Exception:
-                self.log.exception("restoring the machine's state after its restart failed")
+        # The card's slot is held for the scene it announces, which a link
+        # outage in this setup has to release.
+        announcing = self.scenes[self.index] if self.transitioning else None
         scene.keep_pick_for_resetup()
         self.safe_teardown(scene)
         if not self.ensemble_coord.wait_for_audio_claim(scene):
             self.current = None
             return
-        self.safe_setup(scene)
+        self.safe_setup(scene, announcing=announcing)
         scene.is_done = False
+
+    def _put_machine_back(self, message: str, scene_name: str) -> None:
+        """Log the restart, then put back the run's machine state through
+        `on_machine_restart`; a failure there is logged and the scene sets
+        up regardless."""
+        self.log.warning(message, scene_name)
+        if self.on_machine_restart is not None:
+            try:
+                self.on_machine_restart()
+            except Exception:
+                self.log.exception("restoring the machine's state after its restart failed")
 
     def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
         """Set `scene` up, and again once the link answers when the link
@@ -794,6 +806,14 @@ class Playlist:
             started = self.link_outage.now()
             epoch = self.api.delivery_epoch
             error: LinkError | None = None
+            # Before the attempt: a restart the last scene outlived on a dead
+            # link left no landed frame to notice it, and a SID scene's setup
+            # resets the machine itself, which would hide it afterwards.
+            if self.restart_watch.restarted_before_setup():
+                self._put_machine_back(
+                    "the machine restarted before %r set up; putting its state back first",
+                    scene.name,
+                )
             try:
                 hardware_palette.settle_for(self.api, scene)
                 scene.setup()
