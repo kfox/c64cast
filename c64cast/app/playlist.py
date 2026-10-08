@@ -746,22 +746,25 @@ class Playlist:
 
     def _set_up_again_after_restart(self) -> None:
         """The machine restarted under the current scene, so what its setup
-        put there is gone. Put back the run's machine state, then tear the
-        scene down and set it up again, keeping its pick, the way
+        put there is gone. Tear the scene down, put back the run's machine
+        state, and set the scene up again, keeping its pick, the way
         single-scene looping does. Ending the scene instead was rejected:
-        with `loop = false` a one-scene show would stop on a power blip."""
+        with `loop = false` a one-scene show would stop on a power blip.
+        The restore waits for the teardown because, as at startup, nothing
+        of the scene's (its audio streamer, its mode's IRQ) should be
+        writing while the machine is provisioned and reset."""
         scene = self.current
         if scene is None:
             return
-        self._put_machine_back(
-            "the machine restarted during %r, losing what its setup put there; setting it up again",
-            scene.name,
-        )
         # The card's slot is held for the scene it announces, which a link
         # outage in this setup has to release.
         announcing = self.scenes[self.index] if self.transitioning and scene is self._card else None
         scene.keep_pick_for_resetup()
         self.safe_teardown(scene)
+        self._put_machine_back(
+            "the machine restarted during %r, losing what its setup put there; setting it up again",
+            scene.name,
+        )
         if not self.ensemble_coord.wait_for_audio_claim(scene):
             self.current = None
             return

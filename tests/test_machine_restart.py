@@ -301,7 +301,7 @@ class PlaylistSetsUpAgainAfterRestartTest(unittest.TestCase):
         scene.teardown = teardown  # type: ignore[method-assign]
         with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
             pl.run()
-        self.assertEqual(order[:4], ["setup1", "restore@0", "teardown", "setup2"])
+        self.assertEqual(order[:4], ["setup1", "teardown", "restore@1", "setup2"])
         self.assertEqual(scene.keep_pick_count, 1, "the restart rolled a new pick")
         self.assertEqual(scene.frames_by_setup[1], 3)
         self.assertGreater(scene.frames_by_setup.get(2, 0), 0, "the scene never played again")
