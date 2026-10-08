@@ -219,7 +219,7 @@ class ProductionChildTest(unittest.TestCase):
         with (
             _first_on_path(directory),
             _child_sandbox.communicate_once_ready(ready),
-            mock.patch.object(_child_process, "BOUND_S", _TEST_BOUND_S),
+            mock.patch.object(_child_process, "BOUND_S", _child_sandbox.READ_BOUND_S),
             self.assertRaises(ChildProcessHung) as caught,
         ):
             doctor._probe_uv_lock()

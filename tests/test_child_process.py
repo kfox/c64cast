@@ -106,7 +106,7 @@ class RunBoundedTest(unittest.TestCase):
         ):
             run_bounded(
                 argv,
-                timeout=_TEST_BOUND_S,
+                timeout=_child_sandbox.READ_BOUND_S,
                 capture_output=True,
                 text=True,
             )
@@ -124,7 +124,7 @@ class RunBoundedTest(unittest.TestCase):
         ):
             run_bounded(
                 argv,
-                timeout=_TEST_BOUND_S,
+                timeout=_child_sandbox.READ_BOUND_S,
                 capture_output=True,
                 text=True,
             )
@@ -138,7 +138,7 @@ class RunBoundedTest(unittest.TestCase):
         ):
             run_bounded(
                 argv,
-                timeout=_TEST_BOUND_S,
+                timeout=_child_sandbox.READ_BOUND_S,
                 capture_output=True,
             )
         self.assertIn("stderr: � bad", str(caught.exception))
