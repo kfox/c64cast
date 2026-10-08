@@ -60,20 +60,24 @@ AUDIO_DISCONTINUITY_S = 30.0
 DRY_FILL_INTERLEAVE_S = 0.5
 # ... and, once the picture has drained under `DRY_FILL_STALL_PACE` of real
 # time for `DRY_FILL_STALL_S`, never less than this far past its oldest frame,
-# one more step of it for each further `DRY_FILL_STALL_S` that slow, up to
-# `DRY_FILL_MAX_LEAD_S`. Each sink holds audio back before its clock moves
-# (the DAC's 6 x 1024 B prebuffer plus a ring lead around 4096 B: about
-# 0.85 s at its 12 kHz default, 1.28 s at 8 kHz, and past any one step at a
-# low enough rate; the sampler's 1.0 s lead), so in a buffer spanning less
-# than that plus the allowance, a fill short of the newest frame never brings
-# the clock to the oldest. Only a stall takes this lead: a file that writes
-# its audio late in a short buffer otherwise has it covered by silence and
-# trimmed. The first step stays within the frames read for the same reason;
-# a later one does not, because the sink holds back more than they span.
+# though not past the newest. Each sink holds audio back before its clock
+# moves (the DAC's 6 x 1024 B prebuffer plus a ring lead around 4096 B: about
+# 0.85 s at its 12 kHz default, 1.28 s at 8 kHz; the sampler's 1.0 s lead),
+# so in a buffer spanning less than that plus the allowance, a fill short of
+# the newest frame never brings the clock to the oldest. Only a stall takes
+# this lead: a file that writes its audio late in a short buffer otherwise
+# has it covered by silence and trimmed.
 DRY_FILL_MIN_LEAD_S = 1.5
-DRY_FILL_MAX_LEAD_S = 20.0
 DRY_FILL_STALL_S = 1.0
 DRY_FILL_STALL_PACE = 0.5
+# ... and past the newest frame by this much more for each further
+# `DRY_FILL_STALL_S` the picture does not move at all, up to
+# `DRY_FILL_MAX_PAST_NEWEST_S`: a sink can hold back more than the whole
+# buffer spans (the DAC's prebuffer alone is 1.5 s at 4 kHz). Small steps,
+# stopping once the clock moves, because silence past the newest frame covers
+# sound not yet read, and a sound coming back there is trimmed by as much.
+DRY_FILL_PAST_NEWEST_STEP_S = 0.25
+DRY_FILL_MAX_PAST_NEWEST_S = 20.0
 # Silence goes out in pieces no larger than this, so each one fits the sink's
 # backpressure bound and a seek or close is seen between them.
 SILENCE_PIECE_SAMPLES = 1024
@@ -1091,10 +1095,9 @@ class AVFileSource:
         # See `_audio_frame_start`.
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
-        # Steps of stall lead the dry fill takes, raised each time the picture
-        # is too slow over a `_dry_window` (wall time, oldest frame's content
-        # time)
-        # and kept until audio comes again or a seek: the fill keeps its lead
+        # The stall lead the dry fill takes (`_watch_dry_pace`), judged over a
+        # `_dry_window` (wall time, oldest frame's content time) and kept
+        # until audio comes again or a seek: the fill keeps its lead
         # over the sink's buffering for the rest of that stretch, instead of
         # stalling again each time a frame drains.
         self._dry_stall_level = 0
@@ -1470,15 +1473,22 @@ class AVFileSource:
             time.sleep(0.005)
 
     def _watch_dry_pace(self, oldest_pts: float, now: float) -> None:
-        """Raise `_dry_stall_level` a step when the picture, blocked on a full
-        buffer with no audio coming, has drained under `DRY_FILL_STALL_PACE`
-        of real time over the last `DRY_FILL_STALL_S`. Measured over frames
-        rather than per frame: a fill that keeps the clock just short of what
-        the sink holds back drains a frame now and then, and the picture
-        crawls without any one frame waiting long. The window spans calls,
-        and audio coming again or a seek closes it. Judged on the content
-        timeline rather than the stamps, which under tempo compensation run
-        at `tempo_scale` of real time in healthy playback."""
+        """Judge the pace of a picture blocked on a full buffer with no audio
+        coming, each `DRY_FILL_STALL_S`. Under `DRY_FILL_STALL_PACE` of real
+        time, `_dry_stall_level` goes to 1, the lead within the frames read;
+        not moving at all after that, it goes up a step past the newest frame
+        (`_fill_dry_stretch`), up to the ceiling. Measured over frames rather
+        than per frame: a fill that keeps the clock just short of what the
+        sink holds back drains a frame now and then, and the picture crawls
+        without any one frame waiting long. Past the newest only while the
+        picture is held outright, because once the clock moves the step is
+        enough, and each more one trims a returning sound further. The
+        window spans calls, and audio coming again or a seek closes it.
+        Judged on the content timeline rather than the stamps, which under
+        tempo compensation run at `tempo_scale` of real time in healthy
+        playback. Nothing to judge without an audio sink to fill."""
+        if self._resampler is None or self._audio_push is None:
+            return
         oldest = oldest_pts / (self._tempo_scale or 1.0)
         if self._dry_window is None:
             self._dry_window = (now, oldest)
@@ -1486,9 +1496,18 @@ class AVFileSource:
         since, from_s = self._dry_window
         if now - since < DRY_FILL_STALL_S:
             return
-        if oldest - from_s < DRY_FILL_STALL_PACE * (now - since):
+        drained = oldest - from_s
+        if self._dry_stall_level == 0:
+            if drained < DRY_FILL_STALL_PACE * (now - since):
+                self._dry_stall_level = 1
+        elif drained <= 0 and self._past_newest_s() < DRY_FILL_MAX_PAST_NEWEST_S:
             self._dry_stall_level += 1
         self._dry_window = (now, oldest)
+
+    def _past_newest_s(self) -> float:
+        """How far past the newest frame read the stall level fills."""
+        steps = max(0, self._dry_stall_level - 1)
+        return min(steps * DRY_FILL_PAST_NEWEST_STEP_S, DRY_FILL_MAX_PAST_NEWEST_S)
 
     def _fill_dry_stretch(self, oldest_pts: float, newest_pts: float) -> None:
         """The video buffer is full, and the sink's clock is what drains it.
@@ -1498,8 +1517,9 @@ class AVFileSource:
         `DRY_FILL_INTERLEAVE_S` short of the newest buffered frame (or as far
         short as this file has written audio behind its picture); once the
         picture has stalled (`_dry_stall_level`, until audio comes again), at
-        least `DRY_FILL_MIN_LEAD_S` past the oldest per step, up to
-        `DRY_FILL_MAX_LEAD_S`, and past the newest only from the second step.
+        least `DRY_FILL_MIN_LEAD_S` past the oldest but not past the newest,
+        and from the second level `DRY_FILL_PAST_NEWEST_STEP_S` per level
+        past the newest.
         The clock then runs on through the buffer. Audio that does come
         is aligned as usual: later than the fill, it follows it; inside it,
         the covered part is trimmed. A no-op without an audio sink, or while
@@ -1511,8 +1531,9 @@ class AVFileSource:
         margin = max(DRY_FILL_INTERLEAVE_S, self._audio_lag_s + AUDIO_ALIGN_TOLERANCE_S)
         target = newest - margin
         if self._dry_stall_level:
-            lead = oldest + min(DRY_FILL_MIN_LEAD_S * self._dry_stall_level, DRY_FILL_MAX_LEAD_S)
-            target = max(target, lead if self._dry_stall_level > 1 else min(lead, newest))
+            target = max(target, min(oldest + DRY_FILL_MIN_LEAD_S, newest))
+        if self._dry_stall_level > 1:
+            target = max(target, newest + self._past_newest_s())
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
         silence, _, self._audio_fed_s = place_audio_frame(target, 0.0, fed, self.target_sr)
         self._feed_silence(silence)

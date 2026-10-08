@@ -31,8 +31,9 @@ from c64cast.scenes.scenes import VideoScene
 from c64cast.video import video as video_mod
 from c64cast.video.video import (
     AUDIO_DISCONTINUITY_S,
-    DRY_FILL_MAX_LEAD_S,
+    DRY_FILL_MAX_PAST_NEWEST_S,
     DRY_FILL_MIN_LEAD_S,
+    DRY_FILL_PAST_NEWEST_STEP_S,
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
     SILENCE_PIECE_SAMPLES,
@@ -1447,9 +1448,10 @@ class AlignedAudioTest(unittest.TestCase):
     def test_a_stalled_picture_takes_the_sinks_lead_past_its_oldest_frame(self):
         # In a buffer spanning less than the sink holds back, a fill short of
         # the newest frame never brings the clock to the oldest. The first
-        # step stays within the frames read; past it, the sink holds back
-        # more than the buffer spans.
-        for level, expected in ((0, 0.5), (1, 1.0), (2, 2 * DRY_FILL_MIN_LEAD_S)):
+        # level stays within the frames read; each one past it, the sink
+        # holding back more than the buffer spans, goes a step past the newest.
+        step = DRY_FILL_PAST_NEWEST_STEP_S
+        for level, expected in ((0, 0.5), (1, 1.0), (2, 1.0 + step), (3, 1.0 + 2 * step)):
             with self.subTest(level=level):
                 sink: list[np.ndarray] = []
                 src = _aligned_stub(sink)
@@ -1462,7 +1464,14 @@ class AlignedAudioTest(unittest.TestCase):
         src = _aligned_stub(sink)
         src._dry_stall_level = 1000
         src._fill_dry_stretch(0.0, 1.0)
-        self.assertAlmostEqual(cast(float, src._audio_fed_s), DRY_FILL_MAX_LEAD_S)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.0 + DRY_FILL_MAX_PAST_NEWEST_S)
+
+    def test_a_held_picture_stops_raising_the_stall_at_its_ceiling(self):
+        at_ceiling = 1 + round(DRY_FILL_MAX_PAST_NEWEST_S / DRY_FILL_PAST_NEWEST_STEP_S)
+        src = _aligned_stub([])
+        src._dry_stall_level, src._dry_window = at_ceiling, (0.0, 0.0)
+        src._watch_dry_pace(0.0, 2.0)
+        self.assertEqual(src._dry_stall_level, at_ceiling)
 
     def test_no_fill_while_the_audio_fed_reaches_the_target(self):
         # Within the tolerance short of the target, and past it: the fill
@@ -1509,11 +1518,22 @@ class AlignedAudioTest(unittest.TestCase):
         # for the sink grows until it is not.
         self.assertEqual(self._enqueue_blocked(drain_s=0.0)._dry_stall_level, 2)
 
-    def test_a_picture_crawling_through_its_buffer_raises_the_stall(self):
+    def test_a_picture_crawling_through_its_buffer_takes_the_lead_within_it(self):
         # A fill that keeps the clock just short of what the sink holds back
         # drains a frame now and then: no one frame waits long, and the
-        # picture plays at a fraction of its speed.
-        self.assertGreater(self._enqueue_blocked(drain_s=0.01)._dry_stall_level, 0)
+        # picture plays at a fraction of its speed. The clock moves, so the
+        # lead within the frames read is enough, and going past the newest
+        # would trim a returning sound for nothing.
+        self.assertEqual(self._enqueue_blocked(drain_s=0.01)._dry_stall_level, 1)
+
+    def test_no_stall_is_judged_without_an_audio_sink(self):
+        # Nothing reads the level then: a paused REU-pump scene, or a file
+        # with no audio stream.
+        src = _aligned_stub([])
+        src._audio_push = None
+        src._watch_dry_pace(0.0, 0.0)
+        src._watch_dry_pace(0.0, 5.0)
+        self.assertEqual((src._dry_stall_level, src._dry_window), (0, None))
 
     def test_a_picture_draining_in_real_time_does_not_raise_the_stall(self):
         self.assertEqual(self._enqueue_blocked(drain_s=0.3)._dry_stall_level, 0)

@@ -2372,6 +2372,7 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
         start_nmi = dac.nmi.start
         fed = [0]
         first_sound: list[float] = []
+        self.sound_after_2s = 0.0
 
         def started(*args, **kwargs):
             link.started_at = time.monotonic()
@@ -2381,6 +2382,7 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
             loud = np.flatnonzero(samples)
             if loud.size and not first_sound:
                 first_sound.append((fed[0] + int(loud[0])) / rate)
+            self.sound_after_2s += int(np.count_nonzero(fed[0] + loud >= 2 * rate)) / rate
             fed[0] += samples.size
             return dac.push_samples(samples, **kwargs)
 
@@ -2418,9 +2420,12 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
     def test_a_sink_holding_back_more_than_the_buffer_spans_still_plays_through(self):
         # At 4 kHz the DAC's prebuffer alone is 1.5 s of audio, more than a
         # 30-frame buffer spans: silence up to the newest frame read never
-        # starts its clock.
-        finished, _ = self._play(((0.0, 0.3), (3.0, 0.5)), rate=4000, buffer=30, slack_s=4.0)
+        # starts its clock. Silence past it covers sound not yet read, so the
+        # sound coming back loses its front, but no more than the clock
+        # needed to start.
+        finished, _ = self._play(((0.0, 0.3), (2.5, 1.5)), rate=4000, buffer=30, slack_s=4.0)
         self.assertTrue(finished, "the picture stalled in the gap")
+        self.assertGreater(self.sound_after_2s, 0.5)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
