@@ -1101,7 +1101,7 @@ class AVFileSource:
         # The stall lead the dry fill takes (`_watch_dry_pace`), judged over a
         # `_dry_window` (wall time, frames taken by then, the clock's last
         # read position by then) and kept
-        # until audio comes again or a seek: the fill keeps its lead
+        # until audio comes again, a seek or a mute: the fill keeps its lead
         # over the sink's buffering for the rest of that stretch, instead of
         # stalling again each time a frame drains.
         self._dry_stall_level = 0
@@ -1517,9 +1517,12 @@ class AVFileSource:
         holding audio back, and a lead taken for it would only trim the next
         sound. Counted in frames rather than read off the stamps, which
         tempo compensation scales and a file can step back. The window spans
-        calls, and audio coming again or a seek closes it. Nothing to judge
-        without an audio sink to fill (`_dry_fill_applies`)."""
+        calls, and audio coming again, a seek or a mute closes it. Nothing to
+        judge without an audio sink to fill (`_dry_fill_applies`), and a
+        level kept into a mute holds the grown buffer for as long as the
+        stretch stays dry: on the wall-clock path, which never unmutes."""
         if not self._dry_fill_applies():
+            self._dry_stall_level, self._dry_window = 0, None
             return
         clock_at = clock_read[1] if clock_read is not None else None
         if self._dry_window is None:

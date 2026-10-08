@@ -1539,6 +1539,17 @@ class AlignedAudioTest(unittest.TestCase):
         # back: a level taken there grew the buffer for every pause.
         self.assertEqual(self._enqueue_blocked(take=0, muted=True)._dry_stall_level, 0)
 
+    def test_a_mute_drops_a_stall_taken_before_it(self):
+        # Kept, the grown buffer stays grown on the wall-clock path, which
+        # never unmutes.
+        src = _aligned_stub([])
+        src.max_video_buffer = 240
+        src._dry_stall_level, src._dry_window = 3, (0.0, 0, 0.0)
+        src._muted = True
+        src._watch_dry_pace(5.0, 1.0, 0, (4.0, 0.0))
+        self.assertEqual((src._dry_stall_level, src._dry_extra_frames()), (0, 0))
+        self.assertIsNone(src._dry_window)
+
     def test_no_fill_without_an_audio_stream(self):
         sink: list[np.ndarray] = []
         src = _aligned_stub(sink)
