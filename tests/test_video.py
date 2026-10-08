@@ -3769,21 +3769,28 @@ class TempoRetuneTest(unittest.TestCase):
     def test_the_fill_reads_the_buffer_through_the_retuned_map(self):
         sink: list[np.ndarray] = []
         src = self._retuned(sink)
-        # Stamp 7.2 is content 8.0 here; the starting ratio would say 9.0.
+        # Stamp 7.2 is content 8.0 here; the starting ratio would say 8.18.
         src._fill_dry_stretch(0.8, 7.2)
         self.assertAlmostEqual(cast(float, src._audio_fed_s), 7.5)
 
     def test_the_demux_loop_applies_a_pending_retune(self):
-        src = _make_demux_source_stub([_FakePacket([_FakeFrame(0)])])
+        frames = [_FakeFrame(p, width=2, height=2) for p in (0, 1)]
+        src = _make_demux_source_stub([_FakePacket(frames)])
         src._tempo_scale = 0.88
         src._atempo_graph = object()
         atempo = mock.MagicMock()
         src._atempo_filter = atempo
         src.request_tempo_scale(0.8)
-        with self.assertLogs("c64cast.video.video", level="INFO"):
+        with self.assertLogs("c64cast.video.video", level="INFO") as logs:
             _demux_until_parked(src)
         self.assertEqual(src.tempo_scale, 0.8)
         atempo.process_command.assert_called_once_with("tempo", "1.250000")
+        self.assertTrue(any("retuned s=0.8800 → 0.8000" in line for line in logs.output))
+        # The packet's frames are stamped on the retuned map, so the retune
+        # lands before the packet is decoded rather than after it.
+        stamps = [pts for pts, _ in src._video_buf]
+        self.assertEqual(len(stamps), 2)
+        self.assertAlmostEqual(stamps[1], 0.8)
 
     def test_the_first_transport_touch_freezes_the_map_before_it_seeks(self):
         source = _StubSource(duration=100.0)
