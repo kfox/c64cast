@@ -662,8 +662,15 @@ class MachineRestartWatch:
             self._restarts = 0
             self._stood_down = False
         self._write_nonce()
-        # Retried as a lost re-arm is: left off, the play would go unwatched.
-        self._rearm = self._rearm_lost = not self._armed and not self._stood_down
+        self._retry_if_lost()
+
+    def _retry_if_lost(self) -> None:
+        """Have a nonce write the link lost tried again after a later frame:
+        left off, the rest of the play would go unwatched. Only sets the
+        flags, so a reset that arrived from another thread during the write
+        keeps the re-arm it asked for."""
+        if not self._armed and not self._stood_down:
+            self._rearm = self._rearm_lost = True
 
     def _write_nonce(self) -> None:
         """Write the nonce, unless the watch stood down. One the link loses
@@ -699,9 +706,7 @@ class MachineRestartWatch:
             if self._rearm_lost and not landed and self._clock() < self._next_rearm:
                 return False
             self._write_nonce()
-            # A re-arm the link lost is tried again after a later frame:
-            # leaving it off would stop watching for the rest of the scene.
-            self._rearm = self._rearm_lost = not self._armed
+            self._retry_if_lost()
             return False
         if self._judge_poll(counted=counted):
             return True

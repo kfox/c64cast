@@ -170,6 +170,23 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.now[0] += RESTART_CHECK_MIN_S
         self.assertTrue(self.watch.after_frame(True))
 
+    def test_a_reset_during_the_rearm_write_is_rearmed_after(self):
+        self.api.c64cast_reset()
+        real_write = self.api.write_memory_file
+        resets = []
+
+        def write_then_reset(address: str, data: bytes) -> None:
+            real_write(address, data)
+            if not resets:
+                resets.append(1)
+                self.api.c64cast_reset()  # as from another thread, mid-write
+
+        self.api.write_memory_file = write_then_reset
+        self.assertFalse(self.watch.after_frame(True))
+        self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
+        self.assertFalse(self.watch.after_frame(True))
+        self.assertNotIn(0, bytes(self.api.ram[_SENTINEL]), "the second reset was not re-armed")
+
     def test_a_lost_rearm_is_retried_on_a_scene_that_lands_no_frames(self):
         self.api.c64cast_reset()
         self.api.drop_writes = True
