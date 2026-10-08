@@ -845,7 +845,7 @@ class UltimateAudioSampler:
         on what it pushed rather than waiting out the prebuffer timeout for
         audio that will not come. Call it after the last push returns, and
         again after a later push: the next accepted push, or a splice's
-        cut(), reopens the input. Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
+        cut() while the sampler runs, reopens the input. Leaves ``position_seconds`` alone, unlike ``mark_eof``."""
         self._input_ended = True
 
     def mark_eof(self) -> None:
