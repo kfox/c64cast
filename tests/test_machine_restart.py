@@ -383,6 +383,23 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         self.assertTrue(self.watch.restarted_before_setup())
         self.watch._log.warning.assert_not_called()
 
+    def test_an_uncounted_restart_from_a_rest_look_is_not_held_back_by_the_limit(self):
+        for _ in range(RESTART_LIMIT_PER_PLAY - 1):
+            self.assertTrue(self._restart_seen())
+            self.watch.arm(after_restart=True)
+        self.api.restart()
+        self.assertTrue(self.watch.after_frame(True, counted=False))
+        self.watch._log.warning.assert_not_called()
+
+    def test_an_uncounted_restart_from_a_poll_is_not_held_back_by_the_limit(self):
+        for _ in range(RESTART_LIMIT_PER_PLAY - 1):
+            self.assertTrue(self._restart_seen())
+            self.watch.arm(after_restart=True)
+        self.api.external_reset()
+        self.poller._read_modifiers()
+        self.assertTrue(self.watch.after_frame(True, counted=False))
+        self.watch._log.warning.assert_not_called()
+
     def test_a_watch_that_is_not_enabled_leaves_the_poller_alone(self):
         api = FakeApi()
         poller = CommodoreKeyPoller(api)
