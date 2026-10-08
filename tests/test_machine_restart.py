@@ -279,6 +279,16 @@ class KeyPollerTapTest(unittest.TestCase):
         self.assertIsNone(self.poller._read_modifiers())
         self.assertIsNone(self.poller.watched_since(1))
 
+    def test_a_short_read_leaves_no_sample_but_still_reports_the_modifiers(self):
+        self.poller.watch_bytes(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        self.api.ram[ADDR_MODIFIERS] = 0x02
+        real_read = self.api.read_memory
+        self.api.read_memory = lambda address, length, timeout=1.0: real_read(
+            address, length - 1, timeout
+        )
+        self.assertEqual(self.poller._read_modifiers(), 0x02)
+        self.assertIsNone(self.poller.watched_since(0))
+
     def test_a_range_at_or_below_the_modifiers_is_refused(self):
         with self.assertRaises(ValueError):
             self.poller.watch_bytes(ADDR_MODIFIERS, 1)
@@ -313,6 +323,26 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         poller._read_modifiers()  # page 3 still zero: no nonce written yet
         watch.arm()
         self.assertFalse(watch.after_frame(True))
+
+    def test_a_suspended_watch_ignores_the_polls(self):
+        self.watch.suspend()
+        self.api.external_reset()
+        self.poller._read_modifiers()
+        self.assertFalse(self.watch.after_frame(True))
+
+    def test_an_overwritten_nonce_is_reported_once_not_at_every_poll(self):
+        self.api.ram[_SENTINEL] = bytes(range(1, RESTART_SENTINEL_LEN + 1))
+        for _ in range(3):
+            self.poller._read_modifiers()
+            self.assertFalse(self.watch.after_frame(True))
+        self.watch._log.warning.assert_called_once()
+
+    def test_each_sample_is_judged_once(self):
+        self.poller._read_modifiers()
+        with patch.object(self.watch, "_judge", wraps=self.watch._judge) as judge:
+            self.assertFalse(self.watch.after_frame(True))
+            self.assertFalse(self.watch.after_frame(True))
+        self.assertEqual(judge.call_count, 1)
 
     def _restart_seen(self) -> bool:
         self.api.external_reset()

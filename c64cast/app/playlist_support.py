@@ -740,8 +740,6 @@ class MachineRestartWatch:
     def _judge(self, seen: bytes) -> bool:
         """The verdict on bytes read back from where the nonce was written,
         as `_look` describes it."""
-        if len(seen) != RESTART_SENTINEL_LEN:
-            return False
         if seen == self._nonce:
             self._unconfirmed_restarts = 0
             return False
