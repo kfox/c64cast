@@ -100,6 +100,12 @@ class SocketDMAError(LinkError):
     (typically the CLI) is expected to surface a user-actionable message."""
 
 
+class CommandsMayBeLostError(ConnectionError):
+    """``flush()``'s report, after the server answered its IDENTIFY, that a
+    redial since the previous ``flush()`` may have dropped commands. The
+    link answered; what failed is the delivery of what came before it."""
+
+
 class InvalidPasswordError(ValueError):
     """The configured network password cannot be sent to the Ultimate. The
     message names where the password comes from and never quotes it."""
@@ -152,7 +158,8 @@ class SocketDMAClient:
     A redial for any other reason (a reset, an early FIN, a stray byte, an
     unanswered idle IDENTIFY, a failed send) abandons a connection whose
     unconfirmed commands may never have run, so the next ``flush()``
-    raises ``ConnectionError`` once instead of reporting them drained.
+    raises ``CommandsMayBeLostError`` (a ``ConnectionError``) once instead
+    of reporting them drained.
     ``possible_loss_count`` counts every such abandonment, and a ``flush()``
     that fails with commands unconfirmed, since construction; a caller that
     remembers what it sent (``write_region``'s dirty cache) reads it through
@@ -686,8 +693,8 @@ class SocketDMAClient:
 
         A connection redialed since the last ``flush()`` may have taken
         commands with it (see ``_redial_locked``); then this still drains
-        the current connection and raises ``ConnectionError`` once after
-        it. Any raise from here answers for the commands issued before it,
+        the current connection and raises ``CommandsMayBeLostError`` (a
+        ``ConnectionError``) once after it. Any raise from here answers for the commands issued before it,
         so the pending loss is cleared whichever way this call fails."""
         with self._lock:
             try:
@@ -711,7 +718,7 @@ class SocketDMAClient:
         self._latencies.append(time.perf_counter() - t0)
         self._note_answered_locked()
         if self._maybe_lost is not None:
-            raise ConnectionError(
+            raise CommandsMayBeLostError(
                 f"socket dma: {self._maybe_lost}; commands sent before the "
                 "reconnect may not have reached the server"
             )

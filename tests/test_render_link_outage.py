@@ -696,6 +696,160 @@ class SetupSurvivesDmaOutageTest(unittest.TestCase):
         self.assertIn(b"\x20\xd0\x00\x00", sent, "the second setup's writes never landed")
 
 
+class _ResettingScene(FakeScene):
+    """A setup whose DMA connection resets once on every run, on a link that
+    redials at once, either between its two writes or after the last one."""
+
+    def __init__(self, api: Any, link: _Link, *, after_last_write: bool) -> None:
+        super().__init__("B", frames_until_done=10_000)
+        self.api = api
+        self.link = link
+        self.after_last_write = after_last_write
+        self.on_setup: Any = None
+
+    def setup(self) -> None:
+        super().setup()
+        if self.on_setup is not None:
+            self.on_setup()
+        self.api.write_regs("D020", 0, 0)
+        if not self.after_last_write:
+            self.link.connections[-1].peer_reset = True
+        self.api.write_regs("D021", 0, 0)
+        if self.after_last_write:
+            self.link.connections[-1].peer_reset = True
+
+
+class SetupOnALinkThatKeepsResettingTest(unittest.TestCase):
+    """A link that answers every round trip but resets once per setup takes
+    the bounded lossy retry, not the unbounded outage wait: the answered
+    IDENTIFY after a redial that may have dropped commands is an answer."""
+
+    def _run(self, *, after_last_write: bool) -> _ResettingScene:
+        from c64cast.app.playlist import SETUP_LOSSY_TRIES
+        from c64cast.hw.api import Ultimate64API
+
+        link = _Flaky(down_dials=0)
+        for target, value in (
+            ("c64cast.hw.socket_dma.socket.create_connection", link.dial),
+            ("c64cast.app.playlist.SETUP_RETRY_S", 0.0),
+        ):
+            p = patch(target, side_effect=value) if callable(value) else patch(target, value)
+            p.start()
+            self.addCleanup(p.stop)
+        with self.assertLogs("c64cast.hw.socket_dma", level="INFO"):
+            api = Ultimate64API("http://example.invalid")
+        self.addCleanup(api.close)
+        scene = _ResettingScene(api, link, after_last_write=after_last_write)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: 0.0)
+
+        def stop_a_runaway() -> None:
+            if scene.setup_count > SETUP_LOSSY_TRIES:
+                pl.stop_event.set()
+
+        scene.on_setup = stop_a_runaway
+        with (
+            self.assertLogs("c64cast.app.playlist", level="WARNING") as logs,
+            self.assertLogs("c64cast.hw", level="DEBUG"),
+        ):
+            pl.safe_setup(scene)
+        self.assertEqual(scene.setup_count, SETUP_LOSSY_TRIES)
+        self.assertIn("keeping it as set up", logs.output[-1])
+        return scene
+
+    def test_a_reset_between_the_setup_writes_is_retried_a_bounded_number_of_times(self):
+        self._run(after_last_write=False)
+
+    def test_a_reset_after_the_last_setup_write_is_retried_a_bounded_number_of_times(self):
+        self._run(after_last_write=True)
+
+
+class _AudioScene(_LossySetupScene):
+    def competes_for_audio_lock(self) -> bool:
+        return True
+
+
+class SetupOutageReleasesTheEnsembleAudioSlotTest(unittest.TestCase):
+    """A system waiting out an outage in a scene's setup lets the rest of
+    the ensemble have the audio slot, and takes it back when its link does."""
+
+    def setUp(self) -> None:
+        p = patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _ensemble_playlist(self, api: _OutageApi, scene: FakeScene) -> tuple[Playlist, Any]:
+        from _fakes import fake_system_stack
+
+        from c64cast.app.ensemble import Ensemble
+
+        stop_event = threading.Event()
+        pl = Playlist(
+            [scene],
+            api,
+            name="sys",
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop_event,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: 0.0)
+        ens = Ensemble(
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=stop_event
+        )
+        pl.ensemble = ens
+        self.assertTrue(pl.ensemble_coord.wait_for_audio_claim(scene))
+        return pl, ens
+
+    def test_the_slot_is_free_during_the_wait_and_held_again_after(self):
+        api = _OutageApi(down_probes=3)
+        scene = _AudioScene(api, lossy_setups=1)
+        pl, ens = self._ensemble_playlist(api, scene)
+        holders: list[str | None] = []
+        api.on_probe = lambda: holders.append(ens.audio_holder)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.safe_setup(scene)
+        # The first probe is the one that finds the link down; the wait follows.
+        self.assertEqual(holders, ["sys"] + [None] * 3, "the slot stayed held through the wait")
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertTrue(scene.__dict__.get("_audio_lock_held"))
+        self.assertEqual(scene.setup_count, 2)
+
+    def test_a_stop_while_reclaiming_a_slot_taken_meanwhile_ends_the_setup(self):
+        api = _OutageApi(down_probes=2)
+        scene = _AudioScene(api, lossy_setups=1)
+        pl, ens = self._ensemble_playlist(api, scene)
+
+        def other_takes_it() -> None:
+            if api.probes == 2:
+                self.assertTrue(ens.try_claim_audio("other"))
+
+        claim = ens.try_claim_audio
+
+        def stop_once_refused(name: str) -> bool:
+            won = claim(name)
+            if not won:
+                pl.stop_event.set()
+            return won
+
+        api.on_probe = other_takes_it
+        ens.try_claim_audio = stop_once_refused
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.safe_setup(scene)
+        self.assertTrue(pl.stop_event.is_set())
+        self.assertEqual(ens.audio_holder, "other")
+        self.assertFalse(scene.__dict__.get("_audio_lock_held"))
+        self.assertEqual(scene.setup_count, 1, "the scene set up again without the slot")
+        self.assertTrue(any("waiting" in line for line in logs.output), logs.output)
+
+
 class RenderLinkOutageLogTest(unittest.TestCase):
     """A long outage keeps saying so; a recovered one says how long it was."""
 

@@ -338,7 +338,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   silent for the whole clip, a SID scene was skipped, and other setup state
   (the display mode's IRQ, the sampler's gate) never arrived. Now the scene
   waits, the log says the link is down, and once it answers the scene is
-  set up again and plays from the start.
+  set up again and plays from the start. In an ensemble, the other systems
+  can take the audio while it waits.
 
 - **An Ultimate's network dropping out for a few seconds no longer ends the
   scene.** A REU-staged video (`hires`, `mhires`, or a REU-staged character

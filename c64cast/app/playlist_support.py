@@ -438,9 +438,17 @@ class EnsembleCoordinator:
         if pl.ensemble is not None and scene.__dict__.get("_is_conductor", False):
             pl.ensemble.active_orchestrator = None
             scene.clear_orchestrator()
-        if pl.ensemble is not None and scene.__dict__.get("_audio_lock_held", False):
-            pl.ensemble.release_audio(pl.name)
-            scene.__dict__["_audio_lock_held"] = False
+        self.release_audio_claim(scene)
+
+    def release_audio_claim(self, scene: Scene) -> bool:
+        """Release the ensemble audio slot if `scene` holds it, and say
+        whether it did. `wait_for_audio_claim` takes it back."""
+        pl = self._pl
+        if pl.ensemble is None or not scene.__dict__.get("_audio_lock_held", False):
+            return False
+        pl.ensemble.release_audio(pl.name)
+        scene.__dict__["_audio_lock_held"] = False
+        return True
 
     def handle_broadcast_interrupt(self) -> None:
         """Save current scene state, swap in a follower scene driven by

@@ -68,6 +68,7 @@ from .c64 import (
 from .menu_screen import MenuScreen, decode_menu_screen
 from .socket_dma import (
     DEFAULT_PORT,
+    CommandsMayBeLostError,
     InvalidPasswordError,
     SocketDMAClient,
     SocketDMAError,
@@ -2337,10 +2338,16 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         """An IDENTIFY round trip on the DMA socket, redialing first under
         the client's redial backoff, so a refused redial answers False with
         no network I/O. Nothing is logged: the caller reports the outage.
-        A redial that may have dropped commands answers False once, because
-        `SocketDMAClient.flush` raises for it after the reply."""
+        A redial that may have dropped earlier commands still answers True:
+        `SocketDMAClient.flush` reports that loss only after the reply, and
+        the caller already knows of it from `delivery_epoch`. Reading it as
+        a link that does not answer would send a link that resets once per
+        setup down the playlist's unbounded outage wait instead of its
+        bounded lossy retry."""
         try:
             self.socket_dma.flush()
+        except CommandsMayBeLostError:
+            return True
         except (OSError, SocketDMAError):
             return False
         return True

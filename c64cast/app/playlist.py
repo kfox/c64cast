@@ -773,7 +773,7 @@ class Playlist:
                     return True
                 if self.stop_event.wait(SETUP_RETRY_S):
                     return False
-            elif not self._wait_for_link(where, error, frame_time):
+            elif not self._wait_for_link(scene, where, error, frame_time):
                 return False
             scene.keep_pick_for_resetup()
             try:
@@ -781,15 +781,25 @@ class Playlist:
             except Exception:
                 self.log.exception("teardown of %r before its setup retry failed", scene.name)
 
-    def _wait_for_link(self, where: str, error: LinkError, frame_time: float) -> bool:
+    def _wait_for_link(self, scene: Scene, where: str, error: LinkError, frame_time: float) -> bool:
         """Ask the link every `SETUP_RETRY_S` until it answers (True) or
-        `stop_event` fires (False), charging the wait to `link_outage`."""
+        `stop_event` fires (False), charging the wait to `link_outage`.
+
+        The ensemble audio slot `scene` holds is released for the wait and
+        claimed again once the link answers, which can wait on the system
+        that took it meanwhile (False if `stop_event` fires first). The
+        wait for the link has no bound, and without the release
+        another system's audio-bearing scenes would be skipped, or a
+        single-scene one held, for as long as this machine is unplugged."""
+        released = self.ensemble_coord.release_audio_claim(scene)
+        if released:
+            self.log.info("%s: releasing the ensemble audio slot until the link answers", where)
         while True:
             waited_from = self.link_outage.now()
             if self.stop_event.wait(SETUP_RETRY_S):
                 return False
             if self.api.link_answers():
-                return True
+                return not released or self.ensemble_coord.wait_for_audio_claim(scene)
             self.link_outage.failed(
                 where,
                 error,
