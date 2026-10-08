@@ -662,6 +662,26 @@ class MicLeadThreadTest(unittest.TestCase):
         self.assertEqual((rig.reads, rig.servo.reanchors), (1, 0))
         self.assertIsNone(rig.servo.take_reanchor())
 
+    def test_a_stop_during_a_later_read_of_a_reanchoring_lead_is_not_steered_on(self):
+        # The second read is the confirming pair's (no trusted phase) or the
+        # re-anchor's re-read (trusted phase): either can finish inside the
+        # teardown, and a re-anchor posted from it is one nobody takes.
+        for trusted in (False, True):
+            with self.subTest(trusted_phase=trusted):
+                rig = _Rig(drift=0.0, lead=-500)
+                if trusted:
+                    rig.servo._tracker_phase = 0
+
+                def read(address: int, length: int, timeout: float = 1.0, rig=rig) -> bytes | None:
+                    if rig.reads == 1:
+                        rig.servo._stop.set()
+                    return rig.read(address, length, timeout)
+
+                rig.servo._read = read
+                self.assertIsNone(rig.servo.tick())
+                self.assertEqual((rig.reads, rig.servo.reanchors, rig.servo._fails), (2, 0, 0))
+                self.assertIsNone(rig.servo.take_reanchor())
+
     def test_an_open_loop_backs_off_to_a_ceiling(self):
         servo = ml.MicLeadServo(
             read_memory=lambda a, n, timeout=1.0: None,

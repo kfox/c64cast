@@ -567,9 +567,13 @@ class MicLeadServo:
                 MIC_LEAD_REANCHOR_CLAIM_INTERVALS * self._interval,
             )
         m = self._measure()
+        # A read that finished inside the teardown, the confirming one or the
+        # re-anchor's re-read included, is discarded: a re-anchor posted from
+        # it is one the callback no longer takes. A stop is not a failure.
+        if self._stop.is_set():
+            return None
         if m is None:
-            if not self._stop.is_set():
-                self._note_failure()
+            self._note_failure()
             return None
         # Counted whether or not it steers: a re-anchor's wait must not leave
         # failures around a good read looking consecutive.
@@ -686,8 +690,10 @@ class MicLeadServo:
                 )
                 return None
         self._tracker_phase = tracker_phase(m.reading)
-        if mic_lead_in_range(m.lead) or self._stop.is_set():
+        if mic_lead_in_range(m.lead):
             return m
+        if self._stop.is_set():
+            return None
         check = self._read_once()
         if check is None:
             return None
