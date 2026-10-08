@@ -714,9 +714,10 @@ class RestoreAfterMachineRestartTest(unittest.TestCase):
         dac.assert_not_called()
         api.run_basic_clear_loop.assert_called_once_with()
 
-    def test_a_chip_model_the_backend_cannot_set_is_skipped(self):
+    def test_the_chip_model_is_put_back_on_any_link_as_at_startup(self):
         api = MagicMock()
         api.profile.supports_sid_config = False
+        curve = object()
         with (
             patch.object(session.hw_provision, "provision_reu"),
             patch.object(session.hw_provision, "provision_sampler"),
@@ -724,8 +725,8 @@ class RestoreAfterMachineRestartTest(unittest.TestCase):
             patch.object(session.hw_provision, "provision_video_output"),
             patch.object(session.dac_curve_resolve, "provision_calibrated_chip_model") as dac,
         ):
-            session._restore_after_machine_restart(MagicMock(), api, object())
-        dac.assert_not_called()
+            session._restore_after_machine_restart(MagicMock(), api, curve)
+        dac.assert_called_once_with(api, curve)
 
 
 class StackWiringTest(unittest.TestCase):
