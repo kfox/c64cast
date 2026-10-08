@@ -359,6 +359,95 @@ class CalibrateIn6581Test(_NoSettle):
             _calibrate(api, backend="teensyrom", measure=interrupt)
         self.assertEqual(api.left.model, "8580")
 
+    def _read_back(self, answer):
+        """Socket detection answers truthfully until the chip is switched, then
+        with `answer`."""
+        real = dac_calibration.detect_socket_models
+        calls: list[int] = []
+
+        def detect(be, **kwargs):
+            calls.append(1)
+            return real(be, **kwargs) if len(calls) == 1 else answer
+
+        return mock.patch.object(dac_calibration, "detect_socket_models", side_effect=detect)
+
+    def test_a_socket_whose_model_cannot_be_read_back_is_recorded_unknown(self):
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+        with self._read_back((None, None)):
+            run = _calibrate(api)
+        self.assertEqual(run.entries["1"].detected, "ARMSID ?")
+        self.assertTrue(any("could not switch the ARMSID 8580" in m for m in run.lines))
+        self.assertEqual(api.left.model, "8580")
+
+    def test_a_right_channel_read_back_is_not_taken_as_the_measured_chip(self):
+        api = ArmsidAPI(kind="ARM2SID", left="8580")
+        right = armsid.label("ARM2SID", "6581", right=True)
+        with self._read_back((right, None)):
+            run = _calibrate(api)
+        self.assertEqual(run.entries["1"].detected, "ARM2SID ?")
+        self.assertEqual(api.left.model, "8580")
+
+    def test_ctrl_c_during_the_socket_switch_still_restores_the_model(self):
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+        real = armsid.set_socket_model
+
+        def switch_then_interrupt(be, source, model):
+            real(be, source, model)
+            raise KeyboardInterrupt
+
+        with (
+            mock.patch.object(armsid, "set_socket_model", side_effect=switch_then_interrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _calibrate(api)
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "8580")
+
+    def test_ctrl_c_during_the_d400_switch_still_restores_the_model(self):
+        api = _no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        real = armsid.set_socket_model
+
+        def switch_then_interrupt(be, source, model):
+            real(be, source, model)
+            raise KeyboardInterrupt
+
+        with (
+            mock.patch.object(armsid, "set_socket_model", side_effect=switch_then_interrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            _calibrate(api, backend="teensyrom")
+        self.assertEqual(api.left.model, "8580")
+
+    def test_a_failed_d400_switch_records_the_model_actually_measured(self):
+        api = _no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        with (
+            mock.patch.object(armsid, "set_socket_model", side_effect=OSError("link down")),
+            self.assertLogs("c64cast.audio.dac_calibration", "DEBUG"),
+        ):
+            run = _calibrate(api, backend="teensyrom")
+        self.assertEqual(run.models, ["8580"])
+        self.assertEqual(run.entries["default"].detected, "ARMSID 8580")
+        self.assertTrue(any("could not switch the ARMSID 8580" in m for m in run.lines))
+
+    def test_a_d400_chip_whose_model_cannot_be_read_back_is_recorded_unknown(self):
+        api = _no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        replies = iter([armsid.ArmsidReply(channel=None, model="8580"), None])
+        with mock.patch.object(armsid, "probe", side_effect=lambda *_a: next(replies)):
+            run = _calibrate(api, backend="teensyrom")
+        self.assertEqual(run.entries["default"].detected, "ARMSID ?")
+        self.assertEqual(api.left.model, "8580")
+
+    def test_a_d400_chip_that_reports_no_model_is_not_switched(self):
+        api = _no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        unreadable = armsid.ArmsidReply(channel=None, model=None)
+        with (
+            mock.patch.object(armsid, "probe", return_value=unreadable),
+            mock.patch.object(armsid, "set_socket_model") as switch,
+        ):
+            run = _calibrate(api, backend="teensyrom")
+        switch.assert_not_called()
+        self.assertEqual(run.entries["default"].detected, "ARMSID ?")
+
     def test_playback_puts_the_chip_back_into_the_measured_6581(self):
         api = ArmsidAPI(kind="ARM2SID", left="8580")
         detected = _calibrate(api).entries["1"].detected
