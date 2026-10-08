@@ -265,6 +265,23 @@ class TeardownStackOrderTest(unittest.TestCase):
             order, ["preview", "recorder", "reset", "stream_off", "api_close", "source"]
         )
 
+    def test_a_ctrl_c_in_one_step_still_runs_the_steps_under_it(self):
+        # _release_step swallows Exception only; a second Ctrl+C mid-step
+        # must not cost the machine its reset or the link its close.
+        st, order = self._record_order()
+
+        def interrupted():
+            order.append("audio")
+            raise KeyboardInterrupt
+
+        st.audio.close.side_effect = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            teardown_stack(st)
+        self.assertEqual(
+            order,
+            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+        )
+
     def test_missing_optional_resources_skipped(self):
         # framebuffer / preview_window / recorder are all None by default.
         st = fake_system_stack("only")

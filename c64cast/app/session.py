@@ -850,8 +850,13 @@ def teardown_stack(stack: SystemStack) -> None:
         ("API close", stack.api.close),
         ("camera release", lambda: stack.source.release() if stack.source else None),
     )
-    for label, fn in steps:
-        _release_step(stack.name, label, fn)
+    # An ExitStack rather than a plain loop: `_release_step` swallows only
+    # Exception, so a second Ctrl+C inside one step would end the loop and
+    # strand the reset and api.close under it. Registered in reverse because
+    # the stack unwinds last-in, first-out.
+    with ExitStack() as unwind:
+        for label, fn in reversed(steps):
+            unwind.callback(_release_step, stack.name, label, fn)
 
 
 # How long the headless join parks per poll: short enough that Ctrl+C feels
