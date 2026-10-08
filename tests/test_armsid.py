@@ -327,6 +327,17 @@ class SetModelTest(_NoSettle):
         self.assertEqual(api.config_puts, [])
         self.assertEqual(api.right.model, "8580")
 
+    def test_a_socket_whose_last_probe_went_unanswered_is_still_set(self):
+        # A restore planned from "ARMSID 8580" has to land after a later probe
+        # cached the firmware's bare label over it.
+        for bare in ("ARMSID", "ARMSID ?"):
+            with self.subTest(label=bare):
+                api = ArmsidAPI(kind="ARMSID", left="6581")
+                armsid._remember(api, (bare, None))
+                armsid.set_socket_model(api, "socket1", "8580")
+                self.assertEqual(api.left.model, "8580")
+                self.assertEqual(armsid.cached_labels(api), ("ARMSID 8580", None))
+
     def test_a_socket_with_no_armsid_is_left_alone(self):
         api = FakeAPI.ultimate()
         armsid.set_socket_model(api, "socket1", "6581")

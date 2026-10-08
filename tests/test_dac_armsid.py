@@ -320,6 +320,25 @@ class CalibrateIn6581Test(_NoSettle):
         self.assertEqual(run.entries["1"].detected, "ARMSID 8580")
         self.assertTrue(any("could not switch the ARMSID 8580" in m for m in run.lines))
 
+    def test_a_chip_silent_after_the_switch_is_still_restored(self):
+        # The read-back after the switch re-probes the sockets, and a socket
+        # that does not answer is cached under the firmware's bare label. The
+        # restore must not depend on that cache, or it skips the chip it moved.
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+        put = api.put_config_item
+
+        def put_then_go_silent(category, item, value, **kwargs):
+            put(category, item, value, **kwargs)
+            if (category, item, value) == (CAT_ARMSID1, armsid.ITEM_ARMSID_MODE, "6581"):
+                api.read_memory = lambda *a, **k: None  # type: ignore[method-assign]
+
+        api.put_config_item = put_then_go_silent  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.sid.armsid", "INFO"):
+            run = _calibrate(api)
+        self.assertEqual(run.entries["1"].detected, "ARMSID ?")
+        self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "8580")
+        self.assertEqual(api.left.model, "8580")
+
     def test_d400_is_switched_through_its_registers_and_restored(self):
         api = _no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
         run = _calibrate(api, backend="teensyrom")
