@@ -3918,7 +3918,34 @@ class LifecycleTest(unittest.TestCase):
         self.assertIsNone(s._landing_pace)
         with mock.patch.object(audio_mod, "time", clock):
             s._mark_ring_clock()
+        self._landing_at_pace(clock, s, 1024 / (0.7 * s.effective_rate), 1)
         self.assertEqual(s._landing_pace, s.effective_rate)
+
+    def test_the_first_landing_after_the_consumer_starts_seeds_the_pace(self):
+        # The worker hands its first chunk off a pace period before dripping
+        # it, so that landing comes two to three chunk periods after the start.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        self._landing_at_pace(clock, s, 2.9 * 1024 / s.effective_rate, 1)
+        self.assertEqual(s._landing_pace, s.effective_rate)
+
+    def test_the_stall_reanchor_landing_does_not_slow_the_landing_pace(self):
+        # Its lead of pad is written at once after the stall: a 4096-byte
+        # landing half a second late would read as a third off the rate.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        self._landing_at_pace(clock, s, period, 5)
+        landed = s._note_ring_landed
+        with mock.patch.object(s, "_note_ring_landed", wraps=landed) as note:
+            s.running = True
+            with self.assertLogs(audio_mod.log, level="WARNING"):
+                s.api = cast(Ultimate64API, _RFakeAPI([100]))
+                with mock.patch.object(audio_mod, "time", clock):
+                    clock.advance(0.5)
+                    s._resync_after_stall(0.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual([c.kwargs.get("paced") for c in note.call_args_list], [False])
+        self.assertAlmostEqual(s._landing_pace or 0.0, s.effective_rate, places=6)
 
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between

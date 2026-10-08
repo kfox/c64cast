@@ -478,7 +478,7 @@ class AudioStreamer:
         self._ring_landed_at: float | None = None
         # Bytes per second the ring's content lands at once the consumer has
         # started (an EMA over landings): the speed the clock runs at between
-        # landings. None until the consumer starts.
+        # landings. None until the first landing after the consumer starts.
         self._landing_pace: float | None = None
         # One record per interval however often the link stalls.
         self._stall_log = LogThrottle(log)
@@ -1482,7 +1482,7 @@ class AudioStreamer:
         # has played, so the clock reaches the landed count here, and the
         # high-water mark holds it there while the content behind the pad
         # lands and is played.
-        self._note_ring_landed(generation, lead, lead)
+        self._note_ring_landed(generation, lead, lead, paced=False)
         self.servo.resync(lead)
         self._stall_log.warn(
             "audio: DAC worker stalled %.2f s behind the C64's playback (a blocked "
@@ -3155,7 +3155,6 @@ class AudioStreamer:
         nominal rate until landings measure the pace."""
         with self._ring_pad_lock:
             self._ring_landed_at = time.monotonic()
-            self._landing_pace = float(self.effective_rate)
 
     def _note_landing_pace_locked(self, nbytes: int, interval: float) -> None:
         """Fold one landing into ``_landing_pace``. Caller holds
@@ -3168,9 +3167,18 @@ class AudioStreamer:
         the landing: under bitmap video it moved in bursts and holds, and
         video slaved to it skipped and froze frames. Capped at the nominal
         rate, which the NMI cannot beat; a landing that comes a stall late
-        measures the stall, not the pace."""
+        measures the stall, not the pace.
+
+        The first landing after the consumer starts seeds the pace at the
+        nominal rate instead of measuring it: the worker hands its first
+        chunk off a pace period before dripping it, so that interval spans
+        two to three chunk periods for one chunk and read as a third of the
+        rate."""
         rate = self.effective_rate
-        if self._landing_pace is None or not rate or interval <= 0:
+        if self._landing_pace is None:
+            self._landing_pace = float(rate)
+            return
+        if not rate or interval <= 0:
             return
         if interval > LANDING_PACE_MAX_PERIODS * nbytes / rate:
             return
@@ -3194,7 +3202,9 @@ class AudioStreamer:
             pad_bytes += max(0.0, min(hi, end) - max(lo, end - pad))
         return pad_bytes
 
-    def _note_ring_landed(self, generation: int, nbytes: int, pad: int) -> None:
+    def _note_ring_landed(
+        self, generation: int, nbytes: int, pad: int, *, paced: bool = True
+    ) -> None:
         """Worker-side: ``nbytes`` reached the ring, the last ``pad`` of them
         padding. Pad further back than a whole ring can no longer be inside
         the gap, so it is dropped, which bounds the record at a ring's worth
@@ -3205,14 +3215,19 @@ class AudioStreamer:
         fresh record, and the high-water mark would hold the clock past what
         that landing moved. :meth:`_start_worker` bumps the generation and
         clears the record under this lock, so no stale landing slips between
-        the two."""
+        the two.
+
+        ``paced=False`` keeps a landing out of the pace: the stall re-anchor's
+        lead of pad is written at once, after the stall, rather than drained
+        in."""
         with self._ring_pad_lock:
             if generation != self._worker_generation:
                 return
             self._ring_landed_total += nbytes
             if self._ring_landed_at is not None:
                 now = time.monotonic()
-                self._note_landing_pace_locked(nbytes, now - self._ring_landed_at)
+                if paced:
+                    self._note_landing_pace_locked(nbytes, now - self._ring_landed_at)
                 self._ring_landed_at = now
             total = self._ring_landed_total
             if pad > 0:
