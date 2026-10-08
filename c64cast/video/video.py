@@ -491,9 +491,18 @@ def _build_atempo_graph(target_sample_rate: int, tempo_scale: float):
     return graph
 
 
-def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
+def decode_audio_full(
+    path: str, target_sample_rate: int, *, origin_s: float | None = None
+) -> np.ndarray:
     """Decode the entire audio track of ``path`` to mono int16 at
     ``target_sample_rate``. Returns a single contiguous np.ndarray.
+
+    Each frame is placed on the track's timeline the way the demuxer places
+    the audio it feeds (`place_audio_frame`): silence where the file has no
+    sound, overlaps trimmed. Sample 0 is ``origin_s`` on the stream
+    timestamps — the picture's origin, from
+    `AVFileSource.pin_timeline_origin` — or, without one, the first audio
+    timestamp.
 
     Blocking — call before scene paint starts. Used by the REU-staged audio
     path in VideoScene where the whole track must be preloaded into
@@ -514,11 +523,29 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
         a_stream = container.streams.audio[0]
         resampler = av.AudioResampler(format="s16", layout="mono", rate=target_sample_rate)
         chunks: list[np.ndarray] = []
+        fed = 0.0
+        trim = 0
         frames = (f for packet in container.demux(a_stream) for f in packet.decode())
         # The trailing None flushes the filter tail the resampler holds back.
         for frame in itertools.chain(frames, [None]):
+            if frame is not None:
+                rate = frame.sample_rate or target_sample_rate
+                duration = frame.samples / rate if rate else 0.0
+                start = fed
+                if frame.pts is not None and frame.time_base is not None:
+                    pts_s = float(frame.pts * frame.time_base)
+                    if origin_s is None:
+                        origin_s = pts_s
+                    start = pts_s - origin_s
+                silence, cut, fed = place_audio_frame(start, duration, fed, target_sample_rate)
+                trim += cut
+                if silence:
+                    chunks.append(np.zeros(silence, dtype=np.int16))
             for resampled in resampler.resample(frame):
                 arr = resampled.to_ndarray().reshape(-1)
+                cut = min(trim, arr.size)
+                trim -= cut
+                arr = arr[cut:]
                 if arr.size:
                     chunks.append(arr.astype(np.int16, copy=False))
     finally:
@@ -1287,6 +1314,27 @@ class AVFileSource:
         if self._tempo_scale != 1.0:
             pts *= self._tempo_scale
         return pts
+
+    def pin_timeline_origin(self) -> float | None:
+        """Fix the content timeline's origin (stream seconds) before `start`,
+        for a caller that places the audio itself: the REU-staged preload,
+        which gets no audio from this demuxer to set it. The origin is the
+        earliest start either stream reports, where the demuxer's own would
+        be the pass's first timestamp. None, pinning nothing, under a
+        ``start_s`` seek (the preload decodes from the file's start) or when
+        neither stream reports a start."""
+        if self.start_s > 0:
+            return None
+        starts = [
+            float(s.start_time * s.time_base)
+            for s in (self.v_stream, self.a_stream)
+            if s is not None and s.start_time is not None and s.time_base is not None
+        ]
+        if not starts:
+            return None
+        origin = min(starts)
+        self._pts_offset = origin - self._pts_anchor_target
+        return origin
 
     def _content_time(self, pts_s: float) -> float:
         """A stream timestamp (seconds) on the content timeline: rebased,

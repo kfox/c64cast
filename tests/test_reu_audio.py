@@ -1432,6 +1432,29 @@ class ReuPreencodeDitherTest(unittest.TestCase):
         self.assertNotEqual(self._staged(4242), self._staged(9001))
 
 
+class ReuPreencodeOriginTest(unittest.TestCase):
+    """The pre-encode decodes on the picture's origin, pinned on the source
+    before its demuxer starts, so a sound that starts after its picture
+    keeps that distance in the REU (#606)."""
+
+    def test_the_preload_decodes_on_the_pinned_origin(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = os.path.join(tmp.name, "clip.mp4")
+        open(clip, "wb").close()
+        pcm = (np.sin(np.arange(4096) / 8.0) * 12000).astype(np.int16)
+        scene = VideoScene(MagicMock(), new_streamer(dither=False), MagicMock(), clip)
+        scene.source = MagicMock()
+        scene.source.pin_timeline_origin.return_value = 2.5
+        with (
+            mock.patch("c64cast.scenes.scenes.decode_audio_full", return_value=pcm) as decode,
+            self.assertLogs("c64cast.scenes.scenes", level="INFO"),
+        ):
+            scene._preencode_audio_for_reu()
+        scene.source.pin_timeline_origin.assert_called_once_with()
+        self.assertEqual(decode.call_args.kwargs, {"origin_s": 2.5})
+
+
 class ReuPreencodeMarkerTest(unittest.TestCase):
     """``source_alignment_marker`` prepends a chirp to the staged bytes; the
     flag, the order, the length and the active DAC curve all had no test."""

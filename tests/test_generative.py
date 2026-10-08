@@ -2398,6 +2398,54 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
+    """The REU-staged preload decodes the whole soundtrack up front, and the
+    pump plays it from the picture's clock 0. Concatenated back to back, a
+    sound that starts late or comes back after a gap played early, as the
+    demuxer's feed did before #606."""
+
+    RATE = 8000
+
+    def _clip(self, audio: tuple[tuple[float, float], ...]) -> str:
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(clip, 4.0, rate=self.RATE, audio=audio)
+        return clip
+
+    def _sound(self, pcm: np.ndarray) -> list[float]:
+        """Where each stretch of sound starts, in seconds."""
+        loud = np.flatnonzero(np.abs(pcm) > 1000)
+        starts = [loud[0], *loud[np.flatnonzero(np.diff(loud) > self.RATE // 10) + 1]]
+        return [int(s) / self.RATE for s in starts]
+
+    def test_a_sound_back_after_a_gap_keeps_the_gap(self):
+        from c64cast.video.video import decode_audio_full
+
+        pcm = decode_audio_full(self._clip(((0.0, 0.3), (3.0, 0.5))), self.RATE)
+        starts = self._sound(pcm)
+        self.assertEqual(len(starts), 2)
+        self.assertAlmostEqual(starts[0], 0.0, delta=0.03)
+        self.assertAlmostEqual(starts[1], 3.0, delta=0.03)
+
+    def test_a_sound_that_starts_after_its_picture_keeps_that_distance(self):
+        from c64cast.video.video import AVFileSource, decode_audio_full
+
+        clip = self._clip(((3.0, 0.5),))
+        src = AVFileSource(clip, target_sample_rate=self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        origin = src.pin_timeline_origin()
+        self.assertIsNotNone(origin)
+        # The picture's first frame sits at the clock's 0 ...
+        self.assertAlmostEqual(src._content_time(0.0), 0.0)
+        # ... and the sound three seconds after it.
+        pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
+        self.assertAlmostEqual(self._sound(pcm)[0], 3.0, delta=0.03)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AudioFileSourceFeatureSyncTest(unittest.TestCase):
     """A reactive file scene pulses with the click the listener hears, not the
     one the decoder has just reached. Both sinks keep a queue and a ring of

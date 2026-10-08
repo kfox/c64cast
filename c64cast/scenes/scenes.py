@@ -1622,7 +1622,10 @@ class VideoScene(MediaFileMixin, Scene):
         # consumer, so it drains at the *achieved* rate; pre-encoding at the
         # requested one would play the clip off-speed.
         sr = int(round(self.audio.effective_rate))
-        int16 = decode_audio_full(self.filepath, sr)
+        # The picture's origin, pinned before the demuxer starts, so a sound
+        # that starts after its picture keeps that distance in the REU too.
+        origin = self.source.pin_timeline_origin() if self.source is not None else None
+        int16 = decode_audio_full(self.filepath, sr, origin_s=origin)
         if int16.size == 0:
             log.warning("video: empty audio track after decode; REU pump will play silence")
             return b""

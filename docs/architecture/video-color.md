@@ -107,6 +107,8 @@ The sink's clock counts the samples it has played, and the picture follows that 
 
 The buffer holds 240 frames, so the allowance and the lead bind only above about 120 fps; there a silent stretch plays with short stalls rather than in real time, and audio written more than the buffer's span behind its picture is trimmed.
 
+The REU-staged preload (`[audio].use_reu_pump`) gets no audio from the demuxer, so it places its own: `decode_audio_full` puts each frame through `place_audio_frame` too, with sample 0 at the origin `AVFileSource.pin_timeline_origin` fixes on the source before its demuxer starts — the earliest start either stream reports, since the pump plays the whole track from the picture's clock 0 and no pass's first timestamp exists yet. Under a `start_s` seek nothing is pinned and the preload starts at its first audio timestamp, because it decodes from the file's start rather than from `start_s`.
+
 A seek starts the timeline over: `_apply_pending_seek` clears `_audio_fed_s`, `_audio_trim`, `_video_read_s` and the stall latch, and the next pass's first timestamp from either stream sets the shared origin at the seek target. Kept, the old pass's fed position put the target's first audio behind it: trimmed away on a seek back, or behind silence on a seek forward.
 
 ### Bitmap + `$D418`-DAC tempo compensation (`tempo_scale`)
