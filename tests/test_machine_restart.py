@@ -352,6 +352,28 @@ class RestartOnTheLastFrameTest(unittest.TestCase):
         self.assertEqual(scene.setup_count, 1, "a scene that had ended was set up again")
         self.assertTrue(any("restarted as 'Video' ended" in line for line in logs.output))
 
+    def test_the_restore_runs_once_before_the_next_scene_and_not_at_later_teardowns(self):
+        api = _Machine()
+        stop = threading.Event()
+        ended = _EndsAsItRestarts(api, frames=3)
+        following = _StopOnSetup("Next", stop)
+        pl = Playlist(
+            [ended, following],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+        restores: list[tuple[int, int]] = []
+        pl.on_machine_restart = lambda: restores.append(
+            (ended.teardown_count, following.setup_count)
+        )
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        self.assertEqual(following.teardown_count, 1, "the run never reached the next scene")
+        self.assertEqual(restores, [(1, 0)], "not restored once, between the two scenes")
+
 
 class _OutlivedRestartScene(FakeScene):
     """A scene the machine restarts under at frame `restart_at`, whose time
