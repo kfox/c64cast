@@ -1434,7 +1434,8 @@ class AVFileSource:
         rebased ~0). Then the bitmap+DAC tempo compensation: compress the
         video timeline by tempo_scale so it stays in lock-step with the
         1/tempo_scale-compressed audio (both then net to real time under the
-        ~tempo_scale drain-clock slowdown). No-op when tempo_scale == 1.0."""
+        ~tempo_scale drain-clock slowdown), plus the offset a retune leaves
+        (`_apply_pending_tempo`)."""
         pts = float(frame.pts * self.video_time_base) if frame.pts is not None else 0.0
         return self._tempo_offset + self._content_time(pts) * self._tempo_scale
 

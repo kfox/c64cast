@@ -91,7 +91,8 @@ class VideoTransportControls:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
         After the first seek it is the identity except on the resync path over
         the DAC+bitmap tempo scale: there the clock advances at
-        s×content-seconds, so divide by s to recover content seconds for the
+        s×content-seconds, so invert the source's tempo map (offset + c×s once
+        a retune has run) to recover content seconds for the
         transport surface (seek targets, loop A/B, OSD).
 
         Before the touch the clock is the PTS timeline the source rebased to 0
