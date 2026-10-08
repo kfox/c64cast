@@ -346,7 +346,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   lost its picture setup, its audio setup and the REU and sampler settings
   c64cast had turned on, so the rest of the scene showed the BASIC screen.
   Now c64cast notices the restart once the link answers again, logs it, puts
-  those settings back and starts the scene over.
+  those settings back and starts the scene over. A restart while the link is
+  still down at the end of a scene is caught before the next one starts. A
+  program the launcher started owns the machine, so c64cast does not watch
+  for a restart under it.
 
 - **A network dropout on an Ultimate that spans a scene change no longer
   spoils the next scene.** A scene that started while the link was down used
