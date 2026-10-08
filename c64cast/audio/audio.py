@@ -1558,7 +1558,9 @@ class AudioStreamer:
         of a 44.1 kHz WAV at 12 kHz)."""
         return QUEUE_PUT_TIMEOUT_S + (n + 2 * self.chunk_size) / self.effective_rate
 
-    def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
+    def _encode_and_enqueue(
+        self, floats: np.ndarray, block_on_full: bool = False, *, epoch: int | None = None
+    ) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
         DAC queue as 4-bit values. Returns the number of samples enqueued.
 
@@ -1571,13 +1573,18 @@ class AudioStreamer:
         by the PyAV push path so the demuxer naturally throttles). If
         False, drop the whole blob when full (mic path, where the
         sounddevice callback is real-time and can't block). Backpressure
-        is counted in samples (not blobs) against self._max_queued_samples."""
+        is counted in samples (not blobs) against self._max_queued_samples.
+
+        epoch: the caller's capture, taken before its own ``running`` check.
+        Captured here instead, a stop() that lands between that check and this
+        entry bumps it first and the blob is queued behind stop()'s drain."""
         if floats.size == 0:
             return 0
-        # Captured at entry: if flush() bumps it while this call is parked in
-        # the backpressure spin below, the samples are pre-splice and are
-        # dropped just before the put.
-        epoch = self._flush_epoch
+        # If flush() bumps it while this call is parked in the backpressure
+        # spin below, the samples are pre-splice and are dropped just before
+        # the put.
+        if epoch is None:
+            epoch = self._flush_epoch
         floats = self._apply_dsp(floats)
         self._push_to_tap(floats.astype(np.float32, copy=False))
         vol = self._encode_dac(floats)
@@ -1639,6 +1646,8 @@ class AudioStreamer:
         return 0
 
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
+        # Ahead of the running check, which stop()'s bump precedes.
+        epoch = self._flush_epoch
         if status or not self.running:
             return
         mono = downmix_to_mono(indata)
@@ -1648,7 +1657,7 @@ class AudioStreamer:
         # The DSP expander supersedes the legacy hard gate when DSP is on.
         if not self._dsp_active():
             mono[np.abs(mono) < self.noise_gate] = 0
-        self._encode_and_enqueue(mono.astype(np.float32, copy=False))
+        self._encode_and_enqueue(mono.astype(np.float32, copy=False), epoch=epoch)
 
     def _mic_callback_reu(
         self, indata: np.ndarray, frames: int, time_info: Any, status: Any
@@ -2917,6 +2926,9 @@ class AudioStreamer:
         Returns the samples enqueued: 0 once stopped, or when the queue stayed
         full past ``QUEUE_PUT_TIMEOUT_S`` plus the worker's drain time for the
         blob, and the blob was dropped."""
+        # Ahead of the running check, which stop()'s bump precedes: a stop()
+        # that lands after the check finds this capture already stale.
+        epoch = self._flush_epoch
         if not self.running:
             return 0
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
@@ -2926,7 +2938,7 @@ class AudioStreamer:
         # count, which a blob dropped on a backpressure timeout never enters,
         # so tapping it too would leave every later window that far behind
         # the sound.
-        accepted = self._encode_and_enqueue(floats, block_on_full=True)
+        accepted = self._encode_and_enqueue(floats, block_on_full=True, epoch=epoch)
         if accepted:
             # A video's demuxer ends its input at EOF and pushes again
             # after a seek back (an A/B loop wrap, a resume near the end).
@@ -3284,17 +3296,18 @@ class AudioStreamer:
         #    even when the NMI-source disable is the write that failed.
         #  - The DAC-bias gate release goes last, so the bias collapse it
         #    starts (release=0 under digi-boost) happens at volume 0.
+        # Ahead of `running` clearing, which is what releases a producer
+        # parked in the backpressure spin: bumped after it, a producer that
+        # woke in between found its epoch current and landed its blob. The
+        # drain at the bottom only catches one that beats it there. Under
+        # _count_lock, where the push path checks it and puts.
+        with self._count_lock:
+            self._flush_epoch += 1
         self.running = False
         # The callback stops claiming re-anchors at running=False; the servo
         # must stop posting them before the teardown below can stall.
         if self._mic_lead is not None:
             self._mic_lead.request_stop()
-        # Ahead of everything a producer could outlast: the push path's epoch
-        # check is what drops a blob from a producer this clear just released,
-        # and the drain at the bottom only catches one that beats it there.
-        # Under _count_lock, where the push path checks it and puts.
-        with self._count_lock:
-            self._flush_epoch += 1
         # No-op if the pump was never armed and no $0314 restore or CIA #1
         # unmask is owed. The video pumps' governor lives in the C64-side
         # handler, so disarming the IRQ vector stops it; the mic pump's

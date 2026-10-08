@@ -292,6 +292,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **With `$D418` DAC audio, the next scene no longer starts with a moment
+  of the previous one's sound.** A video or mic chunk pushed exactly as a
+  scene ended could land in the queue after the scene's teardown had
+  cleared it, so it played at the start of the next scene. This was rare.
+
 - **An Ultimate's network dropping out for a few seconds no longer ends the
   scene.** A REU-staged video (`hires`, `mhires`, or a REU-staged character
   mode) whose link stayed down past one reconnect attempt stopped with

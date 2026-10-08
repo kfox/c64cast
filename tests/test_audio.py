@@ -294,6 +294,36 @@ class WorkerBatchingTest(unittest.TestCase):
         self.assertGreater(s._total_slots, 0)
 
 
+class _HoldingMicLead:
+    """A mic lead servo whose request_stop() waits for ``thread`` to end."""
+
+    ring_governor = None
+    lead_min = None
+
+    def __init__(self, thread: threading.Thread) -> None:
+        self.thread = thread
+
+    def request_stop(self) -> None:
+        self.thread.join(2.0)
+
+    def stop(self) -> None:
+        pass
+
+
+def _signal_backpressure(s: AudioStreamer) -> threading.Event:
+    """Set once a blocking push has captured its epoch and is about to spin
+    for room, so a test can cut it there without guessing how long that takes."""
+    parked = threading.Event()
+    wait_s = s._backpressure_wait_s
+
+    def backpressure_wait_s(n: int) -> float:
+        parked.set()
+        return wait_s(n)
+
+    s._backpressure_wait_s = backpressure_wait_s  # type: ignore[method-assign]
+    return parked
+
+
 class EffectiveRateTest(unittest.TestCase):
     """`sample_rate` is a request; `effective_rate` is what the CIA latch
     actually yields. The NMI period is an integer PHI2 cycle count, so the
@@ -406,8 +436,6 @@ class EffectiveRateTest(unittest.TestCase):
         self.assertEqual(s._flush_epoch, 0)
 
     def test_blocked_push_dropped_by_flush_epoch(self):
-        import time
-
         s = new_streamer()
         s.running = True
         s._max_queued_samples = 16384
@@ -416,13 +444,14 @@ class EffectiveRateTest(unittest.TestCase):
             s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)  # 16384 samples queued
 
         result: dict[str, int] = {}
+        parked = _signal_backpressure(s)
 
         def push():
             result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
 
         t = threading.Thread(target=push)
         t.start()
-        time.sleep(0.02)  # let it park in the backpressure spin
+        self.assertTrue(parked.wait(2.0), "the producer never reached the backpressure spin")
         s.flush()  # drains the 16384 queued samples + bumps the epoch
         t.join(timeout=1.0)
         self.assertEqual(result["n"], 0)  # stale push dropped
@@ -430,8 +459,6 @@ class EffectiveRateTest(unittest.TestCase):
 
     def test_blocked_push_dropped_by_stop(self):
         """`stop()` owes the next scene the same cut-over `flush()` does."""
-        import time
-
         s = new_streamer()
         s.running = True
         s._max_queued_samples = 16384
@@ -440,13 +467,14 @@ class EffectiveRateTest(unittest.TestCase):
             s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)
 
         result: dict[str, int] = {}
+        parked = _signal_backpressure(s)
 
         def push():
             result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
 
         t = threading.Thread(target=push)
         t.start()
-        time.sleep(0.02)  # let it park in the backpressure spin
+        self.assertTrue(parked.wait(2.0), "the producer never reached the backpressure spin")
         s.stop()
         t.join(timeout=1.0)
         self.assertEqual(result["n"], 0)
@@ -466,6 +494,61 @@ class EffectiveRateTest(unittest.TestCase):
         with patch.object(AudioStreamer, "_drain_queue_samples", recording_drain):
             s.stop()
         self.assertEqual(seen, [1], "stop() drained before it bumped")
+
+    def test_a_push_stop_releases_finds_the_epoch_bumped(self):
+        """Clearing `running` releases a push parked in the backpressure spin;
+        the bump has to be in place by then, or the push lands its blob."""
+        s = new_streamer()
+        s.running = True
+        s._max_queued_samples = 16384
+        s._queued_samples = 16384
+        result: dict[str, int] = {}
+        parked = _signal_backpressure(s)
+
+        def push():
+            result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
+
+        t = threading.Thread(target=push)
+        self.addCleanup(t.join, 1.0)
+        # request_stop() is the first thing stop() does after clearing
+        # `running`: holding it until the released push returns gives that
+        # push every chance to land.
+        s._mic_lead = cast(Any, _HoldingMicLead(t))
+        t.start()
+        self.assertTrue(parked.wait(2.0), "the producer never reached the backpressure spin")
+        s.stop()
+        self.assertFalse(t.is_alive())
+        self.assertEqual(result["n"], 0, "a push released by stop() landed its blob")
+
+    def test_a_push_past_its_running_check_when_stop_lands_is_dropped(self):
+        """A stop() that runs whole between push_samples' running check and the
+        encode bumps the epoch ahead of any capture taken after the check."""
+        s = new_streamer()
+        s.running = True
+        real = AudioStreamer._encode_and_enqueue
+
+        def stop_first(self: AudioStreamer, *args: Any, **kwargs: Any) -> int:
+            self.stop()
+            return real(self, *args, **kwargs)
+
+        with patch.object(AudioStreamer, "_encode_and_enqueue", stop_first):
+            n = s.push_samples(np.zeros(100, dtype=np.int16))
+        self.assertEqual(n, 0)
+        self.assertTrue(s.q.empty(), "the blob landed behind stop()'s drain")
+
+    def test_a_mic_block_past_its_running_check_when_stop_lands_is_dropped(self):
+        """The mic callback's running check has the same window as push_samples'."""
+        s = new_streamer()
+        s.running = True
+        real = AudioStreamer._encode_and_enqueue
+
+        def stop_first(self: AudioStreamer, *args: Any, **kwargs: Any) -> int:
+            self.stop()
+            return real(self, *args, **kwargs)
+
+        with patch.object(AudioStreamer, "_encode_and_enqueue", stop_first):
+            s._mic_callback(np.zeros((100, 1), dtype=np.float32), 100, None, None)
+        self.assertTrue(s.q.empty(), "the blob landed behind stop()'s drain")
 
     def test_stop_still_drains_and_zeroes(self):
         # stop() routes its drain through _drain_queue_samples; the queue must

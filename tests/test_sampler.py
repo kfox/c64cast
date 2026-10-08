@@ -181,6 +181,28 @@ def _make(api: _FakeBackend, **kw) -> s.UltimateAudioSampler:
     return s.UltimateAudioSampler(cast(Any, api), **kw)
 
 
+def _signal_on_put(smp: s.UltimateAudioSampler) -> threading.Event:
+    """An event set when anything next calls ``smp._q.put``, just before the
+    put itself runs."""
+    parked = threading.Event()
+    full_put = smp._q.put
+
+    def put(*a: Any, **kw: Any) -> None:
+        parked.set()
+        full_put(*a, **kw)
+
+    smp._q.put = put  # type: ignore[method-assign]
+    return parked
+
+
+def _outlasting(wait_s: float, sample_rate: int = 8000) -> np.ndarray:
+    """A tone that plays on past a test's wait for it to reach the ring. The
+    writer drops audio whose slot the wall-clock read head has passed, so a
+    shorter one made that slot, not the wait, the writer's budget: half a
+    second pushed after start() is all late about 0.3 s later."""
+    return np.full(int(sample_rate * (wait_s + 1.0)), 8000, dtype=np.int16)
+
+
 class StreamerTest(unittest.TestCase):
     def test_init_resolves_rate_and_ring(self):
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16, ring_size=4097)
@@ -359,8 +381,7 @@ class SamplerReuseTest(unittest.TestCase):
         self._lap(smp, api)
         api.audible_writes = 0
         smp.start(prebuffer_timeout=0.01)
-        for _ in range(4):  # more than the start-up slot the reader passes
-            smp.push_samples(self.TONE)
+        smp.push_samples(_outlasting(2.0))
         deadline = time.monotonic() + 2.0
         while api.audible_writes == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -640,6 +661,7 @@ class _UnconfirmedGateOffBackend(_FailingBackend):
 
 class SamplerWriterFailureTest(unittest.TestCase):
     TONE = np.full(256, 8000, dtype=np.int16)
+    WAIT_S = 3.0
 
     def _started(self, api: _FakeBackend) -> s.UltimateAudioSampler:
         smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.01)
@@ -652,8 +674,8 @@ class SamplerWriterFailureTest(unittest.TestCase):
         smp.start(prebuffer_timeout=0.01)
         return smp
 
-    def _wait(self, cond: Any, timeout: float = 3.0) -> bool:
-        deadline = time.monotonic() + timeout
+    def _wait(self, cond: Any) -> bool:
+        deadline = time.monotonic() + self.WAIT_S
         while not cond() and time.monotonic() < deadline:
             time.sleep(0.01)
         return bool(cond())
@@ -663,8 +685,7 @@ class SamplerWriterFailureTest(unittest.TestCase):
         with self.assertLogs("c64cast.audio.sampler", level="WARNING") as logs:
             smp = self._started(api)
             api.audible_writes = 0
-            for _ in range(16):
-                smp.push_samples(self.TONE)
+            smp.push_samples(_outlasting(self.WAIT_S))
             self.assertTrue(self._wait(lambda: api.audible_writes > 0), "the writer died")
         self.assertTrue(any("ring write failed" in m for m in logs.output), logs.output)
         assert smp._writer is not None
@@ -678,10 +699,11 @@ class SamplerWriterFailureTest(unittest.TestCase):
                 self.assertTrue(self._wait(lambda: smp._failed), "the writer never gave up")
         self.assertEqual(api.mem_writes[-1], ("DF20", "00"), "the channel still loops stale audio")
         smp._q = s.queue.Queue(maxsize=1)
-        smp._q.put((smp._flush_epoch, b""))
-        t0 = time.monotonic()
-        smp.push_samples(self.TONE)  # a full queue nothing drains
-        self.assertLess(time.monotonic() - t0, 0.05, "the producer parked on a dead sampler")
+        smp._q.put((smp._flush_epoch, b""))  # a full queue nothing drains
+        smp._q.put = mock.Mock(  # type: ignore[method-assign]
+            side_effect=AssertionError("the producer parked on a dead sampler")
+        )
+        self.assertEqual(smp.push_samples(self.TONE), 0)
 
     def test_a_gate_off_lost_to_the_outage_is_sent_until_it_lands(self):
         # The gate-off travels the link that failed. Sent once and lost, the
@@ -734,13 +756,14 @@ class SamplerWriterFailureTest(unittest.TestCase):
     def test_a_producer_parked_when_the_writer_gives_up_is_released(self):
         smp = _make(_FakeBackend(), sample_rate=8000, bits=8, queue_max_chunks=1)
         smp._q.put((smp._flush_epoch, b""))
+        parked = _signal_on_put(smp)
         t = threading.Thread(target=smp.push_samples, args=(self.TONE,))
         self.addCleanup(t.join, 1.0)
         self.addCleanup(setattr, smp, "_stopped", True)
         t.start()
-        time.sleep(0.02)  # parked in put(timeout=0.1)
+        self.assertTrue(parked.wait(2.0), "the producer never reached the full queue")
         smp._failed = True
-        t.join(timeout=0.5)
+        t.join(timeout=2.0)
         self.assertFalse(t.is_alive(), "the producer stays parked on a sampler that gave up")
 
     def test_a_write_head_the_reader_passed_skips_ahead_of_it(self):
@@ -2738,6 +2761,7 @@ class SamplerFlushTests(unittest.TestCase):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, queue_max_chunks=1)
         smp._q.put((0, b"x"))  # fill and keep full
+        parked = _signal_on_put(smp)
 
         def push():
             smp.push_samples(np.zeros(50, dtype=np.int16))
@@ -2752,7 +2776,7 @@ class SamplerFlushTests(unittest.TestCase):
 
         self.addCleanup(release)
         t.start()
-        time.sleep(0.02)  # let it park in the Full-retry loop
+        self.assertTrue(parked.wait(2.0), "the producer never reached the full queue")
         smp._flush_epoch += 1  # a concurrent flush bumped the epoch
         t.join(timeout=1.0)
         self.assertFalse(t.is_alive())
@@ -2782,16 +2806,9 @@ class SamplerFlushTests(unittest.TestCase):
         # it up, and the stale chunk ahead of it is dropped by the writer.
         api = _FakeBackend()
         smp = self._running(api, consumed=0)
-        parked = threading.Event()
-
-        class _SignalingQueue(s.queue.Queue):  # type: ignore[type-arg]
-            def put(self, *a: Any, **kw: Any) -> None:
-                parked.set()
-                super().put(*a, **kw)
-
-        smp._q = _SignalingQueue(maxsize=1)
+        smp._q = s.queue.Queue(maxsize=1)
         smp._q.put((smp._flush_epoch, b"\x01" * 32))
-        parked.clear()
+        parked = _signal_on_put(smp)
         tapped: list[np.ndarray] = []
         smp.analysis_sink = tapped.append
         t = threading.Thread(target=smp.push_samples, args=(np.full(50, 8000, dtype=np.int16),))
