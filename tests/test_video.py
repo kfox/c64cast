@@ -3990,8 +3990,23 @@ class FollowDrainTest(unittest.TestCase):
             if t >= 106.0 and round(t * 20) % 40 == 0:
                 audio.underruns += 1
 
-        self._play(scene, 0.6, 130.0, each=starve)
+        with self.assertLogs("c64cast.scenes.scenes", "DEBUG") as logs:
+            self._play(scene, 0.6, 130.0, each=starve)
         self.assertEqual(source.requests, [])
+        self.assertTrue(any("underrun or lost write" in line for line in logs.output))
+
+    def test_restarts_at_the_frame_rate_log_once_a_second(self):
+        scene, _ = self._scene()
+        audio = cast(_UnderrunStubAudio, scene.audio)
+
+        def starve(t: float) -> None:
+            audio.underruns += 1
+
+        with self.assertLogs("c64cast.scenes.scenes", "DEBUG") as logs:
+            self._play(scene, 0.6, 110.0, each=starve)
+        restarts = [line for line in logs.output if "drain window restarted" in line]
+        # About 5 s past the warmup at 20 frames a second: 100 restarts.
+        self.assertLessEqual(len(restarts), 6)
 
     def test_a_delivery_epoch_move_restarts_the_window(self):
         scene, source = self._scene()

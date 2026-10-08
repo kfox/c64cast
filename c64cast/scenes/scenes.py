@@ -1362,6 +1362,9 @@ class VideoScene(MediaFileMixin, Scene):
         self._drain_trust: tuple[int, int] | None = None
         self._follow_start = 0.0
         self._last_retune_t = -math.inf
+        # Window restarts not yet logged, and when the last one was.
+        self._drain_restarts = 0
+        self._drain_restart_log_t = -math.inf
         self._last_rendered_img: np.ndarray | None = None
         # The OSD text baked into the last rendered frame; compared each tick so
         # a post or expiry busts the identity-skip for one render.
@@ -1498,6 +1501,8 @@ class VideoScene(MediaFileMixin, Scene):
         self._drain_marks.clear()
         self._drain_trust = None
         self._last_retune_t = -math.inf
+        self._drain_restarts = 0
+        self._drain_restart_log_t = -math.inf
         self._hw_palette = _scene_hardware_palette(self.api, c, self.display_mode)
         if self.display_mode is not None:
             if c.force_palette or self._hw_palette is not None:
@@ -1962,12 +1967,20 @@ class VideoScene(MediaFileMixin, Scene):
             gap = now - w_prev
             stalled = gap >= TEMPO_FOLLOW_STALL_S and clock_s - c_prev < 0.5 * tempo * gap
             if stalled or trust != self._drain_trust:
-                log.debug(
-                    "video: drain window restarted after %.2fs (%s), tempo held at %.3f",
-                    now - marks[0][0],
-                    "clock stalled" if stalled else "underrun or lost write",
-                    tempo,
-                )
+                # At most one line a second: a producer that underruns every
+                # few frames restarts the window at the frame rate.
+                self._drain_restarts += 1
+                if now - self._drain_restart_log_t >= TEMPO_FOLLOW_RETUNE_S:
+                    log.debug(
+                        "video: drain window restarted after %.2fs (%s), tempo held "
+                        "at %.3f; %d restart(s) since the last report",
+                        now - marks[0][0],
+                        "clock stalled" if stalled else "underrun or lost write",
+                        tempo,
+                        self._drain_restarts,
+                    )
+                    self._drain_restarts = 0
+                    self._drain_restart_log_t = now
                 marks.clear()
         self._drain_trust = trust
         marks.append((now, clock_s))
