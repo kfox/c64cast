@@ -1465,11 +1465,15 @@ class AlignedAudioTest(unittest.TestCase):
         self.assertAlmostEqual(cast(float, src._audio_fed_s), DRY_FILL_MAX_LEAD_S)
 
     def test_no_fill_while_the_audio_fed_reaches_the_target(self):
-        sink: list[np.ndarray] = []
-        src = _aligned_stub(sink)
-        src._audio_fed_s = 7.49
-        src._fill_dry_stretch(0.0, 8.0)
-        self.assertEqual(sink, [])
+        # Within the tolerance short of the target, and past it: the fill
+        # feeds nothing and leaves where the audio fed ends alone.
+        for fed in (7.49, 9.0):
+            with self.subTest(fed=fed):
+                sink: list[np.ndarray] = []
+                src = _aligned_stub(sink)
+                src._audio_fed_s = fed
+                src._fill_dry_stretch(0.0, 8.0)
+                self.assertEqual((sink, src._audio_fed_s), ([], fed))
 
     def test_no_fill_without_an_audio_stream(self):
         sink: list[np.ndarray] = []
