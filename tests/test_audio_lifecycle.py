@@ -4012,6 +4012,17 @@ class LifecycleTest(unittest.TestCase):
         self.assertAlmostEqual(self._pace(s), armed, delta=1.0)
         self.assertGreater(armed, s.effective_rate + 100)
 
+    def test_the_landing_pace_never_runs_past_an_nmi_armed_below_the_nominal_rate(self):
+        # A pitch multiplier under 1 arms the NMI slower than effective_rate,
+        # and a catch-up burst at the nominal rate is faster than it drains.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        s.nmi.latch = s.nmi.nominal_latch() + 40
+        armed = audio_mod.actual_rate_for_latch(s.nmi.latch, s.system)
+        self.assertLess(armed, s.effective_rate - 100)
+        self._landing_at_pace(clock, s, 1024 / s.effective_rate, 40)
+        self.assertAlmostEqual(self._pace(s), armed, places=6)
+
     def test_the_stall_reanchor_landing_does_not_slow_the_landing_pace(self):
         # Its lead of pad is written at once after the stall: a 4096-byte
         # landing half a second late would read as a third off the rate.

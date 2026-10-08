@@ -3169,11 +3169,12 @@ class AudioStreamer:
 
     def _armed_rate(self) -> float:
         """The rate the CIA #2 latch now armed fires at: above
-        ``effective_rate`` under a pitch multiplier or the adaptive loop's
-        bus-halt compensation, which drain the ring that much faster."""
-        rate = self.effective_rate
+        ``effective_rate`` under the adaptive loop's bus-halt compensation or
+        a pitch multiplier over 1, below it under a multiplier under 1. Floored
+        at ``effective_rate``, the cap let a multiplier under 1 run the clock
+        faster than the ring drains."""
         latch = self.nmi.latch
-        return max(rate, actual_rate_for_latch(latch, self.system)) if latch > 0 else rate
+        return actual_rate_for_latch(latch, self.system) if latch > 0 else self.effective_rate
 
     def _landing_pace_locked(self) -> float:
         """Bytes per second the clock runs at between landings. Caller holds
