@@ -3983,14 +3983,17 @@ class LifecycleTest(unittest.TestCase):
     def test_the_landing_after_a_splice_fill_does_not_slow_the_pace(self):
         # The fill lands at once, and the worker collects and hands off the
         # next chunk before it lands, about two periods later.
+        # The pace measured before the fill stands while the window refills,
+        # whether or not the clock was read in between.
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
-        period = 1024 / s.effective_rate
+        drain = 0.8 * s.effective_rate
+        period = 1024 / drain
         self._landing_at_pace(clock, s, period, 5)
         with mock.patch.object(audio_mod, "time", clock):
             s._note_ring_landed(s._worker_generation, 1024, 1024, paced=False)
         self._landing_at_pace(clock, s, 2 * period, 1)
-        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+        self.assertAlmostEqual(self._pace(s), drain, delta=0.001 * drain)
 
     def test_the_landing_pace_follows_an_nmi_armed_above_the_nominal_rate(self):
         # A pitch multiplier or the adaptive loop arms the NMI faster than

@@ -3185,18 +3185,13 @@ class AudioStreamer:
         the sum, where per-landing samples had to be told apart and
         filtered, and capped samples read landing jitter as a slower pace.
         Capped at the armed NMI rate, which the drain cannot beat."""
-        marks = self._landings
-        if len(marks) > LANDING_PACE_MIN_INTERVALS:
-            (t0, b0), (t1, b1) = marks[0], marks[-1]
-            if t1 > t0:
-                self._landing_pace = (b1 - b0) / (t1 - t0)
         if self._landing_pace <= 0:
             return self.effective_rate
         return min(self._landing_pace, self._armed_rate())
 
     def _note_landing_pace_locked(self, now: float, paced: bool) -> None:
-        """Record a landing in the pace window. Caller holds
-        ``_ring_pad_lock``.
+        """Record a landing in the pace window and measure the pace across
+        it. Caller holds ``_ring_pad_lock``.
 
         The window starts afresh at an unpaced landing, and the next landing
         is its first mark, so neither that landing's bytes nor the interval
@@ -3214,6 +3209,10 @@ class AudioStreamer:
             and marks[1][0] <= now - LANDING_PACE_WINDOW_S
         ):
             marks.popleft()
+        if len(marks) > LANDING_PACE_MIN_INTERVALS:
+            (t0, b0), (t1, b1) = marks[0], marks[-1]
+            if t1 > t0:
+                self._landing_pace = (b1 - b0) / (t1 - t0)
 
     def _unplayed_pad(self, lead: float) -> float:
         """The pad bytes among the last ``lead`` bytes landed in the ring.
