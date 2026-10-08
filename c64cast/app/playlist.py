@@ -1258,7 +1258,11 @@ class Playlist:
                     continue
                 self.menu.repaint = False
                 next_deadline = self.run_one_frame(self.current, next_deadline)
-                if self.restart_watch.after_frame(self._frame_landed):
+                # A restart on the frame the scene ends sets nothing up again,
+                # so it cannot loop and does not count toward the limit.
+                if self.restart_watch.after_frame(
+                    self._frame_landed, counted=not self.current.is_done
+                ):
                     if self.current.is_done:
                         # The scene ended (or was skipped) on this frame, so
                         # the advance that follows sets the next one up; the

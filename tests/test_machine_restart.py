@@ -676,6 +676,46 @@ class RestartOnTheLastFrameTest(unittest.TestCase):
         self.assertEqual(restores, [(1, 0)], "not restored once, between the two scenes")
 
 
+class _ResetMidPlayAndAtTheEnd(FakeScene):
+    """Reset from outside at frame 2 of its first setup, and again on the
+    last frame of the setup that follows; the key poller ticks each frame."""
+
+    def __init__(self, api: _Machine, poller: CommodoreKeyPoller, frames: int) -> None:
+        super().__init__("Video", frames_until_done=frames)
+        self.api = api
+        self.poller = poller
+
+    def process_frame(self, current_time: float) -> bool:
+        still_active = super().process_frame(current_time)
+        if (self.setup_count, self.frame_count) in ((1, 2), (2, self.frames_until_done)):
+            self.api.external_reset()
+        self.poller._read_modifiers()
+        self.api.stats["writes"] += 1
+        return still_active
+
+
+class RestartAsTheSceneEndsAfterAnotherTest(unittest.TestCase):
+    def test_a_restart_on_the_last_frame_does_not_count_toward_the_limit(self):
+        api = _Machine()
+        poller = CommodoreKeyPoller(api)
+        scene = _ResetMidPlayAndAtTheEnd(api, poller, frames=5)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            loop=False,
+            key_poller=poller,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(scene.teardown_count)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+            pl.run()
+        self.assertEqual(restores, [1, 2], "the restart as the scene ended was not put back")
+        self.assertFalse(any("zeroed" in line for line in logs.output))
+
+
 class _OutlivedRestartScene(FakeScene):
     """A scene the machine restarts under at frame `restart_at`, whose time
     runs out while the link is still down: `_emit` swallows the failures, so

@@ -589,8 +589,10 @@ class MachineRestartWatch:
     A restart a scene outlives, with the link down until the next setup,
     leaves no landed frame to look after, so `restarted_before_setup()`
     takes the same look before each setup attempt, unthrottled. That setup
-    starts a new play, so a restart found there neither counts toward the
-    limit nor is held back by it.
+    starts a new play, so a restart found there does not count toward the
+    limit, and neither does one found on the frame a scene ends. A watch
+    that already stood down has no nonce to look at, so a restart at the
+    scene change after it goes unhandled.
 
     A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
     nonce too, so the backend's reset listener re-arms it after the next
@@ -675,10 +677,12 @@ class MachineRestartWatch:
         if self._poller is not None:
             self._poller_mark = self._poller.reads_started
 
-    def after_frame(self, landed: bool) -> bool:
+    def after_frame(self, landed: bool, *, counted: bool = True) -> bool:
         """True when the machine restarted since the nonce was written.
         `landed`: the frame raised no link error and the backend's write
-        count moved, so the link reaches the machine now."""
+        count moved, so the link reaches the machine now. `counted`: the
+        restart would set the same scene up again, so it counts toward
+        `RESTART_LIMIT_PER_PLAY`."""
         if not self.enabled:
             return False
         if self._rearm:
@@ -695,7 +699,7 @@ class MachineRestartWatch:
             sample = self._poller.watched_since(self._poller_mark)
             if sample is not None:
                 self._poller_mark = sample[0]
-                if self._judge(sample[1]):
+                if self._judge(sample[1], counted=counted):
                     return True
         if not self._armed or not landed:
             return False
@@ -706,7 +710,7 @@ class MachineRestartWatch:
         if now < self._next_check:
             return False
         self._next_check = now + RESTART_CHECK_MIN_S
-        return self._look(marks)
+        return self._look(marks, counted=counted)
 
     def restarted_before_setup(self) -> bool:
         """True when the machine restarted since the nonce was written,
