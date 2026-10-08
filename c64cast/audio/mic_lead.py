@@ -307,6 +307,12 @@ def trimmed_pump_latch(matched_latch: int, slow_frac: float) -> int:
     return max(1, min(CIA_TIMER_LATCH_MAX, round(period) - 1))
 
 
+def mic_lead_in_range(lead: int) -> bool:
+    """False for a lead the servo re-anchors instead of steering: below zero
+    (the pump overtook the write head) or past ``MIC_LEAD_REANCHOR_ABOVE``."""
+    return 0 <= lead <= MIC_LEAD_REANCHOR_ABOVE
+
+
 def reanchor_fill(anchor: int) -> tuple[int, int]:
     """Where a re-anchor restarts the write head, and how many NEUTRAL bytes
     it writes there first: ``(pos, fill_len)``. ``anchor`` is the pump's
@@ -603,7 +609,7 @@ class MicLeadServo:
                 seed_rate = max(seed_rate, measured)
         self.lead_min = lead if self.lead_min is None else min(self.lead_min, lead)
         self.lead_max = lead if self.lead_max is None else max(self.lead_max, lead)
-        if lead < 0 or lead > MIC_LEAD_REANCHOR_ABOVE:
+        if not mic_lead_in_range(lead):
             self.reanchors += 1
             # The fill restarts the lead at the target, so the drop that steered
             # toward this jump is stale: a pump that sped up mid-scene would keep
@@ -653,7 +659,14 @@ class MicLeadServo:
         second read is made at once and has to agree with the trusted phase
         or with the first read, else the measurement is torn and counts as a
         failure. Two reads that agree with each other but not with the
-        trusted phase replace it."""
+        trusted phase replace it.
+
+        The phase is taken modulo the $4000 ring, so it cannot see a src
+        tracker off by a whole number of those rings, and such a reading puts
+        the lead 8 KB high or low: past the re-anchor limits either way. So a
+        lead that would re-anchor is read once more and must agree within
+        ``MIC_LEAD_TORN_TOLERANCE``, else the measurement is torn. That costs
+        a read only when the host has really lapped or been overtaken."""
         m = self._read_once()
         if m is None or self._stop.is_set():
             return None
@@ -673,7 +686,19 @@ class MicLeadServo:
                 )
                 return None
         self._tracker_phase = tracker_phase(m.reading)
-        return m
+        if mic_lead_in_range(m.lead) or self._stop.is_set():
+            return m
+        check = self._read_once()
+        if check is None:
+            return None
+        if abs(check.lead - m.lead) > MIC_LEAD_TORN_TOLERANCE:
+            log.debug(
+                "audio[reu mic]: torn pump read (lead %+d vs %+d on the re-read)",
+                m.lead,
+                check.lead,
+            )
+            return None
+        return check
 
     def _note_failure(self) -> None:
         # The next good read must not measure the pump's rate across the gap:

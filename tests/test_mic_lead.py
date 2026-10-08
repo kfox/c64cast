@@ -201,8 +201,9 @@ class MicLeadReanchorTest(unittest.TestCase):
         self.assertIsNone(rig.servo.take_reanchor())
 
     def test_the_anchor_is_stamped_at_the_middle_of_its_read(self):
-        # Each read takes 0.1 s; the second runs from t=0.1 to t=0.2, so the
-        # pump position it returned is dated t=0.15, not when it came back.
+        # Each read takes 0.1 s. The first tick makes a confirming pair, and
+        # the overtake is read a third time, from t=0.2 to t=0.3, so the pump
+        # position it returned is dated t=0.25, not when it came back.
         rig = _Rig(drift=0.0, lead=-500)
 
         def slow_read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
@@ -218,7 +219,7 @@ class MicLeadReanchorTest(unittest.TestCase):
         )
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             servo.tick()
-        rig.t = 0.25
+        rig.t = 0.35
         self.assertEqual(servo.take_reanchor(), RATE // 10)
 
     def test_a_lead_far_past_target_is_reanchored(self):
@@ -570,6 +571,29 @@ class MicLeadOpenLoopTest(unittest.TestCase):
         self.assertEqual((rig.reads, rig.servo._fails), (2, 1))
         rig.servo.tick()
         self.assertEqual((rig.reads, rig.servo._fails), (4, 0))
+
+    def test_a_src_off_by_a_whole_ring_does_not_reanchor(self):
+        # The phase is modulo the $4000 ring, so a src garbled by exactly
+        # one ring keeps it and reads the lead 8 KB high: a false lap, and a
+        # NEUTRAL dropout, unless the re-anchor is read again first.
+        rig = self._closed()
+        rig.garble = [RING_BUFFER_SIZE]
+        reads = rig.reads
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG") as cm:
+            self.assertIsNone(rig.servo.tick())
+        self.assertTrue(any("re-read" in m for m in cm.output), cm.output)
+        self.assertEqual(rig.reads - reads, 2)
+        self.assertEqual(rig.servo.reanchors, 0)
+        self.assertEqual(rig.servo._fails, 1)
+
+    def test_a_real_lap_is_read_again_and_reanchored(self):
+        rig = self._closed()
+        rig.host += ml.MIC_LEAD_REANCHOR_ABOVE
+        reads = rig.reads
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual(rig.reads - reads, 2)
+        self.assertEqual(rig.servo.reanchors, 1)
 
     def test_a_pair_off_the_trusted_phase_but_agreeing_replaces_it(self):
         # A reseeded dst tracker moves the phase for good; the servo follows
