@@ -571,7 +571,7 @@ class MachineRestartWatch:
 
     A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
     nonce too, so the backend's reset listener re-arms it after the next
-    frame; a restart that comes after such a reset and before the re-arm
+    frame, and after each later one until that write lands; a restart that comes after such a reset and before the re-arm
     leaves nothing to tell it from that reset. `suspend()` stands the
     watch down while a launched program owns the machine, whose RAM the
     nonce must not touch. Only a backend that reads memory and reports its
@@ -628,6 +628,9 @@ class MachineRestartWatch:
             return False
         if self._rearm:
             self.arm()
+            # A re-arm the link lost is tried again after the next frame:
+            # leaving it off would stop watching for the rest of the scene.
+            self._rearm = not self._armed
             return False
         if not self._armed or not landed:
             return False

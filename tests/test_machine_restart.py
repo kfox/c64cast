@@ -145,6 +145,18 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.api.link_generation += 1
         self.assertFalse(self.watch.after_frame(True))
 
+    def test_a_rearm_the_link_lost_is_tried_again_after_a_later_frame(self):
+        self.api.c64cast_reset()
+        self.api.drop_writes = True
+        self.assertFalse(self.watch.after_frame(False))
+        self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
+        self.api.drop_writes = False
+        self.assertFalse(self.watch.after_frame(True))
+        self.assertNotIn(0, bytes(self.api.ram[_SENTINEL]), "the lost re-arm was not retried")
+        self.api.restart()
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.assertTrue(self.watch.after_frame(True))
+
     def test_a_nonce_the_link_lost_is_never_read_back_as_a_restart(self):
         api = _Machine()
         api.drop_writes = True
@@ -297,6 +309,43 @@ class PlaylistSetsUpAgainAfterRestartTest(unittest.TestCase):
         self.assertEqual(len(warnings), 1, logs.output)
         self.assertIn("'Video'", warnings[0])
         self.assertNotIn(0, bytes(api.ram[_SENTINEL]), "the second setup did not re-arm")
+
+
+class _EndsAsItRestarts(FakeScene):
+    """A scene whose last frame is the one after which the machine is found
+    restarted."""
+
+    def __init__(self, api: _Machine, frames: int) -> None:
+        super().__init__("Video", frames_until_done=frames)
+        self.api = api
+
+    def process_frame(self, current_time: float) -> bool:
+        still_active = super().process_frame(current_time)
+        if self.frame_count == self.frames_until_done:
+            self.api.restart()
+        self.api.stats["writes"] += 1
+        return still_active
+
+
+class RestartOnTheLastFrameTest(unittest.TestCase):
+    def test_a_scene_that_ended_is_not_played_again_but_the_state_is_put_back(self):
+        api = _Machine()
+        scene = _EndsAsItRestarts(api, frames=3)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            loop=False,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(1)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+            pl.run()
+        self.assertEqual(restores, [1])
+        self.assertEqual(scene.setup_count, 1, "a scene that had ended was set up again")
+        self.assertTrue(any("restarted as 'Video' ended" in line for line in logs.output))
 
 
 class _OutlivedRestartScene(FakeScene):

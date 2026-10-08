@@ -1238,7 +1238,15 @@ class Playlist:
                 self.menu.repaint = False
                 next_deadline = self.run_one_frame(self.current, next_deadline)
                 if self.restart_watch.after_frame(self._frame_landed):
-                    self._set_up_again_after_restart()
+                    if self.current.is_done:
+                        # The scene ended (or was skipped) on this frame, so
+                        # the advance that follows sets the next one up.
+                        self._put_machine_back(
+                            "the machine restarted as %r ended; putting its state back first",
+                            self.current.name,
+                        )
+                    else:
+                        self._set_up_again_after_restart()
                     next_deadline = time.time()
         except KeyboardInterrupt:
             self.log.info("interrupted")
