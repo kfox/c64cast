@@ -275,12 +275,37 @@ class TeardownStackOrderTest(unittest.TestCase):
             raise KeyboardInterrupt
 
         st.audio.close.side_effect = interrupted
-        with self.assertRaises(KeyboardInterrupt):
+        with self.assertLogs("c64cast", "WARNING") as logs, self.assertRaises(KeyboardInterrupt):
             teardown_stack(st)
         self.assertEqual(
             order,
             ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
+        self.assertIn("interrupt again to stop at once", logs.output[0])
+
+    def test_a_second_ctrl_c_stops_at_once(self):
+        # The hard stop: whatever is left is skipped, and the interrupt that
+        # asked for it is the one that propagates.
+        st, order = self._record_order()
+        hard_stop = KeyboardInterrupt("hard stop")
+
+        def interrupted(step: str, exc: BaseException):
+            def run():
+                order.append(step)
+                raise exc
+
+            return run
+
+        st.audio.close.side_effect = interrupted("audio", KeyboardInterrupt("hurry"))
+        st.api.reset.side_effect = interrupted("reset", hard_stop)
+        with (
+            self.assertLogs("c64cast", "WARNING") as logs,
+            self.assertRaises(KeyboardInterrupt) as raised,
+        ):
+            teardown_stack(st)
+        self.assertEqual(order, ["preview", "recorder", "audio", "reset"])
+        self.assertIs(raised.exception, hard_stop)
+        self.assertIn("stopping now", logs.output[-1])
 
     def test_missing_optional_resources_skipped(self):
         # framebuffer / preview_window / recorder are all None by default.

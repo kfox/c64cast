@@ -297,6 +297,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   scene ended could land in the queue after the scene's teardown had
   cleared it, so it played at the start of the next scene. This was rare.
 
+- **Pressing Ctrl+C again while c64cast is releasing the machine after a
+  failed start now finishes the job instead of abandoning it.** The release
+  steps that were left (the reset, closing the connection, putting back the
+  REU, sampler, volume, video output and palette settings) still run, and
+  c64cast exits once they are done. Press Ctrl+C once more to stop at once
+  and skip what is left.
+
 - **An ensemble whose second system fails to start no longer leaves the first
   one held.** When a later system's setup failed with anything but c64cast's
   own startup errors (an unexpected network error, say, or Ctrl+C during

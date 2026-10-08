@@ -512,14 +512,56 @@ def _build_preview_and_recording(
     return framebuffer, preview_window, recorder
 
 
-def _release_step(name: str, label: str, fn: Callable[[], object]) -> None:
-    """Run one release step, logging and swallowing a failure so it can't
-    strand the steps under it. Shared by teardown_stack and by build_stack's
-    failure unwind, which releases the same resources in the same way."""
-    try:
-        fn()
-    except Exception:
-        log.exception("[%s] %s failed", name, label)
+class ReleaseInterrupts:
+    """Runs release steps and decides what a Ctrl+C during them means.
+
+    One instance spans a whole teardown — every stack ``build_session``
+    unwinds, or every stack ``teardown_session`` releases — so the count is
+    the operator's, not one stack's. The first interrupt while releasing means
+    "hurry": it is remembered, and every remaining step still runs, because a
+    skipped reset or ``api.close`` leaves the machine held. The next one is the
+    hard stop: it is re-raised at once and every later step is skipped.
+    :meth:`raise_pending` re-raises the remembered interrupt once the release
+    is done. Shared by teardown_stack and by build_stack's failure unwind,
+    which release the same resources in the same way."""
+
+    def __init__(self) -> None:
+        self._pending: BaseException | None = None
+        self._stopped = False
+
+    def step(self, name: str, label: str, fn: Callable[[], object]) -> None:
+        """Run one release step, logging and swallowing an ordinary failure so
+        it can't strand the steps under it."""
+        if self._stopped:
+            return
+        try:
+            fn()
+        except Exception:
+            log.exception("[%s] %s failed", name, label)
+        except KeyboardInterrupt as e:
+            if self._pending is not None:
+                self._stopped = True
+                log.warning(
+                    "[%s] interrupted again during %s; stopping now, without the "
+                    "remaining release steps",
+                    name,
+                    label,
+                )
+                raise
+            self._pending = e
+            log.warning(
+                "[%s] interrupted during %s; finishing the release steps "
+                "(interrupt again to stop at once)",
+                name,
+                label,
+            )
+
+    def raise_pending(self) -> None:
+        """Re-raise the interrupt :meth:`step` remembered, if any. Not after a
+        hard stop: that interrupt is already propagating, and raising the older
+        one in its place would hide it."""
+        if self._pending is not None and not self._stopped:
+            raise self._pending
 
 
 def build_stack(
@@ -530,6 +572,7 @@ def build_stack(
     profiler: FrameProfiler | NullProfiler,
     is_ensemble: bool = False,
     config_path: str | None = None,
+    interrupts: ReleaseInterrupts | None = None,
 ) -> SystemStack:
     """Construct one system's full runtime stack (api + audio + source +
     playlist + preview/recording). Raises StackBuildError on any failure
@@ -541,23 +584,32 @@ def build_stack(
     a failure anywhere in the build releases exactly what came up — in
     reverse of acquisition, one guarded step each, the way teardown_stack
     releases them on the success path. On success the ladder is popped and
-    the returned SystemStack owns them instead."""
-    with ExitStack() as unwind:
-        stack = _acquire_stack(
-            unwind,
-            cfg,
-            name,
-            stop_event=stop_event,
-            profiler=profiler,
-            is_ensemble=is_ensemble,
-            config_path=config_path,
-        )
-        unwind.pop_all()
+    the returned SystemStack owns them instead. ``interrupts`` is the caller's
+    when this build is one step of a larger teardown (see
+    :class:`ReleaseInterrupts`); the caller then re-raises what it holds."""
+    release = interrupts if interrupts is not None else ReleaseInterrupts()
+    try:
+        with ExitStack() as unwind:
+            stack = _acquire_stack(
+                unwind,
+                release,
+                cfg,
+                name,
+                stop_event=stop_event,
+                profiler=profiler,
+                is_ensemble=is_ensemble,
+                config_path=config_path,
+            )
+            unwind.pop_all()
+    finally:
+        if interrupts is None:
+            release.raise_pending()
     return stack
 
 
 def _acquire_stack(
     unwind: ExitStack,
+    release: ReleaseInterrupts,
     cfg: cfgmod.Config,
     name: str,
     *,
@@ -577,7 +629,7 @@ def _acquire_stack(
     ensemble audio lock arbitrates which system drives the SID."""
 
     def release_on_failure(label: str, fn: Callable[[], object]) -> None:
-        unwind.callback(_release_step, name, label, fn)
+        unwind.callback(release.step, name, label, fn)
 
     # Opened only when something needs it, so a blank/waveform-only playlist runs
     # on a box with no webcam (or with camera permission denied). Clips count as
@@ -788,9 +840,11 @@ def _acquire_stack(
     )
 
 
-def teardown_stack(stack: SystemStack) -> None:
+def teardown_stack(stack: SystemStack, interrupts: ReleaseInterrupts | None = None) -> None:
     """Bring one system's stack down cleanly. Each step is independently
-    try/except'd so one failure doesn't strand the rest. Order matters:
+    try/except'd so one failure doesn't strand the rest, and a Ctrl+C is
+    handled the way :class:`ReleaseInterrupts` describes; pass the caller's
+    when this is one stack of several. Order matters:
     stop audio before the final reset so the NMI timer isn't firing into
     a buffer we're about to clear; preview/recording come down first so
     they don't try to render after the API is closed."""
@@ -850,13 +904,11 @@ def teardown_stack(stack: SystemStack) -> None:
         ("API close", stack.api.close),
         ("camera release", lambda: stack.source.release() if stack.source else None),
     )
-    # An ExitStack rather than a plain loop: `_release_step` swallows only
-    # Exception, so a second Ctrl+C inside one step would end the loop and
-    # strand the reset and api.close under it. Registered in reverse because
-    # the stack unwinds last-in, first-out.
-    with ExitStack() as unwind:
-        for label, fn in reversed(steps):
-            unwind.callback(_release_step, stack.name, label, fn)
+    release = interrupts if interrupts is not None else ReleaseInterrupts()
+    for label, fn in steps:
+        release.step(stack.name, label, fn)
+    if interrupts is None:
+        release.raise_pending()
 
 
 # How long the headless join parks per poll: short enough that Ctrl+C feels
@@ -1194,7 +1246,9 @@ def build_session(
     Call validate_configs first. On any exception before the Session exists —
     a StackBuildError or anything else a provisioning step raises, a Ctrl+C
     included — the stacks that did come up are torn down in reverse before it
-    propagates, so a partial failure leaves no hardware held."""
+    propagates, so a partial failure leaves no hardware held. A Ctrl+C during
+    that teardown is handled as :class:`ReleaseInterrupts` describes, counted
+    across every stack."""
     # Before the Playlists are constructed, so the module-global accessor is
     # right for the first frame's sub-stage timings. Process-wide, so an
     # ensemble's per-scene timings mix across systems.
@@ -1217,49 +1271,53 @@ def build_session(
         stop_event = threading.Event()
 
     # An ExitStack rather than a try/except around the loop: a teardown that
-    # raises (a second Ctrl+C) would end a hand-written reverse loop and strand
-    # every stack under it, and the ensemble wiring after the loop has to be
-    # covered too.
+    # raises would end a hand-written reverse loop and strand every stack under
+    # it, and the ensemble wiring after the loop has to be covered too.
     stacks: list[SystemStack] = []
-    with ExitStack() as unwind:
-        for cfg, name, sub_path in zip(cfgs, loaded.names, loaded.paths, strict=True):
-            st = build_stack(
-                cfg,
-                name,
+    interrupts = ReleaseInterrupts()
+    try:
+        with ExitStack() as unwind:
+            for cfg, name, sub_path in zip(cfgs, loaded.names, loaded.paths, strict=True):
+                st = build_stack(
+                    cfg,
+                    name,
+                    stop_event=stop_event,
+                    profiler=profiler,
+                    is_ensemble=loaded.is_ensemble,
+                    config_path=sub_path,
+                    interrupts=interrupts,
+                )
+                stacks.append(st)
+                unwind.callback(teardown_stack, st, interrupts)
+
+            if ensemble is not None:
+                ensemble.stacks = stacks
+                ensemble.populate_broadcast_events()
+                # The follower-scene factory closes over the stack's api/audio/source/cfg,
+                # which the playlist has no way to reach. Built by a helper rather than a
+                # loop-body lambda, so each captures its own stack.
+                for st, cfg in zip(stacks, cfgs, strict=True):
+                    st.playlist.bind_ensemble(
+                        ensemble,
+                        interrupt=ensemble.broadcast_interrupt[st.name],
+                        resume=ensemble.broadcast_resume[st.name],
+                        build_follower_scene=_follower_scene_factory(st, cfg),
+                    )
+
+            sess = Session(
+                args=args,
+                loaded=loaded,
+                cfgs=cfgs,
+                stacks=stacks,
+                ensemble=ensemble,
                 stop_event=stop_event,
                 profiler=profiler,
-                is_ensemble=loaded.is_ensemble,
-                config_path=sub_path,
+                interactive=interactive,
+                generation=generation,
             )
-            stacks.append(st)
-            unwind.callback(teardown_stack, st)
-
-        if ensemble is not None:
-            ensemble.stacks = stacks
-            ensemble.populate_broadcast_events()
-            # The follower-scene factory closes over the stack's api/audio/source/cfg,
-            # which the playlist has no way to reach. Built by a helper rather than a
-            # loop-body lambda, so each captures its own stack.
-            for st, cfg in zip(stacks, cfgs, strict=True):
-                st.playlist.bind_ensemble(
-                    ensemble,
-                    interrupt=ensemble.broadcast_interrupt[st.name],
-                    resume=ensemble.broadcast_resume[st.name],
-                    build_follower_scene=_follower_scene_factory(st, cfg),
-                )
-
-        sess = Session(
-            args=args,
-            loaded=loaded,
-            cfgs=cfgs,
-            stacks=stacks,
-            ensemble=ensemble,
-            stop_event=stop_event,
-            profiler=profiler,
-            interactive=interactive,
-            generation=generation,
-        )
-        unwind.pop_all()
+            unwind.pop_all()
+    finally:
+        interrupts.raise_pending()
     return sess
 
 
@@ -1479,11 +1537,13 @@ def teardown_session(sess: Session, *, save_live_tune: bool = True) -> None:
             sess.control_server.stop()
         except Exception:
             log.exception("control plane shutdown failed")
-    # An ExitStack for the same reason build_session's unwind is one: a second
-    # Ctrl+C during one stack's teardown must not strand the stacks under it.
+    # An ExitStack for the same reason build_session's unwind is one: a stack's
+    # teardown that raises must not strand the stacks under it.
+    interrupts = ReleaseInterrupts()
     with ExitStack() as unwind:
         for st in sess.stacks:
-            unwind.callback(teardown_stack, st)
+            unwind.callback(teardown_stack, st, interrupts)
+    interrupts.raise_pending()
     # After teardown, so the terminal is free for the prompt — which is a
     # blocking `input()`, hence the `interactive` gate. Guarded so a save-flow
     # error cannot mask the original shutdown.

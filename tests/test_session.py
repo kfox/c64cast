@@ -287,7 +287,7 @@ class BuildSessionTest(unittest.TestCase):
                 session, "build_stack", side_effect=[*built, session.StackBuildError(4)]
             ),
             mock.patch.object(
-                session, "teardown_stack", side_effect=lambda st: torn.append(st.name)
+                session, "teardown_stack", side_effect=lambda st, _interrupts: torn.append(st.name)
             ),
         ):
             with self.assertRaises(session.StackBuildError) as cm:
@@ -318,7 +318,7 @@ class BuildSessionTest(unittest.TestCase):
         built = [fake_system_stack("a"), fake_system_stack("b")]
         torn: list[str] = []
 
-        def teardown(st):
+        def teardown(st, _interrupts):
             torn.append(st.name)
             if st.name == "b":
                 raise KeyboardInterrupt
@@ -355,6 +355,51 @@ class BuildSessionTest(unittest.TestCase):
         ):
             session.build_session(_args(), loaded, loaded.cfgs)
         teardown.assert_not_called()
+
+    def _unwind_with_interrupts(self, b_steps: dict[str, BaseException]):
+        """build_session with a and b built and c failing; each of b's named
+        steps (``audio`` / ``reset``) raises its interrupt. Returns a, b and
+        what propagated."""
+        loaded = _loaded(["a", "b", "c"])
+        a, b = fake_system_stack("a"), fake_system_stack("b")
+        for st in (a, b):
+            st.audio = mock.MagicMock(name=f"audio-{st.name}")
+        if "audio" in b_steps:
+            b.audio.close.side_effect = b_steps["audio"]
+        if "reset" in b_steps:
+            b.api.reset.side_effect = b_steps["reset"]
+        with (
+            mock.patch.object(
+                session, "build_stack", side_effect=[a, b, session.StackBuildError(4)]
+            ),
+            self.assertLogs("c64cast", "WARNING"),
+            self.assertRaises(BaseException) as raised,
+        ):
+            session.build_session(_args(), loaded, loaded.cfgs)
+        return a, b, raised.exception
+
+    def test_a_ctrl_c_during_the_unwind_still_releases_every_stack(self):
+        # "Hurry": b finishes its steps, a is still released, and the
+        # interrupt propagates once they are done.
+        hurry = KeyboardInterrupt("hurry")
+        a, b, raised = self._unwind_with_interrupts({"audio": hurry})
+        self.assertIs(raised, hurry)
+        b.api.reset.assert_called_once()
+        b.api.close.assert_called_once()
+        a.audio.close.assert_called_once()
+        a.api.reset.assert_called_once()
+        a.api.close.assert_called_once()
+
+    def test_a_second_ctrl_c_during_the_unwind_stops_every_stack_at_once(self):
+        hard_stop = KeyboardInterrupt("hard stop")
+        a, b, raised = self._unwind_with_interrupts(
+            {"audio": KeyboardInterrupt("hurry"), "reset": hard_stop}
+        )
+        self.assertIs(raised, hard_stop)
+        b.api.close.assert_not_called()
+        a.audio.close.assert_not_called()
+        a.api.reset.assert_not_called()
+        a.api.close.assert_not_called()
 
     def test_ensemble_mode_binds_every_playlist(self):
         loaded = _loaded(["a", "b"], is_ensemble=True)
@@ -698,7 +743,9 @@ class TeardownSessionTest(unittest.TestCase):
         sess.control_server = mock.MagicMock()
         sess.control_server.stop.side_effect = lambda: order.append("control")
         with mock.patch.object(
-            session, "teardown_stack", side_effect=lambda st: order.append(f"stack-{st.name}")
+            session,
+            "teardown_stack",
+            side_effect=lambda st, _interrupts: order.append(f"stack-{st.name}"),
         ):
             session.teardown_session(sess, save_live_tune=False)
         self.assertEqual(order, ["midi", "wled", "control", "stack-b", "stack-a"])
@@ -709,7 +756,7 @@ class TeardownSessionTest(unittest.TestCase):
         sess = _session("a", "b")
         torn: list[str] = []
 
-        def teardown(st):
+        def teardown(st, _interrupts):
             torn.append(st.name)
             if st.name == "b":
                 raise KeyboardInterrupt
@@ -735,7 +782,7 @@ class TeardownSessionTest(unittest.TestCase):
         t.start()
         sess.threads = [t]
         with mock.patch.object(
-            session, "teardown_stack", side_effect=lambda st: order.append("stack")
+            session, "teardown_stack", side_effect=lambda st, _interrupts: order.append("stack")
         ):
             session.teardown_session(sess, save_live_tune=False)
         self.assertEqual(order, ["thread", "stack"])
