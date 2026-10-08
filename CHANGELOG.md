@@ -459,15 +459,6 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   putting yours back at the end; before, a table measured in one model played
   through the other model's ladder.
 
-- **`dac_curve = "auto"` plays a DAC calibration whenever one applies,
-  including one measured on an ARMSID or ARM2SID.** When the calibration
-  recorded the chip's model, the table plays in that model and your model is
-  put back at the end of the run, as for any other ARMSID calibration; a chip
-  whose model went unrecorded, or that a run cannot switch, plays the table in
-  whatever model it is in. `dac_curve = "calibrated"` is no
-  longer needed to play such a table, and `--calibrate-dac` and `--doctor` no
-  longer say it is.
-
 - **An ARM2SID's second SID now plays two-SID tunes and ASID streams on an
   Ultimate 64.** The firmware reports the chip as an ARMSID and socket 2 as
   empty, so the right channel was never used. c64cast now asks the chip itself,
