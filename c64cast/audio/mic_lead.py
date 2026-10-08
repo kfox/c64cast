@@ -669,7 +669,8 @@ class MicLeadServo:
         tracker off by a whole number of those rings, and such a reading puts
         the lead 8 KB high or low: past the re-anchor limits either way. So a
         lead that would re-anchor is read once more and must agree within
-        ``MIC_LEAD_TORN_TOLERANCE``, else the measurement is torn. That costs
+        ``MIC_LEAD_TORN_TOLERANCE`` plus the host's rate times the gap between
+        the reads, else the measurement is torn. That costs
         a read only when the host has really lapped or been overtaken."""
         m = self._read_once()
         if m is None or self._stop.is_set():
@@ -697,7 +698,13 @@ class MicLeadServo:
         check = self._read_once()
         if check is None:
             return None
-        if abs(check.lead - m.lead) > MIC_LEAD_TORN_TOLERANCE:
+        # The lead moves between the reads by the host's advance less the
+        # pump's, up to the host's rate on a stalled pump, so the tolerance
+        # grows with the gap. Capped at half a $4000 ring, it still tells the
+        # 8 KB a garbled src tracker is off by from that motion.
+        moved = round(self._rate * max(0.0, check.at - m.at))
+        tolerance = min(MIC_LEAD_TORN_TOLERANCE + moved, RING_BUFFER_SIZE // 2)
+        if abs(signed_ring_delta(check.lead, m.lead)) > tolerance:
             log.debug(
                 "audio[reu mic]: torn pump read (lead %+d vs %+d on the re-read)",
                 m.lead,

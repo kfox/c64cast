@@ -595,6 +595,41 @@ class MicLeadOpenLoopTest(unittest.TestCase):
         self.assertEqual(rig.reads - reads, 2)
         self.assertEqual(rig.servo.reanchors, 1)
 
+    def test_a_lap_on_a_stalled_pump_with_slow_reads_is_reanchored(self):
+        # The pump halts and the host keeps writing, so the lead grows by
+        # the host's rate across the two reads: 1800 B for 0.15 s reads. That
+        # is the lap moving, not a torn read.
+        rig = self._closed()
+        rig.host += ml.MIC_LEAD_REANCHOR_ABOVE
+
+        def slow_read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            raw = rig.read(address, length, timeout)
+            rig.t += 0.15
+            rig.host += RATE * 0.15
+            return raw
+
+        rig.servo._read = slow_read
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual((rig.servo.reanchors, rig.servo._fails), (1, 0))
+
+    def test_a_lap_whose_two_reads_straddle_the_ring_wrap_is_reanchored(self):
+        # Half a ring ahead, the signed lead flips sign between two reads a
+        # few hundred bytes apart; that is one lap, not a torn read.
+        rig = self._closed()
+        rig.host = rig.pump + REU_MIC_SIZE // 2 - 300
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            raw = rig.read(address, length, timeout)
+            rig.t += 0.02
+            rig.host += 240
+            return raw
+
+        rig.servo._read = read
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual((rig.servo.reanchors, rig.servo._fails), (1, 0))
+
     def test_a_pair_off_the_trusted_phase_but_agreeing_replaces_it(self):
         # A reseeded dst tracker moves the phase for good; the servo follows
         # it rather than failing every read after.
