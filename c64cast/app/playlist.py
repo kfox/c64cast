@@ -190,6 +190,8 @@ class Playlist:
         self.on_machine_restart: Callable[[], None] | None = None
         # Whether the last frame raised no link error and landed a write.
         self._frame_landed = False
+        # A restart found on the frame a scene ended: `safe_teardown` restores.
+        self._restore_after_teardown = False
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -776,6 +778,9 @@ class Playlist:
         `on_machine_restart`; a failure there is logged and the scene sets
         up regardless."""
         self.log.warning(message, scene_name)
+        self._restore_machine()
+
+    def _restore_machine(self) -> None:
         if self.on_machine_restart is not None:
             try:
                 self.on_machine_restart()
@@ -922,6 +927,9 @@ class Playlist:
         # Runs even when teardown raised, so a crashing scene cannot strand the
         # conductor slot or the ensemble audio lock.
         self.ensemble_coord.release_scene(scene)
+        if self._restore_after_teardown:
+            self._restore_after_teardown = False
+            self._restore_machine()
 
     def _maybe_heartbeat(self, now: float) -> None:
         if self.heartbeat_interval <= 0:
@@ -1243,11 +1251,14 @@ class Playlist:
                 if self.restart_watch.after_frame(self._frame_landed):
                     if self.current.is_done:
                         # The scene ended (or was skipped) on this frame, so
-                        # the advance that follows sets the next one up.
-                        self._put_machine_back(
-                            "the machine restarted as %r ended; putting its state back first",
+                        # the advance that follows sets the next one up; the
+                        # restore waits for its teardown, as a re-setup's does.
+                        self.log.warning(
+                            "the machine restarted as %r ended; putting its state back "
+                            "once it is torn down",
                             self.current.name,
                         )
+                        self._restore_after_teardown = True
                     else:
                         self._set_up_again_after_restart()
                     next_deadline = time.time()

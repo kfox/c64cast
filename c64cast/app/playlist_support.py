@@ -571,10 +571,11 @@ class MachineRestartWatch:
 
     A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
     nonce too, so the backend's reset listener re-arms it after the next
-    frame, and after each later one until that write lands; a restart that comes after such a reset and before the re-arm
-    leaves nothing to tell it from that reset. `suspend()` stands the
-    watch down while a launched program owns the machine, whose RAM the
-    nonce must not touch. Only a backend that reads memory and reports its
+    frame, and after each later landed one until that write lands; a
+    restart that comes after such a reset and before the re-arm leaves
+    nothing to tell it from that reset. `suspend()` stands the watch down
+    while a launched program owns the machine, whose RAM the nonce must
+    not touch. Only a backend that reads memory and reports its
     own resets (`add_reset_listener`) is watched."""
 
     def __init__(
@@ -592,6 +593,8 @@ class MachineRestartWatch:
         self._nonce = bytes(b | 0x01 for b in os.urandom(RESTART_SENTINEL_LEN))
         self._armed = False
         self._rearm = False
+        # The last re-arm the link lost, so the next waits for a landed frame.
+        self._rearm_lost = False
         self._suspended = False
         self._marks = (0, 0)
         self._next_check = 0.0
@@ -612,7 +615,7 @@ class MachineRestartWatch:
         back as a restart."""
         if not self.enabled:
             return
-        self._rearm = False
+        self._rearm = self._rearm_lost = False
         self._suspended = False
         self._armed = write_confirmed(
             self._api,
@@ -627,10 +630,14 @@ class MachineRestartWatch:
         if not self.enabled:
             return False
         if self._rearm:
+            # A retry waits for a landed frame: on a link that is down, a
+            # confirmed write every frame spends up to three flushes a frame.
+            if self._rearm_lost and not landed:
+                return False
             self.arm()
-            # A re-arm the link lost is tried again after the next frame:
+            # A re-arm the link lost is tried again after a later frame:
             # leaving it off would stop watching for the rest of the scene.
-            self._rearm = not self._armed
+            self._rearm = self._rearm_lost = not self._armed
             return False
         if not self._armed or not landed:
             return False
@@ -660,7 +667,7 @@ class MachineRestartWatch:
         owns the machine, so the nonce is neither written nor read, and its
         resets are not re-armed."""
         self._armed = False
-        self._rearm = False
+        self._rearm = self._rearm_lost = False
         self._suspended = True
 
     def _look(self, marks: tuple[int, int]) -> bool:

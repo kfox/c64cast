@@ -150,6 +150,11 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.api.drop_writes = True
         self.assertFalse(self.watch.after_frame(False))
         self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
+        errors = self.api.stats["errors"]
+        self.assertFalse(self.watch.after_frame(False))
+        self.assertEqual(
+            self.api.stats["errors"], errors, "retried after a frame that did not land"
+        )
         self.api.drop_writes = False
         self.assertFalse(self.watch.after_frame(True))
         self.assertNotIn(0, bytes(self.api.ram[_SENTINEL]), "the lost re-arm was not retried")
@@ -339,11 +344,11 @@ class RestartOnTheLastFrameTest(unittest.TestCase):
             interstitial_factory=_transition_factory()[0],
             loop=False,
         )
-        restores: list[int] = []
-        pl.on_machine_restart = lambda: restores.append(1)
+        teardowns_at_restore: list[int] = []
+        pl.on_machine_restart = lambda: teardowns_at_restore.append(scene.teardown_count)
         with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
             pl.run()
-        self.assertEqual(restores, [1])
+        self.assertEqual(teardowns_at_restore, [1], "not restored once, after the teardown")
         self.assertEqual(scene.setup_count, 1, "a scene that had ended was set up again")
         self.assertTrue(any("restarted as 'Video' ended" in line for line in logs.output))
 
