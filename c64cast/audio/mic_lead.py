@@ -434,6 +434,8 @@ class _Measurement(NamedTuple):
     lead: int  # the host write head's signed lead over the pump's src tracker
     reading: MicPumpReading
     at: float  # the servo clock at the middle of the read
+    begun: float  # the servo clock as the read was sent
+    ended: float  # the servo clock as it came back
 
 
 class MicLeadServo:
@@ -649,7 +651,7 @@ class MicLeadServo:
         if reading is None:
             return None
         lead = signed_ring_delta(self._host_between(h0, h1), reading.src)
-        return _Measurement(lead, reading, (t0 + t1) / 2)
+        return _Measurement(lead, reading, (t0 + t1) / 2, t0, t1)
 
     def _phase_agrees(self, reading: MicPumpReading, phase: int | None) -> bool:
         if phase is None:
@@ -668,9 +670,11 @@ class MicLeadServo:
         The phase is taken modulo the $4000 ring, so it cannot see a src
         tracker off by a whole number of those rings, and such a reading puts
         the lead 8 KB high or low: past the re-anchor limits either way. So a
-        lead that would re-anchor is read once more and must agree within
-        ``MIC_LEAD_TORN_TOLERANCE`` plus the host's rate times the gap between
-        the reads, and keep the trusted phase, else the measurement is torn. That costs
+        lead that would re-anchor is read once more. Its src must have moved
+        on from the first read's by no less than ``-MIC_LEAD_TORN_TOLERANCE``
+        and no more than the sample rate allows across both reads plus that
+        tolerance, a reach that must stay short of a $4000 ring; and it must
+        keep the trusted phase, else the measurement is torn. That costs
         a read only when the host has really lapped or been overtaken."""
         m = self._read_once()
         if m is None or self._stop.is_set():
@@ -705,17 +709,19 @@ class MicLeadServo:
                 tracker_phase(check.reading),
             )
             return None
-        # The lead moves between the reads by the host's advance less the
-        # pump's, up to the host's rate on a stalled pump, so the tolerance
-        # grows with the gap. Capped at half a $4000 ring, it still tells the
-        # 8 KB a garbled src tracker is off by from that motion.
-        moved = round(self._rate * max(0.0, check.at - m.at))
-        tolerance = min(MIC_LEAD_TORN_TOLERANCE + moved, RING_BUFFER_SIZE // 2)
-        if abs(signed_ring_delta(check.lead, m.lead)) > tolerance:
+        # Judged on the pump's own advance, not on the lead's motion: the lead
+        # moves by the host's advance less the pump's, a host rate one way on
+        # a stall and a deep drop's worth the other, and a window wide enough
+        # for both took in a stalled pump's re-read with its src 8 KB off. The
+        # pump was sampled somewhere inside each read, so the span it can
+        # advance over runs from the first read's start to the re-read's end.
+        advanced = signed_ring_delta(check.reading.src, m.reading.src)
+        reach = MIC_LEAD_TORN_TOLERANCE + round(self._rate * max(0.0, check.ended - m.begun))
+        if reach >= RING_BUFFER_SIZE or not -MIC_LEAD_TORN_TOLERANCE <= advanced <= reach:
             log.debug(
-                "audio[reu mic]: torn pump read (lead %+d vs %+d on the re-read)",
-                m.lead,
-                check.lead,
+                "audio[reu mic]: torn pump read (pump %+d B in %.2fs on the re-read)",
+                advanced,
+                check.ended - m.begun,
             )
             return None
         return check

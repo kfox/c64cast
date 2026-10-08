@@ -653,6 +653,82 @@ class MicLeadOpenLoopTest(unittest.TestCase):
             rig.servo.tick()
         self.assertEqual((rig.servo.reanchors, rig.servo._fails), (1, 0))
 
+    def _lapped_with_reads_of(self, seconds: float, *, pump_rate: float, host_rate: float) -> _Rig:
+        rig = self._closed()
+        rig.host += ml.MIC_LEAD_REANCHOR_ABOVE
+
+        def slow_read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            raw = rig.read(address, length, timeout)
+            rig.t += seconds
+            rig.pump += pump_rate * seconds
+            rig.host += host_rate * seconds
+            return raw
+
+        rig.servo._read = slow_read
+        return rig
+
+    def test_a_stalled_pumps_reread_off_by_a_whole_ring_is_torn_on_slow_reads(self):
+        # The lap's own growth across 0.4 s reads offsets most of the 8 KB a
+        # src garbled ahead moves the lead, which a window on the lead's motion
+        # took in, re-anchoring the fill 8 KB from the pump.
+        rig = self._lapped_with_reads_of(0.4, pump_rate=0.0, host_rate=RATE)
+        rig.garble = [0, RING_BUFFER_SIZE]
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG") as cm:
+            self.assertIsNone(rig.servo.tick())
+        self.assertTrue(any("re-read" in m for m in cm.output), cm.output)
+        self.assertEqual((rig.servo.reanchors, rig.servo._fails), (0, 1))
+
+    def test_a_stalled_pumps_reread_off_by_a_whole_ring_is_torn_where_a_lap_is_told(self):
+        for garble in (RING_BUFFER_SIZE, -RING_BUFFER_SIZE):
+            with self.subTest(garble=garble):
+                rig = self._lapped_with_reads_of(0.25, pump_rate=0.0, host_rate=RATE)
+                rig.garble = [0, garble]
+                with self.assertLogs("c64cast.audio.mic_lead", "DEBUG"):
+                    self.assertIsNone(rig.servo.tick())
+                self.assertEqual((rig.servo.reanchors, rig.servo._fails), (0, 1))
+
+    def test_a_lap_on_a_stalled_pump_is_reanchored_up_to_the_reach_a_garble_is_told_in(self):
+        rig = self._lapped_with_reads_of(0.25, pump_rate=0.0, host_rate=RATE)
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual((rig.servo.reanchors, rig.servo._fails), (1, 0))
+
+    def test_a_lap_whose_pump_was_sampled_at_the_far_ends_of_the_two_reads_is_reanchored(self):
+        # Sampled as the first read was sent and as the re-read came back, the
+        # running pump moved for both reads end to end, twice their midpoints' gap.
+        rig = self._closed()
+        rig.host += ml.MIC_LEAD_REANCHOR_ABOVE
+
+        def advance() -> None:
+            rig.t += 0.25
+            rig.pump += RATE * 0.25
+            rig.host += RATE * 0.25
+
+        def read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            if rig.reads == 0:
+                raw = rig.read(address, length, timeout)
+                advance()
+                return raw
+            advance()
+            return rig.read(address, length, timeout)
+
+        rig.reads = 0
+        rig.servo._read = read
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual((rig.reads, rig.servo.reanchors, rig.servo._fails), (2, 1, 0))
+
+    def test_an_overtake_under_a_deep_drop_with_slow_reads_is_reanchored(self):
+        # The host writes slower than the pump reads, so the lead falls
+        # between the reads while the pump runs on: no stall's direction.
+        rig = self._lapped_with_reads_of(
+            0.25, pump_rate=RATE, host_rate=RATE * (1 - ml.MIC_LEAD_MAX_DROP)
+        )
+        rig.host = rig.pump - 2000
+        with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
+            rig.servo.tick()
+        self.assertEqual((rig.servo.reanchors, rig.servo._fails), (1, 0))
+
     def test_a_lap_whose_two_reads_straddle_the_ring_wrap_is_reanchored(self):
         # Half a ring ahead, the signed lead flips sign between two reads a
         # few hundred bytes apart; that is one lap, not a torn read.
@@ -901,7 +977,7 @@ class MicLeadRingWrapTest(unittest.TestCase):
     def test_an_anchor_extrapolated_past_the_ring_end_wraps(self):
         rig = _Rig(drift=0.0)
         rig.pump = REU_MIC_SIZE - 1024
-        rig.host = rig.pump - 500
+        rig.host = rig.pump - 2000
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             rig.servo.tick()
         rig.t = 0.5
@@ -990,7 +1066,7 @@ class MicLeadRateScalingTest(unittest.TestCase):
         rig.servo.tick()
         rig.t = 1.0
         rig.pump = 10240.0
-        rig.host = rig.pump - 500
+        rig.host = rig.pump - 2000
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             rig.servo.tick()
         rig.t = 1.5
@@ -1002,7 +1078,9 @@ class MicLeadTelemetryTest(unittest.TestCase):
     def test_lead_min_and_max_span_every_measurement(self):
         servo = _Rig(drift=0.0).servo
         script = iter(
-            ml._Measurement(lead, ml.MicPumpReading(pump, RING_BUFFER_ADDR, RING_BUFFER_ADDR), at)
+            ml._Measurement(
+                lead, ml.MicPumpReading(pump, RING_BUFFER_ADDR, RING_BUFFER_ADDR), at, at, at
+            )
             for lead, pump, at in [
                 (1600, 0, 0.0),
                 (1200, 12000, 1.0),
