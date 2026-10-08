@@ -522,9 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
         "from the system default input. On a U64/U2+, every populated "
         "physical SID socket is measured independently. Playback with "
         "[audio].dac_curve = 'auto' (the default) then uses the applicable table "
-        "automatically, except one whose chip the run identified as an ARMSID or "
-        "ARM2SID, which needs "
-        "dac_curve = 'calibrated'. Most valuable for physical 6581/8580 chips and SID "
+        "automatically. Most valuable for physical 6581/8580 chips and SID "
         "replacements, which vary chip-to-chip.",
     )
     debug.add_argument(

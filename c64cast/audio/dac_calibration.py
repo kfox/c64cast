@@ -76,7 +76,6 @@ from .dac_capture_device import (
     find_capture_device,
     resolve_capture_format,
 )
-from .dac_curve_resolve import auto_declined_chip
 from .dac_slot_ring import (
     ANCHOR_CODE,
     NMI_RATE,
@@ -598,8 +597,9 @@ def _identify_d400_chip(be: C64Backend, log_fn: Callable[[str], None]) -> str | 
     """The label of the chip answering ``$D400`` when it is an ARMSID or
     ARM2SID, for a run that measures it without socket detection; None for any
     other chip. The chip's own register protocol needs no SID config query, so
-    this works on every link, and ``"auto"`` declines the table the same way
-    whichever link measured it."""
+    this works on every link, and a run playing through the table can put the
+    chip back into the model it was measured in whichever link measured it,
+    when the chip reported its model."""
     reply = armsid.probe(be, SID.BASE)
     if reply is None:
         return None
@@ -675,12 +675,6 @@ def _report_run(
             f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
             f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
         )
-        declined = auto_declined_chip(None if r.detected is None else (None, r.detected))
-        if declined is not None:
-            log_fn(
-                f'[calib] {name}: measured on an {declined}; dac_curve = "auto" plays '
-                'linear on it, so set [audio].dac_curve = "calibrated" to play this table'
-            )
     log_fn(f"[calib] wrote {path}")
 
 

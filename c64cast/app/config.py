@@ -753,7 +753,7 @@ class AudioCfg:
         },
     )
     # Mahoney 8-bit $D418 companding. "auto" picks a per-unit calibrated table if one
-    # applies (see --calibrate-dac; one whose chip it identified as an ARMSID or ARM2SID gets "linear"), else "mahoney_ultisid" when an UltiSID core owns
+    # applies (see --calibrate-dac), else "mahoney_ultisid" when an UltiSID core owns
     # $D400 (the emulated SID is deterministic), else "linear" — the baked emulated
     # table would not match a physical SID (see dac_curve_resolve.py).
     # "mahoney_ultisid" parks the SID voices as DC sources and writes the full $D418
@@ -764,8 +764,7 @@ class AudioCfg:
         default="auto",
         metadata={
             "help": "SID $D418 DAC companding curve. 'auto' (default) = calibrated "
-            "table for the SID answering $D400 if present (unless the calibrating run identified its chip "
-            "as an ARMSID or ARM2SID, which gets 'linear'), else 'mahoney_ultisid' "
+            "table for the SID answering $D400 if present, else 'mahoney_ultisid' "
             "when an UltiSID core owns $D400, else 'linear' (an uncalibrated "
             "physical chip — run --calibrate-dac to measure it). "
             "'linear' = classic 4-bit volume nibble. 'mahoney_ultisid' "

@@ -223,12 +223,6 @@ class LabelTest(unittest.TestCase):
         self.assertTrue(armsid.is_right_channel("ARM2SID R 8580"))
         self.assertFalse(armsid.is_right_channel("ARM2SID 8580"))
 
-    def test_is_armsid_in_any_state(self):
-        for label in ("ARMSID", "ARMSID ?", "ARMSID 8580", "ARM2SID 6581", "ARM2SID R 8580"):
-            self.assertTrue(armsid.is_armsid(label), label)
-        for label in (None, "6581", "8580", "None", "ARMSIDX 6581"):
-            self.assertFalse(armsid.is_armsid(label), label)
-
 
 class DetectTest(_NoSettle):
     def test_arm2sid_with_split_on_labels_both_channels(self):
