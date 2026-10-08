@@ -3879,6 +3879,11 @@ class LifecycleTest(unittest.TestCase):
                 s._note_ring_landed(s._worker_generation, 1024, 0)
                 s._pushed_count += 1024
 
+    @staticmethod
+    def _pace(s: AudioStreamer) -> float:
+        with s._ring_pad_lock:
+            return s._landing_pace_locked()
+
     def test_the_clock_between_landings_runs_at_the_landing_pace(self):
         # Bus halts slow the NMI, so chunks land slower than the nominal rate.
         # Run at the nominal rate, the clock reached the next chunk early and
@@ -3900,7 +3905,7 @@ class LifecycleTest(unittest.TestCase):
         period = 1024 / s.effective_rate
         self._landing_at_pace(clock, s, period, 5)
         self._landing_at_pace(clock, s, 10 * period, 1)
-        self.assertAlmostEqual(s._landing_pace or 0.0, s.effective_rate, places=6)
+        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
     def test_the_landing_pace_never_runs_past_the_nominal_rate(self):
         # A catch-up burst lands faster than the NMI can play; the clock would
@@ -3908,18 +3913,18 @@ class LifecycleTest(unittest.TestCase):
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
         self._landing_at_pace(clock, s, 0.25 * 1024 / s.effective_rate, 20)
-        self.assertAlmostEqual(s._landing_pace or 0.0, s.effective_rate, places=6)
+        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
     def test_a_new_consumer_start_measures_the_landing_pace_afresh(self):
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
         self._landing_at_pace(clock, s, 1024 / (0.7 * s.effective_rate), 40)
         s._reset_ring_clock()
-        self.assertIsNone(s._landing_pace)
+        self.assertIsNone(s._landing_period)
         with mock.patch.object(audio_mod, "time", clock):
             s._mark_ring_clock()
         self._landing_at_pace(clock, s, 1024 / (0.7 * s.effective_rate), 1)
-        self.assertEqual(s._landing_pace, s.effective_rate)
+        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
     def test_the_first_landing_after_the_consumer_starts_seeds_the_pace(self):
         # The worker hands its first chunk off a pace period before dripping
@@ -3927,7 +3932,42 @@ class LifecycleTest(unittest.TestCase):
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
         self._landing_at_pace(clock, s, 2.9 * 1024 / s.effective_rate, 1)
-        self.assertEqual(s._landing_pace, s.effective_rate)
+        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+
+    def test_landing_jitter_around_the_drain_period_does_not_slow_the_pace(self):
+        # Averaged as capped bytes per second, an early landing clipped to the
+        # rate and a late one counted in full: 0.6 and 1.4 periods, a mean of
+        # exactly the rate, read as about 0.86 of it.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        for _ in range(30):
+            self._landing_at_pace(clock, s, 0.6 * period, 1)
+            self._landing_at_pace(clock, s, 1.4 * period, 1)
+        self.assertGreater(self._pace(s), 0.95 * s.effective_rate)
+
+    def test_the_landing_after_a_splice_fill_does_not_slow_the_pace(self):
+        # The fill lands at once, and the worker collects and hands off the
+        # next chunk before it lands, about two periods later.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        period = 1024 / s.effective_rate
+        self._landing_at_pace(clock, s, period, 5)
+        with mock.patch.object(audio_mod, "time", clock):
+            s._note_ring_landed(s._worker_generation, 1024, 1024, paced=False)
+        self._landing_at_pace(clock, s, 2 * period, 1)
+        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+
+    def test_the_landing_pace_follows_an_nmi_armed_above_the_nominal_rate(self):
+        # A pitch multiplier or the adaptive loop arms the NMI faster than
+        # effective_rate, and the ring drains that much faster.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        s.nmi.latch = s.nmi.nominal_latch() - 4
+        armed = audio_mod.actual_rate_for_latch(s.nmi.latch, s.system)
+        self._landing_at_pace(clock, s, 1024 / armed, 40)
+        self.assertAlmostEqual(self._pace(s), armed, delta=1.0)
+        self.assertGreater(armed, s.effective_rate + 100)
 
     def test_the_stall_reanchor_landing_does_not_slow_the_landing_pace(self):
         # Its lead of pad is written at once after the stall: a 4096-byte
@@ -3945,7 +3985,7 @@ class LifecycleTest(unittest.TestCase):
                     clock.advance(0.5)
                     s._resync_after_stall(0.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
         self.assertEqual([c.kwargs.get("paced") for c in note.call_args_list], [False])
-        self.assertAlmostEqual(s._landing_pace or 0.0, s.effective_rate, places=6)
+        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):
         # The gap is an EMA, so it can grow by more than what landed between
@@ -4645,15 +4685,15 @@ class SpliceFillLandedTest(unittest.TestCase):
         real_fill = s._neutral_fill_ring
         real_landed = s._note_ring_landed
         fills: list[tuple[int, int]] = []
-        landed: list[tuple[int, int]] = []
+        landed: list[tuple[int, int, bool]] = []
 
         def spying_fill(addr: int, n: int) -> None:
             real_fill(addr, n)
             fills.append((len(landed), n))
 
-        def spying_landed(generation: int, n: int, pad: int) -> None:
-            landed.append((n, pad))
-            real_landed(generation, n, pad)
+        def spying_landed(generation: int, n: int, pad: int, *, paced: bool = True) -> None:
+            landed.append((n, pad, paced))
+            real_landed(generation, n, pad, paced=paced)
             if fills:
                 s.running = False
 
@@ -4670,7 +4710,8 @@ class SpliceFillLandedTest(unittest.TestCase):
             t.join(timeout=1.0)
         self.assertEqual(len(fills), 1, "never reached the splice fill")
         at, n = fills[0]
-        self.assertEqual(landed[at : at + 1], [(n, n)])
+        # Unpaced: the fill lands at once rather than draining in.
+        self.assertEqual(landed[at : at + 1], [(n, n, False)])
 
 
 class DacEncodeLockTest(unittest.TestCase):
