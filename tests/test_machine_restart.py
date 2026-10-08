@@ -208,6 +208,19 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.assertFalse(self.watch.after_frame(False))
         self.assertEqual(self.api.stats["errors"], errors, "retried on a dead link")
 
+    def test_a_lost_rearm_is_retried_after_a_quiet_interval_once_the_link_settles(self):
+        self.api.c64cast_reset()
+        self.api.drop_writes = True
+        self.assertFalse(self.watch.after_frame(False))
+        self.api.drop_writes = False
+        self.api.delivery_epoch += 1  # one blip, then nothing moves the marks
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.assertFalse(self.watch.after_frame(False))
+        self.assertEqual(bytes(self.api.ram[_SENTINEL]), bytes(RESTART_SENTINEL_LEN))
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.assertFalse(self.watch.after_frame(False))
+        self.assertNotIn(0, bytes(self.api.ram[_SENTINEL]), "one blip stopped the retries")
+
     def test_a_nonce_arm_lost_is_retried_on_a_scene_that_lands_no_frames(self):
         api = _Machine()
         api.drop_writes = True

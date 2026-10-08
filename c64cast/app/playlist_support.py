@@ -599,8 +599,8 @@ class MachineRestartWatch:
     frame; a restart that comes after such a reset and before the re-arm
     leaves nothing to tell it from that reset. A re-arm, or a nonce `arm()`
     wrote, that the link loses is written again after each later landed
-    frame, or every `RESTART_CHECK_MIN_S` on a scene that lands none while
-    the link marks stay put, until it lands. `suspend()` stands the watch
+    frame, or on a scene that lands none, after each `RESTART_CHECK_MIN_S`
+    in which the link marks stay put, until it lands. `suspend()` stands the watch
     down while a launched program owns the machine, whose RAM the nonce
     must not touch. Only a backend that reads memory and reports its own
     resets (`add_reset_listener`) is watched."""
@@ -707,8 +707,13 @@ class MachineRestartWatch:
             # that is down, a confirmed write every frame spends up to three
             # flushes a frame.
             if self._rearm_lost and not landed:
-                idle = self._current_marks() == self._marks
-                if not idle or self._clock() < self._next_rearm:
+                marks = self._current_marks()
+                if marks != self._marks:
+                    # Waits for one interval in which the marks stay put.
+                    self._marks = marks
+                    self._next_rearm = self._clock() + RESTART_CHECK_MIN_S
+                    return False
+                if self._clock() < self._next_rearm:
                     return False
             self._write_nonce()
             self._retry_if_lost()
