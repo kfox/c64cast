@@ -586,6 +586,23 @@ class MicLeadOpenLoopTest(unittest.TestCase):
         self.assertEqual(rig.servo.reanchors, 0)
         self.assertEqual(rig.servo._fails, 1)
 
+    def test_a_src_off_by_a_whole_ring_is_torn_on_slow_reads_too(self):
+        # 0.6 s reads, within the two-phase read bound, would let the lap's
+        # own motion excuse the 8 KB the garble moves the lead.
+        rig = self._closed()
+        rig.garble = [RING_BUFFER_SIZE]
+
+        def slow_read(address: int, length: int, timeout: float = 1.0) -> bytes | None:
+            raw = rig.read(address, length, timeout)
+            rig.t += 0.6
+            return raw
+
+        rig.servo._read = slow_read
+        with self.assertLogs("c64cast.audio.mic_lead", "DEBUG") as cm:
+            self.assertIsNone(rig.servo.tick())
+        self.assertTrue(any("re-read" in m for m in cm.output), cm.output)
+        self.assertEqual((rig.servo.reanchors, rig.servo._fails), (0, 1))
+
     def test_a_real_lap_is_read_again_and_reanchored(self):
         rig = self._closed()
         rig.host += ml.MIC_LEAD_REANCHOR_ABOVE
