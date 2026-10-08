@@ -984,7 +984,7 @@ class RedactUrlUserinfoTest(unittest.TestCase):
             lambda s: "x://" + "a" * 16_000 * s,
         ):
             with self.subTest(line=make(1)[:16]):
-                line = make(1)
+                line = make(_SCALE)
                 self.assertEqual(redact_secrets(line), line)
                 _assert_linear_time(self, make)
 
