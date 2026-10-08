@@ -428,6 +428,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   was read, up to several seconds ahead of its picture, and a silent stretch
   longer than a few seconds froze the picture for good.
 
+- **`--frame-numbers` shows the video's true position on the 4-bit DAC with a
+  bitmap display.** There the playback clock runs slower than the file, and
+  the label showed that clock as it was: 12% short of the frame on screen.
+
 - **A seek, A/B loop wrap or resume in a video keeps the start of the sound
   it lands on.** The decoder can reach the new position and hand over its
   first sound before the old sound has been cleared out, and that sound was

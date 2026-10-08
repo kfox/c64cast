@@ -2561,6 +2561,17 @@ class VideoSceneFrameNumberLabelTest(unittest.TestCase):
         # both zero); start_s(50) is added back for the true file offset.
         self.assertIn(timecode(50.0), label)
 
+    def test_untouched_reads_the_clock_back_into_file_time_under_tempo_compensation(self):
+        # Under the DAC+bitmap tempo scale the clock runs in the scaled
+        # domain: 8.8 s of it at 0.88 is 10 s into the file past start_s.
+        source = _StubSource(duration=None)
+        scene = _make_video_scene_stub(source, start_s=50.0)
+        scene.show_frame_numbers = True
+        scene.tempo_scale = 0.88
+        scene.wall_start_time = -8.8
+        label = self._run(scene)
+        self.assertEqual(label, f"{timecode(60.0)} f{round(60.0 * 30)}")
+
     def test_touched_does_not_double_count_start_s(self):
         source = _StubSource(duration=None)
         scene = _make_video_scene_stub(source, start_s=50.0)

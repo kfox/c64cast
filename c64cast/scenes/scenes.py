@@ -1779,11 +1779,14 @@ class VideoScene(MediaFileMixin, Scene):
             self.display_mode.set_color_fit(self._online_fit.result())
         if self.show_frame_numbers:
             fps = self.source.video_fps or 30.0
-            # clock_s is rebased to 0 at start_s, so add it back for the true
-            # offset into the file — unless transport has been touched, past
-            # which clock_s is already an absolute file position.
+            # clock_s is rebased to 0 at start_s and runs in the tempo-scaled
+            # domain, so unscale it and add start_s back for the true offset
+            # into the file — unless transport has been touched, past which
+            # clock_to_content maps it to an absolute file position.
             file_s = (
-                tr.clock_to_content(frame_clock_s) if tr.touched else frame_clock_s + self.start_s
+                tr.clock_to_content(frame_clock_s)
+                if tr.touched
+                else frame_clock_s / (self.tempo_scale or 1.0) + self.start_s
             )
             label = f"{timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)

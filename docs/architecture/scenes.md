@@ -75,7 +75,7 @@ From then on `_clock_s()` free-runs from the anchor as `_wall_anchor_clock_s + (
 
 **Reset.** All transport state resets at the top of `setup()`, so a repeated or looped scene starts back on the audio-master clock, untouched.
 
-**Debug label.** `show_frame_numbers` stops adding `start_s` once touched (`file_s = clock_s if _transport_touched else clock_s + start_s`) — past that point `clock_s` is already an absolute file position, so adding `start_s` again would double-count.
+**Debug label.** `show_frame_numbers` stops adding `start_s` once touched (`file_s = clock_to_content(clock_s) if touched else clock_s / tempo_scale + start_s`) — past that point `clock_s` is already an absolute file position, so adding `start_s` again would double-count. Before the touch the clock runs in the tempo-scaled domain, so it is divided by `tempo_scale` first; without that, the DAC+bitmap 0.88 scale put the label 12% short of the frame on screen.
 
 **Why REU-pump audio is force-disabled.** Whenever `[midi_control].cc_map` maps any `transport.*` action, `cli._coerce_reu_for_transport` disables it process-wide, mirroring `_coerce_reu_for_backend`'s shape and running before the shared `AudioStreamer` is constructed (since `use_reu_pump` is a constructor arg baked in there).
 
