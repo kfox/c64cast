@@ -440,16 +440,18 @@ class EnsembleCoordinator:
             scene.clear_orchestrator()
         self.release_audio_claim(scene)
 
-    def audio_claimant(self, scene: Scene) -> Scene | None:
+    def audio_claimant(self, scene: Scene, announcing: Scene | None) -> Scene | None:
         """The scene this playlist holds the ensemble audio slot for while
         `scene` is set up: `scene` itself, or, when `scene` is the "UP NEXT"
-        card, the upcoming scene `resolve_next_index` claimed it for. None
-        when it holds no slot."""
-        pl = self._pl
-        if pl.ensemble is None:
+        card, the upcoming scene it is `announcing`, which
+        `resolve_next_index` claimed the slot for. None when it holds no
+        slot. A slot some other scene still holds is not `scene`'s to
+        release: a broadcast follower or a launched clip that replaced a
+        card would otherwise wait to claim it back for a scene it is not."""
+        if self._pl.ensemble is None:
             return None
-        for candidate in (scene, *pl.scenes):
-            if candidate.__dict__.get("_audio_lock_held", False):
+        for candidate in (scene, announcing):
+            if candidate is not None and candidate.__dict__.get("_audio_lock_held", False):
                 return candidate
         return None
 

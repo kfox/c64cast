@@ -877,14 +877,31 @@ class SetupOutageReleasesTheEnsembleAudioSlotTest(unittest.TestCase):
         upcoming = _AudioScene(api, lossy_setups=0)
         pl, ens = self._ensemble_playlist(api, upcoming)
         card = _LossySetupScene(api, lossy_setups=1)
+        pl.interstitial_factory = lambda name: card
         holders: list[str | None] = []
         api.on_probe = lambda: holders.append(ens.audio_holder)
         with self.assertLogs("c64cast.app.playlist", level="INFO"):
-            pl.safe_setup(card)
+            pl._enter_interstitial()
         self.assertEqual(holders, ["sys"] + [None] * 3, "the slot stayed held through the wait")
         self.assertEqual(ens.audio_holder, "sys")
         self.assertTrue(upcoming.__dict__.get("_audio_lock_held"))
         self.assertEqual(card.setup_count, 2)
+
+    def test_a_scene_that_announces_nothing_leaves_another_scenes_slot_alone(self):
+        # A broadcast follower or a launched clip replacing an "UP NEXT" card
+        # leaves the slot claimed for the card's scene; their setup must not
+        # wait to claim it back for a scene they are not.
+        api = _OutageApi(down_probes=3)
+        upcoming = _AudioScene(api, lossy_setups=0)
+        pl, ens = self._ensemble_playlist(api, upcoming)
+        follower = _LossySetupScene(api, lossy_setups=1)
+        claims = MagicMock(wraps=pl.ensemble_coord.wait_for_audio_claim)
+        pl.ensemble_coord.wait_for_audio_claim = claims  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.safe_setup(follower)
+        claims.assert_not_called()
+        self.assertTrue(upcoming.__dict__.get("_audio_lock_held"))
+        self.assertEqual(follower.setup_count, 2)
 
     def test_the_half_set_up_scene_is_torn_down_before_it_waits_for_the_slot(self):
         api = _OutageApi(down_probes=2)

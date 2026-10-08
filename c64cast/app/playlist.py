@@ -315,6 +315,9 @@ class Playlist:
         self._pending_scenes: list[Scene] | None = None
         self._pending_interstitial: InterstitialFactory | None = None
         self._reload_lock = threading.Lock()
+        # The upcoming scene while its "UP NEXT" card is being set up, whose
+        # audio slot a link outage in that setup releases and claims back.
+        self._announcing: Scene | None = None
         # None in single-system mode. When `_broadcast_interrupt` fires, the run
         # loop tears down the current scene, runs a follower scene driven by
         # `ensemble.active_orchestrator`, and resumes the saved index.
@@ -667,7 +670,11 @@ class Playlist:
         self._safe_prepare_next(nxt)
         self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
         self.current = self.interstitial_factory(nxt.name)
-        self.safe_setup(self.current)
+        self._announcing = nxt
+        try:
+            self.safe_setup(self.current)
+        finally:
+            self._announcing = None
         self.transitioning = True
 
     def _safe_prepare_next(self, scene: Scene) -> None:
@@ -797,7 +804,7 @@ class Playlist:
         audio-bearing scenes, or hold a single-scene one, for as long as
         this machine is unplugged. Claiming it back can wait on the system
         that took it meanwhile."""
-        claimant = self.ensemble_coord.audio_claimant(scene)
+        claimant = self.ensemble_coord.audio_claimant(scene, self._announcing)
         if claimant is None or not self.ensemble_coord.release_audio_claim(claimant):
             return None
         self.log.info("%s: releasing the ensemble audio slot until the link answers", where)
