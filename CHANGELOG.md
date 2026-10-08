@@ -301,13 +301,6 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
-- **Video in a bitmap mode with `$D418` DAC audio no longer stutters and
-  freezes for moments every second or two.** Between ring chunks the DAC's
-  playback clock ran at the nominal sample rate, but a bitmap mode's bus halts
-  slow the rate at which chunks actually land. The clock reached the next
-  chunk early and then held until it arrived, so the video skipped frames and
-  then froze. The clock now runs between chunks at the pace they land.
-
 - **With `$D418` DAC audio, the next scene no longer starts with a moment
   of the previous one's sound.** A video or mic chunk pushed exactly as a
   scene ended could land in the queue after the scene's teardown had
