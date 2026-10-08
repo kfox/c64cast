@@ -734,7 +734,7 @@ class Playlist:
         still runs on it.
 
         A setup lost a write when it raised a `LinkError` or moved the
-        backend's `delivery_epoch`. Most setup steps swallow a dead link
+        backend's `delivery_epoch` by the end of a `flush()` after it. Most setup steps swallow a dead link
         rather than raise it (`_emit`, `write_confirmed`, a scene that ends
         itself when its SID player cannot start), so a raise alone would
         let a setup that never reached the machine play as if it had: a
@@ -758,6 +758,9 @@ class Playlist:
             try:
                 hardware_palette.settle_for(self.api, scene)
                 scene.setup()
+                # Until a round trip drains them, the setup's last writes can
+                # still be lost to a reset that has not reached the epoch.
+                self.api.flush()
             except LinkError as e:
                 error = e
             if error is None and self.api.delivery_epoch == epoch:

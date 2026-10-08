@@ -462,6 +462,23 @@ class SetupThroughOutageTest(unittest.TestCase):
     def test_a_setup_that_raises_a_link_error_waits_and_sets_up_again(self):
         self._assert_waited_then_set_up_again(raise_it=True)
 
+    def test_a_write_lost_after_the_setup_returned_is_caught_by_its_flush(self):
+        api = _OutageApi(down_probes=0)
+        scene = _LossySetupScene(api, lossy_setups=0)
+        pl = self._playlist(api, scene)
+        flushes = [0]
+
+        def flush() -> None:
+            # The reset the setup's last write drew surfaces at the drain.
+            flushes[0] += 1
+            if flushes[0] == 1:
+                api.delivery_epoch += 1
+
+        api.flush = flush  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            self.assertTrue(pl._setup_through_outage(scene))
+        self.assertEqual((scene.setup_count, scene.teardown_count), (2, 1))
+
     def test_a_clean_setup_runs_once_and_asks_the_link_nothing(self):
         api = _OutageApi(down_probes=0)
         scene = _LossySetupScene(api, lossy_setups=0)

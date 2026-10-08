@@ -129,6 +129,9 @@ class FakeApi:
     def link_answers(self):
         return self.answers
 
+    def flush(self):
+        pass
+
     def pause_idle(self):
         self.calls.append("pause_idle")
 
