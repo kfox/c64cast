@@ -39,6 +39,7 @@ from c64cast.hw.c64 import (
     REU,
     SID,
     VECTORS,
+    actual_rate_for_latch,
     halt_quantum_bytes,
     kernal_cia1_latch,
 )
@@ -252,6 +253,15 @@ TRACKED_PUMP_INSTALL_TRIES = 3
 # IRQ that was already asserted when the mask landed has been serviced (through
 # the $C100 stub) before the entry bytes replace it.
 TRACKED_PUMP_ENTRY_DRAIN_S = 0.03
+
+# The DAC clock runs between chunk landings at the pace chunks land: the bytes
+# landed over the last LANDING_PACE_WINDOW_S or so, measured landing to
+# landing, once the window spans LANDING_PACE_MIN_INTERVALS intervals. The
+# record keeps at most LANDING_PACE_MAX_LANDINGS landings, so a burst of tiny
+# landings cannot grow it.
+LANDING_PACE_WINDOW_S = 1.0
+LANDING_PACE_MIN_INTERVALS = 2
+LANDING_PACE_MAX_LANDINGS = 64
 
 
 class PumpInstallError(RuntimeError):
@@ -468,6 +478,13 @@ class AudioStreamer:
         # When the clock's last landed count was taken (monotonic): the
         # consumer's start, then each landing. None until the consumer starts.
         self._ring_landed_at: float | None = None
+        # (monotonic time, landed total) at each paced landing in the pace
+        # window, and the pace the window last measured, which stands while a
+        # restarted window fills. The speed the clock runs at between landings.
+        self._landings: deque[tuple[float, int]] = deque(maxlen=LANDING_PACE_MAX_LANDINGS)
+        self._landing_pace = 0.0
+        # The pace that stood before the window's last landing measured it.
+        self._landing_pace_before_last = 0.0
         # One record per interval however often the link stalls.
         self._stall_log = LogThrottle(log)
 
@@ -1129,7 +1146,7 @@ class AudioStreamer:
                         self._neutral_fill_ring(pending_addr, len(pending))
                         if not current():
                             break
-                        self._note_ring_landed(generation, len(pending), len(pending))
+                        self._note_ring_landed(generation, len(pending), len(pending), paced=False)
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -1458,6 +1475,10 @@ class AudioStreamer:
                 lag,
             )
             self.servo.note_disturbance()
+            # The schedule restarts from now, so nothing catches up on the
+            # stall's long interval: left in the pace window, it read the
+            # pace slow for a window.
+            self._restart_landing_pace(generation)
             return None
         anchor = stall_reanchor(r_addr, self.chunk_size)
         self._stomp_from(r_addr, anchor, current)
@@ -1470,7 +1491,7 @@ class AudioStreamer:
         # has played, so the clock reaches the landed count here, and the
         # high-water mark holds it there while the content behind the pad
         # lands and is played.
-        self._note_ring_landed(generation, lead, lead)
+        self._note_ring_landed(generation, lead, lead, paced=False)
         self.servo.resync(lead)
         self._stall_log.warn(
             "audio: DAC worker stalled %.2f s behind the C64's playback (a blocked "
@@ -3120,7 +3141,9 @@ class AudioStreamer:
         never reached the onset threshold; video slaved to it moved in the
         same steps.
 
-        What the NMI plays next is the front of the gap, so pad there moves
+        It runs at the pace chunks land (``_landing_pace_locked``),
+        which is the speed the NMI drains them at. What the NMI plays next is
+        the front of the gap, so pad there moves
         nothing: content landed behind a dry stretch is not heard until the
         stretch has played. At most one chunk, the next landing's worth, so a
         link that stalls holds the clock rather than running it past what
@@ -3131,14 +3154,98 @@ class AudioStreamer:
         # Whole bytes: the pad record is in whole bytes, so a span of nothing
         # but pad then nets exactly 0. In fractional bytes it netted a few ULPs
         # over, and the clock read content landed behind the pad as heard.
-        span = int(min(elapsed * self.effective_rate, float(self.chunk_size), lead))
+        pace = self._landing_pace_locked()
+        span = int(min(elapsed * pace, float(self.chunk_size), lead))
         lo = self._ring_landed_total - int(lead)
         return float(span - self._pad_in(lo, lo + span))
 
     def _mark_ring_clock(self) -> None:
-        """The consumer started: interpolate the clock from now."""
+        """The consumer started: interpolate the clock from now, at the
+        nominal rate until landings measure the pace."""
         with self._ring_pad_lock:
             self._ring_landed_at = time.monotonic()
+            self._landings.clear()
+            self._landing_pace = float(self.effective_rate)
+            self._landing_pace_before_last = self._landing_pace
+
+    def _armed_rate(self) -> float:
+        """The rate the CIA #2 latch now armed fires at: above
+        ``effective_rate`` under the adaptive loop's bus-halt compensation or
+        a pitch multiplier over 1, below it under a multiplier under 1. Floored
+        at ``effective_rate``, the cap let a multiplier under 1 run the clock
+        faster than the ring drains."""
+        latch = self.nmi.latch
+        return actual_rate_for_latch(latch, self.system) if latch > 0 else self.effective_rate
+
+    def _landing_pace_locked(self) -> float:
+        """Bytes per second the clock runs at between landings. Caller holds
+        ``_ring_pad_lock``.
+
+        The worker lands chunks as fast as the NMI drains them, so the pace
+        is the speed the sound is heard at. Run at the nominal rate instead,
+        the clock reached the next chunk early whenever bus halts slowed the
+        NMI, then held until the landing: under bitmap video it moved in
+        bursts and holds, and video slaved to it skipped and froze frames.
+
+        It is the bytes landed across the window over the time they took,
+        rather than an average of per-landing rates: a stall and the
+        back-to-back landings the worker drips to catch up on it cancel in
+        the sum while both are inside the window, where per-landing samples
+        had to be told apart and filtered, and capped samples read landing
+        jitter as a slower pace. They leave the window one after the other,
+        so about a window after a stall the pace reads fast for a landing or
+        two. Capped at the armed NMI rate, which the drain cannot beat."""
+        if self._landing_pace <= 0:
+            return self.effective_rate
+        return min(self._landing_pace, self._armed_rate())
+
+    def _note_landing_pace_locked(self, now: float, paced: bool) -> None:
+        """Record a landing in the pace window and measure the pace across
+        it. Caller holds ``_ring_pad_lock``.
+
+        The window starts afresh at an unpaced landing, and the next landing
+        is its first mark, so neither that landing's bytes nor the interval
+        after it is measured. The first landing after the consumer starts is
+        a first mark too: the worker hands its first chunk off a pace period
+        before dripping it, so that interval spans two to three chunk periods
+        for one chunk."""
+        marks = self._landings
+        if not paced:
+            self._restart_landing_pace_locked()
+            return
+        self._landing_pace_before_last = self._landing_pace
+        marks.append((now, self._ring_landed_total))
+        while (
+            len(marks) > LANDING_PACE_MIN_INTERVALS + 1
+            and marks[1][0] <= now - LANDING_PACE_WINDOW_S
+        ):
+            marks.popleft()
+        if len(marks) > LANDING_PACE_MIN_INTERVALS:
+            (t0, b0), (t1, b1) = marks[0], marks[-1]
+            if t1 > t0:
+                self._landing_pace = (b1 - b0) / (t1 - t0)
+
+    def _restart_landing_pace(self, generation: int) -> None:
+        """:meth:`_restart_landing_pace_locked` for the worker started as
+        ``generation``; a superseded worker leaves the next session's window
+        alone."""
+        with self._ring_pad_lock:
+            if generation == self._worker_generation:
+                self._restart_landing_pace_locked()
+
+    def _restart_landing_pace_locked(self) -> None:
+        """Start the pace window afresh. Caller holds ``_ring_pad_lock``.
+
+        The pace that stands until the window fills again is the one that
+        stood before the window's last landing: after a stall in the ring
+        write that landing is the late one, and the pace it measured, standing, ran the clock at
+        about half speed for the two to three landings the window takes to
+        refill. Re-measuring the window without it would leave that pace
+        standing when the late landing is the one that filled the window."""
+        marks = self._landings
+        if marks:
+            self._landing_pace = self._landing_pace_before_last
+        marks.clear()
 
     def _unplayed_pad(self, lead: float) -> float:
         """The pad bytes among the last ``lead`` bytes landed in the ring.
@@ -3157,7 +3264,9 @@ class AudioStreamer:
             pad_bytes += max(0.0, min(hi, end) - max(lo, end - pad))
         return pad_bytes
 
-    def _note_ring_landed(self, generation: int, nbytes: int, pad: int) -> None:
+    def _note_ring_landed(
+        self, generation: int, nbytes: int, pad: int, *, paced: bool = True
+    ) -> None:
         """Worker-side: ``nbytes`` reached the ring, the last ``pad`` of them
         padding. Pad further back than a whole ring can no longer be inside
         the gap, so it is dropped, which bounds the record at a ring's worth
@@ -3168,13 +3277,20 @@ class AudioStreamer:
         fresh record, and the high-water mark would hold the clock past what
         that landing moved. :meth:`_start_worker` bumps the generation and
         clears the record under this lock, so no stale landing slips between
-        the two."""
+        the two.
+
+        ``paced=False`` starts the pace window afresh: the stall re-anchor's
+        lead of pad and a splice's NEUTRAL fill are written at once rather
+        than drained in, and the worker collects and hands off the next chunk
+        before that one lands."""
         with self._ring_pad_lock:
             if generation != self._worker_generation:
                 return
             self._ring_landed_total += nbytes
             if self._ring_landed_at is not None:
-                self._ring_landed_at = time.monotonic()
+                now = time.monotonic()
+                self._note_landing_pace_locked(now, paced)
+                self._ring_landed_at = now
             total = self._ring_landed_total
             if pad > 0:
                 self._ring_pads.append((total, pad))
@@ -3193,6 +3309,9 @@ class AudioStreamer:
         self._ring_pads.clear()
         self._position_floor = 0.0
         self._ring_landed_at = None
+        self._landings.clear()
+        self._landing_pace = 0.0
+        self._landing_pace_before_last = 0.0
 
     def reset_position(self) -> None:
         with self._count_lock:
