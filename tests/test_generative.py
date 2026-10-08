@@ -1929,13 +1929,19 @@ def _idle_polls_after_the_end(smp) -> Iterator[list[int]]:
     """Count the sampler's empty prebuffer polls that began after `end_input()`.
 
     `start()` stops collecting its prebuffer at the first poll that finds the
-    queue empty once the input has ended. Waiting out the 2 s timeout instead
-    is about a hundred more such polls, however fast or slow the machine is.
-    The count can reach two without that: the end can land between the read
-    of `_input_ended` that decides and the one counted here.
+    queue empty once the input has ended. Waiting out the timeout instead is
+    many more such polls, however fast or slow the machine is. The count can
+    reach two without that: the end can land between the read of
+    `_input_ended` that decides and the one counted here.
+
+    It is at least one only when the collect saw the end. A producer that never
+    calls `end_input()`, or calls it after `start()` gave up, leaves it at zero.
+    The prebuffer timeout is `_EVENT_WAIT_S` here so that a slow producer does
+    not leave it at zero too.
     """
     idle = [0]
     get = smp._q.get
+    start = smp.start
 
     def counted(*args, **kwargs):
         ended = smp._input_ended
@@ -1946,7 +1952,13 @@ def _idle_polls_after_the_end(smp) -> Iterator[list[int]]:
                 idle[0] += 1
             raise
 
-    with mock.patch.object(smp._q, "get", side_effect=counted):
+    def patient_start() -> None:
+        start(prebuffer_timeout=_EVENT_WAIT_S)
+
+    with (
+        mock.patch.object(smp._q, "get", side_effect=counted),
+        mock.patch.object(smp, "start", side_effect=patient_start),
+    ):
         yield idle
 
 
@@ -2015,7 +2027,15 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
         dac.running = True
         dac.end_input()
-        with mock.patch.object(dac.q, "get", wraps=dac.q.get) as get:
+        get = dac.q.get
+        taken: list[tuple[int, bytes]] = []
+
+        def recorded(*args, **kwargs):
+            item = get(*args, **kwargs)
+            taken.append(item)
+            return item
+
+        with mock.patch.object(dac.q, "get", side_effect=recorded) as calls:
             n, _, _ = dac._collect_until(
                 bytearray(dac.chunk_size),
                 0,
@@ -2025,8 +2045,10 @@ class AudioFileShortClipTest(unittest.TestCase):
                 epoch=dac._flush_epoch,
             )
         self.assertEqual(n, 0)
-        # The wake-up is the only get: a second one waits out the deadline.
-        self.assertEqual(get.call_count, 1, "the collect waited on past the wake-up")
+        # The wake-up is the only get: a second one waits out the deadline, and
+        # so does a first one that finds no wake-up and times out.
+        self.assertEqual([piece for _, piece in taken], [b""], "end_input() left no wake-up")
+        self.assertEqual(calls.call_count, 1, "the collect waited on past the wake-up")
 
     def test_a_stale_end_input_blob_does_not_cut_the_next_producers_collect(self):
         # An end_input() that raced its teardown's drain leaves its wake-up in
@@ -2161,6 +2183,7 @@ class AudioFileShortClipTest(unittest.TestCase):
             with quiet_logging(), _idle_polls_after_the_end(smp) as idle:
                 finished = self._run_scene(smp, lambda src: src.finished)
         self.assertTrue(finished, "the scene never finished")
+        self.assertGreaterEqual(idle[0], 1, "setup never saw the end of the input")
         self.assertLessEqual(idle[0], 2, "setup sat out the prebuffer timeout")
 
 
@@ -2295,6 +2318,7 @@ class VideoShortClipTest(unittest.TestCase):
                     smp.start()
                 finally:
                     smp.stop()
+        self.assertGreaterEqual(idle[0], 1, "setup never saw the end of the input")
         self.assertLessEqual(idle[0], 2, "setup sat out the prebuffer timeout")
 
 
