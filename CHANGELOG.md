@@ -460,9 +460,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   through the other model's ladder.
 
 - **`dac_curve = "auto"` plays a DAC calibration whenever one applies,
-  including one measured on an ARMSID or ARM2SID.** The table plays in the
-  model the chip was measured in, and your model is put back at the end of the
-  run, as for any other ARMSID calibration. `dac_curve = "calibrated"` is no
+  including one measured on an ARMSID or ARM2SID.** When the calibration
+  recorded the chip's model, the table plays in that model and your model is
+  put back at the end of the run, as for any other ARMSID calibration; a chip
+  whose model went unrecorded, or that a run cannot switch, plays the table in
+  whatever model it is in. `dac_curve = "calibrated"` is no
   longer needed to play such a table, and `--calibrate-dac` and `--doctor` no
   longer say it is.
 

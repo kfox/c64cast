@@ -598,7 +598,8 @@ def _identify_d400_chip(be: C64Backend, log_fn: Callable[[str], None]) -> str | 
     ARM2SID, for a run that measures it without socket detection; None for any
     other chip. The chip's own register protocol needs no SID config query, so
     this works on every link, and a run playing through the table can put the
-    chip back into the model it was measured in whichever link measured it."""
+    chip back into the model it was measured in whichever link measured it,
+    when the chip reported its model."""
     reply = armsid.probe(be, SID.BASE)
     if reply is None:
         return None
