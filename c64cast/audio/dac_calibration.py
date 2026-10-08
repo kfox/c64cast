@@ -102,6 +102,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# The model an ARMSID or ARM2SID is measured in, whatever model the run found it
+# in: measuring in the model the chip was left in made which table a user got
+# depend on whatever last set it, a menu edit or the last tune autoconfig played.
+CALIBRATION_MODEL = "6581"
+
 
 @dataclass(frozen=True)
 class CalibrationRun:
@@ -593,18 +598,92 @@ def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tu
     return out
 
 
-def _identify_d400_chip(be: C64Backend, log_fn: Callable[[str], None]) -> str | None:
+def _sockets_in_calibration_model(
+    be: C64Backend,
+    sockets: list[tuple[int, str]],
+    restore: dict[tuple[str, str], str],
+    log_fn: Callable[[str], None],
+) -> list[tuple[int, str]]:
+    """Switch every ARMSID among `sockets` into :data:`CALIBRATION_MODEL`
+    through its socket's config item, adding to `restore` the model that puts
+    each back, and return `sockets` with each switched chip relabeled by what it
+    reports afterward. A chip whose model cannot be read back is labeled with
+    no model, so playback leaves it as it finds it rather than switching it to
+    a model the table may not have been measured in."""
+    switched: set[int] = set()
+    for socket, detected in sockets:
+        if not armsid.is_reconfigurable(detected):
+            continue
+        current = armsid.label_model(detected)
+        if current is None or current == CALIBRATION_MODEL:
+            continue
+        source = f"socket{socket}"
+        # Before the switch: a write that took before its reply was lost still
+        # gets put back, and putting back an unchanged model is a no-op.
+        restore[(armsid.CAT_SOCKET_MODEL, source)] = current
+        try:
+            armsid.set_socket_model(be, source, CALIBRATION_MODEL)
+        except Exception:  # noqa: BLE001 — the read-back below says what was measured
+            log.debug("calib: switching %s to %s failed", source, CALIBRATION_MODEL, exc_info=True)
+        switched.add(socket)
+    if not switched:
+        return sockets
+    live = detect_socket_models(be)
+    out: list[tuple[int, str]] = []
+    for socket, detected in sockets:
+        if socket not in switched:
+            out.append((socket, detected))
+            continue
+        now = live[socket - 1]
+        if now is None or not armsid.is_reconfigurable(now) or armsid.is_right_channel(now):
+            now = armsid.label(detected.partition(" ")[0], None)
+        log_fn(_switch_report(f"SID socket {socket}", detected, now))
+        out.append((socket, now))
+    return out
+
+
+def _switch_report(where: str, found: str, now: str) -> str:
+    """The log line for an ARMSID switched (or not) into the calibration model,
+    `now` being the label it reported afterward."""
+    if armsid.is_reconfigurable(now) and armsid.label_model(now) == CALIBRATION_MODEL:
+        return (
+            f"[calib] {where}: switched the {found} to {CALIBRATION_MODEL} for the "
+            "measurement; its model is put back afterward"
+        )
+    return (
+        f"[calib] {where}: could not switch the {found} to {CALIBRATION_MODEL}; "
+        f"measuring it as {now}"
+    )
+
+
+def _identify_d400_chip(
+    be: C64Backend, restore: dict[tuple[str, str], str], log_fn: Callable[[str], None]
+) -> str | None:
     """The label of the chip answering ``$D400`` when it is an ARMSID or
     ARM2SID, for a run that measures it without socket detection; None for any
-    other chip. The chip's own register protocol needs no SID config query, so
-    this works on every link, and a run playing through the table can put the
-    chip back into the model it was measured in whichever link measured it,
-    when the chip reported its model."""
+    other chip. Such a chip is first switched into :data:`CALIBRATION_MODEL`
+    through its register protocol, adding to `restore` the model that puts it
+    back, and labeled by what it reports afterward. The protocol needs no SID
+    config query, so this works on every link, and a run playing through the
+    table can put the chip back into the model it was measured in whichever
+    link measured it, when the chip reported its model."""
     reply = armsid.probe(be, SID.BASE)
     if reply is None:
         return None
-    chip = armsid.label(reply.kind, reply.model, right=reply.channel == "R")
-    log_fn(f"[calib] $D400 answers as an {chip}")
+    right = reply.channel == "R"
+    found = armsid.label(reply.kind, reply.model, right=right)
+    if reply.model is None or reply.model == CALIBRATION_MODEL:
+        log_fn(f"[calib] $D400 answers as an {found}")
+        return found
+    # Before the switch, for the reason _sockets_in_calibration_model gives.
+    restore[(armsid.CAT_SOCKET_MODEL, armsid.SOURCE_D400)] = reply.model
+    try:
+        armsid.set_socket_model(be, armsid.SOURCE_D400, CALIBRATION_MODEL)
+    except Exception:  # noqa: BLE001 — the read-back below says what was measured
+        log.debug("calib: switching $D400 to %s failed", CALIBRATION_MODEL, exc_info=True)
+    after = armsid.probe(be, SID.BASE)
+    chip = armsid.label(reply.kind, after.model if after is not None else None, right=right)
+    log_fn(_switch_report("$D400", found, chip))
     return chip
 
 
@@ -705,6 +784,9 @@ def run_calibration(
     currently answers ``$D400``, labeled only when that chip is an ARMSID or
     ARM2SID (:func:`_identify_d400_chip`).
 
+    Either way, an ARMSID or ARM2SID is measured in :data:`CALIBRATION_MODEL`
+    and put back into its own model when the run ends, including on a failure or Ctrl+C.
+
     Raises :class:`CaptureUnavailableError` if capture can't be set up.
     """
     _require_sounddevice()
@@ -714,6 +796,9 @@ def run_calibration(
     device_info = _device_provenance(cfg, be, log_fn)
     normal_d400: int | None = None
     master_restore: dict[tuple[str, str], str] = {}
+    # Filled as each ARMSID is switched, so a failure or Ctrl+C at any later
+    # point still puts back every model switched so far.
+    model_restore: dict[tuple[str, str], str] = {}
     try:
         master_restore = _raise_master(be)
         st = _bring_up_dac_env(be, cfg, log_fn)
@@ -724,10 +809,15 @@ def run_calibration(
         )
 
         sockets = _populated_sockets(be, log_fn) if supports_sid_config else []
+        sockets = _sockets_in_calibration_model(be, sockets, model_restore, log_fn)
         # Before the measurement loop: _isolate_socket remaps every socket to
         # $D400 in turn, so asking afterwards answers with c64cast's own edit.
         normal_d400 = active_socket_at_d400(be) if supports_sid_config else None
-        d400_chip = None if sockets else _identify_d400_chip(be, log_fn)
+        d400_chip = None if sockets else _identify_d400_chip(be, model_restore, log_fn)
+        if not sockets and model_restore:
+            # The per-socket loop re-parks the voices after every routing
+            # change; this path measures at once, on a chip just reconfigured.
+            st._enable_mahoney_env()
         # Last screen write of the run — strictly before the first capture.
         _paint_status_line(be, _ESTIMATE_ROW, _estimate_text(max(1, len(sockets)), secs, settle))
 
@@ -740,7 +830,7 @@ def run_calibration(
         try:
             _silence_and_reset(be)
         finally:
-            restore_sid_config(be, master_restore)
+            restore_sid_config(be, {**model_restore, **master_restore})
 
     path = save_calibration(
         cfg,

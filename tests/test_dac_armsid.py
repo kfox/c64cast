@@ -219,32 +219,140 @@ class RecordModelTest(_NoSettle):
         )
 
 
-def _run_unisolated(api) -> dict[str, CalibrationResult]:
-    """run_calibration on a link without socket detection, everything but the
-    identification patched out; the entries it would save."""
-    saved: list[dict[str, CalibrationResult]] = []
+class _Calibration:
+    """What one patched-out run_calibration did: the entries it would save,
+    each measurement's model at the time it ran, its log lines and the
+    streamer stand-in."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, CalibrationResult] = {}
+        self.models: list[str] = []
+        self.lines: list[str] = []
+        self.streamer = mock.Mock()
+
+
+def _calibrate(api, *, backend="ultimate", measure=None) -> _Calibration:
+    """run_calibration with the capture, the reset and the file write patched
+    out, so socket detection, the ARMSID model switch and its restore run as
+    they would on the machine. `measure` replaces each measurement."""
+    run = _Calibration()
 
     def save(_cfg, doc):
-        saved.append(doc.entries)
+        run.entries = doc.entries
         return Path("cal.json")
 
+    def measure_one(_ctx, _label):
+        run.models.append(getattr(getattr(api, "left", None), "model", ""))
+        if measure is not None:
+            measure()
+        return [0] * 256, {"ladder_bits": 6.5}, []
+
     cfg = Config()
-    cfg.hardware.backend = "teensyrom"
+    cfg.hardware.backend = backend
     with (
         mock.patch.object(dac_calibration, "_require_sounddevice"),
-        mock.patch.object(dac_calibration, "_bring_up_dac_env"),
+        mock.patch.object(dac_calibration, "_bring_up_dac_env", return_value=run.streamer),
         mock.patch.object(dac_calibration, "_open_capture", return_value=(0, None)),
-        mock.patch.object(
-            dac_calibration, "_measure_one", return_value=([0] * 256, {"ladder_bits": 6.5}, [])
-        ),
+        mock.patch.object(dac_calibration, "_measure_one", side_effect=measure_one),
         mock.patch.object(dac_calibration, "_silence_and_reset"),
         mock.patch.object(dac_calibration, "save_calibration", side_effect=save),
         mock.patch.object(dac_calibration, "_report_run"),
         mock.patch.object(dac_calibration, "resolve_calibration_key", return_value="k"),
         mock.patch.object(dac_calibration, "_device_provenance", return_value={}),
+        mock.patch.object(dac_calibration.time, "sleep"),
     ):
-        dac_calibration.run_calibration(api, cfg, log_fn=lambda _msg: None)
-    return saved[0]
+        dac_calibration.run_calibration(api, cfg, log_fn=run.lines.append)
+    return run
+
+
+def _run_unisolated(api) -> dict[str, CalibrationResult]:
+    """run_calibration on a link without socket detection; the entries it
+    would save."""
+    return _calibrate(api, backend="teensyrom").entries
+
+
+def _no_socket_detection(api):
+    api.profile = FakeAPI().profile  # no SID config surface, like a TeensyROM+
+    return api
+
+
+class CalibrateIn6581Test(_NoSettle):
+    """--calibrate-dac measures an ARMSID in 6581 mode and puts the chip's own
+    model back when it ends."""
+
+    def test_a_socket_is_measured_in_6581_and_restored(self):
+        api = ArmsidAPI(kind="ARM2SID", left="8580")
+        run = _calibrate(api)
+        self.assertEqual(run.models, ["6581"])
+        self.assertEqual(run.entries["1"].detected, "ARM2SID 6581")
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "8580")
+        self.assertTrue(any("switched the ARM2SID 8580 to 6581" in m for m in run.lines))
+
+    def test_ctrl_c_mid_measurement_still_restores_the_model(self):
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+
+        def interrupt():
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            _calibrate(api, measure=interrupt)
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "8580")
+
+    def test_a_chip_already_in_6581_is_not_touched(self):
+        api = ArmsidAPI(kind="ARMSID", left="6581")
+        run = _calibrate(api)
+        self.assertEqual(run.entries["1"].detected, "ARMSID 6581")
+        modes = [p[2] for p in api.config_puts if p[:2] == (CAT_ARMSID1, armsid.ITEM_ARMSID_MODE)]
+        self.assertTrue(all(m == "6581" for m in modes), api.config_puts)
+        self.assertEqual(run.models, ["6581"])
+        self.assertFalse(any("switched" in m for m in run.lines), run.lines)
+
+    def test_a_failed_switch_records_the_model_actually_measured(self):
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+        with (
+            mock.patch.object(armsid, "set_socket_model", side_effect=OSError("link down")),
+            self.assertLogs("c64cast.audio.dac_calibration", "DEBUG"),
+        ):
+            run = _calibrate(api)
+        self.assertEqual(run.models, ["8580"])
+        self.assertEqual(run.entries["1"].detected, "ARMSID 8580")
+        self.assertTrue(any("could not switch the ARMSID 8580" in m for m in run.lines))
+
+    def test_d400_is_switched_through_its_registers_and_restored(self):
+        api = _no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        run = _calibrate(api, backend="teensyrom")
+        self.assertEqual(run.models, ["6581"])
+        self.assertEqual(run.entries["default"].detected, "ARMSID 6581")
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_puts, [])
+        # Re-parked on the reconfigured chip before the measurement.
+        run.streamer._enable_mahoney_env.assert_called_once_with()
+
+    def test_ctrl_c_at_d400_still_restores_the_model(self):
+        api = _no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+
+        def interrupt():
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            _calibrate(api, backend="teensyrom", measure=interrupt)
+        self.assertEqual(api.left.model, "8580")
+
+    def test_playback_puts_the_chip_back_into_the_measured_6581(self):
+        api = ArmsidAPI(kind="ARM2SID", left="8580")
+        detected = _calibrate(api).entries["1"].detected
+        self.assertEqual(api.left.model, "8580")
+        resolved = dac_curve_resolve.resolve_dac_curve_for_backend(
+            _cfg_with_calibration(detected), be=api
+        )
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "INFO"):
+            restore = dac_curve_resolve.provision_calibrated_chip_model(api, resolved)
+        self.assertEqual(api.left.model, "6581")
+        assert restore is not None
+        restore_sid_config(api, restore)
+        self.assertEqual(api.left.model, "8580")
 
 
 class IdentifyWithoutSocketDetectionTest(_NoSettle):
@@ -253,8 +361,7 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
     measured model on every link (#592)."""
 
     def _no_socket_detection(self, api):
-        api.profile = FakeAPI().profile  # no SID config surface, like a TeensyROM+
-        return api
+        return _no_socket_detection(api)
 
     def test_an_armsid_at_d400_is_recorded(self):
         api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="6581"))
@@ -264,7 +371,7 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
 
     def test_an_arm2sid_at_d400_is_recorded_as_its_left_channel(self):
         api = self._no_socket_detection(ArmsidAPI(kind="ARM2SID", left="8580"))
-        self.assertEqual(_run_unisolated(api)["default"].detected, "ARM2SID 8580")
+        self.assertEqual(_run_unisolated(api)["default"].detected, "ARM2SID 6581")
 
     def test_an_ordinary_sid_stays_unnamed(self):
         api = self._no_socket_detection(FakeAPI())
