@@ -209,6 +209,11 @@ def tracker_phase(reading: MicPumpReading) -> int:
     return (reading.src - (reading.w - RING_BUFFER_ADDR)) % RING_BUFFER_SIZE
 
 
+assert REU_MIC_SIZE % RING_BUFFER_SIZE == 0, (
+    "tracker_phase holds still only while the mic ring is a whole number of $4000 rings"
+)
+
+
 def mic_lead_correction(
     lead: int,
     integ: float,
