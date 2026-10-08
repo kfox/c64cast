@@ -1497,6 +1497,11 @@ class AVFileSource:
         if now - since < DRY_FILL_STALL_S:
             return
         drained = oldest - from_s
+        if drained < 0:
+            # The picture moved, onto a stamp before the window's: a file
+            # whose video timestamps step back. No pace to judge across it.
+            self._dry_window = (now, oldest)
+            return
         if self._dry_stall_level == 0:
             if drained < DRY_FILL_STALL_PACE * (now - since):
                 self._dry_stall_level = 1

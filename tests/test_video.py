@@ -1526,6 +1526,16 @@ class AlignedAudioTest(unittest.TestCase):
         # would trim a returning sound for nothing.
         self.assertEqual(self._enqueue_blocked(drain_s=0.01)._dry_stall_level, 1)
 
+    def test_a_picture_whose_stamps_step_back_is_not_held(self):
+        # The oldest frame's stamp falls each reading: the picture is moving
+        # through a file whose video timestamps step back.
+        for level in (0, 1):
+            with self.subTest(level=level):
+                src = _aligned_stub([])
+                src._dry_stall_level, src._dry_window = level, (0.0, 5.0)
+                src._watch_dry_pace(4.0, 2.0)
+                self.assertEqual((src._dry_stall_level, src._dry_window), (level, (2.0, 4.0)))
+
     def test_no_stall_is_judged_without_an_audio_sink(self):
         # Nothing reads the level then: a paused REU-pump scene, or a file
         # with no audio stream.
