@@ -166,24 +166,24 @@ class VideoTransportControls:
 
     def _splice(self, target_s: float, *, unmute: bool = False) -> None:
         """Resync-path splice primitive (target_s in content seconds): re-anchor
-        the audio clock to the target, arm the demuxer's stale-audio guard, then
-        drop everything already queued. Order is load-bearing — request_seek sets
-        the _emit_audio pending-seek guard live FIRST, then flush() retires the
-        queue (the DAC drains it; the sampler leaves it for its writer to drop
-        by epoch tag); the flush epoch handles any pusher already blocked
-        inside push_samples.
+        the audio clock to the target, arm the demuxer's stale-audio guard, and
+        retire everything pushed before it. Order is load-bearing:
+        request_seek sets the _emit_audio pending-seek guard and takes the
+        sink's cut (its flush-epoch bump and anchor) in one critical section,
+        then flush() finishes the cut (the sampler's ring cut-over, the DAC's
+        stomp request). Both sinks drop pre-cut audio by its epoch tag
+        wherever it is, and keep the target's audio the demuxer pushes
+        between the cut and the flush.
 
-        ``unmute`` (resume) unlatches the source between the two. The demuxer
-        can apply the seek and decode the target's first audio while flush()
-        runs (the sampler's cut-over waits on the ring writer and blanks the
-        old lead, tens of ms), and a source still muted then drops it: the
-        stream starts that much past the target at the anchor, and the sound
-        plays ahead of the picture. Unmuted there, pre-seek audio is still
-        held back by the pending-seek guard, and anything that slips past it
-        before the flush is retired by the flush epoch, as on a seek."""
+        ``unmute`` (resume) unlatches the source in that same critical
+        section. The demuxer can apply the seek and decode the target's first
+        audio while flush() runs (the sampler's cut-over waits on the ring
+        writer and blanks the old lead, tens of ms), and a source still muted
+        then drops it: the stream starts that much past the target at the
+        anchor, and the sound plays ahead of the picture."""
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
-        # The anchor's pos is what the flush returns: where the target's
+        # The anchor's pos is what the cut returns: where the target's
         # first sample is heard, one ring lead from now, read once on the
         # clock as it runs after the flush, which clears a sampler's
         # end-of-stream clamp. Until then the clock holds at the target: an
@@ -192,20 +192,15 @@ class VideoTransportControls:
         # the target plus the clamp's overrun.
         clock = self.content_to_clock(target_s)
         self.audio_anchor = (clock, None)
-        sc.source.request_seek(target_s)
-        if unmute:
-            sc.source.set_muted(False)
         try:
-            pos = sc.audio.flush()
+            cut = sc.source.request_seek(target_s, unmute=unmute, on_request=sc.audio.cut)
+            pos = sc.audio.flush(cut=cut)
         except BaseException:
             # Held at the target for good otherwise: run on from where the
             # sink's clock says the ring's last sample is heard.
             self.audio_anchor = (clock, sc.audio.position_seconds() + sc.audio.ring_lead_seconds())
             raise
         self.audio_anchor = (clock, pos)
-        # The flush reopens the sink's input, and a post-seek pass can reach
-        # EOF and end it before the flush runs.
-        sc.source.restate_audio_end()
 
     def pause(self) -> None:
         sc = self._scene
@@ -234,8 +229,8 @@ class VideoTransportControls:
         if not self.paused:
             return
         if self.resync:
-            # Splice back to the paused position, unmuting the source once the
-            # seek is requested and before the flush (see _splice). The
+            # Splice back to the paused position, unmuting the source as the
+            # seek is requested (see _splice). The
             # sampler's wall position kept advancing through the pause, and the
             # fresh audio_anchor_pos absorbs it (the DAC's position froze on
             # its own).

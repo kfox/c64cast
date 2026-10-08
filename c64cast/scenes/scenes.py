@@ -1517,7 +1517,9 @@ class VideoScene(MediaFileMixin, Scene):
                 self.source.start(audio_push=None)
             else:
                 self.source.start(
-                    audio_push=self.audio.push_samples, audio_end=self.audio.end_input
+                    audio_push=self.audio.push_samples,
+                    audio_end=self.audio.end_input,
+                    audio_epoch=self.audio.current_flush_epoch,
                 )
                 self.audio.start()
             progress.complete("audio-start")
@@ -1559,7 +1561,11 @@ class VideoScene(MediaFileMixin, Scene):
         elif has_audio:
             assert isinstance(self.audio, AudioStreamer)
             self.audio.start_for_external_source()
-            self.source.start(audio_push=self.audio.push_samples, audio_end=self.audio.end_input)
+            self.source.start(
+                audio_push=self.audio.push_samples,
+                audio_end=self.audio.end_input,
+                audio_epoch=self.audio.current_flush_epoch,
+            )
         else:
             self.source.start(audio_push=None)
         progress.finish()

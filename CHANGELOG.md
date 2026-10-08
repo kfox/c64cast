@@ -401,6 +401,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   end when the clip did, and the sampler waited out a 2 s timeout before
   playing it.
 
+- **A video whose sound ends a few seconds before its picture now plays the
+  picture to its end on the 4-bit DAC.** The picture follows the sound, so it
+  froze on the frame where the sound ran out and the scene never ended.
+
+- **A seek, A/B loop wrap or resume in a video keeps the start of the sound
+  it lands on.** The decoder can reach the new position and hand over its
+  first sound before the old sound has been cleared out, and that sound was
+  cleared out with it. The sound then started late, and after a seek into the
+  last moment of a clip it did not play at all.
+
 - **Resuming a paused video near the end of its clip resumes it instead of
   ending the scene.** The video decoder reads several seconds ahead and stopped
   for good when it reached the end of the file, so a seek made after that was

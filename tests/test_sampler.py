@@ -2627,6 +2627,22 @@ class SamplerFlushTests(unittest.TestCase):
         self.assertEqual(smp._content_pos, anchor)
         self.assertEqual(smp._written, consumed[0] + smp._flush_margin)
 
+    def test_a_flush_finishes_the_cut_where_the_cut_anchored_it(self):
+        # A splice takes the cut under the seek lock and flushes after it;
+        # the read head moves in between, and the picture was anchored on
+        # the cut's read.
+        api = _FakeBackend()
+        consumed = [1000]
+        smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=0x4000)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: consumed[0]  # type: ignore[method-assign]
+        smp._written = smp._content_pos = consumed[0] + 1500
+        cut = smp.cut()
+        consumed[0] += 300
+        anchor = smp.flush(cut=cut)
+        self.assertEqual(anchor, cut.anchor_s)
+        self.assertEqual(smp._content_pos, cut.ring_pos)
+
     def test_an_underrun_pad_is_overwritten_by_the_data_that_follows_it(self):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=0x4000)

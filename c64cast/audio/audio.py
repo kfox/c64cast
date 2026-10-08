@@ -126,6 +126,7 @@ from .mic_lead import (
     read_mic_pump,
     reanchor_fill,
 )
+from .splice import FlushCut
 
 log = logging.getLogger(__name__)
 
@@ -402,23 +403,25 @@ class AudioStreamer:
         # snapshot taken with it, and the servo gap's excursion since.
         self._health_last_log = 0.0
         self._health_mark: tuple[int, int, int, int] = (0, 0, 0, 0)
-        # Each item is a pre-encoded bytes blob (one byte per sample), so the
-        # queue costs one lock per chunk rather than per sample. q.qsize()
-        # therefore counts blobs: backpressure reads self._queued_samples, and
-        # q.full() is unused because the cap below is in bytes, not items.
-        self.q: queue.Queue[bytes] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
+        # Each item is (flush epoch, pre-encoded bytes blob, one byte per
+        # sample), so the queue costs one lock per chunk rather than per
+        # sample. q.qsize() therefore counts blobs: backpressure reads
+        # self._queued_samples, and q.full() is unused because the cap below
+        # is in bytes, not items. The epoch is the one the producer pushed in,
+        # which the worker checks blob by blob (_collect_until).
+        self.q: queue.Queue[tuple[int, bytes]] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
         self._queued_samples = 0
         # Queued samples in the chunk the worker is writing to the ring: they
         # passed its flush-epoch check, so they play ahead of any post-splice
-        # sample, and flush()'s anchor counts them until they land. Set by the
-        # worker and read by flush(), each with the epoch under _count_lock.
+        # sample, and cut()'s anchor counts them until they land. Set by the
+        # worker and read by cut(), each with the epoch under _count_lock.
         self._in_flight_samples = 0
-        # flush() and stop() bump _flush_epoch; _encode_and_enqueue and _worker
-        # each capture it and discard audio held across a change, so neither a
+        # cut() and stop() bump _flush_epoch; _encode_and_enqueue and _worker
+        # each carry it and discard audio held across a change, so neither a
         # seek/loop/pause splice nor a scene cut-over can leak pre-splice samples
-        # from a blocked pusher or the worker's hand. _count_lock pairs the _pushed_count/_queued_samples
-        # mutations so position_seconds() (= pushed - queued) stays invariant
-        # across a flush drain. _stomp_requested asks the worker (which owns
+        # from a blocked pusher, the queue or the worker's hand. _count_lock pairs
+        # the _pushed_count/_queued_samples mutations so position_seconds()
+        # (= pushed - queued) stays invariant across a discard. _stomp_requested asks the worker (which owns
         # write_addr) to NEUTRAL-fill the unplayed ring, keeping ring DMA off the
         # playlist thread and away from the servo.
         self._flush_epoch = 0
@@ -608,9 +611,20 @@ class AudioStreamer:
         deadline: float,
         *,
         generation: int,
-    ) -> tuple[int, int, bytes]:
+        epoch: int,
+    ) -> tuple[int, bytes, int]:
         """Fill ``chunk_buf`` from ``leftover`` then the queue until it holds
         ``chunk_size`` bytes or ``deadline`` passes.
+
+        ``chunk_buf[:n]`` is all queued audio (pad is added after the
+        collect), and it and ``leftover`` were pushed in flush epoch
+        ``epoch``. Every blob carries the epoch its producer pushed it in. A
+        blob from an epoch a flush has since retired is discarded. A current
+        blob arriving while the chunk holds audio from an earlier epoch means
+        a flush landed during the collect: the chunk's audio is pre-splice and
+        is discarded, and the chunk restarts from that blob. Judged by an epoch
+        read once per iteration instead, a collect that straddled a flush
+        dropped the post-splice audio it took after it along with the rest.
 
         A worker retired while parked in a ring write takes nothing more from
         the queue: those blobs are the next activation's, already counted in
@@ -618,18 +632,16 @@ class AudioStreamer:
         that count (see :meth:`_discard_unpushed`), so a blob it took would
         stay counted as queued for the rest of the run.
 
-        Returns ``(new_n, taken_this_call, new_leftover)``. Split out of the
+        Returns ``(new_n, new_leftover, new_epoch)``. Split out of the
         worker so collection can be resumed across several short deadlines —
         the drip schedule calls it once per quantum slot, which is what lets the
         next chunk be gathered *while* the current one is being written out.
         """
-        taken = 0
         size = self.chunk_size
         if leftover and n < size:
             take = min(len(leftover), size - n)
             chunk_buf[n : n + take] = leftover[:take]
             n += take
-            taken += take
             leftover = leftover[take:]
         while n < size and not leftover and self.running and generation == self._worker_generation:
             remaining = deadline - time.monotonic()
@@ -638,7 +650,7 @@ class AudioStreamer:
             # expires every later drip slot, and without this drain that
             # starves collection and NEUTRAL-pads every chunk.
             try:
-                piece = self.q.get(timeout=remaining) if remaining > 0 else self.q.get_nowait()
+                tag, piece = self.q.get(timeout=remaining) if remaining > 0 else self.q.get_nowait()
             except queue.Empty:
                 break
             if not piece:
@@ -650,13 +662,19 @@ class AudioStreamer:
                 if self._input_ended:
                     break
                 continue
+            if tag != self._flush_epoch:
+                self._discard_unpushed(len(piece), generation=generation)
+                continue
+            if n and tag != epoch:
+                self._discard_unpushed(n, generation=generation)
+                n = 0
+            epoch = tag
             take = min(len(piece), size - n)
             chunk_buf[n : n + take] = piece[:take]
             n += take
-            taken += take
             if take < len(piece):
                 leftover = piece[take:]
-        return n, taken, leftover
+        return n, leftover, epoch
 
     def _drip_chunk(
         self,
@@ -669,10 +687,12 @@ class AudioStreamer:
         current: Callable[[], bool],
         *,
         generation: int,
-    ) -> tuple[int, int, bytes]:
+        epoch: int,
+    ) -> tuple[int, bytes, int]:
         """Write `payload` into the ring as sub-NMI-period pieces spread evenly
         across `chunk_period`, collecting the *next* chunk in the gaps between
-        them. Returns that collection's ``(n, taken, leftover)``.
+        them. Returns that collection's ``(n, leftover, epoch)``; ``epoch`` is
+        that of ``leftover`` going in (see :meth:`_collect_until`).
 
         Two separate effects, and it is easy to bank only the first. Splitting
         keeps each write's CPU halt inside one NMI period, so it cannot swallow
@@ -697,15 +717,13 @@ class AudioStreamer:
         slots = max(1, (len(payload) + quantum - 1) // quantum)
         slot_period = chunk_period / slots
         n = 0
-        taken_total = 0
         for i in range(slots):
             if not current():
                 break
             slot_deadline = base_time + i * slot_period
-            n, taken, leftover = self._collect_until(
-                chunk_buf, n, leftover, slot_deadline, generation=generation
+            n, leftover, epoch = self._collect_until(
+                chunk_buf, n, leftover, slot_deadline, generation=generation, epoch=epoch
             )
-            taken_total += taken
             # Retired between slots: the rest of the payload is not this
             # worker's to write into a ring the next activation owns.
             if not current():
@@ -724,7 +742,7 @@ class AudioStreamer:
             addr += len(piece)
             if addr >= RING_BUFFER_END:
                 addr = RING_BUFFER_ADDR
-        return n, taken_total, leftover
+        return n, leftover, epoch
 
     def stats(self) -> dict[str, int | float]:
         """Snapshot of the pacing/underrun telemetry counters — the public
@@ -970,8 +988,8 @@ class AudioStreamer:
         """Whether a chunk captured at ``epoch`` may still go to the ring, and
         if so record its ``n`` queued samples as in flight until
         :meth:`_consume_queued` counts them landed. Under ``_count_lock``,
-        where flush() bumps the epoch and reads its anchor: a check made
-        unlocked could pass just before a flush that then anchored without
+        where cut() bumps the epoch and reads its anchor: a check made
+        unlocked could pass just before a cut that then anchored without
         the chunk, one chunk ahead of where the target's first sample plays."""
         with self._count_lock:
             if self._flush_epoch != epoch:
@@ -992,7 +1010,7 @@ class AudioStreamer:
         here, once, rather than hand-written at each site.
 
         ``generation`` is the calling worker's, fenced as in
-        :meth:`_consume_queued`; flush()'s drain passes none."""
+        :meth:`_consume_queued`."""
         if not n:
             return
         with self._count_lock:
@@ -1000,6 +1018,17 @@ class AudioStreamer:
                 return
             self._queued_samples = max(0, self._queued_samples - n)
             self._pushed_count = max(0, self._pushed_count - n)
+
+    def _count_silence(self, n: int, *, generation: int) -> None:
+        """Count ``n`` bytes of pad as pushed and queued, as if a producer had
+        pushed silence: from here they are queued audio in the chunk in hand,
+        landed, claimed or discarded like any other. Fenced as in
+        :meth:`_consume_queued`."""
+        with self._count_lock:
+            if generation != self._worker_generation:
+                return
+            self._pushed_count += n
+            self._queued_samples += n
 
     def _neutral_fill_ring(self, addr: int, n: int) -> None:
         """NEUTRAL-fill ``n`` bytes of ring from ``addr``.
@@ -1072,15 +1101,17 @@ class AudioStreamer:
             pending_pad = 0
             pending_epoch = 0
 
+            # The flush epoch of the chunk being collected: that of the blobs
+            # in it (see _collect_until), else the current one, so a chunk of
+            # nothing but pad is claimed against the epoch it was padded in.
+            epoch = 0
+
             while current():
-                # Captured before the collect: if flush() bumps it while this
-                # iteration holds data, that data is pre-splice and is dropped
-                # before the ring write below.
-                epoch = self._flush_epoch
+                if not leftover:
+                    epoch = self._flush_epoch
                 pace_deadline = next_write_time if prebuffered else 0.0
 
                 n = 0
-                from_queue = 0
 
                 if prebuffered and pending is not None:
                     if not self._claim_ring_write(
@@ -1110,7 +1141,7 @@ class AudioStreamer:
                         # chunk about to be written at the front of the span.
                         if self._stomp_requested:
                             self._stomp_ring(pending_addr, current)
-                        n, from_queue, leftover = self._drip_chunk(
+                        n, leftover, epoch = self._drip_chunk(
                             pending,
                             pending_addr,
                             chunk_buf,
@@ -1119,6 +1150,7 @@ class AudioStreamer:
                             chunk_period,
                             current,
                             generation=generation,
+                            epoch=epoch,
                         )
                         # Every ring write can park past stop()'s join; past
                         # it, the counters below are the next session's.
@@ -1134,29 +1166,35 @@ class AudioStreamer:
 
                 # Read before the collect: end_input() follows the producer's
                 # last push, so a collect that comes back empty after it was
-                # seen leaves nothing behind in the queue.
-                input_ended = self._input_ended
+                # seen leaves nothing behind in the queue. Read with the epoch
+                # it belongs to, under the lock cut() clears it under.
+                with self._count_lock:
+                    input_ended = self._input_ended
+                    ended_epoch = self._flush_epoch
                 if pending is None and n < self.chunk_size:
                     # Priming, or the drip's interleaved slots did not fill the
                     # chunk: fall back to a blocking collect on the same deadline.
                     # A priming collect after the producer ended takes only what
-                    # is queued: nothing more is coming to wait for. Not before
-                    # anything landed, though: a producer that ended having
-                    # pushed nothing leaves the idle branch below to `continue`
-                    # every pass, and a zero deadline made that a busy spin.
+                    # is queued: nothing more is coming to wait for.
                     collect_deadline = (
                         pace_deadline
                         if prebuffered
-                        else time.monotonic()
-                        + (0.0 if input_ended and bytes_prebuffered else chunk_period)
+                        else time.monotonic() + (0.0 if input_ended else chunk_period)
                     )
-                    n, taken, leftover = self._collect_until(
-                        chunk_buf, n, leftover, collect_deadline, generation=generation
+                    n, leftover, epoch = self._collect_until(
+                        chunk_buf, n, leftover, collect_deadline, generation=generation, epoch=epoch
                     )
-                    from_queue += taken
 
                 if not current():
                     break
+                # A collect that crossed a cut holds the post-splice input, and
+                # the end read before it was the pre-splice one: its pad
+                # counted as silence put the clock that far ahead of the sound.
+                # A chunk of an older epoch than the end is retired and dropped
+                # at its claim: read as not ended, its pad was an underrun.
+                input_ended = input_ended and epoch <= ended_epoch
+                # Everything collected so far is queued audio; pad comes next.
+                from_queue = n
 
                 pad = 0
                 # A pad is an underrun only while the NMI is reading and more
@@ -1165,13 +1203,16 @@ class AudioStreamer:
                 # are the silence the ring plays out after the last sample.
                 stalled = prebuffered and not input_ended
                 if n == 0:
-                    if not prebuffered and not (input_ended and bytes_prebuffered):
+                    if not prebuffered and not input_ended:
                         # Idle: no producer data, no NMI to feed.
                         continue
                     # Real underrun: refresh ring with silence. Or, priming, a
                     # producer that ended short of the prebuffer: fill the rest
                     # of it with silence so the NMI starts on what it pushed,
-                    # behind the same lead as any other start.
+                    # behind the same lead as any other start. That includes a
+                    # producer that pushed nothing, such as a video whose
+                    # audio stream holds no samples: its picture waits on
+                    # this clock.
                     chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
                     n = pad = self.chunk_size
                     if stalled:
@@ -1191,10 +1232,19 @@ class AudioStreamer:
                         # Consumption-phase only: with no NMI reading yet, a short
                         # prebuffer collect is a slow start, not an underrun.
                         self._partial_underruns += 1
+                if pad and input_ended:
+                    # Silence after the input ended: counted as pushed audio,
+                    # so the clock runs on through it. Left as pad, the clock
+                    # stopped at the last sample, and a video whose sound ends
+                    # before its picture held that frame for good.
+                    self._count_silence(pad, generation=generation)
+                    from_queue += pad
+                    pad = 0
 
                 # A splice landed while this chunk was in hand: from_queue +
-                # leftover are pre-splice, so count them as never pushed (the
-                # paired subtract holds position) and skip the write and pace.
+                # leftover are pre-splice (leftover is the rest of the chunk's
+                # last blob, so of its epoch), so count them as never pushed
+                # (the paired subtract holds position) and skip the write and pace.
                 # A chunk handed off below is claimed when it is written, at the
                 # top of the loop; a priming chunk is written here.
                 if not self._claim_ring_write(
@@ -1300,6 +1350,11 @@ class AudioStreamer:
             # activation's crash: clearing `running` would stop that one.
             if current():
                 self.running = False
+            # The chunk whose write raised never lands, so nothing would count
+            # it landed: left in flight, every later flush anchored it late.
+            with self._count_lock:
+                if generation == self._worker_generation:
+                    self._in_flight_samples = 0
 
     def _resync_after_stall(
         self, lag: float, generation: int, w_head: int
@@ -1576,14 +1631,15 @@ class AudioStreamer:
         sounddevice callback is real-time and can't block). Backpressure
         is counted in samples (not blobs) against self._max_queued_samples.
 
-        epoch: the caller's capture, taken before its own ``running`` check.
-        Captured here instead, a stop() that lands between that check and this
-        entry bumps it first and the blob is queued behind stop()'s drain."""
+        epoch: the caller's capture, taken before its own ``running`` check,
+        or a producer's own (see :meth:`push_samples`). Captured here instead,
+        a stop() that lands between that check and this entry bumps it first
+        and the blob is queued behind stop()'s drain."""
         if floats.size == 0:
             return 0
-        # If flush() bumps it while this call is parked in the backpressure
-        # spin below, the samples are pre-splice and are dropped just before
-        # the put.
+        # The producer's, else captured at entry: if a cut bumps it while this
+        # call is parked in the backpressure spin below, the samples are
+        # pre-splice and are dropped just before the put.
         if epoch is None:
             epoch = self._flush_epoch
         floats = self._apply_dsp(floats)
@@ -1611,30 +1667,29 @@ class AudioStreamer:
                 if time.monotonic() >= deadline:
                     return 0
                 time.sleep(BACKPRESSURE_SPIN_S)
-        # Drop the blob if a splice flushed while we encoded or waited for
-        # capacity, else it lands in the queue right after the drain. The
-        # residual epoch-check→put window is µs against a user-rate flush.
+        # Drop the blob if a splice cut while we encoded or waited for
+        # capacity: the worker would only discard it.
         if self._flush_epoch != epoch:
             return 0
         # Counted before the put: a blob in the queue without its count, taken
-        # by flush()'s drain or the worker, is subtracted from a queued count
+        # by stop()'s drain or the worker, is subtracted from a queued count
         # that clamps at zero, and the late add then leaves a phantom queued
         # count the ring never consumes.
         with self._count_lock:
             self._queued_samples += n
             self._pushed_count += n
-        # Polled rather than a blocking q.put(timeout=...): flush()'s and
-        # stop()'s drain frees the very slots a parked put waits on, so the
-        # pre-splice blob would land in the queue right after the drain. The
-        # check and the put share _count_lock with the epoch bump, so a put
-        # cannot pass its check before a bump and land after the drain.
+        # Polled rather than a blocking q.put(timeout=...): stop()'s drain
+        # frees the very slots a parked put waits on, so the blob would land
+        # in the queue right after the drain. The check and the put share
+        # _count_lock with the epoch bump, so a put cannot pass its check
+        # before a bump and land after the drain.
         put_deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S
         while True:
             with self._count_lock:
                 if self._flush_epoch != epoch:
                     break
                 try:
-                    self.q.put_nowait(payload)
+                    self.q.put_nowait((epoch, payload))
                     return n
                 except queue.Full:
                     pass
@@ -2906,18 +2961,26 @@ class AudioStreamer:
         latch = kernal_cia1_latch(self.system)
         self._write_cia1_timer_a_latch(latch)
 
-    def push_samples(self, samples_int16: np.ndarray) -> int:
+    def push_samples(self, samples_int16: np.ndarray, *, epoch: int | None = None) -> int:
         """Convert mono int16 → 4-bit volume codes and enqueue. Blocks
         briefly when the queue is full so the PyAV demuxer naturally
         throttles to the audio sample rate. A no-op once stopped, as the
         sampler's is.
 
+        ``epoch`` is the flush epoch (:meth:`current_flush_epoch`) the
+        producer read alongside its decision to push, and the blob is tagged
+        with it: one read before a cut and pushed after it is dropped, and
+        one read after a cut is kept even when the cut's flush() has yet to
+        run. Without it, the epoch at entry.
+
         Returns the samples enqueued: 0 once stopped, or when the queue stayed
         full past ``QUEUE_PUT_TIMEOUT_S`` plus the worker's drain time for the
         blob, and the blob was dropped."""
         # Ahead of the running check, which stop()'s bump precedes: a stop()
-        # that lands after the check finds this capture already stale.
-        epoch = self._flush_epoch
+        # that lands after the check finds this capture already stale. A
+        # producer's own is older still.
+        if epoch is None:
+            epoch = self._flush_epoch
         if not self.running:
             return 0
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
@@ -2939,14 +3002,14 @@ class AudioStreamer:
         """The ``push_samples`` producer has ended: start the consumer on what
         it pushed even when that is short of the prebuffer, which otherwise
         never fills and leaves a short clip unplayed. Call it after the last
-        push returns. Cleared when the next worker starts, by a flush(), and
+        push returns. Cleared when the next worker starts, by a splice's cut(), and
         by the next accepted push."""
         self._input_ended = True
         # An empty blob wakes a worker parked in a priming collect, which
         # would otherwise wait out its chunk period for samples that will not
         # come. Nothing else enqueues one. A full queue has no parked worker.
         with contextlib.suppress(queue.Full):
-            self.q.put_nowait(b"")
+            self.q.put_nowait((self._flush_epoch, b""))
 
     def position_seconds(self) -> float:
         """Approximate playback position from the consumer's perspective.
@@ -3139,37 +3202,35 @@ class AudioStreamer:
 
     def _drain_queue_samples(self) -> int:
         """get_nowait-drain self.q; return the total samples dropped (each blob
-        is one byte per sample, see the q comment in __init__). Shared by flush()
-        and stop()."""
+        is one byte per sample, see the q comment in __init__). Used by stop()
+        and the mic path's stall re-anchor."""
         drained = 0
         while True:
             try:
-                blob = self.q.get_nowait()
+                _, blob = self.q.get_nowait()
             except queue.Empty:
                 break
             drained += len(blob)
         return drained
 
-    def flush(self, *, silence_output: bool = False) -> float:
-        """Drop all queued (not-yet-ring-written) audio WITHOUT moving
-        position_seconds(). Used by VideoScene's transport splice (seek / loop
-        wrap / resume) so stale pre-splice audio doesn't play after the demuxer
-        re-seeks. Returns the splice anchor: the ``position_seconds()`` at
-        which the first sample pushed after the flush is heard: the landed
-        count plus the chunk the worker is writing, from one read of both.
-        ``silence_output`` additionally asks the worker to NEUTRAL-fill
-        the unplayed ring region (pause fast mute) — the worker owns write_addr,
-        so it executes the ring stomp, not this thread.
+    def current_flush_epoch(self) -> int:
+        """The flush epoch a push made now is tagged with; see
+        :meth:`push_samples`."""
+        return self._flush_epoch
 
-        The bump-then-drain order pairs with the epoch checks in the push and
-        worker paths: pushers blocked mid-commit and the worker holding an
-        in-hand chunk both discard against the new epoch, closing the windows a
-        bare queue drain would leave open. Every drop goes through
-        :meth:`_discard_unpushed`, whose paired subtract leaves
-        ``position = pushed - queued`` unchanged.
-        No-op in REU-pump mode (no host queue to flush)."""
+    def cut(self) -> FlushCut:
+        """Retire every sample pushed so far and anchor the splice: the first
+        step of :meth:`flush`, split out so a video source can take it under
+        the lock that sets its pending seek (see
+        :meth:`AVFileSource.request_seek`). Every push tagged with an earlier
+        epoch is dropped from then on, wherever it is: in a blocked pusher,
+        the queue, or the worker's hand.
+
+        The anchor is the ``position_seconds()`` at which the first sample
+        pushed after the cut is heard: the landed count plus the chunk the
+        worker is writing, from one read of both. No-op in REU-pump mode."""
         if self._reu_pump_armed:
-            return self.position_seconds()
+            return FlushCut(None, self.position_seconds())
         rate = self.effective_rate
         # The landed count, plus the chunk the worker is writing, which plays
         # ahead of every post-splice sample but lands after this read. One
@@ -3177,21 +3238,44 @@ class AudioStreamer:
         # landing under, with the epoch bump: a chunk claimed before it is
         # counted here, and one checked after it is dropped. The heard
         # position never passes the landed count, so the landed count is
-        # where the first post-splice sample is heard. Draining the queue
-        # moves neither count.
+        # where the first post-splice sample is heard. The worker discards
+        # the retired blobs with the paired subtract, which moves neither.
         with self._count_lock:
             self._flush_epoch += 1
+            epoch = self._flush_epoch
             landed = max(0, self._pushed_count - self._queued_samples) + self._in_flight_samples
-        anchor = landed / rate if rate else 0.0
-        # A pass that reached EOF before the seek was requested ended the
-        # input, and the post-splice pass has yet to push: left ended, a
-        # priming worker pads its prebuffer out with silence and a stall
-        # after the splice is not counted.
-        self._input_ended = False
-        self._discard_unpushed(self._drain_queue_samples())
+            # A pass that reached EOF before the seek was requested ended the
+            # input, and the post-splice pass has yet to push: left ended, a
+            # priming worker pads its prebuffer out with silence and a stall
+            # after the splice is not counted. Cleared here rather than in
+            # flush(): a post-splice pass short enough to end before flush()
+            # runs has its end kept.
+            self._input_ended = False
+        return FlushCut(epoch, landed / rate if rate else 0.0)
+
+    def flush(self, *, silence_output: bool = False, cut: FlushCut | None = None) -> float:
+        """Drop all pre-splice (not-yet-ring-written) audio WITHOUT moving
+        position_seconds(). Used by VideoScene's transport splice (seek / loop
+        wrap / resume) so stale pre-splice audio doesn't play after the demuxer
+        re-seeks. Returns the splice anchor (see :meth:`cut`); ``cut`` is one
+        already taken, else this takes it. ``silence_output`` additionally
+        asks the worker to NEUTRAL-fill the unplayed ring region (pause fast
+        mute) — the worker owns write_addr, so it executes the ring stomp, not
+        this thread.
+
+        Nothing is drained here: each blob carries the epoch it was pushed
+        in, and the worker discards a retired one when it takes it, through
+        :meth:`_discard_unpushed`, whose paired subtract leaves
+        ``position = pushed - queued`` unchanged. A drain could not tell the
+        retired blobs from post-splice ones a demuxer pushed between the cut
+        and this call. No-op in REU-pump mode (no host queue to flush)."""
+        if cut is None:
+            cut = self.cut()
+        if self._reu_pump_armed:
+            return cut.anchor_s
         if silence_output:
             self._stomp_requested = True
-        return anchor
+        return cut.anchor_s
 
     def _stomp_ring(self, write_addr: int, current: Callable[[], bool]) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the

@@ -1972,7 +1972,12 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac.end_input()
         t0 = time.monotonic()
         n, _, _ = dac._collect_until(
-            bytearray(dac.chunk_size), 0, b"", t0 + 5.0, generation=dac._worker_generation
+            bytearray(dac.chunk_size),
+            0,
+            b"",
+            t0 + 5.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 0)
         self.assertLess(time.monotonic() - t0, 1.0, "the collect waited out its deadline")
@@ -1984,10 +1989,15 @@ class AudioFileShortClipTest(unittest.TestCase):
 
         dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
         dac.running = True
-        dac.q.put_nowait(b"")
-        dac.q.put_nowait(b"\x01" * 16)
+        dac.q.put_nowait((dac._flush_epoch, b""))
+        dac.q.put_nowait((dac._flush_epoch, b"\x01" * 16))
         n, _, _ = dac._collect_until(
-            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+            bytearray(16),
+            0,
+            b"",
+            time.monotonic() + 1.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 16, "a stale wake-up ended the next producer's collect")
 
@@ -2002,7 +2012,12 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac.end_input()
         self.assertGreater(dac.push_samples(np.ones(16, dtype=np.int16)), 0)
         n, _, _ = dac._collect_until(
-            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+            bytearray(16),
+            0,
+            b"",
+            time.monotonic() + 1.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 16, "the ended input cut the resumed producer's collect")
 
@@ -2052,16 +2067,22 @@ class AudioFileShortClipTest(unittest.TestCase):
         with mock.patch.object(dac, "_worker"):
             dac._start_worker().join(timeout=5.0)
         dac.running = True
-        dac.q.put_nowait(b"\x01" * 16)
+        dac.q.put_nowait((dac._flush_epoch, b"\x01" * 16))
         n, _, _ = dac._collect_until(
-            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+            bytearray(16),
+            0,
+            b"",
+            time.monotonic() + 1.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 16, "the last producer's end cut the next producer's collect")
 
-    def test_a_dac_worker_idles_after_a_producer_that_pushed_nothing(self):
-        # A decode that failed before its first push still ends the input. With
-        # nothing landed there is no prebuffer to pad out, and a priming collect
-        # on a zero deadline turned the idle branch into a busy spin.
+    def test_a_dac_worker_does_not_spin_after_a_producer_that_pushed_nothing(self):
+        # A decode that failed before its first push still ends the input, as
+        # does a video whose audio stream holds no samples. The worker primes
+        # the ring with silence and paces from there; a priming collect on a
+        # zero deadline in an idle branch once made this a busy spin.
         from _fakes import FakeAPI, quiet_logging
 
         dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
@@ -2117,30 +2138,41 @@ def _make_click_wav(path: str, *, seconds: float, period: float, rate: int = 441
     return clicks
 
 
-def _write_av_clip(path: str, seconds: float, *, fps: int = 30, rate: int = 8000) -> None:
-    """A tiny Matroska clip with a video stream and a tone on a PCM audio
-    stream, `seconds` long."""
+def _write_av_clip(
+    path: str,
+    seconds: float,
+    *,
+    fps: int = 30,
+    rate: int = 8000,
+    audio: tuple[tuple[float, float], ...] | None = None,
+) -> None:
+    """A tiny Matroska clip with a video stream `seconds` long and a tone on
+    a PCM audio stream: the whole length, or the `(start_s, length_s)` spans
+    in `audio`, with nothing between them."""
     import av
+
+    spans = audio if audio is not None else ((0.0, seconds),)
 
     container = av.open(path, "w", format="matroska")
     try:
         video = container.add_stream("mpeg4", rate=fps)
         video.width, video.height = 64, 64
         video.pix_fmt = "yuv420p"
-        audio = container.add_stream("pcm_s16le", rate=rate)
-        audio.layout = "mono"
+        sound = container.add_stream("pcm_s16le", rate=rate)
+        sound.layout = "mono"
         grey = np.full((64, 64, 3), 128, dtype=np.uint8)
         for _ in range(int(seconds * fps)):
             for packet in video.encode(av.VideoFrame.from_ndarray(grey, "rgb24")):
                 container.mux(packet)
-        t = np.arange(int(seconds * rate)) / rate
-        pcm = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16).reshape(1, -1)
-        frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
-        frame.sample_rate = rate
-        frame.pts = 0
-        for packet in audio.encode(frame):
-            container.mux(packet)
-        for stream in (video, audio):
+        for start_s, length_s in spans:
+            t = np.arange(int(length_s * rate)) / rate
+            pcm = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16).reshape(1, -1)
+            frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
+            frame.sample_rate = rate
+            frame.pts = int(start_s * rate)
+            for packet in sound.encode(frame):
+                container.mux(packet)
+        for stream in (video, sound):
             for packet in stream.encode():
                 container.mux(packet)
     finally:
@@ -2215,6 +2247,74 @@ class VideoShortClipTest(unittest.TestCase):
                 finally:
                     smp.stop()
         self.assertLess(took, self.CLIP_S + self.SLACK_S, "setup sat out the prebuffer timeout")
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class VideoSoundShorterThanPictureTest(unittest.TestCase):
+    """A video whose sound ends before its picture plays the picture to its
+    end on the DAC. The DAC's clock counts the samples played, so it stopped
+    at the last one and held the picture there for good. Real time, with a
+    video buffer that holds the whole picture, so the demuxer reaches the
+    end of the file and ends the input."""
+
+    VIDEO_S = 2.0
+    BUFFER = 90  # frames: three seconds at 30 fps
+    SLACK_S = 1.5
+    RATE = 8000
+
+    def _play(self, audio: tuple[tuple[float, float], ...]) -> bool:
+        """Play a clip with sound at the ``audio`` spans the way VideoScene
+        does, showing the frame at the DAC's clock until the source finishes.
+        Return whether it finished in time."""
+        import tempfile
+
+        from _fakes import FakeAPI, quiet_logging
+
+        from c64cast.audio.audio_source import heard_seconds
+        from c64cast.video.video import AVFileSource
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(clip, self.VIDEO_S, rate=self.RATE, audio=audio)
+        api = FakeAPI()
+        dac = AudioStreamer(cast(C64Backend, api), self.RATE, "NTSC")
+        link = _ConsumerLink(FakeAPI(), dac.effective_rate)
+        api.read_memory = link.read_memory  # type: ignore[method-assign]
+        start_nmi = dac.nmi.start
+
+        def started(*args, **kwargs):
+            link.started_at = time.monotonic()
+            return start_nmi(*args, **kwargs)
+
+        with quiet_logging(), mock.patch.object(dac.nmi, "start", side_effect=started):
+            dac.start_for_external_source()
+            try:
+                src = AVFileSource(
+                    clip,
+                    target_sample_rate=self.RATE,
+                    scan_audio_peak=False,
+                    max_video_buffer=self.BUFFER,
+                )
+                self.addCleanup(src.close)
+                src.start(audio_push=dac.push_samples, audio_end=dac.end_input)
+                deadline = time.monotonic() + self.VIDEO_S + self.SLACK_S
+                while not src.finished and time.monotonic() < deadline:
+                    src.current_frame(heard_seconds(dac))
+                    time.sleep(0.01)
+                finished = src.finished
+                src.close()
+            finally:
+                dac.stop()
+        return finished
+
+    def test_a_sound_shorter_than_the_prebuffer_plays_out_a_long_picture(self):
+        finished = self._play(((0.0, 0.3),))
+        self.assertTrue(finished, "the picture never got past the sound's end")
+
+    def test_a_sound_longer_than_the_prebuffer_plays_out_a_longer_picture(self):
+        finished = self._play(((0.0, 1.0),))
+        self.assertTrue(finished, "the picture never got past the sound's end")
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")

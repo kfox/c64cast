@@ -10,7 +10,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import numpy as np
-from _fakes import new_streamer
+from _fakes import discard_retired, new_streamer
 
 from c64cast.audio.audio import AudioStreamer, downmix_to_mono
 from c64cast.audio.audio_handlers import (
@@ -25,7 +25,7 @@ from c64cast.audio.audio_handlers import (
 from c64cast.audio.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
 
 
-def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
+def _drain_queue_to_samples(q: queue.Queue[tuple[int, bytes]]) -> list[int]:
     """Pop every blob from `q` and concatenate into a list of sample bytes.
 
     Tests below used to do `s.q.get()` per sample; now each get returns a
@@ -33,7 +33,7 @@ def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
     cases."""
     out: list[int] = []
     while not q.empty():
-        blob = q.get()
+        _, blob = q.get()
         out.extend(blob)
     return out
 
@@ -112,7 +112,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         # +1.0 → 15; -1.0 → 0.
         s = new_streamer()
         s._encode_and_enqueue(np.array([1.0, -1.0], dtype=np.float32))
-        blob = s.q.get()
+        _, blob = s.q.get()
         # TPDF dither can shift full-scale by ±1 LSB pre-clip.
         self.assertIn(blob[0], (14, 15))
         self.assertIn(blob[1], (0, 1))
@@ -122,7 +122,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         # noise gates zero the noise floor, and dither must not re-introduce it.
         s = new_streamer()
         s._encode_and_enqueue(np.zeros(1024, dtype=np.float32))
-        blob = s.q.get()
+        _, blob = s.q.get()
         self.assertTrue(
             all(v == 7 for v in blob),
             f"exact-zero input should encode to NEUTRAL_SAMPLE=7 "
@@ -136,7 +136,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         s.dither_enabled = False
         # 0.5 input → (0.5 + 1) * 7.5 = 11.25 → uint8 truncates to 11.
         s._encode_and_enqueue(np.full(64, 0.5, dtype=np.float32))
-        blob = s.q.get()
+        _, blob = s.q.get()
         self.assertTrue(
             all(v == 11 for v in blob),
             f"dither off + constant input should encode to a single value; got {set(blob)}",
@@ -165,7 +165,7 @@ class DacCurveEncodeTest(unittest.TestCase):
     def test_exact_zero_encodes_to_curve_neutral(self):
         s = self._curved_streamer()
         s._encode_and_enqueue(np.zeros(512, dtype=np.float32))
-        blob = s.q.get()
+        _, blob = s.q.get()
         neutral = int(MAHONEY_ULTISID[NEUTRAL_INDEX])
         self.assertTrue(
             all(v == neutral for v in blob),
@@ -176,7 +176,7 @@ class DacCurveEncodeTest(unittest.TestCase):
         s = self._curved_streamer()
         s.dither_enabled = False
         s._encode_and_enqueue(np.array([1.0, -1.0], dtype=np.float32))
-        blob = s.q.get()
+        _, blob = s.q.get()
         self.assertEqual(blob[0], MAHONEY_ULTISID[255])
         self.assertEqual(blob[1], MAHONEY_ULTISID[0])
 
@@ -186,7 +186,7 @@ class DacCurveEncodeTest(unittest.TestCase):
         s = self._curved_streamer()
         s.dither_enabled = False
         s._encode_and_enqueue(np.linspace(-1, 1, 256, dtype=np.float32))
-        blob = s.q.get()
+        _, blob = s.q.get()
         self.assertTrue(any(v > 15 for v in blob), "expected full-byte $D418 codes")
 
 
@@ -195,7 +195,7 @@ class WorkerBatchingTest(unittest.TestCase):
         s = new_streamer()
         s.running = True
         s.chunk_size = 64
-        s.q.put(bytes([7] * 64))
+        s.q.put((s._flush_epoch, bytes([7] * 64)))
         s._queued_samples = 64
         t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
@@ -221,7 +221,7 @@ class WorkerBatchingTest(unittest.TestCase):
         s.running = True
         s.chunk_size = 16
         # 50 samples = 3 full chunks + 2 leftover.
-        s.q.put(bytes(range(50)))
+        s.q.put((s._flush_epoch, bytes(range(50))))
         s._queued_samples = 50
         t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
@@ -261,7 +261,7 @@ class WorkerBatchingTest(unittest.TestCase):
         # 100 full chunks of real audio queued ahead — far more than the
         # worker can ship in the test window if it actually paces itself.
         for _ in range(100):
-            s.q.put(bytes(range(64)))
+            s.q.put((s._flush_epoch, bytes(range(64))))
             s._queued_samples += 64
 
         t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
@@ -392,7 +392,7 @@ class EffectiveRateTest(unittest.TestCase):
         s._pushed_count = pushed
         s._queued_samples = queued
         for n in blobs:
-            s.q.put(bytes([NEUTRAL_SAMPLE]) * n)
+            s.q.put((s._flush_epoch, bytes([NEUTRAL_SAMPLE]) * n))
         return s
 
     def test_flush_preserves_position(self):
@@ -401,9 +401,11 @@ class EffectiveRateTest(unittest.TestCase):
         s = self._seed(pushed=5000, queued=2000, blobs=[1000, 1000])
         before = s.position_seconds()
         s.flush()
-        self.assertTrue(s.q.empty())
         self.assertEqual(s.position_seconds(), before)
-        # pushed and queued both dropped by the 2000 drained samples.
+        # Left for the worker, which drops them as it takes them.
+        discard_retired(s)
+        self.assertEqual(s.position_seconds(), before)
+        # pushed and queued both dropped by the 2000 discarded samples.
         self.assertEqual(s._pushed_count, 3000)
         self.assertEqual(s._queued_samples, 0)
         self.assertEqual(s._flush_epoch, 1)
@@ -413,6 +415,7 @@ class EffectiveRateTest(unittest.TestCase):
         # the max(0, ...) floor must hold): both counters clamp at 0.
         s = self._seed(pushed=500, queued=300, blobs=[1000])
         s.flush()
+        discard_retired(s)
         self.assertEqual(s._pushed_count, 0)
         self.assertEqual(s._queued_samples, 0)
 
@@ -441,7 +444,7 @@ class EffectiveRateTest(unittest.TestCase):
         s._max_queued_samples = 16384
         s._queued_samples = 16384  # at cap → _encode_and_enqueue spins
         for _ in range(16):
-            s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)  # 16384 samples queued
+            s.q.put((s._flush_epoch, bytes([NEUTRAL_SAMPLE]) * 1024))  # 16384 samples queued
 
         result: dict[str, int] = {}
         parked = _signal_backpressure(s)
@@ -452,10 +455,11 @@ class EffectiveRateTest(unittest.TestCase):
         t = threading.Thread(target=push)
         t.start()
         self.assertTrue(parked.wait(2.0), "the producer never reached the backpressure spin")
-        s.flush()  # drains the 16384 queued samples + bumps the epoch
+        s.flush()  # bumps the epoch; the queued 16384 samples are retired
         t.join(timeout=1.0)
         self.assertEqual(result["n"], 0)  # stale push dropped
-        self.assertTrue(s.q.empty())
+        discard_retired(s)
+        self.assertEqual(s._queued_samples, 0)
 
     def test_blocked_push_dropped_by_stop(self):
         """`stop()` owes the next scene the same cut-over `flush()` does."""
@@ -464,7 +468,7 @@ class EffectiveRateTest(unittest.TestCase):
         s._max_queued_samples = 16384
         s._queued_samples = 16384  # at cap → _encode_and_enqueue spins
         for _ in range(16):
-            s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)
+            s.q.put((s._flush_epoch, bytes([NEUTRAL_SAMPLE]) * 1024))
 
         result: dict[str, int] = {}
         parked = _signal_backpressure(s)
@@ -560,7 +564,7 @@ class EffectiveRateTest(unittest.TestCase):
         s._queued_samples = 100
         s._stomp_requested = True
         for _ in range(4):
-            s.q.put(bytes([NEUTRAL_SAMPLE]) * 256)
+            s.q.put((s._flush_epoch, bytes([NEUTRAL_SAMPLE]) * 256))
         s.stop()
         self.assertTrue(s.q.empty())
         self.assertEqual(s._pushed_count, 0)
