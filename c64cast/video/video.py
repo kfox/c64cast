@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import cv2
 import numpy as np
@@ -31,6 +31,8 @@ from c64cast._pollthread import PollThread
 from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator, FrameSampler
+
+_T = TypeVar("_T")
 
 log = logging.getLogger(__name__)
 
@@ -913,11 +915,9 @@ class AVFileSource:
         self._closer = _ContainerCloser(self.container)
         self._closed = False
         self._demux_poll: PollThread | None = None
-        self._audio_push: Callable[[np.ndarray], object] | None = None
+        self._audio_push: Callable[..., object] | None = None
         self._audio_end: Callable[[], object] | None = None
-        # Under _lock: the current pass has ended the sink's input. Cleared
-        # when a seek starts the next pass; read by `restate_audio_end`.
-        self._audio_end_sent = False
+        self._audio_epoch: Callable[[], int] | None = None
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -992,8 +992,9 @@ class AVFileSource:
 
     def start(
         self,
-        audio_push: Callable[[np.ndarray], object] | None,
+        audio_push: Callable[..., object] | None,
         audio_end: Callable[[], object] | None = None,
+        audio_epoch: Callable[[], int] | None = None,
     ):
         """Start the demuxer thread. ``audio_push=None`` skips audio decode
         entirely — used by the REU-staged audio path where the soundtrack
@@ -1005,9 +1006,16 @@ class AVFileSource:
         demuxer crashes. Both sinks wait for a prebuffer before
         they play, and a clip whose audio is shorter than it never fills one.
         A seek after EOF starts pushing again, and the sink's next accepted
-        push reopens its input, so the call is safe under an A/B loop."""
+        push reopens its input, so the call is safe under an A/B loop.
+
+        ``audio_epoch`` is the sink's ``current_flush_epoch``. Each push is
+        tagged with the epoch read under the lock `request_seek` takes the
+        sink's cut under, so a push decided before a seek is requested is
+        dropped and one decided after it is applied is kept, however soon the
+        demuxer gets there (see `request_seek`)."""
         self._audio_push = audio_push
         self._audio_end = audio_end
+        self._audio_epoch = audio_epoch
         # The loop's stop signal is self._closed, read by the seek/emit paths
         # too, so the PollThread event goes unused; the poll supplies only the
         # daemon-thread start/join lifecycle.
@@ -1016,18 +1024,39 @@ class AVFileSource:
         )
         self._demux_poll.start()
 
-    def request_seek(self, target_s: float) -> None:
+    def request_seek(
+        self,
+        target_s: float,
+        *,
+        unmute: bool = False,
+        on_request: Callable[[], _T] | None = None,
+    ) -> _T | None:
         """Ask the demux thread to seek to `target_s` (absolute seconds from
         file start) at its next opportunity. Coalescing is natural: rapid
         repeated calls (RW/FF ticking, jog) just overwrite the single pending
         slot — the demux thread performs however many real seeks it has
         cycles for. Clears the buffered (stale, pre-seek) frames immediately
-        so a caller reading `current_frame` right after doesn't get one."""
+        so a caller reading `current_frame` right after doesn't get one.
+
+        ``on_request`` runs under the same lock, with the seek pending, and
+        its result is returned: the splice takes the audio sink's cut there
+        (`FlushCut`). Every push the demuxer decides on reads the sink's epoch
+        under that lock (`_emit_audio`), so none can straddle the cut: one
+        decided before it carries the retired epoch, and the demuxer can
+        apply the seek and push the target's audio only after it. Taken
+        after this returned, the cut retired that audio too whenever the
+        demuxer got there first. ``unmute`` lifts `set_muted` in the same
+        critical section, for a resume, so no packet of the old position
+        reaches the sink between the two."""
         target_s = max(0.0, target_s)
         with self._lock:
             self._pending_seek = target_s
             self._video_buf.clear()
+            if unmute:
+                self._muted = False
+            result = on_request() if on_request is not None else None
             self._wake.notify_all()
+        return result
 
     def set_muted(self, muted: bool) -> None:
         """Latch (or unlatch) audio output. While muted, `_emit_audio` drops
@@ -1057,19 +1086,17 @@ class AVFileSource:
         array and hand it to the audio consumer. Shared by the direct path and
         the atempo-compensated path."""
         # Drop audio decoded from the stale pre-seek read position while a seek
-        # is pending, or it plays after the splice's flush. The unlocked
-        # _pending_seek read is racy but benign: a chunk slipping through right
-        # as the seek lands is discarded consumer-side by the
-        # AudioStreamer/sampler flush epoch. A closed source pushes nothing: a
-        # demux thread that outlived close()'s bounded join would otherwise
-        # feed a reused sampler that the scene's next setup() has re-armed.
-        if (
-            self._closed
-            or self._audio_push is None
-            or self._muted
-            or self._pending_seek is not None
-        ):
-            return
+        # is pending, or it plays after the splice's flush. A chunk that passes
+        # this check just before a seek is requested carries the epoch read
+        # with it, which the cut taken in request_seek retires, and the sink
+        # drops it. A closed source pushes nothing: a demux thread that
+        # outlived close()'s bounded join would otherwise feed a reused
+        # sampler that the scene's next setup() has re-armed.
+        with self._lock:
+            push = self._audio_push
+            if self._closed or push is None or self._muted or self._pending_seek is not None:
+                return
+            epoch = self._audio_epoch() if self._audio_epoch is not None else None
         if self.audio_noise_gate > 0:
             # Zero source-noise-floor samples before gain, or the encoder jitters
             # between NEUTRAL and ±1 at amplified noise levels.
@@ -1078,7 +1105,10 @@ class AVFileSource:
             arr = np.clip(arr.astype(np.float32) * self.audio_gain, INT16_MIN, INT16_MAX).astype(
                 np.int16
             )
-        self._audio_push(arr.astype(np.int16, copy=False))
+        if epoch is None:
+            push(arr.astype(np.int16, copy=False))
+        else:
+            push(arr.astype(np.int16, copy=False), epoch=epoch)
 
     def _drain_atempo(self) -> None:
         """Pull every time-compressed frame the atempo graph can currently
@@ -1121,7 +1151,6 @@ class AVFileSource:
             # In the same critical section that retires the request, or
             # `finished` could see neither a pending seek nor a live pass.
             self._eof = False
-            self._audio_end_sent = False
         _seek(self.container, self.path, int(target * 1_000_000), closer=self._closer)
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
@@ -1280,10 +1309,11 @@ class AVFileSource:
         """Tell the sink this pass pushed its last sample (see `start`). Not
         when a seek is already pending: that pass is superseded and the next
         one ends the input at its own EOF, while a call here can land after
-        the splice's flush and mark the post-seek input ended. The check and
+        the splice's cut and mark the post-seek input ended. The check and
         the call share `_lock` with `request_seek`, because a seek landing
-        between them is that same late call: the splice flushes only after
-        `request_seek` returns, so a call that wins the lock lands before it."""
+        between them is that same late call: the cut that reopens the input
+        is taken under that lock, so a call that wins the lock lands before
+        it, and a post-seek pass's end, after it, is kept."""
         with self._lock:
             self._end_audio_input_locked()
 
@@ -1296,16 +1326,6 @@ class AVFileSource:
         ):
             return
         self._audio_end()
-        self._audio_end_sent = True
-
-    def restate_audio_end(self) -> None:
-        """Called by the splice after its flush, which reopens the sink's
-        input. A post-seek pass that reached EOF and ended the input before
-        that flush ran has nothing left to end it again, so it is ended here;
-        a seek still pending, or one applied since, leaves it open."""
-        with self._lock:
-            if self._audio_end_sent:
-                self._end_audio_input_locked()
 
     def _demux_pass(self) -> Literal["eof", "seek", "closed"]:
         """Demux from the container's current position until EOF, a pending

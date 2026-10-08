@@ -33,6 +33,8 @@ from c64cast.hw.backend import ULTIMATE_PROFILE, HardwareProfile
 from c64cast.hw.c64 import ULTIMATE_AUDIO
 from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
+from .splice import FlushCut
+
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
 
@@ -788,20 +790,24 @@ class UltimateAudioSampler:
             have += len(chunk)
         return b"".join(chunks)
 
-    def push_samples(self, samples_int16: np.ndarray) -> int:
+    def push_samples(self, samples_int16: np.ndarray, *, epoch: int | None = None) -> int:
         """Accept mono int16 from the demuxer; encode + enqueue for the writer.
 
         Blocks when the queue is full so PyAV naturally throttles to the
         playback rate (same backpressure as the DAC's ``push_samples``).
-        Returns the samples accepted: 0 once stopped, after the writer has
-        given up on the link, or when a splice made the chunk stale."""
+        ``epoch`` is the flush epoch (:meth:`current_flush_epoch`) the
+        producer read alongside its decision to push; without one, the epoch
+        at entry. Returns the samples accepted: 0 once stopped, after the
+        writer has given up on the link, or when a splice made the chunk
+        stale."""
         if self._stopped or self._failed:
             return 0
         # The chunk carries the epoch it was produced in. A splice that lands
         # while this call waits on a full queue makes the put pointless, so the
         # bounded put timeout re-checks; a put that lands just before the splice
         # is dropped by the writer on its stale tag.
-        epoch = self._flush_epoch
+        if epoch is None:
+            epoch = self._flush_epoch
         raw = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
         self._tap_push(raw)
         floats = raw
@@ -867,14 +873,48 @@ class UltimateAudioSampler:
         self.api.write_memory(f"{addr:04X}", f"{value & 0x3F:02X}")
         self.api.flush()
 
-    def flush(self, *, silence_output: bool = False) -> float:
+    def current_flush_epoch(self) -> int:
+        """The flush epoch a push made now is tagged with; see
+        :meth:`push_samples`."""
+        return self._flush_epoch
+
+    def cut(self) -> FlushCut:
+        """Retire everything pushed so far and anchor the splice: the first
+        step of :meth:`flush`, split out so a video source can take it under
+        the lock that sets its pending seek (see
+        :meth:`AVFileSource.request_seek`). The writer holds back audio of
+        the new epoch until the matching ``flush(cut=...)`` has rewritten the
+        ring, so every cut must be followed by that flush.
+
+        The post-splice anchor is the read head now, one margin past it. The
+        volume write and the wait for _io_lock in flush() (the writer holds
+        it for a whole REU write, up to a slice, about 60 ms) come after, and
+        an anchor taken past them would put the sound that much behind the
+        picture. Audio whose slot that wait used up is dropped as late."""
+        if not self._running:
+            return FlushCut(None, self.position_seconds() + self.ring_lead_seconds())
+        anchor = self._read_consumed_bytes() + self._flush_margin
+        # Not under _io_lock: the writer holds it for a whole REU write, and the
+        # demuxer may apply the seek and push post-splice audio meanwhile, which
+        # an epoch bumped late would tag stale and drop. A stale chunk the
+        # writer has already passed its check for is written under the lock
+        # before the cut-over takes it, and that cut-over rewrites it.
+        epoch = self._flush_epoch + 1
+        self._flush_epoch = epoch
+        # An end the pre-splice pass marked is not the post-splice input's:
+        # left set, the writer stops counting a stall after the splice.
+        self._input_ended = False
+        return FlushCut(epoch, anchor / self.bps / self._actual_rate, anchor)
+
+    def flush(self, *, silence_output: bool = False, cut: FlushCut | None = None) -> float:
         """Cut the ring over to post-splice audio: retire everything queued
-        (by bumping the flush epoch) and NEUTRAL-rewrite the unconsumed lead past a small guard margin, then pull
-        the write head back to consumed+margin. The first post-splice sample is
-        anchored one margin past the read head as of the call
-        (`ring_lead_seconds()` reports that margin). Used
-        by VideoScene's transport splice (seek / loop wrap / resume) so stale
-        pre-splice audio doesn't play after the demuxer re-seeks.
+        (by bumping the flush epoch, :meth:`cut`) and NEUTRAL-rewrite the
+        unconsumed lead past a small guard margin, then pull the write head
+        back to consumed+margin. The first post-splice sample is anchored one
+        margin past the read head as of the cut (`ring_lead_seconds()`
+        reports that margin). ``cut`` is one already taken, else this takes
+        it. Used by VideoScene's transport splice (seek / loop wrap / resume)
+        so stale pre-splice audio doesn't play after the demuxer re-seeks.
         ``position_seconds()`` (wall-based) is unaffected — the read head keeps
         advancing, we only change what it reads.
 
@@ -887,31 +927,17 @@ class UltimateAudioSampler:
         (resume's splice) restores it. Present on the DAC's ``flush()`` too for
         signature parity — this ring cut-over already silences within
         ``FLUSH_GUARD_S`` regardless."""
-        if not self._running:
-            return self.position_seconds() + self.ring_lead_seconds()
-        # The post-splice anchor is the read head now. The volume write and
-        # the wait for _io_lock below (the writer holds it for a whole REU
-        # write, up to a slice, about 60 ms) come after, and an anchor taken
-        # past them would put the sound that much behind the picture. Audio
-        # whose slot that wait used up is dropped as late.
-        anchor = self._read_consumed_bytes() + self._flush_margin
-        # Not under _io_lock: the writer holds it for a whole REU write, and the
-        # demuxer may apply the seek and push post-splice audio meanwhile, which
-        # an epoch bumped late would tag stale and drop. A stale chunk the
-        # writer has already passed its check for is written under the lock
-        # before the cut-over below takes it, and that cut-over rewrites it.
-        epoch = self._flush_epoch + 1
-        self._flush_epoch = epoch
-        # An end the pre-splice pass marked is not the post-splice input's:
-        # left set, the writer stops counting a stall after the splice.
-        self._input_ended = False
+        if cut is None:
+            cut = self.cut()
+        if cut.epoch is None:
+            return cut.anchor_s
         try:
-            self._cut_over(anchor, epoch, silence_output=silence_output)
+            self._cut_over(cut.ring_pos, cut.epoch, silence_output=silence_output)
         except BaseException:
             # No cut-over is coming: let the writer go on from where it was.
-            self._cut_epoch = max(self._cut_epoch, epoch)
+            self._cut_epoch = max(self._cut_epoch, cut.epoch)
             raise
-        return anchor / self.bps / self._actual_rate
+        return cut.anchor_s
 
     def _cut_over(self, anchor: int, epoch: int, *, silence_output: bool) -> None:
         """flush() after its epoch bump: the volume write, then the ring

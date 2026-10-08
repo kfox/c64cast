@@ -23,7 +23,14 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, FakeTime, FrozenClock, SleepDrivenClock, quiet_logging
+from _fakes import (
+    FakeAPI,
+    FakeTime,
+    FrozenClock,
+    SleepDrivenClock,
+    discard_retired,
+    quiet_logging,
+)
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio import audio_rate as audio_rate_mod
@@ -190,7 +197,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # Prebuffer with a NON-neutral value, so a NEUTRAL run in the stream can
         # only have come from an underrun pad and not from the prebuffer itself.
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         _run_worker(s, until=lambda: s._full_underruns >= 3)
         self.assertGreaterEqual(s._full_underruns, 1)
@@ -211,10 +218,10 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # without depending on a sleep landing inside a 1 ms window.
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([1] * 64))
+            s.q.put((s._flush_epoch, bytes([1] * 64)))
             s._queued_samples += 64
         half = s.chunk_size // 2
-        s.q.put(bytes([2] * half))
+        s.q.put((s._flush_epoch, bytes([2] * half)))
         s._queued_samples += half
 
         # The padded chunk is the half blob then a NEUTRAL tail, asserted
@@ -238,9 +245,9 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # the short tail chunk nor for the full pads after it.
         s = _make_worker_streamer(chunk_size=32)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
-        s.q.put(bytes([4] * 16))
+        s.q.put((s._flush_epoch, bytes([4] * 16)))
         s._queued_samples += 16
         s.end_input()
         played_out = (PREBUFFER_CHUNKS + 1 + 3) * 32
@@ -258,10 +265,10 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # sample and held the picture there.
         s = _make_worker_streamer(chunk_size=32)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
             s._pushed_count += 32
-        s.q.put(bytes([4] * 16))
+        s.q.put((s._flush_epoch, bytes([4] * 16)))
         s._queued_samples += 16
         s._pushed_count += 16
         s.end_input()
@@ -285,7 +292,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
     def test_a_stall_before_end_input_stays_counted(self):
         s = _make_worker_streamer(chunk_size=32)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         mark: list[int] = []
 
@@ -306,7 +313,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # A single blob bigger than chunk_size must split across writes through
         # the `leftover` carry, preserving byte order.
         s = _make_worker_streamer(chunk_size=16, sample_rate=64000)
-        s.q.put(bytes(range(50)))
+        s.q.put((s._flush_epoch, bytes(range(50))))
         s._queued_samples += 50
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 4)
         body = b"".join(d for _, d in cast(Any, s.api).writes)
@@ -321,7 +328,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
         payload = bytes(range(256)) * 8
         for _ in range(PREBUFFER_CHUNKS + 2):
-            s.q.put(payload)
+            s.q.put((s._flush_epoch, payload))
             s._queued_samples += len(payload)
 
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 40, timeout=3.0)
@@ -344,7 +351,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # ring develops holes the NMI reads as stale audio.
         s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
         for _ in range(PREBUFFER_CHUNKS + 2):
-            s.q.put(bytes([5] * 1024))
+            s.q.put((s._flush_epoch, bytes([5] * 1024)))
             s._queued_samples += 1024
 
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 30, timeout=3.0)
@@ -381,7 +388,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         cast(Any, s.api).profile = SimpleNamespace(max_write_rate_hz=1.0)
         for _ in range(PREBUFFER_CHUNKS + 2):
-            s.q.put(bytes([9] * 64))
+            s.q.put((s._flush_epoch, bytes([9] * 64)))
             s._queued_samples += 64
 
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= PREBUFFER_CHUNKS + 2)
@@ -406,7 +413,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
 
         cast(Any, s.api).write_memory_file = slow_write
         for _ in range(PREBUFFER_CHUNKS + 4):
-            s.q.put(bytes([3] * 256))
+            s.q.put((s._flush_epoch, bytes([3] * 256)))
             s._queued_samples += 256
 
         _run_worker(s, until=lambda: s._total_slots >= 8, timeout=3.0)
@@ -421,7 +428,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # see SleepDrivenClock for why the host's scheduler cannot answer this.
         s = _make_worker_streamer(chunk_size=256, sample_rate=8000)
         for _ in range(PREBUFFER_CHUNKS + 8):
-            s.q.put(bytes([3] * 256))
+            s.q.put((s._flush_epoch, bytes([3] * 256)))
             s._queued_samples += 256
 
         clock = SleepDrivenClock()
@@ -499,7 +506,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         """
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         half = s.chunk_size // 2
-        s.q.put(bytes([2] * half))
+        s.q.put((s._flush_epoch, bytes([2] * half)))
         s._queued_samples += half
         expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
         _run_worker(s, until=lambda: len(_written_stream(s)) >= s.chunk_size)
@@ -521,7 +528,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         """
         s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         flushed: list[float] = []
         real_health = s._maybe_log_health
@@ -564,7 +571,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         write of its ``chunk``-th chunk; return the streamer and the anchor."""
         s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS + 3):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
             s._pushed_count += 32
         api = cast(Any, s.api)
@@ -581,6 +588,33 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(len(anchors), 1)
         return s, anchors[0]
 
+    def test_a_collect_straddling_a_flush_keeps_what_it_took_after_it(self):
+        """A collect that takes pre-splice audio, sees a flush, then takes
+        post-splice audio holds both. Judged by an epoch read once per
+        iteration, the post-splice audio was dropped with the pre-splice, and
+        with a short queue at the splice the sound then led the picture
+        (#620). Tagged per blob, only the pre-splice part goes."""
+        s = _make(sample_rate=64000, dither=False)
+        s.chunk_size = 32
+        s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
+        s.running = True
+        s.push_samples(np.full(16, 1000, dtype=np.int16))  # pre-splice
+        real_get = s.q.get
+        gets = 0
+
+        def get(*args: Any, **kwargs: Any) -> Any:
+            nonlocal gets
+            gets += 1
+            if gets == 2:  # the collect holds the pre-splice blob
+                s.flush()
+                s.push_samples(np.full(32, -1000, dtype=np.int16))  # post-splice
+            return real_get(*args, **kwargs)
+
+        s.q.get = get  # type: ignore[method-assign]
+        _run_worker(s, until=lambda: len(_written_stream(s)) >= 32, timeout=3.0)
+        self.assertEqual(s._pushed_count, 32, "the post-splice audio was dropped")
+        self.assertEqual(s._pushed_count - s._queued_samples, 32)
+
     def test_a_flush_in_the_claim_window_still_counts_the_chunk(self):
         """The epoch check and the in-flight record are one step under
         ``_count_lock``. A flush landing between them would anchor without a
@@ -596,7 +630,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
         s.trigger_claim = claim
         for _ in range(PREBUFFER_CHUNKS + 3):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
             s._pushed_count += 32
         _run_worker(s, until=lambda: s._queued_samples == 0 and bool(s.anchors))
@@ -632,7 +666,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         streamer, the landed count at that moment and the anchor."""
         s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS + 3):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
             s._pushed_count += 32
         flushes: list[tuple[int, float]] = []
@@ -681,7 +715,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         would otherwise act on the next session's ring and counters."""
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 2):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         api = cast(Any, s.api)
         real_read = api.read_memory
@@ -717,7 +751,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         generation inside that write as the next scene's _start_worker would,
         and return ``(queue size, queued samples)`` as they stood then."""
         for _ in range(PREBUFFER_CHUNKS + 4):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         api = cast(Any, s.api)
         real_write = api.write_memory_file
@@ -742,7 +776,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # land that chunk in the ring the next session is priming.
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 2):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         real_collect = s._collect_until
 
@@ -768,7 +802,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # does; the health line after it would reset the next session's window.
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 2):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         # A pace increment far in the past reads as a stall past the lead.
         s.servo.next_pace_increment = lambda *a: -10.0  # type: ignore[method-assign]
@@ -840,7 +874,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # landed-bytes accounting is the next session's.
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 4):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
 
         def splicing_pace(*args):  # type: ignore[no-untyped-def]
@@ -901,7 +935,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         write's address from that one on."""
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 4):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         api = cast(Any, s.api)
         r_offset = audio_mod.RING_BUFFER_SIZE - 1000
@@ -961,7 +995,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s = _make_worker_streamer()
         s.__class__ = _SupersedeOnStompRead
         for _ in range(PREBUFFER_CHUNKS + 4):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
 
         def ask() -> None:
@@ -1003,7 +1037,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # the servo reset and the health window are the next session's.
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 2):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
 
         def superseding_start(**kw):  # type: ignore[no-untyped-def]
@@ -1029,7 +1063,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.
         s = _make_worker_streamer(chunk_size=8)
-        s.q.put(bytes([7] * 8))
+        s.q.put((s._flush_epoch, bytes([7] * 8)))
         s._queued_samples += 8
 
         def boom(addr: str, data: bytes) -> None:
@@ -1049,7 +1083,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # by then the next start_* owns `running`, and clearing it would
         # fence that session's worker out.
         s = _make_worker_streamer(chunk_size=8)
-        s.q.put(bytes([7] * 8))
+        s.q.put((s._flush_epoch, bytes([7] * 8)))
         s._queued_samples += 8
 
         def superseded_then_boom(addr: str, data: bytes) -> None:
@@ -1076,7 +1110,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         the next session first, as its worker's claim would."""
         s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS + 3):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
             s._pushed_count += 32
         api = cast(Any, s.api)
@@ -1617,7 +1651,7 @@ class _AlwaysFullQueue:
     """A decoder that is always ahead: every get returns a blob at once."""
 
     def get(self, timeout=None):  # type: ignore[no-untyped-def]
-        return bytes([3] * 512)
+        return (0, bytes([3] * 512))
 
     get_nowait = get
 
@@ -1693,7 +1727,7 @@ class StallResyncTest(unittest.TestCase):
         if live:
             s.mic_stream = object()
         for _ in range(4):
-            s.q.put(bytes([3] * 512))
+            s.q.put((s._flush_epoch, bytes([3] * 512)))
         s._pushed_count = s._queued_samples = 2048
         # As the worker that calls it sees the streamer: running, and its own
         # generation current.
@@ -2212,7 +2246,7 @@ class StallResyncTest(unittest.TestCase):
             self.assertLogs(audio_mod.log, level="DEBUG") as cm,
         ):
             for _ in range(2):
-                s.q.put(b"\x80" * 512)
+                s.q.put((s._flush_epoch, b"\x80" * 512))
                 s._queued_samples += 512
                 s._pushed_count += 1
                 s._resync_after_stall(0.4, s._worker_generation, audio_mod.RING_BUFFER_ADDR + 2100)
@@ -2848,7 +2882,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         s.running = True
         s.q = queue.Queue(maxsize=1)
-        s.q.put(b"\x07")  # fill the single blob slot
+        s.q.put((s._flush_epoch, b"\x07"))  # fill the single blob slot
         s._queued_samples = 0  # but keep the sample cap clear
         n = s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0)
@@ -2876,6 +2910,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         self.assertEqual(counts_at_put, [(1200, 200)])
         anchor = s.flush()
         self.assertEqual(round(anchor * s.effective_rate), 1000)
+        discard_retired(s)
         self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
 
     def _park_a_push_on_a_full_queue(
@@ -2892,7 +2927,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         s.q = queue.Queue(maxsize=4)
         for _ in range(4):
-            s.q.put(b"\x07" * 8)
+            s.q.put((s._flush_epoch, b"\x07" * 8))
         with s._count_lock:
             s._pushed_count = 1032
             s._queued_samples = 32
@@ -2926,6 +2961,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         t.join(2.0)
         self.assertEqual(out["n"], 0)
         self.assertEqual(round(anchor * s.effective_rate), 1000)
+        discard_retired(s)
         self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (1000, 0, 0))
 
     def test_stop_drops_a_push_parked_on_a_full_queue(self):
@@ -2938,6 +2974,19 @@ class EncodeBackpressureTest(unittest.TestCase):
         t.join(2.0)
         self.assertEqual(out["n"], 0)
         self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (0, 0, 0))
+
+    def test_a_blob_landing_after_stops_drain_is_dropped_by_the_next_worker(self):
+        # A producer window left open anywhere puts its blob behind stop()'s
+        # drain. It carries the epoch stop() retired, so the next session's
+        # worker drops it instead of opening the next scene on it (#632).
+        s = _make()
+        s.running = True
+        retired = s._flush_epoch
+        with quiet_logging():
+            s.stop()
+        s.q.put((retired, bytes([3] * 64)))
+        discard_retired(s)
+        self.assertEqual((s._pushed_count, s._queued_samples), (0, 0))
 
     def test_a_flush_between_the_epoch_check_and_the_put_drains_the_blob(self):
         # The check passed, then a flush bumped the epoch and drained the
@@ -2963,6 +3012,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         s._encode_and_enqueue(np.zeros(200, dtype=np.float32), True)
         flusher.join(2.0)
         self.assertTrue(flushed.is_set())
+        discard_retired(s)
         self.assertEqual((s._pushed_count, s._queued_samples, s.q.qsize()), (0, 0, 0))
 
     def test_empty_input_returns_zero(self):
@@ -3852,7 +3902,7 @@ class LifecycleTest(unittest.TestCase):
         api.write_memory_file = stalling_write
 
         def push(blob: bytes) -> None:
-            s.q.put(blob)
+            s.q.put((s._flush_epoch, blob))
             with s._count_lock:
                 s._queued_samples += len(blob)
                 s._pushed_count += len(blob)
@@ -3887,7 +3937,7 @@ class LifecycleTest(unittest.TestCase):
             release.set()
             t.join(timeout=2.0)
             self.assertFalse(t.is_alive())
-            in_queue = sum(len(b) for b in list(s.q.queue))
+            in_queue = sum(len(b) for _, b in list(s.q.queue))
             self.assertEqual(s._queued_samples, in_queue)
         finally:
             release.set()
@@ -3925,7 +3975,7 @@ class LifecycleTest(unittest.TestCase):
         s.servo.reset_for_consumer_start = servo_resets.append  # type: ignore[method-assign]
         parked, release = self._park_in_ring_write(s, park_on=PREBUFFER_CHUNKS)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+            s.q.put((s._flush_epoch, bytes([NEUTRAL_SAMPLE]) * s.chunk_size))
         s.running = True
         t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
@@ -3948,7 +3998,7 @@ class LifecycleTest(unittest.TestCase):
         # `running` then would stop the activation that owns the ring now.
         s = _make_worker_streamer()
         parked, release = self._park_in_ring_write(s, park_on=1, fail=True)
-        s.q.put(bytes([NEUTRAL_SAMPLE]) * s.chunk_size)
+        s.q.put((s._flush_epoch, bytes([NEUTRAL_SAMPLE]) * s.chunk_size))
         s.running = True
         t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
@@ -4214,7 +4264,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_stop_drains_leftover_queue(self):
         s = _make()
-        s.q.put(b"\x07\x07")
+        s.q.put((s._flush_epoch, b"\x07\x07"))
         s._queued_samples = 2
         s.stop()
         self.assertTrue(s.q.empty())
@@ -4312,7 +4362,7 @@ class StopWorkerJoinTest(unittest.TestCase):
         # a _start_worker, so only stop() can retire the orphan's generation.
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 4):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         api = cast(Any, s.api)
         real_write = api.write_memory_file
@@ -4419,7 +4469,7 @@ class SpliceFillLandedTest(unittest.TestCase):
         # clock and the next splice's anchor fall a chunk behind.
         s = _make_worker_streamer()
         for _ in range(PREBUFFER_CHUNKS + 4):
-            s.q.put(bytes([3] * 32))
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
             s._queued_samples += 32
         spliced: list[bool] = []
 

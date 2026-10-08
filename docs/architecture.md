@@ -120,6 +120,7 @@ the two lists account for every module in the tree.
 | `app/recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
 | `video/rolling_palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
+| `audio/splice.py` | [Audio output](architecture/audio.md#cut--flush-silence_outputfalse-cutnone--transport-resync) |
 | `app/scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes/scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
 | `app/session.py` | [Config, CLI & ensemble](architecture/config.md#sessionpy--the-session-lifecycle) |

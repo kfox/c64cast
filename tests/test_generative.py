@@ -1972,7 +1972,12 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac.end_input()
         t0 = time.monotonic()
         n, _, _ = dac._collect_until(
-            bytearray(dac.chunk_size), 0, b"", t0 + 5.0, generation=dac._worker_generation
+            bytearray(dac.chunk_size),
+            0,
+            b"",
+            t0 + 5.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 0)
         self.assertLess(time.monotonic() - t0, 1.0, "the collect waited out its deadline")
@@ -1984,10 +1989,15 @@ class AudioFileShortClipTest(unittest.TestCase):
 
         dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
         dac.running = True
-        dac.q.put_nowait(b"")
-        dac.q.put_nowait(b"\x01" * 16)
+        dac.q.put_nowait((dac._flush_epoch, b""))
+        dac.q.put_nowait((dac._flush_epoch, b"\x01" * 16))
         n, _, _ = dac._collect_until(
-            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+            bytearray(16),
+            0,
+            b"",
+            time.monotonic() + 1.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 16, "a stale wake-up ended the next producer's collect")
 
@@ -2002,7 +2012,12 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac.end_input()
         self.assertGreater(dac.push_samples(np.ones(16, dtype=np.int16)), 0)
         n, _, _ = dac._collect_until(
-            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+            bytearray(16),
+            0,
+            b"",
+            time.monotonic() + 1.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 16, "the ended input cut the resumed producer's collect")
 
@@ -2052,9 +2067,14 @@ class AudioFileShortClipTest(unittest.TestCase):
         with mock.patch.object(dac, "_worker"):
             dac._start_worker().join(timeout=5.0)
         dac.running = True
-        dac.q.put_nowait(b"\x01" * 16)
+        dac.q.put_nowait((dac._flush_epoch, b"\x01" * 16))
         n, _, _ = dac._collect_until(
-            bytearray(16), 0, b"", time.monotonic() + 1.0, generation=dac._worker_generation
+            bytearray(16),
+            0,
+            b"",
+            time.monotonic() + 1.0,
+            generation=dac._worker_generation,
+            epoch=dac._flush_epoch,
         )
         self.assertEqual(n, 16, "the last producer's end cut the next producer's collect")
 

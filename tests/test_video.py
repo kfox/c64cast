@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any, cast
@@ -17,6 +18,7 @@ from _fakes import FakeAPI, FrozenClock
 
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.sampler import UltimateAudioSampler
+from c64cast.audio.splice import FlushCut
 from c64cast.control.transport import LoopPresetStore, timecode
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import RegionID
@@ -379,6 +381,7 @@ class ResamplerTailTest(unittest.TestCase):
         src = AVFileSource.__new__(AVFileSource)
         src._audio_push = lambda arr: pushed.append(int(arr.size))
         src._audio_end = None
+        src._audio_epoch = None
         src._resampler = av.AudioResampler(format="s16", layout="mono", rate=44000)
         src._atempo_graph = None
         src._closed = False
@@ -674,7 +677,7 @@ def _make_demux_source_stub(
     src._resampler = None
     src._audio_push = None
     src._audio_end = None
-    src._audio_end_sent = False
+    src._audio_epoch = None
     src._decode_target = decode_target
     src._decode_size = None
     src._decode_planned = False
@@ -701,7 +704,8 @@ def _make_emit_audio_stub(sink: list[np.ndarray], *, tempo_scale: float = 1.0) -
     src._pending_seek = None
     _arm_locks(src)
     src._audio_push = sink.append
-    src._audio_end_sent = False
+    src._audio_epoch = None
+    src._video_buf = []
     src.audio_noise_gate = 0
     src.audio_gain = 1.0
     src._tempo_scale = tempo_scale
@@ -867,20 +871,25 @@ class _StubSource:
         self._events = events
         self._frame = np.zeros((200, 320, 3), dtype=np.uint8)
 
-    def request_seek(self, target_s: float) -> None:
+    def request_seek(
+        self,
+        target_s: float,
+        *,
+        unmute: bool = False,
+        on_request: Callable[[], object] | None = None,
+    ) -> object:
         self.seeks.append(target_s)
         self.seek_pending = True
         if self._events is not None:
             self._events.append(("seek", target_s))
+        if unmute:
+            self.set_muted(False)
+        return on_request() if on_request is not None else None
 
     def set_muted(self, muted: bool) -> None:
         self.muted_calls.append(muted)
         if self._events is not None:
             self._events.append(("muted", muted))
-
-    def restate_audio_end(self) -> None:
-        if self._events is not None:
-            self._events.append(("restate", None))
 
     def close(self) -> None:
         pass
@@ -1046,11 +1055,16 @@ class _FakeSceneAudio:
     def ring_lead_seconds(self) -> float:
         return self.ring_lead
 
-    def flush(self, *, silence_output: bool = False) -> float:
+    def cut(self) -> FlushCut:
+        if self._events is not None:
+            self._events.append(("cut", None))
+        return FlushCut(1, self._position + self.ring_lead)
+
+    def flush(self, *, silence_output: bool = False, cut: FlushCut | None = None) -> float:
         self.flush_calls.append(silence_output)
         if self._events is not None:
             self._events.append(("flush", silence_output))
-        return self._position + self.ring_lead
+        return (cut or self.cut()).anchor_s
 
 
 class _FakeSamplerAudio(_FakeSceneAudio):
@@ -1068,10 +1082,10 @@ class _FakeSamplerAudio(_FakeSceneAudio):
         self.lag_read_at.append(position)
         return self.lag
 
-    def flush(self, *, silence_output: bool = False) -> float:
+    def flush(self, *, silence_output: bool = False, cut: FlushCut | None = None) -> float:
         # As the sampler's cut-over does: a splice clears the re-anchor lag.
         self.lag = 0.0
-        return super().flush(silence_output=silence_output)
+        return super().flush(silence_output=silence_output, cut=cut)
 
 
 class EmitAudioSeekGuardTest(unittest.TestCase):
@@ -1115,6 +1129,116 @@ class SeekPendingPropertyTest(unittest.TestCase):
         src = self._src()
         src._pending_seek = 5.0
         self.assertTrue(src.seek_pending)
+
+
+def _splice_sinks() -> list[tuple[str, Any]]:
+    """A DAC and a gated sampler, each accepting pushes, with no worker or
+    writer to take from their queues."""
+    dac = AudioStreamer(cast(Any, FakeAPI()), 8000, "NTSC")
+    dac.running = True
+    smp = UltimateAudioSampler(cast(Any, FakeAPI()), sample_rate=8000)
+    smp._running = True
+    smp._gate_time = time.monotonic()
+    return [("dac", dac), ("sampler", smp)]
+
+
+class SpliceKeepsPostSeekAudioTest(unittest.TestCase):
+    """The demuxer can apply a splice's seek and push the target's first
+    audio before the splice's flush runs. That audio is post-splice and plays
+    from the anchor; the DAC's flush drained it, and the sampler had tagged
+    it with the epoch the flush then retired, so either sink lost the start
+    of the target, and a short post-seek pass lost all of it (#620)."""
+
+    def _scene(self, audio: Any) -> tuple[VideoScene, AVFileSource, np.ndarray]:
+        """A resync-path scene on a real demux stub feeding ``audio``, whose
+        seek request is applied, and the target's first audio pushed, before
+        the splice reaches its flush."""
+        src = _make_emit_audio_stub([])
+        src._audio_push = audio.push_samples
+        src._audio_epoch = getattr(audio, "current_flush_epoch", None)
+        src.a_stream = object()
+        src.duration_s = 100.0
+        target_audio = np.full(64, 1000, dtype=np.int16)
+        request_seek = src.request_seek
+
+        def seek_applied_before_the_flush(target_s: float, **kw: Any) -> Any:
+            out = request_seek(target_s, **kw)
+            with src._lock:
+                src._pending_seek = None  # the demux thread applied it
+            src._emit_audio(target_audio)
+            return out
+
+        src.request_seek = seek_applied_before_the_flush  # type: ignore[method-assign]
+        scene = _make_video_scene_stub(cast(_StubSource, src))
+        scene.audio = audio
+        scene.transport.loop_audio = "on"
+        scene.transport.touch()
+        return scene, src, target_audio
+
+    def test_the_dac_keeps_the_target_audio_pushed_before_its_flush(self):
+        dac = AudioStreamer(cast(Any, FakeAPI()), 8000, "NTSC")
+        dac.running = True  # accepts pushes; no worker, so nothing drains the queue
+        scene, _, target_audio = self._scene(dac)
+        scene.transport_seek(42.0)
+        self.assertEqual(dac._queued_samples, target_audio.size, "the target's audio was dropped")
+        self.assertEqual(dac._pushed_count, target_audio.size)
+        epochs = [epoch for epoch, _ in list(dac.q.queue)]
+        self.assertEqual(epochs, [dac._flush_epoch], "the target's audio was tagged stale")
+        self.assertEqual(scene.transport.audio_anchor_pos, 0.0)
+
+    def test_the_sampler_keeps_the_target_audio_pushed_before_its_flush(self):
+        smp = UltimateAudioSampler(cast(Any, FakeAPI()), sample_rate=8000)
+        smp._running = True
+        smp._gate_time = time.monotonic()
+        scene, _, _ = self._scene(smp)
+        scene.transport_seek(42.0)
+        epochs = [epoch for epoch, _ in list(smp._q.queue)]
+        self.assertEqual(epochs, [smp._flush_epoch], "the target's audio was tagged stale")
+
+    def test_the_sink_cuts_under_the_seek_lock_with_the_seek_pending(self):
+        # Cut outside the lock, a pre-seek push between the two would carry
+        # the new epoch and play after the splice, and post-seek audio pushed
+        # before the cut would carry the old one and be dropped.
+        src = _make_emit_audio_stub([])
+        seen: list[tuple[bool, float | None]] = []
+        src.request_seek(
+            42.0, on_request=lambda: seen.append((src._lock.locked(), src._pending_seek))
+        )
+        self.assertEqual(seen, [(True, 42.0)])
+
+    def test_the_audio_epoch_is_read_under_the_seek_lock(self):
+        # Read outside it, a splice landing between the pending-seek check
+        # and the read tags pre-seek audio with the post-splice epoch.
+        held: list[bool] = []
+        sink: list[np.ndarray] = []
+        src = _make_emit_audio_stub(sink)
+        src._audio_push = lambda arr, epoch=None: sink.append(arr)
+        src._audio_epoch = lambda: held.append(src._lock.locked()) or 0
+        src._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+        self.assertEqual((held, len(sink)), ([True], 1))
+
+    def test_audio_decided_on_before_the_seek_and_pushed_after_it_is_dropped(self):
+        # The push runs outside the lock: a seek requested while it is on
+        # its way finds it carrying the epoch the seek's cut retires.
+        for name, sink in _splice_sinks():
+            with self.subTest(sink=name):
+                src = _make_emit_audio_stub([])
+                src._audio_epoch = sink.current_flush_epoch
+
+                def push(
+                    arr: np.ndarray,
+                    *,
+                    epoch: int | None = None,
+                    sink: Any = sink,
+                    src: AVFileSource = src,
+                ) -> int:
+                    src.request_seek(42.0, on_request=sink.cut)
+                    return sink.push_samples(arr, epoch=epoch)
+
+                src._audio_push = push
+                src._emit_audio(np.full(64, 1000, dtype=np.int16))
+                queued = sink._queued_samples if name == "dac" else sink._q.qsize()
+                self.assertEqual(queued, 0, "pre-seek audio was kept past the cut")
 
 
 class VideoSceneSpliceTest(unittest.TestCase):
@@ -1268,9 +1392,9 @@ class VideoSceneSpliceTest(unittest.TestCase):
 
     def test_resume_requests_the_seek_then_unmutes_then_flushes(self):
         # Order is load-bearing. The seek request first arms the pending-seek
-        # guard against pre-seek audio; the unmute before the flush lets the
-        # target's first audio through even when the demuxer decodes it while
-        # the flush is still running.
+        # guard against pre-seek audio, and the sink's cut is taken with it;
+        # the unmute before the flush lets the target's first audio through
+        # even when the demuxer decodes it while the flush is still running.
         events: list[tuple[str, object]] = []
         scene, _, _ = self._resync_scene(position=10.0, events=events)
         scene.transport.touch()
@@ -1279,7 +1403,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport_resume()
         self.assertFalse(scene.transport.paused)
         self.assertEqual(
-            events, [("seek", 10.0), ("muted", False), ("flush", False), ("restate", None)]
+            events, [("seek", 10.0), ("muted", False), ("cut", None), ("flush", False)]
         )
 
     def test_audio_the_demuxer_decodes_during_the_resume_flush_reaches_the_sink(self):
@@ -1295,7 +1419,9 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport_pause()
         self.assertTrue(demux._muted)
 
-        def flush_while_the_demuxer_seeks(*, silence_output: bool = False) -> float:
+        def flush_while_the_demuxer_seeks(
+            *, silence_output: bool = False, cut: FlushCut | None = None
+        ) -> float:
             demux._pending_seek = None  # the demux thread applied the seek
             demux._emit_audio(np.array([1, 2, 3], dtype=np.int16))
             return 10.0
@@ -1749,22 +1875,26 @@ class VideoSceneEndsAudioInputTest(unittest.TestCase):
             scene.setup()
         return source_cls.return_value
 
-    def test_the_dac_path_passes_end_input(self):
+    def test_the_dac_path_passes_end_input_and_its_epoch(self):
         from c64cast.audio.audio import AudioStreamer
 
         audio = mock.MagicMock(spec=AudioStreamer, effective_rate=8000.0, use_reu_pump=False)
         source = self._setup(audio)
         source.start.assert_called_once_with(
-            audio_push=audio.push_samples, audio_end=audio.end_input
+            audio_push=audio.push_samples,
+            audio_end=audio.end_input,
+            audio_epoch=audio.current_flush_epoch,
         )
 
-    def test_the_sampler_path_passes_end_input(self):
+    def test_the_sampler_path_passes_end_input_and_its_epoch(self):
         from c64cast.audio.sampler import UltimateAudioSampler
 
         audio = mock.MagicMock(spec=UltimateAudioSampler, effective_rate=8000.0)
         source = self._setup(audio)
         source.start.assert_called_once_with(
-            audio_push=audio.push_samples, audio_end=audio.end_input
+            audio_push=audio.push_samples,
+            audio_end=audio.end_input,
+            audio_epoch=audio.current_flush_epoch,
         )
 
 
@@ -1807,44 +1937,28 @@ class EndAudioInputSeekGuardTest(unittest.TestCase):
         src._end_audio_input()
         self.assertEqual(ended, [])
 
-    def test_an_end_before_the_splice_flush_is_restated_after_it(self):
+    def test_an_end_after_the_cut_survives_the_flush(self):
         # The post-seek pass can reach EOF and end the input between
-        # request_seek and the splice's flush, which reopens it: nothing
-        # else ends it again.
-        from _fakes import FakeAPI
+        # request_seek and the splice's flush. A flush that reopened the
+        # input left nothing to end it again.
+        for name, sink in _splice_sinks():
+            with self.subTest(sink=name):
+                src = _make_emit_audio_stub([])
+                src._audio_end = sink.end_input
+                cut = src.request_seek(1.0, on_request=sink.cut)
+                src._pending_seek = None  # the demux thread applied the seek
+                src._end_audio_input()
+                sink.flush(cut=cut)
+                self.assertTrue(sink._input_ended)
 
-        from c64cast.audio.audio import AudioStreamer
-        from c64cast.hw.backend import C64Backend
-
-        dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
-        dac.running = True
-        src = _make_emit_audio_stub([])
-        src._audio_end = dac.end_input
-        # The seek was requested and the demux thread has applied it.
-        src._end_audio_input()
-        dac.flush()
-        src.restate_audio_end()
-        self.assertTrue(dac._input_ended)
-
-    def test_a_pending_seek_keeps_the_pre_seek_end_from_being_restated(self):
-        src, ended = self._source(pending_seek=None)
-        src._end_audio_input()
-        src._pending_seek = 1.0
-        src.restate_audio_end()
-        self.assertEqual(ended, [True])
-
-    def test_an_applied_seek_keeps_the_pre_seek_end_from_being_restated(self):
-        src, ended = self._source(pending_seek=None)
-        src._end_audio_input()
-        src._pending_seek = 1.0
-        src.container = mock.MagicMock()
-        src._closer = _ContainerCloser(src.container)
-        src.a_stream = None
-        src._atempo_graph = None
-        with self.assertLogs("c64cast.video.video", level="INFO"):
-            self.assertTrue(src._apply_pending_seek())
-        src.restate_audio_end()
-        self.assertEqual(ended, [True])
+    def test_the_cut_reopens_an_input_the_pre_seek_pass_ended(self):
+        for name, sink in _splice_sinks():
+            with self.subTest(sink=name):
+                src = _make_emit_audio_stub([])
+                src._audio_end = sink.end_input
+                src._end_audio_input()
+                src.request_seek(1.0, on_request=sink.cut)
+                self.assertFalse(sink._input_ended)
 
     def test_a_demux_crash_ends_the_input(self):
         # Nothing more is pushed after a crash, so a clip that pushed less
@@ -2667,9 +2781,11 @@ class SpliceAnchorTest(unittest.TestCase):
         polls: list[float] = []
         flush = audio.flush
 
-        def flush_while_polled(*, silence_output: bool = False) -> float:
+        def flush_while_polled(
+            *, silence_output: bool = False, cut: FlushCut | None = None
+        ) -> float:
             polls.append(scene.transport.position())
-            return flush(silence_output=silence_output)
+            return flush(silence_output=silence_output, cut=cut)
 
         with mock.patch.object(audio, "flush", side_effect=flush_while_polled):
             scene.transport_seek(5.0)
@@ -2723,9 +2839,11 @@ class SpliceAnchorTest(unittest.TestCase):
         polls: list[float] = []
         flush = audio.flush
 
-        def flush_while_polled(*, silence_output: bool = False) -> float:
+        def flush_while_polled(
+            *, silence_output: bool = False, cut: FlushCut | None = None
+        ) -> float:
             polls.append(scene.transport.position())
-            return flush(silence_output=silence_output)
+            return flush(silence_output=silence_output, cut=cut)
 
         with mock.patch.object(audio, "flush", side_effect=flush_while_polled):
             scene.transport.resume()

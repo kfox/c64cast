@@ -470,6 +470,30 @@ def new_streamer(**overrides):
     return AudioStreamer(cast(Ultimate64API, FakeAPI()), **kwargs)
 
 
+def discard_retired(streamer) -> None:
+    """Run the DAC worker's collect once over the queue as it stands, which
+    discards every blob a flush has retired, as the running worker would on
+    its next take. Fails if a current blob was taken instead: the caller
+    expects nothing but retired audio there."""
+    was_running = streamer.running
+    streamer.running = True
+    try:
+        n, leftover, _ = streamer._collect_until(
+            bytearray(streamer.chunk_size),
+            0,
+            b"",
+            0.0,
+            generation=streamer._worker_generation,
+            epoch=streamer._flush_epoch,
+        )
+    finally:
+        streamer.running = was_running
+    if n or leftover:
+        raise AssertionError(f"took {n + len(leftover)} current samples")
+    if not streamer.q.empty():
+        raise AssertionError("the queue still holds blobs")
+
+
 def lose_writes_to(api: FakeAPI, addr: int, times: int | None = None) -> None:
     """Model the link losing writes to C64 address ``addr``: each of the first
     ``times`` of them (every one, if None) lands nowhere and moves
