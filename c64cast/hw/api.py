@@ -1800,8 +1800,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         """Read `length` bytes from the U64. Returns None on failure.
 
         REST GET — Socket DMA has no read opcode. Cheap enough for 10 Hz
-        polling of small ranges (e.g. the Commodore-key poller reads 1
-        byte at $028D)."""
+        polling of small ranges (e.g. the Commodore-key poller reads
+        $028D-$033B); a request costs about the same at 1 byte and 175."""
         try:
             r = self.session.get(
                 self.read_url,
