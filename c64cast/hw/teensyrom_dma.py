@@ -695,7 +695,7 @@ class TRClient:
             with contextlib.suppress(OSError, TRError):
                 self.transport.send_all(bytes(4))
         with contextlib.suppress(OSError, TRError):
-            self.transport.drain_text(_SPANS_RECOVER_QUIET_S)
+            self._drain_stale(_SPANS_RECOVER_QUIET_S)
 
     def probe_spans(self) -> bool:
         """Does the connected firmware carry WriteC64Spans? Sends the token,
