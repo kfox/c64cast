@@ -1785,6 +1785,7 @@ class AlignedAudioBranchesTest(unittest.TestCase):
         src._atempo_graph = _build_atempo_graph(self.RATE, tempo_scale)
         return src
 
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_silence_goes_through_the_atempo_graph_under_tempo_compensation(self):
         # Fed raw, the gap would play at twice the length the compensated
         # picture gives it, and the sound would fall behind its picture.
@@ -1796,6 +1797,7 @@ class AlignedAudioBranchesTest(unittest.TestCase):
         self.assertAlmostEqual(fed / (10 * self.RATE), 0.5, delta=0.03)
         self.assertTrue(all(not a.any() for a in sink))
 
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_a_trimmed_frame_goes_through_the_atempo_graph_under_tempo_compensation(self):
         sink: list[np.ndarray] = []
         src = self._graph_stub(sink)
