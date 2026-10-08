@@ -744,7 +744,8 @@ class Playlist:
         as skipped frames in `link_outage`, without a bound, like a frame
         the render path skips. A setup that lost writes on a link that
         answers again at once is retried `SETUP_RETRY_S` later, up to
-        `SETUP_LOSSY_TRIES` setups in all, then kept, so a link that drops
+        `SETUP_LOSSY_TRIES` such setups in a row with no outage between
+        them, then kept, so a link that drops
         writes without going down cannot hold the playlist. Every retry
         keeps the file the scene picked (`keep_pick_for_resetup`), which
         the "UP NEXT" card has already named."""
@@ -784,6 +785,8 @@ class Playlist:
                 if self.stop_event.wait(SETUP_RETRY_S):
                     return False
             else:
+                # An outage between two lossy setups ends their run.
+                lossy_tries = 0
                 claimant = self._release_audio_for_wait(scene, announcing, where)
                 if not self._wait_for_link(where, error, frame_time):
                     return False
