@@ -2342,9 +2342,17 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
     RATE = 8000
     TOLERANCE_S = 0.1
 
-    def _play(self, audio: tuple[tuple[float, float], ...]) -> tuple[bool, float | None]:
+    def _play(
+        self,
+        audio: tuple[tuple[float, float], ...],
+        *,
+        rate: int = RATE,
+        buffer: int = BUFFER,
+        slack_s: float = SLACK_S,
+    ) -> tuple[bool, float | None]:
         """Play a clip with sound at the ``audio`` spans the way VideoScene
-        does. Return whether it finished in time, and where on the fed
+        does, through a DAC at ``rate`` behind a ``buffer``-frame picture
+        buffer. Return whether it finished in time, and where on the fed
         timeline the first sound sample went."""
         import tempfile
 
@@ -2356,9 +2364,9 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         clip = f"{tmp.name}/clip.mkv"
-        _write_av_clip(clip, self.VIDEO_S, rate=self.RATE, audio=audio)
+        _write_av_clip(clip, self.VIDEO_S, rate=rate, audio=audio)
         api = FakeAPI()
-        dac = AudioStreamer(cast(C64Backend, api), self.RATE, "NTSC")
+        dac = AudioStreamer(cast(C64Backend, api), rate, "NTSC")
         link = _ConsumerLink(FakeAPI(), dac.effective_rate)
         api.read_memory = link.read_memory  # type: ignore[method-assign]
         start_nmi = dac.nmi.start
@@ -2372,7 +2380,7 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
         def push(samples: np.ndarray, **kwargs) -> int:
             loud = np.flatnonzero(samples)
             if loud.size and not first_sound:
-                first_sound.append((fed[0] + int(loud[0])) / self.RATE)
+                first_sound.append((fed[0] + int(loud[0])) / rate)
             fed[0] += samples.size
             return dac.push_samples(samples, **kwargs)
 
@@ -2381,13 +2389,13 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
             try:
                 src = AVFileSource(
                     clip,
-                    target_sample_rate=self.RATE,
+                    target_sample_rate=rate,
                     scan_audio_peak=False,
-                    max_video_buffer=self.BUFFER,
+                    max_video_buffer=buffer,
                 )
                 self.addCleanup(src.close)
                 src.start(audio_push=push, audio_end=dac.end_input)
-                deadline = time.monotonic() + self.VIDEO_S + self.SLACK_S
+                deadline = time.monotonic() + self.VIDEO_S + slack_s
                 while not src.finished and time.monotonic() < deadline:
                     src.current_frame(heard_seconds(dac))
                     time.sleep(0.01)
@@ -2405,6 +2413,13 @@ class VideoSilentStretchLongerThanBufferTest(unittest.TestCase):
 
     def test_a_sound_back_after_a_gap_longer_than_the_buffer_plays_with_its_picture(self):
         finished, first = self._play(((0.0, 0.3), (3.0, 0.5)))
+        self.assertTrue(finished, "the picture stalled in the gap")
+
+    def test_a_sink_holding_back_more_than_the_buffer_spans_still_plays_through(self):
+        # At 4 kHz the DAC's prebuffer alone is 1.5 s of audio, more than a
+        # 30-frame buffer spans: silence up to the newest frame read never
+        # starts its clock.
+        finished, _ = self._play(((0.0, 0.3), (3.0, 0.5)), rate=4000, buffer=30, slack_s=4.0)
         self.assertTrue(finished, "the picture stalled in the gap")
 
 

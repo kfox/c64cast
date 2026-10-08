@@ -31,6 +31,7 @@ from c64cast.scenes.scenes import VideoScene
 from c64cast.video import video as video_mod
 from c64cast.video.video import (
     AUDIO_DISCONTINUITY_S,
+    DRY_FILL_MAX_LEAD_S,
     DRY_FILL_MIN_LEAD_S,
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
@@ -396,7 +397,7 @@ class ResamplerTailTest(unittest.TestCase):
         src._audio_lag_s = 0.0
         src._audio_shift_s = 0.0
         src._audio_jump_warned = False
-        src._dry_stalled = False
+        src._dry_stall_level, src._dry_window = 0, None
         src._pts_offset = None
         src._pts_anchor_target = 0.0
         src._tempo_scale = 1.0
@@ -703,7 +704,7 @@ def _make_demux_source_stub(
     src._audio_lag_s = 0.0
     src._audio_shift_s = 0.0
     src._audio_jump_warned = False
-    src._dry_stalled = False
+    src._dry_stall_level, src._dry_window = 0, None
     src._decode_target = decode_target
     src._decode_size = None
     src._decode_planned = False
@@ -1308,7 +1309,7 @@ def _aligned_stub(sink: list[np.ndarray], *, rate: int = 8000) -> AVFileSource:
     src._audio_lag_s = 0.0
     src._audio_shift_s = 0.0
     src._audio_jump_warned = False
-    src._dry_stalled = False
+    src._dry_stall_level, src._dry_window = 0, None
     src._resampler = object()  # only tested for None: an audio stream is open
     return src
 
@@ -1445,14 +1446,23 @@ class AlignedAudioTest(unittest.TestCase):
 
     def test_a_stalled_picture_takes_the_sinks_lead_past_its_oldest_frame(self):
         # In a buffer spanning less than the sink holds back, a fill short of
-        # the newest frame never brings the clock to the oldest.
-        for stalled, expected in ((False, 0.5), (True, 1.0)):
-            with self.subTest(stalled=stalled):
+        # the newest frame never brings the clock to the oldest. The first
+        # step stays within the frames read; past it, the sink holds back
+        # more than the buffer spans.
+        for level, expected in ((0, 0.5), (1, 1.0), (2, 2 * DRY_FILL_MIN_LEAD_S)):
+            with self.subTest(level=level):
                 sink: list[np.ndarray] = []
                 src = _aligned_stub(sink)
-                src._dry_stalled = stalled
+                src._dry_stall_level = level
                 src._fill_dry_stretch(0.0, 1.0)
                 self.assertAlmostEqual(cast(float, src._audio_fed_s), expected)
+
+    def test_the_stall_lead_stops_growing_at_its_ceiling(self):
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._dry_stall_level = 1000
+        src._fill_dry_stretch(0.0, 1.0)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), DRY_FILL_MAX_LEAD_S)
 
     def test_no_fill_while_the_audio_fed_reaches_the_target(self):
         sink: list[np.ndarray] = []
@@ -1468,9 +1478,10 @@ class AlignedAudioTest(unittest.TestCase):
         src._fill_dry_stretch(0.0, 8.0)
         self.assertEqual((sink, src._audio_fed_s), ([], None))
 
-    def _enqueue_blocked(self, *, draining: bool) -> AVFileSource:
+    def _enqueue_blocked(self, *, drain_s: float) -> AVFileSource:
         """Block `_enqueue_frame` on a full buffer for about 3 s of a clock
-        that steps 0.3 s a reading, the oldest frame held or draining."""
+        that steps 0.3 s a reading, the oldest frame moving `drain_s` a
+        reading."""
         src = _aligned_stub([])
         img = np.zeros((2, 2, 3), dtype=np.uint8)
         src.max_video_buffer = 2
@@ -1479,8 +1490,7 @@ class AlignedAudioTest(unittest.TestCase):
 
         def fill(_oldest: float, _newest: float) -> None:
             calls[0] += 1
-            if draining:
-                src._video_buf[0] = (calls[0] * 0.01, img)
+            src._video_buf[0] = (calls[0] * drain_s, img)
             if calls[0] >= 10:
                 src._closed = True
 
@@ -1489,17 +1499,25 @@ class AlignedAudioTest(unittest.TestCase):
             self.assertFalse(src._enqueue_frame(2.0, img))
         return src
 
-    def test_a_picture_held_on_one_frame_latches_the_stall(self):
-        self.assertTrue(self._enqueue_blocked(draining=False)._dry_stalled)
+    def test_a_picture_held_on_one_frame_raises_the_stall_each_second(self):
+        # About 3 s held: a step each DRY_FILL_STALL_S, so a lead too short
+        # for the sink grows until it is not.
+        self.assertEqual(self._enqueue_blocked(drain_s=0.0)._dry_stall_level, 2)
 
-    def test_a_draining_picture_does_not_latch_the_stall(self):
-        self.assertFalse(self._enqueue_blocked(draining=True)._dry_stalled)
+    def test_a_picture_crawling_through_its_buffer_raises_the_stall(self):
+        # A fill that keeps the clock just short of what the sink holds back
+        # drains a frame now and then: no one frame waits long, and the
+        # picture plays at a fraction of its speed.
+        self.assertGreater(self._enqueue_blocked(drain_s=0.01)._dry_stall_level, 0)
+
+    def test_a_picture_draining_in_real_time_does_not_raise_the_stall(self):
+        self.assertEqual(self._enqueue_blocked(drain_s=0.3)._dry_stall_level, 0)
 
     def test_audio_coming_again_releases_the_stall(self):
         src = _aligned_stub([])
-        src._dry_stalled = True
+        src._dry_stall_level, src._dry_window = 2, (5.0, 1.0)
         src._align_audio_frame(_audio_frame(0.0, 0.1))
-        self.assertFalse(src._dry_stalled)
+        self.assertEqual((src._dry_stall_level, src._dry_window), (0, None))
 
     def test_a_seek_starts_the_audio_timeline_over(self):
         # Kept, the fed position of the old pass put the target's first audio
@@ -1507,12 +1525,18 @@ class AlignedAudioTest(unittest.TestCase):
         # forward.
         src = _make_demux_source_stub([], pending_seek=3.0)
         src._audio_fed_s, src._audio_trim = 40.0, 123
-        src._video_read_s, src._dry_stalled = 41.0, True
+        src._video_read_s, src._dry_stall_level, src._dry_window = 41.0, 2, (5.0, 1.0)
         src._audio_shift_s, src._audio_jump_warned = 1e6, True
         self.assertTrue(src._apply_pending_seek())
         self.assertEqual(
-            (src._audio_fed_s, src._audio_trim, src._video_read_s, src._dry_stalled),
-            (None, 0, None, False),
+            (
+                src._audio_fed_s,
+                src._audio_trim,
+                src._video_read_s,
+                src._dry_stall_level,
+                src._dry_window,
+            ),
+            (None, 0, None, 0, None),
         )
         # A jump the old pass followed on from is no part of the new pass's
         # timeline, and the new pass warns of its own.
@@ -1691,9 +1715,10 @@ class AlignedAudioBranchesTest(unittest.TestCase):
         self.assertAlmostEqual(src._audio_lag_s, 2.0)
 
     def test_the_stall_lead_exceeds_what_each_sink_holds_back(self):
-        # A retune of either sink that grows its hold-back past the stall
-        # lead stops the clock short of the oldest frame again. The DAC holds
-        # back its prebuffer and a ring lead (at most the servo's target gap);
+        # A retune of either sink that grows its hold-back past the first
+        # step of the stall lead costs every stall at its default settings
+        # another second before the picture moves. The DAC holds back its
+        # prebuffer and a ring lead the servo steers toward its target gap;
         # 8 kHz is the slowest rate it has shipped at (12 kHz is the default).
         dac_s = (PREBUFFER_CHUNKS * CHUNK_SIZE + HOST_DMA_SERVO_TARGET_GAP) / 8000
         self.assertGreater(DRY_FILL_MIN_LEAD_S, dac_s)
