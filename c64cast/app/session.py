@@ -534,10 +534,14 @@ class ReleaseInterrupts:
         it can't strand the steps under it."""
         if self._stopped:
             return
+        # Nested so a Ctrl+C that lands while a failure is being logged is
+        # counted like one inside fn(); as a sibling handler it would escape
+        # uncounted and end teardown_stack's loop.
         try:
-            fn()
-        except Exception:
-            log.exception("[%s] %s failed", name, label)
+            try:
+                fn()
+            except Exception:
+                log.exception("[%s] %s failed", name, label)
         except KeyboardInterrupt as e:
             if self._pending is not None:
                 self._stopped = True

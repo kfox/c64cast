@@ -283,6 +283,26 @@ class TeardownStackOrderTest(unittest.TestCase):
         )
         self.assertIn("interrupt again to stop at once", logs.output[0])
 
+    def test_a_ctrl_c_while_logging_a_failed_step_still_runs_the_steps_under_it(self):
+        st, order = self._record_order()
+
+        def failed():
+            order.append("audio")
+            raise RuntimeError("boom")
+
+        st.audio.close.side_effect = failed
+        with (
+            unittest.mock.patch.object(session.log, "exception", side_effect=KeyboardInterrupt),
+            self.assertLogs("c64cast", "WARNING") as logs,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            teardown_stack(st)
+        self.assertEqual(
+            order,
+            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+        )
+        self.assertIn("interrupt again to stop at once", logs.output[0])
+
     def test_a_second_ctrl_c_stops_at_once(self):
         # The hard stop: whatever is left is skipped, and the interrupt that
         # asked for it is the one that propagates.
