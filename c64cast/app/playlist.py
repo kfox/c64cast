@@ -9,6 +9,7 @@ InterstitialScene) or stub it out for tests."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -830,13 +831,16 @@ class Playlist:
             # Before the attempt: a restart the last scene outlived on a dead
             # link left no landed frame to notice it, and a SID scene's setup
             # resets the machine itself, which would hide it afterwards. Before
-            # the epoch is taken, too, so a write the restore loses is not
-            # charged to the setup.
+            # the epoch is taken, too, and drained by a round trip, so a write
+            # the restore loses is not charged to the setup.
             if self.restart_watch.restarted_before_setup():
                 self._put_machine_back(
                     "the machine restarted before %r set up; putting its state back first",
                     scene.name,
                 )
+                # A link error here is the setup's to meet and be judged by.
+                with contextlib.suppress(LinkError):
+                    self.api.flush()
             started = self.link_outage.now()
             epoch = self.api.delivery_epoch
             error: LinkError | None = None

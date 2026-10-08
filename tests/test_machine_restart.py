@@ -926,6 +926,40 @@ class RestartBeforeTheNextSetupTest(unittest.TestCase):
         self.assertEqual(len(restored_before), 1)
         self.assertEqual(restored_before[0].setup_count, 1, "the restore's loss retried the setup")
 
+    def test_a_restore_loss_found_only_at_the_next_flush_is_not_charged_either(self):
+        api = _Machine()
+        stop = threading.Event()
+        cards: list[FakeScene] = []
+
+        def card(name: str) -> FakeScene:
+            cards.append(FakeScene(f"trans:{name}", frames_until_done=1))
+            return cards[-1]
+
+        pl = Playlist(
+            [_OutlivedRestartScene(api, restart_at=3, frames=10), _StopOnSetup("Next", stop)],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=card,
+            loop=False,
+        )
+        pending: list[int] = []
+
+        def flush() -> None:
+            # As the socket does: a loss surfaces at the round trip after it.
+            if pending:
+                pending.clear()
+                api.delivery_epoch += 1
+
+        api.flush = flush
+        pl.on_machine_restart = lambda: pending.append(1)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        restored_before = [c for c in cards if c.name == "trans:Next"]
+        self.assertEqual(len(restored_before), 1)
+        self.assertEqual(restored_before[0].setup_count, 1, "the restore's loss retried the setup")
+
 
 class _Launcher(FakeScene):
     """Like LauncherScene: its setup runs a program of the user's, here one
