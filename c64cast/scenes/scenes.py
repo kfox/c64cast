@@ -1962,6 +1962,12 @@ class VideoScene(MediaFileMixin, Scene):
             gap = now - w_prev
             stalled = gap >= TEMPO_FOLLOW_STALL_S and clock_s - c_prev < 0.5 * tempo * gap
             if stalled or trust != self._drain_trust:
+                log.debug(
+                    "video: drain window restarted after %.2fs (%s), tempo held at %.3f",
+                    now - marks[0][0],
+                    "clock stalled" if stalled else "underrun or lost write",
+                    tempo,
+                )
                 marks.clear()
         self._drain_trust = trust
         marks.append((now, clock_s))

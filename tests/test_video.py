@@ -3963,8 +3963,10 @@ class FollowDrainTest(unittest.TestCase):
 
     def test_a_stalled_clock_is_not_read_as_drain(self):
         scene, source = self._scene()
-        self._play(scene, 0.88, 130.0, frozen=(115.0, 117.0))
+        with self.assertLogs("c64cast.scenes.scenes", "DEBUG") as logs:
+            self._play(scene, 0.88, 130.0, frozen=(115.0, 117.0))
         self.assertEqual(source.requests, [])
+        self.assertTrue(any("clock stalled" in line for line in logs.output))
 
     def test_a_short_stall_is_not_read_as_drain(self):
         scene, source = self._scene()
