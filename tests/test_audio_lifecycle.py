@@ -695,6 +695,11 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         )
         self.assertTrue(fired, "the queue never ran dry during a drip")
         self.assertEqual((s._full_underruns, s._partial_underruns), (0, 0))
+        # Counted as silence, the retired chunk's pad is dropped with it:
+        # left counted, it stayed queued, and only the chunk in hand is.
+        self.assertLessEqual(
+            s._queued_samples, s.chunk_size, "the retired chunk's pad stayed queued"
+        )
 
     def test_a_flush_in_the_claim_window_still_counts_the_chunk(self):
         """The epoch check and the in-flight record are one step under
