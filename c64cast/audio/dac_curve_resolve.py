@@ -210,7 +210,8 @@ def provision_calibrated_chip_model(
     is left alone.
 
     A calibration measured without socket detection recorded the chip only as
-    whatever answered ``$D400``, so that chip is the one switched, through its
+    whatever answered ``$D400``, so that chip is the one switched: through the
+    socket an Ultimate maps there when it names one, else through the chip's
     own register protocol, which works on every link."""
     if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
@@ -219,7 +220,14 @@ def provision_calibrated_chip_model(
     if wanted is None:
         return None
     if socket is None:
-        return _provision_d400_model(be, recorded, wanted)
+        owner = d400_owner(be)
+        if not isinstance(owner, int):
+            return _provision_d400_model(be, recorded, wanted)
+        # A register write at $D400 would leave the socket's config item, the
+        # label cache and a scene's snapshot naming the old model, and a scene
+        # restore then sets the item from its probe while teardown sets the
+        # register back: the menu ends the run disagreeing with the chip.
+        socket = owner
     if not be.profile.supports_sid_config:
         return None
     live = detect_socket_models(be)[socket - 1]
