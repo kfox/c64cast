@@ -1550,6 +1550,21 @@ class AlignedAudioTest(unittest.TestCase):
         self.assertEqual((src._dry_stall_level, src._dry_extra_frames()), (0, 0))
         self.assertIsNone(src._dry_window)
 
+    def test_a_mute_stops_a_kept_stall_growing_the_buffer(self):
+        src = _aligned_stub([])
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        src.max_video_buffer = 2
+        src._video_buf = [(0.0, img), (1.0, img)]
+        src._dry_stall_level, src._muted = 3, True
+
+        def stop(_oldest: float, _newest: float) -> None:
+            src._closed = True
+
+        src._fill_dry_stretch = stop  # type: ignore[method-assign]
+        with mock.patch.object(video_mod, "time", FrozenClock(0.0, "monotonic", 0.3, sleep=None)):
+            appended = src._enqueue_frame(2.0, img)
+        self.assertEqual((appended, len(src._video_buf)), (False, 2))
+
     def test_no_fill_without_an_audio_stream(self):
         sink: list[np.ndarray] = []
         src = _aligned_stub(sink)
