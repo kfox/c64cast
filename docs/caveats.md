@@ -113,7 +113,7 @@ default), each resolves to the speed fraction `s` measured for the connected
 hardware: **0.89 hires / 0.88 mhires** on a U64-II NTSC and on a TeensyROM
 writing unsliced, **0.97** on a TeensyROM+ with sliced DMA writes, and from a few seconds in the scene follows the `s` it measures (clock/wall) unless the field is set: for the gated bitmap+DAC path,
 `AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
-`atempo` filter graph and stamps each video PTS `c` at `offset + c × s` (`offset` 0 until a retune). The existing
+`atempo` filter graph and stamps each rebased video PTS `c` (seconds from the pass's first timestamp) at `offset + c × s` (`offset` 0 until a retune). The existing
 drain-clock A/V sync (which reads ≈`s`) then lands both content streams at real
 time, in sync, pitch intact. `clock/wall` telemetry still reads ≈`s` **by design**
 (it gauges the drain rate; the compensation makes *content* real-time, not the
@@ -1176,9 +1176,11 @@ design, not bugs:
   anchor). Use it if the resync splices ever misbehave on unusual
   hardware/firmware.
 - **Mute-path DAC+bitmap tempo quirk.** On the `"mute"` path over
-  DAC+bitmap `tempo_scale` (≈0.88) content, the wall-clock anchor runs at
+  DAC+bitmap `tempo_scale` content, the wall-clock anchor runs at
   1× while the video PTS timeline is scaled — so after transport is touched the
-  video plays ≈1.14× (audio is muted, so only the picture is affected). It
+  video plays at `1/s`, `s` being the tempo in force at the touch (≈1.14× at
+  0.88, more once the scene has followed a slower drain; audio is muted, so
+  only the picture is affected). It
   does not occur on the default `"on"` path, whose audio-anchored clock stays
   in the scaled domain.
 
