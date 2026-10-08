@@ -57,6 +57,31 @@ DRY_FILL_STALL_S = 1.0
 # backpressure bound and a seek or close is seen between them.
 SILENCE_PIECE_SAMPLES = 1024
 
+
+def place_audio_frame(
+    start_s: float, duration_s: float, fed_s: float, rate: int
+) -> tuple[int, int, float]:
+    """Where a decoded audio frame starting at ``start_s`` and lasting
+    ``duration_s`` goes, given audio fed so far up to ``fed_s`` (seconds on
+    one timeline) at ``rate`` samples per second: the silence to feed ahead
+    of it and the samples to drop from its front, both counted at ``rate``,
+    and where the audio fed then ends.
+
+    That end advances by what is fed, never to the frame's own timestamp: a
+    frame within `AUDIO_ALIGN_TOLERANCE_S` follows on, and its gap stays in
+    the next frame's, so gaps and overlaps each too small to correct add up
+    until one is corrected rather than drifting the sound from its picture
+    without bound."""
+    gap = start_s - fed_s
+    if gap > AUDIO_ALIGN_TOLERANCE_S:
+        silence = round(gap * rate)
+        return silence, 0, fed_s + silence / rate + duration_s
+    if gap < -AUDIO_ALIGN_TOLERANCE_S:
+        trim = round(min(-gap, duration_s) * rate)
+        return 0, trim, fed_s + duration_s - trim / rate
+    return 0, 0, fed_s + duration_s
+
+
 log = logging.getLogger(__name__)
 
 # Peak-normalization for video-scene audio. The SID volume DAC is 4-bit and
@@ -1337,8 +1362,9 @@ class AVFileSource:
         target = min(target, newest)
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
         if target - fed > AUDIO_ALIGN_TOLERANCE_S:
-            self._audio_fed_s = target
-            self._feed_silence(target - fed)
+            samples = round((target - fed) * self.target_sr)
+            self._audio_fed_s = fed + samples / self.target_sr
+            self._feed_silence(samples)
 
     def _decode_audio_packet(self, packet: Any) -> None:
         """Resample an audio packet and emit it — through the atempo graph
@@ -1372,19 +1398,16 @@ class AVFileSource:
         fed = self._audio_fed_s
         if fed is None:
             fed = self._pts_anchor_target
-        gap = start - fed
-        if gap > AUDIO_ALIGN_TOLERANCE_S:
-            self._feed_silence(gap)
-        elif gap < -AUDIO_ALIGN_TOLERANCE_S:
-            self._audio_trim += round(min(-gap, duration) * self.target_sr)
-        self._audio_fed_s = max(fed, start + duration)
+        silence, trim, self._audio_fed_s = place_audio_frame(start, duration, fed, self.target_sr)
+        self._audio_trim += trim
+        self._feed_silence(silence)
 
-    def _feed_silence(self, seconds: float) -> None:
-        """Feed ``seconds`` of content-timeline silence the way audio goes,
-        through the atempo graph when tempo compensation is on, in pieces a
-        sink's backpressure takes one at a time. Stops early on a seek or a
-        close, which retire it anyway."""
-        remaining = round(seconds * self.target_sr)
+    def _feed_silence(self, samples: int) -> None:
+        """Feed ``samples`` (at ``target_sr``) of content-timeline silence the
+        way audio goes, through the atempo graph when tempo compensation is
+        on, in pieces a sink's backpressure takes one at a time. Stops early
+        on a seek or a close, which retire it anyway."""
+        remaining = samples
         while remaining > 0 and not self._closed and not self.seek_pending:
             n = min(remaining, SILENCE_PIECE_SAMPLES)
             remaining -= n

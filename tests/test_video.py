@@ -1337,7 +1337,43 @@ class AlignedAudioTest(unittest.TestCase):
         src._audio_fed_s = 1.0
         src._align_audio_frame(_audio_frame(1.02, 0.5))
         self.assertEqual(sink, [])
-        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.52)
+        # The 20 ms it starts late was not fed, so the audio fed ends 0.5 s
+        # on, and the next frame's gap carries those 20 ms.
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.5)
+
+    def test_gaps_too_small_to_fill_one_by_one_are_filled_once_they_add_up(self):
+        # Every other 1024-sample frame missing: a 21.3 ms hole each time,
+        # under the tolerance. Each hole was forgotten once the frame after
+        # it was placed, and the sound ran ahead of its picture without
+        # bound: 2.1 s after 4.3 s of content.
+        rate = 48000
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink, rate=rate)
+        seconds = 1024 / rate
+        sound = 0
+        for i in range(0, 200, 2):
+            src._align_audio_frame(_audio_frame(i * seconds, seconds, rate))
+            sound += 1024
+        fed = sound + sum(a.size for a in sink)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), fed / rate, delta=1e-6)
+        # The last frame starts where all that was fed puts it, to within
+        # the tolerance.
+        self.assertAlmostEqual((fed - 1024) / rate, 198 * seconds, delta=0.03)
+
+    def test_overlaps_too_small_to_trim_one_by_one_are_trimmed_once_they_add_up(self):
+        # Each frame's timestamp 10 ms short of the one before's end: the
+        # sound fell behind its picture by 10 ms a frame.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        trimmed = 0
+        for i in range(100):
+            src._align_audio_frame(_audio_frame(i * 0.09, 0.1))
+            trimmed += src._audio_trim
+            src._audio_trim = 0
+        self.assertEqual(sink, [])
+        played = 100 * self.RATE // 10 - trimmed
+        self.assertAlmostEqual(played / self.RATE, 99 * 0.09 + 0.1, delta=0.03)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), played / self.RATE, delta=1e-6)
 
     def test_a_frame_with_no_timestamp_follows_on(self):
         sink: list[np.ndarray] = []
