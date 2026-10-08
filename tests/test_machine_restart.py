@@ -150,6 +150,28 @@ class MachineRestartWatchTest(unittest.TestCase):
         self.assertFalse(watch.after_frame(True))
         self.assertEqual(api.reads, 0)
 
+    def test_bytes_written_over_the_nonce_are_not_a_restart(self):
+        self.api.ram[_SENTINEL] = bytes(range(1, RESTART_SENTINEL_LEN + 1))
+        self.api.link_generation += 1
+        self.assertFalse(self.watch.after_frame(True))
+        self.watch._log.warning.assert_called_once()
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.api.link_generation += 1
+        self.assertFalse(self.watch.after_frame(True))
+        self.assertFalse(self.watch.restarted_before_setup())
+        self.assertEqual(self.api.reads, 1, "an overwritten nonce is looked at again")
+
+    def test_a_read_of_the_wrong_length_is_tried_again_not_taken_as_a_restart(self):
+        self.api.restart()
+        real_read = self.api.read_memory
+        self.api.read_memory = lambda address, length, timeout=1.0: real_read(
+            address, length - 1, timeout
+        )
+        self.assertFalse(self.watch.after_frame(True))
+        self.api.read_memory = real_read
+        self.now[0] += RESTART_CHECK_MIN_S
+        self.assertTrue(self.watch.after_frame(True))
+
     def test_before_setup_a_restart_is_found_without_waiting_for_a_landed_frame(self):
         self.api.restart()
         self.assertTrue(self.watch.restarted_before_setup())

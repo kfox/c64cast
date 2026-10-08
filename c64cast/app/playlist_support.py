@@ -661,14 +661,26 @@ class MachineRestartWatch:
         self._suspended = True
 
     def _look(self, marks: tuple[int, int]) -> bool:
-        """Read the nonce back. True, and disarmed, when it is gone. A read
-        that fails leaves the watch armed and `marks` unrecorded, so the
-        next look tries again."""
+        """Read the nonce back. True, and disarmed, only when a reset
+        cleared it to zeros. A read that fails or comes back the wrong
+        length leaves the watch armed and `marks` unrecorded, so the next
+        look tries again. Other bytes there mean something on the machine
+        wrote over it, and taking that for a restart would reset the
+        machine under the writer at every link change, so the watch stands
+        down until the next scene arms it."""
         seen = self._api.read_memory(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
-        if seen is None:
+        if seen is None or len(seen) != RESTART_SENTINEL_LEN:
             return False
         self._marks = marks
         if seen == self._nonce:
             return False
         self._armed = False
+        if any(seen):
+            self._log.warning(
+                "the restart check found $%04X-$%04X overwritten rather than cleared; "
+                "not watching for a machine restart until the next scene sets up",
+                RESTART_SENTINEL_ADDR,
+                RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,
+            )
+            return False
         return True
