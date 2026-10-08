@@ -3182,9 +3182,11 @@ class AudioStreamer:
         It is the bytes landed across the window over the time they took,
         rather than an average of per-landing rates: a stall and the
         back-to-back landings the worker drips to catch up on it cancel in
-        the sum, where per-landing samples had to be told apart and
-        filtered, and capped samples read landing jitter as a slower pace.
-        Capped at the armed NMI rate, which the drain cannot beat."""
+        the sum while both are inside the window, where per-landing samples
+        had to be told apart and filtered, and capped samples read landing
+        jitter as a slower pace. They leave the window one after the other,
+        so about a window after a stall the pace reads fast for a landing or
+        two. Capped at the armed NMI rate, which the drain cannot beat."""
         if self._landing_pace <= 0:
             return self.effective_rate
         return min(self._landing_pace, self._armed_rate())

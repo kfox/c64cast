@@ -3907,11 +3907,13 @@ class LifecycleTest(unittest.TestCase):
                 s._note_ring_landed(s._worker_generation, 1024, 0)
                 s._pushed_count += 1024
 
-    def test_a_stall_and_its_catch_up_leave_the_landing_pace_at_the_drain(self):
+    def test_a_stall_and_its_catch_up_cancel_inside_the_landing_pace_window(self):
         # After a stalled landing the worker drips the chunks it owes back to
         # back until it is on its schedule again. Per-landing samples had to
         # tell the two apart; counted, the catch-up pulled the pace up to the
         # cap and the clock reached each next chunk early under bus halts.
+        # Checked once the worker is back on schedule with the stall still in
+        # the window, and again once both have left it.
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
         drain = 0.79 * s.effective_rate
@@ -3926,7 +3928,11 @@ class LifecycleTest(unittest.TestCase):
             times.append(at)
             landed = at
         self.assertEqual(times[-1], schedule[-1], "the worker never caught up")
-        self._land_at(clock, s, times)
+        back = next(k for k in range(21, 40) if times[k] == schedule[k])
+        self.assertLess(times[back] - times[19], audio_mod.LANDING_PACE_WINDOW_S)
+        self._land_at(clock, s, times[: back + 1])
+        self.assertAlmostEqual(self._pace(s), drain, delta=0.001 * drain)
+        self._land_at(clock, s, times[back + 1 :])
         self.assertAlmostEqual(self._pace(s), drain, delta=0.001 * drain)
 
     def test_the_landing_pace_follows_a_change_in_the_drain(self):
