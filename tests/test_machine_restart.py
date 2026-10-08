@@ -391,6 +391,15 @@ class RestartSeenByThePollerTest(unittest.TestCase):
         self.assertTrue(self.watch.restarted_before_setup())
         self.assertEqual(self.api.reads, 1, "the watch read on its own")
 
+    def test_before_setup_a_polled_reset_is_not_held_back_by_the_limit(self):
+        for _ in range(RESTART_LIMIT_PER_PLAY - 1):
+            self.assertTrue(self._restart_seen())
+            self.watch.arm(after_restart=True)
+        self.api.external_reset()
+        self.poller._read_modifiers()
+        self.assertTrue(self.watch.restarted_before_setup())
+        self.watch._log.warning.assert_not_called()
+
     def test_a_suspended_watch_ignores_the_polls(self):
         self.watch.suspend()
         self.api.external_reset()
