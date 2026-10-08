@@ -896,21 +896,7 @@ def _validate_dac_curve_resolution(
         authoritative = dac_calibration_store.offline_key_is_authoritative(cfg)
         try:
             resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
-            label, declined = resolved.label, resolved.declined_chip
-            if declined is not None:
-                out.append(
-                    Diagnostic(
-                        level="ok",
-                        category="audio",
-                        subject=f"{name}/dac_curve",
-                        message=(
-                            f"a calibration measured on an {declined} applies, but 'auto' "
-                            f"resolves to {label!r} over it; set [audio].dac_curve = "
-                            "'calibrated' to play it."
-                        ),
-                    )
-                )
-                continue
+            label = resolved.label
             if not authoritative and not label.startswith("calibrated:"):
                 on_disk = dac_calibration_store.list_calibration_files(cfg.hardware.backend)
                 if on_disk:
@@ -2450,16 +2436,11 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
                 "[audio].dac_curve = 'auto'.",
             )
         ]
-    label, declined, key = resolved.label, resolved.declined_chip, resolved.key
+    label, key = resolved.label, resolved.key
     if resolved.table is not None:
         message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
     elif curve == "auto" and cfg.audio.digi_boost:
         message = f"[audio].digi_boost holds 'auto' on {label!r}; no calibrated table is read."
-    elif declined is not None:
-        message = (
-            f"a calibration measured on an {declined} applies (key {key!r}), but 'auto' "
-            f"resolves to {label!r} over it; set [audio].dac_curve = 'calibrated' to play it."
-        )
     else:
         message = f"no calibration applies right now (key {key!r}); resolves to {label!r}."
     return [Diagnostic(level="ok", category="connectivity", subject=subject, message=message)]

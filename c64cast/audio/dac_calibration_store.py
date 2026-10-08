@@ -36,8 +36,6 @@ from c64cast.sid.asid_sidmap import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from c64cast.app.config import Config
     from c64cast.hw.backend import C64Backend
 
@@ -346,19 +344,15 @@ def load_calibrated_table_and_chip(
     *,
     be: C64Backend | None = None,
     path: Path | None = None,
-    declines: Callable[[tuple[int | None, str] | None], bool] | None = None,
 ) -> tuple[bytes | None, tuple[int | None, str] | None]:
     """:func:`load_calibrated_table`, with the ``(socket, detected)`` of the
     entry it came from (see :func:`_chip_of`), from one read of the file and of
     the live socket map. Two reads can each pick a different entry — a
     socket-map read that fails the second time falls back to the file's
-    recorded mapping — and pair one entry's table with another's chip.
-
-    ``declines`` is the caller's verdict on that ``(socket, detected)``: a
-    table it will not play gets no note about what the table assumes."""
+    recorded mapping — and pair one entry's table with another's chip."""
     applicable = _applicable_entry(cfg, be, path)
     table, chip = _table_of(applicable), _chip_of(applicable)
-    if table is not None and applicable is not None and not (declines and declines(chip)):
+    if table is not None and applicable is not None:
         _note_one_sid_assumption(cfg, be, applicable[0])
     return table, chip
 

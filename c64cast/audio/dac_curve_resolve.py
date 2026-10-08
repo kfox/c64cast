@@ -32,23 +32,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def auto_declined_chip(measured: tuple[int | None, str] | None) -> str | None:
-    """The chip label of a calibrated entry that ``"auto"`` will not play
-    through, or None when it would. ``measured`` is the entry's
-    ``(socket, detected)`` from
-    :func:`~c64cast.audio.dac_calibration_store.load_calibrated_table_and_chip`."""
-    if measured is not None and armsid.is_armsid(measured[1]):
-        return measured[1]
-    return None
-
-
 @dataclass(frozen=True)
 class DacCurve:
     """What :func:`resolve_dac_curve_for_backend` chose.
 
     ``measured`` is the ``(socket, detected)`` of the calibrated entry whose
-    table it read — the one ``table`` holds, or the one ``"auto"`` declined —
-    and None when it read no table or the entry names no chip. Its socket is
+    table ``table`` holds, and None when it read no table or the entry names no
+    chip. Its socket is
     None for a ``"default"`` entry, measured without isolating one. A
     consumer that needs the chip reads it here rather than from the file again:
     each read of the file makes its own socket-map read, and one that fails
@@ -62,12 +52,6 @@ class DacCurve:
     measured: tuple[int | None, str] | None = None
     key: str | None = None
 
-    @property
-    def declined_chip(self) -> str | None:
-        """The chip label of the calibration ``"auto"`` resolved past, or None
-        when it played one or none applied."""
-        return None if self.table is not None else auto_declined_chip(self.measured)
-
 
 def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurve:
     """The ``"auto"`` arm: a calibrated table when one applies, the baked
@@ -75,23 +59,8 @@ def _resolve_auto_curve(cfg: Config, be: C64Backend | None, key: str) -> DacCurv
     the safe 4-bit linear path. ``key`` arrives already resolved because
     resolving it can cost a live device round-trip on the Ultimate."""
     path = path_for_key(cfg, key)
-    table, measured = load_calibrated_table_and_chip(
-        cfg, be=be, path=path, declines=lambda chip: auto_declined_chip(chip) is not None
-    )
+    table, measured = load_calibrated_table_and_chip(cfg, be=be, path=path)
     if table is not None:
-        declined = auto_declined_chip(measured)
-        if declined is not None:
-            # Its ladder metrics matched a good 6581's, yet it played a click
-            # track as a splat that linear plays clean (#587), so no metric
-            # here can vouch for it; "calibrated" is the explicit opt-in.
-            log.warning(
-                "the DAC calibration at %s was measured on an %s, which `auto` does not "
-                "play through; using the 4-bit linear DAC. Set [audio].dac_curve = "
-                '"calibrated" to use it anyway.',
-                path,
-                declined,
-            )
-            return DacCurve("linear", None, measured, key)
         return DacCurve(f"calibrated:{key}", table, measured, key)
     if cfg.audio.dac_calibration_profile:
         log.warning(
@@ -155,8 +124,7 @@ def resolve_dac_curve_for_backend(cfg: Config, be: C64Backend | None = None) -> 
     (the legacy linear 4-bit path).
 
     * ``"auto"`` (default) — prefer a calibrated table applicable to this
-      system/socket if one exists, unless the calibrating run identified its chip as an
-      ARMSID or ARM2SID (``linear`` then); else ``mahoney_ultisid`` when an UltiSID
+      system/socket if one exists; else ``mahoney_ultisid`` when an UltiSID
       core answers ``$D400`` (the baked table *is* that core's curve); else
       ``linear`` (a physical/unknown SID with no calibration: the baked
       emulated table would not match it, so stay on the safe 4-bit path).

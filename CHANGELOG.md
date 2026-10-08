@@ -315,8 +315,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   reopened; on a TeensyROM+ the next command first waits about a second and a
   half for the cartridge to give up on the cut one.
 
-- **`[audio].dac_curve = "calibrated"` now puts an ARMSID back into the model
-  it was calibrated in when the calibration ran without socket detection** (on
+- **A DAC calibration now puts an ARMSID back into the model it was
+  calibrated in when the calibration ran without socket detection** (on
   a TeensyROM+, or when detection failed). The table used to play in whatever
   model the chip happened to be in. The chip at `$D400` is now switched for the
   run and put back afterward, on any link.
@@ -459,14 +459,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   putting yours back at the end; before, a table measured in one model played
   through the other model's ladder.
 
-- **`dac_curve = "auto"` no longer plays through a DAC calibration measured on
-  an ARMSID or ARM2SID.** One such table measured as well as a real 6581's yet
-  turned a click track into noise that the 4-bit linear path plays cleanly, so
-  `auto` now uses linear and logs why. Set `[audio].dac_curve = "calibrated"` to
-  play the table anyway; `--calibrate-dac` says so when it measures one. A
-  calibration over a TeensyROM+, or any link that cannot detect SID sockets,
-  asks the chip at `$D400` whether it is an ARMSID, so this covers those tables
-  too.
+- **`dac_curve = "auto"` plays a DAC calibration whenever one applies,
+  including one measured on an ARMSID or ARM2SID.** The table plays in the
+  model the chip was measured in, and your model is put back at the end of the
+  run, as for any other ARMSID calibration. `dac_curve = "calibrated"` is no
+  longer needed to play such a table, and `--calibrate-dac` and `--doctor` no
+  longer say it is.
 
 - **An ARM2SID's second SID now plays two-SID tunes and ASID streams on an
   Ultimate 64.** The firmware reports the chip as an ARMSID and socket 2 as

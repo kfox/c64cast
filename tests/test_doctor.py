@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import io
-import json
 import os
 import tempfile
 import textwrap
@@ -1360,19 +1359,18 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
         self.assertIn("1 calibration file(s) on disk", diags[0].message)
         self.assertIn("--skip-probe", diags[0].hint or "")
 
-    def test_auto_over_an_armsid_table_names_the_table_it_declined(self):
+    def test_auto_over_an_armsid_table_resolves_to_the_table(self):
         path = Path(self._tmp.name) / "rig.json"
         path.write_text(
             '{"schema": 2, "d400_socket": 1, "sids": {"1": '
             f'{{"sidtable": {list(range(256))}, "detected": "ARMSID 8580"}}}}}}'
         )
         loaded = self._loaded("auto", extra=f"dac_calibration_profile = {ser._fmt_str(str(path))}")
-        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+        with self.assertNoLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
             diags = doctor._validate_dac_curve_resolution(loaded)
         self.assertEqual(len(diags), 1)
-        self.assertIn("ARMSID 8580", diags[0].message)
-        self.assertIn("'calibrated'", diags[0].message)
-        self.assertNotIn("no calibration", diags[0].message)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("'calibrated:rig'", diags[0].message)
 
     def test_calibrated_no_files_anywhere_is_still_a_hard_error(self):
         diags = doctor._validate_dac_curve_resolution(self._loaded("calibrated"))
@@ -1490,7 +1488,7 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         self.assertEqual(len(diags), 1)
         self.assertIn("'ultimate-abc123'", diags[0].message)
 
-    def test_auto_over_an_armsid_table_names_the_table_it_declined(self):
+    def test_auto_over_an_armsid_table_resolves_to_the_table(self):
         cfg = self._cfg("auto")
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -1509,53 +1507,10 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "ARMSID",
         }
-        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+        with self.assertNoLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
             diags = doctor._probe_dac_calibration_status("sys", cfg, api)
         self.assertEqual(len(diags), 1)
-        self.assertIn("ARMSID 8580", diags[0].message)
-        self.assertIn("'calibrated'", diags[0].message)
-        self.assertNotIn("no calibration applies", diags[0].message)
-
-    def test_a_failed_later_socket_map_read_still_names_the_declined_table(self):
-        # Resolution read socket 1's ARMSID entry and declined it. A second
-        # read of the map that fails falls back to the file's d400_socket and
-        # lands on socket 2's real chip, which `auto` would have played.
-        cfg = self._cfg("auto")
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        path = Path(tmp.name) / "cal.json"
-        sids = {
-            "1": {"sidtable": list(range(256)), "detected": "ARMSID 8580"},
-            "2": {"sidtable": list(range(256)), "detected": "6581"},
-        }
-        path.write_text(json.dumps({"schema": 2, "d400_socket": 2, "sids": sids}))
-        cfg.audio.dac_calibration_profile = str(path)
-        api = FakeAPI()
-        api.profile = HardwareProfile(
-            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
-        )
-        api.config_store["SID Addressing"] = {"SID Socket 1 Address": "$D400"}
-        api.config_store["SID Sockets Configuration"] = {
-            "SID Socket 1": "Enabled",
-            "SID Detected Socket 1": "ARMSID",
-        }
-        real = api.get_config_category
-        reads = 0
-
-        def second_addressing_read_fails(category, *args, **kwargs):
-            nonlocal reads
-            if category == "SID Addressing":
-                reads += 1
-                if reads == 2:
-                    raise OSError("REST unreachable")
-            return real(category, *args, **kwargs)
-
-        api.get_config_category = second_addressing_read_fails  # type: ignore[method-assign]
-        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
-            diags = doctor._probe_dac_calibration_status("sys", cfg, api)
-        self.assertEqual(len(diags), 1)
-        self.assertIn("ARMSID 8580", diags[0].message)
-        self.assertNotIn("no calibration applies", diags[0].message)
+        self.assertIn("resolves to 'calibrated:cal'", diags[0].message)
 
     def test_auto_under_digi_boost_does_not_offer_the_armsid_table(self):
         # digi_boost holds auto on linear before any table is read, and

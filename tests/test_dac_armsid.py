@@ -128,26 +128,28 @@ class ProvisionModelTest(_NoSettle):
             self.assertIsNone(self._provision(api, _cfg_with_calibration("ARMSID 6581")))
 
 
-class AutoSkipsArmsidTableTest(unittest.TestCase):
-    """`auto` plays linear over a table measured on an ARMSID (#587);
-    `calibrated` still plays it."""
+class AutoPlaysArmsidTableTest(_NoSettle):
+    """`auto` plays a table measured on an ARMSID like any other calibration,
+    in the model it was measured in."""
 
-    def test_auto_plays_linear_and_names_the_opt_in(self):
+    def test_auto_plays_the_table_for_every_armsid_label(self):
         for detected in ("ARM2SID 6581", "ARMSID 8580", "ARMSID", "ARMSID ?"):
             with (
                 self.subTest(detected=detected),
-                self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as cm,
+                self.assertNoLogs("c64cast.audio.dac_curve_resolve", "WARNING"),
             ):
-                cfg = _cfg_with_calibration(detected)
-                resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
-                self.assertEqual((resolved.label, resolved.table), ("linear", None))
-                self.assertEqual(resolved.declined_chip, detected)
-                self.assertIn('dac_curve = "calibrated"', "\n".join(cm.output))
+                resolved = dac_curve_resolve.resolve_dac_curve_for_backend(
+                    _cfg_with_calibration(detected)
+                )
+            self.assertTrue(resolved.label.startswith("calibrated:"), resolved.label)
+            self.assertEqual(resolved.table, bytes(range(256)))
+            self.assertEqual(resolved.measured, (1, detected))
 
     def test_a_live_run_reads_the_socket_map_once(self):
-        # The table and the chip that vetoes it must come from one entry: a
-        # second socket-map read that failed would fall back to the file's
-        # recorded mapping and could pair this table with another socket's chip.
+        # The table and the chip provisioning switches must come from one
+        # entry: a second socket-map read that failed would fall back to the
+        # file's recorded mapping and could pair this table with another
+        # socket's chip.
         api = ArmsidAPI(left="6581")
         reads: list[str] = []
         real = api.get_config_category
@@ -157,30 +159,43 @@ class AutoSkipsArmsidTableTest(unittest.TestCase):
             return real(category, *args, **kwargs)
 
         api.get_config_category = counting  # type: ignore[method-assign]
-        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
-            got = dac_curve_resolve.resolve_dac_curve_for_backend(
-                _cfg_with_calibration("ARMSID 6581"), be=api
-            )
+        got = dac_curve_resolve.resolve_dac_curve_for_backend(
+            _cfg_with_calibration("ARMSID 6581"), be=api
+        )
         self.assertEqual(
-            got, dac_curve_resolve.DacCurve("linear", None, (1, "ARMSID 6581"), key="cal")
+            got,
+            dac_curve_resolve.DacCurve(
+                "calibrated:cal", bytes(range(256)), (1, "ARMSID 6581"), key="cal"
+            ),
         )
         self.assertEqual(len(reads), 2, reads)
 
-    def test_calibrated_still_plays_the_table(self):
+    def test_auto_switches_the_chip_into_its_measured_model_and_restores(self):
+        api = ArmsidAPI(left="8580")
+        resolved = dac_curve_resolve.resolve_dac_curve_for_backend(
+            _cfg_with_calibration("ARMSID 6581"), be=api
+        )
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "INFO"):
+            restore = dac_curve_resolve.provision_calibrated_chip_model(api, resolved)
+        self.assertEqual(api.left.model, "6581")
+        self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, "socket1"): "8580"})
+        assert restore is not None
+        restore_sid_config(api, restore)
+        self.assertEqual(api.left.model, "8580")
+
+    def test_calibrated_plays_the_same_table(self):
         cfg = _cfg_with_calibration("ARM2SID 6581")
         cfg.audio.dac_curve = "calibrated"
         resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
-        label, table = resolved.label, resolved.table
-        self.assertTrue(label.startswith("calibrated:"), label)
-        self.assertEqual(table, bytes(range(256)))
+        self.assertTrue(resolved.label.startswith("calibrated:"), resolved.label)
+        self.assertEqual(resolved.table, bytes(range(256)))
 
     def test_auto_still_plays_a_real_chips_table(self):
         resolved = dac_curve_resolve.resolve_dac_curve_for_backend(_cfg_with_calibration("6581"))
         self.assertTrue(resolved.label.startswith("calibrated:"), resolved.label)
         self.assertEqual(resolved.table, bytes(range(256)))
-        self.assertIsNone(resolved.declined_chip)
 
-    def test_calibration_report_names_the_opt_in(self):
+    def test_calibration_report_does_not_send_the_user_to_calibrated(self):
         result = CalibrationResult(
             sidtable=[0] * 256,
             metrics={
@@ -193,7 +208,7 @@ class AutoSkipsArmsidTableTest(unittest.TestCase):
         )
         lines: list[str] = []
         dac_calibration._report_run({"1": result}, Path("cal.json"), lines.append)
-        self.assertTrue(any('"calibrated"' in line for line in lines), lines)
+        self.assertFalse(any("calibrated" in line for line in lines), lines)
 
 
 class RecordModelTest(_NoSettle):
@@ -234,7 +249,8 @@ def _run_unisolated(api) -> dict[str, CalibrationResult]:
 
 class IdentifyWithoutSocketDetectionTest(_NoSettle):
     """A run that cannot detect sockets still asks the chip at $D400 whether it
-    is an ARMSID, so `auto` decides the same way on every link (#592)."""
+    is an ARMSID, so a run playing the table puts the chip back into its
+    measured model on every link (#592)."""
 
     def _no_socket_detection(self, api):
         api.profile = FakeAPI().profile  # no SID config surface, like a TeensyROM+
@@ -254,13 +270,13 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
         api = self._no_socket_detection(FakeAPI())
         self.assertIsNone(_run_unisolated(api)["default"].detected)
 
-    def test_auto_declines_the_recorded_default_entry(self):
+    def test_auto_plays_the_recorded_default_entry(self):
         cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
         cfg.hardware.backend = "teensyrom"
-        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
+        with self.assertNoLogs("c64cast.audio.dac_curve_resolve", "WARNING"):
             resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
-        self.assertEqual((resolved.label, resolved.table), ("linear", None))
-        self.assertEqual(resolved.declined_chip, "ARMSID 6581")
+        self.assertEqual(resolved.table, bytes(range(256)))
+        self.assertEqual(resolved.measured, (None, "ARMSID 6581"))
 
     def _provision_default(self, api, detected="ARMSID 6581"):
         cfg = _cfg_with_calibration(detected, socket="default")
@@ -361,16 +377,13 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
         self.assertEqual(table, bytes(range(256)))
         self.assertIn("assumes one SID", "\n".join(logs.output))
 
-    def test_a_declined_default_entry_gets_no_note_about_its_table(self):
-        # `auto` plays linear here, so advice about the table's blend is moot.
+    def test_auto_playing_a_labeled_default_entry_states_the_assumption(self):
         cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
         cfg.hardware.backend = "teensyrom"
-        with (
-            self.assertNoLogs("c64cast.audio.dac_calibration_store", "INFO"),
-            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"),
-        ):
+        with self.assertLogs("c64cast.audio.dac_calibration_store", "INFO") as logs:
             resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
-        self.assertEqual(resolved.declined_chip, "ARMSID 6581")
+        self.assertEqual(resolved.table, bytes(range(256)))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
 
     def test_auto_playing_an_unlabeled_default_entry_states_the_assumption(self):
         cfg = _cfg_with_calibration(None, socket="default")
@@ -388,21 +401,6 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
             resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
         self.assertEqual(resolved.table, bytes(range(256)))
         self.assertIn("assumes one SID", "\n".join(logs.output))
-
-    def test_the_report_names_the_opt_in(self):
-        result = CalibrationResult(
-            sidtable=[0] * 256,
-            metrics={
-                "ladder_bits": 6.3,
-                "signed_span": [-0.4, 0.25],
-                "worst_gap_frac": 0.03,
-                "worst_gap_from_zero_frac": 0.1,
-            },
-            detected="ARMSID 6581",
-        )
-        lines: list[str] = []
-        dac_calibration._report_run({"default": result}, Path("cal.json"), lines.append)
-        self.assertTrue(any('"calibrated"' in line for line in lines), lines)
 
 
 if __name__ == "__main__":
