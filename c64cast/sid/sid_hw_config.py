@@ -4,7 +4,9 @@ Snapshot the SID address/socket config, apply a
 :class:`~c64cast.sid.asid_sidmap.SidMap`, and restore the snapshot on teardown.
 
 Every function is best-effort and swallows REST errors (logging at debug/warn),
-and every caller gates on ``api.profile.supports_sid_config``.
+and every caller gates on ``api.profile.supports_sid_config`` — except a
+restore holding only ``armsid.SOURCE_D400`` model entries, which
+:func:`_put_all` sends through the chip's registers on any link.
 
 See docs/architecture/sid.md#sid_hw_configpy--shared-sid-hardware-config-plumbing.
 """

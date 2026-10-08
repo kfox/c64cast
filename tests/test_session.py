@@ -622,9 +622,12 @@ class BuildStackDacCurveTest(unittest.TestCase):
     turns a 'calibrated' curve with no calibration into a StackBuildError, so
     build_session tears down the stacks that did come up."""
 
-    def _build(self, cfg: cfgmod.Config, resolve: mock.MagicMock) -> None:
+    def _build(
+        self, cfg: cfgmod.Config, resolve: mock.MagicMock, *, supports_sid_config: bool = True
+    ) -> None:
         api = self.api = mock.MagicMock(name="api")
         api.profile.max_fps = None
+        api.profile.supports_sid_config = supports_sid_config
         api.disable_case_switch.side_effect = session.StackBuildError(4)
         api.read_menu_screen.return_value = None
         self.hw_provision = mock.MagicMock(name="hw_provision")
@@ -673,6 +676,24 @@ class BuildStackDacCurveTest(unittest.TestCase):
         )
         self.api.reset.assert_not_called()
         self.api.close.assert_called_once()
+
+    def test_a_link_without_sid_config_still_provisions_the_chip_model(self):
+        # A calibration recorded at $D400 is switched through the chip's own
+        # registers, which a TeensyROM+ reaches as well as an Ultimate (#605).
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        curve = session.dac_curve_resolve.DacCurve(
+            "calibrated:k", bytes(256), (None, "ARMSID 6581")
+        )
+        provision = mock.MagicMock(return_value=None)
+        with (
+            mock.patch.object(
+                session.dac_curve_resolve, "provision_calibrated_chip_model", provision
+            ),
+            self.assertRaises(session.StackBuildError),
+        ):
+            self._build(cfg, mock.MagicMock(return_value=curve), supports_sid_config=False)
+        provision.assert_called_once_with(self.api, curve)
 
     def test_a_run_without_audio_resolves_no_curve(self):
         cfg = cfgmod.Config()

@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from _fakes import FakeAPI
-from test_armsid import ArmsidAPI, _NoSettle
+from test_armsid import CAT_ARMSID1, ArmsidAPI, _NoSettle
 
 from c64cast.app.config import Config
 from c64cast.audio import dac_calibration, dac_calibration_store, dac_curve_resolve
@@ -77,6 +77,16 @@ class ProvisionModelTest(_NoSettle):
             restore = self._provision(api, _cfg_with_calibration("ARMSID 6581"))
         self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, "socket1"): "8580"})
         self.assertEqual(api.left.model, "8580")
+
+    def test_a_socket_entry_on_a_link_without_sid_config_is_left_alone(self):
+        # The socket arm switches through the firmware's config item, which a
+        # link without the SID config surface does not have.
+        api = ArmsidAPI(left="8580")
+        api.profile = FakeAPI().profile
+        resolved = dac_curve_resolve.DacCurve("calibrated:k", bytes(256), (1, "ARMSID 6581"))
+        self.assertIsNone(dac_curve_resolve.provision_calibrated_chip_model(api, resolved))
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_puts, [])
 
     def test_a_chip_whose_model_is_unknown_is_left_alone(self):
         api = ArmsidAPI(left="??")  # a model reply that is neither 6581 nor 8580
@@ -252,14 +262,94 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
         self.assertEqual((resolved.label, resolved.table), ("linear", None))
         self.assertEqual(resolved.declined_chip, "ARMSID 6581")
 
-    def test_calibrated_plays_it_and_switches_no_socket(self):
-        api = ArmsidAPI(kind="ARMSID", left="8580")
-        cfg = _cfg_with_calibration("ARMSID 6581", socket="default")
+    def _provision_default(self, api, detected="ARMSID 6581"):
+        cfg = _cfg_with_calibration(detected, socket="default")
         cfg.audio.dac_curve = "calibrated"
         resolved = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
         self.assertEqual(resolved.table, bytes(range(256)))
-        self.assertIsNone(dac_curve_resolve.provision_calibrated_chip_model(api, resolved))
+        return dac_curve_resolve.provision_calibrated_chip_model(api, resolved)
+
+    def test_calibrated_switches_the_chip_at_d400_and_restores_it(self):
+        # No socket was recorded and the link names none, so the switch goes
+        # through the chip's own register protocol (#605).
+        api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "INFO"):
+            restore = self._provision_default(api)
+        self.assertEqual(api.left.model, "6581")
         self.assertEqual(api.config_puts, [])
+        self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, armsid.SOURCE_D400): "8580"})
+        assert restore is not None
+        restore_sid_config(api, restore)
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_puts, [])
+
+    def test_an_ultimate_switches_the_socket_mapped_at_d400(self):
+        # Through the socket's config item, so the menu and the label cache
+        # follow the chip rather than keeping the model it had before.
+        api = ArmsidAPI(kind="ARM2SID", left="8580")
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "INFO"):
+            restore = self._provision_default(api)
+        self.assertEqual(api.left.model, "6581")
+        self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "6581")
+        self.assertEqual(armsid.cached_labels(api), ("ARM2SID 6581", "ARM2SID R 8580"))
+        self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, "socket1"): "8580"})
+        assert restore is not None
+        restore_sid_config(api, restore)
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "8580")
+        self.assertEqual(armsid.cached_labels(api), ("ARM2SID 8580", "ARM2SID R 8580"))
+
+    def test_a_socket_mapped_at_d400_that_no_longer_holds_an_armsid_is_left_alone(self):
+        api = ArmsidAPI(left="8580")
+        resolved = dac_curve_resolve.DacCurve("calibrated:k", bytes(256), (None, "ARMSID 6581"))
+        with (
+            mock.patch.object(
+                dac_curve_resolve, "detect_socket_models", return_value=("6581", None)
+            ),
+            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as logs,
+        ):
+            restore = dac_curve_resolve.provision_calibrated_chip_model(api, resolved)
+        self.assertIsNone(restore)
+        self.assertEqual(api.config_puts, [])
+        self.assertIn("at $D400 (now socket 1)", logs.output[0])
+
+    def test_an_ultimate_that_cannot_say_who_answers_d400_switches_nothing(self):
+        # The register write would leave the socket's config item and the label
+        # cache on the old model (#630's bug), so an unreadable owner on a link
+        # with SID config warns instead of falling back to it.
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+        resolved = dac_curve_resolve.DacCurve("calibrated:k", bytes(256), (None, "ARMSID 6581"))
+        with (
+            mock.patch.object(dac_curve_resolve, "d400_owner", return_value=D400_UNKNOWN),
+            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as logs,
+        ):
+            restore = dac_curve_resolve.provision_calibrated_chip_model(api, resolved)
+        self.assertIsNone(restore)
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_puts, [])
+        self.assertIn("could not tell which socket answers $D400", logs.output[0])
+
+    def test_a_chip_at_d400_already_in_the_measured_model_is_left_alone(self):
+        api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="6581"))
+        self.assertIsNone(self._provision_default(api))
+        self.assertEqual(api.left.model, "6581")
+
+    def test_d400_no_longer_answering_as_an_armsid_is_warned_about(self):
+        api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        api.read_memory = lambda *a, **k: None  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as cm:
+            self.assertIsNone(self._provision_default(api))
+        self.assertIn("$D400", "\n".join(cm.output))
+        self.assertEqual(api.left.model, "8580")
+
+    def test_a_failed_switch_at_d400_does_not_raise_and_still_restores(self):
+        api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="8580"))
+        with (
+            mock.patch.object(armsid, "write_model", side_effect=OSError("link down")),
+            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING"),
+        ):
+            restore = self._provision_default(api)
+        self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, armsid.SOURCE_D400): "8580"})
 
     def test_a_labeled_default_entry_still_states_the_one_sid_assumption(self):
         # The probe names the chip answering $D400, not whether a second one is
