@@ -536,9 +536,9 @@ class SetupThroughOutageTest(unittest.TestCase):
             pl.safe_setup(scene)
         skipped = int(logs.output[-1].split("; ")[1].split(" ")[0])
         # The clock moves 10 s per read and a frame is 1 s: the failed attempt
-        # alone holds about 10 frames, and each of the four unanswered asks
-        # holds about 10 more.
-        self.assertGreaterEqual(skipped, 30, logs.output)
+        # holds 10 frames, and each of the three waits that end in an
+        # unanswered ask holds 10 more.
+        self.assertEqual(skipped, 40, logs.output)
 
     def test_a_teardown_that_raises_before_the_retry_does_not_end_the_setup(self):
         api = _OutageApi(down_probes=1)
