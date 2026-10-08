@@ -11,17 +11,24 @@ behavior, log lines and event semantics are unchanged.
   config save-back flow.
 * ``EnsembleCoordinator`` — everything multi-system: audio-slot gating,
   conductor install/release, and the broadcast-follower interlude.
+* ``MachineRestartWatch`` — tells a machine that restarted under a running
+  scene from a link that only dropped out.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
+import os
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from c64cast.hw.backend import LinkError
+from c64cast.hw.backend import C64Backend, LinkError
+from c64cast.hw.delivery import write_confirmed
 
 if TYPE_CHECKING:
+    from c64cast.control.keyboard import CommodoreKeyPoller
     from c64cast.scenes.scenes import Scene
     from c64cast.video.modes import DisplayMode
 
@@ -533,3 +540,278 @@ class EnsembleCoordinator:
         # `_advance()` re-sets-up the scene at `playlist.index` on the next
         # iteration, so the broadcast's exit pins it back.
         pl.index = saved_idx
+
+
+# Eight bytes the KERNAL leaves unused and its RAMTAS zeroes on every reset,
+# power-on included. The rest of page 3 holds the vectors a restart rewrites
+# anyway, and RAM from $0400 up survives a reset's memory test.
+RESTART_SENTINEL_ADDR = 0x0334
+RESTART_SENTINEL_LEN = 8
+# The fewest seconds between two sentinel reads while the link keeps changing.
+RESTART_CHECK_MIN_S = 2.0
+# Restarts in one play of a scene after which the watch stands down. Clearing
+# the count when a read finds the nonce was rejected: a tune that zeroes it
+# only now and then is read back in between, and would restart forever.
+RESTART_LIMIT_PER_PLAY = 2
+
+
+class MachineRestartWatch:
+    """Tells a machine that restarted under a running scene (a power blip, a
+    firmware crash) from a link that only dropped out. At the socket the two
+    look the same, but a restart loses everything the scene's setup put on
+    the machine, and the live+volatile configuration `hw_provision` set.
+
+    `arm()` writes a per-run nonce where a C64 reset zeroes it. After a
+    frame whose writes landed, `after_frame()` reads it back over REST,
+    but only once the backend's `delivery_epoch` or `link_generation` has
+    moved since the last look, and at most every `RESTART_CHECK_MIN_S`: a
+    machine reached on the same connection, losing nothing, has not
+    restarted. A periodic read was rejected because REST polling during
+    playback is what wedges the Ultimate. A read that fails is tried again
+    later rather than taken as a restart.
+
+    A C64 reset leaves the link alone (the front-panel button, a REST
+    `machine:reset` from anywhere else), so the link marks never move for
+    it. With `attach_poller()`, the Commodore-key poller's 10 Hz read of
+    `$028D` is widened to cover the nonce, and `after_frame()` judges each
+    fresh sample as well: it costs no REST request of its own, and a reset
+    is seen within a poll. Only a sample from a read issued after the
+    nonce was written counts, so one that predates the write is not taken
+    for a cleared nonce.
+
+    Something on the machine that stores zeros over the nonce (a tune
+    clearing page 3) reads exactly like a reset, and since the scene sets up
+    again after one, it would restart the scene over and over. So the
+    restart that makes `RESTART_LIMIT_PER_PLAY` in one play of a scene is
+    not answered by setting it up again: the watch stands down instead,
+    until a scene sets up for any other reason.
+
+    A restart a scene outlives, with the link down until the next setup,
+    leaves no landed frame to look after, so `restarted_before_setup()`
+    takes the same look before each setup attempt, unthrottled. That setup
+    starts a new play, so a restart found there does not count toward the
+    limit, and neither does one found on the frame a scene ends. A watch
+    that already stood down has no nonce to look at, so a restart at the
+    scene change after it goes unhandled.
+
+    A reset c64cast issues itself (a SID scene's `run_prg`) zeroes the
+    nonce too, so the backend's reset listener re-arms it after the next
+    frame; a restart that comes after such a reset and before the re-arm
+    leaves nothing to tell it from that reset. A re-arm, or a nonce `arm()`
+    wrote, that the link loses is written again after each later landed
+    frame, or on a scene that lands none, after each `RESTART_CHECK_MIN_S`
+    in which the delivery epoch stays put, until it lands. `suspend()` stands the watch
+    down while a launched program owns the machine, whose RAM the nonce
+    must not touch. Only a backend that reads memory and reports its own
+    resets (`add_reset_listener`) is watched."""
+
+    def __init__(
+        self,
+        api: C64Backend,
+        log: logging.Logger,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._api = api
+        self._log = log
+        self._clock = clock
+        add_listener = getattr(api, "add_reset_listener", None)
+        profile = getattr(api, "profile", None)
+        self.enabled = getattr(profile, "supports_read", False) is True and callable(add_listener)
+        self._nonce = bytes(b | 0x01 for b in os.urandom(RESTART_SENTINEL_LEN))
+        self._armed = False
+        self._rearm = False
+        # The last nonce write the link lost, so the next waits as
+        # `after_frame` describes.
+        self._rearm_lost = False
+        # When a lost write is retried on a scene that lands nothing, and the
+        # delivery epoch that wait started from.
+        self._next_rearm = 0.0
+        self._rearm_epoch = 0
+        self._suspended = False
+        self._marks = (0, 0)
+        self._next_check = 0.0
+        self._poller: CommodoreKeyPoller | None = None
+        # The poller's read count once the nonce landed: later reads see it.
+        self._poller_mark = 0
+        # Restarts found in this play of the scene.
+        self._restarts = 0
+        self._stood_down = False
+        if self.enabled:
+            assert add_listener is not None
+            add_listener(self._after_reset)
+
+    def _after_reset(self) -> None:
+        if not self._suspended and not self._stood_down:
+            self._rearm = True
+
+    def attach_poller(self, poller: CommodoreKeyPoller) -> None:
+        """Judge the nonce from `poller`'s own reads as well."""
+        if not self.enabled:
+            return
+        poller.watch_bytes(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        self._poller = poller
+        self._poller_mark = poller.reads_started
+
+    def _current_marks(self) -> tuple[int, int]:
+        return self._api.delivery_epoch, self._api.link_generation
+
+    def arm(self, *, after_restart: bool = False) -> None:
+        """Write the nonce, after a scene sets up. `after_restart`: the setup
+        is the one a restart found under that scene called for, so the play
+        and its restart count go on; any other setup, a one-scene loop's
+        next lap included, starts the count over and ends a stand-down."""
+        if not self.enabled:
+            return
+        if not after_restart:
+            self._restarts = 0
+            self._stood_down = False
+        self._write_nonce()
+        self._retry_if_lost()
+
+    def _retry_if_lost(self) -> None:
+        """Have a nonce write the link lost tried again after a later frame:
+        left off, the rest of the play would go unwatched. Only sets the
+        flags, so a reset that arrived from another thread during the write
+        keeps the re-arm it asked for."""
+        if not self._armed and not self._stood_down:
+            self._rearm = self._rearm_lost = True
+
+    def _write_nonce(self) -> None:
+        """Write the nonce, unless the watch stood down. One the link loses
+        leaves the watch disarmed, so a lost write is never read back as a
+        restart."""
+        self._rearm = self._rearm_lost = False
+        self._suspended = False
+        if self._stood_down:
+            self._armed = False
+            return
+        self._armed = write_confirmed(
+            self._api,
+            lambda: self._api.write_memory_file(f"{RESTART_SENTINEL_ADDR:04X}", self._nonce),
+        )
+        self._marks = self._current_marks()
+        if not self._armed:
+            self._rearm_epoch = self._api.delivery_epoch
+            self._next_rearm = self._clock() + RESTART_CHECK_MIN_S
+        if self._poller is not None:
+            self._poller_mark = self._poller.reads_started
+
+    def after_frame(self, landed: bool, *, counted: bool = True) -> bool:
+        """True when the machine restarted since the nonce was written.
+        `landed`: the frame raised no link error and the backend's write
+        count moved, so the link reaches the machine now. `counted`: the
+        restart would set the same scene up again, so it counts toward
+        `RESTART_LIMIT_PER_PLAY`."""
+        if not self.enabled:
+            return False
+        if self._rearm:
+            # A retry waits for a landed frame, or for RESTART_CHECK_MIN_S in
+            # which no write was lost: on a link that is down, a confirmed
+            # write every frame spends up to three flushes a frame. Only the
+            # epoch counts, since `link_generation` also moves when a quiet
+            # link is redialed after the firmware's idle close.
+            if self._rearm_lost and not landed:
+                epoch = self._api.delivery_epoch
+                if epoch != self._rearm_epoch:
+                    self._rearm_epoch = epoch
+                    self._next_rearm = self._clock() + RESTART_CHECK_MIN_S
+                    return False
+                if self._clock() < self._next_rearm:
+                    return False
+            self._write_nonce()
+            self._retry_if_lost()
+            return False
+        if self._judge_poll(counted=counted):
+            return True
+        if not self._armed or not landed:
+            return False
+        marks = self._current_marks()
+        if marks == self._marks:
+            return False
+        now = self._clock()
+        if now < self._next_check:
+            return False
+        self._next_check = now + RESTART_CHECK_MIN_S
+        return self._look(marks, counted=counted)
+
+    def restarted_before_setup(self) -> bool:
+        """True when the machine restarted since the nonce was written,
+        asked before a scene sets up, without the frame path's spacing.
+        Judges the poller's newest sample, which sees a reset that leaves
+        the link alone, then reads over REST once the link has changed
+        since the last look; both only while armed, with no reset of
+        c64cast's own pending re-arm."""
+        if not self.enabled or not self._armed or self._rearm:
+            return False
+        if self._judge_poll(counted=False):
+            return True
+        if not self._armed:
+            return False
+        marks = self._current_marks()
+        if marks == self._marks:
+            return False
+        return self._look(marks, counted=False)
+
+    def _judge_poll(self, *, counted: bool) -> bool:
+        """Judge the poller's newest sample since the last one judged, if
+        the watch is armed and has one."""
+        if not self._armed or self._poller is None:
+            return False
+        sample = self._poller.watched_since(self._poller_mark)
+        if sample is None:
+            return False
+        self._poller_mark = sample[0]
+        return self._judge(sample[1], counted=counted)
+
+    def suspend(self) -> None:
+        """Stand the watch down until the next `arm()`: a launched program
+        owns the machine, so the nonce is neither written nor read, and its
+        resets are not re-armed."""
+        self._armed = False
+        self._rearm = self._rearm_lost = False
+        self._suspended = True
+
+    def _look(self, marks: tuple[int, int], *, counted: bool = True) -> bool:
+        """Read the nonce back. True, and disarmed, only when a reset
+        cleared it to zeros. A read that fails or comes back the wrong
+        length leaves the watch armed and `marks` unrecorded, so the next
+        look tries again. Other bytes there mean something on the machine
+        wrote over it, and taking that for a restart would reset the
+        machine under the writer at every link change, so the watch stands
+        down until the next scene arms it. `counted`: a restart found counts
+        toward `RESTART_LIMIT_PER_PLAY`."""
+        seen = self._api.read_memory(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_LEN)
+        if seen is None or len(seen) != RESTART_SENTINEL_LEN:
+            return False
+        self._marks = marks
+        return self._judge(seen, counted=counted)
+
+    def _judge(self, seen: bytes, *, counted: bool = True) -> bool:
+        """The verdict on bytes read back from where the nonce was written,
+        as `_look` describes it."""
+        if seen == self._nonce:
+            return False
+        self._armed = False
+        if any(seen):
+            self._log.warning(
+                "the restart check found $%04X-$%04X overwritten rather than cleared; "
+                "not watching for a machine restart until the next scene sets up",
+                RESTART_SENTINEL_ADDR,
+                RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,
+            )
+            return False
+        if not counted:
+            return True
+        self._restarts += 1
+        if self._restarts >= RESTART_LIMIT_PER_PLAY:
+            self._stood_down = True
+            self._log.warning(
+                "the restart check found $%04X-$%04X zeroed %d times in one play of "
+                "the scene; something on the machine may store zeros there, so not "
+                "watching for a machine restart until the next scene sets up",
+                RESTART_SENTINEL_ADDR,
+                RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN - 1,
+                self._restarts,
+            )
+            return False
+        return True

@@ -85,6 +85,13 @@ class CommodoreKeyPoller:
         self._menu_active: threading.Event | None = None
         self._menu_eligible: threading.Event | None = None
         self._nav_queue: deque[int] | None = None
+        # A range above $028D that each modifier read also covers, for a
+        # reader on another thread (`watch_bytes`). Riding the read the poller
+        # already makes was chosen over a read of its own, which would add
+        # REST traffic during playback, where it is what wedges the Ultimate.
+        self._watched: tuple[int, int] | None = None
+        self._reads_started = 0
+        self._watched_sample: tuple[int, bytes] | None = None
 
     def start(
         self,
@@ -136,16 +143,44 @@ class CommodoreKeyPoller:
     def stop(self):
         self._poll.stop()
 
+    def watch_bytes(self, address: int, length: int) -> None:
+        """Extend every modifier read to cover `address` .. `address+length-1`
+        (above $028D), so `watched_since` can hand those bytes to another
+        thread without a read of its own."""
+        if address <= ADDR_MODIFIERS:
+            raise ValueError(f"watched range ${address:04X} is not above $028D")
+        self._watched = (address, length)
+
+    @property
+    def reads_started(self) -> int:
+        """How many modifier reads have been issued so far."""
+        return self._reads_started
+
+    def watched_since(self, reads: int) -> tuple[int, bytes] | None:
+        """The watched bytes from the latest read issued after the first
+        `reads` reads, with that read's number; None when there is none yet.
+        A read issued earlier may predate a write the caller made since."""
+        sample = self._watched_sample
+        if sample is None or sample[0] <= reads:
+            return None
+        return sample
+
     def _read_modifiers(self) -> int | None:
         """Read $028D, return the raw modifier byte or None on read failure.
 
         We return None (rather than 0) so the caller can distinguish
         'no modifiers pressed' from 'unable to tell'. A failed read
         shouldn't accidentally trigger any state change."""
+        watched = self._watched
+        length = 1 if watched is None else watched[0] + watched[1] - ADDR_MODIFIERS
+        self._reads_started += 1
+        number = self._reads_started
         with quiet_transport():
-            data = self.api.read_memory(ADDR_MODIFIERS, 1)
+            data = self.api.read_memory(ADDR_MODIFIERS, length)
         if data is None or len(data) < 1:
             return None
+        if watched is not None and len(data) == length:
+            self._watched_sample = (number, bytes(data[watched[0] - ADDR_MODIFIERS :]))
         return data[0]
 
     def _drain_kbbuf(self) -> list[int]:

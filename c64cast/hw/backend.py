@@ -374,6 +374,15 @@ class C64Backend(ABC):
         Default 0: a backend that cannot tell never asks for a resend."""
         return 0
 
+    @property
+    def link_generation(self) -> int:
+        """A number that changes whenever the write link was opened again
+        (a redial), including one that lost nothing. A machine that
+        restarted while its link sat idle is reached again only through a
+        new connection, and `delivery_epoch` does not move for that. Default
+        0: a backend that never redials."""
+        return 0
+
     def link_answers(self) -> bool:
         """Whether the machine answers a round trip over the write link now.
         The playlist asks before setting a scene up again after an outage

@@ -9,6 +9,7 @@ InterstitialScene) or stub it out for tests."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -21,7 +22,12 @@ from c64cast.hw import hardware_palette
 from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.scenes.scenes import Scene
 
-from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
+from .playlist_support import (
+    EnsembleCoordinator,
+    MachineRestartWatch,
+    PlaylistMenu,
+    SceneFades,
+)
 from .profiler import FrameProfiler, NullProfiler
 
 if TYPE_CHECKING:
@@ -178,6 +184,18 @@ class Playlist:
         self.fades = SceneFades(self, duration_s=fade_duration_s)
         self.api = api
         self.link_outage = RenderLinkOutage(self.log)
+        self.restart_watch = MachineRestartWatch(api, self.log)
+        # Puts back what a machine restart lost before the scene sets up again:
+        # the run's live+volatile config and the idle BASIC loop. The session
+        # wires it, because only it holds the config those came from.
+        self.on_machine_restart: Callable[[], None] | None = None
+        # Whether the last frame raised no link error and landed a write.
+        self._frame_landed = False
+        # Whether the last frame's scene had nothing left to play, even while
+        # a busy overlay holds its `is_done` back.
+        self._content_done = False
+        # A restart found on the frame a scene ended: `safe_teardown` restores.
+        self._restore_after_teardown = False
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -187,6 +205,8 @@ class Playlist:
         self.stop_event = stop_event or threading.Event()
         self.interstitial_factory = interstitial_factory or self._default_interstitial_factory()
         self.key_poller = key_poller
+        if key_poller is not None:
+            self.restart_watch.attach_poller(key_poller)
         # A second, camera-driven control surface setting the same
         # pause/resume/skip/cycle events as the keyboard poller, started and
         # stopped alongside it. None unless [vision].enabled.
@@ -307,6 +327,9 @@ class Playlist:
         )
         self.build_performance_scene: Callable[[dict[str, Any]], Scene] | None = None
         self.transitioning = False
+        # The "UP NEXT" card `_enter_interstitial` last set up: a clip launched
+        # over it leaves `transitioning` on without being the card.
+        self._card: Scene | None = None
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
         # Set on SIGHUP; the run loop finishes the current frame, then swaps in
@@ -666,7 +689,7 @@ class Playlist:
         # the "UP NEXT" card names the real upcoming content.
         self._safe_prepare_next(nxt)
         self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
-        self.current = self.interstitial_factory(nxt.name)
+        self.current = self._card = self.interstitial_factory(nxt.name)
         self.safe_setup(self.current, announcing=nxt)
         self.transitioning = True
 
@@ -682,16 +705,23 @@ class Playlist:
                 "prepare_next failed on %r — interstitial will show a stale name", scene.name
             )
 
-    def safe_setup(self, scene: Scene, *, announcing: Scene | None = None) -> None:
+    def safe_setup(
+        self, scene: Scene, *, announcing: Scene | None = None, after_restart: bool = False
+    ) -> None:
         """Set `scene` up for its first frame. `announcing` is the upcoming
         scene when `scene` is its "UP NEXT" card: the ensemble audio slot
         claimed for that scene is the one a link outage in this setup
-        releases and claims back."""
+        releases and claims back. `after_restart`: a machine restart under
+        `scene` called for this setup (`MachineRestartWatch.arm`)."""
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
         if not self._setup_through_outage(scene, announcing):
             return
+        if getattr(scene, "HANDS_OVER_MACHINE", False):
+            self.restart_watch.suspend()
+        else:
+            self.restart_watch.arm(after_restart=after_restart)
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.
         if self.user_dim < 1.0:
@@ -725,6 +755,58 @@ class Playlist:
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
 
+    def _set_up_again_after_restart(self) -> None:
+        """The machine restarted under the current scene, so what its setup
+        put there is gone. Tear the scene down, put back the run's machine
+        state, and set the scene up again, keeping its pick, the way
+        single-scene looping does. Ending the scene instead was rejected:
+        with `loop = false` a one-scene show would stop on a power blip.
+        The restore waits for the teardown because, as at startup, nothing
+        of the scene's (its audio streamer, its mode's IRQ) should be
+        writing while the machine is provisioned and reset."""
+        scene = self.current
+        if scene is None:
+            return
+        # The card's slot is held for the scene it announces, which a link
+        # outage in this setup has to release.
+        announcing = self.scenes[self.index] if self.transitioning and scene is self._card else None
+        # Before the teardown, whose own failures on the reset machine would
+        # otherwise reach the log ahead of their cause.
+        self.log.warning(
+            "the machine restarted during %r, losing what its setup put there; setting it up again",
+            scene.name,
+        )
+        scene.keep_pick_for_resetup()
+        self.safe_teardown(scene)
+        self._restore_machine()
+        # The scene is already torn down, so leaving it current would have the
+        # run loop's exit tear it down a second time.
+        if self.stop_event.is_set() or not self.ensemble_coord.wait_for_audio_claim(scene):
+            self.current = None
+            return
+        self.safe_setup(scene, announcing=announcing, after_restart=True)
+        scene.is_done = False
+
+    def _put_machine_back(self, message: str, scene_name: str) -> None:
+        """Log the restart, then put back the run's machine state through
+        `on_machine_restart`; a failure there is logged and the scene sets
+        up regardless."""
+        self.log.warning(message, scene_name)
+        self._restore_machine()
+
+    def _restore_machine(self) -> None:
+        """Run `on_machine_restart`, then drain it with a round trip: a
+        scene usually sets up next, and a write the restore lost that
+        surfaced only at that setup's flush would be charged to the setup."""
+        if self.on_machine_restart is not None:
+            try:
+                self.on_machine_restart()
+            except Exception:
+                self.log.exception("restoring the machine's state after its restart failed")
+            # A link error here is the setup's to meet.
+            with contextlib.suppress(LinkError):
+                self.api.flush()
+
     def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
         """Set `scene` up, and again once the link answers when the link
         cost the setup a write. False when `stop_event` fired while waiting:
@@ -752,6 +834,16 @@ class Playlist:
         lossy_tries = 0
         while True:
             claimant: Scene | None = None
+            # Before the attempt: a restart the last scene outlived on a dead
+            # link left no landed frame to notice it, and a SID scene's setup
+            # resets the machine itself, which would hide it afterwards. Before
+            # the epoch is taken, too, and drained by a round trip, so a write
+            # the restore loses is not charged to the setup.
+            if self.restart_watch.restarted_before_setup():
+                self._put_machine_back(
+                    "the machine restarted before %r set up; putting its state back first",
+                    scene.name,
+                )
             started = self.link_outage.now()
             epoch = self.api.delivery_epoch
             error: LinkError | None = None
@@ -857,6 +949,9 @@ class Playlist:
         # Runs even when teardown raised, so a crashing scene cannot strand the
         # conductor slot or the ensemble audio lock.
         self.ensemble_coord.release_scene(scene)
+        if self._restore_after_teardown:
+            self._restore_after_teardown = False
+            self._restore_machine()
 
     def _maybe_heartbeat(self, now: float) -> None:
         if self.heartbeat_interval <= 0:
@@ -921,7 +1016,8 @@ class Playlist:
                     self.stop_event.wait(timeout=next_deadline - t0)
                 t0 = time.time()
 
-            stats_before = self.api.stats
+            # A copy: a backend may hand back its live dict.
+            stats_before = dict(self.api.stats)
 
             # Before the scene composes, so the opening frames render
             # progressively brighter over live playback.
@@ -936,6 +1032,9 @@ class Playlist:
             still_active, link_failure = self._render_scene_frame(scene, t0)
 
             stats_after = self.api.stats
+            self._frame_landed = (
+                link_failure is None and stats_after["writes"] > stats_before["writes"]
+            )
             if link_failure is not None:
                 self.link_outage.failed(
                     *link_failure,
@@ -1020,6 +1119,7 @@ class Playlist:
         interstitial transition — cycling the interstitial mid-flight would be
         confusing and it doesn't implement cycle_style anyway."""
         scene.is_done = not still_active
+        self._content_done = not still_active
         if scene.is_done and any(
             not getattr(ov, "disabled", False) and ov.is_busy()
             for ov in getattr(scene, "overlays", ())
@@ -1171,6 +1271,34 @@ class Playlist:
                     continue
                 self.menu.repaint = False
                 next_deadline = self.run_one_frame(self.current, next_deadline)
+                # A restart on the frame the scene ends sets nothing up again,
+                # so it cannot loop and does not count toward the limit.
+                ended = self.current.is_done or self._content_done
+                if self.restart_watch.after_frame(self._frame_landed, counted=not ended):
+                    if ended:
+                        # The scene ended (or was skipped) on this frame, so
+                        # the advance that follows sets the next one up; the
+                        # restore waits for its teardown, as a re-setup's does.
+                        # An overlay still scrolling off was lost with the
+                        # machine, so it no longer holds the scene.
+                        self.current.is_done = True
+                        self.log.warning(
+                            "the machine restarted as %r ended; putting its state back "
+                            "once it is torn down",
+                            self.current.name,
+                        )
+                        self._restore_after_teardown = True
+                    else:
+                        # Ends the run as a setup failing in `_advance` does.
+                        try:
+                            self._set_up_again_after_restart()
+                        except Exception:
+                            self.log.exception(
+                                "setting the scene up again after the machine restarted "
+                                "failed; aborting"
+                            )
+                            break
+                    next_deadline = time.time()
         except KeyboardInterrupt:
             self.log.info("interrupted")
         finally:
