@@ -178,6 +178,9 @@ stops before it touches the machine, lists the inputs, and asks for
 `--audio-device`. It never records from the system default input, which on
 most computers is the microphone. It takes about fifty seconds per SID
 socket, and a machine with two socketed chips measures each one separately.
+An ARMSID or ARM2SID is switched to 6581 mode for the measurement and put
+back into its own model when the run ends. A run that plays through its
+table switches it to 6581 again for the length of the run.
 The file is keyed to the machine's own identity — the Ultimate's serial
 number, a TeensyROM's USB serial — so a changed address does not orphan it.
 `[audio].dac_calibration_profile` overrides that key with a name of your own,

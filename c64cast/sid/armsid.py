@@ -348,7 +348,13 @@ def set_socket_model(api: C64Backend, source: str, model: str) -> None:
     which applies it at once and keeps the U64's menu truthful. An ARM2SID's
     right channel has no config item, so it is set through its registers —
     with the split moved to reach it when it is off, and put back after. A
-    source with no ARMSID behind it is left alone."""
+    source with no ARMSID behind it is left alone.
+
+    Any label of the family will do, the bare ``"ARMSID"`` and ``"ARMSID ?"``
+    included: the caller has already decided on the model, and the restore of
+    a switch has to reach the chip even after a later probe that went
+    unanswered cached the firmware's bare label over the one the switch was
+    planned from."""
     from .asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS, ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN
     from .sid_hw_config import socket_base
 
@@ -358,7 +364,7 @@ def set_socket_model(api: C64Backend, source: str, model: str) -> None:
         return
     labels = cached_labels(api) or (None, None)
     index = {"socket1": 0, "socket2": 1}.get(source)
-    if index is None or not is_reconfigurable(labels[index]):
+    if index is None or (labels[index] or "").partition(" ")[0] not in DETECTED_TYPES:
         log.debug("armsid: no ARMSID behind %s — model %s not set", source, model)
         return
     if model not in MODELS:
