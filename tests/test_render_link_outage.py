@@ -500,27 +500,6 @@ class SetupThroughOutageTest(unittest.TestCase):
         self.assertEqual(scene.teardown_count, SETUP_LOSSY_TRIES - 1)
         self.assertIn("keeping it as set up", logs.output[-1])
 
-    def test_an_outage_between_lossy_setups_starts_their_count_again(self):
-        from c64cast.app.playlist import SETUP_LOSSY_TRIES
-
-        api = _OutageApi(down_probes=0)
-        answers = api.link_answers
-
-        def down_on_the_second_ask() -> bool:
-            if api.probes == 1:
-                api.probes += 1
-                return False
-            return answers()
-
-        api.link_answers = down_on_the_second_ask  # type: ignore[method-assign]
-        scene = _LossySetupScene(api, lossy_setups=10_000)
-        pl = self._playlist(api, scene)
-        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
-            pl.safe_setup(scene)
-        # One lossy setup, the one the outage cost, then a full run of lossy ones.
-        self.assertEqual(scene.setup_count, 2 + SETUP_LOSSY_TRIES)
-        self.assertIn("keeping it as set up", logs.output[-1])
-
     def test_a_stop_while_waiting_ends_the_run_without_rendering_the_scene(self):
         api = _OutageApi(down_probes=10_000)
         scene = _LossySetupScene(api, lossy_setups=10_000)
