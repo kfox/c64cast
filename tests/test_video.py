@@ -1525,6 +1525,20 @@ class AlignedAudioTest(unittest.TestCase):
                 src._fill_dry_stretch(0.0, 8.0)
                 self.assertEqual((sink, src._audio_fed_s), ([], fed))
 
+    def test_no_fill_while_the_source_is_muted(self):
+        # A pause or transport's mute path drops every push, so a fill there
+        # would only move where the audio fed ends.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._muted = True
+        src._fill_dry_stretch(0.0, 8.0)
+        self.assertEqual((sink, src._audio_fed_s), ([], None))
+
+    def test_a_paused_picture_does_not_raise_the_stall(self):
+        # Paused, the clock is the frozen anchor, not the sink holding audio
+        # back: a level taken there grew the buffer for every pause.
+        self.assertEqual(self._enqueue_blocked(take=0, muted=True)._dry_stall_level, 0)
+
     def test_no_fill_without_an_audio_stream(self):
         sink: list[np.ndarray] = []
         src = _aligned_stub(sink)
@@ -1533,13 +1547,19 @@ class AlignedAudioTest(unittest.TestCase):
         self.assertEqual((sink, src._audio_fed_s), ([], None))
 
     def _enqueue_blocked(
-        self, *, take: int, clock: float | None = 0.0, stamps: tuple[float, float] = (0.0, 1.0)
+        self,
+        *,
+        take: int,
+        clock: float | None = 0.0,
+        stamps: tuple[float, float] = (0.0, 1.0),
+        muted: bool = False,
     ) -> AVFileSource:
         """Block `_enqueue_frame` on a full buffer of two frames at `stamps`
         for about 3 s of a clock that steps 0.3 s a reading, the consumer
         taking `take` frames a reading and reading the clock at `clock` (None:
         not reading it at all) at 30 fps. Real time is 9 frames a reading."""
         src = _aligned_stub([])
+        src._muted = muted
         img = np.zeros((2, 2, 3), dtype=np.uint8)
         src.max_video_buffer = 2
         src._video_buf = [(stamps[0], img), (stamps[1], img)]

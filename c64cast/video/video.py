@@ -1518,8 +1518,8 @@ class AVFileSource:
         sound. Counted in frames rather than read off the stamps, which
         tempo compensation scales and a file can step back. The window spans
         calls, and audio coming again or a seek closes it. Nothing to judge
-        without an audio sink to fill."""
-        if self._resampler is None or self._audio_push is None:
+        without an audio sink to fill (`_dry_fill_applies`)."""
+        if not self._dry_fill_applies():
             return
         clock_at = clock_read[1] if clock_read is not None else None
         if self._dry_window is None:
@@ -1547,6 +1547,14 @@ class AVFileSource:
             and self._past_newest_s() < DRY_FILL_MAX_PAST_NEWEST_S
         ):
             self._dry_stall_level += 1
+
+    def _dry_fill_applies(self) -> bool:
+        """Whether a dry stretch is the sink's to fill: an audio stream with
+        a sink, and a source not muted. Muted (a pause, or transport's mute
+        path) every push is dropped and the clock is a pause's frozen anchor
+        or the wall, not the sink holding audio back, so a held picture there
+        raised the stall level and grew the buffer for nothing."""
+        return self._resampler is not None and self._audio_push is not None and not self._muted
 
     def _past_newest_s(self) -> float:
         """How far past the newest frame of a full buffer the stall level
@@ -1580,9 +1588,9 @@ class AVFileSource:
         extra frames do not cover.
         The clock then runs on through the buffer. Audio that does come
         is aligned as usual: later than the fill, it follows it; inside it,
-        the covered part is trimmed. A no-op without an audio sink, or while
-        the audio fed already reaches that far."""
-        if self._resampler is None or self._audio_push is None:
+        the covered part is trimmed. A no-op without an audio sink, while
+        the source is muted, or while the audio fed already reaches that far."""
+        if not self._dry_fill_applies():
             return
         scale = self._tempo_scale or 1.0
         oldest, newest = oldest_pts / scale, newest_pts / scale
