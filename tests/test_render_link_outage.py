@@ -520,6 +520,51 @@ class SetupThroughOutageTest(unittest.TestCase):
         self.assertFalse(set_up)
         self.assertEqual((scene.setup_count, scene.teardown_count), (1, 0))
 
+    def test_the_wait_for_the_link_counts_as_skipped_frames(self):
+        api = _OutageApi(down_probes=4)
+        scene = _LossySetupScene(api, lossy_setups=1)
+        pl = self._playlist(api, scene)
+        ticks = iter(range(1000))
+        pl.link_outage = RenderLinkOutage(pl.log, lambda: 10.0 * next(ticks))
+        pl.frame_time_for = lambda _scene: 1.0  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+            pl.safe_setup(scene)
+        skipped = int(logs.output[-1].split("; ")[1].split(" ")[0])
+        # The clock moves 10 s per read and a frame is 1 s: the failed attempt
+        # alone holds about 10 frames, and each of the four unanswered asks
+        # holds about 10 more.
+        self.assertGreaterEqual(skipped, 30, logs.output)
+
+    def test_a_teardown_that_raises_before_the_retry_does_not_end_the_setup(self):
+        api = _OutageApi(down_probes=1)
+        scene = _LossySetupScene(api, lossy_setups=1)
+        scene.raise_on_teardown = True
+        pl = self._playlist(api, scene)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as logs:
+            self.assertTrue(pl._setup_through_outage(scene))
+        self.assertEqual(scene.setup_count, 2)
+        self.assertIn("before its setup retry failed", logs.output[0])
+
+    def test_a_link_error_from_the_palette_settle_waits_and_sets_up_again(self):
+        api = _OutageApi(down_probes=1)
+        scene = _LossySetupScene(api, lossy_setups=0)
+        pl = self._playlist(api, scene)
+        settle = patch(
+            "c64cast.app.playlist.hardware_palette.settle_for",
+            side_effect=[SocketDMAError("did not answer"), None],
+        )
+        with settle, self.assertLogs("c64cast.app.playlist", level="INFO"):
+            self.assertTrue(pl._setup_through_outage(scene))
+        self.assertEqual(scene.setup_count, 1)
+        self.assertEqual(api.probes, 2)
+
+
+class BackendLinkAnswersTest(unittest.TestCase):
+    def test_a_backend_with_no_round_trip_of_its_own_says_the_link_answers(self):
+        from c64cast.hw.teensyrom_api import TeensyROMBackend
+
+        self.assertTrue(TeensyROMBackend.link_answers(MagicMock()))
+
 
 class SetupRetryKeepsThePickTest(unittest.TestCase):
     """A setup run again after the link cost it writes plays the file the
