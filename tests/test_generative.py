@@ -4,11 +4,13 @@ config wiring for `type = "generative"` + per-scene `effect`."""
 
 from __future__ import annotations
 
+import contextlib
+import queue
 import time
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 import numpy as np
@@ -1906,6 +1908,48 @@ class _ConsumerLink:
         return bytes([r & 0xFF, r >> 8])
 
 
+#: Seconds a short-clip test waits for an event the sinks' own threads produce.
+#: Only a regression waits it out: the tests assert that the event happened,
+#: never how soon.
+_EVENT_WAIT_S = 20.0
+
+
+def _wait_until(predicate: Callable[[], bool]) -> bool:
+    """Poll `predicate` until it holds or `_EVENT_WAIT_S` passes; its last answer."""
+    deadline = time.monotonic() + _EVENT_WAIT_S
+    while not predicate():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+@contextlib.contextmanager
+def _idle_polls_after_the_end(smp) -> Iterator[list[int]]:
+    """Count the sampler's empty prebuffer polls that began after `end_input()`.
+
+    `start()` stops collecting its prebuffer at the first poll that finds the
+    queue empty once the input has ended. Waiting out the 2 s timeout instead
+    is about a hundred more such polls, however fast or slow the machine is.
+    The count can reach two without that: the end can land between the read
+    of `_input_ended` that decides and the one counted here.
+    """
+    idle = [0]
+    get = smp._q.get
+
+    def counted(*args, **kwargs):
+        ended = smp._input_ended
+        try:
+            return get(*args, **kwargs)
+        except queue.Empty:
+            if ended:
+                idle[0] += 1
+            raise
+
+    with mock.patch.object(smp._q, "get", side_effect=counted):
+        yield idle
+
+
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AudioFileShortClipTest(unittest.TestCase):
     """A clip shorter than the sink's prebuffer ends with its audio. Both sinks
@@ -1914,13 +1958,11 @@ class AudioFileShortClipTest(unittest.TestCase):
     after `prebuffer_seconds` or a 2 s timeout. A clip shorter than that never
     filled it, so the DAC never started the NMI and the scene ran to the
     length + 5 s deadline in silence, and the sampler held setup() for the 2 s
-    timeout before gating. Real time: the subject is the sinks' own threads."""
+    timeout before gating. Real time: the subject is the sinks' own threads,
+    so the tests assert on what those threads did rather than on how long it
+    took."""
 
     CLIP_S = 0.3
-    # The worst case either sink should take past the clip: one idle collect on
-    # the DAC, the poll on the sampler, plus headroom for a loaded runner. The
-    # defect overran by 2 s (sampler) and 5 s (DAC).
-    SLACK_S = 1.0
 
     def setUp(self):
         import tempfile
@@ -1930,17 +1972,14 @@ class AudioFileShortClipTest(unittest.TestCase):
         self.wav = f"{tmp.name}/clip.wav"
         ConfigGenerativeTest._make_wav(self.wav, seconds=self.CLIP_S)
 
-    def _run_scene(self, sink) -> float:
-        """Set the source up and return the seconds until it finishes."""
+    def _run_scene(self, sink, until: Callable[[Any], bool]) -> bool:
+        """Set the source up, then wait for `until(source)`; whether it came."""
         from c64cast.audio.audio_source import AudioFileSource
 
         src = AudioFileSource(sink, self.wav, reactive=False)
-        t0 = time.monotonic()
         try:
             src.setup()
-            while not src.finished and time.monotonic() - t0 < self.CLIP_S + 6.0:
-                time.sleep(0.01)
-            return time.monotonic() - t0
+            return _wait_until(lambda: until(src))
         finally:
             src.teardown()
 
@@ -1957,10 +1996,16 @@ class AudioFileShortClipTest(unittest.TestCase):
             link.started_at = time.monotonic()
             return start_nmi(*args, **kwargs)
 
+        def played_to_the_end(src) -> bool:
+            # `_end` is the decoder's, and its length is the clip's on the
+            # sink's clock. Ending on the deadline instead, `finished` would
+            # come with the clock short of it.
+            return src._end is not None and src._heard_seconds() >= src._end[0] - 1e-3
+
         with quiet_logging(), mock.patch.object(dac.nmi, "start", side_effect=started):
-            took = self._run_scene(dac)
+            played = self._run_scene(dac, played_to_the_end)
         self.assertIsNotNone(link.started_at, "the NMI never started, so the clip never played")
-        self.assertLess(took, self.CLIP_S + self.SLACK_S, "the scene ran out the deadline")
+        self.assertTrue(played, "the DAC's clock never reached the end of the clip")
 
     def test_end_input_wakes_a_dac_collect(self):
         # A priming collect waits a chunk period for samples; once the producer
@@ -1970,17 +2015,18 @@ class AudioFileShortClipTest(unittest.TestCase):
         dac = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC")
         dac.running = True
         dac.end_input()
-        t0 = time.monotonic()
-        n, _, _ = dac._collect_until(
-            bytearray(dac.chunk_size),
-            0,
-            b"",
-            t0 + 5.0,
-            generation=dac._worker_generation,
-            epoch=dac._flush_epoch,
-        )
+        with mock.patch.object(dac.q, "get", wraps=dac.q.get) as get:
+            n, _, _ = dac._collect_until(
+                bytearray(dac.chunk_size),
+                0,
+                b"",
+                time.monotonic() + 5.0,
+                generation=dac._worker_generation,
+                epoch=dac._flush_epoch,
+            )
         self.assertEqual(n, 0)
-        self.assertLess(time.monotonic() - t0, 1.0, "the collect waited out its deadline")
+        # The wake-up is the only get: a second one waits out the deadline.
+        self.assertEqual(get.call_count, 1, "the collect waited on past the wake-up")
 
     def test_a_stale_end_input_blob_does_not_cut_the_next_producers_collect(self):
         # An end_input() that raced its teardown's drain leaves its wake-up in
@@ -2112,9 +2158,10 @@ class AudioFileShortClipTest(unittest.TestCase):
 
         with mock.patch.object(sampler, "PollThread", _NoWriter):
             smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=8000)
-            with quiet_logging():
-                took = self._run_scene(smp)
-        self.assertLess(took, self.CLIP_S + self.SLACK_S, "setup sat out the prebuffer timeout")
+            with quiet_logging(), _idle_polls_after_the_end(smp) as idle:
+                finished = self._run_scene(smp, lambda src: src.finished)
+        self.assertTrue(finished, "the scene never finished")
+        self.assertLessEqual(idle[0], 2, "setup sat out the prebuffer timeout")
 
 
 def _make_click_wav(path: str, *, seconds: float, period: float, rate: int = 44100) -> list[float]:
@@ -2193,7 +2240,6 @@ class VideoShortClipTest(unittest.TestCase):
     for its prebuffer timeout. Real time, as in AudioFileShortClipTest."""
 
     CLIP_S = 0.3
-    SLACK_S = 1.0
 
     def setUp(self):
         import tempfile
@@ -2228,9 +2274,9 @@ class VideoShortClipTest(unittest.TestCase):
             dac.start_for_external_source()
             try:
                 self._source(dac)
-                deadline = time.monotonic() + self.CLIP_S + self.SLACK_S
-                while link.started_at is None and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                # Without the end of input the NMI never starts at all, so
+                # waiting longer cannot let a regression through.
+                _wait_until(lambda: link.started_at is not None)
             finally:
                 dac.stop()
         self.assertIsNotNone(link.started_at, "the NMI never started, so the clip never played")
@@ -2242,16 +2288,14 @@ class VideoShortClipTest(unittest.TestCase):
 
         with mock.patch.object(sampler, "PollThread", _NoWriter):
             smp = sampler.UltimateAudioSampler(cast(C64Backend, _SamplerLink()), sample_rate=8000)
-            with quiet_logging():
+            with quiet_logging(), _idle_polls_after_the_end(smp) as idle:
                 smp.arm()
                 self._source(smp)
-                t0 = time.monotonic()
                 try:
                     smp.start()
-                    took = time.monotonic() - t0
                 finally:
                     smp.stop()
-        self.assertLess(took, self.CLIP_S + self.SLACK_S, "setup sat out the prebuffer timeout")
+        self.assertLessEqual(idle[0], 2, "setup sat out the prebuffer timeout")
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
