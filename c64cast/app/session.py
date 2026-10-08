@@ -845,13 +845,12 @@ def _acquire_stack(
         config_path=config_path,
         performance=cfg.performance,
     )
+    playlist.on_machine_restart = lambda: _restore_after_machine_restart(cfg, api, dac_curve)
 
     # Turns a [[performance.clips]] dict into a Scene, closing over this stack's
     # api/audio/source/cfg because the playlist cannot build scenes itself. Called
     # on a background thread during the count-in; `setup()` runs later, on the
     # playlist thread, at the swap.
-    playlist.on_machine_restart = lambda: _restore_after_machine_restart(cfg, api, dac_curve)
-
     playlist.build_performance_scene = _performance_scene_factory(
         cfg,
         api,
