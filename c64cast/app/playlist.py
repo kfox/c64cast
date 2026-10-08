@@ -190,6 +190,9 @@ class Playlist:
         self.on_machine_restart: Callable[[], None] | None = None
         # Whether the last frame raised no link error and landed a write.
         self._frame_landed = False
+        # Whether the last frame's scene had nothing left to play, even while
+        # a busy overlay holds its `is_done` back.
+        self._content_done = False
         # A restart found on the frame a scene ended: `safe_teardown` restores.
         self._restore_after_teardown = False
         self.audio = audio  # Optional AudioStreamer for pitch retune
@@ -1109,6 +1112,7 @@ class Playlist:
         interstitial transition — cycling the interstitial mid-flight would be
         confusing and it doesn't implement cycle_style anyway."""
         scene.is_done = not still_active
+        self._content_done = not still_active
         if scene.is_done and any(
             not getattr(ov, "disabled", False) and ov.is_busy()
             for ov in getattr(scene, "overlays", ())
@@ -1262,13 +1266,15 @@ class Playlist:
                 next_deadline = self.run_one_frame(self.current, next_deadline)
                 # A restart on the frame the scene ends sets nothing up again,
                 # so it cannot loop and does not count toward the limit.
-                if self.restart_watch.after_frame(
-                    self._frame_landed, counted=not self.current.is_done
-                ):
-                    if self.current.is_done:
+                ended = self.current.is_done or self._content_done
+                if self.restart_watch.after_frame(self._frame_landed, counted=not ended):
+                    if ended:
                         # The scene ended (or was skipped) on this frame, so
                         # the advance that follows sets the next one up; the
                         # restore waits for its teardown, as a re-setup's does.
+                        # An overlay still scrolling off was lost with the
+                        # machine, so it no longer holds the scene.
+                        self.current.is_done = True
                         self.log.warning(
                             "the machine restarted as %r ended; putting its state back "
                             "once it is torn down",

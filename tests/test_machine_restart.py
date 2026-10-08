@@ -723,6 +723,50 @@ class _ResetMidPlayAndAtTheEnd(FakeScene):
         return still_active
 
 
+class _FinishedUnderAnOverlay(FakeScene):
+    """Its content ends at frame 3, when the C64 is reset from outside, while
+    an overlay still scrolling off holds the scene."""
+
+    def __init__(self, api: _Machine, poller: CommodoreKeyPoller) -> None:
+        super().__init__("Video", frames_until_done=3)
+        self.api = api
+        self.poller = poller
+        # Its scroll-off outlasts the first setup, so it holds `is_done` back.
+        busy = MagicMock(disabled=False)
+        busy.is_busy.side_effect = lambda: self.setup_count == 1
+        self.overlays = [busy]
+
+    def process_frame(self, current_time: float) -> bool:
+        still_active = super().process_frame(current_time)
+        if self.setup_count == 1 and self.frame_count == 3:
+            self.api.external_reset()
+        self.poller._read_modifiers()
+        self.api.stats["writes"] += 1
+        return still_active
+
+
+class RestartUnderAnOverlayHoldingAFinishedSceneTest(unittest.TestCase):
+    def test_the_finished_scene_is_not_played_again(self):
+        api = _Machine()
+        poller = CommodoreKeyPoller(api)
+        scene = _FinishedUnderAnOverlay(api, poller)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            loop=False,
+            key_poller=poller,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(scene.teardown_count)
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        self.assertEqual(scene.setup_count, 1, "a scene that had finished was set up again")
+        self.assertEqual(restores, [1], "not restored once, after the teardown")
+
+
 class RestartAsTheSceneEndsAfterAnotherTest(unittest.TestCase):
     def test_a_restart_on_the_last_frame_does_not_count_toward_the_limit(self):
         api = _Machine()
