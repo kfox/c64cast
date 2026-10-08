@@ -49,7 +49,7 @@ def _hidden_value_ladder(levels: int, filler: int) -> str:
 #: short one.
 _SCALE = 4
 
-#: Measurements a linear-time check takes of each input before it fails.
+#: Measurements a linear-time check takes of each input.
 _TRIES = 3
 
 
@@ -88,8 +88,9 @@ def _assert_linear_time(
     ratio. A wall-clock limit on one input fails whenever the machine is
     loaded; a ratio between two inputs measured on the same machine does not.
     The clock is this thread's CPU time, which stops while the scheduler runs
-    something else, and each input keeps its fastest of up to `_TRIES`
-    measurements, so a pause in one of them does not fail the check.
+    something else. Each input keeps its fastest of `_TRIES` measurements, all
+    taken before the ratio is judged: deciding after each try would let one
+    inflated measurement of the short input pass a quadratic regression.
     """
     short, long = make(1), make(_SCALE)
     allowed = 2 * len(long) / len(short)
@@ -97,8 +98,8 @@ def _assert_linear_time(
     for _ in range(_TRIES):
         fastest_short = min(fastest_short, _cpu_seconds(work, short))
         fastest_long = min(fastest_long, _cpu_seconds(work, long))
-        if fastest_long <= allowed * fastest_short:
-            return
+    if fastest_long <= allowed * fastest_short:
+        return
     test.fail(
         f"{len(long) / len(short):.1f}x the input took "
         f"{fastest_long / fastest_short:.1f}x the time "
