@@ -3907,7 +3907,7 @@ class LifecycleTest(unittest.TestCase):
         self._landing_at_pace(clock, s, 10 * period, 1)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
-    def test_the_landing_pace_never_runs_past_the_nominal_rate(self):
+    def test_the_landing_pace_never_runs_past_the_armed_nmi_rate(self):
         # A catch-up burst lands faster than the NMI can play; the clock would
         # run ahead of the sound at that pace.
         clock = FrozenClock(100.0, "monotonic")
