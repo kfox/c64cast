@@ -401,6 +401,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   end when the clip did, and the sampler waited out a 2 s timeout before
   playing it.
 
+- **A video whose sound ends a few seconds before its picture now plays the
+  picture to its end on the 4-bit DAC.** The picture follows the sound, so it
+  froze on the frame where the sound ran out and the scene never ended.
+
 - **Resuming a paused video near the end of its clip resumes it instead of
   ending the scene.** The video decoder reads several seconds ahead and stopped
   for good when it reached the end of the file, so a seek made after that was

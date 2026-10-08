@@ -1001,6 +1001,17 @@ class AudioStreamer:
             self._queued_samples = max(0, self._queued_samples - n)
             self._pushed_count = max(0, self._pushed_count - n)
 
+    def _count_silence(self, n: int, *, generation: int) -> None:
+        """Count ``n`` bytes of pad as pushed and queued, as if a producer had
+        pushed silence: from here they are queued audio in the chunk in hand,
+        landed, claimed or discarded like any other. Fenced as in
+        :meth:`_consume_queued`."""
+        with self._count_lock:
+            if generation != self._worker_generation:
+                return
+            self._pushed_count += n
+            self._queued_samples += n
+
     def _neutral_fill_ring(self, addr: int, n: int) -> None:
         """NEUTRAL-fill ``n`` bytes of ring from ``addr``.
 
@@ -1140,15 +1151,11 @@ class AudioStreamer:
                     # Priming, or the drip's interleaved slots did not fill the
                     # chunk: fall back to a blocking collect on the same deadline.
                     # A priming collect after the producer ended takes only what
-                    # is queued: nothing more is coming to wait for. Not before
-                    # anything landed, though: a producer that ended having
-                    # pushed nothing leaves the idle branch below to `continue`
-                    # every pass, and a zero deadline made that a busy spin.
+                    # is queued: nothing more is coming to wait for.
                     collect_deadline = (
                         pace_deadline
                         if prebuffered
-                        else time.monotonic()
-                        + (0.0 if input_ended and bytes_prebuffered else chunk_period)
+                        else time.monotonic() + (0.0 if input_ended else chunk_period)
                     )
                     n, taken, leftover = self._collect_until(
                         chunk_buf, n, leftover, collect_deadline, generation=generation
@@ -1165,13 +1172,16 @@ class AudioStreamer:
                 # are the silence the ring plays out after the last sample.
                 stalled = prebuffered and not input_ended
                 if n == 0:
-                    if not prebuffered and not (input_ended and bytes_prebuffered):
+                    if not prebuffered and not input_ended:
                         # Idle: no producer data, no NMI to feed.
                         continue
                     # Real underrun: refresh ring with silence. Or, priming, a
                     # producer that ended short of the prebuffer: fill the rest
                     # of it with silence so the NMI starts on what it pushed,
-                    # behind the same lead as any other start.
+                    # behind the same lead as any other start. That includes a
+                    # producer that pushed nothing, such as a video whose
+                    # audio stream holds no samples: its picture waits on
+                    # this clock.
                     chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
                     n = pad = self.chunk_size
                     if stalled:
@@ -1191,6 +1201,14 @@ class AudioStreamer:
                         # Consumption-phase only: with no NMI reading yet, a short
                         # prebuffer collect is a slow start, not an underrun.
                         self._partial_underruns += 1
+                if pad and input_ended:
+                    # Silence after the input ended: counted as pushed audio,
+                    # so the clock runs on through it. Left as pad, the clock
+                    # stopped at the last sample, and a video whose sound ends
+                    # before its picture held that frame for good.
+                    self._count_silence(pad, generation=generation)
+                    from_queue += pad
+                    pad = 0
 
                 # A splice landed while this chunk was in hand: from_queue +
                 # leftover are pre-splice, so count them as never pushed (the

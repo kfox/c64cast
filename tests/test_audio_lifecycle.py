@@ -251,6 +251,37 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(s._partial_underruns, 0, "the track's short tail counted as a stall")
         self.assertEqual(s._full_underruns, 0, "the play-out pads counted as a stall")
 
+    def test_silence_after_end_input_counts_as_played(self):
+        # The clock counts landed samples. Pads after the input ended are the
+        # silence after the sound, and a picture longer than the sound plays
+        # on through them; counted as pad, the clock stopped at the last
+        # sample and held the picture there.
+        s = _make_worker_streamer(chunk_size=32)
+        for _ in range(PREBUFFER_CHUNKS):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        s.q.put(bytes([4] * 16))
+        s._queued_samples += 16
+        s._pushed_count += 16
+        s.end_input()
+        played_out = (PREBUFFER_CHUNKS + 1 + 3) * 32
+        _run_worker(s, until=lambda: len(_written_stream(s)) >= played_out, timeout=3.0)
+        landed = s._pushed_count - s._queued_samples
+        self.assertEqual(landed, len(_written_stream(s)), "a pad after the end was not counted")
+
+    def test_a_producer_that_pushed_nothing_starts_the_consumer_on_silence(self):
+        # A video whose audio stream holds no samples ends its input before
+        # any push, and its picture waits on this clock.
+        s = _make_worker_streamer(chunk_size=32)
+        armed: list[bool] = []
+        s.nmi.start = lambda **kw: armed.append(True)  # type: ignore[method-assign]
+        s.end_input()
+        _run_worker(s, until=lambda: bool(armed), timeout=3.0)
+        self.assertEqual(armed, [True], "the NMI never started")
+        prebuffer = PREBUFFER_CHUNKS * 32
+        self.assertEqual(_written_stream(s)[:prebuffer], bytes([NEUTRAL_SAMPLE]) * prebuffer)
+
     def test_a_stall_before_end_input_stays_counted(self):
         s = _make_worker_streamer(chunk_size=32)
         for _ in range(PREBUFFER_CHUNKS):
