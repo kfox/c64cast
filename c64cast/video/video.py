@@ -1410,10 +1410,8 @@ class AVFileSource:
             target = max(target, oldest + DRY_FILL_MIN_LEAD_S)
         target = min(target, newest)
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
-        if target - fed > AUDIO_ALIGN_TOLERANCE_S:
-            samples = round((target - fed) * self.target_sr)
-            self._audio_fed_s = fed + samples / self.target_sr
-            self._feed_silence(samples)
+        silence, _, self._audio_fed_s = place_audio_frame(target, 0.0, fed, self.target_sr)
+        self._feed_silence(silence)
 
     def _decode_audio_packet(self, packet: Any) -> None:
         """Resample an audio packet and emit it — through the atempo graph
@@ -1438,15 +1436,13 @@ class AVFileSource:
         self._dry_stalled = False
         rate = frame.sample_rate or self.target_sr
         duration = frame.samples / rate if rate else 0.0
+        fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
         if frame.pts is None or frame.time_base is None:
-            start = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
+            start = fed
         else:
             start = self._content_time(float(frame.pts * frame.time_base))
             if self._video_read_s is not None:
                 self._audio_lag_s = max(self._audio_lag_s, self._video_read_s - start)
-        fed = self._audio_fed_s
-        if fed is None:
-            fed = self._pts_anchor_target
         silence, trim, self._audio_fed_s = place_audio_frame(start, duration, fed, self.target_sr)
         self._audio_trim += trim
         self._feed_silence(silence)
