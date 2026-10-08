@@ -3899,26 +3899,45 @@ class LifecycleTest(unittest.TestCase):
                 played = s._played_since_landing(4096.0)
         self.assertAlmostEqual(played, 512, delta=2)
 
-    def test_a_stalled_landing_does_not_slow_the_landing_pace(self):
-        clock = FrozenClock(100.0, "monotonic")
-        s = self._started_on(clock, "")
-        period = 1024 / s.effective_rate
-        self._landing_at_pace(clock, s, period, 5)
-        self._landing_at_pace(clock, s, 10 * period, 1)
-        self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
+    def _land_at(self, clock: FrozenClock, s: AudioStreamer, times: list[float]):
+        """Land a 1024-byte content chunk at each absolute monotonic time."""
+        with mock.patch.object(audio_mod, "time", clock):
+            for t in times:
+                clock.advance(t - clock.monotonic())
+                s._note_ring_landed(s._worker_generation, 1024, 0)
+                s._pushed_count += 1024
 
-    def test_the_catch_up_after_a_stall_does_not_speed_the_landing_pace(self):
+    def test_a_stall_and_its_catch_up_leave_the_landing_pace_at_the_drain(self):
         # After a stalled landing the worker drips the chunks it owes back to
-        # back. Counted, they pulled the pace up to the cap, and the clock
-        # reached each next chunk early under bus halts and held.
+        # back until it is on its schedule again. Per-landing samples had to
+        # tell the two apart; counted, the catch-up pulled the pace up to the
+        # cap and the clock reached each next chunk early under bus halts.
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
         drain = 0.79 * s.effective_rate
         interval = 1024 / drain
-        self._landing_at_pace(clock, s, interval, 40)
-        self._landing_at_pace(clock, s, 3.5 * 1024 / s.effective_rate, 1)
-        self._landing_at_pace(clock, s, 0.04, 2)
-        self.assertAlmostEqual(self._pace(s), drain, delta=0.01 * drain)
+        t0 = clock.monotonic()
+        schedule = [t0 + k * interval for k in range(1, 41)]
+        landed, times = 0.0, []
+        for k, due in enumerate(schedule):
+            at = max(due, landed + 0.04)
+            if k == 20:
+                at = due + 2.5 * interval
+            times.append(at)
+            landed = at
+        self.assertEqual(times[-1], schedule[-1], "the worker never caught up")
+        self._land_at(clock, s, times)
+        self.assertAlmostEqual(self._pace(s), drain, delta=0.001 * drain)
+
+    def test_the_landing_pace_follows_a_change_in_the_drain(self):
+        # The window forgets landings older than about a second, so a change
+        # in bus-halt load moves the pace with it.
+        clock = FrozenClock(100.0, "monotonic")
+        s = self._started_on(clock, "")
+        self._landing_at_pace(clock, s, 1024 / s.effective_rate, 40)
+        slower = 0.8 * s.effective_rate
+        self._landing_at_pace(clock, s, 1024 / slower, 20)
+        self.assertAlmostEqual(self._pace(s), slower, delta=0.001 * slower)
 
     def test_the_landing_pace_never_runs_past_the_armed_nmi_rate(self):
         # A catch-up burst lands faster than the NMI can play; the clock would
@@ -3933,18 +3952,20 @@ class LifecycleTest(unittest.TestCase):
         s = self._started_on(clock, "")
         self._landing_at_pace(clock, s, 1024 / (0.7 * s.effective_rate), 40)
         s._reset_ring_clock()
-        self.assertIsNone(s._landing_period)
+        self.assertEqual(len(s._landings), 0)
         with mock.patch.object(audio_mod, "time", clock):
             s._mark_ring_clock()
         self._landing_at_pace(clock, s, 1024 / (0.7 * s.effective_rate), 1)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
-    def test_the_first_landing_after_the_consumer_starts_seeds_the_pace(self):
+    def test_the_interval_to_the_first_landing_after_the_consumer_starts_is_not_measured(self):
         # The worker hands its first chunk off a pace period before dripping
         # it, so that landing comes two to three chunk periods after the start.
         clock = FrozenClock(100.0, "monotonic")
         s = self._started_on(clock, "")
-        self._landing_at_pace(clock, s, 2.9 * 1024 / s.effective_rate, 1)
+        period = 1024 / s.effective_rate
+        self._landing_at_pace(clock, s, 2.9 * period, 1)
+        self._landing_at_pace(clock, s, period, 3)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
     def test_landing_jitter_around_the_drain_period_does_not_slow_the_pace(self):
@@ -3998,6 +4019,7 @@ class LifecycleTest(unittest.TestCase):
                     clock.advance(0.5)
                     s._resync_after_stall(0.5, s._worker_generation, audio_mod.RING_BUFFER_ADDR)
         self.assertEqual([c.kwargs.get("paced") for c in note.call_args_list], [False])
+        self._landing_at_pace(clock, s, period, 1)
         self.assertAlmostEqual(self._pace(s), s.effective_rate, places=6)
 
     def test_a_widening_smoothed_gap_does_not_walk_the_clock_back(self):

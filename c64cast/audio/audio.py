@@ -18,7 +18,6 @@ import contextlib
 import dataclasses
 import functools
 import logging
-import math
 import queue
 import secrets
 import threading
@@ -255,16 +254,14 @@ TRACKED_PUMP_INSTALL_TRIES = 3
 # the $C100 stub) before the entry bytes replace it.
 TRACKED_PUMP_ENTRY_DRAIN_S = 0.03
 
-# The DAC clock runs between chunk landings at the pace chunks land, measured
-# as an EMA of seconds per byte over landings with this weight (about five
-# landings, half a second at 12 kHz). A landing more than
-# LANDING_PACE_MAX_PERIODS nominal chunk periods after the one before it
-# measures a stall rather than the pace, and is left out, along with the
-# catch-up landings the worker drips back to back after it, at most
-# LANDING_PACE_MAX_CATCHUP of them.
-LANDING_PACE_ALPHA = 0.2
-LANDING_PACE_MAX_PERIODS = 3.0
-LANDING_PACE_MAX_CATCHUP = 8
+# The DAC clock runs between chunk landings at the pace chunks land: the bytes
+# landed over the last LANDING_PACE_WINDOW_S or so, measured landing to
+# landing, once the window spans LANDING_PACE_MIN_INTERVALS intervals. The
+# record keeps at most LANDING_PACE_MAX_LANDINGS landings, so a burst of tiny
+# landings cannot grow it.
+LANDING_PACE_WINDOW_S = 1.0
+LANDING_PACE_MIN_INTERVALS = 2
+LANDING_PACE_MAX_LANDINGS = 64
 
 
 class PumpInstallError(RuntimeError):
@@ -481,14 +478,11 @@ class AudioStreamer:
         # When the clock's last landed count was taken (monotonic): the
         # consumer's start, then each landing. None until the consumer starts.
         self._ring_landed_at: float | None = None
-        # Seconds per byte the ring's content lands at once the consumer has
-        # started (an EMA over landings); its inverse is the speed the clock
-        # runs at between landings. None until the consumer starts.
-        self._landing_period: float | None = None
-        # How many coming landings' intervals are not drain intervals (they
-        # follow the start hand-off, an unpaced landing, or a stall the
-        # worker is catching up on), so they are not measured.
-        self._landing_pace_skip = 0
+        # (monotonic time, landed total) at each paced landing in the pace
+        # window, and the pace the window last measured, which stands while a
+        # restarted window fills. The speed the clock runs at between landings.
+        self._landings: deque[tuple[float, int]] = deque(maxlen=LANDING_PACE_MAX_LANDINGS)
+        self._landing_pace = 0.0
         # One record per interval however often the link stalls.
         self._stall_log = LogThrottle(log)
 
@@ -3141,7 +3135,7 @@ class AudioStreamer:
         never reached the onset threshold; video slaved to it moved in the
         same steps.
 
-        It runs at the pace chunks land (``_note_landing_pace_locked``),
+        It runs at the pace chunks land (``_landing_pace_locked``),
         which is the speed the NMI drains them at. What the NMI plays next is
         the front of the gap, so pad there moves
         nothing: content landed behind a dry stretch is not heard until the
@@ -3164,9 +3158,8 @@ class AudioStreamer:
         nominal rate until landings measure the pace."""
         with self._ring_pad_lock:
             self._ring_landed_at = time.monotonic()
-            rate = self.effective_rate
-            self._landing_period = 1.0 / rate if rate else None
-            self._landing_pace_skip = 1
+            self._landings.clear()
+            self._landing_pace = float(self.effective_rate)
 
     def _armed_rate(self) -> float:
         """The rate the CIA #2 latch now armed fires at: above
@@ -3178,46 +3171,49 @@ class AudioStreamer:
 
     def _landing_pace_locked(self) -> float:
         """Bytes per second the clock runs at between landings. Caller holds
-        ``_ring_pad_lock``. Capped at the armed NMI rate, which the drain
-        cannot beat; a catch-up burst lands faster than that."""
-        if not self._landing_period:
-            return self.effective_rate
-        return min(1.0 / self._landing_period, self._armed_rate())
-
-    def _note_landing_pace_locked(self, nbytes: int, interval: float) -> None:
-        """Fold one landing into ``_landing_period``. Caller holds
         ``_ring_pad_lock``.
 
-        The worker lands a chunk as fast as the NMI drains one, so the pace
-        is the speed the sound is heard at, and the clock between landings
-        runs at it. Run at the nominal rate instead, the clock reached the
-        next chunk early whenever bus halts slowed the NMI, then held until
-        the landing: under bitmap video it moved in bursts and holds, and
-        video slaved to it skipped and froze frames.
+        The worker lands chunks as fast as the NMI drains them, so the pace
+        is the speed the sound is heard at. Run at the nominal rate instead,
+        the clock reached the next chunk early whenever bus halts slowed the
+        NMI, then held until the landing: under bitmap video it moved in
+        bursts and holds, and video slaved to it skipped and froze frames.
 
-        The average is over seconds per byte, unclipped, so landing jitter
-        around the drain period averages out; an average of capped bytes per
-        second read a jittery link as slower than its mean. A landing that
-        comes a stall late measures the stall, not the pace, and is left out,
-        and so are the landings the worker then drips back to back to catch
-        up, one per chunk period the stall ran over: unclipped, they read as
-        faster than the drain, and the clock reached each next chunk early
-        and held. So is the landing after the consumer starts or after an
-        unpaced one: the worker hands its first chunk off a pace period
+        It is the bytes landed across the window over the time they took,
+        rather than an average of per-landing rates: a stall and the
+        back-to-back landings the worker drips to catch up on it cancel in
+        the sum, where per-landing samples had to be told apart and
+        filtered, and capped samples read landing jitter as a slower pace.
+        Capped at the armed NMI rate, which the drain cannot beat."""
+        marks = self._landings
+        if len(marks) > LANDING_PACE_MIN_INTERVALS:
+            (t0, b0), (t1, b1) = marks[0], marks[-1]
+            if t1 > t0:
+                self._landing_pace = (b1 - b0) / (t1 - t0)
+        if self._landing_pace <= 0:
+            return self.effective_rate
+        return min(self._landing_pace, self._armed_rate())
+
+    def _note_landing_pace_locked(self, now: float, paced: bool) -> None:
+        """Record a landing in the pace window. Caller holds
+        ``_ring_pad_lock``.
+
+        The window starts afresh at an unpaced landing, and the next landing
+        is its first mark, so neither that landing's bytes nor the interval
+        after it is measured. The first landing after the consumer starts is
+        a first mark too: the worker hands its first chunk off a pace period
         before dripping it, so that interval spans two to three chunk periods
         for one chunk."""
-        if self._landing_pace_skip:
-            self._landing_pace_skip -= 1
+        marks = self._landings
+        if not paced:
+            marks.clear()
             return
-        rate = self.effective_rate
-        period = self._landing_period
-        if period is None or not rate or interval <= 0 or nbytes <= 0:
-            return
-        if interval > LANDING_PACE_MAX_PERIODS * nbytes / rate:
-            owed = math.ceil(interval / (nbytes * period)) - 1
-            self._landing_pace_skip = min(owed, LANDING_PACE_MAX_CATCHUP)
-            return
-        self._landing_period = period + LANDING_PACE_ALPHA * (interval / nbytes - period)
+        marks.append((now, self._ring_landed_total))
+        while (
+            len(marks) > LANDING_PACE_MIN_INTERVALS + 1
+            and marks[1][0] <= now - LANDING_PACE_WINDOW_S
+        ):
+            marks.popleft()
 
     def _unplayed_pad(self, lead: float) -> float:
         """The pad bytes among the last ``lead`` bytes landed in the ring.
@@ -3251,20 +3247,17 @@ class AudioStreamer:
         clears the record under this lock, so no stale landing slips between
         the two.
 
-        ``paced=False`` keeps a landing, and the one after it, out of the
-        pace: the stall re-anchor's lead of pad and a splice's NEUTRAL fill
-        are written at once rather than drained in, and the worker collects
-        and hands off the next chunk before that one lands."""
+        ``paced=False`` starts the pace window afresh: the stall re-anchor's
+        lead of pad and a splice's NEUTRAL fill are written at once rather
+        than drained in, and the worker collects and hands off the next chunk
+        before that one lands."""
         with self._ring_pad_lock:
             if generation != self._worker_generation:
                 return
             self._ring_landed_total += nbytes
             if self._ring_landed_at is not None:
                 now = time.monotonic()
-                if paced:
-                    self._note_landing_pace_locked(nbytes, now - self._ring_landed_at)
-                else:
-                    self._landing_pace_skip = 1
+                self._note_landing_pace_locked(now, paced)
                 self._ring_landed_at = now
             total = self._ring_landed_total
             if pad > 0:
@@ -3284,8 +3277,8 @@ class AudioStreamer:
         self._ring_pads.clear()
         self._position_floor = 0.0
         self._ring_landed_at = None
-        self._landing_period = None
-        self._landing_pace_skip = 0
+        self._landings.clear()
+        self._landing_pace = 0.0
 
     def reset_position(self) -> None:
         with self._count_lock:
