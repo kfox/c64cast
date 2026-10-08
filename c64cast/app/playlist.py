@@ -770,7 +770,9 @@ class Playlist:
         scene.keep_pick_for_resetup()
         self.safe_teardown(scene)
         self._restore_machine()
-        if not self.ensemble_coord.wait_for_audio_claim(scene):
+        # The scene is already torn down, so leaving it current would have the
+        # run loop's exit tear it down a second time.
+        if self.stop_event.is_set() or not self.ensemble_coord.wait_for_audio_claim(scene):
             self.current = None
             return
         self.safe_setup(scene, announcing=announcing)

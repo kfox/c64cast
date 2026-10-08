@@ -582,13 +582,21 @@ def _restore_after_machine_restart(
     cfg: cfgmod.Config,
     api: C64Backend,
     dac_curve: dac_curve_resolve.DacCurve | None,
+    *,
+    name: str,
+    stop: threading.Event,
 ) -> None:
     """Put back what a restart of the machine mid-run took from it: the
     live+volatile configuration `build_stack` provisioned and the idle BASIC
     loop. The originals the run restores at teardown were recorded before
     the restart, and a restart reverts the machine to the same saved
-    values, so what each provisioner returns here is not kept. Each step is
-    best-effort, as at startup."""
+    values, so what each provisioner returns here is not kept.
+
+    Unlike at startup, a step that fails is logged and the next one runs:
+    failing the run here would end a show the scene can still come back
+    in. A stop skips the steps left, because the session's teardown only
+    waits a bounded time for the playlist thread, and a provision landing
+    after its matching restore would outlive the run."""
     steps: tuple[tuple[str, Callable[[], object]], ...] = (
         ("REU", lambda: hw_provision.provision_reu(api, cfg)),
         ("sampler", lambda: hw_provision.provision_sampler(api, cfg)),
@@ -608,10 +616,13 @@ def _restore_after_machine_restart(
         ("case switch", api.disable_case_switch),
     )
     for label, fn in steps:
+        if stop.is_set():
+            log.info("[%s] stopping; skipping the rest of the restore after the restart", name)
+            return
         try:
             fn()
         except Exception:
-            log.exception("[machine restart] %s failed", label)
+            log.exception("[%s] restoring the %s after the machine restarted failed", name, label)
 
 
 def build_stack(
@@ -845,7 +856,9 @@ def _acquire_stack(
         config_path=config_path,
         performance=cfg.performance,
     )
-    playlist.on_machine_restart = lambda: _restore_after_machine_restart(cfg, api, dac_curve)
+    playlist.on_machine_restart = lambda: _restore_after_machine_restart(
+        cfg, api, dac_curve, name=name, stop=stop_event
+    )
 
     # Turns a [[performance.clips]] dict into a Scene, closing over this stack's
     # api/audio/source/cfg because the playlist cannot build scenes itself. Called

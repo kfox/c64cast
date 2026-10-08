@@ -518,6 +518,26 @@ class RestoreFailureTest(unittest.TestCase):
         self.assertTrue(any("restoring the machine's state" in line for line in lines), lines)
 
 
+class StopDuringRestoreTest(unittest.TestCase):
+    def test_a_stop_during_the_restore_neither_sets_up_again_nor_tears_down_twice(self):
+        api = _Machine()
+        stop = threading.Event()
+        scene = _PaintingScene(api, restart_at=3, stop=stop)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.on_machine_restart = stop.set
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl.run()
+        self.assertEqual(scene.setup_count, 1, "set up again after the stop")
+        self.assertEqual(scene.teardown_count, 1, "torn down twice")
+
+
 class _RestartThenNoFrameLands(FakeScene):
     """Frames 1-2 land writes; the machine restarts at frame 3, and every
     frame from then on lands nothing (`mode` "no_write") or lands a write and
@@ -694,7 +714,9 @@ class RestoreAfterMachineRestartTest(unittest.TestCase):
             ) as dac,
             self.assertLogs("c64cast", level="ERROR") as logs,
         ):
-            session._restore_after_machine_restart(MagicMock(), api, curve)
+            session._restore_after_machine_restart(
+                MagicMock(), api, curve, name="cast", stop=threading.Event()
+            )
         self.assertEqual(
             calls, ["reu", "sampler", "master", "video", "dac", "clear loop", "case switch"]
         )
@@ -710,7 +732,9 @@ class RestoreAfterMachineRestartTest(unittest.TestCase):
             patch.object(session.hw_provision, "provision_video_output"),
             patch.object(session.dac_curve_resolve, "provision_calibrated_chip_model") as dac,
         ):
-            session._restore_after_machine_restart(MagicMock(), api, None)
+            session._restore_after_machine_restart(
+                MagicMock(), api, None, name="cast", stop=threading.Event()
+            )
         dac.assert_not_called()
         api.run_basic_clear_loop.assert_called_once_with()
 
@@ -725,8 +749,28 @@ class RestoreAfterMachineRestartTest(unittest.TestCase):
             patch.object(session.hw_provision, "provision_video_output"),
             patch.object(session.dac_curve_resolve, "provision_calibrated_chip_model") as dac,
         ):
-            session._restore_after_machine_restart(MagicMock(), api, curve)
+            session._restore_after_machine_restart(
+                MagicMock(), api, curve, name="cast", stop=threading.Event()
+            )
         dac.assert_called_once_with(api, curve)
+
+    def test_a_stop_skips_the_steps_left(self):
+        api = MagicMock()
+        stop = threading.Event()
+        with (
+            patch.object(session.hw_provision, "provision_reu"),
+            patch.object(
+                session.hw_provision, "provision_sampler", side_effect=lambda *_: stop.set()
+            ),
+            patch.object(session.hw_provision, "provision_master_volume") as master,
+            patch.object(session.hw_provision, "provision_video_output"),
+            patch.object(session.dac_curve_resolve, "provision_calibrated_chip_model"),
+            self.assertLogs("c64cast", level="INFO") as logs,
+        ):
+            session._restore_after_machine_restart(MagicMock(), api, None, name="cast", stop=stop)
+        master.assert_not_called()
+        api.run_basic_clear_loop.assert_not_called()
+        self.assertIn("[cast] stopping", logs.output[-1])
 
 
 class StackWiringTest(unittest.TestCase):
@@ -760,13 +804,14 @@ class StackWiringTest(unittest.TestCase):
             patch.object(session, "_performance_scene_factory"),
             patch.object(session, "_restore_after_machine_restart") as restore,
         ):
+            stop = threading.Event()
             stack = session.build_stack(
-                cfg, "a", stop_event=threading.Event(), profiler=MagicMock(name="profiler")
+                cfg, "a", stop_event=stop, profiler=MagicMock(name="profiler")
             )
             restore_hook = stack.playlist.on_machine_restart
             assert restore_hook is not None, "the playlist was left without a restart hook"
             restore_hook()
-        restore.assert_called_once_with(cfg, api, curve)
+        restore.assert_called_once_with(cfg, api, curve, name="a", stop=stop)
 
 
 class RestoreMirrorsStartupTest(unittest.TestCase):
