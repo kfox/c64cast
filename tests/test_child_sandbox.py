@@ -192,6 +192,21 @@ class ClampTest(unittest.TestCase):
         self.assertIn("sleep", str(error))
 
 
+class CommunicateOnceReadyTest(unittest.TestCase):
+    def test_a_child_that_never_signals_is_killed_and_cannot_be_swallowed(self):
+        popen = mock.Mock(args=["sleep", "300"])
+        popen.poll.return_value = None
+        ready = os.path.join(tempfile.mkdtemp(), "ready")
+        with (
+            mock.patch.object(_child_sandbox, "_READY_S", 0.0),
+            _child_sandbox.communicate_once_ready(ready),
+            self.assertRaises(ChildProcessHung) as caught,
+        ):
+            _child_sandbox._ORIGINAL_COMMUNICATE(popen)
+        popen.kill.assert_called_once_with()
+        self.assertIn(ready, str(caught.exception))
+
+
 class ProductionChildTest(unittest.TestCase):
     """The children this module exists for: started by the code under test."""
 

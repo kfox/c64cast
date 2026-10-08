@@ -167,13 +167,17 @@ def _hung(
 
     Exposed to nobody — tests/test_child_sandbox.py drives the wrappers.
     """
+    _kill_and_reap(popen)
+    return ChildProcessHung(
+        _child_process.hung_message(popen.args, bound, expired, note=_note(requested, bound))
+    )
+
+
+def _kill_and_reap(popen: subprocess.Popen[Any]) -> None:
     with contextlib.suppress(Exception):
         popen.kill()
     with contextlib.suppress(Exception):
         _ORIGINAL_WAIT(popen, _REAP_S)
-    return ChildProcessHung(
-        _child_process.hung_message(popen.args, bound, expired, note=_note(requested, bound))
-    )
 
 
 def _note(requested: float | None, bound: float) -> str:
@@ -218,7 +222,8 @@ def communicate_once_ready(ready: str) -> Iterator[None]:
     the pipe when it starts.
 
     A child that exits without creating `ready` releases the wait at once. One
-    that never creates it fails the test after :data:`_READY_S`.
+    that never creates it is killed after :data:`_READY_S` and fails the test
+    with :class:`ChildProcessHung`.
     """
     if not _armed:
         # The gate replaces what the armed `communicate` calls, so unarmed it
@@ -232,7 +237,8 @@ def communicate_once_ready(ready: str) -> Iterator[None]:
             if time.monotonic() > deadline:
                 # Not an AssertionError: production code under test may
                 # degrade through `except Exception`, as `ChildProcessHung`
-                # explains.
+                # explains. Killed first for the reason `_hung` gives.
+                _kill_and_reap(popen)
                 raise ChildProcessHung(f"the child never created {ready}: {popen.args!r}")
             time.sleep(0.01)
         return communicate(popen, input, timeout)
