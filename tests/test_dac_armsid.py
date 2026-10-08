@@ -313,6 +313,22 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
         self.assertEqual(api.config_puts, [])
         self.assertIn("at $D400 (now socket 1)", logs.output[0])
 
+    def test_an_ultimate_that_cannot_say_who_answers_d400_switches_nothing(self):
+        # The register write would leave the socket's config item and the label
+        # cache on the old model (#630's bug), so an unreadable owner on a link
+        # with SID config warns instead of falling back to it.
+        api = ArmsidAPI(kind="ARMSID", left="8580")
+        resolved = dac_curve_resolve.DacCurve("calibrated:k", bytes(256), (None, "ARMSID 6581"))
+        with (
+            mock.patch.object(dac_curve_resolve, "d400_owner", return_value=D400_UNKNOWN),
+            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as logs,
+        ):
+            restore = dac_curve_resolve.provision_calibrated_chip_model(api, resolved)
+        self.assertIsNone(restore)
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_puts, [])
+        self.assertIn("could not tell which socket answers $D400", logs.output[0])
+
     def test_a_chip_at_d400_already_in_the_measured_model_is_left_alone(self):
         api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="6581"))
         self.assertIsNone(self._provision_default(api))

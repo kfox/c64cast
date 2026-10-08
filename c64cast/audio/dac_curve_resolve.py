@@ -212,7 +212,8 @@ def provision_calibrated_chip_model(
     A calibration measured without socket detection recorded the chip only as
     whatever answered ``$D400``, so that chip is the one switched: through the
     socket an Ultimate maps there when it names one, else through the chip's
-    own register protocol, which works on every link."""
+    own register protocol, which works on every link. An Ultimate whose socket
+    map cannot be read switches nothing."""
     if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
     socket, recorded = dac_curve.measured
@@ -222,6 +223,16 @@ def provision_calibrated_chip_model(
         return None
     if socket is None:
         owner = d400_owner(be)
+        if owner == D400_UNKNOWN and be.profile.supports_sid_config:
+            # Not the register write: on a link with a socket map it would leave
+            # the socket's config item and the label cache on the old model.
+            log.warning(
+                "audio: the DAC calibration was measured on an %s at $D400, but this "
+                "run could not tell which socket answers $D400 (reading the SID "
+                "socket configuration failed); playing through it unchanged",
+                recorded,
+            )
+            return None
         if not isinstance(owner, int):
             return _provision_d400_model(be, recorded, wanted)
         # A register write at $D400 would leave the socket's config item, the
