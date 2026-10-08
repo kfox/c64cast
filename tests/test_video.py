@@ -105,6 +105,7 @@ def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> A
     _arm_locks(src)
     src._eof = eof
     src._pending_seek = None
+    src._frames_taken, src._clock_read = 0, None
     return src
 
 
@@ -399,6 +400,7 @@ class ResamplerTailTest(unittest.TestCase):
         src._audio_shift_s = 0.0
         src._audio_jump_warned = False
         src._dry_stall_level, src._dry_window = 0, None
+        src._frames_taken, src._clock_read = 0, None
         src._pts_offset = None
         src._pts_anchor_target = 0.0
         src._tempo_scale = 1.0
@@ -706,6 +708,7 @@ def _make_demux_source_stub(
     src._audio_shift_s = 0.0
     src._audio_jump_warned = False
     src._dry_stall_level, src._dry_window = 0, None
+    src._frames_taken, src._clock_read = 0, None
     src._decode_target = decode_target
     src._decode_size = None
     src._decode_planned = False
@@ -1311,6 +1314,8 @@ def _aligned_stub(sink: list[np.ndarray], *, rate: int = 8000) -> AVFileSource:
     src._audio_shift_s = 0.0
     src._audio_jump_warned = False
     src._dry_stall_level, src._dry_window = 0, None
+    src._frames_taken, src._clock_read = 0, None
+    src.video_fps = 30.0
     src._resampler = object()  # only tested for None: an audio stream is open
     return src
 
@@ -1469,8 +1474,8 @@ class AlignedAudioTest(unittest.TestCase):
     def test_a_held_picture_stops_raising_the_stall_at_its_ceiling(self):
         at_ceiling = 1 + round(DRY_FILL_MAX_PAST_NEWEST_S / DRY_FILL_PAST_NEWEST_STEP_S)
         src = _aligned_stub([])
-        src._dry_stall_level, src._dry_window = at_ceiling, (0.0, 0.0)
-        src._watch_dry_pace(0.0, 2.0)
+        src._dry_stall_level, src._dry_window = at_ceiling, (0.0, 0)
+        src._watch_dry_pace(2.0, 1.0, 0, (1.5, 0.0))
         self.assertEqual(src._dry_stall_level, at_ceiling)
 
     def test_no_fill_while_the_audio_fed_reaches_the_target(self):
@@ -1491,12 +1496,12 @@ class AlignedAudioTest(unittest.TestCase):
         src._fill_dry_stretch(0.0, 8.0)
         self.assertEqual((sink, src._audio_fed_s), ([], None))
 
-    def _enqueue_blocked(self, *, drain_s: float, tempo_scale: float = 1.0) -> AVFileSource:
-        """Block `_enqueue_frame` on a full buffer for about 3 s of a clock
-        that steps 0.3 s a reading, the oldest frame's stamp moving `drain_s`
-        a reading."""
+    def _enqueue_blocked(self, *, take: int, clock: float | None = 0.0) -> AVFileSource:
+        """Block `_enqueue_frame` on a full buffer of frames 0.0 and 1.0 for
+        about 3 s of a clock that steps 0.3 s a reading, the consumer taking
+        `take` frames a reading and reading the clock at `clock` (None: not
+        reading it at all) at 30 fps. Real time is 9 frames a reading."""
         src = _aligned_stub([])
-        src._tempo_scale = tempo_scale
         img = np.zeros((2, 2, 3), dtype=np.uint8)
         src.max_video_buffer = 2
         src._video_buf = [(0.0, img), (1.0, img)]
@@ -1504,7 +1509,9 @@ class AlignedAudioTest(unittest.TestCase):
 
         def fill(_oldest: float, _newest: float) -> None:
             calls[0] += 1
-            src._video_buf[0] = (calls[0] * drain_s, img)
+            src._frames_taken += take
+            if clock is not None:
+                src._clock_read = (1e9, clock)
             if calls[0] >= 10:
                 src._closed = True
 
@@ -1516,7 +1523,7 @@ class AlignedAudioTest(unittest.TestCase):
     def test_a_picture_held_on_one_frame_raises_the_stall_each_second(self):
         # About 3 s held: a step each DRY_FILL_STALL_S, so a lead too short
         # for the sink grows until it is not.
-        self.assertEqual(self._enqueue_blocked(drain_s=0.0)._dry_stall_level, 2)
+        self.assertEqual(self._enqueue_blocked(take=0)._dry_stall_level, 2)
 
     def test_a_picture_crawling_through_its_buffer_takes_the_lead_within_it(self):
         # A fill that keeps the clock just short of what the sink holds back
@@ -1524,43 +1531,61 @@ class AlignedAudioTest(unittest.TestCase):
         # picture plays at a fraction of its speed. The clock moves, so the
         # lead within the frames read is enough, and going past the newest
         # would trim a returning sound for nothing.
-        self.assertEqual(self._enqueue_blocked(drain_s=0.01)._dry_stall_level, 1)
+        self.assertEqual(self._enqueue_blocked(take=1)._dry_stall_level, 1)
 
-    def test_a_picture_whose_stamps_step_back_is_not_held(self):
-        # The oldest frame's stamp falls each reading: the picture is moving
-        # through a file whose video timestamps step back.
-        for level in (0, 1):
-            with self.subTest(level=level):
-                src = _aligned_stub([])
-                src._dry_stall_level, src._dry_window = level, (0.0, 5.0)
-                src._watch_dry_pace(4.0, 2.0)
-                self.assertEqual((src._dry_stall_level, src._dry_window), (level, (2.0, 4.0)))
+    def test_a_picture_playing_in_real_time_does_not_raise_the_stall(self):
+        self.assertEqual(self._enqueue_blocked(take=9)._dry_stall_level, 0)
+
+    def test_pace_is_counted_in_frames_not_read_off_the_stamps(self):
+        # Tempo compensation scales the stamps (0.5 is a valid setting) and a
+        # file can step them back; the frames the consumer takes are the
+        # pace either way. 80 % of real time is not a stall.
+        src = self._enqueue_blocked(take=7)
+        self.assertEqual(src._dry_stall_level, 0)
+
+    def test_a_consumer_that_stops_reading_the_clock_does_not_raise_the_stall(self):
+        # A stalled render takes no frames, but the sink's clock is not what
+        # held it: a lead taken for it would only trim the next sound.
+        self.assertEqual(self._enqueue_blocked(take=0, clock=None)._dry_stall_level, 0)
+
+    def test_a_clock_past_the_next_frame_does_not_raise_the_stall(self):
+        # The sink's clock has reached the next frame: the picture will move
+        # as soon as the consumer takes it.
+        self.assertEqual(self._enqueue_blocked(take=0, clock=1.0)._dry_stall_level, 0)
+
+    def test_the_consumer_counts_the_frames_it_takes_and_its_clock_reads(self):
+        # What `_watch_dry_pace` judges by: the frames taken off the buffer,
+        # and where the clock was when last read, even short of any frame.
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        for eof, taken in ((False, 2), (True, 3)):
+            with self.subTest(eof=eof):
+                src = _make_av_source_stub([(0.0, img), (1.0, img), (2.0, img)], eof=eof)
+                with mock.patch.object(video_mod, "time", FrozenClock(7.0, "monotonic")):
+                    src.current_frame(2.5)
+                self.assertEqual((src._frames_taken, src._clock_read), (taken, (7.0, 2.5)))
+        src = _make_av_source_stub([(1.0, img)], eof=False)
+        with mock.patch.object(video_mod, "time", FrozenClock(7.0, "monotonic")):
+            self.assertIsNone(src.current_frame(0.5))
+        self.assertEqual((src._frames_taken, src._clock_read), (0, (7.0, 0.5)))
+
+    def test_a_clock_read_before_the_window_does_not_raise_the_stall(self):
+        src = _aligned_stub([])
+        src._dry_window = (1.0, 0)
+        src._watch_dry_pace(2.0, 1.0, 0, (0.5, 0.0))
+        self.assertEqual((src._dry_stall_level, src._dry_window), (0, (2.0, 0)))
 
     def test_no_stall_is_judged_without_an_audio_sink(self):
         # Nothing reads the level then: a paused REU-pump scene, or a file
         # with no audio stream.
         src = _aligned_stub([])
         src._audio_push = None
-        src._watch_dry_pace(0.0, 0.0)
-        src._watch_dry_pace(0.0, 5.0)
+        src._watch_dry_pace(0.0, 1.0, 0, (0.0, 0.0))
+        src._watch_dry_pace(5.0, 1.0, 0, (4.0, 0.0))
         self.assertEqual((src._dry_stall_level, src._dry_window), (0, None))
-
-    def test_a_picture_draining_in_real_time_does_not_raise_the_stall(self):
-        self.assertEqual(self._enqueue_blocked(drain_s=0.3)._dry_stall_level, 0)
-
-    def test_pace_under_tempo_compensation_is_judged_on_the_content(self):
-        # The stamps run at tempo_scale (0.5 is a valid setting) while the
-        # content plays in real time, so a picture playing at 80 % of real
-        # time moves its stamps under half a second a second.
-        scale = 0.6
-        healthy = self._enqueue_blocked(drain_s=0.3 * 0.8 * scale, tempo_scale=scale)
-        self.assertEqual(healthy._dry_stall_level, 0)
-        held = self._enqueue_blocked(drain_s=0.0, tempo_scale=scale)
-        self.assertEqual(held._dry_stall_level, 2)
 
     def test_audio_coming_again_releases_the_stall(self):
         src = _aligned_stub([])
-        src._dry_stall_level, src._dry_window = 2, (5.0, 1.0)
+        src._dry_stall_level, src._dry_window = 2, (5.0, 1)
         src._align_audio_frame(_audio_frame(0.0, 0.1))
         self.assertEqual((src._dry_stall_level, src._dry_window), (0, None))
 
@@ -1570,7 +1595,7 @@ class AlignedAudioTest(unittest.TestCase):
         # forward.
         src = _make_demux_source_stub([], pending_seek=3.0)
         src._audio_fed_s, src._audio_trim = 40.0, 123
-        src._video_read_s, src._dry_stall_level, src._dry_window = 41.0, 2, (5.0, 1.0)
+        src._video_read_s, src._dry_stall_level, src._dry_window = 41.0, 2, (5.0, 1)
         src._audio_shift_s, src._audio_jump_warned = 1e6, True
         self.assertTrue(src._apply_pending_seek())
         self.assertEqual(

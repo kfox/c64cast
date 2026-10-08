@@ -1096,12 +1096,16 @@ class AVFileSource:
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
         # The stall lead the dry fill takes (`_watch_dry_pace`), judged over a
-        # `_dry_window` (wall time, oldest frame's content time) and kept
+        # `_dry_window` (wall time, frames taken by then) and kept
         # until audio comes again or a seek: the fill keeps its lead
         # over the sink's buffering for the rest of that stretch, instead of
         # stalling again each time a frame drains.
         self._dry_stall_level = 0
-        self._dry_window: tuple[float, float] | None = None
+        self._dry_window: tuple[float, int] | None = None
+        # What the consumer has done, for `_watch_dry_pace`: frames it took
+        # off the buffer, and its last clock read (wall time, position).
+        self._frames_taken = 0
+        self._clock_read: tuple[float, float] | None = None
 
         # Unity gain when there is no audio stream or the scan fails.
         self.audio_gain: float = 1.0
@@ -1468,46 +1472,64 @@ class AVFileSource:
                     self._video_buf.append((pts, img))
                     return True
                 oldest, newest = self._video_buf[0][0], self._video_buf[-1][0]
-            self._watch_dry_pace(oldest, time.monotonic())
+                next_pts = self._video_buf[1][0] if len(self._video_buf) > 1 else None
+                taken, clock_read = self._frames_taken, self._clock_read
+            self._watch_dry_pace(time.monotonic(), next_pts, taken, clock_read)
             self._fill_dry_stretch(oldest, newest)
             time.sleep(0.005)
 
-    def _watch_dry_pace(self, oldest_pts: float, now: float) -> None:
+    def _watch_dry_pace(
+        self,
+        now: float,
+        next_pts: float | None,
+        taken: int,
+        clock_read: tuple[float, float] | None,
+    ) -> None:
         """Judge the pace of a picture blocked on a full buffer with no audio
-        coming, each `DRY_FILL_STALL_S`. Under `DRY_FILL_STALL_PACE` of real
-        time, `_dry_stall_level` goes to 1, the lead within the frames read;
-        not moving at all after that, it goes up a step past the newest frame
-        (`_fill_dry_stretch`), up to the ceiling. Measured over frames rather
-        than per frame: a fill that keeps the clock just short of what the
-        sink holds back drains a frame now and then, and the picture crawls
-        without any one frame waiting long. Past the newest only while the
-        picture is held outright, because once the clock moves the step is
-        enough, and each more one trims a returning sound further. The
-        window spans calls, and audio coming again or a seek closes it.
-        Judged on the content timeline rather than the stamps, which under
-        tempo compensation run at `tempo_scale` of real time in healthy
-        playback. Nothing to judge without an audio sink to fill."""
+        coming, each `DRY_FILL_STALL_S`, by the frames the consumer took
+        (`taken`, a running count). Under `DRY_FILL_STALL_PACE` of the
+        file's frame rate, `_dry_stall_level` goes to 1, the lead within the
+        frames read; taking none at all after that, it goes up a step past
+        the newest frame (`_fill_dry_stretch`), up to the ceiling. Measured
+        over frames rather than per frame: a fill that keeps the clock just
+        short of what the sink holds back drains a frame now and then, and
+        the picture crawls without any one frame waiting long. Past the
+        newest only while the picture is held outright, because once the
+        clock moves the step is enough, and each more one trims a returning
+        sound further.
+
+        Only the sink's stall is judged: the consumer read the clock during
+        the window (`clock_read`, wall time and position) and it was still
+        short of the next frame. A consumer that stopped asking (a stalled
+        render) or a clock already past the next frame is not the sink
+        holding audio back, and a lead taken for it would only trim the next
+        sound. Counted in frames rather than read off the stamps, which
+        tempo compensation scales and a file can step back. The window spans
+        calls, and audio coming again or a seek closes it. Nothing to judge
+        without an audio sink to fill."""
         if self._resampler is None or self._audio_push is None:
             return
-        oldest = oldest_pts / (self._tempo_scale or 1.0)
         if self._dry_window is None:
-            self._dry_window = (now, oldest)
+            self._dry_window = (now, taken)
             return
-        since, from_s = self._dry_window
+        since, taken_from = self._dry_window
         if now - since < DRY_FILL_STALL_S:
             return
-        drained = oldest - from_s
-        if drained < 0:
-            # The picture moved, onto a stamp before the window's: a file
-            # whose video timestamps step back. No pace to judge across it.
-            self._dry_window = (now, oldest)
+        self._dry_window = (now, taken)
+        held_by_sink = (
+            clock_read is not None
+            and clock_read[0] >= since
+            and next_pts is not None
+            and clock_read[1] < next_pts
+        )
+        if not held_by_sink:
             return
+        took = taken - taken_from
         if self._dry_stall_level == 0:
-            if drained < DRY_FILL_STALL_PACE * (now - since):
+            if took < DRY_FILL_STALL_PACE * (now - since) * self.video_fps:
                 self._dry_stall_level = 1
-        elif drained <= 0 and self._past_newest_s() < DRY_FILL_MAX_PAST_NEWEST_S:
+        elif took == 0 and self._past_newest_s() < DRY_FILL_MAX_PAST_NEWEST_S:
             self._dry_stall_level += 1
-        self._dry_window = (now, oldest)
 
     def _past_newest_s(self) -> float:
         """How far past the newest frame read the stall level fills."""
@@ -1772,6 +1794,7 @@ class AVFileSource:
                     consumed_through = i
                 else:
                     break
+            self._clock_read = (time.monotonic(), audio_position_s)
             if chosen_img is None:
                 return None
             # Telemetry: VideoScene logs audio_position_s - last_frame_pts as
@@ -1784,8 +1807,10 @@ class AVFileSource:
             # audio worker pads NEUTRAL indefinitely — hence draining it once
             # EOF is observed and the last buffered frame has been consumed.
             if self._eof and consumed_through == len(self._video_buf) - 1:
+                self._frames_taken += len(self._video_buf)
                 self._video_buf.clear()
             elif consumed_through > 0:
+                self._frames_taken += consumed_through
                 del self._video_buf[:consumed_through]
             return chosen_img
 
