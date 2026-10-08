@@ -293,6 +293,25 @@ class IdentifyWithoutSocketDetectionTest(_NoSettle):
         self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "6581")
         self.assertEqual(armsid.cached_labels(api), ("ARM2SID 6581", "ARM2SID R 8580"))
         self.assertEqual(restore, {(armsid.CAT_SOCKET_MODEL, "socket1"): "8580"})
+        assert restore is not None
+        restore_sid_config(api, restore)
+        self.assertEqual(api.left.model, "8580")
+        self.assertEqual(api.config_store[CAT_ARMSID1][armsid.ITEM_ARMSID_MODE], "8580")
+        self.assertEqual(armsid.cached_labels(api), ("ARM2SID 8580", "ARM2SID R 8580"))
+
+    def test_a_socket_mapped_at_d400_that_no_longer_holds_an_armsid_is_left_alone(self):
+        api = ArmsidAPI(left="8580")
+        resolved = dac_curve_resolve.DacCurve("calibrated:k", bytes(256), (None, "ARMSID 6581"))
+        with (
+            mock.patch.object(
+                dac_curve_resolve, "detect_socket_models", return_value=("6581", None)
+            ),
+            self.assertLogs("c64cast.audio.dac_curve_resolve", "WARNING") as logs,
+        ):
+            restore = dac_curve_resolve.provision_calibrated_chip_model(api, resolved)
+        self.assertIsNone(restore)
+        self.assertEqual(api.config_puts, [])
+        self.assertIn("at $D400 (now socket 1)", logs.output[0])
 
     def test_a_chip_at_d400_already_in_the_measured_model_is_left_alone(self):
         api = self._no_socket_detection(ArmsidAPI(kind="ARMSID", left="6581"))

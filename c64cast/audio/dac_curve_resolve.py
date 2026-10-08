@@ -216,6 +216,7 @@ def provision_calibrated_chip_model(
     if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
     socket, recorded = dac_curve.measured
+    measured_at = f"socket {socket}"
     wanted = armsid.label_model(recorded) if armsid.is_reconfigurable(recorded) else None
     if wanted is None:
         return None
@@ -228,15 +229,16 @@ def provision_calibrated_chip_model(
         # restore then sets the item from its probe while teardown sets the
         # register back: the menu ends the run disagreeing with the chip.
         socket = owner
+        measured_at = f"$D400 (now socket {socket})"
     if not be.profile.supports_sid_config:
         return None
     live = detect_socket_models(be)[socket - 1]
     if not armsid.is_reconfigurable(live) or armsid.is_right_channel(live):
         log.warning(
-            "audio: the DAC calibration was measured on an %s in socket %d, which now "
+            "audio: the DAC calibration was measured on an %s at %s, which now "
             "reports %s; playing through it unchanged",
             recorded,
-            socket,
+            measured_at,
             live or "nothing",
         )
         return None
