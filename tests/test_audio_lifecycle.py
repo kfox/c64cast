@@ -666,6 +666,36 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(s._pushed_count, 16, "the pad after the post-splice audio was counted")
         self.assertEqual(s._pushed_count - s._queued_samples, 16)
 
+    def test_a_retired_chunk_after_a_cut_and_end_is_not_an_underrun(self):
+        """A cut and the post-splice pass's end can both land between the
+        worker taking a chunk's epoch and reading the end. The chunk is then
+        retired, so it is dropped at its claim; read as not ended, its pad
+        was counted as an underrun the NMI never heard."""
+        s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+        for _ in range(PREBUFFER_CHUNKS + 1):
+            s.q.put((s._flush_epoch, bytes([3] * 32)))
+            s._queued_samples += 32
+            s._pushed_count += 32
+        real_drip = s._drip_chunk
+        fired: list[int] = []
+
+        def drip_then_cut(*args: Any, **kwargs: Any) -> tuple[int, bytes, int]:
+            result = real_drip(*args, **kwargs)
+            if not fired and result[0] < s.chunk_size:
+                s.flush()
+                s.end_input()  # the post-splice pass ended having pushed nothing
+                fired.append(len(cast(Any, s.api).writes))
+            return result
+
+        s._drip_chunk = drip_then_cut  # type: ignore[method-assign]
+        _run_worker(
+            s,
+            until=lambda: bool(fired) and len(cast(Any, s.api).writes) > fired[0] + 2,
+            timeout=3.0,
+        )
+        self.assertTrue(fired, "the queue never ran dry during a drip")
+        self.assertEqual((s._full_underruns, s._partial_underruns), (0, 0))
+
     def test_a_flush_in_the_claim_window_still_counts_the_chunk(self):
         """The epoch check and the in-flight record are one step under
         ``_count_lock``. A flush landing between them would anchor without a

@@ -1190,7 +1190,9 @@ class AudioStreamer:
                 # A collect that crossed a cut holds the post-splice input, and
                 # the end read before it was the pre-splice one: its pad
                 # counted as silence put the clock that far ahead of the sound.
-                input_ended = input_ended and epoch == ended_epoch
+                # A chunk of an older epoch than the end is retired and dropped
+                # at its claim: read as not ended, its pad was an underrun.
+                input_ended = input_ended and epoch <= ended_epoch
                 # Everything collected so far is queued audio; pad comes next.
                 from_queue = n
 
