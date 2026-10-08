@@ -109,6 +109,9 @@ TEMPO_FOLLOW_STALL_S = 0.1
 TEMPO_FOLLOW_MAX_STEP = 0.05
 TEMPO_FOLLOW_RETUNE_S = 1.0
 TEMPO_FOLLOW_MAX_DROP = 0.15
+# A producer that underruns every few frames restarts the window at the frame
+# rate, so the restart log line goes out at most this often.
+TEMPO_FOLLOW_RESTART_LOG_S = 1.0
 
 # Defined here, not in scene_factory (which imports this module); scene_factory
 # re-exports them to the app layer.
@@ -1364,6 +1367,7 @@ class VideoScene(MediaFileMixin, Scene):
         self._last_retune_t = -math.inf
         # Window restarts not yet logged, and when the last one was.
         self._drain_restarts = 0
+        self._drain_stalls = 0
         self._drain_restart_log_t = -math.inf
         self._last_rendered_img: np.ndarray | None = None
         # The OSD text baked into the last rendered frame; compared each tick so
@@ -1502,6 +1506,7 @@ class VideoScene(MediaFileMixin, Scene):
         self._drain_trust = None
         self._last_retune_t = -math.inf
         self._drain_restarts = 0
+        self._drain_stalls = 0
         self._drain_restart_log_t = -math.inf
         self._hw_palette = _scene_hardware_palette(self.api, c, self.display_mode)
         if self.display_mode is not None:
@@ -1967,19 +1972,20 @@ class VideoScene(MediaFileMixin, Scene):
             gap = now - w_prev
             stalled = gap >= TEMPO_FOLLOW_STALL_S and clock_s - c_prev < 0.5 * tempo * gap
             if stalled or trust != self._drain_trust:
-                # At most one line a second: a producer that underruns every
-                # few frames restarts the window at the frame rate.
                 self._drain_restarts += 1
-                if now - self._drain_restart_log_t >= TEMPO_FOLLOW_RETUNE_S:
+                self._drain_stalls += stalled
+                if now - self._drain_restart_log_t >= TEMPO_FOLLOW_RESTART_LOG_S:
                     log.debug(
                         "video: drain window restarted after %.2fs (%s), tempo held "
-                        "at %.3f; %d restart(s) since the last report",
+                        "at %.3f; %d restart(s) since the last report, %d clock stalled",
                         now - marks[0][0],
                         "clock stalled" if stalled else "underrun or lost write",
                         tempo,
                         self._drain_restarts,
+                        self._drain_stalls,
                     )
                     self._drain_restarts = 0
+                    self._drain_stalls = 0
                     self._drain_restart_log_t = now
                 marks.clear()
         self._drain_trust = trust

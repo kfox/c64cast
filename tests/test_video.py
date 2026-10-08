@@ -4006,7 +4006,22 @@ class FollowDrainTest(unittest.TestCase):
             self._play(scene, 0.6, 110.0, each=starve)
         restarts = [line for line in logs.output if "drain window restarted" in line]
         # About 5 s past the warmup at 20 frames a second: 100 restarts.
+        self.assertTrue(restarts)
         self.assertLessEqual(len(restarts), 6)
+
+    def test_a_stall_inside_the_log_interval_is_counted_in_the_next_report(self):
+        scene, _ = self._scene()
+        audio = cast(_UnderrunStubAudio, scene.audio)
+
+        def starve(t: float) -> None:
+            if abs(t - 110.0) < 0.025 or abs(t - 111.5) < 0.025:
+                audio.underruns += 1
+
+        with self.assertLogs("c64cast.scenes.scenes", "DEBUG") as logs:
+            self._play(scene, 0.88, 112.0, frozen=(110.3, 110.5), each=starve)
+        restarts = [line for line in logs.output if "drain window restarted" in line]
+        self.assertEqual(len(restarts), 2)
+        self.assertIn("2 restart(s) since the last report, 1 clock stalled", restarts[1])
 
     def test_a_delivery_epoch_move_restarts_the_window(self):
         scene, source = self._scene()
