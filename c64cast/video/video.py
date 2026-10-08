@@ -97,6 +97,13 @@ def place_audio_frame(
     return 0, 0, fed_s + duration_s
 
 
+def audio_frame_duration_s(frame: Any, fallback_rate: int) -> float:
+    """How long a decoded audio frame lasts, at its own sample rate, or at
+    ``fallback_rate`` when the frame reports none."""
+    rate = frame.sample_rate or fallback_rate
+    return frame.samples / rate if rate else 0.0
+
+
 def is_audio_discontinuity(start_s: float, fed_s: float, horizon_s: float | None) -> bool:
     """Whether an audio frame starting at ``start_s``, with the audio fed so
     far ending at ``fed_s``, is a jump in the file's timestamps (see
@@ -575,8 +582,7 @@ def decode_audio_full(
             if room <= 0:
                 break
             if frame is not None:
-                rate = frame.sample_rate or target_sample_rate
-                duration = frame.samples / rate if rate else 0.0
+                duration = audio_frame_duration_s(frame, target_sample_rate)
                 start = fed
                 if frame.pts is not None and frame.time_base is not None:
                     pts_s = float(frame.pts * frame.time_base)
@@ -1501,8 +1507,7 @@ class AVFileSource:
         (audio a dry-stretch fill already covered, or a muxer's overlap) loses
         that overlap. A frame with no timestamp follows on."""
         self._dry_stalled = False
-        rate = frame.sample_rate or self.target_sr
-        duration = frame.samples / rate if rate else 0.0
+        duration = audio_frame_duration_s(frame, self.target_sr)
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
         if frame.pts is None or frame.time_base is None:
             start = fed

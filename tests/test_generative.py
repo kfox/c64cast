@@ -2145,10 +2145,12 @@ def _write_av_clip(
     fps: int = 30,
     rate: int = 8000,
     audio: tuple[tuple[float, float], ...] | None = None,
+    video_start_s: float = 0.0,
 ) -> None:
-    """A tiny Matroska clip with a video stream `seconds` long and a tone on
-    a PCM audio stream: the whole length, or the `(start_s, length_s)` spans
-    in `audio`, with nothing between them."""
+    """A tiny Matroska clip with a video stream `seconds` long, its first
+    frame stamped `video_start_s`, and a tone on a PCM audio stream: the whole
+    length, or the `(start_s, length_s)` spans in `audio`, with nothing
+    between them."""
     import av
 
     spans = audio if audio is not None else ((0.0, seconds),)
@@ -2161,8 +2163,11 @@ def _write_av_clip(
         sound = container.add_stream("pcm_s16le", rate=rate)
         sound.layout = "mono"
         grey = np.full((64, 64, 3), 128, dtype=np.uint8)
-        for _ in range(int(seconds * fps)):
-            for packet in video.encode(av.VideoFrame.from_ndarray(grey, "rgb24")):
+        first = round(video_start_s * fps)
+        for i in range(int(seconds * fps)):
+            picture = av.VideoFrame.from_ndarray(grey, "rgb24")
+            picture.pts = first + i
+            for packet in video.encode(picture):
                 container.mux(packet)
         for start_s, length_s in spans:
             t = np.arange(int(length_s * rate)) / rate
@@ -2412,13 +2417,13 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
 
     RATE = 8000
 
-    def _clip(self, audio: tuple[tuple[float, float], ...]) -> str:
+    def _clip(self, audio: tuple[tuple[float, float], ...], *, video_start_s: float = 0.0) -> str:
         import tempfile
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         clip = f"{tmp.name}/clip.mkv"
-        _write_av_clip(clip, 4.0, rate=self.RATE, audio=audio)
+        _write_av_clip(clip, 4.0, rate=self.RATE, audio=audio, video_start_s=video_start_s)
         return clip
 
     def _sound(self, pcm: np.ndarray) -> list[float]:
@@ -2449,6 +2454,34 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         # ... and the sound three seconds after it.
         pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
         self.assertAlmostEqual(self._sound(pcm)[0], 3.0, delta=0.03)
+
+    def test_a_picture_that_starts_after_its_sound_keeps_that_distance(self):
+        # The demuxer decodes no audio under the REU pump, so unpinned it took
+        # the first picture's stamp as the origin and showed it at the clock's
+        # 0, half a second ahead of the sound placed under it.
+        from c64cast.video.video import AVFileSource, decode_audio_full
+
+        clip = self._clip(((0.0, 1.0),), video_start_s=0.5)
+        src = AVFileSource(clip, target_sample_rate=self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        origin = src.pin_timeline_origin()
+        self.assertIsNotNone(origin)
+        self.assertAlmostEqual(src._content_time(cast(float, origin) + 0.5), 0.5)
+        pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
+        self.assertAlmostEqual(self._sound(pcm)[0], 0.0, delta=0.03)
+
+    def test_nothing_is_pinned_under_a_start_offset(self):
+        from c64cast.video.video import AVFileSource
+
+        src = AVFileSource(
+            self._clip(((0.0, 4.0),)),
+            target_sample_rate=self.RATE,
+            scan_audio_peak=False,
+            start_s=1.0,
+        )
+        self.addCleanup(src.close)
+        self.assertIsNone(src.pin_timeline_origin())
+        self.assertIsNone(src._pts_offset)
 
     def test_the_preload_is_capped_however_far_a_packet_is_stamped(self):
         # The silence ahead of a packet grows with its stamp: one at 1e6 s
