@@ -193,6 +193,7 @@ class AbstractContractTest(unittest.TestCase):
                 return {}
 
         b = MinimalBackend()
+        self.assertEqual(b.link_generation, 0)
         self.assertIsNone(b.probe())
         for call in (
             lambda: b.read_memory(0x028D, 1),

@@ -6,14 +6,17 @@ apart, and the scene is set up again (c64cast#599)."""
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import ast
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 from test_playlist import FakeApi, FakeScene, _transition_factory
 
+from c64cast.app import config as cfgmod
 from c64cast.app import session
 from c64cast.app.playlist import Playlist
 from c64cast.app.playlist_support import (
@@ -22,6 +25,8 @@ from c64cast.app.playlist_support import (
     RESTART_SENTINEL_LEN,
     MachineRestartWatch,
 )
+from c64cast.hw.api import Ultimate64API
+from c64cast.hw.backend import LinkError
 
 _SENTINEL = slice(RESTART_SENTINEL_ADDR, RESTART_SENTINEL_ADDR + RESTART_SENTINEL_LEN)
 
@@ -260,6 +265,7 @@ class PlaylistSetsUpAgainAfterRestartTest(unittest.TestCase):
         pl.on_machine_restart = lambda: order.append(f"restore@{scene.teardown_count}")
 
         original_setup = scene.setup
+        original_teardown = scene.teardown
 
         def setup() -> None:
             original_setup()
@@ -267,10 +273,15 @@ class PlaylistSetsUpAgainAfterRestartTest(unittest.TestCase):
             if scene.setup_count == 2:
                 threading.Timer(0.05, stop.set).start()
 
+        def teardown() -> None:
+            original_teardown()
+            order.append("teardown")
+
         scene.setup = setup  # type: ignore[method-assign]
-        with self.assertLogs("c64cast.app.playlist", level="INFO") as logs:
+        scene.teardown = teardown  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
             pl.run()
-        self.assertEqual(order, ["setup1", "restore@0", "setup2"])
+        self.assertEqual(order[:4], ["setup1", "restore@0", "teardown", "setup2"])
         self.assertEqual(scene.keep_pick_count, 1, "the restart rolled a new pick")
         self.assertEqual(scene.frames_by_setup[1], 3)
         self.assertGreater(scene.frames_by_setup.get(2, 0), 0, "the scene never played again")
@@ -382,6 +393,146 @@ class LauncherProgramUntouchedTest(unittest.TestCase):
         self.assertEqual(restores, [])
 
 
+def _run_restart_show(test: unittest.TestCase, on_restart: Any) -> tuple[_PaintingScene, list[str]]:
+    """Run a one-scene playlist whose machine restarts at frame 3, until the
+    scene has been set up a second time; returns the scene and the WARNING+
+    log lines."""
+    api = _Machine()
+    scene = _PaintingScene(api, restart_at=3)
+    stop = threading.Event()
+    pl = Playlist(
+        [scene],
+        api,
+        target_fps=10000.0,
+        heartbeat_interval=0.0,
+        stop_event=stop,
+        interstitial_factory=_transition_factory()[0],
+    )
+    pl.on_machine_restart = on_restart
+    original_setup = scene.setup
+
+    def setup() -> None:
+        original_setup()
+        if scene.setup_count == 2:
+            threading.Timer(0.05, stop.set).start()
+
+    scene.setup = setup  # type: ignore[method-assign]
+    with test.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+        pl.run()
+    return scene, logs.output
+
+
+class RestoreFailureTest(unittest.TestCase):
+    def test_a_restore_that_raises_is_logged_and_the_scene_is_set_up_again(self):
+        def broken() -> None:
+            raise RuntimeError("provisioning blew up")
+
+        scene, lines = _run_restart_show(self, broken)
+        self.assertGreaterEqual(scene.setup_count, 2, "a failed restore stranded the scene")
+        self.assertTrue(any("restoring the machine's state" in line for line in lines), lines)
+
+
+class _RestartThenNoFrameLands(FakeScene):
+    """Frames 1-2 land writes; the machine restarts at frame 3, and every
+    frame from then on lands nothing (`mode` "no_write") or lands a write and
+    then raises `LinkError` ("link_error")."""
+
+    def __init__(self, api: _Machine, stop: threading.Event, mode: str) -> None:
+        super().__init__("Video", frames_until_done=10_000)
+        self.api = api
+        self.stop = stop
+        self.mode = mode
+
+    def process_frame(self, current_time: float) -> bool:
+        super().process_frame(current_time)
+        if self.frame_count < 3:
+            self.api.stats["writes"] += 1
+            return True
+        if self.frame_count == 3:
+            self.api.restart()
+        if self.frame_count == 8:
+            self.stop.set()
+        if self.mode == "link_error":
+            self.api.stats["writes"] += 1
+            raise LinkError("down")
+        return True
+
+
+class FrameMustLandBeforeALookTest(unittest.TestCase):
+    def _run(self, mode: str) -> tuple[_Machine, _RestartThenNoFrameLands]:
+        api = _Machine()
+        stop = threading.Event()
+        scene = _RestartThenNoFrameLands(api, stop, mode)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.on_machine_restart = lambda: None
+        if mode == "link_error":
+            with self.assertLogs("c64cast", level="WARNING"):
+                pl.run()
+        else:
+            with self.assertNoLogs("c64cast", level="WARNING"):
+                pl.run()
+        return api, scene
+
+    def test_a_frame_that_raised_a_link_error_is_not_looked_after(self):
+        api, scene = self._run("link_error")
+        self.assertEqual(api.reads, 0)
+        self.assertEqual(scene.setup_count, 1)
+
+    def test_a_frame_that_landed_nothing_is_not_looked_after(self):
+        api, scene = self._run("no_write")
+        self.assertEqual(api.reads, 0)
+        self.assertEqual(scene.setup_count, 1)
+
+
+class SetUpAgainBranchesTest(unittest.TestCase):
+    def _playlist(self, scene: FakeScene) -> Playlist:
+        pl = Playlist([scene], _Machine(), target_fps=10000.0, heartbeat_interval=0.0)
+        pl.current = scene
+        return pl
+
+    def test_a_refused_audio_claim_leaves_no_current_scene_and_no_setup(self):
+        scene = FakeScene("Video")
+        pl = self._playlist(scene)
+        with (
+            patch.object(pl.ensemble_coord, "wait_for_audio_claim", return_value=False),
+            patch.object(pl, "safe_setup") as setup,
+            self.assertLogs("c64cast.app.playlist", level="WARNING"),
+        ):
+            pl._set_up_again_after_restart()
+        self.assertIsNone(pl.current)
+        setup.assert_not_called()
+
+    def test_the_scene_is_not_done_once_it_is_set_up_again(self):
+        scene = FakeScene("Video")
+        scene.is_done = True
+        pl = self._playlist(scene)
+        with (
+            patch.object(pl, "safe_setup") as setup,
+            self.assertLogs("c64cast.app.playlist", level="WARNING"),
+        ):
+            pl._set_up_again_after_restart()
+        setup.assert_called_once()
+        self.assertFalse(scene.is_done)
+
+
+class LinkGenerationTest(unittest.TestCase):
+    def test_the_ultimate_follows_its_dma_clients_redial_count(self):
+        with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True):
+            api = Ultimate64API("http://example.invalid")
+        self.assertEqual(api.link_generation, 0)
+        api.socket_dma.reconnect_count = 3
+        self.assertEqual(api.link_generation, 3)
+        with patch.object(api.socket_dma, "close"):
+            api.close()
+
+
 class InterstitialResetupTest(unittest.TestCase):
     def test_a_card_set_up_again_names_the_scene_it_announces(self):
         api = _Machine()
@@ -456,6 +607,84 @@ class RestoreAfterMachineRestartTest(unittest.TestCase):
             session._restore_after_machine_restart(MagicMock(), api, None)
         dac.assert_not_called()
         api.run_basic_clear_loop.assert_called_once_with()
+
+    def test_a_chip_model_the_backend_cannot_set_is_skipped(self):
+        api = MagicMock()
+        api.profile.supports_sid_config = False
+        with (
+            patch.object(session.hw_provision, "provision_reu"),
+            patch.object(session.hw_provision, "provision_sampler"),
+            patch.object(session.hw_provision, "provision_master_volume"),
+            patch.object(session.hw_provision, "provision_video_output"),
+            patch.object(session.dac_curve_resolve, "provision_calibrated_chip_model") as dac,
+        ):
+            session._restore_after_machine_restart(MagicMock(), api, object())
+        dac.assert_not_called()
+
+
+class StackWiringTest(unittest.TestCase):
+    def test_the_playlist_restores_with_the_runs_config_backend_and_dac_curve(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        api = MagicMock(name="api")
+        api.profile.max_fps = None
+        api.profile.default_fps = 50.0
+        api.read_menu_screen.return_value = None
+        curve = object()
+        with (
+            patch.object(session, "_open_backend", return_value=api),
+            patch.object(session, "hw_provision"),
+            patch.object(session, "_build_audio", return_value=MagicMock(name="audio")),
+            patch.object(
+                session.dac_curve_resolve, "resolve_dac_curve_for_backend", return_value=curve
+            ),
+            patch.object(session.dac_curve_resolve, "provision_calibrated_chip_model"),
+            patch.object(session, "_resolve_reu_available", return_value=False),
+            patch.object(session, "_resolve_sampler_available", return_value=False),
+            patch.object(
+                session.scene_factory, "scenes_from_config", return_value=[FakeScene("Video")]
+            ),
+            patch.object(session.char_rom, "ensure_installed"),
+            patch.object(session.time, "sleep"),
+            patch.object(session.hardware_palette, "provision_hardware_palette"),
+            patch.object(session, "_build_input_controls", return_value=(None, None)),
+            patch.object(session, "_build_preview_and_recording", return_value=(None, None, None)),
+            patch.object(session, "interstitial_factory"),
+            patch.object(session, "_performance_scene_factory"),
+            patch.object(session, "_restore_after_machine_restart") as restore,
+        ):
+            stack = session.build_stack(
+                cfg, "a", stop_event=threading.Event(), profiler=MagicMock(name="profiler")
+            )
+            restore_hook = stack.playlist.on_machine_restart
+            assert restore_hook is not None, "the playlist was left without a restart hook"
+            restore_hook()
+        restore.assert_called_once_with(cfg, api, curve)
+
+
+class RestoreMirrorsStartupTest(unittest.TestCase):
+    """The restore repeats the startup provisioning by hand, so a provisioner
+    added to `_acquire_stack` and not to `_restore_after_machine_restart`
+    would leave a restarted machine without it."""
+
+    @staticmethod
+    def _provisioners(function: str) -> set[str]:
+        tree = ast.parse(Path(session.__file__).read_text(encoding="utf-8"))
+        (fn,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == function]
+        return {
+            f"{call.func.value.id}.{call.func.attr}"
+            for call in ast.walk(fn)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in ("hw_provision", "dac_curve_resolve")
+            and call.func.attr.startswith("provision_")
+        }
+
+    def test_the_restore_calls_every_provisioner_the_startup_does(self):
+        startup = self._provisioners("_acquire_stack")
+        self.assertIn("hw_provision.provision_reu", startup, "the sweep found nothing to compare")
+        self.assertEqual(startup, self._provisioners("_restore_after_machine_restart"))
 
 
 if __name__ == "__main__":
