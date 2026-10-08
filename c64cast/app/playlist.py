@@ -785,21 +785,24 @@ class Playlist:
         """Ask the link every `SETUP_RETRY_S` until it answers (True) or
         `stop_event` fires (False), charging the wait to `link_outage`.
 
-        The ensemble audio slot `scene` holds is released for the wait and
-        claimed again once the link answers, which can wait on the system
-        that took it meanwhile (False if `stop_event` fires first). The
-        wait for the link has no bound, and without the release
+        The ensemble audio slot held for `scene`, or for the scene an
+        interstitial `scene` announces (`audio_claimant`), is released for
+        the wait and claimed again once the link answers, which can wait on
+        the system that took it meanwhile (False if `stop_event` fires
+        first). The wait for the link has no bound, and without the release
         another system's audio-bearing scenes would be skipped, or a
         single-scene one held, for as long as this machine is unplugged."""
-        released = self.ensemble_coord.release_audio_claim(scene)
-        if released:
+        claimant = self.ensemble_coord.audio_claimant(scene)
+        if claimant is not None and self.ensemble_coord.release_audio_claim(claimant):
             self.log.info("%s: releasing the ensemble audio slot until the link answers", where)
+        else:
+            claimant = None
         while True:
             waited_from = self.link_outage.now()
             if self.stop_event.wait(SETUP_RETRY_S):
                 return False
             if self.api.link_answers():
-                return not released or self.ensemble_coord.wait_for_audio_claim(scene)
+                return claimant is None or self.ensemble_coord.wait_for_audio_claim(claimant)
             self.link_outage.failed(
                 where,
                 error,

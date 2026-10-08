@@ -440,6 +440,19 @@ class EnsembleCoordinator:
             scene.clear_orchestrator()
         self.release_audio_claim(scene)
 
+    def audio_claimant(self, scene: Scene) -> Scene | None:
+        """The scene this playlist holds the ensemble audio slot for while
+        `scene` is set up: `scene` itself, or, when `scene` is the "UP NEXT"
+        card, the upcoming scene `resolve_next_index` claimed it for. None
+        when it holds no slot."""
+        pl = self._pl
+        if pl.ensemble is None:
+            return None
+        for candidate in (scene, *pl.scenes):
+            if candidate.__dict__.get("_audio_lock_held", False):
+                return candidate
+        return None
+
     def release_audio_claim(self, scene: Scene) -> bool:
         """Release the ensemble audio slot if `scene` holds it, and say
         whether it did. `wait_for_audio_claim` takes it back."""

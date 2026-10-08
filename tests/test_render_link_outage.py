@@ -872,6 +872,20 @@ class SetupOutageReleasesTheEnsembleAudioSlotTest(unittest.TestCase):
         self.assertTrue(scene.__dict__.get("_audio_lock_held"))
         self.assertEqual(scene.setup_count, 2)
 
+    def test_an_interstitial_waiting_on_the_link_frees_the_slot_claimed_for_the_next_scene(self):
+        api = _OutageApi(down_probes=3)
+        upcoming = _AudioScene(api, lossy_setups=0)
+        pl, ens = self._ensemble_playlist(api, upcoming)
+        card = _LossySetupScene(api, lossy_setups=1)
+        holders: list[str | None] = []
+        api.on_probe = lambda: holders.append(ens.audio_holder)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.safe_setup(card)
+        self.assertEqual(holders, ["sys"] + [None] * 3, "the slot stayed held through the wait")
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertTrue(upcoming.__dict__.get("_audio_lock_held"))
+        self.assertEqual(card.setup_count, 2)
+
     def test_a_stop_while_reclaiming_a_slot_taken_meanwhile_ends_the_setup(self):
         api = _OutageApi(down_probes=2)
         scene = _AudioScene(api, lossy_setups=1)
