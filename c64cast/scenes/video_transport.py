@@ -89,9 +89,10 @@ class VideoTransportControls:
 
     def clock_to_content(self, clk: float) -> float:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
-        Identity except on the resync path over the DAC+bitmap tempo scale:
-        there the clock advances at s×content-seconds, so divide by s to recover
-        content seconds for the transport surface (seek targets, loop A/B, OSD).
+        After the first seek it is the identity except on the resync path over
+        the DAC+bitmap tempo scale: there the clock advances at
+        s×content-seconds, so divide by s to recover content seconds for the
+        transport surface (seek targets, loop A/B, OSD).
 
         Before the touch the clock is the PTS timeline the source rebased to 0
         at start_s and scaled by the tempo, so it is unscaled and offset back
@@ -411,7 +412,7 @@ class VideoTransportControls:
     def position(self) -> float:
         """The playback position in content seconds, which is what the whole
         transport surface speaks; the internal clock is in the scaled/PTS
-        domain on the resync tempo path, and identical elsewhere.
+        domain, offset by start_s until the first seek (see clock_to_content).
 
         On the resync path a splice holds the clock below its target until the
         target is heard; this reports the target through that hold, because a
