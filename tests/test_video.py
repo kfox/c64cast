@@ -2097,6 +2097,14 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertAlmostEqual(source.seeks[1], 42.0, delta=1.0)
         self.assertEqual(audio.flush_calls, [False, False])
 
+    def test_a_resume_after_a_scrub_is_an_exact_seek_that_settle_does_not_repeat(self):
+        scene, source, _ = self._resync_scene(position=3.0)
+        scene.transport_scrub(42.0)
+        scene.transport.pause()
+        scene.transport.resume()
+        scene.transport_settle()
+        self.assertEqual(source.exacts, [False, True])
+
     def test_seek_waits_out_the_ring_lead(self):
         # The flush keeps the ring's unplayed lead, so the target is heard that
         # much later: the clock sits that far below the target until it is.

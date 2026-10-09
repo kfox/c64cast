@@ -260,6 +260,9 @@ class VideoTransportControls:
         anchor, and the sound plays ahead of the picture."""
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
+        # Every splice is the newest seek, so an exact one (a resume) leaves
+        # nothing for `settle` to make exact.
+        self.scrubbing = not exact
         # The anchor's pos is what the cut returns: where the target's
         # first sample is heard, one ring lead from now, read once on the
         # clock as it runs after the flush, which clears a sampler's
