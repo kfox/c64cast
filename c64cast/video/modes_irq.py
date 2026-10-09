@@ -89,9 +89,18 @@ REU_VIDEO_SCREEN_LEN = SCREEN.N_CELLS  # 1000 bytes of PETSCII screen codes
 # The host rotates through REU_VIDEO_SLOTS slots and the tracker names the one
 # it just filled. A single slot let the host overwrite a frame while the C64
 # was still copying it, and the copy committed with the top rows of one frame
-# over the bottom rows of the next. A copy waits at most for one commit (a
-# field) and then takes about 2.4 fields on mhires, under 60 ms, so the slot
-# is reused no sooner than three host frames later: 150 ms at 20 fps.
+# over the bottom rows of the next.
+#
+# A slot is in use from the snapshot to the end of its commit, which reads
+# color RAM from it: the copy (about 2.4 fields on mhires with audio NMIs),
+# then up to two more fields for the raster window, under
+# _REU_SLOT_MAX_IN_USE_S. The snapshot can be up to one host frame old, and the
+# host refills a slot REU_VIDEO_SLOTS frames after it last filled it, so the
+# count has to cover that window at the fastest push rate, 60 fps. Three slots
+# covered it only up to about the default bitmap caps, and an explicit
+# target_fps above them refilled a slot the C64 was still reading.
+_REU_SLOT_MAX_IN_USE_S = 0.1
+_REU_SLOT_MAX_PUSH_FPS = 60
 #
 # Coexistence: shares the REC controller and $0314 with the REU audio pump.
 # The merged dispatchers below are what let the two run together — one $0314
@@ -106,8 +115,12 @@ REU_VIDEO_BITMAP_SCREEN_LEN = SCREEN.N_CELLS
 # _bank_swap_dispatcher).
 REU_VIDEO_BITMAP_COLOR_BASE = 0xE13000  # 1000-byte color RAM staging
 REU_VIDEO_BITMAP_COLOR_LEN = SCREEN.N_CELLS
-REU_VIDEO_SLOTS = 3
+REU_VIDEO_SLOTS = 16
 REU_VIDEO_SLOT_STRIDE = 0x4000
+# Host frames between a slot's refill and the newest snapshot that can name
+# it, at the fastest push rate; twice the in-use window leaves room for pushes
+# that bunch up after a host stall.
+assert (REU_VIDEO_SLOTS - 1) / _REU_SLOT_MAX_PUSH_FPS >= 2 * _REU_SLOT_MAX_IN_USE_S
 assert REU_VIDEO_BITMAP_COLOR_BASE + REU_VIDEO_BITMAP_COLOR_LEN <= (
     REU_VIDEO_BITMAP_BASE + REU_VIDEO_SLOT_STRIDE
 )
