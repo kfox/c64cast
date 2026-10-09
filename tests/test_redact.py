@@ -1430,6 +1430,46 @@ class QuotedFlagTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), line)
 
+    def test_the_value_of_a_quoted_name_opening_a_pair_is_masked(self):
+        """`getheaders()`, `dict.items()` and a logged call spell a header or
+        a setting as a tuple, with the value in the next element."""
+        for line, want in (
+            ("('password', 'hunter2')", "('password', 'REDACTED')"),
+            ('("viewer_token", "abc")', '("viewer_token", "REDACTED")'),
+            ("('password' , 'abc')", "('password' , 'REDACTED')"),
+            ("('password', '-abc')", "('password', 'REDACTED')"),
+            ("('key', 'abc')", "('key', 'REDACTED')"),
+            ("('X-Password', b'abc')", "('X-Password', b'REDACTED')"),
+            ("[(\\'password\\', \\'abc\\')]", "[(\\'password\\', \\'REDACTED')]"),
+            (
+                "[('Set-Cookie', 'a=1; Path=/'), ('Cookie', 'b=2; c=3')]",
+                "[('Set-Cookie', 'a=REDACTED; Path=/'), ('Cookie', 'b=REDACTED; c=REDACTED')]",
+            ),
+            ("('Authorization', 'Basic abc')", "('Authorization', 'Basic REDACTED')"),
+            ("('Authorization', 'Basic', 'abc')", "('Authorization', 'Basic', 'REDACTED')"),
+            (
+                "('Authorization', 'Digest', 'response=\"x\", cnonce=\"y\"')",
+                "('Authorization', 'Digest', 'REDACTED')",
+            ),
+            ("%28%27password%27%2C%20%27abc%27%29", "%28%27password%27%2C%20%27REDACTED%27%29"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_name_that_opens_no_quoted_pair_keeps_what_follows(self):
+        for line in (
+            "['password', 'abc']",
+            "(password, 'abc')",
+            "('password', abc)",
+            "('a', 'password', 'abc')",
+            "password', 'abc'",
+            "('bypass', 'abc')",
+            "('sortkey', 'abc')",
+            "('--key', 'abc')",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
     def test_a_flag_value_that_starts_with_a_letter_and_a_dash_is_still_a_value(self):
         self.assertEqual(redact_secrets("x --password b-x y"), "x --password REDACTED y")
         self.assertEqual(redact_secrets("x --password '-abc' y"), "x --password 'REDACTED' y")
@@ -1438,6 +1478,10 @@ class QuotedFlagTest(unittest.TestCase):
         _assert_linear_time(self, lambda s: "['--password', " * 6_000 * s)
         _assert_linear_time(self, lambda s: "'--password' " * 8_000 * s)
         _assert_linear_time(self, lambda s: "\\" * 20_000 * s + "--password' 'x")
+        _assert_linear_time(self, lambda s: "('password', " * 6_000 * s)
+        _assert_linear_time(self, lambda s: "('password', 'a'" * 4_000 * s)
+        _assert_linear_time(self, lambda s: "('Set-Cookie', '" * 4_000 * s)
+        _assert_linear_time(self, lambda s: "(\\'" * 20_000 * s + "password\\', \\'x")
 
 
 class DigestParametersTest(unittest.TestCase):

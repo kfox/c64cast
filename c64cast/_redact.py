@@ -670,11 +670,13 @@ _QUOTED_FLAG_GAP = re.compile(
 _LISTED_FLAG = re.compile(r"""[bBrRuUfF]{0,2}+ \\*+ ["'] -""", re.VERBOSE)
 
 
-def _flag_gap(text: str, run: int, end: int) -> tuple[Span, bool] | None:
-    """The gap between the flag whose run of name characters starts at `run`
+def _flag_gap(text: str, run: int, end: int, dashed: bool) -> tuple[Span, bool] | None:
+    """The gap between the name whose run of name characters starts at `run`
     and ends at `end`, and its value, and whether that value starts with a
-    `-`, which makes it another flag."""
-    gap = _FLAG_GAP.match(text, end)
+    `-`, which makes it another flag. A `dashed` run is a flag and may be
+    followed by whitespace. Any other is a name only as the first element of
+    a quoted pair, `('password', 'hunter2')`, whose value is never a flag."""
+    gap = _FLAG_GAP.match(text, end) if dashed else None
     if gap is not None:
         return gap.span(), text.startswith("-", gap.end())
     gap = _QUOTED_FLAG_GAP.match(text, end)
@@ -685,23 +687,30 @@ def _flag_gap(text: str, run: int, end: int) -> tuple[Span, bool] | None:
         opening -= 1
     if opening == 0 or text[opening - 1] != gap.group("close")[-1]:
         return None
-    return gap.span(), _LISTED_FLAG.match(text, gap.end()) is not None
+    if dashed:
+        return gap.span(), _LISTED_FLAG.match(text, gap.end()) is not None
+    paren = opening - 1
+    while paren > 0 and text[paren - 1] == "\\":
+        paren -= 1
+    return (gap.span(), False) if text[max(paren - 1, 0) : paren] == "(" else None
 
 
 def _flag_value_start(line: _Line, name: re.Match[str]) -> tuple[int, int] | None:
     """Where the value after a flag such as `--password` or `--video-password`
     that `name` ends starts, and how deep its gap is. A logged command line
     (yt-dlp's, say) gives it as the next word, and a list repr of an argv as
-    the next element (`['--password', 'hunter2']`). A next word that is itself
-    a flag is not a value, and a short name that is the whole flag is left out: `--key 3.0:…` is a keystroke and `C=-key pause` prose.
+    the next element (`['--password', 'hunter2']`), and a quoted pair spells a
+    name as the first element of a tuple (`('password', 'hunter2')`). A next
+    word that is itself a flag is not a value, and a short name that is the whole flag is left out: `--key 3.0:…` is a keystroke and `C=-key pause` prose.
     After a component of its own it is kept, or `--stream-key X` would keep
     `X` where `--streamkey X` does not."""
     text = line.text
     run = _run_start(text, name.start())
-    if name.group("short") is not None and not text[run : name.start()].strip("-"):
+    dashed = text[run] == "-"
+    if dashed and name.group("short") is not None and not text[run : name.start()].strip("-"):
         return None
-    found = _flag_gap(text, run, name.end())
-    if text[run] != "-" or found is None:
+    found = _flag_gap(text, run, name.end(), dashed)
+    if found is None:
         return None
     gap, is_flag = found
     if gap[1] == len(text) or is_flag:
@@ -1118,7 +1127,8 @@ def redact_secrets(text: str) -> str:
       of a separator, a line break or a tab (`\\nCookie:`, `\\u0026sig=`)
       counts as one. `=`, `:` or `=>` separates them, with the key quoted or not, or, after a flag's dash
       (`--password X`), a space or tab, except where a `_`/`-` name is the
-      whole flag (`--key X`);
+      whole flag (`--key X`), or, in a tuple (`('password', 'X')`), the next
+      quoted element;
     * the credential after `Bearer` and a space, and in an `Authorization:`
       value or an `--authorization` flag's, after a registered scheme
       (`Basic`, `token`, …) and any punctuation around it, which stay in view;

@@ -1693,6 +1693,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 - **The log redactor masks the credential of an `--authorization` flag whose scheme
   is its own list element.** `['--authorization', 'Basic', 'abc']` kept `abc`.
 
+- **The log redactor masks the value in a tuple pair.** `('password', 'hunter2')`
+  and `[('Set-Cookie', 'a=1; Path=/')]`, which is how `getheaders()` and
+  `dict.items()` print, kept the value.
+
 - **The log redactor now reads a line instead of pattern-matching it, which
   closes a dozen shapes that let part or all of a secret through to
   `--log-file`, the web console's log tail and the scene snapshot.** Among
