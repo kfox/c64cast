@@ -250,10 +250,12 @@ def downmix_to_mono(indata: np.ndarray) -> np.ndarray:
 # Attempts per stage of AudioStreamer._install_tracked_pump before it gives up.
 TRACKED_PUMP_INSTALL_TRIES = 3
 # How long the entry upload waits after masking CIA #1 under a bank-swap
-# dispatcher: longer than the chunked mhires dispatcher's ~18 ms run, so a CIA #1
-# IRQ that was already asserted when the mask landed has been serviced (through
-# the $C100 stub) before the entry bytes replace it.
-TRACKED_PUMP_ENTRY_DRAIN_S = 0.03
+# dispatcher: longer than a chunked dispatcher's run, so a CIA #1 IRQ that was
+# already asserted when the mask landed has been serviced (through the $C100
+# stub) before the entry bytes replace it. The mhires run is estimated near
+# 30 ms at 12 kHz: 200 chunk iterations, with every NMI that lands inside the
+# run serviced there.
+TRACKED_PUMP_ENTRY_DRAIN_S = 0.05
 
 # The DAC clock runs between chunk landings at the pace chunks land: the bytes
 # landed over the last LANDING_PACE_WINDOW_S or so, measured landing to
@@ -1979,7 +1981,7 @@ class AudioStreamer:
 
         The order is what keeps a CIA #1 tick that lands mid-install safe. A
         bank-swap dispatcher that owns $0314 can reach $C180 directly (the
-        chunked mhires one JSRs it between REC families) and $C100 through its
+        chunked dispatchers JSR it between REC families) and $C100 through its
         fall-through, and its installer leaves an RTS at $C180 and a JMP $EA31
         at $C100 until this runs. Seeding the trackers first means the body
         never runs on stale ones, and uploading the body before the entry means
@@ -2864,8 +2866,8 @@ class AudioStreamer:
         # auto-incrementing, would then read video staging and write into color
         # RAM. The TRACKED variant reloads all five from the main-RAM tracker at
         # $C200-$C204 (src LO/MI/HI, dst LO/HI) every IRQ. Its pump code is the
-        # $C180 subroutine, which the $C100 entry and the chunked mhires
-        # dispatcher both call, so the chunk size and the governor choice land
+        # $C180 subroutine, which the $C100 entry and the chunked bank-swap
+        # dispatchers both call, so the chunk size and the governor choice land
         # there, once, for both callers.
         #
         # Chunk-operand offsets come from audio_handlers' *_CHUNK_OFFSETS,

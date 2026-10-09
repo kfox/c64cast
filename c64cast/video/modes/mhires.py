@@ -22,6 +22,7 @@ from c64cast.video.flicker import (
     parse_scoring_pairs,
 )
 from c64cast.video.modes_irq import (
+    BANK_SWAP_CHUNK_SIZE,
     BANK_SWAP_IRQ_HANDLER_ADDR,
     DD00_BANK_0,
     FRAME_TRACKER_ADDR,
@@ -467,7 +468,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 BANK_SWAP_IRQ_HANDLER_ADDR,
                 FRAME_TRACKER_ADDR,
                 self.audio_reu_pump_active,
-                "chunked-100B" if self.audio_reu_pump_active else "monolithic",
+                f"chunked-{BANK_SWAP_CHUNK_SIZE}B" if self.audio_reu_pump_active else "monolithic",
             )
 
     def teardown(self, api):

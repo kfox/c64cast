@@ -22,9 +22,9 @@ from c64cast.video.flicker import (
     parse_scoring_pairs,
 )
 from c64cast.video.modes_irq import (
+    BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
-    BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER,
     DD00_BANK_0,
     FRAME_TRACKER_ADDR,
     REU_VIDEO_BITMAP_LEN,
@@ -99,8 +99,8 @@ class HiresDisplayMode(BitmapDisplayMode):
       and the REU_VIDEO_BITMAP_* constants in modes_irq.py.
 
       Runs alongside [audio].use_reu_pump. Both drive REC and $0314,
-      so setup() installs BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER — the merged
-      dispatcher — whenever audio_reu_pump_active is set. Color RAM
+      so setup() installs BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER — the
+      chunked merged dispatcher — whenever audio_reu_pump_active is set. Color RAM
       isn't used by hires (color is in screen RAM nibbles), so the
       shared-$D800 mid-frame-mismatch problem the other display modes
       would have doesn't apply.
@@ -160,7 +160,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         # Mutually exclusive with use_reu_staged; resolve_double_buffer
         # guarantees it.
         self.double_buffer = double_buffer
-        # Selects BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER in setup(), whose dispatcher
+        # Selects BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER in setup(), whose dispatcher
         # falls through to the $C100 audio pump on non-raster (CIA #1) IRQs.
         self.audio_reu_pump_active = audio_reu_pump_active
         # Which VIC bank is displayed: 0 = bank 0 (paint bank 2 next),
@@ -296,7 +296,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
             self._displayed_bank = 0
             handler = (
-                BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER
+                BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER
                 if self.audio_reu_pump_active
                 else BANK_SWAP_IRQ_HANDLER
             )

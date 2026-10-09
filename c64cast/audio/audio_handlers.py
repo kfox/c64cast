@@ -665,7 +665,7 @@ REU_PUMP_TICK_DIVIDER = 3
 # subroutine at $C180 (REU_PUMP_BODY_SUBROUTINE_ADDR), reached two ways:
 # the $C100 entry REU_IRQ_HANDLER_TRACKED JSRs it on every CIA #1 IRQ the
 # merged bank-swap dispatcher hands over (its JMP $C100 fall-through), and
-# the chunked mhires dispatcher JSRs it directly between per-frame REC
+# the chunked bank-swap dispatchers JSR it directly between per-frame REC
 # families to catch CIA #1 ticks that latched during the bank-swap halt.
 # Used INSTEAD OF the plain handler when AudioStreamer.start_for_reu_staged
 # is called with skip_irq_vector_hook=True; the solo video path keeps the
