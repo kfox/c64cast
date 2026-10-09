@@ -43,7 +43,7 @@ def _fake_playlist(name: str, *, scene_count: int = 2) -> Playlist:
     """A MagicMock'd Playlist that satisfies what the control plane reads:
     .current.name, .index, .scenes (list with .name + .duration_s), .pause/
     skip/resume events with .set()/is_set(), .api.stats, .api.format_write_latency(),
-    .transitioning, .request_reload()."""
+    .transitioning, .on_card, .request_reload()."""
     pl = MagicMock(name=f"playlist-{name}")
     pl.name = name
     pl.current = MagicMock()
@@ -54,6 +54,7 @@ def _fake_playlist(name: str, *, scene_count: int = 2) -> Playlist:
         s.name = f"{name}-scene-{i}"
         s.duration_s = 10.0 + i
     pl.transitioning = False
+    pl.on_card = False
     pl.api.stats = {"writes": 100}
     pl.api.format_write_latency.return_value = "lat 5ms"
     # Real Events so .set() / .is_set() round-trip cleanly.
@@ -83,6 +84,15 @@ class ResponseShapeTest(unittest.TestCase):
         self.assertFalse(body["transitioning"])
         self.assertEqual(body["stats"], {"writes": 100})
         self.assertEqual(body["write_latency"], "lat 5ms")
+
+    def test_status_reports_the_card_not_the_stale_flag(self):
+        from c64cast.control.control_plane import _status_for
+
+        pl = _fake_playlist("a")
+        pl.transitioning = True
+        self.assertFalse(_status_for(pl)["transitioning"])
+        pl.on_card = True
+        self.assertTrue(_status_for(pl)["transitioning"])
 
     def test_status_dict_reflects_pause_state(self):
         from c64cast.control.control_plane import _status_for

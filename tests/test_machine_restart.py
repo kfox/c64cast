@@ -1362,6 +1362,27 @@ class ClipOverTheCardTest(unittest.TestCase):
             pl._apply_frame_events(pl.current, True)
         handle.assert_called_once()
 
+    def test_a_finished_card_hands_over_to_the_scene_it_announced(self):
+        pl = self._playlist_on_card()
+        assert pl.current is not None
+        pl.current.is_done = True
+        pl._advance()
+        self.assertIs(pl.current, pl.scenes[1])
+        self.assertFalse(pl.transitioning)
+
+    def test_a_finished_clip_launched_on_the_card_ends_like_any_scene(self):
+        pl = self._playlist_on_card()
+        clip = FakeScene("Clip")
+        pl.perf_swap_scene(clip)
+        clip.is_done = True
+        with (
+            patch.object(pl, "_advance_after_scene") as after,
+            patch.object(pl, "safe_setup") as setup,
+        ):
+            pl._advance()
+        after.assert_called_once()
+        setup.assert_not_called()
+
     def test_a_cycle_over_the_card_is_dropped(self):
         pl = self._playlist_on_card()
         pl.cycle_event.set()
