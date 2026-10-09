@@ -560,7 +560,9 @@ _FLAG_GAP = re.compile(r"[ \t]+")
 def _flag_value(line: _Line, name: re.Match[str]) -> Span | None:
     """The value after a flag such as `--password` or `--video-password` that
     `name` ends, given as the next word: a logged command line (yt-dlp's, say)
-    spells it that way. A next word that is itself a flag is not a value, and
+    spells it that way. An `--authorization` value is a scheme and a credential,
+    so it is read as an `Authorization:` header's is. A next word that is
+    itself a flag is not a value, and
     a short name that is the whole flag is left out: `--key 3.0:…` is a
     keystroke and `C=-key pause` prose. After a component of its own it is
     kept, or `--stream-key X` would keep `X` where `--streamkey X` does not."""
@@ -573,7 +575,9 @@ def _flag_value(line: _Line, name: re.Match[str]) -> Span | None:
     gap = _FLAG_GAP.match(text, name.end())
     if text[run] != "-" or gap is None or gap.end() == len(text) or text[gap.end()] == "-":
         return None
-    return _value(line, gap.end(), line.deepest(*gap.span()), "unquoted")
+    v, d = gap.end(), line.deepest(*gap.span())
+    span = _value(line, v, d, "unquoted")
+    return _past_scheme(line, v, d, span) if name.group("header") is not None else span
 
 
 def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
@@ -675,7 +679,7 @@ def redact_secrets(text: str) -> str:
       (`--password X`), a space or tab, except where a `_`/`-` name is the
       whole flag (`--key X`);
     * the credential after `Bearer` and a space, and in an `Authorization:`
-      value, after a registered scheme (`Basic`, `token`, …) and any
+      value or an `--authorization` flag's, after a registered scheme (`Basic`, `token`, …) and any
       punctuation around it, which stay in view; a first word that is no
       known scheme is masked with the rest, punctuation and all;
     * the userinfo of a URL (`https://user:pass@host` comes back as

@@ -1656,6 +1656,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   hid it. `key2` and `sig2` stay readable: they are as likely a column or an
   index.
 
+- **The log redactor masks the whole value of an `--authorization` flag.**
+  `--authorization Basic abc` kept the credential, because a flag's value was
+  one word and an `Authorization` value is a scheme and a credential.
+
 - **The log redactor now reads a line instead of pattern-matching it, which
   closes a dozen shapes that let part or all of a secret through to
   `--log-file`, the web console's log tail and the scene snapshot.** Among

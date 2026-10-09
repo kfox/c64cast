@@ -1298,6 +1298,40 @@ class NumberedNameTest(unittest.TestCase):
         _assert_linear_time(self, lambda s: "token1" * 8_000 * s)
 
 
+class AuthorizationFlagTest(unittest.TestCase):
+    def test_an_authorization_flag_keeps_its_scheme_and_masks_the_credential(self):
+        for line, want in (
+            ("--authorization Basic abc", "--authorization Basic REDACTED"),
+            ("x --authorization Basic abc --verbose", "x --authorization Basic REDACTED --verbose"),
+            ("x --authorization Basic abc y", "x --authorization Basic REDACTED y"),
+            ("x --authorization\tBearer abc y", "x --authorization\tBearer REDACTED y"),
+            ("x --proxy-authorization Digest abc", "x --proxy-authorization Digest REDACTED"),
+            ('x --authorization "Basic abc" y', 'x --authorization "Basic REDACTED" y'),
+            ("x -authorization Basic abc", "x -authorization Basic REDACTED"),
+            ("x --authorization  Basic   abc d", "x --authorization  Basic   REDACTED d"),
+            ("x --authorization (Basic) abc d", "x --authorization (Basic) REDACTED d"),
+            ("x --authorization %22Basic%22 abc d", "x --authorization %22Basic%22 REDACTED d"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_authorization_flag_with_no_known_scheme_masks_both_words(self):
+        self.assertEqual(redact_secrets("x --authorization s3cr3t y"), "x --authorization REDACTED")
+        self.assertEqual(redact_secrets("x --authorization Basic"), "x --authorization REDACTED")
+
+    def test_an_authorization_flag_with_no_value_is_left_alone(self):
+        for line in ("x --authorization", "x --authorization --verbose"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_another_flag_still_takes_one_word(self):
+        self.assertEqual(redact_secrets("x --password Basic abc"), "x --password REDACTED abc")
+
+    def test_a_long_run_of_authorization_flags_is_redacted_in_linear_time(self):
+        _assert_linear_time(self, lambda s: "--authorization Basic a " * 4_000 * s)
+        _assert_linear_time(self, lambda s: "--authorization " * 8_000 * s)
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""
