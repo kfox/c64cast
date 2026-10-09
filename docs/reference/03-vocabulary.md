@@ -389,8 +389,10 @@ copied at a moment starts there.
 file = "https://youtu.be/<id>?t=18m18s"   # from 18:18
 ```
 
-`start_s` seeks to the keyframe at or just before the given second, so its
-accuracy is keyframe-granular. To loop one video forever, make it the only
+`start_s` starts on the frame at the given second: the container seeks to the
+keyframe before it and the picture and sound before the second are dropped. A
+file that reports no stream start has nothing to place the second against, and
+starts on the keyframe at or just before it. To loop one video forever, make it the only
 scene; to play it once and exit, set `[playlist].loop = false`.
 
 ### `waveform`

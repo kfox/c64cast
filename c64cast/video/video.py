@@ -1095,9 +1095,8 @@ class AVFileSource:
 
         # Before any demux, so there is no decoder state to flush.
         # Whole-container seek in AV_TIME_BASE units (microseconds); backward
-        # lands on the keyframe <= target, so playback starts at most one GOP
-        # early. Audio packets interleave near the same byte offset, so A/V stay
-        # aligned once video PTS are rebased.
+        # lands on the keyframe <= target; the pictures and sound it decodes
+        # before start_s are dropped, so playback starts at start_s.
         if self.start_s > 0:
             # A stall raises out of here, leaving the container to the
             # abandoned seek (RemoteSeekStalled).

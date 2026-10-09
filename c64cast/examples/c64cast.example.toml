@@ -1675,7 +1675,7 @@ palette_mode = "grayscale"
 # file = "assets/videos/your-video.mp4"
 # display = "mhires"                    # unset also defaults to mhires
 # # start_s — seconds into the file to begin playback (video-only; omit or 0
-# # = from the start). Seeks to the keyframe at/just-before this time. A media
+# # = from the start). Starts on the frame at this time. A media
 # # URL's own t=/start=/#t= timestamp fills start_s automatically (in configs
 # # and in `c64cast MEDIA…`); an explicit start_s here wins over the URL.
 # start_s = 90.0
