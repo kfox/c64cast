@@ -1264,6 +1264,877 @@ class RedactingFormatterTest(unittest.TestCase):
         self.assertIn("token=REDACTED", written)
 
 
+class NumberedNameTest(unittest.TestCase):
+    def test_a_strong_secret_name_may_end_in_a_number(self):
+        for line, want in (
+            ("password2 = hunter2", "password2 = REDACTED"),
+            ("Password12=hunter2 x", "Password12=REDACTED x"),
+            ("token1=abc&x=1", "token1=REDACTED&x=1"),
+            ('{"password2": "abc"}', '{"password2": "REDACTED"}'),
+            ("x_secret3=abc", "x_secret3=REDACTED"),
+            ("password_2=abc", "password_2=REDACTED"),
+            ("api-key-7: abc", "api-key-7: REDACTED"),
+            ("dbpwd2=abc", "dbpwd2=REDACTED"),
+            ("PWD2=abc", "PWD2=REDACTED"),
+            ("authorization2: Basic abc", "authorization2: Basic REDACTED"),
+            ("%26password2%3Dabc%26n=1", "%26password2%3DREDACTED%26n=1"),
+            ("--password2 hunter2 x", "--password2 REDACTED x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        safe, verbatim = redact_source_line(['password2 == "hunter2"'], 1)
+        self.assertNotIn("hunter2", safe)
+        self.assertFalse(verbatim)
+
+    def test_a_short_name_or_a_longer_word_keeps_its_value(self):
+        line = (
+            "key2=a sig2=b auth2=c hmac2=d bearer2=e password2x=f password2-x=g "
+            "passes2=3 bypass2=on PWD=/x jwts2=1 token2_x=h"
+        )
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_long_run_of_digits_is_redacted_in_linear_time(self):
+        _assert_linear_time(self, lambda s: "token" + "1" * 20_000 * s + "=x")
+        _assert_linear_time(self, lambda s: "token1" * 8_000 * s)
+
+
+class AuthorizationFlagTest(unittest.TestCase):
+    def test_an_authorization_flag_keeps_its_scheme_and_masks_the_credential(self):
+        for line, want in (
+            ("--authorization Basic abc", "--authorization Basic REDACTED"),
+            ("x --authorization Basic abc --verbose", "x --authorization Basic REDACTED --verbose"),
+            ("x --authorization Basic abc y", "x --authorization Basic REDACTED y"),
+            ("x --authorization\tBearer abc y", "x --authorization\tBearer REDACTED y"),
+            ("x --proxy-authorization Digest abc", "x --proxy-authorization Digest REDACTED"),
+            ('x --authorization "Basic abc" y', 'x --authorization "Basic REDACTED" y'),
+            ("x -authorization Basic abc", "x -authorization Basic REDACTED"),
+            ("x --authorization  Basic   abc d", "x --authorization  Basic   REDACTED d"),
+            ("x --authorization (Basic) abc d", "x --authorization (Basic) REDACTED d"),
+            ("x --authorization %22Basic%22 abc d", "x --authorization %22Basic%22 REDACTED d"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_authorization_flag_with_no_known_scheme_masks_both_words(self):
+        self.assertEqual(redact_secrets("x --authorization s3cr3t y"), "x --authorization REDACTED")
+        self.assertEqual(redact_secrets("x --authorization Basic"), "x --authorization REDACTED")
+
+    def test_an_authorization_flag_with_no_value_is_left_alone(self):
+        for line in ("x --authorization", "x --authorization --verbose"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_another_flag_still_takes_one_word(self):
+        self.assertEqual(redact_secrets("x --password Basic abc"), "x --password REDACTED abc")
+
+    def test_a_long_run_of_authorization_flags_is_redacted_in_linear_time(self):
+        _assert_linear_time(self, lambda s: "--authorization Basic a " * 4_000 * s)
+        _assert_linear_time(self, lambda s: "--authorization " * 8_000 * s)
+
+
+class QuotedFlagTest(unittest.TestCase):
+    def test_a_quoted_flag_masks_the_next_list_element(self):
+        for line, want in (
+            ("['--password', 'hunter2']", "['--password', 'REDACTED']"),
+            ('["--password", "hunter2"]', '["--password", "REDACTED"]'),
+            ("['--password','hunter2']", "['--password','REDACTED']"),
+            ("['--password' , 'hunter2']", "['--password' , 'REDACTED']"),
+            ("('--password', 'x')", "('--password', 'REDACTED')"),
+            ("['--password', 'hunter2', '--verbose']", "['--password', 'REDACTED', '--verbose']"),
+            ("['--password', 'a b c', 'd']", "['--password', 'REDACTED', 'd']"),
+            ("['--password', b'hunter2']", "['--password', b'REDACTED']"),
+            ("['--password', \"it's\"]", "['--password', \"REDACTED\"]"),
+            ("'--password' 'hunter2' x", "'--password' 'REDACTED' x"),
+            ("['--video-password', 'hunter2']", "['--video-password', 'REDACTED']"),
+            ("['--stream-key', 's3']", "['--stream-key', 'REDACTED']"),
+            ("['-token', 'abc']", "['-token', 'REDACTED']"),
+            ("['--authorization', 'Basic abc']", "['--authorization', 'Basic REDACTED']"),
+            ("%27--password%27%2C%20%27hunter2%27", "%27--password%27%2C%20%27REDACTED%27"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_scheme_and_its_credential_in_separate_list_elements_are_both_masked(self):
+        for line, want in (
+            (
+                "['--authorization', 'Basic', 'abc']",
+                "['--authorization', 'Basic', 'REDACTED']",
+            ),
+            (
+                '["--authorization", "Basic", "abc", "--verbose"]',
+                '["--authorization", "Basic", "REDACTED", "--verbose"]',
+            ),
+            (
+                "['--authorization','Basic','abc']",
+                "['--authorization','Basic','REDACTED']",
+            ),
+            (
+                "['--authorization', 'Basic' , 'abc', 'def']",
+                "['--authorization', 'Basic' , 'REDACTED', 'def']",
+            ),
+            (
+                "['--authorization', 'Digest', 'username=\"u\", response=\"x\"']",
+                "['--authorization', 'Digest', 'REDACTED']",
+            ),
+        ):
+            with self.subTest(line=line):
+                got = redact_secrets(line)
+                self.assertEqual(got.count("abc"), 0)
+                self.assertNotIn("response=", got)
+                self.assertEqual(got, want)
+        self.assertNotIn("abc", redact_secrets('\\"--authorization\\", \\"Basic\\", \\"abc\\" x'))
+
+    def test_a_scheme_followed_by_a_flag_or_a_dict_key_keeps_the_next_element(self):
+        for line, want in (
+            (
+                "['--authorization', 'Basic', '--verbose']",
+                "['--authorization', 'REDACTED', '--verbose']",
+            ),
+            ("['--authorization', 'Basic']", "['--authorization', 'REDACTED']"),
+            (
+                "{'Authorization': 'Basic', 'next': 'v'}",
+                "{'Authorization': 'REDACTED', 'next': 'v'}",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_escaped_list_element_is_masked(self):
+        for line in (
+            '\\"--password\\", \\"hunter2\\" x',
+            '"{\\"args\\": [\\"--password\\", \\"hunter2\\"]}"',
+        ):
+            with self.subTest(line=line):
+                self.assertNotIn("hunter2", redact_secrets(line))
+
+    def test_a_list_element_that_is_a_flag_or_a_lone_flag_is_not_a_value(self):
+        for line in (
+            "['--password', '--verbose']",
+            "['--password', \"--verbose\"]",
+            "['--password', b'-x']",
+            "['--password-file', 'x']",
+            "['--key', 'x']",
+            "['--password']",
+            "['--password', ]",
+            '["--password","--x"]',
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_prose_around_a_quoted_flag_keeps_its_words(self):
+        line = 'the "--password", then enter it'
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_flag_that_is_not_itself_quoted_does_not_read_a_quoted_gap(self):
+        for line in ("x --password' 'abc'", 'x --password" "abc\'', 'x --password", "abc"'):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_the_value_of_a_quoted_name_opening_a_pair_is_masked(self):
+        """`getheaders()`, `dict.items()` and a logged call spell a header or
+        a setting as a tuple, with the value in the next element."""
+        for line, want in (
+            ("('password', 'hunter2')", "('password', 'REDACTED')"),
+            ('("viewer_token", "abc")', '("viewer_token", "REDACTED")'),
+            ("('password' , 'abc')", "('password' , 'REDACTED')"),
+            ("('password', '-abc')", "('password', 'REDACTED')"),
+            ("('key', 'abc')", "('key', 'REDACTED')"),
+            ("('X-Password', b'abc')", "('X-Password', b'REDACTED')"),
+            ("(b'x-c64cast-token', b'abc')", "(b'x-c64cast-token', b'REDACTED')"),
+            ("(u'password', 'abc')", "(u'password', 'REDACTED')"),
+            ("( 'password', 'abc')", "( 'password', 'REDACTED')"),
+            ("[(b\\'password\\', \\'abc\\')]", "[(b\\'password\\', \\'REDACTED')]"),
+            (
+                "<Headers([(b'host', b'x'), (b'cookie', b'a=opaque')])>",
+                "<Headers([(b'host', b'x'), (b'cookie', b'a=REDACTED')])>",
+            ),
+            ("[(\\'password\\', \\'abc\\')]", "[(\\'password\\', \\'REDACTED')]"),
+            (
+                "[('Set-Cookie', 'a=1; Path=/'), ('Cookie', 'b=2; c=3')]",
+                "[('Set-Cookie', 'a=REDACTED; Path=/'), ('Cookie', 'b=REDACTED; c=REDACTED')]",
+            ),
+            ("('Authorization', 'Basic abc')", "('Authorization', 'Basic REDACTED')"),
+            ("('Authorization', 'Basic', 'abc')", "('Authorization', 'Basic', 'REDACTED')"),
+            (
+                "('Authorization', 'Digest', 'response=\"x\", cnonce=\"y\"')",
+                "('Authorization', 'Digest', 'REDACTED')",
+            ),
+            ("%28%27password%27%2C%20%27abc%27%29", "%28%27password%27%2C%20%27REDACTED%27%29"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_name_that_opens_no_quoted_pair_keeps_what_follows(self):
+        for line in (
+            "['password', 'abc']",
+            "(password, 'abc')",
+            "('password', abc)",
+            "('a', 'password', 'abc')",
+            "(x'password', 'abc')",
+            "password', 'abc'",
+            "('bypass', 'abc')",
+            "('sortkey', 'abc')",
+            "('--key', 'abc')",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_a_flag_value_that_starts_with_a_letter_and_a_dash_is_still_a_value(self):
+        self.assertEqual(redact_secrets("x --password b-x y"), "x --password REDACTED y")
+        self.assertEqual(redact_secrets("x --password '-abc' y"), "x --password 'REDACTED' y")
+
+    def test_a_long_run_of_quoted_flags_is_redacted_in_linear_time(self):
+        _assert_linear_time(self, lambda s: "['--password', " * 6_000 * s)
+        _assert_linear_time(self, lambda s: "'--password' " * 8_000 * s)
+        _assert_linear_time(self, lambda s: "\\" * 20_000 * s + "--password' 'x")
+        _assert_linear_time(self, lambda s: "('password', " * 6_000 * s)
+        _assert_linear_time(self, lambda s: "('password', 'a'" * 4_000 * s)
+        _assert_linear_time(self, lambda s: "('Set-Cookie', '" * 4_000 * s)
+        _assert_linear_time(self, lambda s: "(\\'" * 20_000 * s + "password\\', \\'x")
+
+
+class DigestParametersTest(unittest.TestCase):
+    def test_every_digest_parameter_is_masked(self):
+        for line, want in (
+            (
+                'Authorization: Digest username="u", response="abc123", cnonce="zz"',
+                "Authorization: Digest REDACTED",
+            ),
+            ("Proxy-Authorization: Digest abc", "Proxy-Authorization: Digest REDACTED"),
+            ("Authorization: Digest abc", "Authorization: Digest REDACTED"),
+            (
+                'Authorization: Digest username="u", uri="/x?a=1&b=2", response="abc" tail',
+                "Authorization: Digest REDACTED",
+            ),
+            ("Authorization: digest a=b, c=\"d e\", f='g h'", "Authorization: digest REDACTED"),
+            ('Authorization: Digest username="u", response="abc', "Authorization: Digest REDACTED"),
+            (
+                "Authorization: Digest username=u, response=abc&n=1",
+                "Authorization: Digest REDACTED&n=1",
+            ),
+            (
+                'x --authorization Digest username="u", response="abc"',
+                "x --authorization Digest REDACTED",
+            ),
+            (
+                "h=Authorization%3A%20Digest%20username%3D%22u%22%2C%20response%3D%22abc%22&x=1",
+                "h=Authorization%3A%20Digest%20REDACTED&x=1",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_the_value_ends_at_the_quote_that_closes_the_header(self):
+        for line, want in (
+            (
+                "{'Authorization': 'Digest username=\"u\", response=\"abc\"', 'next': 'v'}",
+                "{'Authorization': 'Digest REDACTED', 'next': 'v'}",
+            ),
+            (
+                '{"Authorization": "Digest username=\\"u\\", response=\\"abc\\"", "next": "v"}',
+                '{"Authorization": "Digest REDACTED", "next": "v"}',
+            ),
+            (
+                '"Authorization: Digest username=\\"u\\", response=\\"abc\\"" next',
+                '"Authorization: Digest REDACTED" next',
+            ),
+            (
+                '\'Authorization: Digest username="u", response="abc"\' next',
+                "'Authorization: Digest REDACTED' next",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quote_inside_a_parameter_value_does_not_close_the_header(self):
+        for line, want in (
+            ("Authorization: Digest a=it's, response=abc tail", "Authorization: Digest REDACTED"),
+            (
+                'Authorization: Digest response="R", opaque=x\'; cnonce=abc',
+                "Authorization: Digest REDACTED",
+            ),
+            (
+                'Authorization: Digest opaque=x", cnonce=abc',
+                "Authorization: Digest REDACTED",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_another_scheme_still_ends_at_its_first_word(self):
+        self.assertEqual(
+            redact_secrets("Authorization: Basic abc, d=e"), "Authorization: Basic REDACTED, d=e"
+        )
+
+    def test_a_long_run_of_digest_headers_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "Authorization: Digest a=b " * 4_000 * s,
+            lambda s: 'Authorization: Digest a="' * 4_000 * s,
+            lambda s: "Authorization: Digest " + 'a="b" ' * 8_000 * s + "'",
+            lambda s: 'Authorization: Digest \\\\"' * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
+class PunctuatedSchemeTest(unittest.TestCase):
+    def test_a_first_word_with_punctuation_inside_goes_with_the_next_word(self):
+        for line, want in (
+            ("Authorization: s3!x ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x   ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x\tab rest", "Authorization: REDACTED rest"),
+            ("Authorization: !x ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x+ab+rest", "Authorization: REDACTED"),
+            ('Authorization: a"b ab rest', "Authorization: REDACTED rest"),
+            ("Authorization: ab%22cd ef rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x%20ab%20rest", "Authorization: REDACTED"),
+            ("Authorization: (s3!x) ab rest", "Authorization: REDACTED rest"),
+            ("{'Authorization': 's3!x ab', 'n': 1}", "{'Authorization': 'REDACTED', 'n': 1}"),
+            ("x --authorization s3!x ab rest", "x --authorization REDACTED rest"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_first_word_that_a_quote_starts_is_not_read_as_a_scheme(self):
+        """`%22ab%22-tail` is one quoted value and its tail, so `rest` is no
+        credential."""
+        for line, want in (
+            ("Authorization: %22ab%22-tail rest", "Authorization: REDACTED rest"),
+            ("Authorization: %27ab%27-tail rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x", "Authorization: REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_punctuated_words_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "Authorization:" * 8_000 * s + "x" + " " * 20_000 * s + "y z",
+            lambda s: "Authorization: s3!x " * 4_000 * s,
+            lambda s: "Authorization: " + "s3!x" * 20_000 * s + " a",
+            lambda s: "Authorization:s3!x" * 8_000 * s + " " * 20_000 * s + "a",
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
+class QuotedSchemeTest(unittest.TestCase):
+    def test_a_quoted_scheme_keeps_its_credential_out_of_view(self):
+        for line, want in (
+            ('Authorization: "Basic" ab rest', 'Authorization: "Basic" REDACTED rest'),
+            ("Authorization: 'Basic' ab rest", "Authorization: 'Basic' REDACTED rest"),
+            ('Authorization: "basic" ab rest', 'Authorization: "basic" REDACTED rest'),
+            ('Authorization: """Basic""" ab rest', 'Authorization: """Basic""" REDACTED rest'),
+            ('Authorization: "Basic"  ab rest', 'Authorization: "Basic"  REDACTED rest'),
+            ('Authorization: "Basic"+ab+rest', 'Authorization: "Basic"+REDACTED+rest'),
+            ('Authorization: "Basic" "ab cd" rest', 'Authorization: "Basic" "REDACTED" rest'),
+            ('Authorization: b"Basic" ab rest', 'Authorization: b"Basic" REDACTED rest'),
+            ('Authorization: "Bearer" ab rest', 'Authorization: "Bearer" REDACTED rest'),
+            ('x --authorization "Basic" ab rest', 'x --authorization "Basic" REDACTED rest'),
+            (
+                "{\\'Authorization\\': \\'Basic\\' ab, \\'next\\': \\'v\\'}",
+                "{\\'Authorization\\': \\'Basic\\' REDACTED, \\'next\\': \\'v\\'}",
+            ),
+            (
+                'Proxy-Authorization: "Digest" username="u", response="x" tail',
+                'Proxy-Authorization: "Digest" REDACTED',
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_value_that_a_comma_closes_is_one_word(self):
+        for line, want in (
+            (
+                "{'Authorization': 'Basic', 'next': 'v'}",
+                "{'Authorization': 'REDACTED', 'next': 'v'}",
+            ),
+            (
+                "{'Authorization': 's3cr3t', 'next': 'v'}",
+                "{'Authorization': 'REDACTED', 'next': 'v'}",
+            ),
+            ('Authorization: "s3cr3t" ab rest', 'Authorization: "REDACTED" ab rest'),
+            ('Authorization: "Basic"', 'Authorization: "REDACTED"'),
+            ('Authorization: "Basic" ', 'Authorization: "REDACTED" '),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_quoted_schemes_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: 'Authorization: "Basic" ' * 4_000 * s,
+            lambda s: 'Authorization:"' * 8_000 * s + 'Basic"' + " " * 20_000 * s + "a",
+            lambda s: 'Authorization: "Digest" ' * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
+class WordBeforeQuoteTest(unittest.TestCase):
+    def test_any_word_before_a_quote_that_closes_around_whitespace_opens_a_value(self):
+        for line, want in (
+            ("token=Qz'abc def' rest", "token=REDACTED' rest"),
+            ('token=Qz"abc def" rest', 'token=REDACTED" rest'),
+            ("token=Qz'''abc def''' rest", "token=REDACTED''' rest"),
+            ("token=Qz\\'abc def\\' rest", "token=REDACTED' rest"),
+            ("token=ab12'cd ef' rest", "token=REDACTED' rest"),
+            ("token=ab_cd'ef gh' rest", "token=REDACTED' rest"),
+            ("token=çz'abc def' rest", "token=REDACTED' rest"),
+            ("Bearer Qz'abc def' rest", "Bearer REDACTED' rest"),
+            ("--password Qz'abc def' rest", "--password REDACTED' rest"),
+            ("Authorization: Qz'abc def' rest", "Authorization: REDACTED' rest"),
+            ("token=Qz%27abc def%27 rest", "token=REDACTED rest"),
+            ("x_token=Qz'abc def' and the user's name", "x_token=REDACTED' and the user's name"),
+            ("token=rU'abc def' x", "token=REDACTED' x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_word_before_a_quote_that_does_not_close_around_whitespace_is_one_word(self):
+        for line, want in (
+            ("token=it's@er2 next", "token=REDACTED next"),
+            ("token=Qz'abc def", "token=REDACTED def"),
+            ("token=Qz'abc' rest", "token=REDACTED' rest"),
+            ("token=Qz' x", "token=REDACTED' x"),
+            ("token=Qz'", "token=REDACTED'"),
+            ('token=a",\'"&b', 'token=REDACTED",\'"&b'),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_words_before_quotes_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "token=Qz'" * 8_000 * s,
+            lambda s: "token=Qz'a " * 4_000 * s,
+            lambda s: "token=" + "a" * 20_000 * s + "'",
+            lambda s: "Bearer " + "Qz'a b' " * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
+class EscapeBeforeNameTest(unittest.TestCase):
+    """A logged C string, bytes repr or JSON string spells a line break, a
+    tab or any other character as a backslash escape, whose last character
+    is a letter or digit glued to the name after it."""
+
+    def test_every_letter_escape_reads_as_the_character_it_spells(self):
+        for letter in "abefnrtv":
+            line = "x\\" + letter + "sig=SEC"
+            with self.subTest(letter=letter):
+                self.assertEqual(redact_secrets(line), "x\\" + letter + "sig=REDACTED")
+
+    def test_a_name_after_a_backslash_escape_is_not_glued(self):
+        e = "\\"
+        for line, want in (
+            (
+                "send: b'GET / HTTP/1.1"
+                + e
+                + "r"
+                + e
+                + "nHost: h"
+                + e
+                + "r"
+                + e
+                + "nCookie: sid=s"
+                + e
+                + "r"
+                + e
+                + "n'",
+                "send: b'GET / HTTP/1.1"
+                + e
+                + "r"
+                + e
+                + "nHost: h"
+                + e
+                + "r"
+                + e
+                + "nCookie: sid=REDACTED",
+            ),
+            (
+                "b'Host: h" + e + "r" + e + "nAuthorization: Basic s" + e + "r" + e + "n'",
+                "b'Host: h" + e + "r" + e + "nAuthorization: Basic REDACTED'",
+            ),
+            ("x" + e + "nsig=s", "x" + e + "nsig=REDACTED"),
+            ("'a=1" + e + "nBearer s'", "'a=1" + e + "nBearer REDACTED'"),
+            ("x" + e + "tkey=s", "x" + e + "tkey=REDACTED"),
+            ("x" + e + "x0akey=s", "x" + e + "x0akey=REDACTED"),
+            ("x" + e + "012key=s", "x" + e + "012key=REDACTED"),
+            ("x" + e + "u000aBearer s", "x" + e + "u000aBearer REDACTED"),
+            ("x" + e + "U0000000aCookie: a=s", "x" + e + "U0000000aCookie: a=REDACTED"),
+            ("x" + e + e + "nsig=s", "x" + e + e + "nsig=REDACTED"),
+            ("x%5CnCookie: sid=s", "x%5CnCookie: sid=REDACTED"),
+            ("x%5Cnsig=s", "x%5Cnsig=REDACTED"),
+            (
+                "['--token', b'a']" + e + "nAuthorization: Basic s",
+                "['--token', b'REDACTED']" + e + "nAuthorization: Basic REDACTED",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_flag_after_a_backslash_escape_is_a_flag(self):
+        e = "\\"
+        for line, want in (
+            (
+                '"password": "a"' + e + "u0026--password s",
+                '"password": "REDACTED"' + e + "u0026--password REDACTED",
+            ),
+            ("x" + e + "n--password s", "x" + e + "n--password REDACTED"),
+            ("x%5Cu0026--password s", "x%5Cu0026--password REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_escaped_letter_still_glues(self):
+        e = "\\"
+        for line in ("x" + e + "u0061key=1", "x" + e + "x41key=1", "x" + e + "tPWD=/home/k"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_a_long_run_of_escapes_is_redacted_in_linear_time(self):
+        e = "\\"
+        for make in (
+            lambda s: (e + "nsig=a ") * 4_000 * s,
+            lambda s: (e + "u0026") * 8_000 * s + "--password a",
+            lambda s: "x" + (e + "n") * 8_000 * s + "Cookie: a=b",
+            lambda s: (e + "n--password a ") * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
+class CookieTest(unittest.TestCase):
+    def test_every_value_in_a_cookie_header_is_masked(self):
+        for line, want in (
+            ("Cookie: session=abc123def", "Cookie: session=REDACTED"),
+            (
+                "Cookie: session=abc123def; theme=dark; id=7",
+                "Cookie: session=REDACTED; theme=REDACTED; id=REDACTED",
+            ),
+            ("Cookie: a=b;c=d ; e = f", "Cookie: a=REDACTED;c=REDACTED ; e = REDACTED"),
+            ('Cookie: a="x y"; b=c', "Cookie: a=REDACTED; b=REDACTED"),
+            ('Cookie: a="x;y"; b=c', "Cookie: a=REDACTED; b=REDACTED"),
+            ('Cookie: a="b', "Cookie: a=REDACTED"),
+            ("Cookie: a=b&c=d; e=f", "Cookie: a=REDACTED; e=REDACTED"),
+            ("Cookie: a=; b=c", "Cookie: REDACTED; b=REDACTED"),
+            ("Cookie: a=b;;;c=d", "Cookie: a=REDACTED;;;c=REDACTED"),
+            ("Cookie: bare", "Cookie: REDACTED"),
+            ("Cookie: ä=ö; ü=ß", "Cookie: ä=REDACTED; ü=REDACTED"),
+            ("COOKIE: A=B", "COOKIE: A=REDACTED"),
+            ("cookie :a=b", "cookie :a=REDACTED"),
+            ("cookie=abc", "cookie=REDACTED"),
+            ("Cookie=a=b; c=d", "Cookie=a=REDACTED; c=REDACTED"),
+            ("HTTP_COOKIE=a=b; c=d", "HTTP_COOKIE=a=REDACTED; c=REDACTED"),
+            ("Cookie2: $Version=1", "Cookie2: $Version=REDACTED"),
+            ("curl --cookie a=b;c=d x", "curl --cookie a=REDACTED;c=REDACTED"),
+            ('curl --cookie "a=b; c=d" x', 'curl --cookie "a=REDACTED; c=REDACTED" x'),
+            ("['curl', '--cookie', 'a=b; c=d']", "['curl', '--cookie', 'a=REDACTED; c=REDACTED']"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_set_cookie_header_loses_its_first_value_and_keeps_its_attributes(self):
+        for line, want in (
+            (
+                "Set-Cookie: sid=abc; Path=/; HttpOnly; Secure; SameSite=Lax",
+                "Set-Cookie: sid=REDACTED; Path=/; HttpOnly; Secure; SameSite=Lax",
+            ),
+            (
+                "Set-Cookie: sid=abc; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600; Domain=x.com",
+                "Set-Cookie: sid=REDACTED; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600; Domain=x.com",
+            ),
+            ('set-cookie: sid="a;b"; Path=/', "set-cookie: sid=REDACTED; Path=/"),
+            (
+                "Set-Cookie: sid=abc, other=def; Path=/",
+                "Set-Cookie: sid=REDACTED, other=REDACTED; Path=/",
+            ),
+            ("Set-Cookie: sid=abc", "Set-Cookie: sid=REDACTED"),
+            ("Set-Cookie: sid=abc;", "Set-Cookie: sid=REDACTED;"),
+            ("Set-Cookie: =abc; Path=/", "Set-Cookie: REDACTED; Path=/"),
+            ("Set-Cookie:  ; sid=abc; Path=/", "Set-Cookie:  ; sid=REDACTED; Path=/"),
+            ("X-Set-Cookie: sid=abc; Path=/", "X-Set-Cookie: sid=REDACTED; Path=/"),
+            ("Set_Cookie: sid=abc; Path=/", "Set_Cookie: sid=REDACTED; Path=/"),
+            (
+                "{'Set-Cookie': 'sid=abc; Path=/', 'next': 'v'}",
+                "{'Set-Cookie': 'sid=REDACTED; Path=/', 'next': 'v'}",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_each_cookie_in_a_joined_set_cookie_header_loses_its_value(self):
+        for line, want in (
+            (
+                "Set-Cookie: tracker=1; Path=/, session=s; HttpOnly",
+                "Set-Cookie: tracker=REDACTED; Path=/, session=REDACTED; HttpOnly",
+            ),
+            (
+                "{'Set-Cookie': 'tracker=1; Path=/, session=s; HttpOnly'}",
+                "{'Set-Cookie': 'tracker=REDACTED; Path=/, session=REDACTED; HttpOnly'}",
+            ),
+            (
+                "Set-Cookie: a=1; Expires=Wed, 09 Jun 2021 10:18:14 GMT, b=s; Path=/",
+                "Set-Cookie: a=REDACTED; Expires=Wed, 09 Jun 2021 10:18:14 GMT, b=REDACTED; Path=/",
+            ),
+            ("Set-Cookie: a=1,path=s; Path=/", "Set-Cookie: a=REDACTED,path=REDACTED; Path=/"),
+            (
+                'Set-Cookie: a=1; x="q, b=c"; HttpOnly',
+                "Set-Cookie: a=REDACTED; x=REDACTED; HttpOnly",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_set_cookie_item_naming_no_attribute_is_masked(self):
+        for line, want in (
+            ("Set-Cookie: x; session=s", "Set-Cookie: REDACTED; session=REDACTED"),
+            ("Set-Cookie: =; session=s", "Set-Cookie: REDACTED; session=REDACTED"),
+            ("Set-Cookie: a=1; s; Secure", "Set-Cookie: a=REDACTED; REDACTED; Secure"),
+            ("Cookie: a=1; path=s; Domain=t", "Cookie: a=REDACTED; path=REDACTED; Domain=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_header_ends_at_its_closing_quote(self):
+        for line, want in (
+            (
+                "{'Cookie': 'a=b; c=d', 'next': 'v'}",
+                "{'Cookie': 'a=REDACTED; c=REDACTED', 'next': 'v'}",
+            ),
+            (
+                '{"Cookie": "a=b; c=d", "next": "v"}',
+                '{"Cookie": "a=REDACTED; c=REDACTED", "next": "v"}',
+            ),
+            ('"Cookie: a=b; c=d" next', '"Cookie: a=REDACTED; c=REDACTED" next'),
+            (
+                "'Cookie: a=b; c=it's; d=e' next",
+                "'Cookie: a=REDACTED; c=REDACTED; d=REDACTED' next",
+            ),
+            ("'Cookie': b'a=b; c=d'", "'Cookie': b'a=REDACTED; c=REDACTED'"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_item_whose_name_is_no_cookie_name_is_masked_whole(self):
+        for line, want in (
+            ("cookie=S x=y", "cookie=REDACTED"),
+            ("cookie=S&a=b", "cookie=REDACTED"),
+            ("cookie=SECRET&x=1", "cookie=REDACTED"),
+            ("cookie=SEC/RET=1", "cookie=REDACTED"),
+            ("cookie=S,x=y", "cookie=REDACTED"),
+            ("cookie=S'x=y", "cookie=REDACTED"),
+            ("cookie=dGVzdA==", "cookie=REDACTED"),
+            ("cookie=YWI=", "cookie=REDACTED"),
+            ("Cookie: dGVzdA==; b=c", "Cookie: REDACTED; b=REDACTED"),
+            ("--cookie dGVzdA==", "--cookie REDACTED"),
+            ("Set-Cookie: S x=y; Path=/", "Set-Cookie: REDACTED; Path=/"),
+            ("Cookie: a = b ; c = d", "Cookie: a = REDACTED ; c = REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_underscore_after_a_quote_keeps_the_header_open(self):
+        self.assertEqual(
+            redact_secrets("'Cookie: a=b'_c; s=SEC' tail"),
+            "'Cookie: a=REDACTED; s=REDACTED' tail",
+        )
+
+    def test_a_quote_inside_a_cookie_does_not_end_the_list(self):
+        for line, want in (
+            ("Cookie: a=b'; c=d", "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a=b"; session=s', "Cookie: a=REDACTED; session=REDACTED"),
+            ("Cookie: a=b' ; session=s", "Cookie: a=REDACTED ; session=REDACTED"),
+            ("Cookie: a=x\\'; session=s", "Cookie: a=REDACTED; session=REDACTED"),
+            ("Cookie: a=x'-y; session=s", "Cookie: a=REDACTED; session=REDACTED"),
+            ("Cookie: a'=1; session=s", "Cookie: REDACTED; session=REDACTED"),
+            ('Cookie: a=b; c=d" tail', "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: prefs={"a":1}; sid=s', "Cookie: prefs=REDACTED; sid=REDACTED"),
+            (
+                "Cookie: data=%7B%22k%22%3A%22v%22%7D; t=s",
+                "Cookie: data=REDACTED; t=REDACTED",
+            ),
+            ("Cookie%3A a%3Db%22%3B session%3Ds", "Cookie%3A a%3DREDACTED%3B session%3DREDACTED"),
+            (
+                '--add-header "Cookie: a=b\'; session=s"',
+                '--add-header "Cookie: a=REDACTED; session=REDACTED"',
+            ),
+            (
+                '"Cookie: a=b\\"; session=s", "n": 1',
+                '"Cookie: a=REDACTED; session=REDACTED", "n": 1',
+            ),
+            ("'Cookie: a=b'; session=s' next", "'Cookie: a=REDACTED; session=REDACTED' next"),
+            ("'Cookie: a=x%27 y; s=t' next", "'Cookie: a=REDACTED; s=REDACTED' next"),
+            (
+                "h=%27Cookie%3A%20a%3Db%27%3B%20s%3Dt%27&n=1",
+                "h=%27Cookie%3A%20a%3DREDACTED%3B%20s%3DREDACTED%27&n=1",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_first_value_that_a_semicolon_follows_starts_the_list(self):
+        for line, want in (
+            ('Cookie: "a"; session=s', "Cookie: REDACTED; session=REDACTED"),
+            ('cookie: "a=1"; b=s', "cookie: REDACTED; b=REDACTED"),
+            ("cookie: 'sid=s' ; b=t", "cookie: REDACTED ; b=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_first_value_that_more_text_follows_starts_the_list(self):
+        for line, want in (
+            ("Cookie: '' session=s", "Cookie: REDACTED"),
+            ("Cookie: '' ; a=s", "Cookie: REDACTED ; a=REDACTED"),
+            ("Cookie: '';a=s", "Cookie: REDACTED;a=REDACTED"),
+            ("cookie='' s", "cookie=REDACTED"),
+            ("--cookie ''s x", "--cookie 'REDACTED"),
+            ("cookie: b'' s", "cookie: REDACTED"),
+            ("Cookie: 'a=b' c=s", "Cookie: REDACTED"),
+            ("cookie=%22%22 s", "cookie=%22REDACTED"),
+            ("cookie=%22a%22 s", "cookie=%22REDACTED"),
+            ("cookie=%5C%22a%5C%22%20s", "cookie=%5C%22REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_empty_quoted_value_that_ends_its_element_is_left_alone(self):
+        for line in (
+            'Cookie: ""',
+            "cookie: ''",
+            "{'Cookie': '', 'x': 'y'}",
+            '{"Cookie": "", "x": 1}',
+            "['--cookie', '']",
+            "['--cookie', '', 'x']",
+            "\"Cookie: ''\" next",
+            "cookie=%22a%22, n",
+            "--cookie '' x",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line.replace("%22a%22", "%22REDACTED%22"))
+
+    def test_an_encoded_header_ends_at_the_ampersand_that_ends_its_parameter(self):
+        for line, want in (
+            (
+                "h=Cookie%3A%20a%3Db%3B%20c%3Dd&x=1",
+                "h=Cookie%3A%20a%3DREDACTED%3B%20c%3DREDACTED&x=1",
+            ),
+            (
+                "h=Cookie:%20a%3Db%3B%20c%3Dd%26x%3D1",
+                "h=Cookie:%20a%3DREDACTED%3B%20c%3DREDACTED",
+            ),
+            (
+                "h=Cookie%3A%20a%3Dx%26y%3B%20s%3Dt&n=1",
+                "h=Cookie%3A%20a%3DREDACTED%3B%20s%3DREDACTED&n=1",
+            ),
+            (
+                "h=Set-Cookie%3A%20a%3Dx%26y%3B%20Path%3D%2F%2C%20s%3Dt&n=1",
+                "h=Set-Cookie%3A%20a%3DREDACTED%3B%20Path%3D%2F%2C%20s%3DREDACTED&n=1",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quote_the_header_is_not_written_in_does_not_end_the_list(self):
+        for line, want in (
+            ("Cookie: a=b'; c=d'", "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a=b; c=d"', "Cookie: a=REDACTED; c=REDACTED"),
+            ("'Cookie': 'a=b; c=d' tail", "'Cookie': REDACTED; c=REDACTED"),
+            (
+                '\\"Cookie\\": \\"a=b\\"; c=d\\" tail',
+                '\\"Cookie\\": REDACTED; c=REDACTED',
+            ),
+            (
+                '\\"Cookie: a=b\\"; c=d\\" tail',
+                '\\"Cookie: a=REDACTED; c=REDACTED\\" tail',
+            ),
+            (
+                '"{\\"h\\": \\"Cookie: a=b\\"; c=d\\"}" tail',
+                '"{\\"h\\": \\"Cookie: a=REDACTED; c=REDACTED\\"}" tail',
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_first_item_is_read_past_a_quote_inside_it(self):
+        for line, want in (
+            ("'Cookie: \"a'\"; c=d' next", "'Cookie: REDACTED; c=REDACTED' next"),
+            ("'Cookie: \"a=\"; c=d' next", "'Cookie: REDACTED' next"),
+            ('cookie="a;b" x; c=d', "cookie=REDACTED;REDACTED; c=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_value_with_an_escaped_quote_keeps_its_semicolon_inside(self):
+        for line, want in (
+            ('Cookie: a="x\\"y;z"; c=d', "Cookie: a=REDACTED; c=REDACTED"),
+            ("Cookie: a='x\\'y;z'; c=d", "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a=\\"x"y;z\\"; c=d', "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a="x\\\\"; c=d', "Cookie: a=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_nameless_item_after_a_semicolon_is_masked_whole(self):
+        self.assertEqual(redact_secrets("Cookie: x; bare"), "Cookie: REDACTED; REDACTED")
+
+    def test_an_encoded_quoted_value_reaches_an_ampersand_and_a_closing_quote(self):
+        for line, want in (
+            ("Cookie: %22a=b&x", "Cookie: %22a=REDACTED"),
+            ("Cookie: %22&x", "Cookie: %22REDACTED"),
+            ("cookie=%5C%22a%5C%22,x", "cookie=%5C%22REDACTED%5C%22,x"),
+            ("cookie=%5C%22a%5C%22%7D", "cookie=%5C%22REDACTED%5C%22%7D"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        for line in ("cookie=%22secret%22", "h=cookie%3D%22secret%22"):
+            with self.subTest(line=line):
+                self.assertNotIn("secret", redact_secrets(line))
+
+    def test_a_digest_in_an_encoded_quote_ends_at_that_quote(self):
+        got = redact_secrets("Authorization: %22Digest a=b, response=c%22 tail")
+        self.assertNotIn("response=c", got)
+        self.assertTrue(got.endswith(" tail"), got)
+
+    def test_words_around_the_name_cookie_are_left_alone(self):
+        for line in ("Cookie: ", "Cookie:", "cookie jar loaded", "cookies: 3", "mycookie: sid=abc"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_a_rejected_config_line_naming_a_cookie_loses_what_follows(self):
+        safe, verbatim = redact_source_line(['cookie == "a=b"'], 1)
+        self.assertNotIn("a=b", safe)
+        self.assertFalse(verbatim)
+
+    def test_a_long_run_of_cookie_headers_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "cookie=" * 8_000 * s,
+            lambda s: "Cookie: " * 8_000 * s,
+            lambda s: "Cookie:" + "a=b;" * 8_000 * s,
+            lambda s: "Set-Cookie: a=b;" * 4_000 * s,
+            lambda s: "cookie='" * 8_000 * s,
+            lambda s: "cookie=%22" * 4_000 * s,
+            lambda s: 'cookie: "a="' * 4_000 * s,
+            lambda s: "x cookie=a;cookie='b;" * 4_000 * s,
+            lambda s: "'--cookie', 'a=b'," * 4_000 * s,
+            lambda s: 'cookie: "a"; ' * 4_000 * s,
+            lambda s: "'Cookie: a=b' " * 4_000 * s,
+            lambda s: "'Cookie: '" + " " * 40_000 * s + "x",
+            lambda s: "cookie=" + "a b=" * 8_000 * s,
+            lambda s: "cookie: '' " * 4_000 * s,
+            lambda s: "cookie=%22%22 " * 4_000 * s,
+            lambda s: "Cookie: ''" + " " * 40_000 * s + "x",
+            lambda s: "Set-Cookie: " + ",a=" * 8_000 * s,
+            lambda s: "Set-Cookie: " + ",    " * 8_000 * s,
+            lambda s: "Set-Cookie: a=1" + "; Path=/" * 8_000 * s,
+            lambda s: "Cookie%3A%20" + "a%3Dx%26" * 4_000 * s,
+            lambda s: "Set-Cookie: %27&" * 500 * s,
+            lambda s: "=['--cookie', %27" * 500 * s,
+            lambda s: "://Set-Cookie: \\\\%2527  " * 400 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""
