@@ -6,6 +6,8 @@
     python scripts/bump_version.py --check 0.2.0  # verify, change nothing
     python scripts/bump_version.py --notes 0.2.0  # print that section's body
 
+Cutting collects every fragment under `changelog.d/` into the new version's
+section and deletes the files; `changelog.d/README.md` has the fragment format.
 `--check` and `--notes` write nothing. See RELEASING.md.
 """
 
@@ -18,10 +20,12 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
+FRAGMENT_DIR = REPO_ROOT / "changelog.d"
 UV_LOCK = REPO_ROOT / "uv.lock"
 
 REPO_URL = "https://github.com/kfox/c64cast"
@@ -32,6 +36,28 @@ VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:(?:a|b|rc)\d+|\.dev\d+)?$")
 PYPROJECT_VERSION_RE = re.compile(r'^version = "([^"]+)"$', re.M)
 
 UNRELEASED_HEADING = "## [Unreleased]"
+
+UNRELEASED_POINTER = (
+    "Entries for the next release are one file each under `changelog.d/` (its\n"
+    "README.md has the format), and are collected here when the release is cut."
+)
+
+# Release-body order: Upgrade notes lead, the rest follow Keep a Changelog.
+FRAGMENT_CATEGORIES = {
+    "upgrade-notes": "Upgrade notes",
+    "added": "Added",
+    "changed": "Changed",
+    "deprecated": "Deprecated",
+    "removed": "Removed",
+    "fixed": "Fixed",
+    "security": "Security",
+}
+
+FRAGMENT_README = "README.md"
+FRAGMENT_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# A heading line inside an entry would split it out of its bullet list and
+# break the Upgrade-notes-first rule; fenced blocks may hold `#` comments.
+FRAGMENT_HEADING_RE = re.compile(r"^#{1,6}[ \t]")
 
 # `[ \t]*` rather than `\s*`, which would span the newline these offsets splice at.
 SECTION_RE = re.compile(r"^## \[([^\]]+)\](?:[ \t]+-[ \t]+(\d{4}-\d{2}-\d{2}))?[ \t]*$", re.M)
@@ -88,6 +114,89 @@ def section_body(changelog: str, version: str) -> str:
     raise BumpError(f"CHANGELOG.md has no '## [{version}]' section")
 
 
+class Fragment(NamedTuple):
+    name: str
+    category: str
+    text: str
+
+
+def _fragment_problem(name: str, text: str) -> str | None:
+    """Why `changelog.d/<name>` is not a valid fragment, or None if it is."""
+    if not name.endswith(".md"):
+        return f"changelog.d/{name}: fragments are named <slug>.<category>.md"
+    slug, _, category = name[: -len(".md")].rpartition(".")
+    if not FRAGMENT_SLUG_RE.match(slug):
+        return (
+            f"changelog.d/{name}: slug {slug!r} must be lowercase letters, digits and "
+            "single hyphens, as in <slug>.<category>.md"
+        )
+    if category not in FRAGMENT_CATEGORIES:
+        return (
+            f"changelog.d/{name}: category {category!r} is not one of "
+            f"{', '.join(FRAGMENT_CATEGORIES)}"
+        )
+    if not text.strip():
+        return f"changelog.d/{name}: the fragment is empty"
+    if not text.startswith("- "):
+        return f"changelog.d/{name}: an entry is a bullet and must start with '- '"
+    fenced = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and FRAGMENT_HEADING_RE.match(line):
+            return f"changelog.d/{name}: a heading line ({line!r}) cannot appear inside an entry"
+    if fenced:
+        return f"changelog.d/{name}: a code fence is never closed"
+    return None
+
+
+def fragment_paths(directory: Path | None = None) -> list[Path]:
+    """Everything in the fragment directory except its README, by filename."""
+    root = FRAGMENT_DIR if directory is None else directory
+    if not root.is_dir():
+        return []
+    return sorted(path for path in root.iterdir() if path.name != FRAGMENT_README)
+
+
+def fragment_problems(directory: Path | None = None) -> list[str]:
+    """Every malformed entry in the fragment directory."""
+    root = FRAGMENT_DIR if directory is None else directory
+    if not root.is_dir():
+        return [f"{root.name}/ is missing"]
+    problems = []
+    for path in fragment_paths(root):
+        if not path.is_file():
+            problems.append(f"{root.name}/{path.name}: not a file")
+            continue
+        problem = _fragment_problem(path.name, path.read_text(encoding="utf-8"))
+        if problem is not None:
+            problems.append(problem)
+    return problems
+
+
+def read_fragments(directory: Path | None = None) -> list[Fragment]:
+    """Every fragment, ordered by filename. Raises BumpError on a malformed one."""
+    root = FRAGMENT_DIR if directory is None else directory
+    problems = fragment_problems(root)
+    if problems:
+        raise BumpError("malformed changelog fragments:\n  " + "\n  ".join(problems))
+    return [
+        Fragment(path.name, path.name[: -len(".md")].rpartition(".")[2], path.read_text("utf-8"))
+        for path in fragment_paths(root)
+    ]
+
+
+def render_fragments(fragments: list[Fragment]) -> str:
+    """The body of a version's section: one `###` subsection per category that
+    has entries, in `FRAGMENT_CATEGORIES` order."""
+    blocks = []
+    for category, title in FRAGMENT_CATEGORIES.items():
+        entries = [f.text.rstrip() for f in fragments if f.category == category]
+        if entries:
+            blocks.append(f"### {title}\n\n" + "\n\n".join(entries))
+    return "\n\n".join(blocks) + "\n"
+
+
 def apply_pyproject(text: str, version: str) -> str:
     """Return `text` with `[project] version` set to `version`."""
     matches = PYPROJECT_VERSION_RE.findall(text)
@@ -106,24 +215,27 @@ def compare_url(previous: str | None, version: str) -> str:
     return f"{REPO_URL}/compare/v{previous}...v{version}"
 
 
-def apply_changelog(text: str, version: str, date: str) -> str:
-    """Rename the Unreleased section to `version`, dated, and open a fresh one."""
+def apply_changelog(text: str, version: str, date: str, body: str) -> str:
+    """Insert a dated `version` section holding `body` after the Unreleased pointer."""
     # A whole line, not a substring: the preamble names the heading inline too.
     heading = re.search(rf"^{re.escape(UNRELEASED_HEADING)}[ \t]*$", text, re.M)
     if heading is None:
-        raise BumpError(
-            f"CHANGELOG.md has no '{UNRELEASED_HEADING}' section to cut -- "
-            "was this version already released?"
-        )
+        raise BumpError(f"CHANGELOG.md has no '{UNRELEASED_HEADING}' section to cut")
     existing = released_versions(text)
     if version in existing:
         raise BumpError(f"CHANGELOG.md already has a '## [{version}]' section")
+    if not body.strip():
+        raise BumpError("changelog.d/ holds no fragments -- there is nothing to release")
     previous = existing[0] if existing else None
 
+    following = SECTION_RE.search(text, heading.end())
+    refs = LINK_REF_RE.search(text, heading.end())
+    ends = [m.start() for m in (following, refs) if m is not None]
+    insert_at = min(ends) if ends else len(text)
     text = (
-        text[: heading.start()]
-        + f"{UNRELEASED_HEADING}\n\nNothing yet.\n\n## [{version}] - {date}"
-        + text[heading.end() :]
+        text[:insert_at].rstrip("\n")
+        + f"\n\n## [{version}] - {date}\n\n{body.strip()}\n\n"
+        + text[insert_at:]
     )
 
     old_unreleased = f"[Unreleased]: {REPO_URL}/commits/main"
@@ -175,6 +287,14 @@ def check(version: str) -> list[str]:
     if f"[{version}]: " not in changelog:
         problems.append(f"CHANGELOG.md has no '[{version}]:' link reference")
 
+    problems.extend(fragment_problems())
+    leftover = [path.name for path in fragment_paths()]
+    if leftover:
+        problems.append(
+            f"changelog.d/ still holds {len(leftover)} fragment(s) ({', '.join(leftover[:3])}"
+            f"{', ...' if len(leftover) > 3 else ''}) -- a cut collects and deletes them, "
+            "so an entry left behind would never reach the release notes"
+        )
     return problems
 
 
@@ -183,12 +303,15 @@ def bump(version: str, date: str, do_lock: bool) -> None:
     changelog = CHANGELOG.read_text(encoding="utf-8")
 
     new_pyproject = apply_pyproject(pyproject, version)
-    new_changelog = apply_changelog(changelog, version, date)
+    fragments = read_fragments()
+    new_changelog = apply_changelog(changelog, version, date, render_fragments(fragments))
 
     PYPROJECT.write_text(new_pyproject, encoding="utf-8")
     CHANGELOG.write_text(new_changelog, encoding="utf-8")
+    for fragment in fragments:
+        (FRAGMENT_DIR / fragment.name).unlink()
     print(f"pyproject.toml  version -> {version}")
-    print(f"CHANGELOG.md    [Unreleased] -> [{version}] - {date}")
+    print(f"CHANGELOG.md    {len(fragments)} fragment(s) -> [{version}] - {date}")
 
     if do_lock:
         relock()

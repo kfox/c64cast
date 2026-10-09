@@ -9,8 +9,11 @@ import io
 import os
 import re
 import sys
+import tempfile
 import tomllib
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS = os.path.join(_REPO, "scripts")
@@ -95,20 +98,20 @@ def _book_outputs() -> list[str]:
 
 # Shaped like the real changelog: the preamble names the Unreleased heading
 # inline, above the heading itself.
-_CHANGELOG = """\
+_CHANGELOG = f"""\
 # Changelog
 
-Work lands under `## [Unreleased]`; cutting a release renames that section to
-the version and stamps it with the date.
+Entries are fragments; cutting a release collects them under a dated heading
+beneath `## [Unreleased]`.
 
 ## [Unreleased]
 
-### Added
-
-- A thing worth announcing.
+{bv.UNRELEASED_POINTER}
 
 [Unreleased]: https://github.com/kfox/c64cast/commits/main
 """
+
+_BODY = "### Added\n\n- A thing worth announcing.\n"
 
 
 class TestVersionIsSingleSourced(unittest.TestCase):
@@ -153,6 +156,9 @@ class TestChangelogIsReleasable(unittest.TestCase):
 
     def test_unreleased_section_still_exists(self) -> None:
         self.assertRegex(_read("CHANGELOG.md"), r"(?m)^## \[Unreleased\][ \t]*$")
+
+    def test_every_fragment_in_the_tree_is_well_formed(self) -> None:
+        self.assertEqual(bv.fragment_problems(), [])
 
 
 class TestUpgradeNotesConvention(unittest.TestCase):
@@ -210,24 +216,24 @@ class TestBumpRewrites(unittest.TestCase):
         )
 
     def test_cut_renames_the_heading_not_the_preamble(self) -> None:
-        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29")
-        self.assertIn("Work lands under `## [Unreleased]`;", out)
+        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", _BODY)
+        self.assertIn("beneath `## [Unreleased]`.", out)
         self.assertEqual(
             bv.sections(out),
             [("Unreleased", None), ("1.0.0", "2026-07-29")],
         )
 
     def test_cut_keeps_a_blank_line_after_the_new_heading(self) -> None:
-        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29")
+        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", _BODY)
         self.assertIn("## [1.0.0] - 2026-07-29\n\n### Added", out)
 
     def test_cut_moves_the_release_body_into_the_new_section(self) -> None:
-        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29")
+        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", _BODY)
         self.assertIn("A thing worth announcing.", bv.section_body(out, "1.0.0"))
-        self.assertEqual(bv.section_body(out, "Unreleased").strip(), "Nothing yet.")
+        self.assertEqual(bv.section_body(out, "Unreleased"), bv.UNRELEASED_POINTER + "\n")
 
     def test_first_release_links_to_its_own_tag(self) -> None:
-        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29")
+        out = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", _BODY)
         self.assertIn(
             "[1.0.0]: https://github.com/kfox/c64cast/releases/tag/v1.0.0",
             out,
@@ -239,8 +245,8 @@ class TestBumpRewrites(unittest.TestCase):
         self.assertNotIn("/commits/main", out)
 
     def test_second_release_links_to_a_diff_from_the_previous(self) -> None:
-        first = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29")
-        second = bv.apply_changelog(first, "1.1.0", "2026-09-01")
+        first = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", _BODY)
+        second = bv.apply_changelog(first, "1.1.0", "2026-09-01", _BODY)
         self.assertIn(
             "[1.1.0]: https://github.com/kfox/c64cast/compare/v1.0.0...v1.1.0",
             second,
@@ -252,14 +258,131 @@ class TestBumpRewrites(unittest.TestCase):
             [("Unreleased", None), ("1.1.0", "2026-09-01"), ("1.0.0", "2026-07-29")],
         )
 
-    def test_cutting_the_same_version_twice_is_refused(self) -> None:
-        once = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29")
+    def test_cut_without_entries_is_refused(self) -> None:
         with self.assertRaises(bv.BumpError):
-            bv.apply_changelog(once, "1.0.0", "2026-07-30")
+            bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", "\n")
+
+    def test_a_new_section_lands_above_the_previous_release(self) -> None:
+        first = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", _BODY)
+        second = bv.apply_changelog(first, "1.1.0", "2026-09-01", "### Fixed\n\n- A bug.\n")
+        self.assertEqual(bv.section_body(second, "1.1.0"), "### Fixed\n\n- A bug.\n")
+        self.assertEqual(bv.section_body(second, "1.0.0"), _BODY)
+
+    def test_cutting_the_same_version_twice_is_refused(self) -> None:
+        once = bv.apply_changelog(_CHANGELOG, "1.0.0", "2026-07-29", _BODY)
+        with self.assertRaises(bv.BumpError):
+            bv.apply_changelog(once, "1.0.0", "2026-07-30", _BODY)
 
     def test_cut_without_an_unreleased_section_is_refused(self) -> None:
         with self.assertRaises(bv.BumpError):
-            bv.apply_changelog("# Changelog\n\n## [1.0.0] - 2026-01-01\n", "1.1.0", "2026-07-29")
+            bv.apply_changelog(
+                "# Changelog\n\n## [1.0.0] - 2026-01-01\n", "1.1.0", "2026-07-29", _BODY
+            )
+
+
+class TestFragments(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        (self.dir / "README.md").write_text("how fragments work\n", encoding="utf-8")
+
+    def _write(self, name: str, text: str = "- An entry.\n") -> None:
+        (self.dir / name).write_text(text, encoding="utf-8")
+
+    def test_the_readme_is_not_a_fragment(self) -> None:
+        self.assertEqual(bv.fragment_problems(self.dir), [])
+        self.assertEqual(bv.read_fragments(self.dir), [])
+
+    def test_upgrade_notes_lead_whatever_order_the_files_sort_in(self) -> None:
+        self._write("aaa.fixed.md", "- A fix.\n")
+        self._write("bbb.added.md", "- An addition.\n")
+        self._write("zzz.upgrade-notes.md", "- **Do this first.**\n")
+        self._write("mmm.removed.md", "- A removal.\n")
+        self._write("ccc.changed.md", "- A change.\n")
+        body = bv.render_fragments(bv.read_fragments(self.dir))
+        self.assertEqual(
+            re.findall(r"(?m)^### .+$", body),
+            ["### Upgrade notes", "### Added", "### Changed", "### Removed", "### Fixed"],
+        )
+
+    def test_entries_within_a_category_sort_by_filename(self) -> None:
+        self._write("b-second.fixed.md", "- Second.\n")
+        self._write("a-first.fixed.md", "- First.\n")
+        self.assertEqual(
+            bv.render_fragments(bv.read_fragments(self.dir)),
+            "### Fixed\n\n- First.\n\n- Second.\n",
+        )
+
+    def test_a_multi_line_entry_survives_verbatim(self) -> None:
+        entry = (
+            "- **Bold lead.** Continues\n  on a second line.\n\n  ```\n  # not a heading\n  ```\n"
+        )
+        self._write("one.added.md", entry)
+        body = bv.render_fragments(bv.read_fragments(self.dir))
+        self.assertEqual(body, "### Added\n\n" + entry.rstrip() + "\n")
+
+    def test_malformed_fragments_are_named(self) -> None:
+        cases = {
+            "no-category.md": "- An entry.\n",
+            "slug.unknown.md": "- An entry.\n",
+            "Bad_Slug.added.md": "- An entry.\n",
+            "empty.added.md": "\n",
+            "prose.added.md": "Not a bullet.\n",
+            "heading.added.md": "- An entry.\n\n### Fixed\n",
+            "notes.txt": "- An entry.\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name):
+                self._write(name, text)
+                problems = bv.fragment_problems(self.dir)
+                self.assertTrue(any(name in problem for problem in problems), problems)
+                (self.dir / name).unlink()
+
+    def test_a_malformed_fragment_stops_collection(self) -> None:
+        self._write("good.added.md")
+        self._write("bad.oops.md")
+        with self.assertRaisesRegex(bv.BumpError, "bad.oops.md"):
+            bv.read_fragments(self.dir)
+
+    def test_a_missing_directory_is_a_problem(self) -> None:
+        self.assertEqual(bv.fragment_problems(self.dir / "absent"), ["absent/ is missing"])
+
+
+class TestCutCollectsFragments(unittest.TestCase):
+    def test_cut_writes_the_changelog_and_deletes_the_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fragments = root / "changelog.d"
+            fragments.mkdir()
+            (fragments / "README.md").write_text("docs\n", encoding="utf-8")
+            (fragments / "thing.added.md").write_text("- A thing.\n", encoding="utf-8")
+            changelog = root / "CHANGELOG.md"
+            changelog.write_text(_CHANGELOG, encoding="utf-8")
+            pyproject = root / "pyproject.toml"
+            pyproject.write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
+            with (
+                patch.object(bv, "FRAGMENT_DIR", fragments),
+                patch.object(bv, "CHANGELOG", changelog),
+                patch.object(bv, "PYPROJECT", pyproject),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                bv.bump("1.0.0", "2026-07-29", do_lock=False)
+            self.assertEqual(
+                bv.section_body(changelog.read_text(encoding="utf-8"), "1.0.0"),
+                "### Added\n\n- A thing.\n",
+            )
+            self.assertEqual([p.name for p in fragments.iterdir()], ["README.md"])
+
+
+class TestCheckRefusesUncollectedFragments(unittest.TestCase):
+    def test_a_fragment_left_after_the_cut_is_a_problem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "left.fixed.md").write_text("- Left behind.\n", encoding="utf-8")
+            with patch.object(bv, "FRAGMENT_DIR", root):
+                problems = bv.check(bv.pyproject_version())
+        self.assertTrue(any("still holds 1 fragment" in p for p in problems), problems)
 
 
 class TestVersionArgumentParsing(unittest.TestCase):
