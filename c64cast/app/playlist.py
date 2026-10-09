@@ -327,8 +327,6 @@ class Playlist:
         )
         self.build_performance_scene: Callable[[dict[str, Any]], Scene] | None = None
         self.transitioning = False
-        # The "UP NEXT" card `_enter_interstitial` last set up: a clip launched
-        # over it leaves `transitioning` on without being the card.
         self._card: Scene | None = None
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
@@ -528,6 +526,13 @@ class Playlist:
         self.index = 0
         self.transitioning = False
 
+    @property
+    def on_card(self) -> bool:
+        """True while the "UP NEXT" card is the current scene. `transitioning`
+        cannot answer this: `perf_swap_scene` replaces the card with a clip and
+        leaves the flag set."""
+        return self.current is not None and self.current is self._card
+
     def perf_swap_scene(self, new_scene: Scene) -> bool:
         """Single-scene hot-swap for the clip-launch engine (Phase 2): tear down
         the current scene and set up `new_scene` in its place, returning True on
@@ -580,7 +585,7 @@ class Playlist:
             return
         if self.current is None:
             self._resolve_and_announce()
-        elif self.transitioning and self.current.is_done:
+        elif self.on_card and self.current.is_done:
             self.fades.fade_out(self.current)
             self.safe_teardown(self.current)
             upcoming = self.scenes[self.index]
@@ -600,7 +605,7 @@ class Playlist:
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
             self.safe_setup(self.current)
             self.transitioning = False
-        elif not self.transitioning and self.current.is_done:
+        elif not self.on_card and self.current.is_done:
             self._advance_after_scene()
 
     def _advance_single_scene(self) -> None:
@@ -974,7 +979,7 @@ class Playlist:
     def _announced_by(self, scene: Scene) -> Scene | None:
         """The scene `scene` announces when it is the "UP NEXT" card still
         on screen, whose ensemble audio slot the card holds for it."""
-        return self.scenes[self.index] if self.transitioning and scene is self._card else None
+        return self.scenes[self.index] if self.on_card and scene is self._card else None
 
     def drop_current(self) -> None:
         """Tear the current scene down and leave none, for a pause, a reload,
@@ -1194,7 +1199,7 @@ class Playlist:
                 self.fades.ended_via_skip = True
             self.skip_event.clear()
         if self.cycle_event.is_set():
-            if not self.transitioning:
+            if not self.on_card:
                 self._handle_cycle()
             self.cycle_event.clear()
 

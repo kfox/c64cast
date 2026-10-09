@@ -99,15 +99,16 @@ class _ScrubScene(_StubScene):
 
 
 class _FakePlaylist:
-    def __init__(self, scene=None, *, transitioning: bool = False):
+    def __init__(self, scene=None, *, on_card: bool = False, transitioning: bool = False):
         self.current = scene
+        self.on_card = on_card
         self.transitioning = transitioning
         self.stop_event = threading.Event()
 
 
 def _tick(session: TransportSession, pl: _FakePlaylist, now: float) -> None:
     """Thin wrapper around TransportSession.tick — TransportSession only
-    ever reads `.current`/`.transitioning` off its `pl` argument (duck-typed
+    ever reads `.current`/`.on_card` off its `pl` argument (duck-typed
     by design, see the module docstring), so `_FakePlaylist` deliberately
     isn't a real Playlist. Centralizes the one intentional type mismatch in
     one spot instead of a `# type: ignore` at every call site."""
@@ -188,13 +189,21 @@ class DispatchTests(unittest.TestCase):
         # fire against whatever scene becomes current next frame.
         self.assertTrue(session._queue.empty())
 
-    def test_transitioning_is_noop(self):
+    def test_card_on_screen_is_noop(self):
         scene = _StubScene()
-        pl = _FakePlaylist(scene, transitioning=True)
+        pl = _FakePlaylist(scene, on_card=True, transitioning=True)
         session = TransportSession()
         session.enqueue(TransportEvent(action="play_pause"))
         _tick(session, pl, 0.0)
         self.assertEqual(scene.toggle_calls, 0)
+
+    def test_clip_over_the_card_still_takes_transport(self):
+        scene = _StubScene()
+        pl = _FakePlaylist(scene, on_card=False, transitioning=True)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="play_pause"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 1)
 
     def test_unknown_scene_type_missing_surface_is_noop(self):
         pl = _FakePlaylist(object())  # no transport_* methods at all
@@ -438,6 +447,37 @@ class ScrubSettleTests(unittest.TestCase):
         pl.current = other
         _tick(session, pl, 1.0)
         self.assertEqual((scene.settles, other.settles), (0, 0))
+
+    def test_a_clip_over_the_card_still_scrubs_and_settles(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene, on_card=False, transitioning=True)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 0.3)
+        self.assertEqual(scene.scrubs, [12.0])
+        self.assertEqual(scene.settles, 1)
+
+    def test_the_card_on_screen_drops_a_pending_scrub(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        pl.on_card = True
+        _tick(session, pl, 0.1)
+        pl.on_card = False
+        _tick(session, pl, 1.0)
+        self.assertEqual(scene.settles, 0)
+
+    def test_a_held_ff_does_not_scrub_while_the_card_is_on_screen(self):
+        scene, pl, session = self._held_ff()
+        scrubs = len(scene.scrubs)
+        pl.on_card = True
+        _tick(session, pl, 0.3)
+        _tick(session, pl, 1.0)
+        self.assertEqual((len(scene.scrubs), scene.settles), (scrubs, 0))
 
     def test_a_scene_without_the_approximate_seek_is_scrubbed_with_its_seek(self):
         scene = _StubScene(position=10.0)

@@ -605,7 +605,7 @@ class TransportSession:
         if self._scrubbed is None or self._held:
             return
         scene, at = self._scrubbed
-        if pl.transitioning or pl.current is not scene:
+        if pl.on_card or pl.current is not scene:
             self._scrubbed = None
             return
         if now - at < _SCRUB_SETTLE_S:
@@ -628,7 +628,7 @@ class TransportSession:
             except queue.Empty:
                 break
             self._dispatch(pl, event, now)
-        if pl.transitioning or pl.current is None:
+        if pl.on_card or pl.current is None:
             self._scrubbed = None
             return
         if dt <= 0.0:
@@ -662,7 +662,7 @@ class TransportSession:
             self._record_held_since = now if event.pressed else None
         elif event.action == "stop":
             self._stop_held_since = now if event.pressed else None
-        if pl.transitioning or pl.current is None:
+        if pl.on_card or pl.current is None:
             return
         scene = pl.current
         if event.action == "play_pause":
