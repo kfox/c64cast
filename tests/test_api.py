@@ -6,14 +6,18 @@ test_socket_dma.py."""
 
 from __future__ import annotations
 
+import random
+import socket
+import struct
 import threading
+import time
 import unittest
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
 import requests
-from _fakes import TOO_DEEP_JSON, FakeTime, SleepDrivenClock, make_psid
+from _fakes import TOO_DEEP_JSON, FakeTime, SleepDrivenClock, make_psid, quiet_logging
 from test_socket_dma import (
     _IDENT_REPLY,
     FakeSocket,
@@ -81,7 +85,7 @@ from c64cast.hw.c64 import (
     frame_rate,
     kernal_cia1_latch,
 )
-from c64cast.hw.socket_dma import SocketDMAError
+from c64cast.hw.socket_dma import CMD_DMAWRITE, CMD_IDENTIFY, SocketDMAClient, SocketDMAError
 
 
 class DmaLatencyTest(unittest.TestCase):
@@ -1003,6 +1007,126 @@ class FlushOrRaiseOwnWritesTest(unittest.TestCase):
             self.assertEqual(self.api.delivery_epoch, 1)
             with self.assertRaisesRegex(RuntimeError, "refusing to launch"):
                 self.api._flush_or_raise("launch", mark)
+
+
+class _ResettableConnection:
+    """One connection to a fake DMA server that answers every IDENTIFY and,
+    once `reset`, refuses everything. It records the writes it took and each
+    answered IDENTIFY, so a write is lost when it reached a connection that
+    was reset with no answer after it."""
+
+    def __init__(self, opened: list[_ResettableConnection]):
+        self.reset = False
+        self.events: list[int | None] = []
+        self._reply = bytearray()
+        opened.append(self)
+
+    def settimeout(self, _t):
+        pass
+
+    def setsockopt(self, *_a):
+        pass
+
+    def getsockopt(self, *_a):
+        return 0
+
+    def shutdown(self, _how):
+        pass
+
+    def close(self):
+        pass
+
+    def sendall(self, data: bytes) -> None:
+        if self.reset:
+            raise BrokenPipeError("reset")
+        opcode = struct.unpack("<H", data[:2])[0]
+        if opcode == CMD_IDENTIFY:
+            self._reply += b"\x04TEST"
+        elif opcode == CMD_DMAWRITE:
+            self.events.append(struct.unpack("<H", data[4:6])[0])
+
+    def recv(self, n: int, flags: int = 0) -> bytes:
+        if self.reset:
+            raise ConnectionResetError("reset")
+        if flags & socket.MSG_PEEK or not self._reply:
+            raise BlockingIOError("nothing pending")
+        out = bytes(self._reply[:n])
+        del self._reply[:n]
+        if not self._reply:
+            self.events.append(None)
+        return out
+
+
+def _lost_writes(opened: list[_ResettableConnection]) -> set[int]:
+    lost: set[int] = set()
+    for conn in opened:
+        if conn.reset:
+            unanswered: list[int] = []
+            for event in conn.events:
+                unanswered = [] if event is None else [*unanswered, event]
+            lost.update(unanswered)
+    return lost
+
+
+class FlushOrRaiseUnderConcurrentLossTest(unittest.TestCase):
+    """A launch that `_flush_or_raise` lets through never stands on a write of
+    its own thread that was lost, however a render thread writing, resetting
+    the connection and checking for loss interleaves with it."""
+
+    def test_no_launch_proceeds_over_a_lost_write_of_its_own(self):
+        opened: list[_ResettableConnection] = []
+        with (
+            quiet_logging(),
+            patch(
+                "c64cast.hw.socket_dma.socket.create_connection",
+                side_effect=lambda *_a, **_k: _ResettableConnection(opened),
+            ),
+        ):
+            with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True):
+                backend = Ultimate64API("http://example.invalid")
+            backend.socket_dma = SocketDMAClient("test-host", 64)
+            backend.socket_dma.connect()
+            stop = threading.Event()
+
+            def render() -> None:
+                chaos = random.Random(1)
+                while not stop.is_set():
+                    backend._emit(0xD020, b"\x01")
+                    if chaos.random() < 0.3:
+                        opened[-1].reset = True
+                    if chaos.random() < 0.2:
+                        backend.socket_dma.check_for_loss()
+                    time.sleep(0)
+
+            renderer = threading.Thread(target=render)
+            renderer.start()
+            launcher = random.Random(2)
+            unsafe = refused = 0
+            addr = 0x1000
+            try:
+                for _ in range(300):
+                    mark = backend.write_loss_mark()
+                    mine = []
+                    for _ in range(launcher.randint(1, 4)):
+                        addr += 1
+                        mine.append(addr)
+                        backend._emit(addr, b"\x00")
+                        time.sleep(0)
+                        if launcher.random() < 0.1:
+                            opened[-1].reset = True
+                    try:
+                        backend._flush_or_raise("launch", mark)
+                    except RuntimeError:
+                        refused += 1
+                        continue
+                    if set(mine) & _lost_writes(opened):
+                        unsafe += 1
+            finally:
+                stop.set()
+                renderer.join()
+                backend.socket_dma.close()
+        self.assertEqual(unsafe, 0)
+        self.assertGreater(refused, 0)
 
 
 class PutConfigItemTest(unittest.TestCase):
