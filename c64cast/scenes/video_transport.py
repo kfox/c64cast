@@ -200,23 +200,27 @@ class VideoTransportControls:
         # BEFORE the flag flip: clock_s() branches on `touched`, so a read taken
         # after it returns the anchor's own unseeded default.
         clock_s = self.clock_s()
-        self.touched = True
-        self.resync = (
+        resync = (
             self.loop_audio == "on"
             and sc.audio is not None
             and sc.source is not None
             and sc.source.a_stream is not None
             and not getattr(sc.audio, "use_reu_pump", False)
         )
-        if self.resync:
+        if resync:
             assert sc.audio is not None
             # The pre-touch clock is the audio position in the scaled domain, so
             # the anchor delta starts at zero and playback carries on unbroken.
-            self.anchor = self.anchor._replace(clock=clock_s, ref=heard_seconds(sc.audio))
+            ref = heard_seconds(sc.audio)
         else:
-            self.anchor = self.anchor._replace(clock=clock_s, ref=time.time())
-            if sc.source is not None:
-                sc.source.set_muted(True)
+            ref = time.time()
+        # `touched` last: a poll off the playlist thread reads the anchor and
+        # `resync` only once it sees it set.
+        self.anchor = self.anchor._replace(clock=clock_s, ref=ref)
+        self.resync = resync
+        self.touched = True
+        if not resync and sc.source is not None:
+            sc.source.set_muted(True)
 
     def _splice(self, target_s: float, *, unmute: bool = False) -> None:
         """Resync-path splice primitive (target_s in content seconds): re-anchor
@@ -274,7 +278,10 @@ class VideoTransportControls:
             sc.source.set_muted(True)
             sc.audio.flush(silence_output=True)
         else:
-            self.anchor = self.anchor._replace(clock=self.clock_s())
+            # The new reference goes in with the frozen clock: a poll between
+            # the stores and the flag would otherwise add the time elapsed
+            # since the old reference a second time.
+            self.anchor = self.anchor._replace(clock=self.clock_s(), ref=time.time())
             self.paused = True
         sc.osd.post("PAUSED")
 
@@ -292,8 +299,11 @@ class VideoTransportControls:
             self._splice(self.clock_to_content(self.anchor.clock), unmute=True)
             self.paused = False
         else:
-            self.paused = False
+            # Re-anchored while still paused, which holds the clock at the
+            # anchor: a poll after the flag would otherwise run it from the
+            # reference the pause left, over the whole pause.
             self.anchor = self.anchor._replace(ref=time.time())
+            self.paused = False
         sc.osd.post("PLAY")
 
     def toggle_pause(self) -> None:

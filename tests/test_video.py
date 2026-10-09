@@ -3615,7 +3615,7 @@ class SpliceAnchorTest(unittest.TestCase):
         class Traced(VideoTransportControls):
             def __setattr__(self, name: str, value: object) -> None:
                 super().__setattr__(name, value)
-                if "anchor" in name or name == "rebased":
+                if name in ("anchor", "paused", "touched", "resync"):
                     polls.append(self.position())
 
         scene.transport.__class__ = Traced
@@ -3645,6 +3645,53 @@ class SpliceAnchorTest(unittest.TestCase):
         self.assertTrue(polls)
         for polled in polls:
             self.assertIn(polled, (before, 5.0))
+
+    def test_a_console_poll_between_the_stores_of_a_mute_pause_reads_the_frozen_position(self):
+        # The pause stored the frozen clock against the reference of the
+        # anchor before it, so a poll before the flag added the time since
+        # that reference a second time.
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        scene.transport.loop_audio = "mute"
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        with _freeze_time(100.0):
+            before = scene.transport.position()
+            polls = self._positions_through(scene, scene.transport.pause)
+        self.assertTrue(polls)
+        for polled in polls:
+            self.assertAlmostEqual(polled, before)
+
+    def test_a_console_poll_between_the_stores_of_a_mute_resume_reads_the_paused_position(self):
+        # The flag cleared before the reference moved, so a poll between ran
+        # the clock from the pause's reference over the whole pause.
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        scene.transport.loop_audio = "mute"
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        with _freeze_time(100.0):
+            scene.transport.pause()
+            paused_at = scene.transport.position()
+        with _freeze_time(500.0):
+            polls = self._positions_through(scene, scene.transport.resume)
+        self.assertTrue(polls)
+        for polled in polls:
+            self.assertAlmostEqual(polled, paused_at)
+
+    def test_a_console_poll_during_the_first_touch_reads_the_untouched_position(self):
+        # `touched` flipped before the audio policy and the anchor were set,
+        # so a poll between read a clock run from the anchor's unseeded
+        # default.
+        for loop_audio in ("on", "mute"):
+            with self.subTest(loop_audio=loop_audio):
+                scene = _make_video_scene_stub(_StubSource(duration=100.0, a_stream=object()))
+                scene.audio = cast(Any, _FakeSceneAudio(position=3.0))
+                scene.transport.loop_audio = loop_audio
+                with _freeze_time(10.0):
+                    before = scene.transport.position()
+                    polls = self._positions_through(scene, scene.transport.touch)
+                self.assertTrue(polls)
+                for polled in polls:
+                    self.assertAlmostEqual(polled, before)
 
     def test_a_console_poll_during_the_flush_reads_the_target(self):
         # The web console reads position() off the playlist thread; read
