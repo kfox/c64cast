@@ -19,7 +19,7 @@ import sys
 import threading
 import unittest
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -522,12 +522,7 @@ class _SilentScene(FakeScene):
         return False
 
 
-class DroppedCardReleasesTheSlotTest(unittest.TestCase):
-    """An "UP NEXT" card holds the ensemble audio slot for the scene it
-    announces. Anything that drops the card instead of playing that scene
-    has to let the slot go, or a waiting system is held out for as long as
-    the pause, the reloaded playlist or the launched clip lasts."""
-
+class _CardUp:
     def _card_up(self) -> tuple[Playlist, Ensemble]:
         api = FakeApi()
         pl = Playlist(
@@ -556,6 +551,13 @@ class DroppedCardReleasesTheSlotTest(unittest.TestCase):
     def _assert_other_gets_it(self, ens: Ensemble) -> None:
         self.assertIsNone(ens.audio_holder, "the dropped card kept the slot")
         self.assertTrue(ens.try_claim_audio("other"))
+
+
+class DroppedCardReleasesTheSlotTest(_CardUp, unittest.TestCase):
+    """An "UP NEXT" card holds the ensemble audio slot for the scene it
+    announces. Anything that drops the card instead of playing that scene
+    has to let the slot go, or a waiting system is held out for as long as
+    the pause, the reloaded playlist or the launched clip lasts."""
 
     def test_a_pause_during_a_card(self):
         pl, ens = self._card_up()
@@ -609,6 +611,43 @@ class DroppedCardReleasesTheSlotTest(unittest.TestCase):
             pl._set_up_again_after_restart()
         self.assertIs(pl.current, pl._card)
         self.assertEqual(ens.audio_holder, "sys")
+
+
+class ClipLaunchedOverTheCardTest(_CardUp, unittest.TestCase):
+    """A clip launched over the card is not the card: `transitioning` stays
+    set, the card's own slot went with it, and the clip's slot is the clip's."""
+
+    def _clip_over_the_card(
+        self, clip: FakeScene, *, other_waiting: bool = True
+    ) -> tuple[Playlist, Ensemble]:
+        pl, ens = self._card_up()
+        if not other_waiting:
+            ens.leave_audio_queue("other")
+        self.assertTrue(pl.perf_swap_scene(clip))
+        self.assertTrue(pl.transitioning)
+        self.assertFalse(pl.on_card)
+        return pl, ens
+
+    def test_dropping_a_clip_releases_no_slot_as_a_dropped_card(self):
+        clip = _ContendingScene("clip", frames_until_done=10_000)
+        pl, ens = self._clip_over_the_card(clip, other_waiting=False)
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertTrue(clip.__dict__["_audio_lock_held"])
+        self.assertIsNone(pl._announced_by(clip))
+        pl.drop_current()
+        self.assertIsNone(ens.audio_holder)
+
+    def test_a_finished_clip_does_not_take_the_lapsed_card_branch(self):
+        clip = _ContendingScene("clip", frames_until_done=1)
+        pl, _ = self._clip_over_the_card(clip, other_waiting=False)
+        clip.is_done = True
+        with (
+            patch.object(pl.ensemble_coord, "claim_lapsed") as lapsed,
+            patch.object(pl, "_advance_after_scene") as after,
+        ):
+            pl._advance()
+        lapsed.assert_not_called()
+        after.assert_called_once()
 
 
 class AudioOnlyEnsembleWarningTest(unittest.TestCase):
