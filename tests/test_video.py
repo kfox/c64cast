@@ -49,6 +49,7 @@ from c64cast.video.video import (
     _SampleProgressTap,
     av_open,
     ensure_pyav,
+    is_audio_discontinuity,
     probe_container_title,
     scan_video_samples,
 )
@@ -1800,6 +1801,19 @@ class AlignedAudioTest(unittest.TestCase):
         self.assertAlmostEqual(cast(float, src._audio_fed_s), 100.0, places=3)
         src._align_audio_frame(_audio_frame(100.0, 0.5))
         self.assertAlmostEqual(cast(float, src._audio_fed_s), 100.5, places=3)
+
+    def test_a_frame_that_follows_on_far_past_the_picture_is_no_jump(self):
+        # A soundtrack that outlasts its picture by more than the bound has
+        # every frame start past it; only a frame that also starts after the
+        # audio fed (a gap) is a jump, or each of them warns and shifts.
+        self.assertFalse(is_audio_discontinuity(100.0, 100.0, 4.0))
+        self.assertFalse(is_audio_discontinuity(100.01, 100.0, 4.0))
+        self.assertTrue(is_audio_discontinuity(101.0, 100.0, 4.0))
+        src = _aligned_stub([])
+        src._video_read_s = 4.0
+        src._audio_fed_s = 100.0
+        src._align_audio_frame(_audio_frame(100.01, 0.5))
+        self.assertEqual((src._audio_shift_s, src._audio_jump_warned), (0.0, False))
 
     def _jumped(
         self, frames: list[tuple[float, float]], at: float
