@@ -1796,8 +1796,9 @@ class VideoScene(MediaFileMixin, Scene):
         tr = self.transport
         clock_s = tr.clock_s()
         if tr.loop_state == "active" and tr.loop_a is not None:
-            # loop_b is stored in content seconds; the clock is in the scaled
-            # domain on the resync tempo path, so compare against the scaled B.
+            # loop_b is stored in content seconds; under a tempo scale the clock
+            # is in the scaled domain on both paths, so compare against the
+            # scaled B.
             at_b = tr.loop_b is not None and clock_s >= tr.content_to_clock(tr.loop_b)
             if at_b or self.source.finished:
                 # On the resync path a second wrap before the demuxer takes the

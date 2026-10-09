@@ -2107,7 +2107,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio = _FakeSamplerAudio(position=4.0)
         scene.audio = audio  # type: ignore[assignment]
         audio.lag = 0.1
-        scene.transport.touch()  # anchor_clock = heard 3.9, anchor_pos = heard 3.9
+        scene.transport.touch()  # anchor clock and ref = heard 3.9
         self.assertAlmostEqual(scene.transport.clock_s(), 3.9)
         audio._position = 9.0
         audio.lag = 0.6  # a re-anchor since the touch
@@ -2131,7 +2131,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
 
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
-        scene.transport.touch()  # anchor_clock=0, anchor_pos=0
+        scene.transport.touch()  # anchor clock and ref = 0
         audio._position = 5.0
         # Wall time is irrelevant on the resync path — only the audio delta.
         with _freeze_time(999.0):
