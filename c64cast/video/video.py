@@ -1018,6 +1018,8 @@ class AVFileSource:
     # The newest decoded picture before the pass's target, held until one at
     # or after it arrives; see `_admit_frame`.
     _pre_target: Any = None
+    # Whether the pending seek is decoded up to its target (`request_seek`).
+    _pending_exact = True
     # Content time of the held picture once it was queued ahead of a picture at
     # the target; a later one before the target must be newer to follow it.
     _released_s: float | None = None
@@ -1295,6 +1297,7 @@ class AVFileSource:
         *,
         unmute: bool = False,
         on_request: Callable[[], _T] | None = None,
+        exact: bool = True,
     ) -> _T | None:
         """Ask the demux thread to seek to `target_s` (absolute seconds from
         file start) at its next opportunity. Coalescing is natural: rapid
@@ -1302,6 +1305,12 @@ class AVFileSource:
         slot — the demux thread performs however many real seeks it has
         cycles for. Clears the buffered (stale, pre-seek) frames immediately
         so a caller reading `current_frame` right after doesn't get one.
+
+        ``exact=False`` is for a seek that a newer one will replace within a
+        tick (a held FF/RW, a jog): the pass shows the keyframe it lands on
+        as the target, with no decode up to the target first, which on a long
+        GOP would not finish before the next seek interrupts it. The last
+        such seek is followed by an exact one.
 
         ``on_request`` runs under the same lock, with the seek pending, and
         its result is returned: the splice takes the audio sink's cut there
@@ -1316,6 +1325,7 @@ class AVFileSource:
         target_s = max(0.0, target_s)
         with self._lock:
             self._pending_seek = target_s
+            self._pending_exact = exact
             # The caller converted target_s with the map in force; a retune
             # applied after the seek would stamp the target off it.
             self._pending_tempo = None
@@ -1414,10 +1424,13 @@ class AVFileSource:
         decision 2 of the transport plan: the clock IS file position once
         transport is touched — no separate file_offset_s bookkeeping). The
         container lands on the keyframe before the target, and what it decodes
-        before the target is dropped (`_admit_frame`, `place_audio_frame`).
-        Returns True if a seek was applied."""
+        before the target is dropped (`_admit_frame`, `place_audio_frame`);
+        an approximate seek (``exact=False``) has no origin to place that
+        against, so the first timestamp read, the keyframe's, becomes the
+        target. Returns True if a seek was applied."""
         with self._lock:
             target = self._pending_seek
+            exact = self._pending_exact
             self._pending_seek = None
             if target is None:
                 return False
@@ -1431,7 +1444,7 @@ class AVFileSource:
             self._atempo_graph, self._atempo_filter = _build_atempo(
                 self.target_sr, self._tempo_scale
             )
-        self._pts_offset = self._origin_s
+        self._pts_offset = self._origin_s if exact else None
         self._pts_anchor_target = target
         self._pre_target = None
         self._released_s = None

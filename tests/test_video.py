@@ -896,6 +896,7 @@ class _StubSource:
         self.accepts_seeks = True
         self.last_frame_pts = 0.0
         self.seeks: list[float] = []
+        self.exacts: list[bool] = []
         self.muted_calls: list[bool] = []
         # A non-None a_stream marks the source audio-bearing, which
         # VideoScene._touch_transport requires to resolve the resync path;
@@ -917,8 +918,10 @@ class _StubSource:
         *,
         unmute: bool = False,
         on_request: Callable[[], object] | None = None,
+        exact: bool = True,
     ) -> object:
         self.seeks.append(target_s)
+        self.exacts.append(exact)
         self.seek_pending = True
         if self._events is not None:
             self._events.append(("seek", target_s))
@@ -1081,6 +1084,32 @@ class VideoSceneClockTest(unittest.TestCase):
         self.assertEqual(scene.transport.anchor.clock, 42.0)
         self.assertEqual(scene.source.seeks, [42.0])  # type: ignore[union-attr]
         self.assertTrue(scene.transport.touched)
+
+    def test_a_scrub_step_seeks_approximately_and_settle_seeks_exactly_where_it_left_off(self):
+        scene = self._scene()
+        source = cast(_StubSource, scene.source)
+        with _freeze_time(10.0):
+            scene.transport_scrub(40.0)
+        with _freeze_time(10.5):
+            scene.transport_scrub(41.0)
+        with _freeze_time(10.75):
+            scene.transport_settle()
+        self.assertEqual(source.seeks, [40.0, 41.0, 41.25])
+        self.assertEqual(source.exacts, [False, False, True])
+
+    def test_settle_does_nothing_after_an_exact_seek_or_a_settle(self):
+        scene = self._scene()
+        source = cast(_StubSource, scene.source)
+        scene.transport_settle()
+        scene.transport_scrub(40.0)
+        scene.transport_seek(50.0)
+        scene.transport_settle()
+        with _freeze_time(10.0):
+            scene.transport_scrub(60.0)
+            scene.transport_settle()
+            scene.transport_settle()
+        self.assertEqual(source.seeks, [40.0, 50.0, 60.0, 60.0])
+        self.assertEqual(source.exacts, [False, True, False, True])
 
     def test_seek_clamps_to_duration(self):
         scene = self._scene()  # duration=100.0
@@ -2058,6 +2087,15 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertEqual(source.seeks, [42.0])  # request_seek fired
         self.assertEqual(audio.flush_calls, [False])  # plain flush (not silence)
         self.assertAlmostEqual(scene.transport.anchor.clock, 42.0)  # tempo 1.0
+
+    def test_a_scrub_step_splices_approximately_and_settle_splices_exactly(self):
+        scene, source, audio = self._resync_scene(position=3.0)
+        scene.transport_scrub(42.0)
+        scene.transport_settle()
+        self.assertEqual(source.exacts, [False, True])
+        self.assertEqual(source.seeks[0], 42.0)
+        self.assertAlmostEqual(source.seeks[1], 42.0, delta=1.0)
+        self.assertEqual(audio.flush_calls, [False, False])
 
     def test_seek_waits_out_the_ring_lead(self):
         # The flush keeps the ring's unplayed lead, so the target is heard that

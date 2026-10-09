@@ -82,6 +82,22 @@ class _StubScene:
         self.loop_slot_calls.append((slot, save, clear))
 
 
+class _ScrubScene(_StubScene):
+    """A scene with the approximate-seek surface VideoScene has."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.scrubs: list[float] = []
+        self.settles = 0
+
+    def transport_scrub(self, target_s: float) -> None:
+        self.scrubs.append(target_s)
+        self._position = target_s
+
+    def transport_settle(self) -> None:
+        self.settles += 1
+
+
 class _FakePlaylist:
     def __init__(self, scene=None, *, transitioning: bool = False):
         self.current = scene
@@ -355,6 +371,82 @@ class HoldRampTests(unittest.TestCase):
         _tick(session, pl, 0.2)
         self.assertEqual(len(scene.seeks), 1)
         self.assertGreater(scene.seeks[0], 10.0)
+
+
+class ScrubSettleTests(unittest.TestCase):
+    """A held rw/ff or a jog moves by approximate seeks and ends on one exact
+    seek, once it has been still for a moment."""
+
+    def _held_ff(self) -> tuple[_ScrubScene, _FakePlaylist, TransportSession]:
+        scene = _ScrubScene(position=50.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        _tick(session, pl, 0.0)
+        session.enqueue(TransportEvent(action="ff", pressed=True))
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 0.2)
+        return scene, pl, session
+
+    def test_a_held_ff_scrubs_and_never_seeks_exactly_or_settles_while_held(self):
+        scene, pl, session = self._held_ff()
+        _tick(session, pl, 5.0)
+        self.assertEqual(len(scene.scrubs), 3)
+        self.assertEqual(scene.seeks, [])
+        self.assertEqual(scene.settles, 0)
+
+    def test_the_release_settles_once_after_the_scrub_has_been_still(self):
+        scene, pl, session = self._held_ff()
+        session.enqueue(TransportEvent(action="ff", pressed=False))
+        _tick(session, pl, 0.25)
+        self.assertEqual(scene.settles, 0)
+        _tick(session, pl, 0.4)
+        self.assertEqual(scene.settles, 1)
+        _tick(session, pl, 0.6)
+        self.assertEqual(scene.settles, 1)
+
+    def test_a_jog_scrubs_and_settles_when_it_stops(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 0.2)
+        self.assertEqual(scene.scrubs, [12.0, 14.0])
+        self.assertEqual(scene.seeks, [])
+        self.assertEqual(scene.settles, 0)
+        _tick(session, pl, 0.3)
+        self.assertEqual(scene.settles, 1)
+
+    def test_a_seek_event_stays_exact(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="seek", target=30.0))
+        _tick(session, pl, 0.0)
+        _tick(session, pl, 1.0)
+        self.assertEqual(scene.seeks, [30.0])
+        self.assertEqual(scene.scrubs, [])
+        self.assertEqual(scene.settles, 0)
+
+    def test_a_scrub_does_not_settle_the_scene_that_replaced_its_own(self):
+        scene, pl, session = self._held_ff()
+        session.enqueue(TransportEvent(action="ff", pressed=False))
+        _tick(session, pl, 0.25)
+        other = _ScrubScene(position=0.0)
+        pl.current = other
+        _tick(session, pl, 1.0)
+        self.assertEqual((scene.settles, other.settles), (0, 0))
+
+    def test_a_scene_without_the_approximate_seek_is_scrubbed_with_its_seek(self):
+        scene = _StubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        _tick(session, pl, 1.0)
+        self.assertEqual(scene.seeks, [12.0])
 
 
 class RecordStopChordTests(unittest.TestCase):

@@ -317,6 +317,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   the exact moment the same way, and a file whose streams start after 0
   seeks to the right place.
 
+- **Holding fast-forward or rewind, or turning the jog wheel, on a video
+  with long gaps between keyframes shows the picture at once when you
+  stop.** With exact seeking each step decoded from the keyframe to its
+  target before showing anything, up to a second at 1080p, and the next
+  step cut that short. The steps now land on the keyframe and the position
+  you stop at is seeked exactly a moment later.
+
 - **With `[audio].use_reu_pump`, a video scene with `start_s` (or a URL
   timestamp) now plays the sound from `start_s`.** The soundtrack was staged
   from the start of the file while the picture began at `start_s`, so the

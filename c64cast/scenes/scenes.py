@@ -1749,6 +1749,12 @@ class VideoScene(MediaFileMixin, Scene):
     def transport_seek(self, target_s: float) -> None:
         self.transport.seek(target_s)
 
+    def transport_scrub(self, target_s: float) -> None:
+        self.transport.seek(target_s, exact=False)
+
+    def transport_settle(self) -> None:
+        self.transport.settle()
+
     def transport_loop_toggle(self) -> None:
         self.transport.loop_toggle()
 

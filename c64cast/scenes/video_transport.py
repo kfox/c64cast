@@ -103,6 +103,7 @@ class VideoTransportControls:
         self.loop_b: float | None = None
         self.loop_state: Literal["none", "armed", "active"] = "none"
         self.record_border_active = False
+        self.scrubbing = False
 
     def _state(self) -> _State:
         touched, resync, paused = self.touched, self.resync, self.paused
@@ -240,7 +241,7 @@ class VideoTransportControls:
         if not resync and sc.source is not None:
             sc.source.set_muted(True)
 
-    def _splice(self, target_s: float, *, unmute: bool = False) -> None:
+    def _splice(self, target_s: float, *, unmute: bool = False, exact: bool = True) -> None:
         """Resync-path splice primitive (target_s in content seconds): re-anchor
         the audio clock to the target, arm the demuxer's stale-audio guard, and
         retire everything pushed before it. Order is load-bearing:
@@ -269,7 +270,9 @@ class VideoTransportControls:
         clock = self._to_clock(target_s, False)
         self.anchor = _Anchor(clock, None, False)
         try:
-            cut = sc.source.request_seek(target_s, unmute=unmute, on_request=sc.audio.cut)
+            cut = sc.source.request_seek(
+                target_s, unmute=unmute, on_request=sc.audio.cut, exact=exact
+            )
             pos = sc.audio.flush(cut=cut)
         except BaseException:
             # Held at the target for good otherwise: run on from where the
@@ -332,20 +335,33 @@ class VideoTransportControls:
         else:
             self.pause()
 
-    def seek(self, target_s: float) -> None:
+    def seek(self, target_s: float, *, exact: bool = True) -> None:
+        """Seek to ``target_s`` content seconds. ``exact=False`` is for the
+        steps of a held FF/RW or a jog, which the next step replaces within a
+        tick: each lands on the keyframe at or before its target, whose decode
+        costs one picture, where an exact one decodes the whole GOP between
+        and is interrupted by the next step before a picture lands. `settle`
+        makes the last step exact."""
         sc = self._scene
         self.touch()
         # Both target_s and duration() are content seconds, unscaled.
         duration = self.duration()
         hi = duration if duration is not None else max(target_s, 0.0)
         target_s = max(0.0, min(target_s, hi))
+        self.scrubbing = not exact
         if self.resync:
-            self._splice(target_s)
+            self._splice(target_s, exact=exact)
         else:
             self.anchor = _Anchor(self._to_clock(target_s, False), time.time(), False)
             if sc.source is not None:
-                sc.source.request_seek(target_s)
+                sc.source.request_seek(target_s, exact=exact)
         sc.osd.post(f"SEEK {timecode(target_s)}")
+
+    def settle(self) -> None:
+        """Seek exactly to where the approximate seeks of a scrub left the
+        position; a no-op unless the last seek was one."""
+        if self.scrubbing:
+            self.seek(self.position())
 
     def loop_toggle(self) -> None:
         """3-state cycle: mark A -> mark B + start looping -> clear.

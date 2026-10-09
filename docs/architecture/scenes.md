@@ -108,7 +108,7 @@ On the resync path it does **not** mute, and seeds an **audio-anchored clock** �
 2. `audio.flush(cut=cut)` — finishing the cut: the sampler's ring cut-over, the DAC's stomp request. Neither drains its queue.
 3. `ref = ` what the flush returned — where the target's first sample is heard on the sink's clock, read once, by the cut. Until then the anchor is `(target, None, False)`, so a web-console poll of `position()` during the flush shows the target. An earlier version held a `position_seconds() + ring_lead_seconds()` estimate there instead; on the sampler that estimate sat on `mark_eof`'s clamp while the flush cleared it, so a poll inside the flush read the target plus the clamp's overrun. A flush that raises leaves the sink's `splice_position_seconds()` as the anchor (that sum from one read of its clock, since two reads with the clock moving between them put the sum off by that much), so the clock is not held at the target for good. Frames never see the held clock: transport commands are dispatched on the playlist thread right before `process_frame` (`TransportSession.tick`). Read before the flush, the anchor paired two clock reads on the DAC, and on the sampler sat on `mark_eof`'s clamped total, which the flush clears, so a splice after the clip's end put the picture ahead of the sound by however long the audio had been out.
 
-It is used by `transport_seek`, the loop wrap, and resume-from-pause.
+It is used by `transport_seek`, the loop wrap, and resume-from-pause, and by `transport_scrub` and `transport_settle` with `exact` false and true (see the approximate seek in video-color.md).
 
 **Pause and resume.**
 

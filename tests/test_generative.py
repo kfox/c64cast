@@ -2779,6 +2779,21 @@ class ExactSeekTest(unittest.TestCase):
                     self.assertEqual(self._first_picture(src, clock), expected)
                     src.close()
 
+    def test_an_approximate_seek_shows_the_keyframe_it_lands_on_as_its_target(self):
+        # The keyframe at 6 s stands at 6.31, with nothing decoded up to the
+        # target first.
+        src, _ = self._source(self._clip(), muted=True)
+        src.request_seek(6.31, exact=False)
+        self.assertEqual(self._first_picture(src, 6.31), 180)
+        self.assertAlmostEqual(src.last_frame_pts, 6.31, delta=0.002)
+
+    def test_a_later_exact_seek_replaces_an_approximate_one(self):
+        src, _ = self._source(self._clip(), muted=True)
+        src.request_seek(6.31, exact=False)
+        self.assertEqual(self._first_picture(src, 6.31), 180)
+        src.request_seek(6.31)
+        self.assertEqual(self._first_picture(src, 6.31), 189)
+
     def test_a_seek_holds_back_only_the_picture_before_its_target(self):
         src, _ = self._source(self._clip(), muted=True)
         src.request_seek(6.31)
