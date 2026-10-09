@@ -196,7 +196,7 @@ class ReuMicPumpTest(unittest.TestCase):
         self.assertEqual(self._dst(run), RING_BUFFER_ADDR)
 
     def test_chunked_dispatcher_call_returns_to_its_caller(self):
-        # The chunked mhires dispatcher JSRs $C180 directly between REC
+        # The chunked dispatchers JSR $C180 directly between REC
         # families, so the body must RTS rather than chain to the kernal.
         caller = bytes(
             [
@@ -325,7 +325,7 @@ class StartMicForReuPumpTest(unittest.TestCase):
 
     def test_install_order_is_trackers_then_body_then_entry(self):
         # Under a bank-swap dispatcher that owns $0314, a CIA #1 tick can reach
-        # $C180 (chunked mhires JSR) or $C100 (fall-through) mid-install. The
+        # $C180 (chunked dispatcher JSR) or $C100 (fall-through) mid-install. The
         # body must never run on unseeded trackers, and the entry must never
         # JSR a body that is not there yet.
         s = self._start(skip_irq_vector_hook=True)

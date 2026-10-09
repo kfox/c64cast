@@ -47,6 +47,7 @@ from c64cast.audio.audio_handlers import (
     REU_IRQ_HANDLER_GOVERNOR,
     REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS,
     REU_PUMP_CHUNK_SIZE,
+    REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
     REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
     REU_PUMP_HANDLER_STUB,
@@ -600,7 +601,7 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         self.assertTrue(s.running)
 
     def test_skip_hook_uploads_pump_body_subroutine(self):
-        # The chunked mhires bank-swap dispatcher JSRs to $C180 between
+        # The chunked bank-swap dispatchers JSR to $C180 between
         # families (audio.REU_PUMP_BODY_SUBROUTINE_ADDR). Without the
         # body bytes there, the JSR returns from uninitialized RAM.
         # Verify both the body bytes and the address are uploaded.
@@ -653,9 +654,10 @@ def _tracker_seed(src: int, dst: int) -> dict[int, int]:
     }
 
 
-def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int]):
-    """Run REU_PUMP_BODY_SUBROUTINE_GOVERNOR through a JSR / JMP $EA31 caller,
-    the way both of its callers reach it, and check it returned balanced."""
+def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int], body: bytes | None = None):
+    """Run REU_PUMP_BODY_SUBROUTINE_GOVERNOR (or ``body``, a chunk-patched
+    copy of it) through a JSR / JMP $EA31 caller, the way both of its callers
+    reach it, and check it returned balanced."""
     from c64cast.audio.audio_handlers import (
         REU_PUMP_BODY_SUBROUTINE_ADDR,
         REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
@@ -675,7 +677,11 @@ def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int]):
         caller,
         addr=0xC000,
         seed=seed,
-        images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR},
+        images={
+            REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR
+            if body is None
+            else body
+        },
     )
     test.assertEqual(run.exit_pc, 0xEA31, "the subroutine must RTS to its caller")
     test.assertEqual(run.mpu.sp, 0xFF)
@@ -815,12 +821,14 @@ class ReuTrackedHandlerTest(unittest.TestCase):
 
 class ReuTrackedGovernorTest(unittest.TestCase):
     """REU_PUMP_BODY_SUBROUTINE_GOVERNOR, executed through a JSR the way both
-    of its callers reach it (the $C100 entry and the chunked mhires
+    of its callers reach it (the $C100 entry and the chunked bank-swap
     dispatcher). Under the bank-swap video DMAs the open-loop tracked pump
     lapped the NMI reader every 10.5-12 s (#544); the governed one must skip
     a chunk while its write head is half a ring ahead of R, pump otherwise
     (GovernorSkipWindowTest sweeps every gap), and return to its caller on
-    both paths."""
+    both paths. One call pumps until the write head is in the skip window:
+    the bank-swap dispatchers hold CIA #1 off for most of each frame, and one
+    chunk per call left the pump short of the reader (#661)."""
 
     SRC = 0x032211
 
@@ -829,6 +837,7 @@ class ReuTrackedGovernorTest(unittest.TestCase):
         seed[READ_PTR_HI_ADDR] = r >> 8
         if df03 is not None:
             seed[0xDF03] = df03
+        self._dst, self._r = dst, r
         return _jsr_tracked_governor(self, seed)
 
     def _pumped(self, run) -> bool:
@@ -837,12 +846,18 @@ class ReuTrackedGovernorTest(unittest.TestCase):
         t = REU_AUDIO_SRC_TRACKER_ADDR
         ram = run.memory.ram
         src_after = ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
+        dst_after = ram[t + 3] | (ram[t + 4] << 8)
+        chunks, rest = divmod(src_after - self.SRC, REU_PUMP_CHUNK_SIZE)
         triggered = ram[0xDF01] == REU_CMD_FETCH_EXEC
+        self.assertEqual(rest, 0)
+        self.assertEqual(triggered, chunks > 0, "a trigger and a tracker advance must go together")
         self.assertEqual(
-            triggered,
-            src_after == self.SRC + REU_PUMP_CHUNK_SIZE,
-            "a trigger and a tracker advance must go together",
+            (dst_after - self._dst) % RING_BUFFER_SIZE,
+            chunks * REU_PUMP_CHUNK_SIZE % RING_BUFFER_SIZE,
+            "src and dst must advance together",
         )
+        gap_hi = ((dst_after >> 8) - (self._r >> 8)) & 0x1F
+        self.assertIn(gap_hi, (16, 17), "the call must leave the write head in the skip window")
         return triggered
 
     def test_skips_when_write_head_is_half_a_ring_ahead(self):
@@ -883,16 +898,57 @@ class ReuTrackedGovernorTest(unittest.TestCase):
     def test_governed_body_is_the_open_loop_body_behind_the_test(self):
         from c64cast.audio.audio_handlers import (
             REU_PUMP_BODY_SUBROUTINE,
+            REU_PUMP_BODY_SUBROUTINE_ADDR,
             REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
         )
 
-        self.assertTrue(REU_PUMP_BODY_SUBROUTINE_GOVERNOR.endswith(REU_PUMP_BODY_SUBROUTINE))
+        jmp_test = bytes(
+            [0x4C, REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF, REU_PUMP_BODY_SUBROUTINE_ADDR >> 8]
+        )
+        self.assertTrue(
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR.endswith(REU_PUMP_BODY_SUBROUTINE[:-1] + jmp_test)
+        )
+
+    def test_one_call_catches_up_from_the_deepest_overtake(self):
+        # The longest catch-up: the reader fourteen pages past the write head
+        # (gap 18, the first that reads as an overtake), so the write head
+        # has to travel 30 pages to reach the skip window.
+        r = RING_BUFFER_ADDR + 0x1000
+        dst = r - 0xE00
+        self.assertEqual(((dst >> 8) - (r >> 8)) & 0x1F, REU_GOVERNOR_OVERTAKE_GAP_HI)
+        self.assertTrue(self._pumped(self._call(dst=dst, r=r)))
+
+    def test_the_heavy_bus_chunk_also_stops_at_the_skip_window(self):
+        # The bitmap scenes patch REU_PUMP_CHUNK_SIZE_HEAVY_BUS into the
+        # governed body, and only those scenes run it behind a dispatcher.
+        from c64cast.audio.audio_handlers import (
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
+        )
+
+        chunk = REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+        body = patch_chunk_size(
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
+            chunk,
+        )
+        r = RING_BUFFER_ADDR
+        dst = r + REU_PUMP_INITIAL_MARGIN - 0x100
+        seed = _tracker_seed(self.SRC, dst)
+        seed[READ_PTR_HI_ADDR] = r >> 8
+        run = _jsr_tracked_governor(self, seed, body)
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        ram = run.memory.ram
+        src_after = ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
+        dst_after = ram[t + 3] | (ram[t + 4] << 8)
+        self.assertEqual(src_after - self.SRC, 0x100, "one page of heavy-bus chunks")
+        self.assertEqual(dst_after, r + REU_PUMP_INITIAL_MARGIN)
 
 
 class TrackedPumpSelectionTest(unittest.TestCase):
     """start_for_reu_staged on the bank-swap path uploads the governed or the
     open-loop pump body at $C180 per reu_pump_governor, with the scene's chunk
-    size patched in: the chunked mhires dispatcher calls that body directly,
+    size patched in: the chunked dispatchers call that body directly,
     so an unpatched one pumps the default chunk on every call it makes."""
 
     def _body(self, *, governor: bool, chunk: int | None = None) -> bytes:

@@ -1,8 +1,8 @@
 """The C64-side IRQ-handler layer for tear-free double-buffered video.
 
 The 6502 machine code the bitmap modes in `modes/` upload and drive per frame:
-the $C500 bank-swap raster IRQ handlers (hires, mhires, the chunked
-mhires + REU-audio merged dispatcher, and the host-DMA page-flip sibling
+the $C500 bank-swap raster IRQ handlers (hires, mhires, their chunked
+REU-audio merged dispatchers, and the host-DMA page-flip sibling
 for no-REU backends), the $C700 frame-tracker layouts each handler reads
 at vblank, the REU staging addresses near 14 MB, and the bring-up /
 teardown plus per-frame push helpers that stage a frame and arm the
@@ -32,6 +32,7 @@ from c64cast.hw.c64 import (
     CIA1,
     CIA2,
     KERNAL,
+    NMI_SAFE_MIN_PERIOD_CYCLES,
     RASTER_COMMIT_LAST_SAFE_LINE,
     RASTER_VBLANK_LINE,
     REU,
@@ -39,6 +40,7 @@ from c64cast.hw.c64 import (
     VECTORS,
     VIC_BANK_0,
     VIC_BANK_2,
+    halt_quantum_bytes,
 )
 
 log = logging.getLogger(__name__)
@@ -376,7 +378,7 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 AUDIO_HANDLER_INSTALL_ADDR = REU_PUMP_HANDLER_ADDR  # where audio.AudioStreamer uploads its REU pump
 AUDIO_HANDLER_STUB = REU_PUMP_HANDLER_STUB  # JMP $EA31
 # What $C180 holds until the audio pump uploads its body there: the chunked
-# mhires dispatcher JSRs $C180 itself, so without it the first CIA #1 tick that
+# dispatchers JSR $C180 themselves, so without it the first CIA #1 tick that
 # latches during a REC family calls whatever an earlier scene or power-on left.
 PUMP_BODY_STUB = bytes([0x60])  # RTS
 
@@ -437,310 +439,192 @@ def _make_merged_handler(base: bytes, audio_jmp_target: int = AUDIO_HANDLER_INST
 
 
 # Pre-built merged dispatchers. The 6-byte extension replaces base[-3:], so
-# merged = base - 3 + 6: hires 61 → 64 B, mhires 83 → 86 B. hires installs its
-# one at $C500 when the scene combines REU video bank-swap with REU audio pump;
-# mhires installs MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER instead, and
-# the plain mhires merge is what that one is built and tested against.
+# merged = base - 3 + 6: hires 61 → 64 B, mhires 83 → 86 B. Neither is
+# installed: a scene combining REU video bank-swap with the REU audio pump
+# gets the chunked dispatchers below, which are assembled separately. These
+# monolithic merges remain only as the one-REC-per-family reference.
 BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER = _make_merged_handler(BANK_SWAP_IRQ_HANDLER)
 MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER = _make_merged_handler(MHIRES_BANK_SWAP_IRQ_HANDLER)
 assert len(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 64
 assert len(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 86
 
 
-# Chunked mhires merged dispatcher.
+# Chunked merged dispatchers (hires and mhires).
 #
-# The plain merged dispatcher above triggers one large REC DMA per family
+# The plain merged dispatchers above trigger one large REC DMA per family
 # (bitmap = 8000 bytes ≈ 8 ms halt, screen = 1000 ≈ 1 ms, color = 1000 ≈
-# 1 ms). NMI fires at 8 kHz = every 125 cycles (≈ 125 µs at 1 MHz NTSC).
-# CIA #2 is edge-triggered through the NMI line: when the bus halt covers
-# multiple NMI underflows, the ICR bit latches once and the rest collapse
-# into the same edge — losing every NMI past the first per halt.
+# 1 ms). CIA #2 is edge-triggered through the NMI line: when a bus halt covers
+# several NMI underflows, the ICR bit latches once and the rest collapse into
+# the same edge — losing every NMI past the first per halt. Each lost NMI is a
+# sample the reader never advances past, so the audio plays slow and flat.
 #
-# Empirically (2026-05-27 Cam Link D-vs-C diagnosis): the plain mhires
-# merged dispatcher loses ~30 % of NMI events per frame, slowing 8 kHz
-# playback to ~5 600 Hz effective. The music's BPM drops to ~70 % and
-# the slow drift creates the "echo / time-stretch" the user reported.
+# Empirically (2026-05-27 Cam Link D-vs-C diagnosis, 8 kHz): the plain mhires
+# merged dispatcher lost ~30 % of NMI events per frame, slowing 8 kHz playback
+# to ~5 600 Hz effective.
 #
-# Fix: split each REC into 100-byte chunks. 100 bytes × 1 cyc/byte =
-# 100 µs halt per chunk, comfortably under the 125 µs NMI period — so
-# every NMI underflow lands either between chunks or in the active code
-# right after a halt, and is serviced before the next underflow can
-# collapse onto it. Bitmap: 80 chunks; screen + color: 10 chunks each.
-# After each chunk DMA, only the LENGTH register decrements to 0; the
-# src/dst registers auto-increment and stay valid across chunks, so the
-# per-chunk inner body is just "reload length, retrigger" + the standard
-# DEC/BNE counter.
+# Fix: split each REC into BANK_SWAP_CHUNK_SIZE-byte chunks, so that no halt
+# spans an underflow. At 1 cyc/byte the halt is the chunk length, and it has
+# to fit inside the SHORTEST NMI period the audio streamer can arm
+# (c64.NMI_SAFE_MIN_PERIOD_CYCLES), less the cycles from the halt's end to the
+# handler's $DD0D ack — the same budget c64.halt_quantum_bytes sizes the
+# host-side ring writes by. A chunk sized for the period at the requested rate
+# is the trap: 100 bytes fits the 125-cycle period at 8 kHz but outlasts the
+# 85-cycle period of the 12 kHz default, and REU-pump video audio then played
+# ~17 % slow against the picture (#661). 50 bytes fits the budget too; 40 is
+# what the best U64 run at 12 kHz used, alongside a 32-byte pump chunk (see
+# REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the figures, which changed both chunks at
+# once). A badline stretches any halt by up to 43 cycles, more than any chunk
+# the one-byte counter allows can leave free (below 32 the bitmap family's
+# chunk count no longer fits it), so a stretched chunk can still lose a tick;
+# a smaller one only leaves less of the stretch past the period.
 #
-# CIA #1 (audio pump) loss is partially addressed by per-family pump
-# JSR calls (3 per bank-swap). After each family's chunk loop ends, the
-# handler reads $DC0D / AND #$01 / BEQ skip / JSR $C180 — picking up any
-# CIA #1 underflow that latched into the ICR during the family's halt
-# time. Per-CHUNK pump checks would be ideal but break the bitmap's REC
-# auto-increment (pump_body overwrites $DF02..$DF06 with the audio
-# REU/main addresses, so the next bitmap chunk would re-trigger a
-# 100-byte transfer from audio → audio rather than the next bitmap
-# slice; the per-family check is safe because each family begins with
-# its own copy-from-tracker loop that re-sets REC).
+# After each chunk DMA, only the LENGTH register decrements to 0; the src/dst
+# registers auto-increment and stay valid across chunks, so the per-chunk
+# inner body is just "reload length, retrigger" + the DEC/BNE counter.
 #
-# Capture rate per ~33 ms bank-swap cycle: bitmap (10.7 ms halt, ~1.07
-# underflows, 1 latched) + screen (1.34 ms, ~0.13) + color (1.34 ms,
-# ~0.13) + inter-bank-swap gap (19.6 ms, 1.96 normal CIA #1 dispatches
-# via the audio fallthrough). Total ≈ 3.22 of 3.30 underflows captured
-# (~97 % vs. 67 % baseline). Residual ~3 % loss is below the host
-# audio sample queue's hysteresis and not audibly distinguishable from
-# the C baseline (REU audio alone with no bank-swap).
+# CIA #1 (audio pump) loss is partially addressed by per-family pump JSR
+# calls. After each family's chunk loop ends, the handler reads $DC0D / AND
+# #$01 / BEQ skip / JSR $C180 — picking up any CIA #1 underflow that latched
+# into the ICR during the family's halt time. Per-CHUNK pump checks would break
+# the REC auto-increment (the pump body overwrites $DF02..$DF06 with the audio
+# REU/main addresses, so the next chunk would re-trigger a transfer from
+# audio → audio rather than the next video slice); the per-family check is
+# safe because each family begins with its own copy-from-tracker loop that
+# re-sets REC.
 #
-# Wall-time cost: each chunk adds ~17 cycles of inner-loop overhead
-# (length reload + 5-cyc DEC zp + 3-cyc BNE) on top of the 100-cycle
-# halt, plus ~50 µs NMI service per chunk on average. Total bank-swap
-# wall ≈ 18 ms (vs. ~10 ms for the monolithic merged variant). On NTSC
-# (16.6 ms frame) this means bank-swap straddles the frame boundary —
-# but the host already produces mhires frames at ~30 fps (per-cell
-# quantization is the bottleneck), so the effective display rate is
-# unchanged.
-#
-# Zero-page: the chunk counter lives at $FB (the canonical 4-byte
-# user-free block $FB-$FE). c64cast uses no other zero-page slots.
-BANK_SWAP_CHUNK_SIZE = 100  # bytes per chunked REC DMA
-_BITMAP_CHUNKS = 8000 // BANK_SWAP_CHUNK_SIZE  # 80
-_SCREEN_CHUNKS = 1000 // BANK_SWAP_CHUNK_SIZE  # 10
-_COLOR_CHUNKS = 1000 // BANK_SWAP_CHUNK_SIZE  # 10
+# Zero-page: the chunk counter lives at $FB (the canonical 4-byte user-free
+# block $FB-$FE). asid_player.ZP_PTR uses $FB too; the ASID player's own IRQ
+# handler owns $0314, so it never runs alongside a bank-swap dispatcher.
+BANK_SWAP_CHUNK_SIZE = 40  # bytes per chunked REC DMA
 _CHUNK_COUNTER_ZP = 0xFB  # zero-page chunk counter
-
-# The dispatcher is too large for the original 1-byte BEQ displacement
-# trick (the audio fallthrough sits ~170 bytes deep). The first two
-# branches are inverted to BNE-skip-then-JMP form so they can reach
-# any offset in the handler. The rest of the branches stay within
-# single-byte range (chunk loops + copy loops are all ≤ 19 bytes;
-# pump-check BEQ is +3).
-#
-# Byte layout (offsets relative to $C500 install address):
-#   0-20    Header: raster vs audio dispatch + ready-flag gate
-#   21-64   Bitmap family: copy loop (11) + counter init (4) + chunk loop
-#           (19) + end-of-family pump check (10) = 44 B
-#   65-108  Screen family: same shape
-#   109-152 Color family: same shape
-#   153-169 Tail: bg0, $DD00 bank swap, clear ready flag
-#   170-172 chain: JMP $EA31
-#   173-175 audio_fallthrough: JMP $C100
-#
-# Branch displacements (all verified by the assertion below):
-#   offset 5   BNE +3 → 10     (skip JMP audio)
-#   offset 7   JMP $C5AD       (audio_fallthrough = $C500 + 173)
-#   offset 16  BNE +3 → 21     (skip JMP chain)
-#   offset 18  JMP $C5AA       (chain = $C500 + 170)
-#   offset 30  BPL -9 → 23     (bitmap copy loop body)
-#   offset 53  BNE -19 → 36    (bitmap chunk loop body)
-#   offset 60  BEQ +3 → 65     (bitmap end-of-family pump check)
-#   offset 74  BPL -9 → 67     (screen copy loop body)
-#   offset 97  BNE -19 → 80    (screen chunk loop body)
-#   offset 104 BEQ +3 → 109    (screen end-of-family pump check)
-#   offset 118 BPL -9 → 111    (color copy loop body)
-#   offset 141 BNE -19 → 124   (color chunk loop body)
-#   offset 148 BEQ +3 → 153    (color end-of-family pump check)
 _PUMP_BODY_LO = REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF
 _PUMP_BODY_HI = (REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF
-MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = bytes(
-    [
-        # --- Header: dispatch raster vs audio ---
-        0xAD,
-        0x19,
-        0xD0,  # 0   LDA $D019
-        0x29,
-        0x01,  # 3   AND #$01
-        0xD0,
-        0x03,  # 5   BNE +3 → 10
-        0x4C,
-        0xAD,
-        0xC5,  # 7   JMP $C5AD (audio fallthrough)
-        0x8D,
-        0x19,
-        0xD0,  # 10  STA $D019 (ack raster)
-        0xAD,
-        0x17,
-        0xC7,  # 13  LDA $C717 (ready flag)
-        0xD0,
-        0x03,  # 16  BNE +3 → 21
-        0x4C,
-        0xAA,
-        0xC5,  # 18  JMP $C5AA (chain to kernal)
-        # --- BITMAP family: 80 chunks × 100 bytes = 8000 bytes ---
-        # Copy 5 bytes ($DF02..$DF06 = main lo/hi + REU lo/mi/hi). Length
-        # ($DF07/$DF08) is set per-chunk, NOT here.
-        0xA2,
-        0x04,  # 21  LDX #$04
-        0xBD,
-        0x00,
-        0xC7,  # 23  LDA $C700,X
-        0x9D,
-        0x02,
-        0xDF,  # 26  STA $DF02,X
-        0xCA,  # 29  DEX
-        0x10,
-        0xF7,  # 30  BPL -9 → 23
-        0xA9,
-        _BITMAP_CHUNKS,  # 32  LDA #80
-        0x85,
-        _CHUNK_COUNTER_ZP,  # 34  STA $FB
-        0xA9,
-        BANK_SWAP_CHUNK_SIZE,  # 36  LDA #100 (chunk lo)
-        0x8D,
-        0x07,
-        0xDF,  # 38  STA $DF07
-        0xA9,
-        0x00,  # 41  LDA #$00 (chunk hi)
-        0x8D,
-        0x08,
-        0xDF,  # 43  STA $DF08
-        0xA9,
-        0x91,  # 46  LDA #$91 (REU exec REU→C64)
-        0x8D,
-        0x01,
-        0xDF,  # 48  STA $DF01 (trigger ~100 cyc halt)
-        0xC6,
-        _CHUNK_COUNTER_ZP,  # 51  DEC $FB
-        0xD0,
-        0xED,  # 53  BNE -19 → 36
-        # End-of-bitmap pump check: ack CIA #1 if pending, run pump body.
-        # JSR clobbers $DF02..$DF06 — safe because the next family's copy
-        # loop re-loads them from the frame tracker.
-        0xAD,
-        0x0D,
-        0xDC,  # 55  LDA $DC0D (ack CIA #1 ICR)
-        0x29,
-        0x01,  # 58  AND #$01 (timer A bit)
-        0xF0,
-        0x03,  # 60  BEQ +3 → 65 (skip JSR)
-        0x20,
-        _PUMP_BODY_LO,
-        _PUMP_BODY_HI,  # 62  JSR $C180 (pump body)
-        # --- SCREEN family: 10 chunks × 100 bytes = 1000 bytes ---
-        0xA2,
-        0x04,  # 65  LDX #$04
-        0xBD,
-        0x07,
-        0xC7,  # 67  LDA $C707,X
-        0x9D,
-        0x02,
-        0xDF,  # 70  STA $DF02,X
-        0xCA,  # 73  DEX
-        0x10,
-        0xF7,  # 74  BPL -9 → 67
-        0xA9,
-        _SCREEN_CHUNKS,  # 76  LDA #10
-        0x85,
-        _CHUNK_COUNTER_ZP,  # 78  STA $FB
-        0xA9,
-        BANK_SWAP_CHUNK_SIZE,  # 80  LDA #100
-        0x8D,
-        0x07,
-        0xDF,  # 82  STA $DF07
-        0xA9,
-        0x00,  # 85  LDA #$00
-        0x8D,
-        0x08,
-        0xDF,  # 87  STA $DF08
-        0xA9,
-        0x91,  # 90  LDA #$91
-        0x8D,
-        0x01,
-        0xDF,  # 92  STA $DF01 (trigger)
-        0xC6,
-        _CHUNK_COUNTER_ZP,  # 95  DEC $FB
-        0xD0,
-        0xED,  # 97  BNE -19 → 80
-        # End-of-screen pump check.
-        0xAD,
-        0x0D,
-        0xDC,  # 99  LDA $DC0D
-        0x29,
-        0x01,  # 102 AND #$01
-        0xF0,
-        0x03,  # 104 BEQ +3 → 109
-        0x20,
-        _PUMP_BODY_LO,
-        _PUMP_BODY_HI,  # 106 JSR $C180
-        # --- COLOR family: 10 chunks × 100 bytes = 1000 bytes ---
-        0xA2,
-        0x04,  # 109 LDX #$04
-        0xBD,
-        0x0E,
-        0xC7,  # 111 LDA $C70E,X
-        0x9D,
-        0x02,
-        0xDF,  # 114 STA $DF02,X
-        0xCA,  # 117 DEX
-        0x10,
-        0xF7,  # 118 BPL -9 → 111
-        0xA9,
-        _COLOR_CHUNKS,  # 120 LDA #10
-        0x85,
-        _CHUNK_COUNTER_ZP,  # 122 STA $FB
-        0xA9,
-        BANK_SWAP_CHUNK_SIZE,  # 124 LDA #100
-        0x8D,
-        0x07,
-        0xDF,  # 126 STA $DF07
-        0xA9,
-        0x00,  # 129 LDA #$00
-        0x8D,
-        0x08,
-        0xDF,  # 131 STA $DF08
-        0xA9,
-        0x91,  # 134 LDA #$91
-        0x8D,
-        0x01,
-        0xDF,  # 136 STA $DF01 (trigger)
-        0xC6,
-        _CHUNK_COUNTER_ZP,  # 139 DEC $FB
-        0xD0,
-        0xED,  # 141 BNE -19 → 124
-        # End-of-color pump check.
-        0xAD,
-        0x0D,
-        0xDC,  # 143 LDA $DC0D
-        0x29,
-        0x01,  # 146 AND #$01
-        0xF0,
-        0x03,  # 148 BEQ +3 → 153
-        0x20,
-        _PUMP_BODY_LO,
-        _PUMP_BODY_HI,  # 150 JSR $C180
-        # --- TAIL: bg0, bank swap, clear ready ---
-        0xAD,
-        0x15,
-        0xC7,  # 153 LDA $C715 (bg0)
-        0x8D,
-        0x21,
-        0xD0,  # 156 STA $D021
-        0xAD,
-        0x16,
-        0xC7,  # 159 LDA $C716 (bank value)
-        0x8D,
-        0x00,
-        0xDD,  # 162 STA $DD00 (swap VIC bank)
-        0xA9,
-        0x00,  # 165 LDA #$00
-        0x8D,
-        0x17,
-        0xC7,  # 167 STA $C717 (clear ready flag)
-        # --- EXIT PATHS ---
-        0x4C,
-        0x31,
-        0xEA,  # 170 JMP $EA31 (chain to kernal)
-        0x4C,
-        AUDIO_HANDLER_INSTALL_ADDR & 0xFF,
-        (AUDIO_HANDLER_INSTALL_ADDR >> 8) & 0xFF,  # 173 JMP $C100
-    ]
+assert halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES) >= BANK_SWAP_CHUNK_SIZE, (
+    "a bank-swap chunk's halt must fit inside the shortest NMI period the streamer arms"
 )
-assert len(MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER) == 176, (
-    "MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER length changed — the "
-    "JMP targets at offsets 7 ($C500+173) and 18 ($C500+170), the BPL "
-    "offsets in the 3 copy loops, the BNE offsets in the 3 chunk loops, "
-    "and the BEQ +3 offsets in the 3 end-of-family pump checks must all "
-    "be recomputed before changing. See the offset comments in the byte "
-    "column."
+
+
+# fmt: off
+def _chunked_merged_dispatcher(
+    families: tuple[tuple[int, int], ...], ready_flag_addr: int, tail: bytes
+) -> bytes:
+    """Assemble a chunked bank-swap + audio-pump dispatcher for $C500.
+
+    ``families`` is one ``(tracker_addr, length)`` per REC DMA in trigger
+    order: the 7 staged REC bytes at ``tracker_addr`` (only the first 5,
+    $DF02-$DF06, are copied; the length is set per chunk) and the family's
+    byte count, which BANK_SWAP_CHUNK_SIZE must divide into at most 255
+    chunks (the counter is one zero-page byte). ``tail`` runs after the last
+    family (bg0, the $DD00 swap, clearing ``ready_flag_addr``).
+
+    Layout (offsets relative to $C500):
+        0     header (21 B): raster vs audio dispatch + ready-flag gate, both
+              as BNE-skip-then-JMP since the exits sit past BEQ range
+        21    per family (44 B): copy loop (11) + counter init (4) + chunk
+              loop (19) + end-of-family pump check (10)
+        ...   ``tail``
+        -6    JMP $EA31 (chain to kernal)
+        -3    JMP $C100 (audio fallthrough)
+    """
+    header_len, family_len = 21, 44
+    length = header_len + family_len * len(families) + len(tail) + 6
+    chain = BANK_SWAP_IRQ_HANDLER_ADDR + length - 6
+    audio = BANK_SWAP_IRQ_HANDLER_ADDR + length - 3
+    out = bytearray(
+        [
+            0xAD, 0x19, 0xD0,  # LDA $D019
+            0x29, 0x01,  # AND #$01 (raster bit)
+            0xD0, 0x03,  # BNE +3 (raster → ack)
+            0x4C, audio & 0xFF, audio >> 8,  # JMP audio fallthrough
+            0x8D, 0x19, 0xD0,  # STA $D019 (ack raster)
+            0xAD, ready_flag_addr & 0xFF, ready_flag_addr >> 8,  # LDA ready flag
+            0xD0, 0x03,  # BNE +3 (staged → first family)
+            0x4C, chain & 0xFF, chain >> 8,  # JMP chain to kernal
+        ]
+    )
+    assert len(out) == header_len
+    for tracker_addr, family_bytes in families:
+        chunks, rest = divmod(family_bytes, BANK_SWAP_CHUNK_SIZE)
+        assert rest == 0 and 0 < chunks <= 0xFF, (family_bytes, BANK_SWAP_CHUNK_SIZE)
+        out += bytes(
+            [
+                0xA2, 0x04,  # LDX #$04
+                0xBD, tracker_addr & 0xFF, tracker_addr >> 8,  # LDA tracker,X
+                0x9D, 0x02, 0xDF,  # STA $DF02,X
+                0xCA,  # DEX
+                0x10, 0xF7,  # BPL -9 (copy loop)
+                0xA9, chunks,  # LDA #chunks
+                0x85, _CHUNK_COUNTER_ZP,  # STA $FB
+                0xA9, BANK_SWAP_CHUNK_SIZE,  # LDA #chunk (length lo)
+                0x8D, 0x07, 0xDF,  # STA $DF07
+                0xA9, 0x00,  # LDA #$00 (length hi)
+                0x8D, 0x08, 0xDF,  # STA $DF08
+                0xA9, REU.CMD_FETCH_EXEC,  # LDA #$91 (REU → C64, exec)
+                0x8D, 0x01, 0xDF,  # STA $DF01 (trigger one chunk's halt)
+                0xC6, _CHUNK_COUNTER_ZP,  # DEC $FB
+                0xD0, 0xED,  # BNE -19 (chunk loop)
+                0xAD, 0x0D, 0xDC,  # LDA $DC0D (ack CIA #1 ICR)
+                0x29, 0x01,  # AND #$01 (timer A)
+                0xF0, 0x03,  # BEQ +3 (no pump tick pending)
+                0x20, _PUMP_BODY_LO, _PUMP_BODY_HI,  # JSR $C180 (pump body)
+            ]
+        )
+    out += tail
+    out += bytes(
+        [
+            0x4C, 0x31, 0xEA,  # JMP $EA31 (chain to kernal)
+            0x4C, AUDIO_HANDLER_INSTALL_ADDR & 0xFF, AUDIO_HANDLER_INSTALL_ADDR >> 8,  # JMP $C100
+        ]
+    )
+    assert len(out) == length
+    return bytes(out)
+
+
+# hires: bitmap + screen, then the $DD00 swap and the ready-flag clear.
+_HIRES_READY_FLAG = FRAME_TRACKER_ADDR + TRACKER_OFF_READY_FLAG
+_HIRES_BANK_VALUE = FRAME_TRACKER_ADDR + TRACKER_OFF_BANK_VALUE
+BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = _chunked_merged_dispatcher(
+    (
+        (FRAME_TRACKER_ADDR + TRACKER_OFF_BITMAP_REGS, REU_VIDEO_BITMAP_LEN),
+        (FRAME_TRACKER_ADDR + TRACKER_OFF_SCREEN_REGS, REU_VIDEO_BITMAP_SCREEN_LEN),
+    ),
+    _HIRES_READY_FLAG,
+    bytes(
+        [
+            0xAD, _HIRES_BANK_VALUE & 0xFF, _HIRES_BANK_VALUE >> 8,  # LDA bank value
+            0x8D, 0x00, 0xDD,  # STA $DD00 (swap VIC bank)
+            0xA9, 0x00,  # LDA #$00
+            0x8D, _HIRES_READY_FLAG & 0xFF, _HIRES_READY_FLAG >> 8,  # STA ready flag
+        ]
+    ),
 )
+assert len(BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER) == 21 + 2 * 44 + 11 + 6  # 126
+
+# mhires: bitmap + screen + color, then bg0, the $DD00 swap and the
+# ready-flag clear.
+_MHIRES_READY_FLAG = FRAME_TRACKER_ADDR + MHIRES_TRACKER_OFF_READY_FLAG
+_MHIRES_BANK_VALUE = FRAME_TRACKER_ADDR + MHIRES_TRACKER_OFF_BANK_VALUE
+_MHIRES_BG0 = FRAME_TRACKER_ADDR + MHIRES_TRACKER_OFF_BG0
+MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = _chunked_merged_dispatcher(
+    (
+        (FRAME_TRACKER_ADDR + MHIRES_TRACKER_OFF_BITMAP_REGS, REU_VIDEO_BITMAP_LEN),
+        (FRAME_TRACKER_ADDR + MHIRES_TRACKER_OFF_SCREEN_REGS, REU_VIDEO_BITMAP_SCREEN_LEN),
+        (FRAME_TRACKER_ADDR + MHIRES_TRACKER_OFF_COLOR_REGS, REU_VIDEO_BITMAP_COLOR_LEN),
+    ),
+    _MHIRES_READY_FLAG,
+    bytes(
+        [
+            0xAD, _MHIRES_BG0 & 0xFF, _MHIRES_BG0 >> 8,  # LDA bg0
+            0x8D, 0x21, 0xD0,  # STA $D021
+            0xAD, _MHIRES_BANK_VALUE & 0xFF, _MHIRES_BANK_VALUE >> 8,  # LDA bank value
+            0x8D, 0x00, 0xDD,  # STA $DD00 (swap VIC bank)
+            0xA9, 0x00,  # LDA #$00
+            0x8D, _MHIRES_READY_FLAG & 0xFF, _MHIRES_READY_FLAG >> 8,  # STA ready flag
+        ]
+    ),
+)
+# fmt: on
+assert len(MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER) == 21 + 3 * 44 + 17 + 6  # 176
 
 
 # Host-DMA double-buffer swap IRQ handler (no-REU backends, e.g. TeensyROM).
@@ -1008,11 +892,11 @@ def install_bank_swap_irq(
 
     `audio_pump_active`: True when the scene also opted into REU audio
     (`use_reu_pump = true`). In that case `handler_bytes` is expected to
-    be a merged dispatcher (BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER or the
-    mhires equivalent) whose non-raster branch JMPs to $C100 where the
+    be a chunked merged dispatcher (BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER
+    or the mhires equivalent) whose non-raster branch JMPs to $C100 where the
     audio pump handler lives. We pre-upload a 3-byte JMP $EA31 stub at
     $C100 and a lone RTS at $C180 (the pump-body subroutine the chunked
-    mhires dispatcher JSRs) BEFORE hooking $0314, so the gap between this
+    dispatchers JSR) BEFORE hooking $0314, so the gap between this
     install completing (CIA #1 IRQ re-enabled at the end) and the audio
     streamer uploading the real pump is covered by a safe fall-through
     instead of a jump into uninitialized RAM or a previous scene's pump.

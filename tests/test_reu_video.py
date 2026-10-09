@@ -29,11 +29,13 @@ from c64cast.hw.c64 import (
     CIA1,
     CIA2,
     KERNAL,
+    NMI_SAFE_MIN_PERIOD_CYCLES,
     REU,
     SCREEN,
     VECTORS,
     VIC_BANK_0,
     VIC_BANK_2,
+    halt_quantum_bytes,
 )
 from c64cast.video import modes_irq
 from c64cast.video.modes import (
@@ -46,6 +48,7 @@ from c64cast.video.modes_irq import (
     AUDIO_HANDLER_INSTALL_ADDR,
     AUDIO_HANDLER_STUB,
     BANK_SWAP_CHUNK_SIZE,
+    BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
     BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER,
@@ -1520,13 +1523,15 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         — so the gap between this install completing and audio.start
         writing real bytes doesn't vector into uninitialized RAM."""
 
-    def test_hires_uses_merged_handler_when_audio_active(self):
+    def test_hires_uses_chunked_merged_handler_when_audio_active(self):
+        # #661: the monolithic merge (64 B) halts the bus for the whole 8 ms
+        # bitmap DMA and collapses ~95 NMIs into one.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         m = HiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
         m.setup(api)
         handler = fake.mem_files[f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}"]
-        self.assertEqual(handler, BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER)
+        self.assertEqual(handler, BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER)
 
     def test_mhires_uses_chunked_merged_handler_when_audio_active(self):
         # mhires + REU audio uses the CHUNKED merged variant (176 B). The monolithic
@@ -1595,7 +1600,7 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertLess(stub_idx, vec_idx)
 
     def test_pump_body_stub_uploaded_before_irq_vector_hook_mhires(self):
-        # #551: the chunked mhires dispatcher JSRs $C180 itself, so an RTS has
+        # #551: the chunked dispatchers JSR $C180 themselves, so an RTS has
         # to be there before $0314 is hooked — otherwise the first CIA #1 tick
         # that latches during a REC family calls power-on RAM or a previous
         # scene's pump body.
@@ -1656,11 +1661,11 @@ class MergedDispatcherFlagWiringTest(unittest.TestCase):
 
 class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
     """The chunked mhires merged dispatcher splits each per-frame REC
-    DMA into 100-byte sub-DMAs so the per-chunk bus halt stays under
-    the 125 µs NMI period (fixing NMI loss → restored music pitch).
+    DMA into BANK_SWAP_CHUNK_SIZE-byte sub-DMAs so the per-chunk bus halt
+    stays under the shortest NMI period (fixing NMI loss → restored pitch).
     After each family's chunk loop ends, a pump check reads $DC0D and
     runs the pump body if CIA #1 was pending — keeping the audio ring
-    refilled across the ~14 ms bank-swap I-flag window (fixing the
+    refilled across the bank-swap I-flag window (fixing the
     ring drain that the split alone makes WORSE). These tests pin the
     byte layout, branch displacements, chunk counts, and the three
     end-of-family pump JSRs."""
@@ -1672,10 +1677,11 @@ class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
         # loop + 10 pump check) + 17 tail + 6 exits = 176.
         self.assertEqual(len(self.HANDLER), 176)
 
-    def test_chunk_size_100(self):
-        # 1 cyc/byte REU bandwidth × 100 = 100 µs halt per chunk,
-        # under the 125 µs NMI period.
-        self.assertEqual(BANK_SWAP_CHUNK_SIZE, 100)
+    def test_chunk_halt_fits_the_shortest_nmi_period(self):
+        # #661: 100 bytes fit the 125-cycle period at 8 kHz but not the
+        # 85-cycle period of the 12 kHz default. The bound is the shortest
+        # period the streamer arms, less the halt-to-ack margin.
+        self.assertLessEqual(BANK_SWAP_CHUNK_SIZE, halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES))
 
     def test_exit_paths_jmp_kernal_then_audio(self):
         # Last 6 bytes: chain to kernal, then audio fallthrough.
@@ -1713,19 +1719,19 @@ class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
         self.assertEqual(self.HANDLER[20], 0xC5)
 
     def test_bitmap_chunk_count(self):
-        # LDA #80 at offset 32 (= 8000 / 100).
+        # LDA #chunks at offset 32.
         self.assertEqual(self.HANDLER[32], 0xA9)
-        self.assertEqual(self.HANDLER[33], 80)
+        self.assertEqual(self.HANDLER[33], REU_VIDEO_BITMAP_LEN // BANK_SWAP_CHUNK_SIZE)
 
     def test_screen_chunk_count(self):
-        # LDA #10 at offset 76 (= 1000 / 100).
+        # LDA #chunks at offset 76.
         self.assertEqual(self.HANDLER[76], 0xA9)
-        self.assertEqual(self.HANDLER[77], 10)
+        self.assertEqual(self.HANDLER[77], REU_VIDEO_BITMAP_SCREEN_LEN // BANK_SWAP_CHUNK_SIZE)
 
     def test_color_chunk_count(self):
-        # LDA #10 at offset 120.
+        # LDA #chunks at offset 120.
         self.assertEqual(self.HANDLER[120], 0xA9)
-        self.assertEqual(self.HANDLER[121], 10)
+        self.assertEqual(self.HANDLER[121], REU_VIDEO_BITMAP_COLOR_LEN // BANK_SWAP_CHUNK_SIZE)
 
     def test_each_chunk_loop_uses_bne_back_19(self):
         # Three BNE -19 branches at offsets 53, 97, 141 — the chunk-loop
@@ -1785,9 +1791,153 @@ class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
                 )
 
 
+class ChunkedDispatcherExecutionTest(unittest.TestCase):
+    """Runs both chunked dispatchers on py65 with the REU controller modeled
+    at $DF01: each trigger records the transfer the REC registers describe,
+    then advances the C64 address and zeroes the length, as the REU does.
+    Byte-offset pins cannot see a chunk loop that covers the wrong span or
+    issues a transfer longer than the NMI budget."""
+
+    CASES = (
+        (
+            "hires",
+            BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
+            (TRACKER_OFF_BITMAP_REGS, TRACKER_OFF_SCREEN_REGS),
+            (REU_VIDEO_BITMAP_LEN, REU_VIDEO_BITMAP_SCREEN_LEN),
+            TRACKER_OFF_BANK_VALUE,
+            TRACKER_OFF_READY_FLAG,
+        ),
+        (
+            "mhires",
+            MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
+            (
+                MHIRES_TRACKER_OFF_BITMAP_REGS,
+                MHIRES_TRACKER_OFF_SCREEN_REGS,
+                MHIRES_TRACKER_OFF_COLOR_REGS,
+            ),
+            (REU_VIDEO_BITMAP_LEN, REU_VIDEO_BITMAP_SCREEN_LEN, REU_VIDEO_BITMAP_COLOR_LEN),
+            MHIRES_TRACKER_OFF_BANK_VALUE,
+            MHIRES_TRACKER_OFF_READY_FLAG,
+        ),
+    )
+    # Distinct C64 destinations per family, so a family that re-used another's
+    # registers shows up as a wrong span.
+    DESTS = (0xA000, 0x8400, 0xD800)
+
+    # Where the clobbering pump-body stub counts its calls.
+    PUMP_CALLS = 0x02A7
+
+    def _run(
+        self, handler, families, lens, bank_off, ready_off, *, raster=True, ready=1, cia1_tick=False
+    ):
+        from py65.devices.mpu6502 import MPU
+        from py65.memory import ObservableMemory
+
+        mem = ObservableMemory()
+        for i, b in enumerate(handler):
+            mem[BANK_SWAP_IRQ_HANDLER_ADDR + i] = b
+        # The pump body stub: like the real body it rewrites $DF02-$DF06 with
+        # its own addresses, then counts the call and returns.
+        body = [0xA9, 0xEE]  # LDA #$EE
+        for reg in range(REU.C64_ADDR_LO, REU.REU_ADDR_HI + 1):
+            body += [0x8D, reg & 0xFF, reg >> 8]  # STA reg
+        body += [0xEE, self.PUMP_CALLS & 0xFF, self.PUMP_CALLS >> 8, 0x60]  # INC count; RTS
+        for i, b in enumerate(body):
+            mem[REU_PUMP_BODY_SUBROUTINE_ADDR + i] = b
+        mem[CIA1.ICR] = 0x01 if cia1_tick else 0x00
+        for off, dst, length in zip(families, self.DESTS[: len(lens)], lens, strict=True):
+            regs = [dst & 0xFF, dst >> 8, 0x00, 0x00, 0xE1, length & 0xFF, length >> 8]
+            for i, b in enumerate(regs):
+                mem[FRAME_TRACKER_ADDR + off + i] = b
+        mem[FRAME_TRACKER_ADDR + bank_off] = 0x95
+        mem[FRAME_TRACKER_ADDR + ready_off] = ready
+        mem[0xD019] = 0x01 if raster else 0x00
+        transfers: list[tuple[int, int]] = []
+        # The REC registers as the handler last wrote them (the REU's own
+        # advance applied), kept apart from py65's untyped memory.
+        rec: dict[int, int] = {}
+
+        def store(address, value):
+            rec[address] = value
+
+        def trigger(address, value):
+            dst = rec[REU.C64_ADDR_LO] | (rec[REU.C64_ADDR_HI] << 8)
+            length = rec[REU.LENGTH_LO] | (rec[REU.LENGTH_HI] << 8)
+            self.assertEqual(value, REU.CMD_FETCH_EXEC)
+            # The staged REU bank is $E1; the pump stub leaves $EE behind.
+            self.assertEqual(rec[REU.REU_ADDR_HI], 0xE1, "a chunk fired from the pump's registers")
+            transfers.append((dst, length))
+            end = dst + length
+            rec[REU.C64_ADDR_LO], rec[REU.C64_ADDR_HI] = end & 0xFF, (end >> 8) & 0xFF
+            rec[REU.LENGTH_LO] = rec[REU.LENGTH_HI] = 0
+
+        mem.subscribe_to_write(range(REU.C64_ADDR_LO, REU.LENGTH_HI + 1), store)
+        mem.subscribe_to_write([REU.COMMAND], trigger)
+        mpu = MPU(memory=mem)
+        mpu.pc = BANK_SWAP_IRQ_HANDLER_ADDR
+        for _ in range(20000):
+            if mpu.pc in (0xEA31, AUDIO_HANDLER_INSTALL_ADDR):
+                return mpu.pc, transfers, mem
+            mpu.step()
+        self.fail(f"dispatcher never exited (PC=${mpu.pc:04X})")
+
+    def test_each_family_is_copied_whole_in_chunks_that_fit_the_nmi_budget(self):
+        budget = halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES)
+        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+            with self.subTest(mode=name):
+                exit_pc, transfers, mem = self._run(handler, families, lens, bank_off, ready_off)
+                self.assertEqual(exit_pc, 0xEA31)
+                self.assertTrue(all(0 < n <= budget for _, n in transfers), transfers[:3])
+                covered = []
+                for dst, n in transfers:
+                    if covered and covered[-1][1] == dst:
+                        covered[-1][1] = dst + n
+                    else:
+                        covered.append([dst, dst + n])
+                self.assertEqual(
+                    covered,
+                    [[d, d + n] for d, n in zip(self.DESTS[: len(lens)], lens, strict=True)],
+                    "spans copied",
+                )
+                self.assertEqual(mem[0xDD00], 0x95)
+                self.assertEqual(mem[FRAME_TRACKER_ADDR + ready_off], 0)
+
+    def test_a_pending_cia1_tick_runs_the_pump_between_families(self):
+        # The pump body rewrites $DF02-$DF06, so each family has to reload
+        # its own registers from the tracker after the end-of-family JSR.
+        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+            with self.subTest(mode=name):
+                exit_pc, transfers, mem = self._run(
+                    handler, families, lens, bank_off, ready_off, cia1_tick=True
+                )
+                self.assertEqual(exit_pc, 0xEA31)
+                self.assertEqual(mem[self.PUMP_CALLS], len(families))
+                firsts = [t for t in transfers if t[0] in self.DESTS]
+                self.assertEqual([d for d, _ in firsts], list(self.DESTS[: len(lens)]))
+                self.assertEqual(sum(n for _, n in transfers), sum(lens))
+
+    def test_non_raster_irq_falls_through_to_the_pump(self):
+        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+            with self.subTest(mode=name):
+                exit_pc, transfers, _ = self._run(
+                    handler, families, lens, bank_off, ready_off, raster=False
+                )
+                self.assertEqual(exit_pc, AUDIO_HANDLER_INSTALL_ADDR)
+                self.assertEqual(transfers, [])
+
+    def test_unstaged_frame_chains_without_a_transfer(self):
+        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+            with self.subTest(mode=name):
+                exit_pc, transfers, _ = self._run(
+                    handler, families, lens, bank_off, ready_off, ready=0
+                )
+                self.assertEqual(exit_pc, 0xEA31)
+                self.assertEqual(transfers, [])
+
+
 class ReuPumpBodySubroutineTest(unittest.TestCase):
     """The open-loop pump body at $C180 is the tracked pump's one copy:
-    REU_IRQ_HANDLER_TRACKED and the chunked mhires bank-swap dispatcher
+    REU_IRQ_HANDLER_TRACKED and the chunked bank-swap dispatchers
     both JSR to it, so it ends with RTS. Caller is responsible for
     saving A; subroutine doesn't preserve registers (X / Y aren't
     touched anyway, A is dead at every call site)."""
