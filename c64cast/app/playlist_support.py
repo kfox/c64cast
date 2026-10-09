@@ -492,7 +492,9 @@ class EnsembleCoordinator:
 
     def release_audio_claim(self, scene: Scene) -> bool:
         """Release the ensemble audio slot if `scene` holds it, and say
-        whether it did. `wait_for_audio_claim` takes it back."""
+        whether it did. A scene set up again claims it back with
+        `wait_for_audio_claim`; a dropped or lapsed "UP NEXT" card's scene
+        is resolved afresh instead (`claim_lapsed`)."""
         pl = self._pl
         if pl.ensemble is None or not scene.__dict__.get("_audio_lock_held", False):
             return False

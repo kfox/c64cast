@@ -583,6 +583,26 @@ class DroppedCardReleasesTheSlotTest(unittest.TestCase):
             pl.run()
         self._assert_other_gets_it(ens)
 
+    def test_a_broadcast_interrupt_during_a_card(self):
+        pl, ens = self._card_up()
+
+        class _Follower(_SilentScene):
+            def bind_orchestrator(self, orch, *, conductor: bool, index: int) -> None:
+                pass
+
+        class _Orch:
+            def follower_scene_cfg_for(self, name: str) -> object:
+                return object()
+
+        ens.active_orchestrator = _Orch()  # type: ignore[assignment]
+        pl.broadcast_interrupt = threading.Event()
+        pl.broadcast_resume = threading.Event()
+        pl.broadcast_resume.set()
+        pl.build_follower_scene = lambda cfg: _Follower("follower")  # type: ignore[assignment]
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.ensemble_coord.handle_broadcast_interrupt()
+        self._assert_other_gets_it(ens)
+
     def test_a_restart_under_the_card_keeps_the_slot_for_its_scene(self):
         pl, ens = self._card_up()
         with self.assertLogs("c64cast.app.playlist", level="WARNING"):
