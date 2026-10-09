@@ -1485,10 +1485,19 @@ class DigestParametersTest(unittest.TestCase):
                 self.assertEqual(redact_secrets(line), want)
 
     def test_a_quote_inside_a_parameter_value_does_not_close_the_header(self):
-        self.assertEqual(
-            redact_secrets("Authorization: Digest a=it's, response=abc tail"),
-            "Authorization: Digest REDACTED",
-        )
+        for line, want in (
+            ("Authorization: Digest a=it's, response=abc tail", "Authorization: Digest REDACTED"),
+            (
+                'Authorization: Digest response="R", opaque=x\'; cnonce=abc',
+                "Authorization: Digest REDACTED",
+            ),
+            (
+                'Authorization: Digest opaque=x", cnonce=abc',
+                "Authorization: Digest REDACTED",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
 
     def test_another_scheme_still_ends_at_its_first_word(self):
         self.assertEqual(
@@ -1653,7 +1662,7 @@ class CookieTest(unittest.TestCase):
             ('Cookie: a="x;y"; b=c', "Cookie: a=REDACTED; b=REDACTED"),
             ('Cookie: a="b', "Cookie: a=REDACTED"),
             ("Cookie: a=b&c=d; e=f", "Cookie: a=REDACTED; e=REDACTED"),
-            ("Cookie: a=; b=c", "Cookie: a=; b=REDACTED"),
+            ("Cookie: a=; b=c", "Cookie: REDACTED; b=REDACTED"),
             ("Cookie: a=b;;;c=d", "Cookie: a=REDACTED;;;c=REDACTED"),
             ("Cookie: bare", "Cookie: REDACTED"),
             ("Cookie: ä=ö; ü=ß", "Cookie: ä=REDACTED; ü=REDACTED"),
@@ -1684,7 +1693,7 @@ class CookieTest(unittest.TestCase):
             ("Set-Cookie: sid=abc, other=def; Path=/", "Set-Cookie: sid=REDACTED; Path=/"),
             ("Set-Cookie: sid=abc", "Set-Cookie: sid=REDACTED"),
             ("Set-Cookie: sid=abc;", "Set-Cookie: sid=REDACTED;"),
-            ("Set-Cookie: =abc; Path=/", "Set-Cookie: =REDACTED; Path=/"),
+            ("Set-Cookie: =abc; Path=/", "Set-Cookie: REDACTED; Path=/"),
             ("Set-Cookie:  ; sid=abc; Path=/", "Set-Cookie:  ; sid=REDACTED; Path=/"),
             ("X-Set-Cookie: sid=abc; Path=/", "X-Set-Cookie: sid=REDACTED; Path=/"),
             ("Set_Cookie: sid=abc; Path=/", "Set_Cookie: sid=REDACTED; Path=/"),
@@ -1712,7 +1721,66 @@ class CookieTest(unittest.TestCase):
                 "'Cookie: a=REDACTED; c=REDACTED; d=REDACTED' next",
             ),
             ("'Cookie': b'a=b; c=d'", "'Cookie': b'a=REDACTED; c=REDACTED'"),
-            ('Cookie: a=b; c=d" tail', 'Cookie: a=REDACTED; c=REDACTED" tail'),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_item_whose_name_is_no_cookie_name_is_masked_whole(self):
+        for line, want in (
+            ("cookie=S x=y", "cookie=REDACTED"),
+            ("cookie=S&a=b", "cookie=REDACTED"),
+            ("cookie=SECRET&x=1", "cookie=REDACTED"),
+            ("cookie=SEC/RET=1", "cookie=REDACTED"),
+            ("cookie=S,x=y", "cookie=REDACTED"),
+            ("cookie=S'x=y", "cookie=REDACTED"),
+            ("cookie=dGVzdA==", "cookie=REDACTED"),
+            ("cookie=YWI=", "cookie=REDACTED"),
+            ("Cookie: dGVzdA==; b=c", "Cookie: REDACTED; b=REDACTED"),
+            ("--cookie dGVzdA==", "--cookie REDACTED"),
+            ("Set-Cookie: S x=y; Path=/", "Set-Cookie: REDACTED; Path=/"),
+            ("Cookie: a = b ; c = d", "Cookie: a = REDACTED ; c = REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quote_inside_a_cookie_does_not_end_the_list(self):
+        for line, want in (
+            ("Cookie: a=b'; c=d", "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a=b"; session=s', "Cookie: a=REDACTED; session=REDACTED"),
+            ("Cookie: a=b' ; session=s", "Cookie: a=REDACTED ; session=REDACTED"),
+            ("Cookie: a=x\\'; session=s", "Cookie: a=REDACTED; session=REDACTED"),
+            ("Cookie: a=x'-y; session=s", "Cookie: a=REDACTED; session=REDACTED"),
+            ("Cookie: a'=1; session=s", "Cookie: REDACTED; session=REDACTED"),
+            ('Cookie: a=b; c=d" tail', "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: prefs={"a":1}; sid=s', "Cookie: prefs=REDACTED; sid=REDACTED"),
+            (
+                "Cookie: data=%7B%22k%22%3A%22v%22%7D; t=s",
+                "Cookie: data=REDACTED; t=REDACTED",
+            ),
+            ("Cookie%3A a%3Db%22%3B session%3Ds", "Cookie%3A a%3DREDACTED%3B session%3DREDACTED"),
+            (
+                '--add-header "Cookie: a=b\'; session=s"',
+                '--add-header "Cookie: a=REDACTED; session=REDACTED"',
+            ),
+            (
+                '"Cookie: a=b\\"; session=s", "n": 1',
+                '"Cookie: a=REDACTED; session=REDACTED", "n": 1',
+            ),
+            ("'Cookie: a=b'; session=s' next", "'Cookie: a=REDACTED; session=REDACTED' next"),
+            ("'Cookie: a=x%27 y; s=t' next", "'Cookie: a=REDACTED; s=REDACTED' next"),
+            (
+                "h=%27Cookie%3A%20a%3Db%27%3B%20s%3Dt%27&n=1",
+                "h=%27Cookie%3A%20a%3DREDACTED%3B%20s%3DREDACTED%27&n=1",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_first_value_that_a_semicolon_follows_starts_the_list(self):
+        for line, want in (
+            ('Cookie: "a"; session=s', "Cookie: REDACTED; session=REDACTED"),
+            ('cookie: "a=1"; b=s', "cookie: REDACTED; b=REDACTED"),
+            ("cookie: 'sid=s' ; b=t", "cookie: REDACTED ; b=REDACTED"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
@@ -1752,6 +1820,10 @@ class CookieTest(unittest.TestCase):
             lambda s: 'cookie: "a="' * 4_000 * s,
             lambda s: "x cookie=a;cookie='b;" * 4_000 * s,
             lambda s: "'--cookie', 'a=b'," * 4_000 * s,
+            lambda s: 'cookie: "a"; ' * 4_000 * s,
+            lambda s: "'Cookie: a=b' " * 4_000 * s,
+            lambda s: "'Cookie: '" + " " * 40_000 * s + "x",
+            lambda s: "cookie=" + "a b=" * 8_000 * s,
         ):
             with self.subTest(line=make(1)[:30]):
                 _assert_linear_time(self, make)

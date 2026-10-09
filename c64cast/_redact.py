@@ -579,14 +579,47 @@ def _key_values(line: _Line) -> Iterator[Span]:
             v, d = start
         else:
             v, d = tail.end(), line.depth(tail.start("sep"))
+        closer = _enclosing_quote(line, name)
         if name.group("cookie") is not None:
-            yield from _cookie_values(line, v, d, name.group("cookie").lower().startswith("set"))
+            first_only = name.group("cookie").lower().startswith("set")
+            yield from _cookie_values(line, v, d, first_only, closer)
             continue
         span = _value(line, v, d, "unquoted")
         if name.group("header") is not None:
-            span = _past_scheme(line, v, d, span, listed=tail is None)
+            span = _past_scheme(line, v, d, span, closer, listed=tail is None)
         if span is not None:
             yield span
+
+
+#: The quote that can close a header's parameter list: the quote character,
+#: the number of backslashes before it, and its depth.
+_Closer = tuple[str, int, int]
+
+
+def _enclosing_quote(line: _Line, name: re.Match[str]) -> _Closer | None:
+    """The quote opening the string that the header `name` ends is written
+    in, as in `'Cookie: a=b' next`. A quote after the name as well makes it
+    a quoted key (`{'Cookie': …}`), and its value carries its own quote."""
+    text = line.text
+    run = name.start()
+    while run > 0 and _is_name_char(text[run - 1]):
+        run -= 1
+    after = name.end()
+    while after < len(text) and text[after] == "\\":
+        after += 1
+    if run == 0 or text[run - 1] not in "\"'" or text.startswith(("'", '"'), after):
+        return None
+    q = run - 1
+    escaped = q
+    while escaped > 0 and text[escaped - 1] == "\\":
+        escaped -= 1
+    return text[q], q - escaped, line.depth(q)
+
+
+def _opener_closer(line: _Line, opener: re.Match[str]) -> _Closer:
+    """The quote that closes what `opener` opens."""
+    q = opener.start("q")
+    return opener.group("q")[0], len(opener.group("esc") or ""), line.depth(q)
 
 
 #: What separates a command-line flag from its value.
@@ -651,44 +684,66 @@ def _flag_value_start(line: _Line, name: re.Match[str]) -> tuple[int, int] | Non
     return gap[1], line.deepest(*gap)
 
 
-def _cookie_values(line: _Line, v: int, d: int, first_only: bool) -> list[Span]:
+def _cookie_values(
+    line: _Line, v: int, d: int, first_only: bool, closer: _Closer | None
+) -> list[Span]:
     """The values in a `Cookie` header's `name=value; name=value` list that
     starts at `v`, `d` deep, or in a `Set-Cookie` header's first pair when
     `first_only`: the attributes after it (`Path`, `Expires`, `HttpOnly`) are
-    no secret. A quoted list ends at its closing quote and an unquoted one at
-    the end of the line or the quote closing the header, which is where
-    `_params_end` stops; an `&` ends it only in an encoded value, since a raw
-    cookie may hold one. A list inside a stretch already read is masked whole
-    rather than split again, which keeps a run of `cookie=` linear. An item
-    with no `=` is masked whole: it is a cookie with its name left off."""
+    no secret. A quoted list ends at its closing quote, unless a `;` follows
+    that quote, which makes the quoted string the list's first item
+    (`"a"; b=c`). An unquoted list ends where `_params_end` stops, given
+    `closer`, the quote of the string the header is written in; an `&` ends
+    it only in an encoded value, since a raw cookie may hold one. A list
+    inside a stretch already read is masked whole rather than split again,
+    which keeps a run of `cookie=` linear. An item is masked whole when what
+    comes before its first `=` is no cookie name, or nothing but `=` comes
+    after it: `cookie=S x=y` and `cookie=dGVzdA==` are a cookie with its name
+    left off."""
     text = line.text
     opener = _opener(text, v)
-    if opener is None:
-        start, end = v, _params_end(line, v, d, amp_ends=d > 0)
-    elif line.deepest(v, opener.end()) > d:
-        start = opener.end()
-        end = _params_end(line, start, d, amp_ends=d > 0)
-    else:
+    span = None
+    if opener is not None and line.deepest(v, opener.end()) <= d:
         span = _value(line, v, d, "unquoted")
         if span is None:
             return []
-        start, end = span
-        if not line.params_scanned[0] < start < line.params_scanned[1]:
-            line.params_scanned = span
+        after = span[1] + len(opener.group("q"))
+        while after < len(text) and text[after].isspace():
+            after += 1
+        if text.startswith(";", after):
+            span = None
+            opener = None
+            start, end = v, _params_end(line, after, d, closer, amp_ends=d > 0)
+        else:
+            start, end = span
+            if not line.params_scanned[0] < start < line.params_scanned[1]:
+                line.params_scanned = span
+    elif opener is None:
+        start, end = v, _params_end(line, v, d, closer, amp_ends=d > 0)
+    else:
+        start = opener.end()
+        end = _params_end(line, start, d, _opener_closer(line, opener), amp_ends=d > 0)
     if line.params_scanned[0] < start < line.params_scanned[1]:
-        return [(start, len(text) if opener is None else end)] if start < end else []
+        return [(start, len(text) if span is None else end)] if start < end else []
     spans: list[Span] = []
     for a, b in _cookie_items(text, start, end):
         eq = text.find("=", a, b)
-        if eq >= 0:
-            a = eq + 1
-            while a < b and text[a].isspace():
-                a += 1
+        if eq >= 0 and _COOKIE_NAME.fullmatch(text, a, len(text[a:eq].rstrip()) + a):
+            value = eq + 1
+            while value < b and text[value].isspace():
+                value += 1
+            if text[value:b].strip("="):
+                a = value
         if a < b:
             spans.append((a, b))
         if first_only:
             break
     return spans
+
+
+#: A cookie name: an RFC 6265 token, and no `&` or `'`, which leave it the
+#: tail of a query or a quoted string rather than a name.
+_COOKIE_NAME = re.compile(r"""[^\s()<>@,;:\\"'/\[\]?={}&]+""")
 
 
 def _cookie_items(text: str, start: int, end: int) -> Iterator[Span]:
@@ -725,13 +780,19 @@ def _cookie_items(text: str, start: int, end: int) -> Iterator[Span]:
 
 
 def _past_scheme(
-    line: _Line, v: int, d: int, span: Span | None, listed: bool = False
+    line: _Line,
+    v: int,
+    d: int,
+    span: Span | None,
+    closer: _Closer | None = None,
+    listed: bool = False,
 ) -> Span | None:
     """The credential in an `Authorization` value at `v`, `d` deep, whose
     `span` is what a value there would cover. A known scheme before it is
     kept, as `Bearer` is; any other first word may be the credential itself,
-    so it goes with what follows it. `listed` is for a value that follows a
-    flag, where a quoted scheme may be a list element of its own."""
+    so it goes with what follows it. `closer` is the quote of the string the
+    header is written in. `listed` is for a value that follows a flag, where
+    a quoted scheme may be a list element of its own."""
     text = line.text
     opener = _opener(text, v)
     deep = opener is not None and line.deepest(v, opener.end()) > d
@@ -740,7 +801,7 @@ def _past_scheme(
             return None
         scheme = _SCHEME_AND_GAP.match(text, span[0], span[1])
         if scheme is None:
-            return _past_quoted_scheme(line, opener, span, listed) or span
+            return _past_quoted_scheme(line, opener, span, closer, listed) or span
         if scheme.end() == span[1] or not _is_auth_scheme(scheme):
             return span
         return (scheme.end(), span[1])
@@ -761,16 +822,21 @@ def _past_scheme(
         # `_value`: bounded by the quoted span alone, `%22Basic%22 x` kept `x`.
         credential = (gap_end, max(span[1], gap_end if credential is None else credential[1]))
     if _is_auth_scheme(scheme):
-        return _widen_digest(line, scheme.group("scheme"), credential, gap_end, d)
+        if opener is not None:
+            closer = _opener_closer(line, opener)
+        return _widen_digest(line, scheme.group("scheme"), credential, gap_end, d, closer)
     return span if credential is None else (v, credential[1])
 
 
-def _widen_digest(line: _Line, scheme: str, credential: Span | None, c: int, d: int) -> Span | None:
+def _widen_digest(
+    line: _Line, scheme: str, credential: Span | None, c: int, d: int, closer: _Closer | None
+) -> Span | None:
     """`credential`, the one that follows `scheme` at `c` in a value `d` deep,
-    widened to the whole parameter list when the scheme is `Digest`."""
+    widened to the whole parameter list when the scheme is `Digest`; `closer`
+    is the quote that may close the list."""
     if credential is None or scheme.lower() != "digest":
         return credential
-    return (credential[0], max(credential[1], _params_end(line, c, d)))
+    return (credential[0], max(credential[1], _params_end(line, c, d, closer)))
 
 
 #: A comma between two list elements, when a quoted element that is no flag
@@ -779,7 +845,11 @@ _LIST_GAP = re.compile(r"""[ \t]*+ , [ \t]*+ (?= [bBrRuUfF]{0,2}+ \\*+ ["'] (?!-
 
 
 def _past_quoted_scheme(
-    line: _Line, opener: re.Match[str], span: Span, listed: bool = False
+    line: _Line,
+    opener: re.Match[str],
+    span: Span,
+    closer: _Closer | None = None,
+    listed: bool = False,
 ) -> Span | None:
     """The credential after a quoted value that is exactly a registered scheme,
     when whitespace or a `+` follows its closing quote: `"Basic" ab rest`. The
@@ -798,10 +868,14 @@ def _past_quoted_scheme(
     gap = _SCHEME_GAP.match(text, span[1] + len(q))
     if gap is None and listed:
         gap = _LIST_GAP.match(text, span[1] + len(q))
+        element = None if gap is None else _opener(text, gap.end())
+        if element is not None:
+            closer = _opener_closer(line, element)
     if gap is None:
         return None
     d = line.deepest(*gap.span())
-    return _widen_digest(line, scheme, _credential(line, gap.end(), gap.group(), d), gap.end(), d)
+    credential = _credential(line, gap.end(), gap.group(), d)
+    return _widen_digest(line, scheme, credential, gap.end(), d, closer)
 
 
 def _unknown_scheme(line: _Line, v: int) -> Span | None:
@@ -828,14 +902,18 @@ def _unknown_scheme(line: _Line, v: int) -> Span | None:
     return None if credential is None else (v, credential[1])
 
 
-def _params_end(line: _Line, c: int, d: int, amp_ends: bool = True) -> int:
+def _params_end(line: _Line, c: int, d: int, closer: _Closer | None, amp_ends: bool = True) -> int:
     """Where a header's parameter list starting at `c` ends in a value `d`
     deep: at the end of the line, at an `&` outside every quoted parameter
-    that is no deeper than `d` (when `amp_ends`), or at a quote that opens no
-    parameter and that no letter or digit follows, which is the quote closing
-    the header. A parameter's quote opens it when an `=` comes before it, and
-    closes at the next such quote with as many backslashes before it, so
-    `response=\\"a\\"` inside a JSON string is read whole. The list holds
+    that is no deeper than `d` (when `amp_ends`), or at the quote closing the
+    header: `closer`'s quote, with as many backslashes before it and as deep,
+    where it opens no parameter and neither a letter or digit nor a `;`
+    follows it. Any other
+    quote is the value's own (`a=b'; c=d`, `a={"k":1}; c=d`), and with no
+    `closer` none ends the list. A parameter's quote opens it when an `=`
+    comes before it, and closes at the next such quote with as many
+    backslashes before it, so `response=\\"a\\"` inside a JSON string is read
+    whole. The list holds
     spaces, commas and quotes, which end an ordinary value, so a `Digest`
     response and a cookie after the first would be left in view. A list that
     starts inside a stretch already read ends at the end of the line instead
@@ -857,7 +935,7 @@ def _params_end(line: _Line, c: int, d: int, amp_ends: bool = True) -> int:
                 if ch in "\"'":
                     if i - backslashes - 1 >= c and text[i - backslashes - 1] == "=":
                         quote = (ch, backslashes)
-                    elif i + 1 == len(text) or not _is_word_char(text[i + 1]):
+                    elif (ch, backslashes, line.depth(i)) == closer and _closes(text, i + 1):
                         i -= backslashes
                         break
             elif (ch, backslashes) == quote:
@@ -868,6 +946,15 @@ def _params_end(line: _Line, c: int, d: int, amp_ends: bool = True) -> int:
         i = len(text)
     line.params_scanned = (c, i)
     return i
+
+
+#: What may follow a header's closing quote: anything but a letter or digit,
+#: or a `;` that carries its list on.
+_INSIDE_LIST = re.compile(r"\w|\s*+;")
+
+
+def _closes(text: str, after: int) -> bool:
+    return _INSIDE_LIST.match(text, after) is None
 
 
 def _is_auth_scheme(m: re.Match[str]) -> bool:
