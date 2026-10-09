@@ -147,6 +147,11 @@ _LINK_SHAPE_EXEMPT = {
 }
 
 
+def _is_changelog_record(path: Path) -> bool:
+    """The changelog and its fragments, which quote links and paths as they were."""
+    return path == _REPO_ROOT / "CHANGELOG.md" or path.parent == _REPO_ROOT / "changelog.d"
+
+
 def _linked_paths(text: str) -> list[tuple[int, str]]:
     found = []
     for match in _MARKDOWN_LINK.finditer(text):
@@ -200,7 +205,7 @@ class RelativeLinkTest(unittest.TestCase):
         offenders = []
         for path in _linkable_files():
             rel = path.relative_to(_REPO_ROOT).as_posix()
-            if rel in _LINK_SHAPE_EXEMPT:
+            if rel in _LINK_SHAPE_EXEMPT or _is_changelog_record(path):
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             for lineno, target in _linked_paths(text):
@@ -295,13 +300,15 @@ class RetiredDocsTest(unittest.TestCase):
         surrounding one used to be. Point it at `docs/reference/` instead.
         """
         needle = "usage.md"
-        # Two files have to say the name: this one, and the changelog, which records
-        # the removal and would be useless if it could not name what was removed.
-        allowed = {Path(__file__).resolve(), _REPO_ROOT / "CHANGELOG.md"}
+        # Two places have to say the name: this file, and the changelog and its
+        # fragments, which record the removal and would be useless if they could
+        # not name what was removed.
         offenders = [
             str(path.relative_to(_REPO_ROOT))
             for path in _text_files()
-            if path not in allowed and needle in path.read_text(encoding="utf-8", errors="ignore")
+            if path != Path(__file__).resolve()
+            and not _is_changelog_record(path)
+            and needle in path.read_text(encoding="utf-8", errors="ignore")
         ]
         self.assertEqual(offenders, [], "these still point at the retired usage document")
 
