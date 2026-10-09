@@ -518,9 +518,7 @@ class Playlist:
         if not new_scenes:
             return
         self.log.info("playlist: reloading (%d → %d scenes)", len(self.scenes), len(new_scenes))
-        if self.current is not None:
-            self.safe_teardown(self.current)
-            self.current = None
+        self.drop_current()
         self.scenes = new_scenes
         self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
@@ -543,9 +541,7 @@ class Playlist:
         single-scene looping does (a no-op returning True in single-system mode);
         a lost claim / stop leaves `current` torn down and returns False. Runs on
         the playlist thread only (from PerformanceSession.service)."""
-        if self.current is not None:
-            self.safe_teardown(self.current)
-            self.current = None
+        self.drop_current()
         if not self.ensemble_coord.wait_for_audio_claim(new_scene):
             return False
         self.safe_setup(new_scene)
@@ -588,15 +584,24 @@ class Playlist:
             self._advance_single_scene()
             return
         if self.current is None:
-            resolved = self.ensemble_coord.resolve_next_index()
-            if resolved is None:
-                return  # stop_event fired during the gate wait
-            self.index = resolved
-            self._enter_interstitial()
+            self._resolve_and_announce()
         elif self.on_card and self.current.is_done:
             self.fades.fade_out(self.current)
             self.safe_teardown(self.current)
-            self.current = self.scenes[self.index]
+            upcoming = self.scenes[self.index]
+            if self.ensemble_coord.claim_lapsed(upcoming):
+                # The card's setup gave the slot up for a link outage and left
+                # it to be resolved again, which may skip a scene another
+                # system now holds the slot for. Resolved here, not on the next
+                # call: the run loop ends the run when `_advance` leaves no
+                # current scene.
+                self.log.info(
+                    "the slot for %r was released during its card; resolving again", upcoming.name
+                )
+                self.transitioning = False
+                self._resolve_and_announce()
+                return
+            self.current = upcoming
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
             self.safe_setup(self.current)
             self.transitioning = False
@@ -661,12 +666,7 @@ class Playlist:
                 self.safe_setup(self.current)
                 self.transitioning = False
                 return
-            resolved = self.ensemble_coord.resolve_next_index()
-            if resolved is None:
-                self.current = None
-                return
-            self.index = resolved
-            self._enter_interstitial()
+            self._resolve_and_announce()
             return
         next_index = self.index + 1
         if next_index >= len(self.scenes):
@@ -677,6 +677,12 @@ class Playlist:
                 return
             next_index = 0
         self.index = next_index
+        self._resolve_and_announce()
+
+    def _resolve_and_announce(self) -> None:
+        """Resolve the scene to play from `self.index` and show its "UP
+        NEXT" card. `current` is left None only when `stop_event` fired
+        during the gate wait."""
         resolved = self.ensemble_coord.resolve_next_index()
         if resolved is None:
             self.current = None
@@ -760,7 +766,21 @@ class Playlist:
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
 
-    def _set_up_again_after_restart(self) -> None:
+    def follower_frame_rendered(self) -> bool:
+        """Called after each frame of a broadcast follower scene, which the
+        run loop does not drive. A machine restart under it puts the run's
+        machine state back and sets the follower up again, and the interlude
+        goes on: its lifetime belongs to the orchestrator, so ending it was
+        rejected, and playing on against a machine that lost the follower's
+        setup was the defect. The follower never held the ensemble audio
+        slot (nothing claims one for it), so it does not wait to claim it.
+        True when it did. Raises what the new setup raises."""
+        if not self.restart_watch.after_frame(self._frame_landed, counted=True):
+            return False
+        self._set_up_again_after_restart(claim_audio=False)
+        return True
+
+    def _set_up_again_after_restart(self, *, claim_audio: bool = True) -> None:
         """The machine restarted under the current scene, so what its setup
         put there is gone. Tear the scene down, put back the run's machine
         state, and set the scene up again, keeping its pick, the way
@@ -768,13 +788,15 @@ class Playlist:
         with `loop = false` a one-scene show would stop on a power blip.
         The restore waits for the teardown because, as at startup, nothing
         of the scene's (its audio streamer, its mode's IRQ) should be
-        writing while the machine is provisioned and reset."""
+        writing while the machine is provisioned and reset. `claim_audio`
+        False skips waiting to claim the ensemble audio slot back, for a
+        scene that never held it."""
         scene = self.current
         if scene is None:
             return
         # The card's slot is held for the scene it announces, which a link
         # outage in this setup has to release.
-        announcing = self.scenes[self.index] if self.on_card else None
+        announcing = self._announced_by(scene)
         # Before the teardown, whose own failures on the reset machine would
         # otherwise reach the log ahead of their cause.
         self.log.warning(
@@ -786,7 +808,9 @@ class Playlist:
         self._restore_machine()
         # The scene is already torn down, so leaving it current would have the
         # run loop's exit tear it down a second time.
-        if self.stop_event.is_set() or not self.ensemble_coord.wait_for_audio_claim(scene):
+        if self.stop_event.is_set() or (
+            claim_audio and not self.ensemble_coord.wait_for_audio_claim(scene)
+        ):
             self.current = None
             return
         self.safe_setup(scene, announcing=announcing, after_restart=True)
@@ -820,12 +844,16 @@ class Playlist:
         back leaves it already torn down. Either way the caller's teardown
         still runs on it.
 
-        A setup lost a write when it raised a `LinkError` or moved the
-        backend's `delivery_epoch` by the end of a `flush()` after it. Most setup steps swallow a dead link
-        rather than raise it (`_emit`, `write_confirmed`, a scene that ends
-        itself when its SID player cannot start), so a raise alone would
-        let a setup that never reached the machine play as if it had: a
-        silent clip, an IRQ that was never installed, a skipped scene.
+        A setup lost a write when it raised a `LinkError` or, by the end of
+        a `flush()` after it, the backend's `write_loss_mark()` for this
+        thread had moved. Only this thread's writes count: another thread's
+        failed write (the audio worker's, a poll thread's) is that thread's
+        to repeat, and must not make a setup that landed run again. Most
+        setup steps swallow a dead link rather than raise it (`_emit`,
+        `write_confirmed`, a scene that ends itself when its SID player
+        cannot start), so a raise alone would let a setup that never
+        reached the machine play as if it had: a silent clip, an IRQ that
+        was never installed, a skipped scene.
 
         While the link does not answer the setup waits, and the time counts
         as skipped frames in `link_outage`, without a bound, like a frame
@@ -842,7 +870,7 @@ class Playlist:
             # Before the attempt: a restart the last scene outlived on a dead
             # link left no landed frame to notice it, and a SID scene's setup
             # resets the machine itself, which would hide it afterwards. Before
-            # the epoch is taken, too, and drained by a round trip, so a write
+            # the mark is taken, too, and drained by a round trip, so a write
             # the restore loses is not charged to the setup.
             if self.restart_watch.restarted_before_setup():
                 self._put_machine_back(
@@ -850,7 +878,7 @@ class Playlist:
                     scene.name,
                 )
             started = self.link_outage.now()
-            epoch = self.api.delivery_epoch
+            mark = self.api.write_loss_mark()
             error: LinkError | None = None
             try:
                 hardware_palette.settle_for(self.api, scene)
@@ -860,7 +888,7 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
-            if error is None and self.api.delivery_epoch == epoch:
+            if error is None and not self.api.writes_lost_since(mark):
                 self.link_outage.frame_ok(self.api.stats["writes"])
                 return True
             if error is None:
@@ -891,8 +919,15 @@ class Playlist:
                 self.log.exception("teardown of %r before its setup retry failed", scene.name)
             # Not before the teardown: a half-set-up scene the link reaches
             # again can sound (a MIDI scene's reader drives the SID) while
-            # another system holds the slot.
-            if claimant is not None and not self.ensemble_coord.wait_for_audio_claim(claimant):
+            # another system holds the slot. A card does not claim it back for
+            # the scene it announces: waiting here would hold the card's setup
+            # on a slot that scene may never get, so the playlist resolves the
+            # announced scene again when the card ends (`claim_lapsed`).
+            if (
+                claimant is not None
+                and claimant is scene
+                and not self.ensemble_coord.wait_for_audio_claim(claimant)
+            ):
                 return False
 
     def _release_audio_for_wait(
@@ -903,8 +938,10 @@ class Playlist:
         return the scene to claim it back for. The wait for the link has no
         bound, and holding the slot through it would skip another system's
         audio-bearing scenes, or hold a single-scene one, for as long as
-        this machine is unplugged. Claiming it back can wait on the system
-        that took it meanwhile."""
+        this machine is unplugged. Claiming it back for `scene` itself can
+        wait on the system that took it meanwhile, in line behind any
+        system already waiting; for an announced scene it is left to the
+        run loop (`claim_lapsed`)."""
         claimant = self.ensemble_coord.audio_claimant(scene, announcing)
         if claimant is None or not self.ensemble_coord.release_audio_claim(claimant):
             return None
@@ -938,6 +975,26 @@ class Playlist:
         from .recording_metadata import log_scene_recording_metadata
 
         log_scene_recording_metadata(scene, self.config, self.name)
+
+    def _announced_by(self, scene: Scene) -> Scene | None:
+        """The scene `scene` announces when it is the "UP NEXT" card still
+        on screen, whose ensemble audio slot the card holds for it."""
+        return self.scenes[self.index] if self.on_card and scene is self._card else None
+
+    def drop_current(self) -> None:
+        """Tear the current scene down and leave none, for a pause, a reload,
+        a launched clip, a broadcast or the end of the run. A card dropped
+        here never hands on to the scene it announces, so the audio slot
+        claimed for that scene is released with it: nothing else releases it
+        before that scene is set up and torn down."""
+        scene = self.current
+        if scene is None:
+            return
+        announced = self._announced_by(scene)
+        self.safe_teardown(scene)
+        self.current = None
+        if announced is not None:
+            self.ensemble_coord.release_audio_claim(announced)
 
     def safe_teardown(self, scene: Scene) -> None:
         for ov in getattr(scene, "overlays", ()):
@@ -1312,8 +1369,7 @@ class Playlist:
             for controller in (self.key_poller, self.vision_controller):
                 if controller is not None:
                     controller.stop()
-            if self.current is not None:
-                self.safe_teardown(self.current)
+            self.drop_current()
 
     def _handle_cycle(self) -> None:
         """Broadcast a style cycle to the current scene, its display mode,
@@ -1382,9 +1438,7 @@ class Playlist:
         We do NOT advance self.index — the same scene picks back up after
         the next `_advance()` call when we leave this method."""
         self.log.info("paused — hold Commodore key to resume")
-        if self.current is not None:
-            self.safe_teardown(self.current)
-            self.current = None
+        self.drop_current()
         # Before idling, not after: the poller can set `resume_event` the moment
         # it sees a 3 s C= hold, which can land *during* a slow `pause_idle`, and
         # clearing afterwards would wipe a legitimate resume and strand the pause.

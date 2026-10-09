@@ -120,8 +120,29 @@ class FakeApi:
         }
         self.calls = []
         # A test simulating a lossy link moves these.
-        self.delivery_epoch = 0
+        self._delivery_epoch = 0
+        self._thread_losses: dict[int, int] = {}
         self.answers = True
+
+    @property
+    def delivery_epoch(self) -> int:
+        return self._delivery_epoch
+
+    @delivery_epoch.setter
+    def delivery_epoch(self, value: int) -> None:
+        """A rise is a lost write, charged to the thread that raised it, as
+        `write_loss_mark` charges a real backend's losses."""
+        ident = threading.get_ident()
+        self._thread_losses[ident] = self._thread_losses.get(ident, 0) + max(
+            0, value - self._delivery_epoch
+        )
+        self._delivery_epoch = value
+
+    def write_loss_mark(self) -> int:
+        return self._thread_losses.get(threading.get_ident(), 0)
+
+    def writes_lost_since(self, mark: int) -> bool:
+        return self.write_loss_mark() != mark
 
     def format_write_latency(self):
         return None

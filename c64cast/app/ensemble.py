@@ -119,7 +119,11 @@ class Ensemble:
     audio (video / waveform / midi). Only one system may hold it at
     a time; others whose playlist lands on an audio-bearing scene skip
     it until the holder releases. `audio_lock` guards the claim/release
-    transaction so concurrent claims can't both win. Live scenes
+    transaction so concurrent claims can't both win. `audio_queue` is the
+    first-come-first-served line of systems that have decided to wait for
+    the slot rather than skip: a freed slot goes to the head of it, and a
+    claim by anyone else is refused while it is non-empty, so a holder that
+    releases and claims again in a loop cannot starve a waiter. Live scenes
     (webcam, blank) never claim — their audio is suppressed at build
     time in ensemble mode (see scene_factory.build_scene)."""
 
@@ -130,6 +134,7 @@ class Ensemble:
     broadcast_resume: dict[str, threading.Event] = field(default_factory=dict)
     audio_lock: threading.Lock = field(default_factory=threading.Lock)
     audio_holder: str | None = None
+    audio_queue: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.populate_broadcast_events()
@@ -138,12 +143,35 @@ class Ensemble:
         """Atomically claim the audio slot for `name`. Returns True if
         the caller is now the holder. A system re-claiming a slot it
         already holds counts as success — keeps repeat setup() calls
-        (reload, follower→original restore) idempotent."""
+        (reload, follower→original restore) idempotent. A free slot is
+        refused to everyone but the head of `audio_queue` while the queue
+        is non-empty; a claim that wins takes `name` out of it."""
         with self.audio_lock:
-            if self.audio_holder is None or self.audio_holder == name:
+            if self.audio_holder == name:
+                return True
+            if self.audio_holder is None and (not self.audio_queue or self.audio_queue[0] == name):
                 self.audio_holder = name
+                if name in self.audio_queue:
+                    self.audio_queue.remove(name)
                 return True
             return False
+
+    def join_audio_queue(self, name: str) -> None:
+        """Take a place in line for the audio slot, behind every system
+        already waiting. Idempotent: a system already in line keeps its
+        place. The caller leaves with `leave_audio_queue` however it stops
+        waiting, or the system at the head of a line nobody is serving
+        holds the slot against everyone else."""
+        with self.audio_lock:
+            if name not in self.audio_queue:
+                self.audio_queue.append(name)
+
+    def leave_audio_queue(self, name: str) -> None:
+        """Give up a place in line; a no-op for a system not in it, such as
+        one whose claim already won."""
+        with self.audio_lock:
+            if name in self.audio_queue:
+                self.audio_queue.remove(name)
 
     def release_audio(self, name: str) -> None:
         """Release the audio slot if `name` currently holds it.

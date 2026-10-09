@@ -14,11 +14,12 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from _fakes import quiet_logging
+from _fakes import fake_system_stack, quiet_logging
 from test_playlist import FakeApi, FakeScene, _transition_factory
 
 from c64cast.app import config as cfgmod
 from c64cast.app import session
+from c64cast.app.ensemble import Ensemble
 from c64cast.app.playlist import Playlist
 from c64cast.app.playlist_support import (
     RESTART_CHECK_MIN_S,
@@ -1058,6 +1059,113 @@ class RestartBeforeTheNextSetupTest(unittest.TestCase):
         restored_before = [c for c in cards if c.name == "trans:Next"]
         self.assertEqual(len(restored_before), 1)
         self.assertEqual(restored_before[0].setup_count, 1, "the restore's loss retried the setup")
+
+
+class _Follower(_PaintingScene):
+    """A broadcast follower that competes for audio, over a machine that
+    restarts at frame `restart_at` of its first setup; `resume` is set once the
+    second setup has run `FRAMES_AFTER` frames."""
+
+    FRAMES_AFTER = 3
+
+    def __init__(
+        self,
+        api: _Machine,
+        restart_at: int,
+        stop: threading.Event,
+        resume: threading.Event,
+        *,
+        fail_resetup: bool = False,
+    ) -> None:
+        super().__init__(api, restart_at, stop)
+        self.resume = resume
+        self.fail_resetup = fail_resetup
+
+    def bind_orchestrator(self, orch: Any, *, conductor: bool, index: int) -> None:
+        pass
+
+    def competes_for_audio_lock(self) -> bool:
+        return True
+
+    def setup(self) -> None:
+        if self.fail_resetup and self.setup_count >= 1:
+            raise RuntimeError("the second setup failed")
+        super().setup()
+
+    def process_frame(self, current_time: float) -> bool:
+        landed = super().process_frame(current_time)
+        if self.frames_by_setup.get(2, 0) >= self.FRAMES_AFTER:
+            self.resume.set()
+        return landed
+
+
+class RestartUnderABroadcastFollowerTest(unittest.TestCase):
+    def _interlude(
+        self, *, fail_resetup: bool = False, stop_during_restore: bool = False
+    ) -> tuple[Playlist, _Follower, list[int], Any]:
+        api = _Machine()
+        stop = threading.Event()
+        resume = threading.Event()
+        follower = _Follower(api, restart_at=3, stop=stop, resume=resume, fail_resetup=fail_resetup)
+        pl = Playlist(
+            [FakeScene("main", frames_until_done=10_000)],
+            api,
+            name="sys",
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+        ens = Ensemble(
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=stop
+        )
+        # Held elsewhere: a follower that waited to claim it back would hang here.
+        ens.try_claim_audio("other")
+        ens.active_orchestrator = SimpleNamespace(follower_scene_cfg_for=lambda name: None)  # type: ignore[assignment]
+        pl.ensemble = ens
+        pl.broadcast_interrupt = threading.Event()
+        pl.broadcast_resume = resume
+        pl.build_follower_scene = lambda cfg: follower
+        restores: list[int] = []
+
+        def restore() -> None:
+            restores.append(follower.teardown_count)
+            if stop_during_restore:
+                stop.set()
+
+        pl.on_machine_restart = restore
+        pl.broadcast_interrupt.set()
+        with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
+            pl.ensemble_coord.handle_broadcast_interrupt()
+        return pl, follower, restores, logs
+
+    def test_a_restart_under_the_follower_sets_it_up_again_and_the_interlude_goes_on(self):
+        pl, follower, restores, logs = self._interlude()
+        self.assertEqual(follower.setup_count, 2, "the restart went unnoticed")
+        self.assertEqual(restores, [1], "the machine state was not put back between the setups")
+        self.assertEqual(follower.keep_pick_count, 1)
+        self.assertEqual(follower.frames_by_setup[1], 3, "the restart was not caught on its frame")
+        self.assertGreaterEqual(follower.frames_by_setup[2], _Follower.FRAMES_AFTER)
+        self.assertEqual(follower.teardown_count, 2)
+        self.assertIsNone(pl.current)
+        self.assertEqual(sum("machine restarted" in line for line in logs.output), 1, logs.output)
+
+    def test_a_follower_set_up_again_never_waits_for_the_audio_slot(self):
+        _, follower, _, _ = self._interlude()
+        self.assertEqual(follower.setup_count, 2)
+
+    def test_a_follower_that_cannot_be_set_up_again_ends_the_interlude(self):
+        pl, follower, _, logs = self._interlude(fail_resetup=True)
+        self.assertEqual(follower.setup_count, 1)
+        self.assertIsNone(pl.current)
+        self.assertEqual(pl.index, 0)
+        self.assertTrue(any("ending the interlude" in line for line in logs.output), logs.output)
+
+    def test_a_stop_while_the_follower_is_set_up_again_tears_it_down_once(self):
+        pl, follower, _, _ = self._interlude(stop_during_restore=True)
+        self.assertEqual(follower.setup_count, 1)
+        self.assertEqual(follower.teardown_count, 1, "the torn-down follower was torn down again")
+        self.assertIsNone(pl.current)
 
 
 class _Launcher(FakeScene):

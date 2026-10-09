@@ -17,6 +17,7 @@ import contextlib
 import logging
 import os
 import tempfile
+import threading
 import time
 import unittest
 from collections.abc import Callable, Iterator
@@ -239,7 +240,28 @@ class FakeAPI:
         # the TeensyROM.
         self.profile = HardwareProfile(name="Fake", family="fake")
         # C64Backend.delivery_epoch; a test bumps it to model a lost write.
-        self.delivery_epoch = 0
+        self._delivery_epoch = 0
+        self._thread_losses: dict[int, int] = {}
+
+    @property
+    def delivery_epoch(self) -> int:
+        return self._delivery_epoch
+
+    @delivery_epoch.setter
+    def delivery_epoch(self, value: int) -> None:
+        """A rise is a lost write, charged to the thread that raised it, as
+        `write_loss_mark` charges a real backend's losses."""
+        ident = threading.get_ident()
+        self._thread_losses[ident] = self._thread_losses.get(ident, 0) + max(
+            0, value - self._delivery_epoch
+        )
+        self._delivery_epoch = value
+
+    def write_loss_mark(self) -> int:
+        return self._thread_losses.get(threading.get_ident(), 0)
+
+    def writes_lost_since(self, mark: int) -> bool:
+        return self.write_loss_mark() != mark
 
     @classmethod
     def ultimate(cls, *, supports_config: bool = True) -> FakeAPI:

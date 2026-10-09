@@ -19,7 +19,7 @@ import sys
 import threading
 import unittest
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -29,6 +29,7 @@ from c64cast.scenes.scenes import BlankScene, Scene, VideoScene, WebcamScene
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI, fake_system_stack  # noqa: E402
+from test_playlist import FakeApi, FakeScene  # noqa: E402
 
 
 class EnsembleAudioLockTest(unittest.TestCase):
@@ -338,6 +339,140 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertIsNone(idx)
 
 
+class _WaitSignalEvent(threading.Event):
+    """A stop event that says when somebody first sleeps on it, which is how a
+    test knows a wait loop has taken its place without guessing at a delay."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.slept = threading.Event()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.slept.set()
+        return super().wait(timeout)
+
+
+class FairAudioHandoffTest(unittest.TestCase):
+    """The ensemble audio slot goes to whoever has waited longest, so a holder
+    that releases and claims again at once cannot starve a waiting system."""
+
+    def _ensemble(self, names):
+        return Ensemble(stacks=[fake_system_stack(n) for n in names], stop_event=threading.Event())
+
+    def _waiting_playlist(self, scenes):
+        pl = _build_playlist(scenes)
+        pl.stop_event = _WaitSignalEvent()
+        ens = self._ensemble(["sys", "other", "third"])
+        pl.ensemble = ens
+        ens.stop_event = pl.stop_event
+        ens.try_claim_audio("other")
+        return pl, ens
+
+    def _in_thread(self, pl, fn):
+        result: list = []
+        t = threading.Thread(target=lambda: result.append(fn()))
+        t.start()
+
+        def finish() -> None:
+            pl.stop_event.set()
+            t.join(5)
+
+        self.addCleanup(finish)
+        self.assertTrue(pl.stop_event.slept.wait(5), "the waiter never went to sleep")
+        return t, result
+
+    def test_a_free_slot_goes_to_the_longest_waiter(self):
+        ens = self._ensemble(["a", "b", "c"])
+        ens.try_claim_audio("a")
+        ens.join_audio_queue("b")
+        ens.join_audio_queue("c")
+        ens.release_audio("a")
+        self.assertFalse(ens.try_claim_audio("a"))
+        self.assertFalse(ens.try_claim_audio("c"))
+        self.assertTrue(ens.try_claim_audio("b"))
+        self.assertEqual(ens.audio_queue, ["c"])
+
+    def test_joining_twice_keeps_the_first_place(self):
+        ens = self._ensemble(["a", "b"])
+        ens.join_audio_queue("a")
+        ens.join_audio_queue("b")
+        ens.join_audio_queue("a")
+        self.assertEqual(ens.audio_queue, ["a", "b"])
+
+    def test_the_holder_re_claiming_its_own_slot_ignores_the_line(self):
+        ens = self._ensemble(["a", "b"])
+        ens.try_claim_audio("a")
+        ens.join_audio_queue("b")
+        self.assertTrue(ens.try_claim_audio("a"))
+
+    def test_a_holder_that_releases_and_claims_again_cannot_starve_wait_for_audio_claim(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, lambda: pl.ensemble_coord.wait_for_audio_claim(scene))
+            ens.release_audio("other")
+            self.assertFalse(
+                ens.try_claim_audio("other"),
+                "the holder took the slot back from the waiter",
+            )
+            t.join(5)
+        self.assertEqual(result, [True])
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertEqual(ens.audio_queue, [])
+
+    def test_a_holder_that_releases_and_claims_again_cannot_starve_resolve_next_index(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, pl.ensemble_coord.resolve_next_index)
+            ens.release_audio("other")
+            self.assertFalse(
+                ens.try_claim_audio("other"),
+                "the holder took the slot back from the waiter",
+            )
+            t.join(5)
+        self.assertEqual(result, [0])
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertEqual(ens.audio_queue, [])
+
+    def test_a_waiter_that_stops_leaves_the_line(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, lambda: pl.ensemble_coord.wait_for_audio_claim(scene))
+            self.assertEqual(ens.audio_queue, ["sys"])
+            pl.stop_event.set()
+            t.join(5)
+        self.assertEqual(result, [False])
+        self.assertEqual(ens.audio_queue, [])
+        ens.release_audio("other")
+        self.assertTrue(ens.try_claim_audio("third"))
+
+    def test_a_resolver_that_stops_leaves_the_line(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, pl.ensemble_coord.resolve_next_index)
+            self.assertEqual(ens.audio_queue, ["sys"])
+            pl.stop_event.set()
+            t.join(5)
+        self.assertEqual(result, [None])
+        self.assertEqual(ens.audio_queue, [])
+        ens.release_audio("other")
+        self.assertTrue(ens.try_claim_audio("third"))
+
+    def test_a_rotation_with_a_runnable_scene_skips_without_joining_the_line(self):
+        gated = FakePlaylistScene("video", wants_audio=True)
+        live = FakePlaylistScene("live", wants_audio=False)
+        pl = _build_playlist([gated, live])
+        ens = self._ensemble(["sys", "other"])
+        pl.ensemble = ens
+        ens.try_claim_audio("other")
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            self.assertEqual(pl.ensemble_coord.resolve_next_index(), 1)
+        self.assertEqual(ens.audio_queue, [])
+
+
 class SafeTeardownReleasesLockTest(unittest.TestCase):
     def test_teardown_releases_audio_slot_when_flag_set(self):
         scene = FakePlaylistScene("video", wants_audio=True)
@@ -375,6 +510,144 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         with self.assertLogs("c64cast.app.playlist", level="ERROR"):
             pl.safe_teardown(scene)
         self.assertIsNone(pl.ensemble.audio_holder)
+
+
+class _ContendingScene(FakeScene):
+    def competes_for_audio_lock(self) -> bool:
+        return True
+
+
+class _SilentScene(FakeScene):
+    def competes_for_audio_lock(self) -> bool:
+        return False
+
+
+class _CardUp:
+    def _card_up(self) -> tuple[Playlist, Ensemble]:
+        api = FakeApi()
+        pl = Playlist(
+            [_ContendingScene("tune", frames_until_done=10_000), _SilentScene("live")],
+            api,
+            name="sys",
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=lambda name: _SilentScene(
+                f"UP NEXT {name}", frames_until_done=10_000
+            ),
+        )
+        ens = Ensemble(
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")],
+            stop_event=threading.Event(),
+        )
+        pl.ensemble = ens
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._advance()
+        self.assertIs(pl.current, pl._card)
+        self.assertEqual(ens.audio_holder, "sys")
+        ens.join_audio_queue("other")
+        return pl, ens
+
+    def _assert_other_gets_it(self, ens: Ensemble) -> None:
+        self.assertIsNone(ens.audio_holder, "the dropped card kept the slot")
+        self.assertTrue(ens.try_claim_audio("other"))
+
+
+class DroppedCardReleasesTheSlotTest(_CardUp, unittest.TestCase):
+    """An "UP NEXT" card holds the ensemble audio slot for the scene it
+    announces. Anything that drops the card instead of playing that scene
+    has to let the slot go, or a waiting system is held out for as long as
+    the pause, the reloaded playlist or the launched clip lasts."""
+
+    def test_a_pause_during_a_card(self):
+        pl, ens = self._card_up()
+        pl.stop_event.set()
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._handle_pause()
+        self._assert_other_gets_it(ens)
+
+    def test_a_reload_during_a_card(self):
+        pl, ens = self._card_up()
+        pl.request_reload([_SilentScene("a"), _SilentScene("b")])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+        self._assert_other_gets_it(ens)
+
+    def test_a_silent_clip_launched_during_a_card(self):
+        pl, ens = self._card_up()
+        self.assertTrue(pl.perf_swap_scene(_SilentScene("clip", frames_until_done=10_000)))
+        self._assert_other_gets_it(ens)
+
+    def test_the_run_ending_during_a_card(self):
+        pl, ens = self._card_up()
+        pl.stop_event.set()
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.run()
+        self._assert_other_gets_it(ens)
+
+    def test_a_broadcast_interrupt_during_a_card(self):
+        pl, ens = self._card_up()
+
+        class _Follower(_SilentScene):
+            def bind_orchestrator(self, orch, *, conductor: bool, index: int) -> None:
+                pass
+
+        class _Orch:
+            def follower_scene_cfg_for(self, name: str) -> object:
+                return object()
+
+        ens.active_orchestrator = _Orch()  # type: ignore[assignment]
+        pl.broadcast_interrupt = threading.Event()
+        pl.broadcast_resume = threading.Event()
+        pl.broadcast_resume.set()
+        pl.build_follower_scene = lambda cfg: _Follower("follower")  # type: ignore[assignment]
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.ensemble_coord.handle_broadcast_interrupt()
+        self._assert_other_gets_it(ens)
+
+    def test_a_restart_under_the_card_keeps_the_slot_for_its_scene(self):
+        pl, ens = self._card_up()
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl._set_up_again_after_restart()
+        self.assertIs(pl.current, pl._card)
+        self.assertEqual(ens.audio_holder, "sys")
+
+
+class ClipLaunchedOverTheCardTest(_CardUp, unittest.TestCase):
+    """A clip launched over the card is not the card: `transitioning` stays
+    set, the card's own slot went with it, and the clip's slot is the clip's."""
+
+    def _clip_over_the_card(
+        self, clip: FakeScene, *, other_waiting: bool = True
+    ) -> tuple[Playlist, Ensemble]:
+        pl, ens = self._card_up()
+        if not other_waiting:
+            ens.leave_audio_queue("other")
+        self.assertTrue(pl.perf_swap_scene(clip))
+        self.assertTrue(pl.transitioning)
+        self.assertFalse(pl.on_card)
+        return pl, ens
+
+    def test_dropping_a_clip_releases_no_slot_as_a_dropped_card(self):
+        clip = _ContendingScene("clip", frames_until_done=10_000)
+        pl, ens = self._clip_over_the_card(clip, other_waiting=False)
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertTrue(clip.__dict__["_audio_lock_held"])
+        self.assertIsNone(pl._announced_by(clip))
+        pl.drop_current()
+        self.assertIsNone(ens.audio_holder)
+
+    def test_a_finished_clip_does_not_take_the_lapsed_card_branch(self):
+        clip = _ContendingScene("clip", frames_until_done=1)
+        pl, _ = self._clip_over_the_card(clip, other_waiting=False)
+        clip.is_done = True
+        with (
+            patch.object(pl.ensemble_coord, "claim_lapsed") as lapsed,
+            patch.object(pl, "_advance_after_scene") as after,
+        ):
+            pl._advance()
+        lapsed.assert_not_called()
+        after.assert_called_once()
 
 
 class AudioOnlyEnsembleWarningTest(unittest.TestCase):
