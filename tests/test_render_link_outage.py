@@ -970,7 +970,15 @@ class SetupOutageReleasesTheEnsembleAudioSlotTest(unittest.TestCase):
         pl, ens, upcoming, card = self._card_that_waited_out_an_outage()
         card.is_done = True
         second = FakeScene("UP NEXT again", frames_until_done=10_000)
-        second.setup = lambda: pl.stop_event.set()  # type: ignore[method-assign]
+        held_at_second_card: list[object] = []
+
+        def second_setup() -> None:
+            held_at_second_card.extend(
+                [ens.audio_holder, upcoming.__dict__.get("_audio_lock_held")]
+            )
+            pl.stop_event.set()
+
+        second.setup = second_setup  # type: ignore[method-assign]
         pl.interstitial_factory = lambda name: second
         run = threading.Thread(target=pl.run)
 
@@ -985,8 +993,7 @@ class SetupOutageReleasesTheEnsembleAudioSlotTest(unittest.TestCase):
         self.assertFalse(run.is_alive())
         self.assertTrue(pl.stop_event.is_set(), "the run ended before the new card set up")
         self.assertEqual(pl.index, 0)
-        self.assertEqual(ens.audio_holder, "sys")
-        self.assertTrue(upcoming.__dict__.get("_audio_lock_held"))
+        self.assertEqual(held_at_second_card, ["sys", True])
         self.assertEqual(upcoming.setup_count, 0)
 
     def test_a_card_whose_slot_was_never_released_goes_straight_to_its_scene(self):

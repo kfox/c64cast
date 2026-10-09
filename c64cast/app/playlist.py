@@ -520,9 +520,7 @@ class Playlist:
         if not new_scenes:
             return
         self.log.info("playlist: reloading (%d → %d scenes)", len(self.scenes), len(new_scenes))
-        if self.current is not None:
-            self.safe_teardown(self.current)
-            self.current = None
+        self.drop_current()
         self.scenes = new_scenes
         self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
@@ -538,9 +536,7 @@ class Playlist:
         single-scene looping does (a no-op returning True in single-system mode);
         a lost claim / stop leaves `current` torn down and returns False. Runs on
         the playlist thread only (from PerformanceSession.service)."""
-        if self.current is not None:
-            self.safe_teardown(self.current)
-            self.current = None
+        self.drop_current()
         if not self.ensemble_coord.wait_for_audio_claim(new_scene):
             return False
         self.safe_setup(new_scene)
@@ -795,7 +791,7 @@ class Playlist:
             return
         # The card's slot is held for the scene it announces, which a link
         # outage in this setup has to release.
-        announcing = self.scenes[self.index] if self.transitioning and scene is self._card else None
+        announcing = self._announced_by(scene)
         # Before the teardown, whose own failures on the reset machine would
         # otherwise reach the log ahead of their cause.
         self.log.warning(
@@ -974,6 +970,26 @@ class Playlist:
         from .recording_metadata import log_scene_recording_metadata
 
         log_scene_recording_metadata(scene, self.config, self.name)
+
+    def _announced_by(self, scene: Scene) -> Scene | None:
+        """The scene `scene` announces when it is the "UP NEXT" card still
+        on screen, whose ensemble audio slot the card holds for it."""
+        return self.scenes[self.index] if self.transitioning and scene is self._card else None
+
+    def drop_current(self) -> None:
+        """Tear the current scene down and leave none, for a pause, a reload,
+        a launched clip, a broadcast or the end of the run. A card dropped
+        here never hands on to the scene it announces, so the audio slot
+        claimed for that scene is released with it: nothing else releases it
+        before that scene is set up and torn down."""
+        scene = self.current
+        if scene is None:
+            return
+        announced = self._announced_by(scene)
+        self.safe_teardown(scene)
+        self.current = None
+        if announced is not None:
+            self.ensemble_coord.release_audio_claim(announced)
 
     def safe_teardown(self, scene: Scene) -> None:
         for ov in getattr(scene, "overlays", ()):
@@ -1348,8 +1364,7 @@ class Playlist:
             for controller in (self.key_poller, self.vision_controller):
                 if controller is not None:
                     controller.stop()
-            if self.current is not None:
-                self.safe_teardown(self.current)
+            self.drop_current()
 
     def _handle_cycle(self) -> None:
         """Broadcast a style cycle to the current scene, its display mode,
@@ -1418,9 +1433,7 @@ class Playlist:
         We do NOT advance self.index — the same scene picks back up after
         the next `_advance()` call when we leave this method."""
         self.log.info("paused — hold Commodore key to resume")
-        if self.current is not None:
-            self.safe_teardown(self.current)
-            self.current = None
+        self.drop_current()
         # Before idling, not after: the poller can set `resume_event` the moment
         # it sees a 3 s C= hold, which can land *during* a slow `pause_idle`, and
         # clearing afterwards would wipe a legitimate resume and strand the pause.

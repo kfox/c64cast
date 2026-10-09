@@ -534,9 +534,7 @@ class EnsembleCoordinator:
         # Torn down cleanly so its overlays release threads and network state;
         # the follower scene runs in its place until the orchestrator releases us.
         saved_idx = pl.index
-        if pl.current is not None:
-            pl.safe_teardown(pl.current)
-            pl.current = None
+        pl.drop_current()
 
         follower_cfg = orch.follower_scene_cfg_for(pl.name)
         try:

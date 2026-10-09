@@ -29,6 +29,7 @@ from c64cast.scenes.scenes import BlankScene, Scene, VideoScene, WebcamScene
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI, fake_system_stack  # noqa: E402
+from test_playlist import FakeApi, FakeScene  # noqa: E402
 
 
 class EnsembleAudioLockTest(unittest.TestCase):
@@ -509,6 +510,85 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         with self.assertLogs("c64cast.app.playlist", level="ERROR"):
             pl.safe_teardown(scene)
         self.assertIsNone(pl.ensemble.audio_holder)
+
+
+class _ContendingScene(FakeScene):
+    def competes_for_audio_lock(self) -> bool:
+        return True
+
+
+class _SilentScene(FakeScene):
+    def competes_for_audio_lock(self) -> bool:
+        return False
+
+
+class DroppedCardReleasesTheSlotTest(unittest.TestCase):
+    """An "UP NEXT" card holds the ensemble audio slot for the scene it
+    announces. Anything that drops the card instead of playing that scene
+    has to let the slot go, or a waiting system is held out for as long as
+    the pause, the reloaded playlist or the launched clip lasts."""
+
+    def _card_up(self) -> tuple[Playlist, Ensemble]:
+        api = FakeApi()
+        pl = Playlist(
+            [_ContendingScene("tune", frames_until_done=10_000), _SilentScene("live")],
+            api,
+            name="sys",
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=lambda name: _SilentScene(
+                f"UP NEXT {name}", frames_until_done=10_000
+            ),
+        )
+        ens = Ensemble(
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")],
+            stop_event=threading.Event(),
+        )
+        pl.ensemble = ens
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._advance()
+        self.assertIs(pl.current, pl._card)
+        self.assertEqual(ens.audio_holder, "sys")
+        ens.join_audio_queue("other")
+        return pl, ens
+
+    def _assert_other_gets_it(self, ens: Ensemble) -> None:
+        self.assertIsNone(ens.audio_holder, "the dropped card kept the slot")
+        self.assertTrue(ens.try_claim_audio("other"))
+
+    def test_a_pause_during_a_card(self):
+        pl, ens = self._card_up()
+        pl.stop_event.set()
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._handle_pause()
+        self._assert_other_gets_it(ens)
+
+    def test_a_reload_during_a_card(self):
+        pl, ens = self._card_up()
+        pl.request_reload([_SilentScene("a"), _SilentScene("b")])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+        self._assert_other_gets_it(ens)
+
+    def test_a_silent_clip_launched_during_a_card(self):
+        pl, ens = self._card_up()
+        self.assertTrue(pl.perf_swap_scene(_SilentScene("clip", frames_until_done=10_000)))
+        self._assert_other_gets_it(ens)
+
+    def test_the_run_ending_during_a_card(self):
+        pl, ens = self._card_up()
+        pl.stop_event.set()
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.run()
+        self._assert_other_gets_it(ens)
+
+    def test_a_restart_under_the_card_keeps_the_slot_for_its_scene(self):
+        pl, ens = self._card_up()
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl._set_up_again_after_restart()
+        self.assertIs(pl.current, pl._card)
+        self.assertEqual(ens.audio_holder, "sys")
 
 
 class AudioOnlyEnsembleWarningTest(unittest.TestCase):
