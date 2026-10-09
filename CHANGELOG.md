@@ -313,7 +313,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   ran closer to underrun than the bootstrap margin promised. The head is now
   placed relative to where the pump actually is, and the lead servo takes its
   first reading a quarter second after the stream opens instead of a full
-  second, so it starts steering before a slow pump has piled up its drift.
+  second, so the first logged lead shows the opening lead rather than a
+  second of a slow pump's drift.
 - **A multi-system start with a bad DAC curve on a later system no longer
   provisions the earlier ones first.** With `[audio].dac_curve = "calibrated"`
   and no calibration for the last system, the earlier systems had already
