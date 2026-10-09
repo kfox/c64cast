@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import time
 import unittest
 from typing import cast
@@ -264,6 +265,32 @@ class StartForReuStagedTest(unittest.TestCase):
         with mock.patch.object(s.nmi, "start") as nmi_start:
             s.release_hold()
             s.release_hold()
+        nmi_start.assert_called_once()
+
+    def test_a_release_during_an_arm_waits_and_arms_nothing(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        entered, proceed = threading.Event(), threading.Event()
+
+        def slow_start(**kw: object) -> None:
+            entered.set()
+            proceed.wait(5.0)
+
+        with mock.patch.object(s.nmi, "start", side_effect=slow_start) as nmi_start:
+            first = threading.Thread(target=s.release_hold)
+            first.start()
+            self.addCleanup(first.join, 5.0)
+            self.addCleanup(proceed.set)
+            self.assertTrue(entered.wait(5.0))
+            second = threading.Thread(target=s.release_hold)
+            second.start()
+            self.addCleanup(second.join, 5.0)
+            second.join(0.2)
+            self.assertTrue(second.is_alive())
+            proceed.set()
+            first.join(5.0)
+            second.join(5.0)
         nmi_start.assert_called_once()
 
     def test_a_release_whose_arm_fails_leaves_nothing_running_and_raises(self):
