@@ -82,14 +82,26 @@ class PeriodicModeTest(unittest.TestCase):
     def test_stop_interrupts_a_long_period_wait(self):
         # After the immediate first call the loop parks in stop.wait(60);
         # stop() must unblock it, not ride out the period.
-        called = threading.Event()
-        poll = PollThread(called.set, name="t", period=60.0)
-        poll.start()
-        self.assertTrue(called.wait(2.0))
-        t0 = time.monotonic()
-        poll.stop()
-        self.assertLess(time.monotonic() - t0, 5.0)
+        # A wait that ignored the event but slept less than join_timeout would
+        # still leave the thread gone after stop(), so the evidence is the
+        # wait itself: entered, and woken by the event rather than its timeout.
+        poll = PollThread(lambda: None, name="t", period=60.0, join_timeout=20.0)
+        self.addCleanup(poll.stop)
+        parked = threading.Event()
+        woken: list[bool] = []
+        real_wait = poll.stop_event.wait
+
+        def watched_wait(timeout: float | None = None) -> bool:
+            parked.set()
+            woken.append(real_wait(timeout))
+            return woken[-1]
+
+        with mock.patch.object(poll.stop_event, "wait", watched_wait):
+            poll.start()
+            self.assertTrue(parked.wait(2.0), "the loop must park in the stop event's wait")
+            poll.stop()
         self.assertFalse(poll.is_running())
+        self.assertEqual(woken, [True], "stop() must wake the period wait, not let it time out")
 
 
 class ManualModeTest(unittest.TestCase):
@@ -182,10 +194,14 @@ class LifecycleTest(unittest.TestCase):
         self.addCleanup(hang.set)  # let the daemon thread die at test end
         poll.start()
         self.assertTrue(started.wait(2.0))
-        t0 = time.monotonic()
-        with self.assertLogs("c64cast._pollthread", level="WARNING"):
+        thread = poll._thread
+        assert thread is not None
+        with (
+            mock.patch.object(thread, "join", autospec=True, side_effect=thread.join) as join,
+            self.assertLogs("c64cast._pollthread", level="WARNING"),
+        ):
             poll.stop()
-        self.assertLess(time.monotonic() - t0, 2.0, "stop() must not wait past join_timeout")
+        join.assert_called_once_with(timeout=0.05)
         self.assertTrue(
             poll.is_running(), "the worker really is still running; is_running() must say so"
         )
