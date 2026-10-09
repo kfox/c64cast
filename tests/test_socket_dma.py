@@ -1180,6 +1180,25 @@ class PerThreadLossTest(unittest.TestCase):
                 )
         self.assertEqual(counts, [0])
 
+    def test_a_write_another_threads_flush_confirmed_is_not_charged_later(self):
+        fake1 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        c = _client_with(fake1)
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY, _IDENT_REPLY])
+        counts: list[int] = []
+        with _live_thread_that(
+            lambda: c.dmawrite(0xD020, b"\x0e"), lambda: counts.append(c.thread_loss_count())
+        ) as raised:
+            c.flush()
+            c.dmawrite(0xD021, b"\x00")
+            fake1.peer_reset = True
+            with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+                with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                    with self.assertRaises(ConnectionError):
+                        c.flush()
+        self.assertEqual(raised, [])
+        self.assertEqual(counts, [0])
+        self.assertEqual(c.thread_loss_count(), 1)
+
     def test_a_loss_is_reported_once_to_the_sender(self):
         c, fake2 = self._lost_after_main_wrote()
         with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
