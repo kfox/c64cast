@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import queue
+import threading
 import time
 import unittest
 from collections.abc import Callable, Iterator
@@ -2811,6 +2812,109 @@ class ExactSeekTest(unittest.TestCase):
         src, sink = self._source(clip, start_s=4.01)
         self.assertEqual(self._first_picture(src, 0.0), 120)
         self.assertAlmostEqual(self._first_sound_s(sink), 2.0 + 4.01, delta=0.04)
+
+    def _sparse_clip(self, gap_s: int = 10, seconds: int = 60) -> str:
+        """A picture every `gap_s` seconds (each marks its index) among sound
+        in quarter-second packets, written in time order so the demuxer meets
+        them in it."""
+        import tempfile
+        from fractions import Fraction
+
+        import av
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/sparse.mkv"
+        container = av.open(clip, "w", format="matroska")
+        try:
+            video = container.add_stream("mpeg4", rate=1)
+            video.width, video.height = 64, 64
+            video.pix_fmt = "yuv420p"
+            video.codec_context.time_base = Fraction(1, 1)
+            sound = container.add_stream("pcm_s16le", rate=self.RATE)
+            sound.layout = "mono"
+            events = [(float(t), "v") for t in range(0, seconds, gap_s)]
+            events += [(k / 4, "a") for k in range(seconds * 4)]
+            for at, kind in sorted(events, key=lambda e: (e[0], e[1] == "a")):
+                if kind == "v":
+                    picture = av.VideoFrame.from_ndarray(marked_frame(int(at) // gap_s), "rgb24")
+                    picture.pts = int(at)
+                    picture.time_base = Fraction(1, 1)
+                    for packet in video.encode(picture):
+                        container.mux(packet)
+                else:
+                    wave = (at + np.arange(self.RATE // 4) / self.RATE) * 1000
+                    frame = av.AudioFrame.from_ndarray(
+                        wave.astype(np.int16).reshape(1, -1), format="s16", layout="mono"
+                    )
+                    frame.sample_rate = self.RATE
+                    frame.pts = int(at * self.RATE)
+                    for packet in sound.encode(frame):
+                        container.mux(packet)
+            for stream in (video, sound):
+                for packet in stream.encode():
+                    container.mux(packet)
+        finally:
+            container.close()
+        return clip
+
+    def _stalled_sparse_source(self) -> tuple[AVFileSource, threading.Event]:
+        """A source over `_sparse_clip` whose sink stops taking sound once the
+        demuxer has read to 26.5 s, short of the picture at 30 s, until the
+        event is set."""
+        clip = self._sparse_clip()
+        release = threading.Event()
+
+        def sink(samples: np.ndarray, epoch: int | None = None) -> None:
+            if float(samples[0]) / 1000 >= 26.5:
+                release.wait(self.TIMEOUT_S)
+
+        src = AVFileSource(clip, target_sample_rate=self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        self.addCleanup(release.set)
+        src.request_seek(25.0)
+        src.start(audio_push=sink)
+        return src, release
+
+    def test_a_seek_between_distant_pictures_shows_the_one_before_it_without_waiting_for_the_next(
+        self,
+    ):
+        # The picture at 20 s is the one on screen at 25 s, and the next is at
+        # 30 s: held for it, the screen kept the last position's picture until
+        # the demuxer, throttled by the sink, read that far.
+        src, _ = self._stalled_sparse_source()
+        self.assertEqual(self._first_picture(src, 25.0), 2)
+
+    def test_a_seek_after_a_released_picture_holds_its_own(self):
+        src, release = self._stalled_sparse_source()
+        self.assertEqual(self._first_picture(src, 25.0), 2)
+        release.set()
+        src.request_seek(15.0)
+        self.assertEqual(self._first_picture(src, 15.0), 1)
+
+    def test_a_picture_that_follows_a_released_one_before_the_target_is_queued_after_it(self):
+        src = AVFileSource(self._clip(), target_sample_rate=self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src._pts_offset = 0.0
+        src._pts_anchor_target = 10.0
+        queued: list[float] = []
+
+        def enqueue(frame: Any) -> bool:
+            queued.append(frame.pts / 10)
+            return True
+
+        def picture(at: float) -> Any:
+            return SimpleNamespace(pts=int(at * 10))
+
+        with (
+            mock.patch.object(src, "_enqueue_decoded", side_effect=enqueue),
+            mock.patch.object(src, "_frame_pts_s", side_effect=lambda f: f.pts / 10),
+        ):
+            src._admit_frame(picture(8.0))
+            src._release_held_picture(SimpleNamespace(pts=110, time_base=0.1))
+            for at in (7.0, 9.0, 8.5, 10.0):
+                src._admit_frame(picture(at))
+        self.assertEqual(queued, [8.0, 9.0, 10.0])
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")

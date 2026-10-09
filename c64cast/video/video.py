@@ -54,6 +54,12 @@ AUDIO_ALIGN_TOLERANCE_S = 0.03
 # never has its silence take the audio fed more than the bound past the
 # picture.
 AUDIO_DISCONTINUITY_S = 30.0
+# The picture held for a pass's target (`AVFileSource._admit_frame`) waits for
+# the first picture at or after the target, and is queued anyway once any
+# stream has been read this far past the target: a stream whose pictures are
+# seconds apart (a screen capture, a slide show) would otherwise leave the
+# last screen up for as long as it takes the demuxer to reach the next one.
+PRE_TARGET_RELEASE_S = 1.0
 # A full video buffer with no audio coming is fed silence up to its newest
 # frame less this much, or less the furthest the file has been seen to write
 # audio behind its picture if that is more: audio for anything earlier would
@@ -1012,6 +1018,9 @@ class AVFileSource:
     # The newest decoded picture before the pass's target, held until one at
     # or after it arrives; see `_admit_frame`.
     _pre_target: Any = None
+    # Content time of the held picture once it was queued ahead of a picture at
+    # the target; a later one before the target must be newer to follow it.
+    _released_s: float | None = None
     # Stream seconds of file position 0, None when neither stream says.
     _origin_s: float | None = None
 
@@ -1426,6 +1435,7 @@ class AVFileSource:
         self._pts_offset = self._origin_s
         self._pts_anchor_target = target
         self._pre_target = None
+        self._released_s = None
         self._audio_fed_s = None
         self._audio_trim = 0
         self._video_read_s = None
@@ -1490,19 +1500,40 @@ class AVFileSource:
         """Queue a decoded picture, or hold it back while the pass has not
         reached its target (a seek lands on the keyframe before it): only the
         newest picture before the target is kept, to be shown until one at or
-        after it arrives, and none of the pictures it replaces is converted.
-        Returns False only when the source closed mid-wait (stop demuxing)."""
-        before = (
-            frame.pts is not None
-            and self._content_time(self._frame_pts_s(frame)) < self._pts_anchor_target - 1e-6
-        )
-        if before:
-            self._pre_target = frame
-            return True
+        after it arrives (or `_release_held_picture` queues it), and none of
+        the pictures it replaces is converted. Returns False only when the
+        source closed mid-wait (stop demuxing)."""
+        content = None if frame.pts is None else self._content_time(self._frame_pts_s(frame))
+        if content is not None and content < self._pts_anchor_target - 1e-6:
+            if self._released_s is None:
+                self._pre_target = frame
+                return True
+            if content <= self._released_s:
+                return True
+            self._released_s = content
+            return self._enqueue_decoded(frame)
         held, self._pre_target = self._pre_target, None
         if held is not None and not self._enqueue_decoded(held):
             return False
         return self._enqueue_decoded(frame)
+
+    def _release_held_picture(self, packet: Any) -> bool:
+        """Queue the held picture once a packet of any stream has been read
+        `PRE_TARGET_RELEASE_S` past the target. Returns False only when the
+        source closed mid-wait (stop demuxing)."""
+        if (
+            self._pre_target is None
+            or self._pts_offset is None
+            or packet.pts is None
+            or packet.time_base is None
+        ):
+            return True
+        read_s = float(packet.pts * packet.time_base) - self._pts_offset
+        if read_s < self._pts_anchor_target + PRE_TARGET_RELEASE_S:
+            return True
+        held, self._pre_target = self._pre_target, None
+        self._released_s = self._content_time(self._frame_pts_s(held))
+        return self._enqueue_decoded(held)
 
     def _enqueue_decoded(self, frame: Any) -> bool:
         return self._enqueue_frame(self._rebase_pts(frame), self._frame_to_bgr(frame))
@@ -2003,6 +2034,8 @@ class AVFileSource:
                     return "seek"
                 if self._pending_tempo is not None:
                     self._apply_pending_tempo()
+                if not self._release_held_picture(packet):
+                    return "closed"
                 if packet.stream.type == "video":
                     for frame in packet.decode():
                         if not self._admit_frame(frame):
