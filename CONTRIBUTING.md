@@ -377,8 +377,9 @@ a follow-up. Concretely, when you change functionality:
   `--compat`, the JSON schema, the config serializer, and the `--init` wizard,
   so filling it in is what keeps all of them from drifting — and the drift tests
   will tell you if you skipped it.
-- Add `CHANGELOG.md` entries under `## [Unreleased]` for anything users would
-  notice.
+- Add a changelog fragment under [`changelog.d/`](changelog.d/README.md) for
+  anything users would notice: one file per entry, never an edit to
+  `CHANGELOG.md`.
 - Hand-encoded 6502 bytes (the NMI DAC handler, the REU pump, the SID player
   PRG, BASIC stubs) are annotated with the assembly they represent and why each
   instruction is there. Keep that up when you touch a byte array — a wall of hex
@@ -405,5 +406,5 @@ above keep working.
 
 Cutting a release is a maintainer task and lives in
 [`RELEASING.md`](RELEASING.md). The one thing worth knowing as a contributor is
-that the `## [Unreleased]` section of the changelog becomes the release notes
-verbatim, so write an entry as the announcement it will be.
+that the fragments under `changelog.d/` become the release notes verbatim, so
+write an entry as the announcement it will be.
