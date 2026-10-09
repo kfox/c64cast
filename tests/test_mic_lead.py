@@ -908,7 +908,8 @@ class MicLeadThreadTest(unittest.TestCase):
         with self.assertLogs("c64cast.audio.mic_lead", "WARNING"):
             servo._run()
         interval = ml.MIC_LEAD_SERVO_INTERVAL_S
-        self.assertEqual(waits[:3], [interval] * 3)  # closed through 3 failures
+        # closed through 3 failures, the first read coming early
+        self.assertEqual(waits[:3], [ml.MIC_LEAD_FIRST_READ_S, interval, interval])
         self.assertEqual(waits[3:6], [2 * interval, 4 * interval, 8 * interval])
         self.assertEqual(max(waits), ml.MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
         self.assertEqual(waits[-1], ml.MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
@@ -1236,6 +1237,24 @@ class MicLeadThreadExitTest(unittest.TestCase):
             waits = self._waits_until_stopped(servo)
         self.assertEqual(len(waits), 1)
         self.assertEqual(len(cm.records), 1)
+
+    def test_the_first_read_comes_early_and_the_rest_one_interval_apart(self):
+        # A pump slower than the mic puts a second of drift on a first reading
+        # taken a full interval after the stream opened.
+        servo = _Rig(drift=0.0).servo
+        waits = self._waits_until_stopped(servo)
+        self.assertEqual(waits[0], ml.MIC_LEAD_FIRST_READ_S)
+        self.assertLess(ml.MIC_LEAD_FIRST_READ_S, ml.MIC_LEAD_SERVO_INTERVAL_S)
+        self.assertEqual(set(waits[1:]), {ml.MIC_LEAD_SERVO_INTERVAL_S})
+
+    def test_a_short_interval_is_not_stretched_to_the_first_read_wait(self):
+        servo = ml.MicLeadServo(
+            read_memory=lambda a, n, timeout=1.0: None,
+            write_pos=lambda: 0,
+            sample_rate=RATE,
+            interval_s=0.001,
+        )
+        self.assertEqual(servo._next_wait(), 0.001)
 
     def test_an_open_loop_held_for_hours_still_waits_the_ceiling(self):
         # Without the doubling cap, 2.0 ** fails overflows a float after ~1000
