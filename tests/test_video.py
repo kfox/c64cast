@@ -1495,6 +1495,29 @@ class AlignedAudioTest(unittest.TestCase):
                 src._dry_stall_level = level
                 self.assertEqual(src._dry_extra_frames(), extra)
 
+    def test_the_reach_past_the_newest_frame_is_sized_by_the_stamps_buffered(self):
+        # A variable-frame-rate file at 10 frames a second under a nominal 30:
+        # 0.25 s past the newest is 3 frames, not 8.
+        src = _aligned_stub([])
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        src.max_video_buffer = 240
+        src._video_buf = [(i * 0.1, img) for i in range(6)]
+        src._dry_stall_level = 2
+        self.assertEqual(src._dry_extra_frames(), 3)
+
+    def test_the_fill_counts_the_extra_frames_by_the_stamps_they_reach(self):
+        # Four frames half a second apart in a buffer of two: the extras
+        # reach 1.0 s past the full buffer's newest, more than the 0.5 s the
+        # level asks, so the fill goes no further than the newest frame.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        src.max_video_buffer = 2
+        src._video_buf = [(i * 0.5, img) for i in range(4)]
+        src._dry_stall_level = 3
+        src._fill_dry_stretch(0.0, 1.5)
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 1.5, places=3)
+
     def test_the_buffer_grows_no_more_than_twice_its_size(self):
         # Past that the fill goes past the newest frame by what the frames
         # do not cover.

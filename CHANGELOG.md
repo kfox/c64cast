@@ -307,6 +307,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **On a variable-frame-rate video, a stalled picture's silence fill now
+  reaches as far past its frames as intended.** How many extra frames the
+  buffer reads ahead was sized from the file's nominal frame rate; it now
+  follows the frames' own timestamps.
+
 - **With `$D418` DAC audio, the next scene no longer starts with a moment
   of the previous one's sound.** A video or mic chunk pushed exactly as a
   scene ended could land in the queue after the scene's teardown had

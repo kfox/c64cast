@@ -1665,17 +1665,48 @@ class AVFileSource:
         steps = max(0, self._dry_stall_level - 1)
         return min(steps * DRY_FILL_PAST_NEWEST_STEP_S, DRY_FILL_MAX_PAST_NEWEST_S)
 
+    def _frame_spacing_s(self) -> float:
+        """Content seconds between the frames buffered, measured over their
+        stamps: a variable-frame-rate file runs at no one rate, and the
+        nominal one would size the reach past the newest frame wrong. The
+        nominal interval stands in while fewer than two frames, or none that
+        advance, are buffered."""
+        buf = self._video_buf
+        try:
+            first, last, n = buf[0][0], buf[-1][0], len(buf)
+        except IndexError:
+            return 1.0 / self.video_fps
+        span = self._clock_to_content(last) - self._clock_to_content(first)
+        if n < 2 or span <= 0:
+            return 1.0 / self.video_fps
+        return span / (n - 1)
+
+    def _extra_reach_s(self, extra: int) -> float:
+        """Content seconds the frames past `max_video_buffer` reach beyond the
+        newest frame of a full buffer: read off their stamps once they are
+        buffered, and ``extra`` frames at the measured spacing before."""
+        buf = self._video_buf
+        try:
+            full_newest, newest = buf[self.max_video_buffer - 1][0], buf[-1][0]
+        except IndexError:
+            return extra * self._frame_spacing_s()
+        if len(buf) <= self.max_video_buffer:
+            return extra * self._frame_spacing_s()
+        return max(0.0, self._clock_to_content(newest) - self._clock_to_content(full_newest))
+
     def _dry_extra_frames(self) -> int:
         """Frames the video buffer takes past `max_video_buffer` so the stall
         level's reach past the newest frame is frames read rather than
         silence: silence there covers sound not yet read, and a sound coming
-        back was trimmed by as much. Up to as many again, which bounds the
-        memory; past that the fill goes past the newest frame. Zero while
-        the fill does not apply: a level kept until the next full wait resets
-        it would let a muted demuxer refill the grown buffer first."""
+        back was trimmed by as much. The count is the reach over the spacing
+        of the stamps buffered (`_frame_spacing_s`), up to as many again,
+        which bounds the memory; past that the fill goes past the newest
+        frame. Zero while the fill does not apply: a level kept until the
+        next full wait resets it would let a muted demuxer refill the grown
+        buffer first."""
         if self._dry_stall_level < 2 or not self._dry_fill_applies():
             return 0
-        wanted = math.ceil(self._past_newest_s() * self.video_fps - 1e-9)
+        wanted = math.ceil(self._past_newest_s() / self._frame_spacing_s() - 1e-9)
         return min(self.max_video_buffer, max(0, wanted))
 
     def _fill_dry_stretch(self, oldest_pts: float, newest_pts: float) -> None:
@@ -1703,7 +1734,7 @@ class AVFileSource:
         if self._dry_stall_level:
             target = max(target, min(oldest + DRY_FILL_MIN_LEAD_S, newest))
         if self._dry_stall_level > 1:
-            covered = self._dry_extra_frames() / self.video_fps
+            covered = self._extra_reach_s(self._dry_extra_frames())
             target = max(target, newest + max(0.0, self._past_newest_s() - covered))
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
         silence, _, self._audio_fed_s = place_audio_frame(target, 0.0, fed, self.target_sr)
