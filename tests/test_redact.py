@@ -1821,6 +1821,36 @@ class CookieTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_a_quoted_first_value_that_more_text_follows_starts_the_list(self):
+        for line, want in (
+            ("Cookie: '' session=s", "Cookie: REDACTED"),
+            ("Cookie: '' ; a=s", "Cookie: REDACTED ; a=REDACTED"),
+            ("Cookie: '';a=s", "Cookie: REDACTED;a=REDACTED"),
+            ("cookie='' s", "cookie=REDACTED"),
+            ("--cookie ''s x", "--cookie 'REDACTED"),
+            ("cookie: b'' s", "cookie: REDACTED"),
+            ("Cookie: 'a=b' c=s", "Cookie: REDACTED"),
+            ("cookie=%22%22 s", "cookie=%22REDACTED"),
+            ("cookie=%22a%22 s", "cookie=%22REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_empty_quoted_value_that_ends_its_element_is_left_alone(self):
+        for line in (
+            'Cookie: ""',
+            "cookie: ''",
+            "{'Cookie': '', 'x': 'y'}",
+            '{"Cookie": "", "x": 1}',
+            "['--cookie', '']",
+            "['--cookie', '', 'x']",
+            "\"Cookie: ''\" next",
+            "cookie=%22a%22, n",
+            "--cookie '' x",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line.replace("%22a%22", "%22REDACTED%22"))
+
     def test_an_encoded_header_ends_at_the_ampersand_that_ends_its_parameter(self):
         for line, want in (
             (
@@ -1868,6 +1898,9 @@ class CookieTest(unittest.TestCase):
             lambda s: "'Cookie: a=b' " * 4_000 * s,
             lambda s: "'Cookie: '" + " " * 40_000 * s + "x",
             lambda s: "cookie=" + "a b=" * 8_000 * s,
+            lambda s: "cookie: '' " * 4_000 * s,
+            lambda s: "cookie=%22%22 " * 4_000 * s,
+            lambda s: "Cookie: ''" + " " * 40_000 * s + "x",
             lambda s: "Set-Cookie: " + ",a=" * 8_000 * s,
             lambda s: "Set-Cookie: " + ",    " * 8_000 * s,
             lambda s: "Set-Cookie: a=1" + "; Path=/" * 8_000 * s,

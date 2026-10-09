@@ -582,7 +582,7 @@ def _key_values(line: _Line) -> Iterator[Span]:
         closer = _enclosing_quote(line, name)
         if name.group("cookie") is not None:
             set_cookie = name.group("cookie").lower().startswith("set")
-            yield from _cookie_values(line, v, d, set_cookie, closer)
+            yield from _cookie_values(line, v, d, set_cookie, closer, flag=tail is None)
             continue
         span = _value(line, v, d, "unquoted")
         if name.group("header") is not None:
@@ -685,7 +685,7 @@ def _flag_value_start(line: _Line, name: re.Match[str]) -> tuple[int, int] | Non
 
 
 def _cookie_values(
-    line: _Line, v: int, d: int, set_cookie: bool, closer: _Closer | None
+    line: _Line, v: int, d: int, set_cookie: bool, closer: _Closer | None, flag: bool = False
 ) -> list[Span]:
     """The values in a `Cookie` header's `name=value; name=value` list that
     starts at `v`, `d` deep, or in a `Set-Cookie` header when `set_cookie`.
@@ -695,10 +695,13 @@ def _cookie_values(
     before a cookie name and `=` starts another cookie, whose first pair is
     masked whatever its name: a client joins repeated `Set-Cookie` headers
     that way, and an `Expires` date's comma is followed by no `=`. A quoted
-    list ends at its closing quote, unless a `;` follows that quote, which
-    makes the quoted string the list's first item (`"a"; b=c`). An unquoted
-    list ends where `_params_end` stops, given `closer`, the quote of the
-    string the header is written in; an `&` ends it only when it is
+    list ends at its closing quote where `_ELEMENT_END` or the end of the
+    line follows it; anything else makes the quoted string the list's first
+    item (`"a"; b=c`, `'' session=x`), except after whitespace when the
+    list is a `flag`'s value: `--cookie "a=b" x` ends the argument there. A
+    quote deeper than the separator is read the same way. An unquoted list
+    ends where `_params_end` stops, given `closer`, the quote of the string
+    the header is written in; an `&` ends it only when it is
     shallower than the header's separator, since a cookie may hold one, raw
     or encoded as deep as the header. A list inside a stretch already read
     is masked whole rather than split again, which keeps a run of `cookie=`
@@ -710,15 +713,17 @@ def _cookie_values(
     span = None
     if opener is not None and line.deepest(v, opener.end()) <= d:
         span = _value(line, v, d, "unquoted")
-        if span is None:
-            return []
-        after = span[1] + len(opener.group("q"))
+        closing = _quoted_end(line, opener, opener.end()) if span is None else span[1]
+        glued = after = closing + len(opener.group("q"))
         while after < len(text) and text[after].isspace():
             after += 1
-        if text.startswith(";", after):
+        if after < len(text) and text[after] not in _ELEMENT_END and not (flag and after > glued):
             span = None
             opener = None
-            start, end = v, _params_end(line, after, d, closer, amp_below=d)
+            from_ = after if text[after] == ";" else v
+            start, end = v, _params_end(line, from_, d, closer, amp_below=d)
+        elif span is None:
+            return []
         else:
             start, end = span
             if not line.params_scanned[0] < start < line.params_scanned[1]:
@@ -728,6 +733,16 @@ def _cookie_values(
     else:
         start = opener.end()
         end = _params_end(line, start, d, _opener_closer(line, opener), amp_below=d)
+        after = end + 1
+        while after < len(text) and text[after].isspace():
+            after += 1
+        if (
+            end < len(text)
+            and text[end] in "\"'"
+            and after < len(text)
+            and text[after] not in _ELEMENT_END
+        ):
+            end = _params_end(line, after, d, closer, amp_below=d)
     if line.params_scanned[0] < start < line.params_scanned[1]:
         return [(start, len(text) if span is None else end)] if start < end else []
     spans: list[Span] = []
@@ -746,6 +761,11 @@ def _cookie_values(
             spans.append((a, b))
     return spans
 
+
+#: What may follow the closing quote of a quoted cookie list: the end of a
+#: list element or of the string around it. Anything else, a `;` included,
+#: makes the quoted string the list's first item.
+_ELEMENT_END = frozenset(",)]}\"'\\")
 
 #: A cookie name: an RFC 6265 token, and no `&` or `'`, which leave it the
 #: tail of a query or a quoted string rather than a name.
