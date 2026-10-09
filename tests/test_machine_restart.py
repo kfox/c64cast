@@ -1333,6 +1333,44 @@ class InterstitialResetupTest(unittest.TestCase):
         self.assertIsNone(setup.call_args.kwargs["announcing"])
 
 
+class ClipOverTheCardTest(unittest.TestCase):
+    def _playlist_on_card(self) -> Playlist:
+        pl = Playlist(
+            [FakeScene("First"), FakeScene("Next")],
+            _Machine(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.index = 1
+        pl.current = pl._card = FakeScene("trans:Next")
+        pl.transitioning = True
+        return pl
+
+    def test_the_card_is_on_card_until_a_clip_replaces_it(self):
+        pl = self._playlist_on_card()
+        self.assertTrue(pl.on_card)
+        self.assertTrue(pl.perf_swap_scene(FakeScene("Clip")))
+        self.assertFalse(pl.on_card)
+        self.assertTrue(pl.transitioning)
+
+    def test_a_cycle_over_a_clip_launched_on_the_card_is_handled(self):
+        pl = self._playlist_on_card()
+        pl.perf_swap_scene(FakeScene("Clip"))
+        pl.cycle_event.set()
+        with patch.object(pl, "_handle_cycle") as handle:
+            pl._apply_frame_events(pl.current, True)
+        handle.assert_called_once()
+
+    def test_a_cycle_over_the_card_is_dropped(self):
+        pl = self._playlist_on_card()
+        pl.cycle_event.set()
+        with patch.object(pl, "_handle_cycle") as handle:
+            pl._apply_frame_events(pl.current, True)
+        handle.assert_not_called()
+        self.assertFalse(pl.cycle_event.is_set())
+
+
 class RestoreAfterMachineRestartTest(unittest.TestCase):
     def test_every_step_runs_in_order_and_one_failing_does_not_stop_the_rest(self):
         calls: list[str] = []

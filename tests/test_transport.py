@@ -83,15 +83,16 @@ class _StubScene:
 
 
 class _FakePlaylist:
-    def __init__(self, scene=None, *, transitioning: bool = False):
+    def __init__(self, scene=None, *, on_card: bool = False, transitioning: bool = False):
         self.current = scene
+        self.on_card = on_card
         self.transitioning = transitioning
         self.stop_event = threading.Event()
 
 
 def _tick(session: TransportSession, pl: _FakePlaylist, now: float) -> None:
     """Thin wrapper around TransportSession.tick — TransportSession only
-    ever reads `.current`/`.transitioning` off its `pl` argument (duck-typed
+    ever reads `.current`/`.on_card` off its `pl` argument (duck-typed
     by design, see the module docstring), so `_FakePlaylist` deliberately
     isn't a real Playlist. Centralizes the one intentional type mismatch in
     one spot instead of a `# type: ignore` at every call site."""
@@ -172,13 +173,21 @@ class DispatchTests(unittest.TestCase):
         # fire against whatever scene becomes current next frame.
         self.assertTrue(session._queue.empty())
 
-    def test_transitioning_is_noop(self):
+    def test_card_on_screen_is_noop(self):
         scene = _StubScene()
-        pl = _FakePlaylist(scene, transitioning=True)
+        pl = _FakePlaylist(scene, on_card=True, transitioning=True)
         session = TransportSession()
         session.enqueue(TransportEvent(action="play_pause"))
         _tick(session, pl, 0.0)
         self.assertEqual(scene.toggle_calls, 0)
+
+    def test_clip_over_the_card_still_takes_transport(self):
+        scene = _StubScene()
+        pl = _FakePlaylist(scene, on_card=False, transitioning=True)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="play_pause"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 1)
 
     def test_unknown_scene_type_missing_surface_is_noop(self):
         pl = _FakePlaylist(object())  # no transport_* methods at all

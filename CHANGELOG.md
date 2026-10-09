@@ -307,6 +307,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A clip launched while the "UP NEXT" card was up no longer leaves the
+  transport and SHIFT dead.** The launch replaced the card but left the
+  playlist believing it was still on screen, so play/pause, rewind,
+  fast-forward and SHIFT style cycling ignored the clip until the next
+  scene change.
 - **With `$D418` DAC audio, the next scene no longer starts with a moment
   of the previous one's sound.** A video or mic chunk pushed exactly as a
   scene ended could land in the queue after the scene's teardown had

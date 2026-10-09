@@ -595,7 +595,7 @@ class TransportSession:
             except queue.Empty:
                 break
             self._dispatch(pl, event, now)
-        if pl.transitioning or pl.current is None or dt <= 0.0:
+        if pl.on_card or pl.current is None or dt <= 0.0:
             return
         scene = pl.current
         seek = getattr(scene, "transport_seek", None)
@@ -625,7 +625,7 @@ class TransportSession:
             self._record_held_since = now if event.pressed else None
         elif event.action == "stop":
             self._stop_held_since = now if event.pressed else None
-        if pl.transitioning or pl.current is None:
+        if pl.on_card or pl.current is None:
             return
         scene = pl.current
         if event.action == "play_pause":
