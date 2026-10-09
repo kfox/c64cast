@@ -670,6 +670,18 @@ _QUOTED_FLAG_GAP = re.compile(
 _LISTED_FLAG = re.compile(r"""[bBrRuUfF]{0,2}+ \\*+ ["'] -""", re.VERBOSE)
 
 
+#: What may sit between a tuple's `(` and the quote opening its first element:
+#: whitespace, backslashes (an escaped rendering) and a string prefix, as in
+#: `( b'password', b'x')`.
+_PAIR_OPENER = re.compile(r"""\( [ \t]*+ [bBrRuUfF]{0,2}+ \\*+ \Z""", re.VERBOSE)
+_PAIR_REACH = 24
+
+
+def _opens_pair(text: str, quote: int) -> bool:
+    """Whether the quote at `quote` opens the first element of a tuple."""
+    return _PAIR_OPENER.search(text, max(0, quote - _PAIR_REACH), quote) is not None
+
+
 def _flag_gap(text: str, run: int, end: int, dashed: bool) -> tuple[Span, bool] | None:
     """The gap between the name whose run of name characters starts at `run`
     and ends at `end`, and its value, and whether that value starts with a
@@ -689,10 +701,7 @@ def _flag_gap(text: str, run: int, end: int, dashed: bool) -> tuple[Span, bool] 
         return None
     if dashed:
         return gap.span(), _LISTED_FLAG.match(text, gap.end()) is not None
-    paren = opening - 1
-    while paren > 0 and text[paren - 1] == "\\":
-        paren -= 1
-    return (gap.span(), False) if text[max(paren - 1, 0) : paren] == "(" else None
+    return (gap.span(), False) if _opens_pair(text, opening - 1) else None
 
 
 def _flag_value_start(line: _Line, name: re.Match[str]) -> tuple[int, int] | None:

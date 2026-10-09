@@ -1440,6 +1440,14 @@ class QuotedFlagTest(unittest.TestCase):
             ("('password', '-abc')", "('password', 'REDACTED')"),
             ("('key', 'abc')", "('key', 'REDACTED')"),
             ("('X-Password', b'abc')", "('X-Password', b'REDACTED')"),
+            ("(b'x-c64cast-token', b'abc')", "(b'x-c64cast-token', b'REDACTED')"),
+            ("(u'password', 'abc')", "(u'password', 'REDACTED')"),
+            ("( 'password', 'abc')", "( 'password', 'REDACTED')"),
+            ("[(b\\'password\\', \\'abc\\')]", "[(b\\'password\\', \\'REDACTED')]"),
+            (
+                "<Headers([(b'host', b'x'), (b'cookie', b'a=opaque')])>",
+                "<Headers([(b'host', b'x'), (b'cookie', b'a=REDACTED')])>",
+            ),
             ("[(\\'password\\', \\'abc\\')]", "[(\\'password\\', \\'REDACTED')]"),
             (
                 "[('Set-Cookie', 'a=1; Path=/'), ('Cookie', 'b=2; c=3')]",
@@ -1462,6 +1470,7 @@ class QuotedFlagTest(unittest.TestCase):
             "(password, 'abc')",
             "('password', abc)",
             "('a', 'password', 'abc')",
+            "(x'password', 'abc')",
             "password', 'abc'",
             "('bypass', 'abc')",
             "('sortkey', 'abc')",
