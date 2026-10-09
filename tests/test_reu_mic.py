@@ -415,11 +415,21 @@ class _RingPointers:
     the NMI armed). The first ``lose`` writes to the dst pair are overwritten
     by the pump's own tick, as a write between its load and store would be.
     The first ``glitch`` span reads after a dst write catch R in its ring-end
-    carry, at $6000, outside the ring."""
+    carry, at $6000, outside the ring. The pump's src tracker reads
+    ``src_per_read`` bytes further into the REU mic ring on every span read,
+    as a pump that keeps consuming while the bring-up goes on."""
 
     def __init__(
-        self, fake: FakeAPI, *, r: int, pump_ran: int = 0, lose: int = 0, glitch: int = 0
+        self,
+        fake: FakeAPI,
+        *,
+        r: int,
+        pump_ran: int = 0,
+        lose: int = 0,
+        glitch: int = 0,
+        src_per_read: int = 0,
     ) -> None:
+        self.src_per_read = src_per_read
         self.r = r
         self.pump_ran = pump_ran
         self.lose = lose
@@ -466,7 +476,8 @@ class _RingPointers:
         raw[off : off + 2] = w.to_bytes(2, "little")
         # The src tracker the install seeded, which the span read also checks.
         src_off = REU_AUDIO_SRC_TRACKER_ADDR - READ_PTR_LO_ADDR
-        raw[src_off : src_off + 3] = REU_MIC_BASE.to_bytes(3, "little")
+        src = REU_MIC_BASE + self.src_per_read * self.reads
+        raw[src_off : src_off + 3] = src.to_bytes(3, "little")
         return bytes(raw)
 
     def lead(self) -> int:
@@ -547,6 +558,7 @@ class MicRingLeadSeedTest(unittest.TestCase):
             s._start_mic_for_reu_pump(device=-1)
         self.assertTrue(any("stays at its install seed" in m for m in cm.output), cm.output)
         self.assertNotIn(f"{REU_AUDIO_DST_TRACKER_ADDR:04X}", cast(FakeAPI, s.api).memories)
+        self.assertEqual(s._mic_reu_write_pos, REU_MIC_BOOTSTRAP_BYTES)
 
     def test_a_backend_without_reads_does_not_try(self):
         s = _new_streamer()
@@ -557,6 +569,22 @@ class MicRingLeadSeedTest(unittest.TestCase):
         cast(Any, s)._start_mic_lead_servo = lambda: None
         s._start_mic_for_reu_pump(device=-1)
         self.assertEqual((ptrs.reads, ptrs.dst_writes), (0, []))
+        self.assertEqual(s._mic_reu_write_pos, REU_MIC_BOOTSTRAP_BYTES)
+
+    def test_a_slow_bring_up_starts_the_head_past_where_the_pump_has_got_to(self):
+        # The pump consumes from its first tick, so the head is anchored at the
+        # src tracker as the seed last read it, not at the ring start.
+        r = RING_BUFFER_ADDR + 1500
+        s, ptrs = self._start(r=r, lose=2, src_per_read=700)
+        self.assertGreater(ptrs.reads, 1)
+        self.assertEqual(
+            s._mic_reu_write_pos,
+            (700 * ptrs.reads + REU_MIC_BOOTSTRAP_BYTES) % REU_MIC_SIZE,
+        )
+
+    def test_a_head_anchored_near_the_ring_end_wraps(self):
+        s, ptrs = self._start(r=RING_BUFFER_ADDR + 963, src_per_read=REU_MIC_SIZE - 100)
+        self.assertEqual(s._mic_reu_write_pos, (REU_MIC_BOOTSTRAP_BYTES - 100) % REU_MIC_SIZE)
 
     def test_the_bring_up_log_states_both_stages_of_the_latency(self):
         with self.assertLogs("c64cast.audio.audio", "INFO") as cm:

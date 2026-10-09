@@ -156,7 +156,7 @@ def _status_for(pl: Playlist) -> dict[str, Any]:
         "current_index": pl.index,
         "n_scenes": len(pl.scenes),
         "paused": pl.pause_event.is_set(),
-        "transitioning": pl.transitioning,
+        "transitioning": pl.on_card,
         "stats": pl.api.stats,
         "write_latency": pl.api.format_write_latency(),
     }

@@ -327,8 +327,6 @@ class Playlist:
         )
         self.build_performance_scene: Callable[[dict[str, Any]], Scene] | None = None
         self.transitioning = False
-        # The "UP NEXT" card `_enter_interstitial` last set up: a clip launched
-        # over it leaves `transitioning` on without being the card.
         self._card: Scene | None = None
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
@@ -530,6 +528,13 @@ class Playlist:
         self.index = 0
         self.transitioning = False
 
+    @property
+    def on_card(self) -> bool:
+        """True while the "UP NEXT" card is the current scene. `transitioning`
+        cannot answer this: `perf_swap_scene` replaces the card with a clip and
+        leaves the flag set."""
+        return self.current is not None and self.current is self._card
+
     def perf_swap_scene(self, new_scene: Scene) -> bool:
         """Single-scene hot-swap for the clip-launch engine (Phase 2): tear down
         the current scene and set up `new_scene` in its place, returning True on
@@ -588,14 +593,14 @@ class Playlist:
                 return  # stop_event fired during the gate wait
             self.index = resolved
             self._enter_interstitial()
-        elif self.transitioning and self.current.is_done:
+        elif self.on_card and self.current.is_done:
             self.fades.fade_out(self.current)
             self.safe_teardown(self.current)
             self.current = self.scenes[self.index]
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
             self.safe_setup(self.current)
             self.transitioning = False
-        elif not self.transitioning and self.current.is_done:
+        elif not self.on_card and self.current.is_done:
             self._advance_after_scene()
 
     def _advance_single_scene(self) -> None:
@@ -769,7 +774,7 @@ class Playlist:
             return
         # The card's slot is held for the scene it announces, which a link
         # outage in this setup has to release.
-        announcing = self.scenes[self.index] if self.transitioning and scene is self._card else None
+        announcing = self.scenes[self.index] if self.on_card else None
         # Before the teardown, whose own failures on the reset machine would
         # otherwise reach the log ahead of their cause.
         self.log.warning(
@@ -1137,7 +1142,7 @@ class Playlist:
                 self.fades.ended_via_skip = True
             self.skip_event.clear()
         if self.cycle_event.is_set():
-            if not self.transitioning:
+            if not self.on_card:
                 self._handle_cycle()
             self.cycle_event.clear()
 

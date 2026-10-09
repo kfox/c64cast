@@ -14,6 +14,7 @@ complaints file-wide rather than spraying ignores on every assertion."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import tempfile
 import threading
@@ -259,6 +260,18 @@ class PerSystemValidatorsTest(unittest.TestCase):
         self.assertEqual(cm.exception.exit_code, 5)
 
 
+@contextlib.contextmanager
+def _stub_build(effects):
+    """build_session with each system's two build halves stubbed: opening
+    returns a placeholder, and provisioning hands back ``effects`` in turn
+    (a stack, or an exception to raise). Yields the provisioning mock."""
+    with (
+        mock.patch.object(session, "_open_stack", side_effect=lambda *_a: mock.MagicMock()),
+        mock.patch.object(session, "_provision_stack", side_effect=effects) as provision,
+    ):
+        yield provision
+
+
 class BuildSessionTest(unittest.TestCase):
     def setUp(self):
         # build_session installs the profiler process-wide via set_profiler and never
@@ -268,7 +281,7 @@ class BuildSessionTest(unittest.TestCase):
     def test_builds_one_stack_per_system(self):
         loaded = _loaded(["a", "b"])
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
-        with mock.patch.object(session, "build_stack", side_effect=stacks) as bs:
+        with _stub_build(stacks) as bs:
             sess = session.build_session(_args(), loaded, loaded.cfgs)
         self.assertEqual(sess.stacks, stacks)
         self.assertEqual(bs.call_count, 2)
@@ -283,9 +296,7 @@ class BuildSessionTest(unittest.TestCase):
         built = [fake_system_stack("a"), fake_system_stack("b")]
         torn: list[str] = []
         with (
-            mock.patch.object(
-                session, "build_stack", side_effect=[*built, session.StackBuildError(4)]
-            ),
+            _stub_build([*built, session.StackBuildError(4)]),
             mock.patch.object(
                 session, "teardown_stack", side_effect=lambda st, _interrupts: torn.append(st.name)
             ),
@@ -303,7 +314,7 @@ class BuildSessionTest(unittest.TestCase):
             built = [fake_system_stack("a"), fake_system_stack("b")]
             with (
                 self.subTest(exc=type(exc).__name__),
-                mock.patch.object(session, "build_stack", side_effect=[*built, exc]),
+                _stub_build([*built, exc]),
                 mock.patch.object(session, "teardown_stack") as teardown,
             ):
                 with self.assertRaises(type(exc)) as cm:
@@ -324,9 +335,7 @@ class BuildSessionTest(unittest.TestCase):
                 raise KeyboardInterrupt
 
         with (
-            mock.patch.object(
-                session, "build_stack", side_effect=[*built, session.StackBuildError(4)]
-            ),
+            _stub_build([*built, session.StackBuildError(4)]),
             mock.patch.object(session, "teardown_stack", side_effect=teardown),
         ):
             with self.assertRaises(KeyboardInterrupt):
@@ -338,7 +347,7 @@ class BuildSessionTest(unittest.TestCase):
         built = [fake_system_stack("a"), fake_system_stack("b")]
         built[1].playlist.bind_ensemble.side_effect = KeyboardInterrupt
         with (
-            mock.patch.object(session, "build_stack", side_effect=built),
+            _stub_build(built),
             mock.patch.object(session, "teardown_stack") as teardown,
         ):
             with self.assertRaises(KeyboardInterrupt):
@@ -350,7 +359,7 @@ class BuildSessionTest(unittest.TestCase):
         loaded = _loaded(["a", "b"], is_ensemble=True)
         built = [fake_system_stack("a"), fake_system_stack("b")]
         with (
-            mock.patch.object(session, "build_stack", side_effect=built),
+            _stub_build(built),
             mock.patch.object(session, "teardown_stack") as teardown,
         ):
             session.build_session(_args(), loaded, loaded.cfgs)
@@ -369,9 +378,7 @@ class BuildSessionTest(unittest.TestCase):
         if "reset" in b_steps:
             b.api.reset.side_effect = b_steps["reset"]
         with (
-            mock.patch.object(
-                session, "build_stack", side_effect=[a, b, session.StackBuildError(4)]
-            ),
+            _stub_build([a, b, session.StackBuildError(4)]),
             self.assertLogs("c64cast", "WARNING"),
             self.assertRaises(BaseException) as raised,
         ):
@@ -404,7 +411,7 @@ class BuildSessionTest(unittest.TestCase):
     def test_ensemble_mode_binds_every_playlist(self):
         loaded = _loaded(["a", "b"], is_ensemble=True)
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
-        with mock.patch.object(session, "build_stack", side_effect=stacks):
+        with _stub_build(stacks):
             sess = session.build_session(_args(), loaded, loaded.cfgs)
         self.assertIsNotNone(sess.ensemble)
         self.assertIs(sess.ensemble.stop_event, sess.stop_event)
@@ -416,7 +423,7 @@ class BuildSessionTest(unittest.TestCase):
         # every one of them ends up pointing at the last stack.
         loaded = _loaded(["a", "b"], is_ensemble=True)
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
-        with mock.patch.object(session, "build_stack", side_effect=stacks):
+        with _stub_build(stacks):
             session.build_session(_args(), loaded, loaded.cfgs)
         factories = [
             st.playlist.bind_ensemble.call_args.kwargs["build_follower_scene"] for st in stacks
@@ -703,6 +710,107 @@ class BuildStackDacCurveTest(unittest.TestCase):
         with self.assertRaises(session.StackBuildError):
             self._build(cfg, resolve)
         resolve.assert_not_called()
+
+
+class BuildSessionOpensEverySystemFirstTest(unittest.TestCase):
+    """build_session opens every system and resolves every DAC curve before it
+    provisions any, so a later system's failure costs an earlier one no HDMI
+    mode switch or reset."""
+
+    def setUp(self):
+        self.addCleanup(profiler_mod.set_profiler, profiler_mod.get_profiler())
+
+    def _build(
+        self,
+        resolve_effects: list,
+        *,
+        fail_provisioning_of: tuple[str, ...] = ("a", "b"),
+        close_raises: dict[str, BaseException] | None = None,
+        expect: type[BaseException] = session.StackBuildError,
+    ) -> None:
+        loaded = _loaded(["a", "b"], is_ensemble=True)
+        for cfg in loaded.cfgs:
+            cfg.audio.enabled = True
+            cfg.scenes = []
+        self.events: list[str] = []
+        self.apis: dict[str, mock.MagicMock] = {}
+
+        def open_backend(cfg, name):
+            api = mock.MagicMock(name=f"api-{name}")
+            api.profile.max_fps = None
+            api.read_menu_screen.return_value = None
+            if name in fail_provisioning_of:
+                api.disable_case_switch.side_effect = session.StackBuildError(4)
+            if close_raises and name in close_raises:
+                api.close.side_effect = close_raises[name]
+            self.apis[name] = api
+            self.events.append(f"open {name}")
+            return api
+
+        hw = mock.MagicMock(name="hw_provision")
+        hw.provision_reu.side_effect = lambda api, cfg: self.events.append(
+            f"provision {'a' if api is self.apis['a'] else 'b'}"
+        )
+        self.hw = hw
+        with (
+            mock.patch.object(session, "_open_backend", side_effect=open_backend),
+            mock.patch.object(session, "hw_provision", hw),
+            mock.patch.object(session, "_build_audio", return_value=mock.MagicMock()),
+            mock.patch.object(
+                session.dac_curve_resolve,
+                "resolve_dac_curve_for_backend",
+                side_effect=resolve_effects,
+            ),
+            mock.patch.object(session, "_resolve_reu_available", return_value=False),
+            mock.patch.object(session, "_resolve_sampler_available", return_value=False),
+            mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]),
+            mock.patch.object(session, "Playlist"),
+            mock.patch.object(session.char_rom, "ensure_installed"),
+            mock.patch.object(session.time, "sleep"),
+            mock.patch.object(session.hardware_palette, "provision_hardware_palette"),
+            mock.patch.object(session.dac_curve_resolve, "provision_calibrated_chip_model"),
+            self.assertRaises(expect) as raised,
+        ):
+            session.build_session(_args(), loaded, loaded.cfgs)
+        self.raised = raised.exception
+
+    def test_a_later_systems_missing_calibration_provisions_no_system(self):
+        curve = session.dac_curve_resolve.DacCurve("calibrated:k", bytes(256))
+        with self.assertLogs("c64cast", "ERROR"):
+            self._build([curve, ValueError("no usable calibration")])
+        self.assertEqual(self.raised.exit_code, 3)
+        self.assertEqual(self.events, ["open a", "open b"])
+        self.hw.provision_reu.assert_not_called()
+        for api in self.apis.values():
+            api.reset.assert_not_called()
+            api.close.assert_called_once()
+
+    def test_a_ctrl_c_releasing_an_opened_system_still_releases_the_rest(self):
+        curve = session.dac_curve_resolve.DacCurve("calibrated:k", bytes(256))
+        with self.assertLogs("c64cast", "WARNING"):
+            self._build(
+                [curve, ValueError("no usable calibration")],
+                close_raises={"a": KeyboardInterrupt()},
+                expect=KeyboardInterrupt,
+            )
+        for api in self.apis.values():
+            api.close.assert_called_once()
+
+    def test_a_system_provisioned_before_a_failure_is_released_once(self):
+        curve = session.dac_curve_resolve.DacCurve("calibrated:k", bytes(256))
+        self._build([curve, curve], fail_provisioning_of=("b",))
+        self.assertEqual(self.events, ["open a", "open b", "provision a", "provision b"])
+        for api in self.apis.values():
+            api.close.assert_called_once()
+        self.assertEqual(self.hw.restore_reu.call_count, 2)
+
+    def test_every_system_is_opened_before_the_first_is_provisioned(self):
+        curve = session.dac_curve_resolve.DacCurve("calibrated:k", bytes(256))
+        self._build([curve, curve])
+        self.assertEqual(self.raised.exit_code, 4)
+        self.assertEqual(self.events, ["open a", "open b", "provision a"])
+        for api in self.apis.values():
+            api.close.assert_called_once()
 
 
 class BuildPreviewAndRecordingTest(unittest.TestCase):
