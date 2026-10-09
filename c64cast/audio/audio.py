@@ -381,7 +381,8 @@ class AudioStreamer:
         # forgets to derive one reads as unset instead of plausibly wrong.
         self._reu_cia1_latch_nominal = 0
         # Host's REU write position, wrapping at REU_MIC_SIZE; 0 until
-        # _start_mic_for_reu_pump seeds REU_MIC_BOOTSTRAP_BYTES. The error count
+        # _start_mic_for_reu_pump seeds it REU_MIC_BOOTSTRAP_BYTES past the
+        # pump's src tracker (past the ring start when that is unread). The error count
         # is this pump's only telemetry — its REUWRITEs go out from the
         # PortAudio callback, which has none of the worker counters below.
         self._mic_reu_write_pos = 0
