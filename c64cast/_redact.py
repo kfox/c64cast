@@ -734,6 +734,7 @@ def _cookie_values(
     no cookie name, or nothing but `=` comes after it: `cookie=S x=y` and
     `cookie=dGVzdA==` are a cookie with its name left off."""
     text = line.text
+    read = line.params_scanned
     opener = _opener(text, v)
     span = None
     if opener is not None and line.deepest(v, opener.end()) <= d:
@@ -751,8 +752,6 @@ def _cookie_values(
             return []
         else:
             start, end = span
-            if not line.params_scanned[0] < start < line.params_scanned[1]:
-                line.params_scanned = span
     elif opener is None:
         start, end = v, _params_end(line, v, d, closer, amp_below=d)
     else:
@@ -771,8 +770,10 @@ def _cookie_values(
             and text[after] not in _ELEMENT_END
         ):
             end = _params_end(line, after, d, closer, amp_below=d)
-    if line.params_scanned[0] < start < line.params_scanned[1]:
+    if read[0] < start < read[1]:
         return [(start, len(text) if span is None else end)] if start < end else []
+    if start < end:
+        line.params_scanned = (start, end)
     spans: list[Span] = []
     for a, b, first in _cookie_items(text, start, end, set_cookie):
         eq = text.find("=", a, b)

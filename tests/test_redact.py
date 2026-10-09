@@ -2058,6 +2058,9 @@ class CookieTest(unittest.TestCase):
             lambda s: "Set-Cookie: " + ",    " * 8_000 * s,
             lambda s: "Set-Cookie: a=1" + "; Path=/" * 8_000 * s,
             lambda s: "Cookie%3A%20" + "a%3Dx%26" * 4_000 * s,
+            lambda s: "Set-Cookie: %27&" * 500 * s,
+            lambda s: "=['--cookie', %27" * 500 * s,
+            lambda s: "://Set-Cookie: \\\\%2527  " * 400 * s,
         ):
             with self.subTest(line=make(1)[:30]):
                 _assert_linear_time(self, make)
