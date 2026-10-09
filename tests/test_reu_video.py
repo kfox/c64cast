@@ -1665,7 +1665,7 @@ class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
     stays under the shortest NMI period (fixing NMI loss → restored pitch).
     After each family's chunk loop ends, a pump check reads $DC0D and
     runs the pump body if CIA #1 was pending — keeping the audio ring
-    refilled across the ~14 ms bank-swap I-flag window (fixing the
+    refilled across the bank-swap I-flag window (fixing the
     ring drain that the split alone makes WORSE). These tests pin the
     byte layout, branch displacements, chunk counts, and the three
     end-of-family pump JSRs."""
@@ -1824,14 +1824,27 @@ class ChunkedDispatcherExecutionTest(unittest.TestCase):
     # registers shows up as a wrong span.
     DESTS = (0xA000, 0x8400, 0xD800)
 
-    def _run(self, handler, families, lens, bank_off, ready_off, *, raster=True, ready=1):
+    # Where the clobbering pump-body stub counts its calls.
+    PUMP_CALLS = 0x02A7
+
+    def _run(
+        self, handler, families, lens, bank_off, ready_off, *, raster=True, ready=1, cia1_tick=False
+    ):
         from py65.devices.mpu6502 import MPU
         from py65.memory import ObservableMemory
 
         mem = ObservableMemory()
         for i, b in enumerate(handler):
             mem[BANK_SWAP_IRQ_HANDLER_ADDR + i] = b
-        mem[REU_PUMP_BODY_SUBROUTINE_ADDR] = 0x60  # RTS: the pump body stub
+        # The pump body stub: like the real body it rewrites $DF02-$DF06 with
+        # its own addresses, then counts the call and returns.
+        body = [0xA9, 0xEE]  # LDA #$EE
+        for reg in range(REU.C64_ADDR_LO, REU.REU_ADDR_HI + 1):
+            body += [0x8D, reg & 0xFF, reg >> 8]  # STA reg
+        body += [0xEE, self.PUMP_CALLS & 0xFF, self.PUMP_CALLS >> 8, 0x60]  # INC count; RTS
+        for i, b in enumerate(body):
+            mem[REU_PUMP_BODY_SUBROUTINE_ADDR + i] = b
+        mem[CIA1.ICR] = 0x01 if cia1_tick else 0x00
         for off, dst, length in zip(families, self.DESTS[: len(lens)], lens, strict=True):
             regs = [dst & 0xFF, dst >> 8, 0x00, 0x00, 0xE1, length & 0xFF, length >> 8]
             for i, b in enumerate(regs):
@@ -1851,6 +1864,8 @@ class ChunkedDispatcherExecutionTest(unittest.TestCase):
             dst = rec[REU.C64_ADDR_LO] | (rec[REU.C64_ADDR_HI] << 8)
             length = rec[REU.LENGTH_LO] | (rec[REU.LENGTH_HI] << 8)
             self.assertEqual(value, REU.CMD_FETCH_EXEC)
+            # The staged REU bank is $E1; the pump stub leaves $EE behind.
+            self.assertEqual(rec[REU.REU_ADDR_HI], 0xE1, "a chunk fired from the pump's registers")
             transfers.append((dst, length))
             end = dst + length
             rec[REU.C64_ADDR_LO], rec[REU.C64_ADDR_HI] = end & 0xFF, (end >> 8) & 0xFF
@@ -1886,6 +1901,20 @@ class ChunkedDispatcherExecutionTest(unittest.TestCase):
                 )
                 self.assertEqual(mem[0xDD00], 0x95)
                 self.assertEqual(mem[FRAME_TRACKER_ADDR + ready_off], 0)
+
+    def test_a_pending_cia1_tick_runs_the_pump_between_families(self):
+        # The pump body rewrites $DF02-$DF06, so each family has to reload
+        # its own registers from the tracker after the end-of-family JSR.
+        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+            with self.subTest(mode=name):
+                exit_pc, transfers, mem = self._run(
+                    handler, families, lens, bank_off, ready_off, cia1_tick=True
+                )
+                self.assertEqual(exit_pc, 0xEA31)
+                self.assertEqual(mem[self.PUMP_CALLS], len(families))
+                firsts = [t for t in transfers if t[0] in self.DESTS]
+                self.assertEqual([d for d, _ in firsts], list(self.DESTS[: len(lens)]))
+                self.assertEqual(sum(n for _, n in transfers), sum(lens))
 
     def test_non_raster_irq_falls_through_to_the_pump(self):
         for name, handler, families, lens, bank_off, ready_off in self.CASES:
