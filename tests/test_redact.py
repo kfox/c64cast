@@ -1649,6 +1649,91 @@ class WordBeforeQuoteTest(unittest.TestCase):
                 _assert_linear_time(self, make)
 
 
+class EscapeBeforeNameTest(unittest.TestCase):
+    """A logged C string, bytes repr or JSON string spells a line break, a
+    tab or any other character as a backslash escape, whose last character
+    is a letter or digit glued to the name after it."""
+
+    def test_a_name_after_a_backslash_escape_is_not_glued(self):
+        e = "\\"
+        for line, want in (
+            (
+                "send: b'GET / HTTP/1.1"
+                + e
+                + "r"
+                + e
+                + "nHost: h"
+                + e
+                + "r"
+                + e
+                + "nCookie: sid=s"
+                + e
+                + "r"
+                + e
+                + "n'",
+                "send: b'GET / HTTP/1.1"
+                + e
+                + "r"
+                + e
+                + "nHost: h"
+                + e
+                + "r"
+                + e
+                + "nCookie: sid=REDACTED",
+            ),
+            (
+                "b'Host: h" + e + "r" + e + "nAuthorization: Basic s" + e + "r" + e + "n'",
+                "b'Host: h" + e + "r" + e + "nAuthorization: Basic REDACTED'",
+            ),
+            ("x" + e + "nsig=s", "x" + e + "nsig=REDACTED"),
+            ("'a=1" + e + "nBearer s'", "'a=1" + e + "nBearer REDACTED'"),
+            ("x" + e + "tkey=s", "x" + e + "tkey=REDACTED"),
+            ("x" + e + "x0akey=s", "x" + e + "x0akey=REDACTED"),
+            ("x" + e + "012key=s", "x" + e + "012key=REDACTED"),
+            ("x" + e + "u000aBearer s", "x" + e + "u000aBearer REDACTED"),
+            ("x" + e + "U0000000aCookie: a=s", "x" + e + "U0000000aCookie: a=REDACTED"),
+            ("x" + e + e + "nsig=s", "x" + e + e + "nsig=REDACTED"),
+            ("x%5CnCookie: sid=s", "x%5CnCookie: sid=REDACTED"),
+            ("x%5Cnsig=s", "x%5Cnsig=REDACTED"),
+            (
+                "['--token', b'a']" + e + "nAuthorization: Basic s",
+                "['--token', b'REDACTED']" + e + "nAuthorization: Basic REDACTED",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_flag_after_a_backslash_escape_is_a_flag(self):
+        e = "\\"
+        for line, want in (
+            (
+                '"password": "a"' + e + "u0026--password s",
+                '"password": "REDACTED"' + e + "u0026--password REDACTED",
+            ),
+            ("x" + e + "n--password s", "x" + e + "n--password REDACTED"),
+            ("x%5Cu0026--password s", "x%5Cu0026--password REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_escaped_letter_still_glues(self):
+        e = "\\"
+        for line in ("x" + e + "u0061key=1", "x" + e + "x41key=1", "x" + e + "tPWD=/home/k"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_a_long_run_of_escapes_is_redacted_in_linear_time(self):
+        e = "\\"
+        for make in (
+            lambda s: (e + "nsig=a ") * 4_000 * s,
+            lambda s: (e + "u0026") * 8_000 * s + "--password a",
+            lambda s: "x" + (e + "n") * 8_000 * s + "Cookie: a=b",
+            lambda s: (e + "n--password a ") * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
 class CookieTest(unittest.TestCase):
     def test_every_value_in_a_cookie_header_is_masked(self):
         for line, want in (
@@ -1832,6 +1917,7 @@ class CookieTest(unittest.TestCase):
             ("Cookie: 'a=b' c=s", "Cookie: REDACTED"),
             ("cookie=%22%22 s", "cookie=%22REDACTED"),
             ("cookie=%22a%22 s", "cookie=%22REDACTED"),
+            ("cookie=%5C%22a%5C%22%20s", "cookie=%5C%22REDACTED"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)

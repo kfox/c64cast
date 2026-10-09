@@ -1684,6 +1684,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   readable and everything else is masked, including each cookie of a header
   that a client joined with commas. `--cookie` is read the same way.
 
+- **The log redactor reads a name after a backslash escape as a name.**
+  A logged bytes repr such as `b'Host: h\r\nCookie: sid=…'` kept the cookie,
+  because the `n` of `\n` glued to `Cookie`; the same held for
+  `Authorization:`, `Bearer`, `sig=` and a `--password` flag after `\n`, `\t`,
+  `\xXX` or a JSON `\uXXXX` escape.
+
 - **The log redactor masks the credential of an `--authorization` flag whose scheme
   is its own list element.** `['--authorization', 'Basic', 'abc']` kept `abc`.
 

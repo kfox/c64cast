@@ -407,18 +407,59 @@ def _secret_names(text: str, judge: str | None = None) -> Iterator[re.Match[str]
             pos = m.start() + 1
 
 
-#: A JSON `\uXXXX` escape ending just before a name. Its last hex digit glues
-#: to the name, so `\u0026sig=` would read as the word `u0026sig`.
-_JSON_ESCAPE = re.compile(r"\\u(?P<hex>[0-9A-Fa-f]{4})\Z")
+#: A backslash escape ending just before a name, as a JSON string, a bytes
+#: repr or a logged C string spells one: `\uXXXX`, `\xXX`, an octal one, or
+#: a letter such as the `n` of `\n`. Its last character glues to the name,
+#: so `\u0026sig=` would read as the word `u0026sig` and `\nCookie:` as
+#: `nCookie`. An escaped backslash before a letter (`\\n`) reads the same
+#: way, which costs a mask and never a secret.
+_ESCAPE_BEFORE = re.compile(
+    r"""\\ (?: u (?P<u> [0-9A-Fa-f]{4} ) | U (?P<U> [0-9A-Fa-f]{8} ) | x (?P<x> [0-9A-Fa-f]{2} )
+           | (?P<octal> [0-7]{1,3} ) | (?P<letter> [abefnrtv] ) ) \Z""",
+    re.VERBOSE,
+)
+_ESCAPE_REACH = 10
+_LETTER_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+}
 
 
 def _char_before(text: str, s: int) -> str:
-    """The character before `s`, read through a JSON escape that ends there,
-    or "" at the start of `text`."""
+    """The character before `s`, read through a backslash escape that ends
+    there, or "" at the start of `text`."""
     if s == 0:
         return ""
-    escape = _JSON_ESCAPE.search(text, max(0, s - 6), s)
-    return text[s - 1] if escape is None else chr(int(escape.group("hex"), 16))
+    escape = _ESCAPE_BEFORE.search(text, max(0, s - _ESCAPE_REACH), s)
+    if escape is None:
+        return text[s - 1]
+    if escape.group("letter") is not None:
+        return _LETTER_ESCAPES[escape.group("letter")]
+    if escape.group("octal") is not None:
+        return chr(int(escape.group("octal"), 8))
+    code = int(escape.group("u") or escape.group("U") or escape.group("x"), 16)
+    return chr(code) if code <= 0x10FFFF else "\0"
+
+
+def _run_start(text: str, s: int, reach: int | None = None) -> int:
+    """Where the run of name characters ending at `s` starts, stopping at a
+    backslash escape, which spells some other character: the run in
+    `\\u0026--password` is `--password`. No further back than `reach`."""
+    run = s
+    while (
+        run > 0
+        and (reach is None or s - run < reach)
+        and _is_name_char(text[run - 1])
+        and _ESCAPE_BEFORE.search(text, max(0, run - _ESCAPE_REACH), run) is None
+    ):
+        run -= 1
+    return run
 
 
 def _starts_word(text: str, s: int) -> bool:
@@ -429,7 +470,7 @@ def _starts_word(text: str, s: int) -> bool:
 
 def _is_glued(text: str, s: int) -> bool:
     """Whether the name at `s` continues a word, rather than following a
-    separator, a `_` or `-`, or a JSON escape of any of them."""
+    separator, a `_` or `-`, or a backslash escape of any of them."""
     c = _char_before(text, s)
     return c != "" and _is_name_char(c) and c not in "_-"
 
@@ -457,20 +498,8 @@ def _names_no_password(text: str, s: int, end: int) -> bool:
     `allpass` and `phone_pass` as `onepass`. A run longer than the reach is
     not known to start a component where the window does, so it keeps its
     mask."""
-    lo = s
-    while lo > 0 and s - lo < _NOT_A_PASSWORD_REACH and _is_name_char(text[lo - 1]):
-        lo -= 1
-    first = 0 if lo == 0 or not _is_name_char(text[lo - 1]) else 1
-    if (
-        first == 0
-        and lo > 0
-        and text[lo - 1] == "\\"
-        and lo + 5 <= s
-        and not _is_glued(text, lo + 5)
-    ):
-        # The run opens with the tail of a JSON escape of a separator: read
-        # as part of the key, the `u0026` of `\u0026bypass` hid the word.
-        lo += 5
+    lo = _run_start(text, s, _NOT_A_PASSWORD_REACH)
+    first = 1 if _is_glued(text, lo) else 0
     parts = re.split(r"[_-]", text[lo:end].lower())
     return any("".join(parts[i:]) in _NOT_A_PASSWORD for i in range(first, len(parts)))
 
@@ -601,9 +630,7 @@ def _enclosing_quote(line: _Line, name: re.Match[str]) -> _Closer | None:
     in, as in `'Cookie: a=b' next`. A quote after the name as well makes it
     a quoted key (`{'Cookie': …}`), and its value carries its own quote."""
     text = line.text
-    run = name.start()
-    while run > 0 and _is_name_char(text[run - 1]):
-        run -= 1
+    run = _run_start(text, name.start())
     after = name.end()
     while after < len(text) and text[after] == "\\":
         after += 1
@@ -670,9 +697,7 @@ def _flag_value_start(line: _Line, name: re.Match[str]) -> tuple[int, int] | Non
     After a component of its own it is kept, or `--stream-key X` would keep
     `X` where `--streamkey X` does not."""
     text = line.text
-    run = name.start()
-    while run > 0 and _is_name_char(text[run - 1]):
-        run -= 1
+    run = _run_start(text, name.start())
     if name.group("short") is not None and not text[run : name.start()].strip("-"):
         return None
     found = _flag_gap(text, run, name.end())
@@ -733,12 +758,15 @@ def _cookie_values(
     else:
         start = opener.end()
         end = _params_end(line, start, d, _opener_closer(line, opener), amp_below=d)
-        after = end + 1
+        quote = end
+        while quote < len(text) and text[quote] == "\\":
+            quote += 1
+        after = quote + 1
         while after < len(text) and text[after].isspace():
             after += 1
         if (
-            end < len(text)
-            and text[end] in "\"'"
+            quote < len(text)
+            and text[quote] in "\"'"
             and after < len(text)
             and text[after] not in _ELEMENT_END
         ):
@@ -1083,9 +1111,9 @@ def redact_secrets(text: str) -> str:
       secret (`bypass`, `high-pass`, starting a component, so `firewall_pass`
       still matches) and the shell's `PWD` — or whose last `_`/`-` component
       is `key`, `sig`, `signature`, `hmac`, `auth`, `bearer` or `cookie`, so
-      `signing_key` matches and `sortkey` does not, and a JSON escape of a
-      separator (`\\u0026sig=`) counts as one. `=`, `:` or `=>`
-      separates them, with the key quoted or not, or, after a flag's dash
+      `signing_key` matches and `sortkey` does not, and a backslash escape
+      of a separator, a line break or a tab (`\\nCookie:`, `\\u0026sig=`)
+      counts as one. `=`, `:` or `=>` separates them, with the key quoted or not, or, after a flag's dash
       (`--password X`), a space or tab, except where a `_`/`-` name is the
       whole flag (`--key X`);
     * the credential after `Bearer` and a space, and in an `Authorization:`
