@@ -148,6 +148,8 @@ _AUTH_SCHEMES = frozenset(
     }
 )
 
+_SCHEME_REACH = max(map(len, _AUTH_SCHEMES))
+
 #: An `Authorization:` value that is a scheme and a credential, with any
 #: punctuation around the scheme. Without it, `(Basic x)`, `(Basic) x`,
 #: `s3cr3t, x` or a `%22` too deep to open a quote ends the value at the first
@@ -634,7 +636,9 @@ def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
         if span is None:
             return None
         scheme = _SCHEME_AND_GAP.match(text, span[0], span[1])
-        if scheme is None or scheme.end() == span[1] or not _is_auth_scheme(scheme):
+        if scheme is None:
+            return _past_quoted_scheme(line, opener, span) or span
+        if scheme.end() == span[1] or not _is_auth_scheme(scheme):
             return span
         return (scheme.end(), span[1])
     # Read from past a deep quote's prefix: from `v`, the `b` of `b%22Basic%22`
@@ -654,10 +658,36 @@ def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
         # `_value`: bounded by the quoted span alone, `%22Basic%22 x` kept `x`.
         credential = (gap_end, max(span[1], gap_end if credential is None else credential[1]))
     if _is_auth_scheme(scheme):
-        if credential is not None and scheme.group("scheme").lower() == "digest":
-            return (credential[0], max(credential[1], _params_end(line, gap_end, d)))
-        return credential
+        return _widen_digest(line, scheme.group("scheme"), credential, gap_end, d)
     return span if credential is None else (v, credential[1])
+
+
+def _widen_digest(line: _Line, scheme: str, credential: Span | None, c: int, d: int) -> Span | None:
+    """`credential`, the one that follows `scheme` at `c` in a value `d` deep,
+    widened to the whole parameter list when the scheme is `Digest`."""
+    if credential is None or scheme.lower() != "digest":
+        return credential
+    return (credential[0], max(credential[1], _params_end(line, c, d)))
+
+
+def _past_quoted_scheme(line: _Line, opener: re.Match[str], span: Span) -> Span | None:
+    """The credential after a quoted value that is exactly a registered scheme,
+    when whitespace or a `+` follows its closing quote: `"Basic" ab rest`. The
+    scheme stays in view, as it does with the credential inside the quotes.
+    Closing quote and comma, as in `{'Authorization': 'Basic', 'next': 'v'}`,
+    leave the value a lone word, which goes."""
+    text, q = line.text, opener.group("q")
+    end = span[1] - len(opener.group("esc") or "")
+    if end - span[0] > _SCHEME_REACH or not text.startswith(q, span[1]):
+        return None
+    scheme = text[span[0] : end]
+    if scheme.lower() not in _AUTH_SCHEMES:
+        return None
+    gap = _SCHEME_GAP.match(text, span[1] + len(q))
+    if gap is None:
+        return None
+    d = line.deepest(*gap.span())
+    return _widen_digest(line, scheme, _credential(line, gap.end(), gap.group(), d), gap.end(), d)
 
 
 def _unknown_scheme(line: _Line, v: int) -> Span | None:

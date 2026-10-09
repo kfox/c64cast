@@ -1499,6 +1499,58 @@ class PunctuatedSchemeTest(unittest.TestCase):
                 _assert_linear_time(self, make)
 
 
+class QuotedSchemeTest(unittest.TestCase):
+    def test_a_quoted_scheme_keeps_its_credential_out_of_view(self):
+        for line, want in (
+            ('Authorization: "Basic" ab rest', 'Authorization: "Basic" REDACTED rest'),
+            ("Authorization: 'Basic' ab rest", "Authorization: 'Basic' REDACTED rest"),
+            ('Authorization: "basic" ab rest', 'Authorization: "basic" REDACTED rest'),
+            ('Authorization: """Basic""" ab rest', 'Authorization: """Basic""" REDACTED rest'),
+            ('Authorization: "Basic"  ab rest', 'Authorization: "Basic"  REDACTED rest'),
+            ('Authorization: "Basic"+ab+rest', 'Authorization: "Basic"+REDACTED+rest'),
+            ('Authorization: "Basic" "ab cd" rest', 'Authorization: "Basic" "REDACTED" rest'),
+            ('Authorization: b"Basic" ab rest', 'Authorization: b"Basic" REDACTED rest'),
+            ('Authorization: "Bearer" ab rest', 'Authorization: "Bearer" REDACTED rest'),
+            ('x --authorization "Basic" ab rest', 'x --authorization "Basic" REDACTED rest'),
+            (
+                "{\\'Authorization\\': \\'Basic\\' ab, \\'next\\': \\'v\\'}",
+                "{\\'Authorization\\': \\'Basic\\' REDACTED, \\'next\\': \\'v\\'}",
+            ),
+            (
+                'Proxy-Authorization: "Digest" username="u", response="x" tail',
+                'Proxy-Authorization: "Digest" REDACTED',
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_value_that_a_comma_closes_is_one_word(self):
+        for line, want in (
+            (
+                "{'Authorization': 'Basic', 'next': 'v'}",
+                "{'Authorization': 'REDACTED', 'next': 'v'}",
+            ),
+            (
+                "{'Authorization': 's3cr3t', 'next': 'v'}",
+                "{'Authorization': 'REDACTED', 'next': 'v'}",
+            ),
+            ('Authorization: "s3cr3t" ab rest', 'Authorization: "REDACTED" ab rest'),
+            ('Authorization: "Basic"', 'Authorization: "REDACTED"'),
+            ('Authorization: "Basic" ', 'Authorization: "REDACTED" '),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_quoted_schemes_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: 'Authorization: "Basic" ' * 4_000 * s,
+            lambda s: 'Authorization:"' * 8_000 * s + 'Basic"' + " " * 20_000 * s + "a",
+            lambda s: 'Authorization: "Digest" ' * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""
