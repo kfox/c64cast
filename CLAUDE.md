@@ -74,7 +74,7 @@ renders the PDFs; `make site-check` is the parse check CI runs on every PR.
 
 Other docs: [caveats.md](docs/caveats.md), [troubleshooting.md](docs/troubleshooting.md),
 [extending.md](docs/extending.md). [CHANGELOG.md](CHANGELOG.md) follows Keep a
-Changelog — anything a user would notice gets an entry under `## [Unreleased]`.
+Changelog — anything a user would notice gets a fragment under `changelog.d/`.
 README links are **absolute** GitHub/raw URLs — it is the PyPI long_description,
 where relative paths 404. **Releasing** is [RELEASING.md](RELEASING.md), guarded by
 [tests/test_release.py](tests/test_release.py). Visual verification on real hardware
