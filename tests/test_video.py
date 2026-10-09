@@ -4211,6 +4211,20 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         closer.join(5.0)
         self.assertEqual(order, ["released", "closed"])
 
+    def test_teardown_stops_the_audio_only_after_a_release_in_flight_returns(self):
+        scene, audio, _ = self._held_scene()
+        proceed, order = self._release_in_flight(scene, audio)
+        audio.stop = lambda: order.append("audio stop")  # type: ignore[attr-defined]
+        tearer = threading.Thread(target=scene.teardown)
+        tearer.start()
+        self.addCleanup(tearer.join, 5.0)
+        tearer.join(0.2)
+        self.assertEqual(order, [])
+        proceed.set()
+        tearer.join(5.0)
+        self.assertEqual(order, ["released", "audio stop"])
+        self.assertFalse(scene._audio_held)
+
     def test_a_release_that_raises_still_ends_the_hold(self):
         scene, audio, _ = self._held_scene()
 
