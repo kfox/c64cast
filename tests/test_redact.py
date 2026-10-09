@@ -1264,6 +1264,40 @@ class RedactingFormatterTest(unittest.TestCase):
         self.assertIn("token=REDACTED", written)
 
 
+class NumberedNameTest(unittest.TestCase):
+    def test_a_strong_secret_name_may_end_in_a_number(self):
+        for line, want in (
+            ("password2 = hunter2", "password2 = REDACTED"),
+            ("Password12=hunter2 x", "Password12=REDACTED x"),
+            ("token1=abc&x=1", "token1=REDACTED&x=1"),
+            ('{"password2": "abc"}', '{"password2": "REDACTED"}'),
+            ("x_secret3=abc", "x_secret3=REDACTED"),
+            ("password_2=abc", "password_2=REDACTED"),
+            ("api-key-7: abc", "api-key-7: REDACTED"),
+            ("dbpwd2=abc", "dbpwd2=REDACTED"),
+            ("PWD2=abc", "PWD2=REDACTED"),
+            ("authorization2: Basic abc", "authorization2: Basic REDACTED"),
+            ("%26password2%3Dabc%26n=1", "%26password2%3DREDACTED%26n=1"),
+            ("--password2 hunter2 x", "--password2 REDACTED x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        safe, verbatim = redact_source_line(['password2 == "hunter2"'], 1)
+        self.assertNotIn("hunter2", safe)
+        self.assertFalse(verbatim)
+
+    def test_a_short_name_or_a_longer_word_keeps_its_value(self):
+        line = (
+            "key2=a sig2=b auth2=c hmac2=d bearer2=e password2x=f password2-x=g "
+            "passes2=3 bypass2=on PWD=/x jwts2=1 token2_x=h"
+        )
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_long_run_of_digits_is_redacted_in_linear_time(self):
+        _assert_linear_time(self, lambda s: "token" + "1" * 20_000 * s + "=x")
+        _assert_linear_time(self, lambda s: "token1" * 8_000 * s)
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""

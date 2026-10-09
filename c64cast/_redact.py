@@ -46,16 +46,21 @@ Span = tuple[int, int]
 #: (`viewer_token`, `dbpasswd`, `userpass`); the rest only a prefix that ends in
 #: `_` or `-`, because glued they are the tails of ordinary words: `sortkey`,
 #: `monkey`, `sigma`, `oauth`. The `(?![\w-])` makes the name end where the
-#: key does, so `passes=` and `jwt_expiry_s=` keep their values.
+#: key does, so `passes=` and `jwt_expiry_s=` keep their values. Only `open` and
+#: `header` names take a trailing number, glued or after a `_` or `-`
+#: (`password2`, `token_1`): a numbered secret is as secret as the first, while
+#: `key2` and `sig2` are as likely to be a column or an index.
 _NAME = re.compile(
     r"""
     (?:
-        (?P<open>
-            token | passw (?:or)? d | pass (?:phrase|code)? | loginpass? | pwd | jwt
-          | secret | credentials? | api [_-]? key
-          | (?: auth | priv (?:ate)? | access | secret | master | session | signing | stream ) key
-        )
-      | (?P<header> authorization )
+        (?:
+            (?P<open>
+                token | passw (?:or)? d | pass (?:phrase|code)? | loginpass? | pwd | jwt
+              | secret | credentials? | api [_-]? key
+              | (?: auth | priv (?:ate)? | access | secret | master | session | signing | stream ) key
+            )
+          | (?P<header> authorization )
+        ) (?: [_-]? \d++ )?+
       | (?P<scheme> bearer )
       | (?P<short> key | sig (?:nature)? | hmac | auth )
     ) (?![\w-])
@@ -421,8 +426,8 @@ def _names_a_secret(text: str, m: re.Match[str]) -> bool:
         return not glued
     name = m.group("open").lower()
     if name == "pass":
-        return not _names_no_password(text, s, m.end())
-    if name == "pwd":
+        return not _names_no_password(text, s, m.end("open"))
+    if name == "pwd" and m.end("open") == m.end():
         for word in _SHELL_PWD:
             lo = m.end() - len(word)
             if text[lo : m.end()] == word and _starts_word(text, lo):
@@ -658,7 +663,8 @@ def redact_secrets(text: str) -> str:
 
     * the value of a key whose name ends in `token`, `password`, `passwd`,
       `pass`, `passphrase`, `passcode`, `loginpas(s)`, `pwd`, `jwt`, `secret`,
-      `credential(s)` or `apikey` — glued to any prefix, so `viewer_token` and
+      `credential(s)` or `apikey`, with or without a number after it
+      (`password2`, `token_1`) — glued to any prefix, so `viewer_token` and
       `userpass` match, bar the words that end in `pass` and name nothing
       secret (`bypass`, `high-pass`, starting a component, so `firewall_pass`
       still matches) and the shell's `PWD` — or whose last `_`/`-` component
