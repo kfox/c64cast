@@ -1459,6 +1459,46 @@ class DigestParametersTest(unittest.TestCase):
                 _assert_linear_time(self, make)
 
 
+class PunctuatedSchemeTest(unittest.TestCase):
+    def test_a_first_word_with_punctuation_inside_goes_with_the_next_word(self):
+        for line, want in (
+            ("Authorization: s3!x ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x   ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x\tab rest", "Authorization: REDACTED rest"),
+            ("Authorization: !x ab rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x+ab+rest", "Authorization: REDACTED"),
+            ('Authorization: a"b ab rest', "Authorization: REDACTED rest"),
+            ("Authorization: ab%22cd ef rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x%20ab%20rest", "Authorization: REDACTED"),
+            ("Authorization: (s3!x) ab rest", "Authorization: REDACTED rest"),
+            ("{'Authorization': 's3!x ab', 'n': 1}", "{'Authorization': 'REDACTED', 'n': 1}"),
+            ("x --authorization s3!x ab rest", "x --authorization REDACTED rest"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_first_word_that_a_quote_starts_is_not_read_as_a_scheme(self):
+        """`%22ab%22-tail` is one quoted value and its tail, so `rest` is no
+        credential."""
+        for line, want in (
+            ("Authorization: %22ab%22-tail rest", "Authorization: REDACTED rest"),
+            ("Authorization: %27ab%27-tail rest", "Authorization: REDACTED rest"),
+            ("Authorization: s3!x", "Authorization: REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_punctuated_words_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "Authorization:" * 8_000 * s + "x" + " " * 20_000 * s + "y z",
+            lambda s: "Authorization: s3!x " * 4_000 * s,
+            lambda s: "Authorization: " + "s3!x" * 20_000 * s + " a",
+            lambda s: "Authorization:s3!x" * 8_000 * s + " " * 20_000 * s + "a",
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""

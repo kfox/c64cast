@@ -1668,6 +1668,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   and the `cnonce`, because the spaces, commas and quotes in the list each
   ended the value.
 
+- **The log redactor masks the word after an unknown scheme that holds
+  punctuation.** `Authorization: s3!x ab rest` masked `s3!x` and kept `ab`.
+
 - **The log redactor now reads a line instead of pattern-matching it, which
   closes a dozen shapes that let part or all of a secret through to
   `--log-file`, the web console's log tail and the scene snapshot.** Among

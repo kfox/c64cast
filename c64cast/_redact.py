@@ -171,6 +171,7 @@ _STOP_PATTERNS = {
     "unquoted": re.compile(r"""[\s&,] | ["'}] (?!\w)""", re.VERBOSE),
     "unquoted+": re.compile(r"""[\s&,+] | ["'}] (?!\w)""", re.VERBOSE),
     "space": re.compile(r"\s"),
+    "gap": re.compile(r"[\s+]"),
     "netloc": re.compile(r"[\s/?#]"),
     "@": re.compile(r"@"),
 }
@@ -340,6 +341,7 @@ class _Line:
         self._depth = depth
         self._stops: dict[str, _Stops] = {}
         self.params_scanned: Span = (0, 0)
+        self.word_gaps: set[int] = set()
 
     def depth(self, i: int) -> int:
         return 0 if self._depth is None else self._depth[i]
@@ -638,7 +640,12 @@ def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
     # Read from past a deep quote's prefix: from `v`, the `b` of `b%22Basic%22`
     # is glued to the quote, no scheme matches, and the credential stays in view.
     scheme = _SCHEME_AND_GAP.match(text, v if opener is None else opener.end("prefix"))
-    if scheme is None or scheme.end() == len(text):
+    if scheme is None:
+        word = _unknown_scheme(line, v if opener is None else opener.end("prefix"))
+        if word is None or span is None:
+            return span if word is None else word
+        return (min(word[0], span[0]), max(word[1], span[1]))
+    if scheme.end() == len(text):
         return span
     gap_start, gap_end = scheme.span("gap")
     credential = _credential(line, gap_end, scheme.group("gap"), line.deepest(gap_start, gap_end))
@@ -651,6 +658,30 @@ def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
             return (credential[0], max(credential[1], _params_end(line, gap_end, d)))
         return credential
     return span if credential is None else (v, credential[1])
+
+
+def _unknown_scheme(line: _Line, v: int) -> Span | None:
+    """The first word of an `Authorization` value at `v`, and the word after
+    it, when no scheme pattern read the word: a first word with punctuation
+    inside it (`s3!x ab`) is no known scheme, and may be a credential that more
+    text follows. The word runs to whitespace or a `+` and takes quotes inside
+    it, but does not begin with one: `%22ab%22-tail rest` is a quoted value and
+    its tail, and `rest` is not a credential. A word whose gap an earlier call
+    read goes to the end of the line instead of reading the gap again."""
+    text = line.text
+    if v >= len(text) or text[v] in "\"'":
+        return None
+    end = line.stop("gap", v + 1, _UNREACHABLE)
+    if end >= len(text):
+        return None
+    if end in line.word_gaps:
+        return (v, len(text))
+    line.word_gaps.add(end)
+    gap = _SCHEME_GAP.match(text, end)
+    if gap is None:
+        return None
+    credential = _credential(line, gap.end(), gap.group(), line.deepest(*gap.span()))
+    return None if credential is None else (v, credential[1])
 
 
 def _params_end(line: _Line, c: int, d: int) -> int:
