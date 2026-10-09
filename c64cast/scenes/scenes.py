@@ -1347,6 +1347,7 @@ class VideoScene(MediaFileMixin, Scene):
         # AUDIO_HOLD_MAX_S passes): the sink is up but its clock is held, so
         # the sound at clip time 0 starts with its picture.
         self._audio_held = False
+        self._audio_hold_lock = threading.Lock()
         self._hold_since = 0.0
         # The resolved URL's yt-dlp attribution (None for a local file). Set
         # post-construction by scene_factory._build_video; read by
@@ -1676,19 +1677,27 @@ class VideoScene(MediaFileMixin, Scene):
 
     def release_audio_hold(self) -> None:
         """Start the sound the scene held back at setup(), now that its first
-        frame is up (or the wait ran out, or the transport took over).
+        frame is up (or the wait ran out, or the transport took over). Safe
+        from any thread: a caller that finds a release in flight waits for it,
+        so a transport touch reads its anchor off a started sound.
         A release the REU pump cannot arm leaves the scene silent on the wall
         clock, as a failed install in setup() does."""
-        if not self._audio_held:
-            return
-        self._audio_held = False
-        audio = self.audio
-        assert audio is not None
-        try:
-            audio.release_hold()
-        except PumpInstallError:
-            self._audio_set_aside, self.audio = audio, None
-        self._start_clocks()
+        with self._audio_hold_lock:
+            if not self._audio_held:
+                return
+            audio = self.audio
+            assert audio is not None
+            try:
+                audio.release_hold()
+            except PumpInstallError:
+                self._audio_set_aside, self.audio = audio, None
+            finally:
+                self._audio_held = False
+            self._start_clocks()
+
+    def _close_audio_hold(self) -> None:
+        with self._audio_hold_lock:
+            self._audio_held = False
 
     def _setup_segments(self) -> list[tuple[str, float]]:
         """The SegmentedProgress weights for this scene's blocking setup
@@ -1963,6 +1972,7 @@ class VideoScene(MediaFileMixin, Scene):
         # Ahead of the audio stop: that zeroes `position_seconds()`, which is
         # what this summary's clock/wall gauge divides.
         steps.append(("A/V lag summary", self._log_av_lag_summary))
+        steps.append(("audio hold close", self._close_audio_hold))
         if self.audio:
             steps.append(("audio stop", self.audio.stop))
         # Behind the audio stop: the close bounded-joins the demux thread, which

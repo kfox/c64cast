@@ -4165,6 +4165,63 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         scene.transport.touch()
         self.assertEqual(events, ["release"])
 
+    def _release_in_flight(
+        self, scene: VideoScene, audio: _FakeSceneAudio
+    ) -> tuple[threading.Event, list[str]]:
+        entered, proceed, order = threading.Event(), threading.Event(), []
+
+        def release() -> None:
+            entered.set()
+            proceed.wait(5.0)
+            order.append("released")
+
+        audio.release_hold = release  # type: ignore[attr-defined]
+        first = threading.Thread(target=scene.release_audio_hold)
+        first.start()
+        self.addCleanup(first.join, 5.0)
+        self.addCleanup(proceed.set)
+        self.assertTrue(entered.wait(5.0))
+        return proceed, order
+
+    def test_a_release_in_flight_holds_back_a_second_caller(self):
+        scene, audio, _ = self._held_scene()
+        proceed, order = self._release_in_flight(scene, audio)
+        second = threading.Thread(
+            target=lambda: (scene.release_audio_hold(), order.append("second returned"))
+        )
+        second.start()
+        self.addCleanup(second.join, 5.0)
+        second.join(0.2)
+        self.assertEqual(order, [])
+        proceed.set()
+        second.join(5.0)
+        self.assertEqual(order, ["released", "second returned"])
+
+    def test_teardown_waits_for_a_release_in_flight(self):
+        scene, audio, _ = self._held_scene()
+        proceed, order = self._release_in_flight(scene, audio)
+        closer = threading.Thread(
+            target=lambda: (scene._close_audio_hold(), order.append("closed"))
+        )
+        closer.start()
+        self.addCleanup(closer.join, 5.0)
+        closer.join(0.2)
+        self.assertEqual(order, [])
+        proceed.set()
+        closer.join(5.0)
+        self.assertEqual(order, ["released", "closed"])
+
+    def test_a_release_that_raises_still_ends_the_hold(self):
+        scene, audio, _ = self._held_scene()
+
+        def boom() -> None:
+            raise RuntimeError("no")
+
+        audio.release_hold = boom  # type: ignore[attr-defined]
+        with self.assertRaises(RuntimeError):
+            scene.release_audio_hold()
+        self.assertFalse(scene._audio_held)
+
     def test_a_pump_that_cannot_arm_leaves_the_scene_on_the_wall_clock(self):
         scene, audio, events = self._held_scene()
 
