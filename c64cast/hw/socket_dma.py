@@ -27,6 +27,7 @@ import socket
 import struct
 import threading
 import time
+import weakref
 from collections import deque
 from collections.abc import Iterator
 
@@ -128,6 +129,18 @@ def encode_password(password: str) -> bytes:
         ) from None
 
 
+class _ThreadLoss:
+    """One thread's losses on a ``SocketDMAClient``: how many connections
+    dropped its commands, and why the latest did until its next flush reports
+    it."""
+
+    __slots__ = ("count", "pending")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.pending: str | None = None
+
+
 class SocketDMAClient:
     """One-connection client. Not multi-process safe — each process should
     open its own. Within a process, ``dmawrite()`` and ``flush()`` are
@@ -157,9 +170,10 @@ class SocketDMAClient:
 
     A redial for any other reason (a reset, an early FIN, a stray byte, an
     unanswered idle IDENTIFY, a failed send) abandons a connection whose
-    unconfirmed commands may never have run, so the next ``flush()``
-    raises ``CommandsMayBeLostError`` (a ``ConnectionError``) once instead
-    of reporting them drained.
+    unconfirmed commands may never have run, so the next ``flush()`` of
+    each thread that sent them raises ``CommandsMayBeLostError`` (a
+    ``ConnectionError``) once instead of reporting them drained;
+    ``thread_loss_count()`` is that thread's running count of such losses.
     ``possible_loss_count`` counts every such abandonment, and a ``flush()``
     that fails with commands unconfirmed, since construction; a caller that
     remembers what it sent (``write_region``'s dirty cache) reads it through
@@ -205,9 +219,17 @@ class SocketDMAClient:
         # True while a command has gone out on this connection since the
         # last answered IDENTIFY; see _redial_locked.
         self._unconfirmed = False
-        # Why a connection holding unconfirmed commands was abandoned in a
-        # way that may have dropped them, until flush() reports it.
-        self._maybe_lost: str | None = None
+        # The threads that sent those commands. Weak, so a thread that ends
+        # with a loss pending leaves nothing behind.
+        self._unconfirmed_writers: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
+        # Per thread: how many abandonments dropped its commands, and why the
+        # latest one did until that thread's flush() reports it. Guarded by
+        # _loss_lock, which nests inside _lock and is never held across I/O,
+        # so a reader never waits behind a send.
+        self._losses: weakref.WeakKeyDictionary[threading.Thread, _ThreadLoss] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._loss_lock = threading.Lock()
         self.reconnect_count = 0
         self.possible_loss_count = 0
         # Implicit redials are refused until monotonic() reaches this; see
@@ -445,28 +467,42 @@ class SocketDMAClient:
             raise
         except BaseException:
             if sending:
-                self._unconfirmed = True
+                self._note_unconfirmed_locked()
             self._abandon_locked("a command was cut part way through")
             raise
+
+    def _note_unconfirmed_locked(self) -> None:
+        """Record that the calling thread has a command on this connection
+        the server has not yet answered for."""
+        self._unconfirmed = True
+        self._unconfirmed_writers.add(threading.current_thread())
 
     def _note_answered_locked(self) -> None:
         """Record an answered round trip: every command sent on this
         connection has run, and the server's idle timer restarts now."""
         self._last_send = time.monotonic()
         self._unconfirmed = False
+        self._unconfirmed_writers.clear()
 
     def _abandon_locked(self, reason: str, *, benign: bool = False) -> None:
         """Close a connection the client is giving up on mid-run.
 
         Unless ``benign``, commands sent on it since its last answered
         IDENTIFY may never have run: ``possible_loss_count`` goes up, and
-        the next ``flush()`` raises once for them; the round trips on a new
+        each thread that sent one is charged the loss (``thread_loss_count``)
+        and has its next ``flush()`` raise once for it. A thread that sent
+        nothing on this connection is not charged, whichever thread
+        happened to find the connection gone; the round trips on a new
         connection say nothing about this one."""
         if self._unconfirmed and not benign:
             self.possible_loss_count += 1
-            if self._maybe_lost is None:
-                self._maybe_lost = reason
+            with self._loss_lock:
+                for thread in list(self._unconfirmed_writers):
+                    loss = self._losses.setdefault(thread, _ThreadLoss())
+                    loss.count += 1
+                    loss.pending = reason
         self._unconfirmed = False
+        self._unconfirmed_writers.clear()
         self._close_locked()
 
     def _redial_locked(self, reason: str, *, benign: bool = False) -> None:
@@ -525,6 +561,16 @@ class SocketDMAClient:
             return f"idle connection did not answer IDENTIFY ({e})"
         self._note_answered_locked()
         return None
+
+    def thread_loss_count(self) -> int:
+        """How many abandoned connections dropped commands the calling
+        thread had sent, since construction. Monotonic per thread; a caller
+        that must know whether its own writes survived compares it across
+        them, and a loss only other threads' commands suffered cannot move
+        it."""
+        with self._loss_lock:
+            loss = self._losses.get(threading.current_thread())
+            return 0 if loss is None else loss.count
 
     def check_for_loss(self) -> int:
         """Return ``possible_loss_count``, first abandoning the connection
@@ -599,7 +645,7 @@ class SocketDMAClient:
                     raise SocketDMAError(f"send failed again after reconnect: {e2}") from e2
             self._latencies.append(time.perf_counter() - t0)
             self._last_send = time.monotonic()
-            self._unconfirmed = True
+            self._note_unconfirmed_locked()
 
     def dmawrite(self, addr: int, data: bytes) -> None:
         """Write ``data`` to C64 address ``addr`` via hardware DMA.
@@ -692,15 +738,29 @@ class SocketDMAClient:
         arrives only after every prior DMAWRITE has been executed.
 
         A connection redialed since the last ``flush()`` may have taken
-        commands with it (see ``_redial_locked``); then this still drains
-        the current connection and raises ``CommandsMayBeLostError`` (a
-        ``ConnectionError``) once after it. Any raise from here answers for the commands issued before it,
-        so the pending loss is cleared whichever way this call fails."""
+        commands the calling thread sent with it (see ``_redial_locked``);
+        then this still drains the current connection and raises
+        ``CommandsMayBeLostError`` (a ``ConnectionError``) once after it. A
+        loss another thread's commands suffered is that thread's to hear of,
+        not this one's. Any raise from here answers for the commands this
+        thread issued before it, so its pending loss is cleared whichever
+        way this call fails."""
         with self._lock:
             try:
                 self._flush_locked()
             finally:
-                self._maybe_lost = None
+                self._clear_pending_loss()
+
+    def _pending_loss(self) -> str | None:
+        with self._loss_lock:
+            loss = self._losses.get(threading.current_thread())
+            return None if loss is None else loss.pending
+
+    def _clear_pending_loss(self) -> None:
+        with self._loss_lock:
+            loss = self._losses.get(threading.current_thread())
+            if loss is not None:
+                loss.pending = None
 
     def _flush_locked(self) -> None:
         self._ensure_live_locked()
@@ -717,9 +777,10 @@ class SocketDMAClient:
             raise
         self._latencies.append(time.perf_counter() - t0)
         self._note_answered_locked()
-        if self._maybe_lost is not None:
+        pending = self._pending_loss()
+        if pending is not None:
             raise CommandsMayBeLostError(
-                f"socket dma: {self._maybe_lost}; commands sent before the "
+                f"socket dma: {pending}; commands sent before the "
                 "reconnect may not have reached the server"
             )
 

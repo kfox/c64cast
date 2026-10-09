@@ -25,6 +25,7 @@ import contextlib
 import logging
 import sys
 import threading
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -374,6 +375,22 @@ class C64Backend(ABC):
         Default 0: a backend that cannot tell never asks for a resend."""
         return 0
 
+    def write_loss_mark(self) -> int:
+        """A number, private to the calling thread, that moves whenever a
+        write *this thread* issued may not have reached the machine.
+        `delivery_epoch` moves for every thread's losses, so a caller that
+        must answer for its own writes (a setup that decides whether to run
+        again, a flush before an irreversible runner) takes a mark before
+        them and asks `writes_lost_since` after. Default 0: a backend that
+        cannot tell reports no loss."""
+        return 0
+
+    def writes_lost_since(self, mark: int) -> bool:
+        """Whether the calling thread's writes since it took `mark` from
+        `write_loss_mark` may not have reached the machine. The mark must
+        have been taken on the thread asking."""
+        return self.write_loss_mark() != mark
+
     @property
     def link_generation(self) -> int:
         """A number that changes whenever the write link was opened again
@@ -638,6 +655,11 @@ class BufferedWriteBackend(C64Backend):
         self._listeners: list[WriteListener] = []
         self._consecutive_errors = 0
         self._failure_lock = threading.Lock()
+        # Failed `_emit`s per issuing thread; weak, so a finished thread's
+        # entry goes with it.
+        self._thread_errors: weakref.WeakKeyDictionary[threading.Thread, int] = (
+            weakref.WeakKeyDictionary()
+        )
         self._consecutive_listener_errors = 0
 
     # Labels for the shared _emit failure-log ladder. Subclasses override so
@@ -662,6 +684,12 @@ class BufferedWriteBackend(C64Backend):
         fails the write itself, which `_note_emit_failure` counts."""
         return 0
 
+    def _thread_possible_loss_count(self) -> int:
+        """`_possible_loss_count` restricted to the transport's losses of
+        writes the calling thread issued. Monotonic per thread. Default 0,
+        like `_possible_loss_count`."""
+        return 0
+
     @property
     def delivery_epoch(self) -> int:
         """A number that changes whenever a write this backend accepted may
@@ -670,6 +698,11 @@ class BufferedWriteBackend(C64Backend):
         order to skip resending it compares this, and stops trusting that
         memory when it moves; `write_region`'s cache does."""
         return self._stats["errors"] + self._possible_loss_count()
+
+    def write_loss_mark(self) -> int:
+        with self._failure_lock:
+            failed = self._thread_errors.get(threading.current_thread(), 0)
+        return failed + self._thread_possible_loss_count()
 
     def _note_emit_success(self) -> None:
         """Clear the consecutive-failure counter after a successful write."""
@@ -687,6 +720,8 @@ class BufferedWriteBackend(C64Backend):
         # recorded would hide a failed write.
         with self._failure_lock:
             self._stats["errors"] += 1
+            me = threading.current_thread()
+            self._thread_errors[me] = self._thread_errors.get(me, 0) + 1
             self._consecutive_errors += 1
             streak = self._consecutive_errors
         if streak == 1:

@@ -1502,9 +1502,11 @@ class _StubRunnerBackend(BufferedWriteBackend):
     """
 
     @abstractmethod
-    def _kick_char_rom_dump(self, stub_addr: int, timeout: float) -> None:
+    def _kick_char_rom_dump(self, stub_addr: int, timeout: float, mark: int) -> None:
         """Hand the CPU to the already-uploaded character-ROM dump stub at
-        `stub_addr`. Returning does NOT mean the copy finished — `dump_char_rom`
+        `stub_addr`. `mark` is the caller's `write_loss_mark()` from before it
+        uploaded the stub; a kick that fires an irreversible runner checks it
+        with `_flush_or_raise`. Returning does NOT mean the copy finished — `dump_char_rom`
         polls the stub's completion flag for that.
 
         The two kicks differ in whether the stub is entered as ordinary code or
@@ -1541,9 +1543,10 @@ class _StubRunnerBackend(BufferedWriteBackend):
         # audio's NMI/REU handler area, $C300+ the SID player), so the next
         # scene must diff against fresh state.
         self.invalidate_cache()
+        mark = self.write_loss_mark()
         self.write_memory_file(f"{CHAR_ROM_DUMP_STUB_ADDR:04X}", stub)
         self.flush()
-        self._kick_char_rom_dump(CHAR_ROM_DUMP_STUB_ADDR, timeout)
+        self._kick_char_rom_dump(CHAR_ROM_DUMP_STUB_ADDR, timeout, mark)
 
         deadline = time.time() + _CHAR_ROM_FLAG_TIMEOUT_S
         while time.time() < deadline:
@@ -1727,9 +1730,6 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         self.base_url = base_url.rstrip("/")
         self.read_url = f"{self.base_url}{U64_API.READ_MEM}"
         self.reset_url = f"{self.base_url}{U64_API.RESET}"
-        # Set by flush() so _flush_or_raise can tell a swallowed failure from a
-        # clean round-trip without changing flush()'s own -> None contract.
-        self._last_flush_failed = False
         self._reset_listeners: list[Callable[[], None]] = []
         # Per connection: a firmware update needs a reconnect anyway.
         self._route_answers: dict[str, RouteAnswer] = {}
@@ -1777,6 +1777,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
 
     def _possible_loss_count(self) -> int:
         return self.socket_dma.check_for_loss()
+
+    def _thread_possible_loss_count(self) -> int:
+        return self.socket_dma.thread_loss_count()
 
     @property
     def link_generation(self) -> int:
@@ -2178,10 +2181,11 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 f"(expected .prg or .crt)"
             )
 
+        mark = self.write_loss_mark()
         with open(path, "rb") as fh:
             payload = fh.read()
 
-        self._flush_or_raise("launch_program")
+        self._flush_or_raise("launch_program", mark)
         self.invalidate_cache()
         self._post_prg(
             endpoint,
@@ -2240,9 +2244,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         True so `run_sid_player` runs the standard finalize (timestamp + divider).
         WaveformScene's `begin_sid_audio()` is then a no-op, and it (re)asserts the
         bitmap display *after* this call as it always has."""
+        mark = self.write_loss_mark()
         self.blank_display()
         self._write_sid_blobs(launch)
-        self._flush_or_raise("run_sid_player")
+        self._flush_or_raise("run_sid_player", mark)
         basic_stub = _build_basic_sys_stub(launch.layout.player_base)
         self._post_prg(
             U64_API.RUN_PRG,
@@ -2253,7 +2258,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         )
         return True
 
-    def _kick_char_rom_dump(self, stub_addr: int, timeout: float) -> None:
+    def _kick_char_rom_dump(self, stub_addr: int, timeout: float, mark: int) -> None:
         """Ultimate kick: POST a `10 SYS <stub_addr>` PRG to the REST run_prg
         runner, exactly like the SID player's. run_prg soft-resets the C64
         (RAM preserved — RAMTAS restores every byte its memory-size scan
@@ -2266,7 +2271,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         and why the BASIC clear loop is re-established afterwards — the caller
         gets the machine back in the idle state it handed over."""
         self.blank_display()
-        self._flush_or_raise("dump_char_rom")
+        self._flush_or_raise("dump_char_rom", mark)
         self._post_prg(
             U64_API.RUN_PRG,
             "chargen.prg",
@@ -2330,13 +2335,18 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         every prior DMAWRITE has executed. Call before any REST runner
         (reset / run_sid_player / run_basic_clear_loop) so the runner doesn't
         race ahead of in-flight scene writes."""
+        self._flush_failure()
+
+    def _flush_failure(self) -> Exception | None:
+        """`flush()`, returning the failure it logged instead of dropping it,
+        so a caller that must act on one sees its own flush's outcome and
+        not whichever thread flushed last."""
         try:
             self.socket_dma.flush()
         except (OSError, SocketDMAError) as e:
             log.warning("dma flush failed: %s", e)
-            self._last_flush_failed = True
-        else:
-            self._last_flush_failed = False
+            return e
+        return None
 
     def link_answers(self) -> bool:
         """An IDENTIFY round trip on the DMA socket, redialing first under
@@ -2356,16 +2366,21 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             return False
         return True
 
-    def _flush_or_raise(self, action: str) -> None:
-        """`flush()`, but raise instead of only logging when it fails.
+    def _flush_or_raise(self, action: str, mark: int) -> None:
+        """`flush()`, but raise instead of only logging when it fails, or when
+        a write the calling thread issued since `mark` (its own
+        `write_loss_mark()`, taken before those writes) may not have reached
+        the machine.
 
         For call sites that flush right before firing an irreversible REST
         runner (run_prg soft-resets the C64): proceeding on a failed flush
         risks the runner racing ahead of writes it depends on having landed
         (the SID payload, the re-INIT stub, ...), so those call sites abort
-        the launch instead."""
-        self.flush()
-        if self._last_flush_failed:
+        the launch instead. Only this thread's writes count: another
+        thread's lost write is its own to repeat, and a flush it already
+        consumed the report of must not hide this thread's."""
+        failure = self._flush_failure()
+        if failure is not None or self.writes_lost_since(mark):
             raise RuntimeError(f"{action}: dma flush failed — refusing to launch")
 
     def _post_prg(

@@ -14,6 +14,13 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from _fakes import TOO_DEEP_JSON, FakeTime, SleepDrivenClock, make_psid
+from test_socket_dma import (
+    _IDENT_REPLY,
+    FakeSocket,
+    _client_with,
+    _live_thread_that,
+    _on_another_thread,
+)
 
 from c64cast.hw import api
 from c64cast.hw.api import (
@@ -198,6 +205,7 @@ class RunSidPlayerTest(unittest.TestCase):
 
         self.api._emit = _fake_emit  # type: ignore[method-assign]
         patch.object(self.api, "flush").start()
+        patch.object(self.api, "_flush_failure", return_value=None).start()
         self.posts: list[tuple[str, bytes]] = []
 
         def _fake_post(url, files=None, **_):
@@ -651,7 +659,7 @@ class RunSidPlayerTest(unittest.TestCase):
     def test_flush_failure_aborts_before_the_run_prg_post(self):
         # Past a flush it cannot confirm, the player MC / re-INIT stub may not be
         # in place, so the irreversible run_prg reset must not fire.
-        self.api._last_flush_failed = True
+        patch.object(self.api, "_flush_failure", return_value=OSError("scripted")).start()
         with self.assertRaises(RuntimeError):
             self.api.run_sid_player(self._make_sid())
         self.assertEqual(self.posts, [])
@@ -861,6 +869,7 @@ class LaunchProgramTest(unittest.TestCase):
         self.api = Ultimate64API("http://example.invalid")
         self.addCleanup(patch.stopall)
         patch.object(self.api, "flush").start()
+        patch.object(self.api, "_flush_failure", return_value=None).start()
         patch.object(self.api, "invalidate_cache").start()
         self.post = patch.object(self.api.session, "post").start()
         self.post.return_value.raise_for_status.return_value = None
@@ -914,11 +923,66 @@ class LaunchProgramTest(unittest.TestCase):
 
         # run_prg resets the C64; it must not fire past a flush that could not
         # confirm the pending DMA writes landed.
-        self.api._last_flush_failed = True
+        patch.object(self.api, "_flush_failure", return_value=OSError("scripted")).start()
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(RuntimeError):
                 self.api.launch_program(self._write(tmp, "game.prg"))
         self.post.assert_not_called()
+
+
+class FlushOrRaiseOwnWritesTest(unittest.TestCase):
+    """`_flush_or_raise` answers for the calling thread's writes only: another
+    thread's flush cannot consume the report of a loss this thread's writes
+    suffered, and another thread's loss does not refuse this thread's launch."""
+
+    def setUp(self):
+        with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True):
+            self.api = Ultimate64API("http://example.invalid")
+        self.fake1 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        self.api.socket_dma = _client_with(self.fake1)
+        self.addCleanup(self._close)
+
+    def _close(self):
+        with patch.object(self.api.socket_dma, "close"):
+            self.api.close()
+
+    def _redial_socket(self):
+        return patch(
+            "c64cast.hw.socket_dma.socket.create_connection",
+            return_value=FakeSocket([_IDENT_REPLY, _IDENT_REPLY, _IDENT_REPLY]),
+        )
+
+    def test_another_threads_flush_does_not_hide_a_lost_write_from_this_one(self):
+        mark = self.api.write_loss_mark()
+        self.api._emit(0xD020, b"\x0e")
+        self.fake1.peer_reset = True
+        with self._redial_socket(), self.assertLogs("c64cast.hw", level="DEBUG"):
+            _on_another_thread(self.api.flush)
+            with self.assertRaisesRegex(RuntimeError, "refusing to launch"):
+                self.api._flush_or_raise("launch", mark)
+
+    def test_another_threads_lost_write_does_not_refuse_this_launch(self):
+        mark = self.api.write_loss_mark()
+        with _live_thread_that(lambda: self.api._emit(0xD020, b"\x0e")):
+            self.fake1.peer_reset = True
+            with self._redial_socket(), self.assertLogs("c64cast.hw", level="DEBUG"):
+                self.api._flush_or_raise("launch", mark)
+
+    def test_a_write_that_failed_before_a_clean_flush_refuses_the_launch(self):
+        mark = self.api.write_loss_mark()
+        with patch.object(self.api.socket_dma, "dmawrite", side_effect=SocketDMAError("down")):
+            with self.assertLogs("c64cast.hw", level="DEBUG"):
+                self.api._emit(0xD020, b"\x0e")
+        with self.assertRaisesRegex(RuntimeError, "refusing to launch"):
+            self.api._flush_or_raise("launch", mark)
+
+    def test_another_threads_failed_write_is_not_this_threads(self):
+        mark = self.api.write_loss_mark()
+        with patch.object(self.api.socket_dma, "dmawrite", side_effect=SocketDMAError("down")):
+            with self.assertLogs("c64cast.hw", level="DEBUG"):
+                _on_another_thread(lambda: self.api._emit(0xD020, b"\x0e"))
+        self.assertFalse(self.api.writes_lost_since(mark))
+        self.assertEqual(self.api.delivery_epoch, 1)
 
 
 class PutConfigItemTest(unittest.TestCase):
@@ -1666,6 +1730,7 @@ class DumpCharRomTest(unittest.TestCase):
         self.writes: list[tuple[int, bytes]] = []
         self.api._emit = lambda addr, payload: self.writes.append((addr, bytes(payload)))  # type: ignore[method-assign]
         patch.object(self.api, "flush").start()
+        patch.object(self.api, "_flush_failure", return_value=None).start()
         patch.object(self.api, "run_basic_clear_loop").start()
         self.posts: list[tuple[str, bytes]] = []
 
@@ -1745,7 +1810,7 @@ class DumpCharRomTest(unittest.TestCase):
     def test_flush_failure_aborts_before_the_run_prg_post(self):
         # run_prg resets the C64; it must not fire past a flush that could not
         # confirm the stub upload landed.
-        self.api._last_flush_failed = True
+        patch.object(self.api, "_flush_failure", return_value=OSError("scripted")).start()
         with self.assertRaises(RuntimeError):
             self.api.dump_char_rom()
         self.assertEqual(self.posts, [])

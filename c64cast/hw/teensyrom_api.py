@@ -625,7 +625,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
     def _char_rom_stub_wants_irq_exit(self) -> bool:
         return True
 
-    def _kick_char_rom_dump(self, stub_addr: int, timeout: float) -> None:
+    def _kick_char_rom_dump(self, stub_addr: int, timeout: float, mark: int) -> None:
         """TeensyROM kick — pure DMA, no LaunchFile/reset/boot, the same
         primitive as the SID player's start: swap `$0314/$0315` to the stub so
         the next kernal IRQ runs it once. It executes with interrupts already

@@ -8,6 +8,7 @@ AUTHENTICATE)."""
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import socket
@@ -16,6 +17,7 @@ import threading
 import time
 import unittest
 from collections import deque
+from collections.abc import Iterator
 from unittest.mock import patch
 
 from c64cast.hw.backend import LinkError
@@ -26,6 +28,7 @@ from c64cast.hw.socket_dma import (
     CMD_KEYB,
     CMD_RESET,
     CMD_REUWRITE,
+    CommandsMayBeLostError,
     SocketDMAClient,
     SocketDMAError,
 )
@@ -1053,6 +1056,138 @@ class LostCommandReportTest(unittest.TestCase):
             with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
                 c.flush()
         self.assertEqual(c.reconnect_count, 1)
+
+
+def _on_another_thread(fn) -> BaseException | None:
+    """Run ``fn`` on a thread of its own, joined before returning; the
+    exception it raised, if any."""
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            fn()
+        except BaseException as e:
+            raised.append(e)
+
+    t = threading.Thread(target=run)
+    t.start()
+    t.join()
+    return raised[0] if raised else None
+
+
+@contextlib.contextmanager
+def _live_thread_that(first, then=None) -> Iterator[list[BaseException]]:
+    """Run ``first`` on a thread that stays alive through the ``with`` body,
+    then runs ``then`` and ends; yields the exceptions the two raised. A thread
+    that has ended is no longer a writer anyone can charge."""
+    raised: list[BaseException] = []
+    first_done = threading.Event()
+    release = threading.Event()
+
+    def run() -> None:
+        try:
+            first()
+            first_done.set()
+            release.wait()
+            if then is not None:
+                then()
+        except BaseException as e:
+            raised.append(e)
+        finally:
+            first_done.set()
+
+    t = threading.Thread(target=run)
+    t.start()
+    first_done.wait()
+    try:
+        yield raised
+    finally:
+        release.set()
+        t.join()
+
+
+class PerThreadLossTest(unittest.TestCase):
+    """A lost command is charged to the threads that sent it. Another
+    thread's flush must neither hear of it nor consume the report."""
+
+    def _lost_after_main_wrote(self) -> tuple[SocketDMAClient, FakeSocket]:
+        fake1 = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        c.dmawrite(0xD020, b"\x0e")
+        fake1.peer_reset = True
+        return c, FakeSocket([_IDENT_REPLY, _IDENT_REPLY, _IDENT_REPLY])
+
+    def test_a_flush_on_a_thread_that_sent_nothing_does_not_consume_the_loss(self):
+        c, fake2 = self._lost_after_main_wrote()
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                other = _on_another_thread(c.flush)
+                self.assertIsNone(other)
+                with self.assertRaisesRegex(ConnectionError, "may not have reached the server"):
+                    c.flush()
+
+    def test_a_live_senders_loss_stays_pending_for_its_own_flush(self):
+        fake1 = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY, _IDENT_REPLY])
+        with _live_thread_that(lambda: c.dmawrite(0xD020, b"\x0e"), c.flush) as raised:
+            fake1.peer_reset = True
+            with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+                with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                    c.flush()
+                    self.assertEqual(c.thread_loss_count(), 0)
+        self.assertEqual(len(raised), 1)
+        self.assertIsInstance(raised[0], ConnectionError)
+        self.assertIn("may not have reached the server", str(raised[0]))
+
+    def test_the_loss_is_charged_to_the_sender_only(self):
+        c, fake2 = self._lost_after_main_wrote()
+        other_counts: list[int] = []
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                _on_another_thread(lambda: (c.flush(), other_counts.append(c.thread_loss_count())))
+        self.assertEqual(other_counts, [0])
+        self.assertEqual(c.thread_loss_count(), 1)
+        self.assertEqual(c.possible_loss_count, 1)
+
+    def test_every_thread_that_sent_on_the_lost_connection_is_charged(self):
+        fake1 = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY, _IDENT_REPLY])
+        with _live_thread_that(lambda: c.dmawrite(0xD020, b"\x0e"), c.flush) as raised:
+            c.dmawrite(0xD021, b"\x00")
+            fake1.peer_reset = True
+            with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+                with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                    with self.assertRaises(ConnectionError):
+                        c.flush()
+        self.assertEqual(c.thread_loss_count(), 1)
+        self.assertEqual(c.possible_loss_count, 1)
+        self.assertEqual([type(e) for e in raised], [type(CommandsMayBeLostError())])
+
+    def test_a_thread_that_wrote_only_after_the_redial_is_not_charged(self):
+        c, fake2 = self._lost_after_main_wrote()
+        counts: list[int] = []
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.check_for_loss()
+                _on_another_thread(
+                    lambda: (
+                        c.dmawrite(0xD021, b"\x00"),
+                        c.flush(),
+                        counts.append(c.thread_loss_count()),
+                    )
+                )
+        self.assertEqual(counts, [0])
+
+    def test_a_loss_is_reported_once_to_the_sender(self):
+        c, fake2 = self._lost_after_main_wrote()
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                with self.assertRaises(ConnectionError):
+                    c.flush()
+                c.flush()
+        self.assertEqual(c.thread_loss_count(), 1)
 
 
 class PossibleLossCountTest(unittest.TestCase):
