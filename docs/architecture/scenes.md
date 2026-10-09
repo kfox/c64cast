@@ -61,12 +61,12 @@ DJ-style seek, pause, and loop, driven by `transport.TransportSession` via `[mid
 **First touch.** Any of `transport_pause`/`_seek`/`_loop_toggle`/`_record`/`_stop`/`_loop_slot`, or a jog/rw/ff, routes through `_touch_transport()`. It:
 
 1. **Reads the current clock BEFORE flipping `_transport_touched`.** The order is load-bearing — `_clock_s()` branches on that flag, so seeding the anchor from a post-flip read would capture the anchor's own not-yet-seeded default rather than the real pre-touch position. `VideoSceneClockTest` pins the order.
-2. Seeds `_wall_anchor_clock_s` / `_wall_anchor_time` from that reading.
+2. Seeds the anchor's `clock` and `ref` (the wall time) from that reading, then sets `resync`, and `touched` last, while a reader takes the flags before the anchor (`_state`): the web console's poll reads the anchor and `resync` only once it sees the flag, and a pause or resume likewise stores the anchor's new reference before the flag that makes it count.
 3. Calls `source.set_muted(True)` — idempotent, a no-op on later calls.
 
-From then on `_clock_s()` free-runs from the anchor as `_wall_anchor_clock_s + (time.time() - _wall_anchor_time)`, frozen at the anchor while `_paused`.
+From then on `_clock_s()` free-runs from the anchor as `anchor.clock + (time.time() - anchor.ref) × rate`, frozen at the anchor while `_paused`; the rate is 1 without a tempo scale and the source's scale with one (see the `tempo_scale` domain seam below).
 
-**`transport_seek(target_s)`** clamps to `[0, duration_s or target_s]`, re-anchors the clock directly to `target_s`, and calls `source.request_seek(target_s)`. There is no separate offset bookkeeping: the wall clock **is** the file position once touched.
+**`transport_seek(target_s)`** clamps to `[0, duration_s or target_s]`, re-anchors the clock to `content_to_clock(target_s)` (`target_s` itself without a tempo scale), and calls `source.request_seek(target_s)`. There is no separate offset bookkeeping: the clock **is** the file position, in the source's stamp domain, once touched.
 
 **`transport_loop_toggle()`** is a minimal 3-state cycle — mark A, mark B and start looping, clear — read by `process_frame`. Two things change there:
 
@@ -98,7 +98,7 @@ _transport_resync = (loop_audio == "on"
                      and not use_reu_pump)
 ```
 
-On the resync path it does **not** mute, and seeds an **audio-anchored clock** — the tuple `audio_anchor = (anchor_clock, anchor_pos)`, with `anchor_pos` the heard position — instead of the wall anchor. `clock_s()` then returns `anchor_clock + (heard − anchor_pos)`, held at `anchor_clock` while paused or while `anchor_pos` is `None`. Both halves are stored at once, because the web console's HTTP worker reads `position()` off the playlist thread, and a read between two separate stores paired one anchor's clock with the previous anchor's position: the target plus everything heard since then.
+On the resync path it does **not** mute, and seeds an **audio-anchored clock** — the anchor `(clock, ref, rebased)`, whose `ref` is the heard position — instead of the wall anchor. `clock_s()` then returns `clock + (heard − ref)`, held at `clock` while paused or while `ref` is `None`. The anchor is one object, replaced by a single store, because the web console's HTTP worker reads `position()` off the playlist thread, and a read between two separate stores paired one anchor's clock with the previous anchor's position (the target plus everything heard since then) or with the other anchor's rebase flag (a position `start_s` off, for one poll). The mute path's wall anchor is the same object, its `ref` the wall time, and `position()` and `clock_s()` each convert from one read of it.
 
 **Why audio-anchored and not wall.** On DAC+bitmap the drain runs ≈0.88× wall, courtesy of the `tempo_scale` machinery, so a wall master would desync ≈7 s/min. The audio delta instead inherits exactly the shipped pre-touch clock's drift behavior on every backend.
 
@@ -106,9 +106,9 @@ On the resync path it does **not** mute, and seeds an **audio-anchored clock** �
 
 1. `source.request_seek(target_s, unmute=..., on_request=audio.cut)` — engaging `_emit_audio`'s pending-seek guard and taking the sink's cut (its flush-epoch bump and anchor) in one critical section. Every push the demuxer decides on reads that epoch under the same lock, so audio decided before the seek carries the retired epoch and is dropped by the sink wherever it is, and the target's audio, which the demuxer can push before step 2 runs, carries the new one and is kept ([video-color.md](video-color.md#transport-audio-resync-midi-live-tune-phase-4)).
 2. `audio.flush(cut=cut)` — finishing the cut: the sampler's ring cut-over, the DAC's stomp request. Neither drains its queue.
-3. `anchor_pos = ` what the flush returned — where the target's first sample is heard on the sink's clock, read once, by the cut. Until then the anchor is `(target, None)`, so a web-console poll of `position()` during the flush shows the target. An earlier version held a `position_seconds() + ring_lead_seconds()` estimate there instead; on the sampler that estimate sat on `mark_eof`'s clamp while the flush cleared it, so a poll inside the flush read the target plus the clamp's overrun. A flush that raises leaves that estimate as the anchor, so the clock is not held at the target for good. Frames never see the held clock: transport commands are dispatched on the playlist thread right before `process_frame` (`TransportSession.tick`). Read before the flush, the anchor paired two clock reads on the DAC, and on the sampler sat on `mark_eof`'s clamped total, which the flush clears, so a splice after the clip's end put the picture ahead of the sound by however long the audio had been out.
+3. `ref = ` what the flush returned — where the target's first sample is heard on the sink's clock, read once, by the cut. Until then the anchor is `(target, None, False)`, so a web-console poll of `position()` during the flush shows the target. An earlier version held a `position_seconds() + ring_lead_seconds()` estimate there instead; on the sampler that estimate sat on `mark_eof`'s clamp while the flush cleared it, so a poll inside the flush read the target plus the clamp's overrun. A flush that raises leaves the sink's `splice_position_seconds()` as the anchor (that sum from one read of its clock, since two reads with the clock moving between them put the sum off by that much), so the clock is not held at the target for good. Frames never see the held clock: transport commands are dispatched on the playlist thread right before `process_frame` (`TransportSession.tick`). Read before the flush, the anchor paired two clock reads on the DAC, and on the sampler sat on `mark_eof`'s clamped total, which the flush clears, so a splice after the clip's end put the picture ahead of the sound by however long the audio had been out.
 
-It is used by `transport_seek`, the loop wrap, and resume-from-pause.
+It is used by `transport_seek`, the loop wrap, and resume-from-pause, and by `transport_scrub` and `transport_settle` with `exact` false and true (see the approximate seek in video-color.md).
 
 **Pause and resume.**
 
@@ -121,7 +121,7 @@ It is used by `transport_seek`, the loop wrap, and resume-from-pause.
 
 They are the identity when `tempo_scale == 1.0`, i.e. sampler, DAC+char, and muted: those scenes build no atempo graph and never follow, so the source's map stays `offset 0, s 1.0`. Those common paths therefore carry zero risk; only DAC+bitmap actually scales. The first transport touch freezes the source's map (`freeze_tempo`), so every conversion after it, and a seek target stamped by the demux thread, read one map.
 
-The `"mute"` path uses the wall anchor and identity conversions throughout, which is why it carries the DAC+bitmap tempo quirk documented in [caveats.md](../caveats.md).
+The `"mute"` path is in the same domain (`_clock_scaled`): its wall anchor is a clock value, a seek anchors at `content_to_clock(target)`, and the clock advances `_clock_rate` (the source's frozen tempo scale) clock seconds per wall second, so content plays at 1x and the frames the source stamps `offset + c × s` come due at the content time the transport reports. Anchored in content seconds and advanced at 1x, the clock instead put a seek `c × (1 − s)` short of the frame it asked for, and ran the picture at `1/s` of real time afterward.
 
 ### Record workflow + loop preset pads (MIDI live-tune Phase 3)
 
