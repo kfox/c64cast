@@ -22,7 +22,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Literal, TypeVar
 
 import cv2
@@ -54,6 +54,12 @@ AUDIO_ALIGN_TOLERANCE_S = 0.03
 # never has its silence take the audio fed more than the bound past the
 # picture.
 AUDIO_DISCONTINUITY_S = 30.0
+# The picture held for a pass's target (`AVFileSource._admit_frame`) waits for
+# the first picture at or after the target, and is queued anyway once any
+# stream has been read this far past the target: a stream whose pictures are
+# seconds apart (a screen capture, a slide show) would otherwise leave the
+# last screen up for as long as it takes the demuxer to reach the next one.
+PRE_TARGET_RELEASE_S = 1.0
 # A full video buffer with no audio coming is fed silence up to its newest
 # frame less this much, or less the furthest the file has been seen to write
 # audio behind its picture if that is more: audio for anything earlier would
@@ -121,14 +127,23 @@ def audio_frame_duration_s(frame: Any, fallback_rate: int) -> float:
     return frame.samples / rate if rate else 0.0
 
 
-def is_audio_discontinuity(start_s: float, fed_s: float, horizon_s: float | None) -> bool:
+def is_audio_discontinuity(
+    start_s: float, fed_s: float, horizon_s: float | None, floor_s: float | None = None
+) -> bool:
     """Whether an audio frame starting at ``start_s``, with the audio fed so
     far ending at ``fed_s``, is a jump in the file's timestamps (see
     `AUDIO_DISCONTINUITY_S`): more than the bound behind the audio fed, or
     starting after it and more than the bound past ``horizon_s``, the newest
     picture read. ``horizon_s`` None (no picture to measure from) checks the
     backward bound only, because a forward bound measured from the audio fed
-    would pull a sound that starts late to the front."""
+    would pull a sound that starts late to the front.
+
+    ``floor_s`` is where the timeline starts, when audio from before it is
+    read (a seek lands on a keyframe before its target): until the audio fed
+    passes it, a frame behind it is the lead-in to be trimmed, however far,
+    not a jump."""
+    if floor_s is not None and start_s < fed_s <= floor_s + AUDIO_ALIGN_TOLERANCE_S:
+        return False
     if fed_s - start_s > AUDIO_DISCONTINUITY_S:
         return True
     return (
@@ -564,8 +579,15 @@ def decode_audio_full(
     the audio it feeds (`place_audio_frame`): silence where the file has no
     sound, overlaps trimmed. Sample 0 is ``origin_s`` on the stream
     timestamps — the picture's origin, from
-    `AVFileSource.pin_timeline_origin` — or, without one, the first audio
-    timestamp.
+    `AVFileSource.pin_timeline_origin`, which under a ``start_s`` seek is that
+    far into the file, so the sound before it is trimmed — or, without one,
+    the first audio timestamp.
+
+    A timestamp that jumps is followed on rather than placed: back by more
+    than `AUDIO_DISCONTINUITY_S`, or forward by more than it past the newest
+    picture packet read (the soundtrack is read with the picture's packets
+    for that stamp; a soundtrack that runs on past its picture without a gap
+    is no jump).
 
     ``max_samples`` caps the result, and decoding stops once it is reached:
     the silence a placed frame is preceded by grows with the timestamp a file
@@ -596,7 +618,19 @@ def decode_audio_full(
         trim = 0
         shift = 0.0
         warned = False
-        frames = (f for packet in container.demux(a_stream) for f in packet.decode())
+        v_stream = container.streams.video[0] if container.streams.video else None
+        picture_s: float | None = None
+
+        def decoded() -> Iterator[Any]:
+            nonlocal picture_s
+            for packet in container.demux(*(s for s in (a_stream, v_stream) if s is not None)):
+                if packet.stream is a_stream:
+                    yield from packet.decode()
+                elif packet.pts is not None and packet.time_base is not None:
+                    stamp = float(packet.pts * packet.time_base)
+                    picture_s = stamp if picture_s is None else max(picture_s, stamp)
+
+        frames = decoded()
         # The trailing None flushes the filter tail the resampler holds back.
         for frame in itertools.chain(frames, [None]):
             if room <= 0:
@@ -610,12 +644,17 @@ def decode_audio_full(
                         origin_s = pts_s
                     start = pts_s - origin_s - shift
                     jump = 0.0
-                    if is_audio_discontinuity(start, fed, None):
-                        jump = start - fed
-                    elif shift < 0 and start - fed > AUDIO_DISCONTINUITY_S:
+                    if shift < 0 and start - fed > AUDIO_DISCONTINUITY_S:
                         # Back on the stamps a backward jump left: undo that
                         # shift, but never place a frame before its own stamp.
                         jump = min(start - fed, -shift)
+                    elif is_audio_discontinuity(
+                        start,
+                        fed,
+                        None if picture_s is None else picture_s - origin_s,
+                        floor_s=0.0,
+                    ):
+                        jump = start - fed
                     if jump:
                         if not warned:
                             warned = True
@@ -976,6 +1015,16 @@ class AVFileSource:
     _pending_tempo: float | None = None
     _tempo_frozen = False
     _atempo_filter: Any = None
+    # The newest decoded picture before the pass's target, held until one at
+    # or after it arrives; see `_admit_frame`.
+    _pre_target: Any = None
+    # Whether the pending seek is decoded up to its target (`request_seek`).
+    _pending_exact = True
+    # Content time of the held picture once it was queued ahead of a picture at
+    # the target; a later one before the target must be newer to follow it.
+    _released_s: float | None = None
+    # Stream seconds of file position 0, None when neither stream says.
+    _origin_s: float | None = None
 
     def __init__(
         self,
@@ -1011,16 +1060,19 @@ class AVFileSource:
         # the A/V-lag telemetry in VideoScene reads it as displayed_frame_pts.
         self.last_frame_pts: float = 0.0
         # Seconds into the source to begin playback (0 = from the start). The
-        # container seeks to the keyframe at/just-before it and frame PTS rebase
-        # to ~0 (_pts_offset), so VideoScene's from-0 playback clock lines up.
+        # container seeks to the keyframe at/just-before it, and the pictures
+        # and sound before it are dropped, so VideoScene's from-0 playback
+        # clock lines up with the file position start_s.
         self.start_s = max(0.0, start_s)
-        # From the first decoded video frame, so later PTS rebase to a ~0 origin.
-        # None until that frame arrives; re-derived after a transport seek so the
-        # rebased domain lands on the seek target instead of 0.
+        # Stream seconds subtracted from a timestamp to put it on the content
+        # timeline: the stream origin plus start_s, or after a transport seek
+        # the stream origin, which makes the content time the file position.
+        # Without a stream origin, None until the first decoded timestamp, which
+        # then sets it so that timestamp lands on `_pts_anchor_target`.
         self._pts_offset: float | None = None
-        # Where the next _pts_offset derivation rebases to: 0.0 for ordinary
-        # start-of-file playback, or a landed transport seek's target_s. The
-        # arithmetic is in _demux_loop.
+        # The content time this pass starts at: 0.0 for the initial pass, or a
+        # landed transport seek's target_s. Pictures and sound before it are
+        # dropped.
         self._pts_anchor_target: float = 0.0
         # Transport. Guarded by self._lock alongside _video_buf: a pending seek
         # is a target_s float or None, consumed by the demux thread between
@@ -1041,15 +1093,18 @@ class AVFileSource:
             self.container.duration / 1_000_000 if self.container.duration else None
         )
 
+        self._origin_s = self._stream_origin()
+
         # Before any demux, so there is no decoder state to flush.
         # Whole-container seek in AV_TIME_BASE units (microseconds); backward
-        # lands on the keyframe <= target, so playback starts at most one GOP
-        # early. Audio packets interleave near the same byte offset, so A/V stay
-        # aligned once video PTS are rebased.
+        # lands on the keyframe <= target; the pictures and sound it decodes
+        # before start_s are dropped, so playback starts at start_s.
         if self.start_s > 0:
             # A stall raises out of here, leaving the container to the
             # abandoned seek (RemoteSeekStalled).
-            _seek(self.container, path, int(self.start_s * 1_000_000))
+            _seek(self.container, path, self._seek_us(self.start_s))
+            if self._origin_s is not None:
+                self._pts_offset = self._origin_s + self.start_s
             log.info("av %s: seek to start_s=%.3fs", os.path.basename(self.path), self.start_s)
 
         if self.a_stream is not None:
@@ -1108,9 +1163,9 @@ class AVFileSource:
         # Resampled samples still to drop from the front of the next audio:
         # the part of a packet that overlaps audio already fed.
         self._audio_trim = 0
-        # Content time of the newest decoded picture this pass, reset by a
-        # seek; and the furthest behind it the file has written a packet of
-        # audio, kept for the file. See `_fill_dry_stretch`.
+        # Content time of the newest decoded picture this pass, and the
+        # furthest behind it the file has written a packet of audio; both
+        # reset by a seek. See `_fill_dry_stretch`.
         self._video_read_s: float | None = None
         self._audio_lag_s = 0.0
         # How far this pass's audio timestamps are shifted to follow on past
@@ -1178,7 +1233,7 @@ class AVFileSource:
                 # the gain reflects what is actually heard.
                 if self.start_s > 0:
                     try:
-                        _seek(container, self.path, int(self.start_s * 1_000_000))
+                        _seek(container, self.path, self._seek_us(self.start_s))
                     except RemoteSeekStalled:
                         container = None
                         raise
@@ -1242,6 +1297,7 @@ class AVFileSource:
         *,
         unmute: bool = False,
         on_request: Callable[[], _T] | None = None,
+        exact: bool = True,
     ) -> _T | None:
         """Ask the demux thread to seek to `target_s` (absolute seconds from
         file start) at its next opportunity. Coalescing is natural: rapid
@@ -1249,6 +1305,12 @@ class AVFileSource:
         slot — the demux thread performs however many real seeks it has
         cycles for. Clears the buffered (stale, pre-seek) frames immediately
         so a caller reading `current_frame` right after doesn't get one.
+
+        ``exact=False`` is for a seek that a newer one will replace within a
+        tick (a held FF/RW, a jog): the pass shows the keyframe it lands on
+        as the target, with no decode up to the target first, which on a long
+        GOP would not finish before the next seek interrupts it. The last
+        such seek is followed by an exact one.
 
         ``on_request`` runs under the same lock, with the seek pending, and
         its result is returned: the splice takes the audio sink's cut there
@@ -1263,6 +1325,7 @@ class AVFileSource:
         target_s = max(0.0, target_s)
         with self._lock:
             self._pending_seek = target_s
+            self._pending_exact = exact
             # The caller converted target_s with the map in force; a retune
             # applied after the seek would stamp the target off it.
             self._pending_tempo = None
@@ -1357,31 +1420,38 @@ class AVFileSource:
     def _apply_pending_seek(self) -> bool:
         """Demux-thread-only: if a transport seek is pending, perform it —
         re-seek the container, rebuild per-seek decoder state (resampler,
-        atempo graph), and re-anchor the PTS rebase so the next frame's PTS
-        lands on the requested target (design decision 2 of the transport
-        plan: the clock IS file position once transport is touched — no
-        separate file_offset_s bookkeeping). Returns True if a seek was
-        applied."""
+        atempo graph), and put the content timeline on the file position (design
+        decision 2 of the transport plan: the clock IS file position once
+        transport is touched — no separate file_offset_s bookkeeping). The
+        container lands on the keyframe before the target, and what it decodes
+        before the target is dropped (`_admit_frame`, `place_audio_frame`);
+        an approximate seek (``exact=False``) has no origin to place that
+        against, so the first timestamp read, the keyframe's, becomes the
+        target. Returns True if a seek was applied."""
         with self._lock:
             target = self._pending_seek
+            exact = self._pending_exact
             self._pending_seek = None
             if target is None:
                 return False
             # In the same critical section that retires the request, or
             # `finished` could see neither a pending seek nor a live pass.
             self._eof = False
-        _seek(self.container, self.path, int(target * 1_000_000), closer=self._closer)
+        _seek(self.container, self.path, self._seek_us(target), closer=self._closer)
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
         if self._atempo_graph is not None:
             self._atempo_graph, self._atempo_filter = _build_atempo(
                 self.target_sr, self._tempo_scale
             )
-        self._pts_offset = None
+        self._pts_offset = self._origin_s if exact else None
         self._pts_anchor_target = target
+        self._pre_target = None
+        self._released_s = None
         self._audio_fed_s = None
         self._audio_trim = 0
         self._video_read_s = None
+        self._audio_lag_s = 0.0
         self._dry_stall_level, self._dry_window = 0, None
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
@@ -1423,21 +1493,62 @@ class AVFileSource:
         return frame.to_ndarray(format="bgr24")
 
     def _rebase_pts(self, frame: Any) -> float:
-        """Rebase a frame's PTS so the first decoded frame sits at
-        ~_pts_anchor_target (0.0 for ordinary start_s playback; a transport
-        seek's target_s once one has landed — see _apply_pending_seek). With a
-        start_s seek the raw PTS are ~start_s; the playback clock (audio
-        samples / wall-clock) starts at 0, so without this current_frame()
-        would find no frame <= 0 for start_s seconds. Offset is captured from
-        the first frame (the keyframe the seek landed on), so the
-        no-transport-seek path is unchanged (anchor 0.0, offset == first PTS,
-        rebased ~0). Then the bitmap+DAC tempo compensation: compress the
+        """Stamp a frame on the playback clock: its content time (`_content_time`,
+        0 at the scene's start_s, the file position after a transport seek —
+        see _apply_pending_seek). With a start_s seek the raw PTS are ~start_s;
+        the playback clock (audio samples / wall-clock) starts at 0, so without
+        the offset current_frame() would find no frame <= 0 for start_s
+        seconds. Then the bitmap+DAC tempo compensation: compress the
         video timeline by tempo_scale so it stays in lock-step with the
         1/tempo_scale-compressed audio (both then net to real time under the
         ~tempo_scale drain-clock slowdown), plus the offset a retune leaves
         (`_apply_pending_tempo`)."""
-        pts = float(frame.pts * self.video_time_base) if frame.pts is not None else 0.0
-        return self._tempo_offset + self._content_time(pts) * self._tempo_scale
+        return self._tempo_offset + self._content_time(self._frame_pts_s(frame)) * self._tempo_scale
+
+    def _frame_pts_s(self, frame: Any) -> float:
+        return float(frame.pts * self.video_time_base) if frame.pts is not None else 0.0
+
+    def _admit_frame(self, frame: Any) -> bool:
+        """Queue a decoded picture, or hold it back while the pass has not
+        reached its target (a seek lands on the keyframe before it): only the
+        newest picture before the target is kept, to be shown until one at or
+        after it arrives (or `_release_held_picture` queues it), and none of
+        the pictures it replaces is converted. Returns False only when the
+        source closed mid-wait (stop demuxing)."""
+        content = None if frame.pts is None else self._content_time(self._frame_pts_s(frame))
+        if content is not None and content < self._pts_anchor_target - 1e-6:
+            if self._released_s is None:
+                self._pre_target = frame
+                return True
+            if content <= self._released_s:
+                return True
+            self._released_s = content
+            return self._enqueue_decoded(frame)
+        held, self._pre_target = self._pre_target, None
+        if held is not None and not self._enqueue_decoded(held):
+            return False
+        return self._enqueue_decoded(frame)
+
+    def _release_held_picture(self, packet: Any) -> bool:
+        """Queue the held picture once a packet of any stream has been read
+        `PRE_TARGET_RELEASE_S` past the target. Returns False only when the
+        source closed mid-wait (stop demuxing)."""
+        if (
+            self._pre_target is None
+            or self._pts_offset is None
+            or packet.pts is None
+            or packet.time_base is None
+        ):
+            return True
+        read_s = float(packet.pts * packet.time_base) - self._pts_offset
+        if read_s < self._pts_anchor_target + PRE_TARGET_RELEASE_S:
+            return True
+        held, self._pre_target = self._pre_target, None
+        self._released_s = self._content_time(self._frame_pts_s(held))
+        return self._enqueue_decoded(held)
+
+    def _enqueue_decoded(self, frame: Any) -> bool:
+        return self._enqueue_frame(self._rebase_pts(frame), self._frame_to_bgr(frame))
 
     def _clock_to_content(self, clock_s: float) -> float:
         """A clock stamp back on the content timeline (rebased, unscaled)."""
@@ -1516,33 +1627,45 @@ class AVFileSource:
             pivot,
         )
 
-    def pin_timeline_origin(self) -> float | None:
-        """Fix the content timeline's origin (stream seconds) before `start`,
-        for a caller that places the audio itself: the REU-staged preload,
-        which gets no audio from this demuxer to set it. The origin is the
-        earliest start either stream reports, where the demuxer's own would
-        be the pass's first timestamp. None, pinning nothing, under a
-        ``start_s`` seek (the preload decodes from the file's start) or when
-        neither stream reports a start."""
-        if self.start_s > 0:
-            return None
+    def _stream_origin(self) -> float | None:
+        """The earliest start either stream reports, in stream seconds: file
+        position 0. None when neither reports one."""
         starts = [
             float(s.start_time * s.time_base)
             for s in (self.v_stream, self.a_stream)
             if s is not None and s.start_time is not None and s.time_base is not None
         ]
-        if not starts:
+        return min(starts) if starts else None
+
+    def _seek_us(self, position_s: float) -> int:
+        """A file position as the container's seek target: AV_TIME_BASE
+        microseconds on the stream timestamps, which a file whose streams
+        start after 0 offsets from the position."""
+        return int(((self._origin_s or 0.0) + position_s) * 1_000_000)
+
+    def pin_timeline_origin(self) -> float | None:
+        """Fix the content timeline's origin (stream seconds) before `start`,
+        for a caller that places the audio itself: the REU-staged preload,
+        which gets no audio from this demuxer to set it. The origin is the
+        earliest start either stream reports, where the demuxer's own would
+        be the pass's first timestamp, plus ``start_s``: content 0 is the
+        file position the scene starts at, the picture before it (from the
+        keyframe the seek landed on) is held back (`_admit_frame`), and the
+        preload trims the sound before it. None, pinning nothing, when
+        neither stream reports a start."""
+        if self._origin_s is None:
             return None
-        origin = min(starts)
+        origin = self._origin_s + self.start_s
         self._pts_offset = origin - self._pts_anchor_target
         return origin
 
     def _content_time(self, pts_s: float) -> float:
         """A stream timestamp (seconds) on the content timeline: rebased,
-        unscaled. The pass's first timestamp from either stream sets the
-        offset, so audio and picture share one origin; a sound that starts
-        after its picture keeps that distance instead of being pulled to the
-        front."""
+        unscaled. Where the stream origin is known the offset is fixed by it
+        (`_pts_offset`); otherwise the pass's first timestamp from either
+        stream sets it, so audio and picture share one origin, and a sound
+        that starts after its picture keeps that distance instead of being
+        pulled to the front."""
         if self._pts_offset is None:
             self._pts_offset = pts_s - self._pts_anchor_target
         return pts_s - self._pts_offset
@@ -1665,17 +1788,48 @@ class AVFileSource:
         steps = max(0, self._dry_stall_level - 1)
         return min(steps * DRY_FILL_PAST_NEWEST_STEP_S, DRY_FILL_MAX_PAST_NEWEST_S)
 
+    def _frame_spacing_s(self) -> float:
+        """Content seconds between the frames buffered, measured over their
+        stamps: a variable-frame-rate file runs at no one rate, and the
+        nominal one would size the reach past the newest frame wrong. The
+        nominal interval stands in while fewer than two frames, or none that
+        advance, are buffered."""
+        buf = self._video_buf
+        try:
+            first, last, n = buf[0][0], buf[-1][0], len(buf)
+        except IndexError:
+            return 1.0 / self.video_fps
+        span = self._clock_to_content(last) - self._clock_to_content(first)
+        if n < 2 or span <= 0:
+            return 1.0 / self.video_fps
+        return span / (n - 1)
+
+    def _extra_reach_s(self, extra: int) -> float:
+        """Content seconds the frames past `max_video_buffer` reach beyond the
+        newest frame of a full buffer: read off their stamps once they are
+        buffered, and ``extra`` frames at the measured spacing before."""
+        buf = self._video_buf
+        try:
+            full_newest, newest = buf[self.max_video_buffer - 1][0], buf[-1][0]
+        except IndexError:
+            return extra * self._frame_spacing_s()
+        if len(buf) <= self.max_video_buffer:
+            return extra * self._frame_spacing_s()
+        return max(0.0, self._clock_to_content(newest) - self._clock_to_content(full_newest))
+
     def _dry_extra_frames(self) -> int:
         """Frames the video buffer takes past `max_video_buffer` so the stall
         level's reach past the newest frame is frames read rather than
         silence: silence there covers sound not yet read, and a sound coming
-        back was trimmed by as much. Up to as many again, which bounds the
-        memory; past that the fill goes past the newest frame. Zero while
-        the fill does not apply: a level kept until the next full wait resets
-        it would let a muted demuxer refill the grown buffer first."""
+        back was trimmed by as much. The count is the reach over the spacing
+        of the stamps buffered (`_frame_spacing_s`), up to as many again,
+        which bounds the memory; past that the fill goes past the newest
+        frame. Zero while the fill does not apply: a level kept until the
+        next full wait resets it would let a muted demuxer refill the grown
+        buffer first."""
         if self._dry_stall_level < 2 or not self._dry_fill_applies():
             return 0
-        wanted = math.ceil(self._past_newest_s() * self.video_fps - 1e-9)
+        wanted = math.ceil(self._past_newest_s() / self._frame_spacing_s() - 1e-9)
         return min(self.max_video_buffer, max(0, wanted))
 
     def _fill_dry_stretch(self, oldest_pts: float, newest_pts: float) -> None:
@@ -1703,7 +1857,7 @@ class AVFileSource:
         if self._dry_stall_level:
             target = max(target, min(oldest + DRY_FILL_MIN_LEAD_S, newest))
         if self._dry_stall_level > 1:
-            covered = self._dry_extra_frames() / self.video_fps
+            covered = self._extra_reach_s(self._dry_extra_frames())
             target = max(target, newest + max(0.0, self._past_newest_s() - covered))
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
         silence, _, self._audio_fed_s = place_audio_frame(target, 0.0, fed, self.target_sr)
@@ -1736,7 +1890,7 @@ class AVFileSource:
             start = fed
         else:
             start = self._audio_frame_start(float(frame.pts * frame.time_base), fed)
-            if self._video_read_s is not None:
+            if self._video_read_s is not None and start >= self._pts_anchor_target:
                 self._audio_lag_s = max(self._audio_lag_s, self._video_read_s - start)
         silence, trim, self._audio_fed_s = place_audio_frame(start, duration, fed, self.target_sr)
         self._audio_trim += trim
@@ -1751,7 +1905,7 @@ class AVFileSource:
         follows on, and the pass's later frames are shifted by the same jump."""
         start = self._content_time(pts_s) - self._audio_shift_s
         horizon = self._video_read_s if self._video_read_s is not None else self._pts_anchor_target
-        if not is_audio_discontinuity(start, fed_s, horizon):
+        if not is_audio_discontinuity(start, fed_s, horizon, floor_s=self._pts_anchor_target):
             return start
         jump = start - fed_s
         self._audio_shift_s += jump
@@ -1892,10 +2046,11 @@ class AVFileSource:
                     return "seek"
                 if self._pending_tempo is not None:
                     self._apply_pending_tempo()
+                if not self._release_held_picture(packet):
+                    return "closed"
                 if packet.stream.type == "video":
                     for frame in packet.decode():
-                        img = self._frame_to_bgr(frame)
-                        if not self._enqueue_frame(self._rebase_pts(frame), img):
+                        if not self._admit_frame(frame):
                             return "closed"
                 elif (
                     packet.stream.type == "audio"
@@ -1910,7 +2065,13 @@ class AVFileSource:
             if close is not None:
                 close()
         # A seek requested after the last packet would otherwise park with it.
-        return "seek" if self.seek_pending else "eof"
+        if self.seek_pending:
+            return "seek"
+        # A target past the last picture still shows that picture.
+        held, self._pre_target = self._pre_target, None
+        if held is not None and not self._enqueue_decoded(held):
+            return "closed"
+        return "eof"
 
     def _await_seek_after_eof(self) -> bool:
         """Mark EOF and park until a seek is requested (True; `_demux_loop`

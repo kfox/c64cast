@@ -3622,6 +3622,31 @@ class LifecycleTest(unittest.TestCase):
             s.position_seconds() + s.ring_lead_seconds(), 2036 / s.effective_rate, places=6
         )
 
+    def test_the_splice_position_is_one_read_of_the_clock(self):
+        # Position and ring lead read separately sum to the landed content
+        # less however far the clock moved between the two reads.
+        s = _make()
+        reads: list[int] = []
+
+        def clock_that_moves() -> tuple[int, float]:
+            reads.append(1)
+            return 4096, 1024.0 + 16 * len(reads)
+
+        with mock.patch.object(s, "_host_clock_bytes", side_effect=clock_that_moves):
+            position = s.splice_position_seconds()
+        self.assertEqual(len(reads), 1)
+        self.assertAlmostEqual(position, 4096 / s.effective_rate, places=6)
+
+    def test_the_splice_position_with_the_consumer_not_started_is_what_landed(self):
+        s = _make()
+        s._pushed_count = 3072
+        s._queued_samples = 1024
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertAlmostEqual(
+            s.splice_position_seconds(), s.position_seconds() + s.ring_lead_seconds(), places=6
+        )
+        self.assertGreater(s.splice_position_seconds(), 0.0)
+
     def test_the_prebuffer_lead_leaves_out_a_padded_chunks_pad(self):
         # position_seconds() counts content only, so the clock already lags by
         # a prebuffer pad; a lead that also counted the pad would hold the

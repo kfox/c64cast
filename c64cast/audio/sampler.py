@@ -1630,6 +1630,13 @@ class UltimateAudioSampler:
         transport splice anchors the picture there too."""
         return self._flush_margin / self.bps / self._actual_rate
 
+    def splice_position_seconds(self) -> float:
+        """Where a sample fed now is heard: the read head plus
+        `ring_lead_seconds()`, the margin a flush keeps ahead of it. The
+        ``AudioStreamer`` splice hook, which reads its own clock once for
+        the same sum."""
+        return self.position_seconds() + self.ring_lead_seconds()
+
     def start_for_external_source(self) -> None:
         """Alias for ``start()`` so a caller feeding via ``push_samples`` (e.g.
         AudioFileSource) can bring up either backend with the same call. The DAC
