@@ -157,6 +157,13 @@ class TestChangelogIsReleasable(unittest.TestCase):
     def test_unreleased_section_still_exists(self) -> None:
         self.assertRegex(_read("CHANGELOG.md"), r"(?m)^## \[Unreleased\][ \t]*$")
 
+    def test_unreleased_holds_only_the_pointer(self) -> None:
+        self.assertEqual(
+            bv.section_body(_read("CHANGELOG.md"), "Unreleased"),
+            bv.UNRELEASED_POINTER + "\n",
+            "entries belong in changelog.d/, not under [Unreleased]",
+        )
+
     def test_every_fragment_in_the_tree_is_well_formed(self) -> None:
         self.assertEqual(bv.fragment_problems(), [])
 

@@ -32,7 +32,7 @@ lines that didn't.
       behavior changed
 - [ ] User-facing docs updated (the User's Guide, the Reference Guide, the
       Performance Card, `caveats.md`, `troubleshooting.md`, `extending.md`)
-- [ ] `CHANGELOG.md` entry added under `## [Unreleased]`
+- [ ] Changelog fragment added under `changelog.d/` (not an edit to `CHANGELOG.md`)
 - [ ] New config knob: field `help`/`choices` metadata filled in,
       `c64cast/examples/` updated, `make schema` re-run
 - [ ] Not applicable — no behavior or config surface changed

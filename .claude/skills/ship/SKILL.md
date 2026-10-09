@@ -89,8 +89,9 @@ they are enforced by tests that fail late:
   temp fixture — never widen the sandbox.
 - **Config metadata is the single source of truth.** A new config field means
   filling in its `help`/`choices`/`applies_to`, then `make schema`.
-- **CHANGELOG.md** gets an entry under `## [Unreleased]` for anything a user
-  would notice.
+- **A changelog fragment** (`changelog.d/<slug>.<category>.md`, format in
+  `changelog.d/README.md`) for anything a user would notice. Never edit
+  `CHANGELOG.md` for it.
 
 ## 3. Commit
 
@@ -240,7 +241,7 @@ itself:
   `ruff`, `mypy`, `pyright`, and the suite already prove.
 - **Where this repo states its rules**, so it can check code against claim:
   `CLAUDE.md`, `CONTRIBUTING.md`, `docs/architecture/`,
-  `c64cast/data/c64cast.schema.json`, `CHANGELOG.md`, and
+  `c64cast/data/c64cast.schema.json`, `changelog.d/README.md`, and
   `c64cast/examples/c64cast.example.toml`. It cannot check a claim it was never
   shown.
 - **The pinned paths.** Diff size is a bad proxy for risk: a one-line change to

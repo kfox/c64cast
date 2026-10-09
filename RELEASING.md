@@ -14,7 +14,7 @@ A release is one tag push;
 | `c64cast-reference-guide-X.Y.Z.pdf` | the GitHub release |
 | `c64cast-performance-card-X.Y.Z.pdf` | the GitHub release |
 | The same three PDFs again, unversioned | the GitHub release |
-| Release notes | the GitHub release, from that version's `CHANGELOG.md` section |
+| Release notes | the GitHub release, from that version's `CHANGELOG.md` section, which the bump built from `changelog.d/` |
 
 Each book ships twice because a version-stamped filename is what you want on
 disk and an unversioned one is what a link can point at:
@@ -50,8 +50,10 @@ if you want a required reviewer on the upload step.
 
 ## Cutting a release
 
-**1. Check the changelog.** `## [Unreleased]` becomes the release notes
-verbatim, so read it as the announcement it is about to be.
+**1. Check the fragments.** Every file under `changelog.d/` (see its
+[README](changelog.d/README.md)) becomes a bullet in the release notes
+verbatim, so read them as the announcement they are about to be.
+`python scripts/bump_version.py --check <version>` refuses a malformed one.
 
 **2. Bump.**
 
@@ -59,8 +61,10 @@ verbatim, so read it as the announcement it is about to be.
 python scripts/bump_version.py 0.2.0
 ```
 
-Moves `[project] version`, renames the changelog section and dates it, opens a
-fresh `## [Unreleased]`, fixes the link references, and re-runs `uv lock`.
+Moves `[project] version`, collects the fragments into a new dated changelog
+section (Upgrade notes first, then Added, Changed, Removed, Fixed, Security)
+and deletes them, fixes the link references, and re-runs `uv lock`.
+`## [Unreleased]` stays, pointing at `changelog.d/`.
 
 Nothing else needs editing — `__version__`, the `#:schema` URL and every book's
 cover or footer version all derive from that number. The exception is the
