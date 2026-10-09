@@ -969,8 +969,8 @@ def _params_end(
     that is shallower than `amp_below` (`d + 1` when not given, so no deeper
     than `d`), or at the quote closing the
     header: `closer`'s quote, with as many backslashes before it and as deep,
-    where it opens no parameter and neither a letter or digit nor a `;`
-    follows it. Any other
+    where it opens no parameter and neither a letter, digit or `_` nor a
+    `;` follows it. Any other
     quote is the value's own (`a=b'; c=d`, `a={"k":1}; c=d`), and with no
     `closer` none ends the list. A parameter's quote opens it when an `=`
     comes before it, and closes at the next such quote with as many
@@ -1012,8 +1012,8 @@ def _params_end(
     return i
 
 
-#: What may follow a header's closing quote: anything but a letter or digit,
-#: or a `;` that carries its list on.
+#: What may follow a header's closing quote: anything but a letter, digit or
+#: `_`, or a `;` that carries its list on.
 _INSIDE_LIST = re.compile(r"\w|\s*+;")
 
 

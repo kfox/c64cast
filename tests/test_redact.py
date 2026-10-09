@@ -1873,6 +1873,67 @@ class CookieTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_a_quote_the_header_is_not_written_in_does_not_end_the_list(self):
+        for line, want in (
+            ("Cookie: a=b'; c=d'", "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a=b; c=d"', "Cookie: a=REDACTED; c=REDACTED"),
+            ("'Cookie': 'a=b; c=d' tail", "'Cookie': REDACTED; c=REDACTED"),
+            (
+                '\\"Cookie\\": \\"a=b\\"; c=d\\" tail',
+                '\\"Cookie\\": REDACTED; c=REDACTED',
+            ),
+            (
+                '\\"Cookie: a=b\\"; c=d\\" tail',
+                '\\"Cookie: a=REDACTED; c=REDACTED\\" tail',
+            ),
+            (
+                '"{\\"h\\": \\"Cookie: a=b\\"; c=d\\"}" tail',
+                '"{\\"h\\": \\"Cookie: a=REDACTED; c=REDACTED\\"}" tail',
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_first_item_is_read_past_a_quote_inside_it(self):
+        for line, want in (
+            ("'Cookie: \"a'\"; c=d' next", "'Cookie: REDACTED; c=REDACTED' next"),
+            ("'Cookie: \"a=\"; c=d' next", "'Cookie: REDACTED' next"),
+            ('cookie="a;b" x; c=d', "cookie=REDACTED;REDACTED; c=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_value_with_an_escaped_quote_keeps_its_semicolon_inside(self):
+        for line, want in (
+            ('Cookie: a="x\\"y;z"; c=d', "Cookie: a=REDACTED; c=REDACTED"),
+            ("Cookie: a='x\\'y;z'; c=d", "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a=\\"x"y;z\\"; c=d', "Cookie: a=REDACTED; c=REDACTED"),
+            ('Cookie: a="x\\\\"; c=d', "Cookie: a=REDACTED"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_nameless_item_after_a_semicolon_is_masked_whole(self):
+        self.assertEqual(redact_secrets("Cookie: x; bare"), "Cookie: REDACTED; REDACTED")
+
+    def test_an_encoded_quoted_value_reaches_an_ampersand_and_a_closing_quote(self):
+        for line, want in (
+            ("Cookie: %22a=b&x", "Cookie: %22a=REDACTED"),
+            ("Cookie: %22&x", "Cookie: %22REDACTED"),
+            ("cookie=%5C%22a%5C%22,x", "cookie=%5C%22REDACTED%5C%22,x"),
+            ("cookie=%5C%22a%5C%22%7D", "cookie=%5C%22REDACTED%5C%22%7D"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+        for line in ("cookie=%22secret%22", "h=cookie%3D%22secret%22"):
+            with self.subTest(line=line):
+                self.assertNotIn("secret", redact_secrets(line))
+
+    def test_a_digest_in_an_encoded_quote_ends_at_that_quote(self):
+        got = redact_secrets("Authorization: %22Digest a=b, response=c%22 tail")
+        self.assertNotIn("response=c", got)
+        self.assertTrue(got.endswith(" tail"), got)
+
     def test_words_around_the_name_cookie_are_left_alone(self):
         for line in ("Cookie: ", "Cookie:", "cookie jar loaded", "cookies: 3", "mycookie: sid=abc"):
             with self.subTest(line=line):
