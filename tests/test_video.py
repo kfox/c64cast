@@ -3837,8 +3837,10 @@ class TempoRetuneTest(unittest.TestCase):
         video and one audio stream."""
         container = SimpleNamespace(
             streams=SimpleNamespace(
-                video=[SimpleNamespace(average_rate=30, time_base=Fraction(1, 30))],
-                audio=[object()],
+                video=[
+                    SimpleNamespace(average_rate=30, time_base=Fraction(1, 30), start_time=None)
+                ],
+                audio=[SimpleNamespace(time_base=Fraction(1, 8000), start_time=None)],
             ),
             duration=None,
         )

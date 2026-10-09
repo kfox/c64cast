@@ -2208,6 +2208,24 @@ def _make_click_wav(path: str, *, seconds: float, period: float, rate: int = 441
     return clicks
 
 
+def marked_frame(index: int) -> np.ndarray:
+    """A 64x64 RGB picture, grey but for two 16x16 blocks whose flat grey
+    levels, sixteen apart, spell ``index`` in base 16 (below 256). The rest
+    stays still, so the encoder keeps to its keyframe interval."""
+    low, high = index % 16, (index // 16) % 16
+    picture = np.full((64, 64, 3), 128, dtype=np.uint8)
+    picture[:16, :16] = low * 16 + 8
+    picture[:16, 16:32] = high * 16 + 8
+    return picture
+
+
+def frame_index(picture: np.ndarray) -> int:
+    """The index `marked_frame` wrote, read back from a decoded BGR picture."""
+    low = int(round((float(picture[:16, :16].mean()) - 8) / 16))
+    high = int(round((float(picture[:16, 16:32].mean()) - 8) / 16))
+    return high * 16 + low
+
+
 def _write_av_clip(
     path: str,
     seconds: float,
@@ -2216,37 +2234,55 @@ def _write_av_clip(
     rate: int = 8000,
     audio: tuple[tuple[float, float], ...] | None = None,
     video_start_s: float = 0.0,
+    gop: int | None = None,
+    ramp: bool = False,
+    chunk_s: float | None = None,
 ) -> None:
     """A tiny Matroska clip with a video stream `seconds` long, its first
     frame stamped `video_start_s`, and a tone on a PCM audio stream: the whole
     length, or the `(start_s, length_s)` spans in `audio`, with nothing
-    between them."""
+    between them.
+
+    ``gop`` is the keyframe interval in frames. ``ramp`` marks each frame's
+    picture with its index (`frame_index`) and writes the audio as a ramp
+    that reads 1000 per second of file time, so a sample says where in the
+    file it came from. ``chunk_s`` cuts the audio into packets that long."""
     import av
 
     spans = audio if audio is not None else ((0.0, seconds),)
 
     container = av.open(path, "w", format="matroska")
     try:
-        video = container.add_stream("mpeg4", rate=fps)
+        video = container.add_stream(
+            "mpeg4", rate=fps, options={"sc_threshold": "0"} if gop is not None else None
+        )
         video.width, video.height = 64, 64
         video.pix_fmt = "yuv420p"
+        if gop is not None:
+            video.gop_size = gop
         sound = container.add_stream("pcm_s16le", rate=rate)
         sound.layout = "mono"
         grey = np.full((64, 64, 3), 128, dtype=np.uint8)
         first = round(video_start_s * fps)
         for i in range(int(seconds * fps)):
-            picture = av.VideoFrame.from_ndarray(grey, "rgb24")
+            picture = av.VideoFrame.from_ndarray(marked_frame(i) if ramp else grey, "rgb24")
             picture.pts = first + i
             for packet in video.encode(picture):
                 container.mux(packet)
-        for start_s, length_s in spans:
-            t = np.arange(int(length_s * rate)) / rate
-            pcm = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16).reshape(1, -1)
-            frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
-            frame.sample_rate = rate
-            frame.pts = int(start_s * rate)
-            for packet in sound.encode(frame):
-                container.mux(packet)
+        for span_start_s, span_length_s in spans:
+            step = chunk_s if chunk_s is not None else span_length_s
+            for at in np.arange(0.0, span_length_s, step):
+                length_s = min(step, span_length_s - float(at))
+                n = int(length_s * rate)
+                start_s = span_start_s + float(at)
+                t = np.arange(n) / rate
+                wave = (start_s + t) * 1000 if ramp else np.sin(2 * np.pi * 440 * t) * 12000
+                pcm = wave.astype(np.int16).reshape(1, -1)
+                frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
+                frame.sample_rate = rate
+                frame.pts = int(start_s * rate)
+                for packet in sound.encode(frame):
+                    container.mux(packet)
         for stream in (video, sound):
             for packet in stream.encode():
                 container.mux(packet)
@@ -2558,18 +2594,79 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
         self.assertAlmostEqual(self._sound(pcm)[0], 0.0, delta=0.03)
 
-    def test_nothing_is_pinned_under_a_start_offset(self):
+    def test_the_preload_and_the_picture_both_start_at_start_s(self):
+        # The origin is start_s into the file: the preload drops the sound
+        # before it, and the picture reads that file position as its clock 0.
+        from c64cast.video.video import AVFileSource, decode_audio_full
+
+        clip = self._clip(((0.5, 0.3), (2.0, 0.3), (3.0, 0.3)))
+        src = AVFileSource(clip, target_sample_rate=self.RATE, scan_audio_peak=False, start_s=1.0)
+        self.addCleanup(src.close)
+        origin = src.pin_timeline_origin()
+        self.assertEqual(origin, 1.0)
+        self.assertAlmostEqual(src._content_time(1.0), 0.0)
+        pcm = decode_audio_full(clip, self.RATE, origin_s=origin)
+        starts = self._sound(pcm)
+        self.assertEqual(len(starts), 2)
+        self.assertAlmostEqual(starts[0], 1.0, delta=0.03)
+        self.assertAlmostEqual(starts[1], 2.0, delta=0.03)
+
+    def test_a_start_offset_far_past_the_sound_before_it_drops_that_sound(self):
+        # More than the discontinuity bound of sound before start_s is the
+        # lead-in to trim, not a jump back to follow on from.
+        from c64cast.video.video import decode_audio_full
+
+        clip = self._clip(((0.0, 40.0),))
+        pcm = decode_audio_full(clip, self.RATE, origin_s=35.0)
+        self.assertAlmostEqual(pcm.size / self.RATE, 5.0, delta=0.03)
+
+    def test_the_picture_before_start_s_is_held_back_for_the_frame_at_it(self):
+        # The seek lands on the keyframe before start_s. Its frames come due
+        # before the clock's 0, so the first picture shown is the one at 0,
+        # and the pictures it replaces are never converted.
+        import tempfile
+        import time
+
         from c64cast.video.video import AVFileSource
 
-        src = AVFileSource(
-            self._clip(((0.0, 4.0),)),
-            target_sample_rate=self.RATE,
-            scan_audio_peak=False,
-            start_s=1.0,
-        )
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(clip, 8.0, rate=self.RATE, gop=90, ramp=True)
+        src = AVFileSource(clip, target_sample_rate=self.RATE, scan_audio_peak=False, start_s=4.5)
         self.addCleanup(src.close)
-        self.assertIsNone(src.pin_timeline_origin())
-        self.assertIsNone(src._pts_offset)
+        origin = src.pin_timeline_origin()
+        src.start(audio_push=None)
+        deadline = time.monotonic() + 10.0
+        while not src._eof and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(src._eof)
+        stamps = [pts for pts, _ in src._video_buf]
+        self.assertAlmostEqual(stamps[0], -1 / 30, delta=0.002)
+        self.assertAlmostEqual(stamps[1], 0.0, delta=0.002)
+        shown = src.current_frame(0.0)
+        self.assertEqual(origin, 4.5)
+        self.assertEqual(frame_index(cast(np.ndarray, shown)), 135)
+
+    def test_a_packet_stamped_far_past_the_picture_follows_on(self):
+        # Placed at its stamp, the packet was preceded by 100 s of silence:
+        # the rest of the clip played silent on the REU pump.
+        from c64cast.video.video import decode_audio_full
+
+        clip = self._clip(((0.0, 0.3), (100.0, 0.5)))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            pcm = decode_audio_full(clip, self.RATE, origin_s=0.0)
+        self.assertEqual(len(logs.records), 1)
+        self.assertAlmostEqual(pcm.size / self.RATE, 0.8, delta=0.03)
+
+    def test_a_soundtrack_running_past_its_picture_is_no_jump(self):
+        # The picture ends at 4 s and the sound goes on to 40, with no gap.
+        from c64cast.video.video import decode_audio_full
+
+        clip = self._clip(((0.0, 40.0),))
+        with self.assertNoLogs("c64cast.video.video", level="WARNING"):
+            pcm = decode_audio_full(clip, self.RATE, origin_s=0.0)
+        self.assertAlmostEqual(pcm.size / self.RATE, 40.0, delta=0.03)
 
     def test_the_preload_is_capped_however_far_a_packet_is_stamped(self):
         # The silence ahead of a packet grows with its stamp: one at 1e6 s
@@ -2577,7 +2674,7 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         from c64cast.video.video import decode_audio_full
 
         cap = 4 * self.RATE
-        pcm = decode_audio_full(self._clip(((0.0, 0.3), (1000.0, 0.5))), self.RATE, max_samples=cap)
+        pcm = decode_audio_full(self._clip(((0.0, 0.3), (30.0, 0.5))), self.RATE, max_samples=cap)
         self.assertEqual(pcm.size, cap)
         self.assertAlmostEqual(self._sound(pcm)[0], 0.0, delta=0.03)
 
