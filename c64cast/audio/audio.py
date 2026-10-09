@@ -122,6 +122,7 @@ from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import (
     MicLeadServo,
     MicLeadShaper,
+    MicPumpReading,
     MicRingGovernor,
     TrimWrite,
     read_mic_pump,
@@ -380,7 +381,8 @@ class AudioStreamer:
         # forgets to derive one reads as unset instead of plausibly wrong.
         self._reu_cia1_latch_nominal = 0
         # Host's REU write position, wrapping at REU_MIC_SIZE; 0 until
-        # _start_mic_for_reu_pump seeds REU_MIC_BOOTSTRAP_BYTES. The error count
+        # _start_mic_for_reu_pump seeds it REU_MIC_BOOTSTRAP_BYTES past the
+        # pump's src tracker (past the ring start when that is unread). The error count
         # is this pump's only telemetry — its REUWRITEs go out from the
         # PortAudio callback, which has none of the worker counters below.
         self._mic_reu_write_pos = 0
@@ -2333,12 +2335,18 @@ class AudioStreamer:
         self.running = True
         self._reu_pump_armed = True
         self._pushed_count = 0
-        ring_lead = self._seed_mic_ring_lead()
+        ring_lead, pump_src = self._seed_mic_ring_lead()
         # Start the host write head ahead of the pump's src tracker. Latency is
         # this lead plus the pump's lead over the NMI in the $4000 ring:
         # (REU_MIC_BOOTSTRAP_BYTES + REU_MIC_RING_LEAD) / sample_rate, ~0.3 s
-        # at 12 kHz.
-        self._mic_reu_write_pos = REU_MIC_BOOTSTRAP_BYTES
+        # at 12 kHz. Anchored at the tracker as the seed last read it rather
+        # than at the ring start: the pump has been consuming since its first
+        # tick, so a constant would shrink the lead by the bring-up time.
+        self._mic_reu_write_pos = (
+            REU_MIC_BOOTSTRAP_BYTES
+            if pump_src is None
+            else (pump_src + REU_MIC_BOOTSTRAP_BYTES) % REU_MIC_SIZE
+        )
 
         # _open_input_stream hardcodes self._mic_callback, so swap in the REU
         # variant for this path.
@@ -2360,18 +2368,19 @@ class AudioStreamer:
             1000 * (REU_MIC_BOOTSTRAP_BYTES + ring_bytes) / self.sample_rate,
         )
 
-    def _read_mic_ring_phase(self, timeout: float = 1.0) -> tuple[int, int] | None:
-        """``(R, W)`` from the lead servo's span read (``read_mic_pump``), so
-        the two come from the same instant and their difference carries no
+    def _read_mic_ring_phase(self, timeout: float = 1.0) -> MicPumpReading | None:
+        """The lead servo's span read (``read_mic_pump``): R, W and the pump's
+        src tracker come from the same instant, so their differences carry no
         round-trip skew. None when the read fails or a pointer is outside its
         ring. ``timeout`` is the backend's per-read bound."""
-        reading = read_mic_pump(self.api.read_memory, timeout)
-        return None if reading is None else (reading.r, reading.w)
+        return read_mic_pump(self.api.read_memory, timeout)
 
-    def _seed_mic_ring_lead(self) -> int | None:
+    def _seed_mic_ring_lead(self) -> tuple[int | None, int | None]:
         """Put the mic pump's write head ``REU_MIC_RING_LEAD`` ahead of the NMI
-        reader in the $4000 ring, once both are running, and return the lead
-        read back (bytes), or None when it could not be read.
+        reader in the $4000 ring, once both are running, and return
+        ``(lead, src)``: the lead read back (bytes) and the pump's src tracker
+        as an offset into the REU mic ring from the last reading taken, each
+        None when it could not be read.
 
         The install seeded the dst tracker that far past the ring start, where
         R sits until the NMI arms, but the two do not start together: on the
@@ -2388,8 +2397,9 @@ class AudioStreamer:
         bound: the tracker no longer holds the install seed, and one read can
         land in the instant either pointer's HI byte sits at the ring end."""
         if not self.api.profile.supports_read:
-            return None
+            return None, None
         phase: int | None = None
+        src: int | None = None
         seeds = 0
         for attempt in range(TRACKED_PUMP_INSTALL_TRIES + 1):
             got = self._read_mic_ring_phase()
@@ -2398,17 +2408,17 @@ class AudioStreamer:
                     "audio[reu mic]: could not read the C64 ring pointers; the pump's "
                     "lead over the NMI stays at its install seed"
                 )
-                return None
+                return None, None
             if got is None:
                 phase = None
                 continue
-            r, w = got
-            phase = (w - r) % RING_BUFFER_SIZE
+            src = got.src
+            phase = (got.w - got.r) % RING_BUFFER_SIZE
             if mic_ring_lead_ok(phase):
-                return phase
+                return phase, src
             if attempt == TRACKED_PUMP_INSTALL_TRIES:
                 break
-            dst = mic_ring_seed(r)
+            dst = mic_ring_seed(got.r)
             self.api.write_memory(
                 f"{REU_AUDIO_DST_TRACKER_ADDR:04X}", f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}"
             )
@@ -2421,7 +2431,7 @@ class AudioStreamer:
             seeds,
             REU_MIC_RING_LEAD,
         )
-        return phase
+        return phase, src
 
     def _start_mic_lead_servo(self) -> None:
         """Close the loop on the write head's lead over the pump (#560), or
@@ -3095,6 +3105,19 @@ class AudioStreamer:
             return 0.0
         consumed, heard = self._host_clock_bytes()
         return max(0.0, consumed - heard) / rate
+
+    def splice_position_seconds(self) -> float:
+        """Where a sample fed now is heard: `position_seconds()` plus
+        `ring_lead_seconds()`, from one read of the clock. Two reads put the
+        sum off by however far the clock moved between them. In the REU pump
+        mode there is no ring lead, and it is the position."""
+        rate = self.effective_rate
+        if not rate:
+            return 0.0
+        if self._reu_pump_armed:
+            return self.position_seconds()
+        consumed, heard = self._host_clock_bytes()
+        return max(consumed, heard) / rate
 
     def _host_clock_bytes(self) -> tuple[int, float]:
         """``(landed content, heard content)`` in bytes on the host-DMA path.

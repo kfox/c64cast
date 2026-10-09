@@ -933,9 +933,10 @@ assert REU_PUMP_HANDLER_ADDR + len(REU_IRQ_HANDLER_TRACKED) <= REU_PUMP_BODY_SUB
 #
 # Bootstrap: the entire REU ring is pre-filled with NEUTRAL_SAMPLE so the
 # pump's first ~200 ms read silence (not garbage SRAM) while the mic
-# warms up; `_mic_reu_write_pos` starts at REU_MIC_BOOTSTRAP_BYTES so the
-# first burst of real mic data lands ahead of the pump's read position
-# (= steady-state latency of REU_MIC_BOOTSTRAP_BYTES / sample_rate).
+# warms up; `_mic_reu_write_pos` starts REU_MIC_BOOTSTRAP_BYTES past the pump's
+# src tracker as the bring-up last read it (the ring start when the backend
+# cannot read), so the first burst of real mic data lands ahead of the pump's
+# read position (= steady-state latency of REU_MIC_BOOTSTRAP_BYTES / sample_rate).
 #
 # 64 KB. The host produces at the mic's clock and the pump consumes at
 # whatever rate its IRQ ticks actually achieve, so the two drift apart: on a

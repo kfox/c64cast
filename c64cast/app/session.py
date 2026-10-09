@@ -668,6 +668,19 @@ def build_stack(
     return stack
 
 
+@dataclass
+class _OpenedStack:
+    """What :func:`_open_stack` has acquired for one system: the camera and the
+    backend link, and the DAC curve resolved against that link. Nothing has
+    been written to the machine yet."""
+
+    cfg: cfgmod.Config
+    name: str
+    source: WebcamSource | None
+    api: C64Backend
+    dac_curve: dac_curve_resolve.DacCurve | None
+
+
 def _acquire_stack(
     unwind: ExitStack,
     release: ReleaseInterrupts,
@@ -683,11 +696,31 @@ def _acquire_stack(
 
     Split out so the ladder can be a `with` block one level up: this half
     only has to remember to register what it opens, and nothing has to
-    remember the release order.
+    remember the release order. :func:`build_session` runs the two halves
+    itself, opening every system before provisioning any."""
+    opened = _open_stack(unwind, release, cfg, name)
+    return _provision_stack(
+        unwind,
+        release,
+        opened,
+        stop_event=stop_event,
+        profiler=profiler,
+        is_ensemble=is_ensemble,
+        config_path=config_path,
+    )
 
-    `is_ensemble=True` propagates into `scenes_from_config` so live
-    scenes (webcam, blank) are built with audio suppressed — the
-    ensemble audio lock arbitrates which system drives the SID."""
+
+def _open_stack(
+    unwind: ExitStack, release: ReleaseInterrupts, cfg: cfgmod.Config, name: str
+) -> _OpenedStack:
+    """First half of a stack build: open the camera and the backend, and resolve
+    the DAC curve, registering each on ``unwind``.
+
+    Everything here can fail for a reason the config or the host decides, and
+    nothing here writes to the machine, so :func:`build_session` runs it for
+    every system before :func:`_provision_stack` touches any of them: a
+    failure in a later system then costs no earlier system its HDMI mode
+    switch or its reset."""
 
     def release_on_failure(label: str, fn: Callable[[], object]) -> None:
         unwind.callback(release.step, name, label, fn)
@@ -715,10 +748,10 @@ def _acquire_stack(
     api = _open_backend(cfg, name)
     release_on_failure("API close", api.close)
 
-    # Before any provisioning, so a 'calibrated' curve with no table fails
-    # without switching the HDMI mode or resetting the machine only for the
-    # unwind to switch it back. It reads the SID socket map and the calibration
-    # file, which nothing below changes.
+    # Before any provisioning, this system's or another's, so a 'calibrated'
+    # curve with no table fails without switching the HDMI mode or resetting
+    # the machine only for the unwind to switch it back. It reads the SID
+    # socket map and the calibration file, which provisioning does not change.
     dac_curve: dac_curve_resolve.DacCurve | None = None
     if cfg.audio.enabled:
         try:
@@ -726,6 +759,38 @@ def _acquire_stack(
         except ValueError as e:
             log.error("%s", e)
             raise StackBuildError(3) from e
+
+    return _OpenedStack(cfg=cfg, name=name, source=source, api=api, dac_curve=dac_curve)
+
+
+def _provision_stack(
+    unwind: ExitStack,
+    release: ReleaseInterrupts,
+    opened: _OpenedStack,
+    *,
+    stop_event: threading.Event,
+    profiler: FrameProfiler | NullProfiler,
+    is_ensemble: bool,
+    config_path: str | None,
+) -> SystemStack:
+    """Second half of a stack build: provision the machine, build the scenes
+    and the playlist, and return the stack, registering what it sets up on
+    ``unwind``. Scene construction stays here because it needs what
+    provisioning found (`reu_available`, `sampler_available`).
+
+    `is_ensemble=True` propagates into `scenes_from_config` so live
+    scenes (webcam, blank) are built with audio suppressed — the
+    ensemble audio lock arbitrates which system drives the SID."""
+    cfg, name, source, api, dac_curve = (
+        opened.cfg,
+        opened.name,
+        opened.source,
+        opened.api,
+        opened.dac_curve,
+    )
+
+    def release_on_failure(label: str, fn: Callable[[], object]) -> None:
+        unwind.callback(release.step, name, label, fn)
 
     # Drop REU-staged opt-ins on a backend with no REU, before the AudioStreamer
     # + scenes are built (so the host-DMA paths are used instead).
@@ -1340,16 +1405,31 @@ def build_session(
     interrupts = ReleaseInterrupts()
     try:
         with ExitStack() as unwind:
-            for cfg, name, sub_path in zip(cfgs, loaded.names, loaded.paths, strict=True):
-                st = build_stack(
-                    cfg,
-                    name,
+            # Every system is opened before any is provisioned, so a failure
+            # the config or the host decides (a missing camera, an unreachable
+            # box, a 'calibrated' DAC curve with no table) surfaces before any
+            # system's HDMI mode switch or reset. Each system's opening has its
+            # own ladder, emptied once its stack exists and teardown_stack owns
+            # what it opened.
+            ladders: list[ExitStack] = []
+            opened: list[_OpenedStack] = []
+            for cfg, name in zip(cfgs, loaded.names, strict=True):
+                ladder = unwind.enter_context(ExitStack())
+                ladders.append(ladder)
+                opened.append(_open_stack(ladder, interrupts, cfg, name))
+            for op, ladder, sub_path in zip(opened, ladders, loaded.paths, strict=True):
+                provisioned = unwind.enter_context(ExitStack())
+                st = _provision_stack(
+                    provisioned,
+                    interrupts,
+                    op,
                     stop_event=stop_event,
                     profiler=profiler,
                     is_ensemble=loaded.is_ensemble,
                     config_path=sub_path,
-                    interrupts=interrupts,
                 )
+                provisioned.pop_all()
+                ladder.pop_all()
                 stacks.append(st)
                 unwind.callback(teardown_stack, st, interrupts)
 

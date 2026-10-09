@@ -82,16 +82,33 @@ class _StubScene:
         self.loop_slot_calls.append((slot, save, clear))
 
 
+class _ScrubScene(_StubScene):
+    """A scene with the approximate-seek surface VideoScene has."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.scrubs: list[float] = []
+        self.settles = 0
+
+    def transport_scrub(self, target_s: float) -> None:
+        self.scrubs.append(target_s)
+        self._position = target_s
+
+    def transport_settle(self) -> None:
+        self.settles += 1
+
+
 class _FakePlaylist:
-    def __init__(self, scene=None, *, transitioning: bool = False):
+    def __init__(self, scene=None, *, on_card: bool = False, transitioning: bool = False):
         self.current = scene
+        self.on_card = on_card
         self.transitioning = transitioning
         self.stop_event = threading.Event()
 
 
 def _tick(session: TransportSession, pl: _FakePlaylist, now: float) -> None:
     """Thin wrapper around TransportSession.tick — TransportSession only
-    ever reads `.current`/`.transitioning` off its `pl` argument (duck-typed
+    ever reads `.current`/`.on_card` off its `pl` argument (duck-typed
     by design, see the module docstring), so `_FakePlaylist` deliberately
     isn't a real Playlist. Centralizes the one intentional type mismatch in
     one spot instead of a `# type: ignore` at every call site."""
@@ -172,13 +189,21 @@ class DispatchTests(unittest.TestCase):
         # fire against whatever scene becomes current next frame.
         self.assertTrue(session._queue.empty())
 
-    def test_transitioning_is_noop(self):
+    def test_card_on_screen_is_noop(self):
         scene = _StubScene()
-        pl = _FakePlaylist(scene, transitioning=True)
+        pl = _FakePlaylist(scene, on_card=True, transitioning=True)
         session = TransportSession()
         session.enqueue(TransportEvent(action="play_pause"))
         _tick(session, pl, 0.0)
         self.assertEqual(scene.toggle_calls, 0)
+
+    def test_clip_over_the_card_still_takes_transport(self):
+        scene = _StubScene()
+        pl = _FakePlaylist(scene, on_card=False, transitioning=True)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="play_pause"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 1)
 
     def test_unknown_scene_type_missing_surface_is_noop(self):
         pl = _FakePlaylist(object())  # no transport_* methods at all
@@ -355,6 +380,113 @@ class HoldRampTests(unittest.TestCase):
         _tick(session, pl, 0.2)
         self.assertEqual(len(scene.seeks), 1)
         self.assertGreater(scene.seeks[0], 10.0)
+
+
+class ScrubSettleTests(unittest.TestCase):
+    """A held rw/ff or a jog moves by approximate seeks and ends on one exact
+    seek, once it has been still for a moment."""
+
+    def _held_ff(self) -> tuple[_ScrubScene, _FakePlaylist, TransportSession]:
+        scene = _ScrubScene(position=50.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        _tick(session, pl, 0.0)
+        session.enqueue(TransportEvent(action="ff", pressed=True))
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 0.2)
+        return scene, pl, session
+
+    def test_a_held_ff_scrubs_and_never_seeks_exactly_or_settles_while_held(self):
+        scene, pl, session = self._held_ff()
+        _tick(session, pl, 5.0)
+        self.assertEqual(len(scene.scrubs), 3)
+        self.assertEqual(scene.seeks, [])
+        self.assertEqual(scene.settles, 0)
+
+    def test_the_release_settles_once_after_the_scrub_has_been_still(self):
+        scene, pl, session = self._held_ff()
+        session.enqueue(TransportEvent(action="ff", pressed=False))
+        _tick(session, pl, 0.25)
+        self.assertEqual(scene.settles, 0)
+        _tick(session, pl, 0.4)
+        self.assertEqual(scene.settles, 1)
+        _tick(session, pl, 0.6)
+        self.assertEqual(scene.settles, 1)
+
+    def test_a_jog_scrubs_and_settles_when_it_stops(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 0.2)
+        self.assertEqual(scene.scrubs, [12.0, 14.0])
+        self.assertEqual(scene.seeks, [])
+        self.assertEqual(scene.settles, 0)
+        _tick(session, pl, 0.3)
+        self.assertEqual(scene.settles, 1)
+
+    def test_a_seek_event_stays_exact(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="seek", target=30.0))
+        _tick(session, pl, 0.0)
+        _tick(session, pl, 1.0)
+        self.assertEqual(scene.seeks, [30.0])
+        self.assertEqual(scene.scrubs, [])
+        self.assertEqual(scene.settles, 0)
+
+    def test_a_scrub_does_not_settle_the_scene_that_replaced_its_own(self):
+        scene, pl, session = self._held_ff()
+        session.enqueue(TransportEvent(action="ff", pressed=False))
+        _tick(session, pl, 0.25)
+        other = _ScrubScene(position=0.0)
+        pl.current = other
+        _tick(session, pl, 1.0)
+        self.assertEqual((scene.settles, other.settles), (0, 0))
+
+    def test_a_clip_over_the_card_still_scrubs_and_settles(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene, on_card=False, transitioning=True)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 0.3)
+        self.assertEqual(scene.scrubs, [12.0])
+        self.assertEqual(scene.settles, 1)
+
+    def test_the_card_on_screen_drops_a_pending_scrub(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        pl.on_card = True
+        _tick(session, pl, 0.1)
+        pl.on_card = False
+        _tick(session, pl, 1.0)
+        self.assertEqual(scene.settles, 0)
+
+    def test_a_held_ff_does_not_scrub_while_the_card_is_on_screen(self):
+        scene, pl, session = self._held_ff()
+        scrubs = len(scene.scrubs)
+        pl.on_card = True
+        _tick(session, pl, 0.3)
+        _tick(session, pl, 1.0)
+        self.assertEqual((len(scene.scrubs), scene.settles), (scrubs, 0))
+
+    def test_a_scene_without_the_approximate_seek_is_scrubbed_with_its_seek(self):
+        scene = _StubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        _tick(session, pl, 1.0)
+        self.assertEqual(scene.seeks, [12.0])
 
 
 class RecordStopChordTests(unittest.TestCase):

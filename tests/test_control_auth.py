@@ -133,6 +133,7 @@ class _FakePlaylist:
         self.scenes = [self.current]
         self.index = 0
         self.transitioning = False
+        self.on_card = False
         self.api = _FakeApi()
         self.pause_event = threading.Event()
         self.resume_event = threading.Event()

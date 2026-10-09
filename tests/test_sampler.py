@@ -2586,6 +2586,13 @@ class SamplerFlushTests(unittest.TestCase):
         )
         self.assertAlmostEqual(smp.ring_lead_seconds(), s.FLUSH_GUARD_S, delta=0.001)
 
+    def test_the_splice_position_is_the_read_head_plus_the_lead(self):
+        smp = self._running(_FakeBackend(), consumed=0)
+        with mock.patch.object(smp, "position_seconds", return_value=3.0):
+            self.assertAlmostEqual(
+                smp.splice_position_seconds(), 3.0 + smp.ring_lead_seconds(), places=9
+            )
+
     def test_post_splice_audio_lands_where_the_transport_anchored_it(self):
         # The demuxer takes a while to deliver post-seek audio. Its first
         # sample belongs one ring lead after the splice; whatever arrives after
