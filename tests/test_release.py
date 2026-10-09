@@ -313,12 +313,20 @@ class TestFragments(unittest.TestCase):
             ["### Upgrade notes", "### Added", "### Changed", "### Removed", "### Fixed"],
         )
 
-    def test_entries_within_a_category_sort_by_filename(self) -> None:
+    def test_entries_within_a_category_sort_by_slug(self) -> None:
         self._write("b-second.fixed.md", "- Second.\n")
         self._write("a-first.fixed.md", "- First.\n")
         self.assertEqual(
             bv.render_fragments(bv.read_fragments(self.dir)),
             "### Fixed\n\n- First.\n\n- Second.\n",
+        )
+
+    def test_a_slug_that_prefixes_another_sorts_first(self) -> None:
+        self._write("dac-curve.fixed.md", "- Short.\n")
+        self._write("dac-curve-auto.fixed.md", "- Long.\n")
+        self.assertEqual(
+            bv.render_fragments(bv.read_fragments(self.dir)),
+            "### Fixed\n\n- Short.\n\n- Long.\n",
         )
 
     def test_a_multi_line_entry_survives_verbatim(self) -> None:

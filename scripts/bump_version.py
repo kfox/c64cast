@@ -151,11 +151,14 @@ def _fragment_problem(name: str, text: str) -> str | None:
 
 
 def fragment_paths(directory: Path | None = None) -> list[Path]:
-    """Everything in the fragment directory except its README, by filename."""
+    """Everything in the fragment directory except its README, by slug."""
     root = FRAGMENT_DIR if directory is None else directory
     if not root.is_dir():
         return []
-    return sorted(path for path in root.iterdir() if path.name != FRAGMENT_README)
+    return sorted(
+        (path for path in root.iterdir() if path.name != FRAGMENT_README),
+        key=lambda path: (path.name.removesuffix(".md").rpartition(".")[0], path.name),
+    )
 
 
 def fragment_problems(directory: Path | None = None) -> list[str]:

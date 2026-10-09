@@ -62,7 +62,7 @@ python scripts/bump_version.py 0.2.0
 ```
 
 Moves `[project] version`, collects the fragments into a new dated changelog
-section (Upgrade notes first, then Added, Changed, Removed, Fixed, Security)
+section (Upgrade notes first, then Added, Changed, Deprecated, Removed, Fixed, Security)
 and deletes them, fixes the link references, and re-runs `uv lock`.
 `## [Unreleased]` stays, pointing at `changelog.d/`.
 
