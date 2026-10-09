@@ -1717,6 +1717,12 @@ class EscapeBeforeNameTest(unittest.TestCase):
     tab or any other character as a backslash escape, whose last character
     is a letter or digit glued to the name after it."""
 
+    def test_every_letter_escape_reads_as_the_character_it_spells(self):
+        for letter in "abefnrtv":
+            line = "x\\" + letter + "sig=SEC"
+            with self.subTest(letter=letter):
+                self.assertEqual(redact_secrets(line), "x\\" + letter + "sig=REDACTED")
+
     def test_a_name_after_a_backslash_escape_is_not_glued(self):
         e = "\\"
         for line, want in (
@@ -1926,6 +1932,12 @@ class CookieTest(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
+
+    def test_an_underscore_after_a_quote_keeps_the_header_open(self):
+        self.assertEqual(
+            redact_secrets("'Cookie: a=b'_c; s=SEC' tail"),
+            "'Cookie: a=REDACTED; s=REDACTED' tail",
+        )
 
     def test_a_quote_inside_a_cookie_does_not_end_the_list(self):
         for line, want in (
