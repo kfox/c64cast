@@ -214,6 +214,7 @@ class VideoTransportControls:
         if self.touched:
             return
         sc = self._scene
+        sc.release_audio_hold()
         if sc.source is not None:
             sc.source.freeze_tempo()
         # BEFORE the flag flip: clock_s() branches on `touched`, so a read taken

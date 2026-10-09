@@ -465,6 +465,7 @@ class UltimateAudioSampler:
         self._failed = False
 
         self._gate_time = 0.0
+        self._held = False
         # Absolute byte positions (the read head is (monotonic - gate) * rate).
         # _written is how far the ring holds anything current, real or pad;
         # _content_pos is where the next real sample belongs. Sample k of an
@@ -660,9 +661,15 @@ class UltimateAudioSampler:
             )
         self._writer = None
 
-    def start(self, prebuffer_timeout: float = 2.0) -> None:
+    def start(self, prebuffer_timeout: float = 2.0, *, hold: bool = False) -> None:
         """Prefill the ring with silence, prebuffer ``_prebuffer_target`` bytes
         of real PCM, then gate the looping channel on.
+
+        With ``hold`` the gate waits for :meth:`release_hold` instead, and
+        ``position_seconds`` reads 0 until then: a video scene holds the sound
+        until its first frame is on screen, so the clock starts from the
+        picture. Whatever the producer pushes meanwhile queues behind the
+        prebuffer, and a stop() while held leaves the channel off.
 
         Prefilling the whole ring with NEUTRAL guarantees the FPGA never reads
         uninitialized REU even under a startup jitter spike; the prebuffer seeds
@@ -676,7 +683,7 @@ class UltimateAudioSampler:
         gate-on waits for a given-up writer's gate-off still in flight, which
         is one write and its flush, each bounded by the transport's own
         timeouts."""
-        if self._running:
+        if self._running or self._held:
             raise RuntimeError("sampler is already started")
         self._refuse_if_writer_survives()
         if self._stopped:
@@ -696,7 +703,17 @@ class UltimateAudioSampler:
         if len(prebuf) > head:
             self._carry = (self._flush_epoch, memoryview(prebuf)[head:])
 
+        self._held = True
+        if not hold:
+            self.release_hold()
+
+    def release_hold(self) -> None:
+        """Gate the ring on and start the writer, for a ``start(hold=True)``.
+        A no-op when nothing is held, including after stop()."""
         with self._gate_lock:
+            if not self._held:
+                return
+            self._held = False
             self._writer_gen += 1
             gen = self._writer_gen
             program_channel(
@@ -1637,12 +1654,12 @@ class UltimateAudioSampler:
         the same sum."""
         return self.position_seconds() + self.ring_lead_seconds()
 
-    def start_for_external_source(self) -> None:
+    def start_for_external_source(self, *, hold: bool = False) -> None:
         """Alias for ``start()`` so a caller feeding via ``push_samples`` (e.g.
         AudioFileSource) can bring up either backend with the same call. The DAC
         streamer uses this name for its no-input-thread bring-up; the sampler's
         ``start()`` already is that path (prefill + gate + writer thread)."""
-        self.start()
+        self.start(hold=hold)
 
     def _push_to_analysis(self, mono_floats: np.ndarray) -> None:
         """Feed the pre-DSP analysis sink, if one is installed. A failing analyzer
@@ -1702,6 +1719,7 @@ class UltimateAudioSampler:
         it writes nothing more once that write returns."""
         self._stopped = True
         self._running = False
+        self._held = False
         if self._writer is not None:
             self._writer.stop()
             if not self._writer.is_running():

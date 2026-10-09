@@ -19,7 +19,7 @@ from unittest import mock
 import numpy as np
 from _fakes import FakeAPI, FrozenClock
 
-from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import CHUNK_SIZE, PREBUFFER_CHUNKS
 from c64cast.audio.audio_servo import HOST_DMA_SERVO_TARGET_GAP
 from c64cast.audio.sampler import DEFAULT_LEAD_SECONDS, UltimateAudioSampler
@@ -4373,6 +4373,230 @@ class FollowDrainTest(unittest.TestCase):
         scene.audio = None
         self._play(scene, 0.79, 112.0)
         self.assertEqual(source.requests, [])
+
+
+class VideoSceneAudioHoldTest(unittest.TestCase):
+    """The sound at clip time 0 starts with its picture: setup() brings the
+    sink up with its clock held, and the first shown frame releases it."""
+
+    def _setup(self, audio: Any, *, start_s: float = 0.0) -> VideoScene:
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource"),
+            mock.patch.object(VideoScene, "_preencode_audio_for_reu", return_value=b"\x07"),
+            mock.patch.object(scenes, "reu_pump_skips_irq_hook", return_value=False),
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=audio,
+                display_mode=mock.MagicMock(),
+                file=STUB_VIDEO_URL,
+                setup_progress=False,
+                start_s=start_s,
+            )
+            scene.setup()
+        self.addCleanup(scene.teardown)
+        return scene
+
+    def test_the_dac_is_started_held(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = False
+        scene = self._setup(audio)
+        audio.start_for_external_source.assert_called_once_with(hold=True)
+        audio.release_hold.assert_not_called()
+        self.assertTrue(scene._audio_held)
+
+    def test_the_sampler_is_started_held(self):
+        audio = mock.create_autospec(UltimateAudioSampler, instance=True)
+        scene = self._setup(audio)
+        audio.start.assert_called_once_with(hold=True)
+        audio.release_hold.assert_not_called()
+        self.assertTrue(scene._audio_held)
+
+    def test_the_reu_pump_is_staged_held(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        scene = self._setup(audio)
+        self.assertIs(audio.start_for_reu_staged.call_args.kwargs["hold"], True)
+        audio.release_hold.assert_not_called()
+        self.assertTrue(scene._audio_held)
+
+    def test_a_failed_reu_install_holds_nothing(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        audio.start_for_reu_staged.side_effect = PumpInstallError("no")
+        scene = self._setup(audio)
+        self.assertFalse(scene._audio_held)
+
+    def _held_scene(self) -> tuple[VideoScene, _FakeSceneAudio, list[str]]:
+        events: list[str] = []
+        audio = _FakeSceneAudio()
+        audio.release_hold = lambda: events.append("release")  # type: ignore[attr-defined]
+        scene = _make_video_scene_stub(_StubSource())
+        scene.audio = audio  # type: ignore[assignment]  # duck-typed sink
+        scene._audio_held = True
+        scene._hold_since = 0.0
+        cast(Any, scene.api).delivery_epoch = 0
+        return scene, audio, events
+
+    def _process(self, scene: VideoScene, events: list[str], *, now: float = 0.0) -> None:
+        with (
+            mock.patch.object(
+                scenes, "_render_with_overlays", side_effect=lambda *a: events.append("render")
+            ),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes.time, "monotonic", return_value=now),
+        ):
+            scene.process_frame(0.0)
+
+    def test_the_first_shown_frame_releases_the_sound_after_its_render(self):
+        scene, _, events = self._held_scene()
+        self._process(scene, events)
+        self.assertEqual(events, ["render", "release"])
+        self.assertFalse(scene._audio_held)
+
+    def test_the_sound_is_released_once(self):
+        scene, _, events = self._held_scene()
+        self._process(scene, events)
+        self._process(scene, events)
+        self.assertEqual(events.count("release"), 1)
+
+    def test_no_frame_yet_keeps_the_sound_held(self):
+        scene, _, events = self._held_scene()
+        cast(Any, scene.source).current_frame = lambda _clock: None
+        self._process(scene, events, now=scenes.AUDIO_HOLD_MAX_S * 0.5)
+        self.assertEqual(events, [])
+        self.assertTrue(scene._audio_held)
+
+    def test_a_source_with_no_first_frame_gets_its_sound_after_the_cap(self):
+        scene, _, events = self._held_scene()
+        cast(Any, scene.source).current_frame = lambda _clock: None
+        self._process(scene, events, now=scenes.AUDIO_HOLD_MAX_S + 0.1)
+        self.assertEqual(events, ["release"])
+
+    def test_touching_the_transport_releases_the_sound(self):
+        scene, _, events = self._held_scene()
+        scene.transport.touch()
+        self.assertEqual(events, ["release"])
+
+    def test_a_scrub_step_while_held_releases_the_sound_before_it_seeks(self):
+        scene, _, events = self._held_scene()
+        source = cast(_StubSource, scene.source)
+        source._events = cast(Any, events)
+        scene.wall_start_time = 100.0
+        with _freeze_time(105.0):
+            scene.transport_scrub(40.0)
+        with _freeze_time(105.5):
+            scene.transport_settle()
+        self.assertEqual(events[0], "release")
+        self.assertEqual(events.count("release"), 1)
+        self.assertEqual(source.seeks, [40.0, 40.5])
+        self.assertEqual(source.exacts, [False, True])
+
+    def test_a_touch_while_held_whose_pump_cannot_arm_anchors_at_the_restarted_wall_clock(self):
+        scene, audio, _ = self._held_scene()
+        audio.release_hold = mock.Mock(side_effect=PumpInstallError("no"))  # type: ignore[attr-defined]
+        scene.wall_start_time = 100.0
+        with _freeze_time(105.0):
+            scene.transport.touch()
+        self.assertIsNone(scene.audio)
+        self.assertEqual(scene.transport.anchor.clock, 0.0)
+
+    def test_start_s_with_a_held_reu_pump_arms_at_the_release_and_keeps_its_offset(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        with _freeze_time(100.0):
+            scene = self._setup(audio, start_s=12.0)
+        audio.release_hold.assert_not_called()
+        cast(Any, scene.source).clock_to_content = lambda clock: clock
+        self.assertEqual(scene.transport.clock_to_content(0.0), 12.0)
+        with _freeze_time(103.0):
+            scene.release_audio_hold()
+        audio.release_hold.assert_called_once_with()
+        self.assertEqual(scene.wall_start_time, 103.0)
+        self.assertEqual(scene.transport.clock_to_content(0.0), 12.0)
+
+    def _release_in_flight(
+        self, scene: VideoScene, audio: _FakeSceneAudio
+    ) -> tuple[threading.Event, list[str]]:
+        entered, proceed, order = threading.Event(), threading.Event(), []
+
+        def release() -> None:
+            entered.set()
+            proceed.wait(5.0)
+            order.append("released")
+
+        audio.release_hold = release  # type: ignore[attr-defined]
+        first = threading.Thread(target=scene.release_audio_hold)
+        first.start()
+        self.addCleanup(first.join, 5.0)
+        self.addCleanup(proceed.set)
+        self.assertTrue(entered.wait(5.0))
+        return proceed, order
+
+    def test_a_release_in_flight_holds_back_a_second_caller(self):
+        scene, audio, _ = self._held_scene()
+        proceed, order = self._release_in_flight(scene, audio)
+        second = threading.Thread(
+            target=lambda: (scene.release_audio_hold(), order.append("second returned"))
+        )
+        second.start()
+        self.addCleanup(second.join, 5.0)
+        second.join(0.2)
+        self.assertEqual(order, [])
+        proceed.set()
+        second.join(5.0)
+        self.assertEqual(order, ["released", "second returned"])
+
+    def test_teardown_waits_for_a_release_in_flight(self):
+        scene, audio, _ = self._held_scene()
+        proceed, order = self._release_in_flight(scene, audio)
+        closer = threading.Thread(
+            target=lambda: (scene._close_audio_hold(), order.append("closed"))
+        )
+        closer.start()
+        self.addCleanup(closer.join, 5.0)
+        closer.join(0.2)
+        self.assertEqual(order, [])
+        proceed.set()
+        closer.join(5.0)
+        self.assertEqual(order, ["released", "closed"])
+
+    def test_teardown_stops_the_audio_only_after_a_release_in_flight_returns(self):
+        scene, audio, _ = self._held_scene()
+        proceed, order = self._release_in_flight(scene, audio)
+        audio.stop = lambda: order.append("audio stop")  # type: ignore[attr-defined]
+        tearer = threading.Thread(target=scene.teardown)
+        tearer.start()
+        self.addCleanup(tearer.join, 5.0)
+        tearer.join(0.2)
+        self.assertEqual(order, [])
+        proceed.set()
+        tearer.join(5.0)
+        self.assertEqual(order, ["released", "audio stop"])
+        self.assertFalse(scene._audio_held)
+
+    def test_a_release_that_raises_still_ends_the_hold(self):
+        scene, audio, _ = self._held_scene()
+
+        def boom() -> None:
+            raise RuntimeError("no")
+
+        audio.release_hold = boom  # type: ignore[attr-defined]
+        with self.assertRaises(RuntimeError):
+            scene.release_audio_hold()
+        self.assertFalse(scene._audio_held)
+
+    def test_a_pump_that_cannot_arm_leaves_the_scene_on_the_wall_clock(self):
+        scene, audio, events = self._held_scene()
+
+        def fail() -> None:
+            raise PumpInstallError("no")
+
+        audio.release_hold = fail  # type: ignore[attr-defined]
+        self._process(scene, events)
+        self.assertIsNone(scene.audio)
+        self.assertIs(scene._audio_set_aside, audio)
 
 
 if __name__ == "__main__":

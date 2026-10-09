@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from typing import cast
 from unittest import mock
@@ -222,6 +224,95 @@ class StartForReuStagedTest(unittest.TestCase):
             s.start_for_reu_staged(b"")
         self.assertEqual(fake.socket_dma.reuwrites, [])
         self.assertFalse(s._reu_pump_armed)
+
+    def test_a_held_start_leaves_the_nmi_off_and_the_clock_at_zero(self):
+        s = _new_streamer()
+        with mock.patch.object(s.nmi, "start") as nmi_start:
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        nmi_start.assert_not_called()
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertIsNotNone(s._pending_arm)
+
+    def test_release_arms_the_pump_and_starts_the_clock(self):
+        s = _new_streamer()
+        with mock.patch.object(s.nmi, "start") as nmi_start:
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+            self.addCleanup(s.stop)
+            s.release_hold()
+        nmi_start.assert_called_once()
+        self.assertIsNone(s._pending_arm)
+        self.assertGreater(s._reu_pump_start_time, 0.0)
+
+    def test_the_clock_reads_zero_until_the_arm_returns(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        seen: list[float] = []
+
+        def read_clock(**kw: object) -> None:
+            time.sleep(0.01)
+            seen.append(s.position_seconds())
+
+        with mock.patch.object(s.nmi, "start", side_effect=read_clock):
+            s.release_hold()
+        self.assertEqual(seen, [0.0])
+
+    def test_a_second_release_does_not_arm_again(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        with mock.patch.object(s.nmi, "start") as nmi_start:
+            s.release_hold()
+            s.release_hold()
+        nmi_start.assert_called_once()
+
+    def test_a_release_during_an_arm_waits_and_arms_nothing(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        entered, proceed = threading.Event(), threading.Event()
+
+        def slow_start(**kw: object) -> None:
+            entered.set()
+            proceed.wait(5.0)
+
+        with mock.patch.object(s.nmi, "start", side_effect=slow_start) as nmi_start:
+            first = threading.Thread(target=s.release_hold)
+            first.start()
+            self.addCleanup(first.join, 5.0)
+            self.addCleanup(proceed.set)
+            self.assertTrue(entered.wait(5.0))
+            second = threading.Thread(target=s.release_hold)
+            second.start()
+            self.addCleanup(second.join, 5.0)
+            second.join(0.2)
+            self.assertTrue(second.is_alive())
+            proceed.set()
+            first.join(5.0)
+            second.join(5.0)
+        nmi_start.assert_called_once()
+
+    def test_a_release_whose_arm_fails_leaves_nothing_running_and_raises(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        with (
+            mock.patch.object(s, "_arm_installed_pump", side_effect=PumpInstallError("no")),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.release_hold()
+        self.assertFalse(s.running)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertIsNone(s._pending_arm)
+
+    def test_stop_while_held_drops_the_arm(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        s.stop()
+        self.assertIsNone(s._pending_arm)
+        s.release_hold()
+        self.assertFalse(s.running)
 
     def test_reu_upload_is_chunked_into_slices(self):
         """A 100 KB audio blob should arrive as ceil(100K / 32K) = 4
