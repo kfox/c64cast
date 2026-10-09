@@ -178,7 +178,7 @@ def fragment_problems(directory: Path | None = None) -> list[str]:
 
 
 def read_fragments(directory: Path | None = None) -> list[Fragment]:
-    """Every fragment, ordered by filename. Raises BumpError on a malformed one."""
+    """Every fragment, ordered by slug. Raises BumpError on a malformed one."""
     root = FRAGMENT_DIR if directory is None else directory
     problems = fragment_problems(root)
     if problems:
