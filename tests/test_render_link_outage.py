@@ -480,6 +480,24 @@ class SetupThroughOutageTest(unittest.TestCase):
             self.assertTrue(pl._setup_through_outage(scene))
         self.assertEqual((scene.setup_count, scene.teardown_count), (2, 1))
 
+    def test_another_threads_lost_write_does_not_make_a_landed_setup_run_again(self):
+        api = _OutageApi(down_probes=0)
+
+        def another_thread_loses() -> None:
+            api.delivery_epoch += 1
+            api.stats["errors"] += 1
+
+        class _Bystander(_LossySetupScene):
+            def setup(self) -> None:
+                super().setup()
+                worker = threading.Thread(target=another_thread_loses)
+                worker.start()
+                worker.join()
+
+        scene = _Bystander(api, lossy_setups=0)
+        self._playlist(api, scene).safe_setup(scene)
+        self.assertEqual((scene.setup_count, scene.teardown_count, api.probes), (1, 0, 0))
+
     def test_a_clean_setup_runs_once_and_asks_the_link_nothing(self):
         api = _OutageApi(down_probes=0)
         scene = _LossySetupScene(api, lossy_setups=0)

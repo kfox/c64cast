@@ -815,12 +815,16 @@ class Playlist:
         back leaves it already torn down. Either way the caller's teardown
         still runs on it.
 
-        A setup lost a write when it raised a `LinkError` or moved the
-        backend's `delivery_epoch` by the end of a `flush()` after it. Most setup steps swallow a dead link
-        rather than raise it (`_emit`, `write_confirmed`, a scene that ends
-        itself when its SID player cannot start), so a raise alone would
-        let a setup that never reached the machine play as if it had: a
-        silent clip, an IRQ that was never installed, a skipped scene.
+        A setup lost a write when it raised a `LinkError` or, by the end of
+        a `flush()` after it, the backend's `write_loss_mark()` for this
+        thread had moved. Only this thread's writes count: another thread's
+        failed write (the audio worker's, a poll thread's) is that thread's
+        to repeat, and must not make a setup that landed run again. Most
+        setup steps swallow a dead link rather than raise it (`_emit`,
+        `write_confirmed`, a scene that ends itself when its SID player
+        cannot start), so a raise alone would let a setup that never
+        reached the machine play as if it had: a silent clip, an IRQ that
+        was never installed, a skipped scene.
 
         While the link does not answer the setup waits, and the time counts
         as skipped frames in `link_outage`, without a bound, like a frame
@@ -837,7 +841,7 @@ class Playlist:
             # Before the attempt: a restart the last scene outlived on a dead
             # link left no landed frame to notice it, and a SID scene's setup
             # resets the machine itself, which would hide it afterwards. Before
-            # the epoch is taken, too, and drained by a round trip, so a write
+            # the mark is taken, too, and drained by a round trip, so a write
             # the restore loses is not charged to the setup.
             if self.restart_watch.restarted_before_setup():
                 self._put_machine_back(
@@ -845,7 +849,7 @@ class Playlist:
                     scene.name,
                 )
             started = self.link_outage.now()
-            epoch = self.api.delivery_epoch
+            mark = self.api.write_loss_mark()
             error: LinkError | None = None
             try:
                 hardware_palette.settle_for(self.api, scene)
@@ -855,7 +859,7 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
-            if error is None and self.api.delivery_epoch == epoch:
+            if error is None and not self.api.writes_lost_since(mark):
                 self.link_outage.frame_ok(self.api.stats["writes"])
                 return True
             if error is None:

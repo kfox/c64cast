@@ -314,6 +314,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   that never landed. A lost write is now charged to the thread that sent it,
   and a launch refuses only for its own thread's losses.
 
+- **A scene's setup is no longer run again because something else lost a
+  write.** The playlist judged whether a setup had landed by whether any
+  write on the link had failed meanwhile, so a failed audio or poll-thread
+  write during setup re-ran a setup that had gone fine, up to three times.
+  It now looks only at the setup's own writes.
+
 - **With `$D418` DAC audio, the next scene no longer starts with a moment
   of the previous one's sound.** A video or mic chunk pushed exactly as a
   scene ended could land in the queue after the scene's teardown had
