@@ -1443,6 +1443,12 @@ class DigestParametersTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_a_quote_inside_a_parameter_value_does_not_close_the_header(self):
+        self.assertEqual(
+            redact_secrets("Authorization: Digest a=it's, response=abc tail"),
+            "Authorization: Digest REDACTED",
+        )
+
     def test_another_scheme_still_ends_at_its_first_word(self):
         self.assertEqual(
             redact_secrets("Authorization: Basic abc, d=e"), "Authorization: Basic REDACTED, d=e"
@@ -1588,6 +1594,123 @@ class WordBeforeQuoteTest(unittest.TestCase):
             lambda s: "token=Qz'a " * 4_000 * s,
             lambda s: "token=" + "a" * 20_000 * s + "'",
             lambda s: "Bearer " + "Qz'a b' " * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
+class CookieTest(unittest.TestCase):
+    def test_every_value_in_a_cookie_header_is_masked(self):
+        for line, want in (
+            ("Cookie: session=abc123def", "Cookie: session=REDACTED"),
+            (
+                "Cookie: session=abc123def; theme=dark; id=7",
+                "Cookie: session=REDACTED; theme=REDACTED; id=REDACTED",
+            ),
+            ("Cookie: a=b;c=d ; e = f", "Cookie: a=REDACTED;c=REDACTED ; e = REDACTED"),
+            ('Cookie: a="x y"; b=c', "Cookie: a=REDACTED; b=REDACTED"),
+            ('Cookie: a="x;y"; b=c', "Cookie: a=REDACTED; b=REDACTED"),
+            ('Cookie: a="b', "Cookie: a=REDACTED"),
+            ("Cookie: a=b&c=d; e=f", "Cookie: a=REDACTED; e=REDACTED"),
+            ("Cookie: a=; b=c", "Cookie: a=; b=REDACTED"),
+            ("Cookie: a=b;;;c=d", "Cookie: a=REDACTED;;;c=REDACTED"),
+            ("Cookie: bare", "Cookie: REDACTED"),
+            ("Cookie: ä=ö; ü=ß", "Cookie: ä=REDACTED; ü=REDACTED"),
+            ("COOKIE: A=B", "COOKIE: A=REDACTED"),
+            ("cookie :a=b", "cookie :a=REDACTED"),
+            ("cookie=abc", "cookie=REDACTED"),
+            ("Cookie=a=b; c=d", "Cookie=a=REDACTED; c=REDACTED"),
+            ("HTTP_COOKIE=a=b; c=d", "HTTP_COOKIE=a=REDACTED; c=REDACTED"),
+            ("Cookie2: $Version=1", "Cookie2: $Version=REDACTED"),
+            ("curl --cookie a=b;c=d x", "curl --cookie a=REDACTED;c=REDACTED"),
+            ('curl --cookie "a=b; c=d" x', 'curl --cookie "a=REDACTED; c=REDACTED" x'),
+            ("['curl', '--cookie', 'a=b; c=d']", "['curl', '--cookie', 'a=REDACTED; c=REDACTED']"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_set_cookie_header_loses_its_first_value_and_keeps_its_attributes(self):
+        for line, want in (
+            (
+                "Set-Cookie: sid=abc; Path=/; HttpOnly; Secure; SameSite=Lax",
+                "Set-Cookie: sid=REDACTED; Path=/; HttpOnly; Secure; SameSite=Lax",
+            ),
+            (
+                "Set-Cookie: sid=abc; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600; Domain=x.com",
+                "Set-Cookie: sid=REDACTED; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600; Domain=x.com",
+            ),
+            ('set-cookie: sid="a;b"; Path=/', "set-cookie: sid=REDACTED; Path=/"),
+            ("Set-Cookie: sid=abc, other=def; Path=/", "Set-Cookie: sid=REDACTED; Path=/"),
+            ("Set-Cookie: sid=abc", "Set-Cookie: sid=REDACTED"),
+            ("Set-Cookie: sid=abc;", "Set-Cookie: sid=REDACTED;"),
+            ("Set-Cookie: =abc; Path=/", "Set-Cookie: =REDACTED; Path=/"),
+            ("Set-Cookie:  ; sid=abc; Path=/", "Set-Cookie:  ; sid=REDACTED; Path=/"),
+            ("X-Set-Cookie: sid=abc; Path=/", "X-Set-Cookie: sid=REDACTED; Path=/"),
+            ("Set_Cookie: sid=abc; Path=/", "Set_Cookie: sid=REDACTED; Path=/"),
+            (
+                "{'Set-Cookie': 'sid=abc; Path=/', 'next': 'v'}",
+                "{'Set-Cookie': 'sid=REDACTED; Path=/', 'next': 'v'}",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_quoted_header_ends_at_its_closing_quote(self):
+        for line, want in (
+            (
+                "{'Cookie': 'a=b; c=d', 'next': 'v'}",
+                "{'Cookie': 'a=REDACTED; c=REDACTED', 'next': 'v'}",
+            ),
+            (
+                '{"Cookie": "a=b; c=d", "next": "v"}',
+                '{"Cookie": "a=REDACTED; c=REDACTED", "next": "v"}',
+            ),
+            ('"Cookie: a=b; c=d" next', '"Cookie: a=REDACTED; c=REDACTED" next'),
+            (
+                "'Cookie: a=b; c=it's; d=e' next",
+                "'Cookie: a=REDACTED; c=REDACTED; d=REDACTED' next",
+            ),
+            ("'Cookie': b'a=b; c=d'", "'Cookie': b'a=REDACTED; c=REDACTED'"),
+            ('Cookie: a=b; c=d" tail', 'Cookie: a=REDACTED; c=REDACTED" tail'),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_encoded_header_ends_at_the_ampersand_that_ends_its_parameter(self):
+        for line, want in (
+            (
+                "h=Cookie%3A%20a%3Db%3B%20c%3Dd&x=1",
+                "h=Cookie%3A%20a%3DREDACTED%3B%20c%3DREDACTED&x=1",
+            ),
+            (
+                "h=Cookie:%20a%3Db%3B%20c%3Dd%26x%3D1",
+                "h=Cookie:%20a%3DREDACTED%3B%20c%3DREDACTED",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_words_around_the_name_cookie_are_left_alone(self):
+        for line in ("Cookie: ", "Cookie:", "cookie jar loaded", "cookies: 3", "mycookie: sid=abc"):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_a_rejected_config_line_naming_a_cookie_loses_what_follows(self):
+        safe, verbatim = redact_source_line(['cookie == "a=b"'], 1)
+        self.assertNotIn("a=b", safe)
+        self.assertFalse(verbatim)
+
+    def test_a_long_run_of_cookie_headers_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "cookie=" * 8_000 * s,
+            lambda s: "Cookie: " * 8_000 * s,
+            lambda s: "Cookie:" + "a=b;" * 8_000 * s,
+            lambda s: "Set-Cookie: a=b;" * 4_000 * s,
+            lambda s: "cookie='" * 8_000 * s,
+            lambda s: "cookie=%22" * 4_000 * s,
+            lambda s: 'cookie: "a="' * 4_000 * s,
+            lambda s: "x cookie=a;cookie='b;" * 4_000 * s,
+            lambda s: "'--cookie', 'a=b'," * 4_000 * s,
         ):
             with self.subTest(line=make(1)[:30]):
                 _assert_linear_time(self, make)

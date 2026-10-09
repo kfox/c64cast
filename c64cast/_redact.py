@@ -62,6 +62,7 @@ _NAME = re.compile(
           | (?P<header> authorization )
         ) (?: [_-]? \d++ )?+
       | (?P<scheme> bearer )
+      | (?P<cookie> (?: set [_-]? )? cookie2? )
       | (?P<short> key | sig (?:nature)? | hmac | auth )
     ) (?![\w-])
     """,
@@ -388,6 +389,10 @@ def _is_name_char(c: str) -> bool:
     return c.isalnum() or c in "_-"
 
 
+def _is_word_char(c: str) -> bool:
+    return c.isalnum() or c == "_"
+
+
 def _secret_names(text: str, judge: str | None = None) -> Iterator[re.Match[str]]:
     """Each secret-shaped name in `text` that ends a run of name characters.
     Whether a match is glued or one of the exempt words is read from `judge`
@@ -568,11 +573,15 @@ def _key_values(line: _Line) -> Iterator[Span]:
                     yield span
             continue
         if tail is None:
-            span = _flag_value(line, name)
-            if span is not None:
-                yield span
+            start = _flag_value_start(line, name)
+            if start is None:
+                continue
+            v, d = start
+        else:
+            v, d = tail.end(), line.depth(tail.start("sep"))
+        if name.group("cookie") is not None:
+            yield from _cookie_values(line, v, d, name.group("cookie").lower().startswith("set"))
             continue
-        v, d = tail.end(), line.depth(tail.start("sep"))
         span = _value(line, v, d, "unquoted")
         if name.group("header") is not None:
             span = _past_scheme(line, v, d, span)
@@ -619,14 +628,12 @@ def _flag_gap(text: str, run: int, end: int) -> tuple[Span, bool] | None:
     return gap.span(), _LISTED_FLAG.match(text, gap.end()) is not None
 
 
-def _flag_value(line: _Line, name: re.Match[str]) -> Span | None:
-    """The value after a flag such as `--password` or `--video-password` that
-    `name` ends, given as the next word: a logged command line (yt-dlp's, say)
-    spells it that way, and a list repr of an argv, as the next element
-    (`['--password', 'hunter2']`). An `--authorization` value is a scheme and a
-    credential, so it is read as an `Authorization:` header's is. A next word
-    that is itself a flag is not a value, and a short name that is the whole
-    flag is left out: `--key 3.0:…` is a keystroke and `C=-key pause` prose.
+def _flag_value_start(line: _Line, name: re.Match[str]) -> tuple[int, int] | None:
+    """Where the value after a flag such as `--password` or `--video-password`
+    that `name` ends starts, and how deep its gap is. A logged command line
+    (yt-dlp's, say) gives it as the next word, and a list repr of an argv as
+    the next element (`['--password', 'hunter2']`). A next word that is itself
+    a flag is not a value, and a short name that is the whole flag is left out: `--key 3.0:…` is a keystroke and `C=-key pause` prose.
     After a component of its own it is kept, or `--stream-key X` would keep
     `X` where `--streamkey X` does not."""
     text = line.text
@@ -641,9 +648,80 @@ def _flag_value(line: _Line, name: re.Match[str]) -> Span | None:
     gap, is_flag = found
     if gap[1] == len(text) or is_flag:
         return None
-    v, d = gap[1], line.deepest(*gap)
-    span = _value(line, v, d, "unquoted")
-    return _past_scheme(line, v, d, span) if name.group("header") is not None else span
+    return gap[1], line.deepest(*gap)
+
+
+def _cookie_values(line: _Line, v: int, d: int, first_only: bool) -> list[Span]:
+    """The values in a `Cookie` header's `name=value; name=value` list that
+    starts at `v`, `d` deep, or in a `Set-Cookie` header's first pair when
+    `first_only`: the attributes after it (`Path`, `Expires`, `HttpOnly`) are
+    no secret. A quoted list ends at its closing quote and an unquoted one at
+    the end of the line or the quote closing the header, which is where
+    `_params_end` stops; an `&` ends it only in an encoded value, since a raw
+    cookie may hold one. A list inside a stretch already read is masked whole
+    rather than split again, which keeps a run of `cookie=` linear. An item
+    with no `=` is masked whole: it is a cookie with its name left off."""
+    text = line.text
+    opener = _opener(text, v)
+    if opener is None:
+        start, end = v, _params_end(line, v, d, amp_ends=d > 0)
+    elif line.deepest(v, opener.end()) > d:
+        start = opener.end()
+        end = _params_end(line, start, d, amp_ends=d > 0)
+    else:
+        span = _value(line, v, d, "unquoted")
+        if span is None:
+            return []
+        start, end = span
+        if not line.params_scanned[0] < start < line.params_scanned[1]:
+            line.params_scanned = span
+    if line.params_scanned[0] < start < line.params_scanned[1]:
+        return [(start, len(text) if opener is None else end)] if start < end else []
+    spans: list[Span] = []
+    for a, b in _cookie_items(text, start, end):
+        eq = text.find("=", a, b)
+        if eq >= 0:
+            a = eq + 1
+            while a < b and text[a].isspace():
+                a += 1
+        if a < b:
+            spans.append((a, b))
+        if first_only:
+            break
+    return spans
+
+
+def _cookie_items(text: str, start: int, end: int) -> Iterator[Span]:
+    """The non-blank items of the `;`-separated list in `text[start:end]`,
+    trimmed. A `;` inside a quoted value (`a="x;y"`) does not end an item, and
+    a quote nothing closes runs to the end of the list."""
+    cuts: list[int] = []
+    quote: tuple[str, int] | None = None
+    backslashes = 0
+    for i in range(start, end):
+        ch = text[i]
+        if ch == "\\":
+            backslashes += 1
+            continue
+        if quote is not None:
+            if (ch, backslashes) == quote:
+                quote = None
+        elif ch in "\"'" and i - backslashes > start and text[i - backslashes - 1] == "=":
+            quote = (ch, backslashes)
+        elif ch == ";":
+            cuts.append(i)
+        backslashes = 0
+    cuts.append(end)
+    item = start
+    for cut in cuts:
+        a, b = item, cut
+        while a < b and text[a].isspace():
+            a += 1
+        while b > a and text[b - 1].isspace():
+            b -= 1
+        if a < b:
+            yield a, b
+        item = cut + 1
 
 
 def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
@@ -736,17 +814,18 @@ def _unknown_scheme(line: _Line, v: int) -> Span | None:
     return None if credential is None else (v, credential[1])
 
 
-def _params_end(line: _Line, c: int, d: int) -> int:
-    """Where the parameter list of a `Digest` credential starting at `c` ends
-    in a value `d` deep: at the end of the line, at an `&` outside every quoted
-    parameter that is no deeper than `d`, or at a quote that opens none, which
-    is the quote closing the header. A parameter's quote opens it when an `=`
-    comes before it, and closes at the next such quote with as many backslashes
-    before it, so `response=\\"a\\"` inside a JSON string is read whole. The
-    list holds spaces, commas and quotes, which end an ordinary value, so the
-    response and the cnonce would be left in view. A `Digest` that starts
-    inside a stretch already read ends at the end of the line instead of
-    reading it again, which a run of `Digest` words would make quadratic."""
+def _params_end(line: _Line, c: int, d: int, amp_ends: bool = True) -> int:
+    """Where a header's parameter list starting at `c` ends in a value `d`
+    deep: at the end of the line, at an `&` outside every quoted parameter
+    that is no deeper than `d` (when `amp_ends`), or at a quote that opens no
+    parameter and that no letter or digit follows, which is the quote closing
+    the header. A parameter's quote opens it when an `=` comes before it, and
+    closes at the next such quote with as many backslashes before it, so
+    `response=\\"a\\"` inside a JSON string is read whole. The list holds
+    spaces, commas and quotes, which end an ordinary value, so a `Digest`
+    response and a cookie after the first would be left in view. A list that
+    starts inside a stretch already read ends at the end of the line instead
+    of reading it again, which a run of them would make quadratic."""
     text = line.text
     if line.params_scanned[0] < c < line.params_scanned[1]:
         return len(text)
@@ -759,13 +838,14 @@ def _params_end(line: _Line, c: int, d: int) -> int:
             backslashes += 1
         else:
             if quote is None:
-                if ch == "&" and line.depth(i) <= d:
+                if amp_ends and ch == "&" and line.depth(i) <= d:
                     break
                 if ch in "\"'":
-                    if i - backslashes - 1 < c or text[i - backslashes - 1] != "=":
+                    if i - backslashes - 1 >= c and text[i - backslashes - 1] == "=":
+                        quote = (ch, backslashes)
+                    elif i + 1 == len(text) or not _is_word_char(text[i + 1]):
                         i -= backslashes
                         break
-                    quote = (ch, backslashes)
             elif (ch, backslashes) == quote:
                 quote = None
             backslashes = 0
@@ -837,7 +917,7 @@ def redact_secrets(text: str) -> str:
       `userpass` match, bar the words that end in `pass` and name nothing
       secret (`bypass`, `high-pass`, starting a component, so `firewall_pass`
       still matches) and the shell's `PWD` — or whose last `_`/`-` component
-      is `key`, `sig`, `signature`, `hmac`, `auth` or `bearer`, so
+      is `key`, `sig`, `signature`, `hmac`, `auth`, `bearer` or `cookie`, so
       `signing_key` matches and `sortkey` does not, and a JSON escape of a
       separator (`\\u0026sig=`) counts as one. `=`, `:` or `=>`
       separates them, with the key quoted or not, or, after a flag's dash
@@ -850,6 +930,10 @@ def redact_secrets(text: str) -> str:
       punctuation and all, and after `Digest` the whole parameter list goes,
       to the end of the line, an `&` outside a quoted parameter, or the quote
       closing the header;
+    * the value of every `name=value` pair in a `Cookie` header, and of the
+      first pair only in a `Set-Cookie` header, whose attributes (`Path`,
+      `Expires`, `HttpOnly`, …) stay; the list ends at the end of the line, at
+      the quote closing the header, or at the `&` ending an encoded one;
     * the userinfo of a URL (`https://user:pass@host` comes back as
       `https://REDACTED@host`) — a private media file is legitimately reached
       that way, and FFmpeg quotes the URL it failed on into its errors.

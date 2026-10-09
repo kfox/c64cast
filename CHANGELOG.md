@@ -1677,6 +1677,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 - **The log redactor masks a quoted value that follows any word.**
   `token=Qz'abc def' rest` masked `Qz'abc` and kept `def'`.
 
+- **The log redactor masks the values in a `Cookie` or `Set-Cookie` header.**
+  `Cookie: session=abc123def` kept the session, because `session` is no secret
+  name on its own. Every value in a `Cookie` header is masked, and the first
+  value of a `Set-Cookie` header, whose attributes (`Path`, `Expires`,
+  `HttpOnly`, …) stay readable. `--cookie` is read the same way.
+
 - **The log redactor now reads a line instead of pattern-matching it, which
   closes a dozen shapes that let part or all of a secret through to
   `--log-file`, the web console's log tail and the scene snapshot.** Among
