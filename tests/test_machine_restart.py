@@ -1506,7 +1506,7 @@ class StackWiringTest(unittest.TestCase):
 
 class RestoreMirrorsStartupTest(unittest.TestCase):
     """The restore repeats the startup provisioning by hand, so a provisioner
-    added to `_acquire_stack` and not to `_restore_after_machine_restart`
+    added to `_provision_stack` and not to `_restore_after_machine_restart`
     would leave a restarted machine without it."""
 
     @staticmethod
@@ -1524,7 +1524,7 @@ class RestoreMirrorsStartupTest(unittest.TestCase):
         }
 
     def test_the_restore_calls_every_provisioner_the_startup_does(self):
-        startup = self._provisioners("_acquire_stack")
+        startup = self._provisioners("_provision_stack")
         self.assertIn("hw_provision.provision_reu", startup, "the sweep found nothing to compare")
         self.assertEqual(startup, self._provisioners("_restore_after_machine_restart"))
 

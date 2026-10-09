@@ -307,6 +307,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A multi-system start with a bad DAC curve on a later system no longer
+  provisions the earlier ones first.** With `[audio].dac_curve = "calibrated"`
+  and no calibration for the last system, the earlier systems had already
+  switched the HDMI mode, set the REU, sampler and master volume, and reset
+  the machine before the run stopped. Every system is now opened and its
+  curve resolved before any is provisioned.
 - **A clip launched while the "UP NEXT" card was up no longer leaves the
   transport and SHIFT dead.** The launch replaced the card but left the
   playlist believing it was still on screen, so play/pause, rewind,
