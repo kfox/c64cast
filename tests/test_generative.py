@@ -33,7 +33,7 @@ from c64cast.scenes.frame_source import BaseFrameSource, FrameSource
 from c64cast.scenes.generators import build_generator, generator_names
 from c64cast.scenes.scenes import Scene, SourceScene, _render_with_overlays
 from c64cast.video.modes import DisplayMode
-from c64cast.video.video import ensure_pyav
+from c64cast.video.video import AVFileSource, ensure_pyav
 
 
 class GeneratorTest(unittest.TestCase):
@@ -2701,6 +2701,116 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         self.assertEqual(len(logs.records), 1)
         self.assertAlmostEqual(pcm.size / self.RATE, 42.0, delta=0.03)
         self.assertAlmostEqual(self._sound(pcm[int(40.5 * self.RATE) :])[0], 0.5, delta=0.03)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class ExactSeekTest(unittest.TestCase):
+    """A seek, and a start_s, land on their target rather than on the keyframe
+    before it (#615). The clip has a keyframe every 3 s, every picture marks
+    its own index, and the sound is a ramp that reads 1000 per second of file
+    time, so what plays says where in the file it came from."""
+
+    RATE = 8000
+    TIMEOUT_S = 10.0
+
+    def _clip(
+        self, *, video_start_s: float = 0.0, audio_start_s: float = 0.0, seconds: float = 8.0
+    ) -> str:
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = f"{tmp.name}/clip.mkv"
+        _write_av_clip(
+            clip,
+            seconds,
+            rate=self.RATE,
+            audio=((audio_start_s, seconds),),
+            video_start_s=video_start_s,
+            gop=90,
+            ramp=True,
+            chunk_s=0.5,
+        )
+        return clip
+
+    def _source(
+        self, clip: str, *, start_s: float = 0.0, tempo_scale: float = 1.0, muted: bool = False
+    ) -> tuple[AVFileSource, list[np.ndarray]]:
+        from c64cast.video.video import AVFileSource
+
+        sink: list[np.ndarray] = []
+        src = AVFileSource(
+            clip,
+            target_sample_rate=self.RATE,
+            scan_audio_peak=False,
+            start_s=start_s,
+            tempo_scale=tempo_scale,
+        )
+        self.addCleanup(src.close)
+        src.set_muted(muted)
+        src.start(audio_push=sink.append)
+        return src, sink
+
+    def _first_picture(self, src: AVFileSource, clock_s: float) -> int:
+        deadline = time.monotonic() + self.TIMEOUT_S
+        while time.monotonic() < deadline:
+            shown = src.current_frame(clock_s)
+            if shown is not None:
+                return frame_index(shown)
+            time.sleep(0.005)
+        self.fail("no picture")
+
+    def _first_sound_s(self, sink: list[np.ndarray]) -> float:
+        deadline = time.monotonic() + self.TIMEOUT_S
+        while not sink and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertTrue(sink, "no sound")
+        return float(sink[0][0]) / 1000
+
+    def test_a_seek_shows_the_picture_at_its_target(self):
+        for tempo_scale in (1.0, 0.88):
+            for target, expected in ((6.31, 189), (7.91, 237), (4.55, 136)):
+                with self.subTest(tempo_scale=tempo_scale, target=target):
+                    src, _ = self._source(self._clip(), tempo_scale=tempo_scale, muted=True)
+                    src.freeze_tempo()
+                    src.request_seek(target, unmute=True)
+                    clock = src.content_to_clock(target)
+                    self.assertEqual(self._first_picture(src, clock), expected)
+                    src.close()
+
+    def test_a_seek_holds_back_only_the_picture_before_its_target(self):
+        src, _ = self._source(self._clip(), muted=True)
+        src.request_seek(6.31)
+        deadline = time.monotonic() + self.TIMEOUT_S
+        while len(src._video_buf) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stamps = [pts for pts, _ in src._video_buf[:2]]
+        self.assertAlmostEqual(stamps[0], 6.3, delta=0.002)
+        self.assertAlmostEqual(stamps[1], 6.3 + 1 / 30, delta=0.002)
+
+    def test_a_seek_plays_the_sound_from_its_target(self):
+        src, sink = self._source(self._clip(), muted=True)
+        src.request_seek(6.31, unmute=True)
+        self.assertAlmostEqual(self._first_sound_s(sink), 6.31, delta=0.04)
+
+    def test_start_s_starts_the_picture_and_the_sound_at_it(self):
+        src, sink = self._source(self._clip(), start_s=4.5)
+        self.assertEqual(self._first_picture(src, 0.0), 135)
+        self.assertAlmostEqual(self._first_sound_s(sink), 4.5, delta=0.04)
+
+    def test_a_seek_in_a_file_whose_streams_start_late_lands_on_its_file_position(self):
+        # Content 0 is the file's first timestamp, 2 s in on the stamps.
+        clip = self._clip(video_start_s=2.0, audio_start_s=2.0)
+        src, sink = self._source(clip, muted=True)
+        src.request_seek(4.01, unmute=True)
+        self.assertEqual(self._first_picture(src, 4.01), 120)
+        self.assertAlmostEqual(self._first_sound_s(sink), 2.0 + 4.01, delta=0.04)
+
+    def test_start_s_in_a_file_whose_streams_start_late_lands_on_its_file_position(self):
+        clip = self._clip(video_start_s=2.0, audio_start_s=2.0)
+        src, sink = self._source(clip, start_s=4.01)
+        self.assertEqual(self._first_picture(src, 0.0), 120)
+        self.assertAlmostEqual(self._first_sound_s(sink), 2.0 + 4.01, delta=0.04)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")

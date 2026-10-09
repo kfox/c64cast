@@ -1785,6 +1785,22 @@ class AlignedAudioTest(unittest.TestCase):
         # timeline, and the new pass warns of its own.
         self.assertEqual((src._audio_shift_s, src._audio_jump_warned), (0.0, False))
 
+    def test_sound_from_before_a_seeks_target_is_trimmed_not_followed_on_from(self):
+        # A seek lands on the keyframe before its target, and the sound read
+        # from there starts that far behind it: far past the discontinuity
+        # bound, a long GOP, and still the lead-in to drop, not a jump back
+        # that would play it at the target.
+        sink: list[np.ndarray] = []
+        src = _aligned_stub(sink)
+        src._pts_anchor_target = 100.0
+        src._video_read_s = 100.0
+        for start in (60.0, 60.5):
+            src._align_audio_frame(_audio_frame(start, 0.5))
+        self.assertEqual((sink, src._audio_shift_s, src._audio_lag_s), ([], 0.0, 0.0))
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 100.0, places=3)
+        src._align_audio_frame(_audio_frame(100.0, 0.5))
+        self.assertAlmostEqual(cast(float, src._audio_fed_s), 100.5, places=3)
+
     def _jumped(
         self, frames: list[tuple[float, float]], at: float
     ) -> tuple[AVFileSource, list[np.ndarray], int]:
