@@ -389,10 +389,6 @@ def _is_name_char(c: str) -> bool:
     return c.isalnum() or c in "_-"
 
 
-def _is_word_char(c: str) -> bool:
-    return c.isalnum() or c == "_"
-
-
 def _secret_names(text: str, judge: str | None = None) -> Iterator[re.Match[str]]:
     """Each secret-shaped name in `text` that ends a run of name characters.
     Whether a match is glued or one of the exempt words is read from `judge`
