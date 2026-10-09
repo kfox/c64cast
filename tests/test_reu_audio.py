@@ -820,7 +820,9 @@ class ReuTrackedGovernorTest(unittest.TestCase):
     lapped the NMI reader every 10.5-12 s (#544); the governed one must skip
     a chunk while its write head is half a ring ahead of R, pump otherwise
     (GovernorSkipWindowTest sweeps every gap), and return to its caller on
-    both paths."""
+    both paths. One call pumps until the write head is in the skip window:
+    the bank-swap dispatchers hold CIA #1 off for most of each frame, and one
+    chunk per call left the pump short of the reader (#661)."""
 
     SRC = 0x032211
 
@@ -829,6 +831,7 @@ class ReuTrackedGovernorTest(unittest.TestCase):
         seed[READ_PTR_HI_ADDR] = r >> 8
         if df03 is not None:
             seed[0xDF03] = df03
+        self._dst, self._r = dst, r
         return _jsr_tracked_governor(self, seed)
 
     def _pumped(self, run) -> bool:
@@ -837,12 +840,18 @@ class ReuTrackedGovernorTest(unittest.TestCase):
         t = REU_AUDIO_SRC_TRACKER_ADDR
         ram = run.memory.ram
         src_after = ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
+        dst_after = ram[t + 3] | (ram[t + 4] << 8)
+        chunks, rest = divmod(src_after - self.SRC, REU_PUMP_CHUNK_SIZE)
         triggered = ram[0xDF01] == REU_CMD_FETCH_EXEC
+        self.assertEqual(rest, 0)
+        self.assertEqual(triggered, chunks > 0, "a trigger and a tracker advance must go together")
         self.assertEqual(
-            triggered,
-            src_after == self.SRC + REU_PUMP_CHUNK_SIZE,
-            "a trigger and a tracker advance must go together",
+            (dst_after - self._dst) % RING_BUFFER_SIZE,
+            chunks * REU_PUMP_CHUNK_SIZE % RING_BUFFER_SIZE,
+            "src and dst must advance together",
         )
+        gap_hi = ((dst_after >> 8) - (self._r >> 8)) & 0x1F
+        self.assertIn(gap_hi, (16, 17), "the call must leave the write head in the skip window")
         return triggered
 
     def test_skips_when_write_head_is_half_a_ring_ahead(self):
@@ -883,10 +892,22 @@ class ReuTrackedGovernorTest(unittest.TestCase):
     def test_governed_body_is_the_open_loop_body_behind_the_test(self):
         from c64cast.audio.audio_handlers import (
             REU_PUMP_BODY_SUBROUTINE,
+            REU_PUMP_BODY_SUBROUTINE_ADDR,
             REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
         )
 
-        self.assertTrue(REU_PUMP_BODY_SUBROUTINE_GOVERNOR.endswith(REU_PUMP_BODY_SUBROUTINE))
+        jmp_test = bytes(
+            [0x4C, REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF, REU_PUMP_BODY_SUBROUTINE_ADDR >> 8]
+        )
+        self.assertTrue(
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR.endswith(REU_PUMP_BODY_SUBROUTINE[:-1] + jmp_test)
+        )
+
+    def test_one_call_catches_up_a_whole_lap_behind(self):
+        # The longest catch-up: the reader two pages past the write head.
+        r = RING_BUFFER_ADDR + 0x1000
+        run = self._call(dst=r - 0x200, r=r)
+        self.assertTrue(self._pumped(run))
 
 
 class TrackedPumpSelectionTest(unittest.TestCase):

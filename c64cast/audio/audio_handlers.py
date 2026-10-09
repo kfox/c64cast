@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from c64cast.hw.c64 import REU
+from c64cast.hw.c64 import NMI_SAFE_MIN_PERIOD_CYCLES, REU, halt_quantum_bytes
 
 # Where the NMI routine lives in C64 RAM ($C000-$C01F is big_text's).
 NMI_ROUTINE_ADDR = 0xC020
@@ -306,7 +306,18 @@ REU_PUMP_INITIAL_MARGIN = RING_BUFFER_SIZE // 2  # 4096 B = half the ring
 # RING_BUFFER_END DMA'd its tail into $6000+, the wrap reset dst to the ring
 # start, and 48-79 samples per lap were never played. Every chunk must
 # divide RING_BUFFER_SIZE and REU_PUMP_INITIAL_MARGIN (asserted below).
-REU_PUMP_CHUNK_SIZE_HEAVY_BUS = 64
+#
+# Its halt also has to fit inside the shortest NMI period the streamer arms
+# (c64.halt_quantum_bytes), or two underflows land in one halt and the
+# reader drops a sample: the bitmap modes' bank-swap dispatchers JSR the pump
+# body between their own chunked DMAs, which are held to the same budget.
+# 64 bytes did not fit it; on a U64 at 12 kHz under mhires the reader ran at
+# 0.944 of nominal with 64-byte pump DMAs and 50-byte video chunks, and 0.977
+# with 32 and 40 (#661).
+REU_PUMP_CHUNK_SIZE_HEAVY_BUS = 32
+assert halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES) >= REU_PUMP_CHUNK_SIZE_HEAVY_BUS, (
+    "the heavy-bus pump chunk's halt must fit inside the shortest NMI period the streamer arms"
+)
 
 
 def reu_pump_chunk_fits_ring(chunk: int) -> bool:
@@ -641,8 +652,8 @@ REU_AUDIO_DST_TRACKER_ADDR = REU_AUDIO_SRC_TRACKER_ADDR + 3
 REU_PUMP_TICK_COUNTER_ADDR = 0xC205
 _TCTR_LO = REU_PUMP_TICK_COUNTER_ADDR & 0xFF
 _TCTR_HI_BYTE = (REU_PUMP_TICK_COUNTER_ADDR >> 8) & 0xFF
-# N=3 → kernal tail at ~63 Hz with chunk 64 at 12 kHz (CIA #1 @ ~188 Hz
-# matched), ~94 Hz governed (REU_GOVERNOR_PUMP_OVERDRIVE). No service depends
+# N=3 → kernal tail at ~125 Hz with chunk 32 at 12 kHz (CIA #1 @ ~376 Hz
+# matched), ~188 Hz governed (REU_GOVERNOR_PUMP_OVERDRIVE). No service depends
 # on the exact rate, and it clears the 10 Hz keyboard poller. Do not exceed
 # 8 — SCNKEY then misses held keys.
 REU_PUMP_TICK_DIVIDER = 3
@@ -830,18 +841,30 @@ _RTS = 0x60
 # The open-loop variant is the body plus RTS. The governed one puts the
 # governor's skip-when-ahead test in front, reading the write head from the
 # dst_hi tracker ($C204) rather than from $DF03, which the bank-swap DMAs
-# leave pointing into video memory:
+# leave pointing into video memory, and loops back to it after each chunk:
 #
 #   0    <_governor_test($C204)>      17 bytes; pump → offset 18
-#  17    RTS                          ; gap in the skip window: skip the chunk
+#  17    RTS                          ; gap in the skip window: return
 #  18    <_TRACKED_PUMP_BODY>         104 bytes
-# 122    RTS
+# 122    JMP $C180                    ; test again
+#
+# So one call pumps until the write head is half a ring ahead, however many
+# CIA #1 ticks went unserviced before it. The bank-swap dispatchers hold the I
+# flag for most of each frame, every tick that falls inside collapses into one
+# pending flag, and their end-of-family JSRs recover one chunk each; pumping a
+# chunk per call there left the pump short of the reader (U64, 12 kHz, mhires:
+# pump at 0.81 of nominal against the reader's 0.94) however far the overdrive
+# raised its tick rate.
+# The loop ends: each chunk moves the gap 32-128 B forward and the reader
+# takes back about 3 B in that time, so the gap reaches the 512 B skip window
+# from below without stepping over it. A catch-up from an overtaken reader
+# is the longest, at most a ring's worth of chunks.
 #
 # A skipped chunk triggers no DMA and advances neither tracker, so the same
 # audio is pumped on a later tick once the reader has caught up — the plain
-# governor's behavior (REU_IRQ_HANDLER_GOVERNOR). A pumping call costs 17
-# cycles more than the open-loop one (21 once the reader has overtaken); a
-# skip runs the test and the RTS, and no DMA.
+# governor's behavior (REU_IRQ_HANDLER_GOVERNOR). A pumping pass costs 17
+# cycles more than the open-loop body (21 once the reader has overtaken) plus
+# the JMP; the final skip runs the test and the RTS, and no DMA.
 #
 # $C180 is the address the chunked dispatcher in modes_irq.py JSRs, so the
 # subroutine cannot move, and it must end below the $C200 tracker.
@@ -853,7 +876,12 @@ _TRACKED_GOVERNOR_PREFIX = _governor_test(
     _TRK_DST_HI_ADDR,  # write head vs R_hi
     bytes([_RTS]),  # skip: return to the caller
 )
-REU_PUMP_BODY_SUBROUTINE_GOVERNOR = _TRACKED_GOVERNOR_PREFIX + _TRACKED_PUMP_BODY + bytes([_RTS])
+_JMP_GOVERNOR_TEST = bytes(
+    [0x4C, REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF, (REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF]
+)
+REU_PUMP_BODY_SUBROUTINE_GOVERNOR = (
+    _TRACKED_GOVERNOR_PREFIX + _TRACKED_PUMP_BODY + _JMP_GOVERNOR_TEST
+)
 REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS = tuple(
     off + len(_TRACKED_GOVERNOR_PREFIX) for off in _TRACKED_PUMP_BODY_CHUNK_OFFSETS
 )
@@ -862,8 +890,8 @@ _assert_chunk_offsets(
     REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
     "REU_PUMP_BODY_SUBROUTINE_GOVERNOR",
 )
+assert REU_PUMP_BODY_SUBROUTINE[-1] == _RTS, "subroutine must end with RTS"
 for _sub in (REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_GOVERNOR):
-    assert _sub[-1] == _RTS, "subroutine must end with RTS"
     assert REU_PUMP_BODY_SUBROUTINE_ADDR + len(_sub) <= REU_AUDIO_SRC_TRACKER_ADDR, (
         "pump-body subroutine overruns the $C200 tracker"
     )

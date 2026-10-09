@@ -253,9 +253,9 @@ TRACKED_PUMP_INSTALL_TRIES = 3
 # dispatcher: longer than a chunked dispatcher's run, so a CIA #1 IRQ that was
 # already asserted when the mask landed has been serviced (through the $C100
 # stub) before the entry bytes replace it. The mhires run is estimated near
-# 30 ms at 12 kHz: 200 chunk iterations, with every NMI that lands inside the
-# run serviced there.
-TRACKED_PUMP_ENTRY_DRAIN_S = 0.05
+# 40 ms at 12 kHz: 250 chunk iterations, the pump's catch-up at each family's
+# end, and every NMI that lands inside the run serviced there.
+TRACKED_PUMP_ENTRY_DRAIN_S = 0.08
 
 # The DAC clock runs between chunk landings at the pace chunks land: the bytes
 # landed over the last LANDING_PACE_WINDOW_S or so, measured landing to

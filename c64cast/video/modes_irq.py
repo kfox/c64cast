@@ -470,7 +470,11 @@ assert len(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 86
 # host-side ring writes by. A chunk sized for the period at the requested rate
 # is the trap: 100 bytes fits the 125-cycle period at 8 kHz but outlasts the
 # 85-cycle period of the 12 kHz default, and REU-pump video audio then played
-# ~17 % slow against the picture.
+# ~17 % slow against the picture (#661). 50 bytes fits the budget too but
+# measured worse than 40 on a U64 at 12 kHz (see REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+# for the figures): a badline stretches any halt by up to 43 cycles, so the
+# slack under the budget is margin rather than waste. Below 32 the bitmap
+# family's chunk count no longer fits the one-byte counter.
 #
 # After each chunk DMA, only the LENGTH register decrements to 0; the src/dst
 # registers auto-increment and stay valid across chunks, so the per-chunk
@@ -487,8 +491,9 @@ assert len(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 86
 # re-sets REC.
 #
 # Zero-page: the chunk counter lives at $FB (the canonical 4-byte user-free
-# block $FB-$FE). c64cast uses no other zero-page slots.
-BANK_SWAP_CHUNK_SIZE = 50  # bytes per chunked REC DMA
+# block $FB-$FE). asid_player.ZP_PTR uses $FB too; the ASID player's own IRQ
+# handler owns $0314, so it never runs alongside a bank-swap dispatcher.
+BANK_SWAP_CHUNK_SIZE = 40  # bytes per chunked REC DMA
 _CHUNK_COUNTER_ZP = 0xFB  # zero-page chunk counter
 _PUMP_BODY_LO = REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF
 _PUMP_BODY_HI = (REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF
