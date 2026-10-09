@@ -223,6 +223,33 @@ class StartForReuStagedTest(unittest.TestCase):
         self.assertEqual(fake.socket_dma.reuwrites, [])
         self.assertFalse(s._reu_pump_armed)
 
+    def test_a_held_start_leaves_the_nmi_off_and_the_clock_at_zero(self):
+        s = _new_streamer()
+        with mock.patch.object(s.nmi, "start") as nmi_start:
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        nmi_start.assert_not_called()
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertIsNotNone(s._pending_arm)
+
+    def test_release_arms_the_pump_and_starts_the_clock(self):
+        s = _new_streamer()
+        with mock.patch.object(s.nmi, "start") as nmi_start:
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+            self.addCleanup(s.stop)
+            s.release_hold()
+        nmi_start.assert_called_once()
+        self.assertIsNone(s._pending_arm)
+        self.assertGreater(s._reu_pump_start_time, 0.0)
+
+    def test_stop_while_held_drops_the_arm(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        s.stop()
+        self.assertIsNone(s._pending_arm)
+        s.release_hold()
+        self.assertFalse(s.running)
+
     def test_reu_upload_is_chunked_into_slices(self):
         """A 100 KB audio blob should arrive as ceil(100K / 32K) = 4
         REUWRITEs covering offsets 0, 32K, 64K, 96K, followed by EOF-pad

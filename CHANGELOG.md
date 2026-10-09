@@ -307,6 +307,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A video's first sound now plays with its first picture.** The sound's clock
+  used to start while the scene was still setting up, so the DAC played the
+  sound at clip time 0 about 110-136 ms before its picture, and the sampler never
+  showed the frames due in its first 0.2 s. The sound now waits for the first
+  frame to be on screen, on the DAC, the sampler and the REU pump.
+
 - **With `$D418` DAC audio, the next scene no longer starts with a moment
   of the previous one's sound.** A video or mic chunk pushed exactly as a
   scene ended could land in the queue after the scene's teardown had

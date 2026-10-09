@@ -3681,6 +3681,42 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(s.servo.ring_lead, 32 * 6)
         self.assertEqual(at_start, [0.0])
 
+    def _held_worker(self) -> tuple[AudioStreamer, threading.Event]:
+        s = _make_worker_streamer(chunk_size=32)
+        started = threading.Event()
+        seed = s.servo.reset_for_consumer_start
+
+        def seed_then_signal(ring_lead: int) -> None:
+            seed(ring_lead)
+            started.set()
+
+        s.servo.reset_for_consumer_start = seed_then_signal  # type: ignore[method-assign]
+        s.host_dma_servo = False
+        s.start_for_external_source(hold=True)
+        self.addCleanup(s.stop)
+        s.push_samples(np.zeros(32 * 6, dtype=np.int16))
+        return s, started
+
+    def test_a_held_start_primes_the_ring_but_waits_to_start_the_consumer(self):
+        s, started = self._held_worker()
+        deadline = time.monotonic() + 5.0
+        while s._pushed_count - s._queued_samples < 32 * 6 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(s._pushed_count - s._queued_samples, 32 * 6)
+        self.assertFalse(started.wait(0.2), "the consumer started while held")
+        self.assertEqual(s.position_seconds(), 0.0)
+
+    def test_release_starts_the_consumer(self):
+        s, started = self._held_worker()
+        s.release_hold()
+        self.assertTrue(started.wait(5.0))
+
+    def test_stop_ends_a_worker_still_held(self):
+        s, started = self._held_worker()
+        s.stop()
+        self.assertFalse(started.wait(0.2))
+        self.assertIsNone(s._worker_thread)
+
     def test_position_seconds_reaches_the_end_once_the_producer_runs_dry(self):
         # Past the last sample the worker pads the ring, so the gap holds while
         # nothing in it is content. The clock has to reach the end anyway: a

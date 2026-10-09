@@ -103,6 +103,10 @@ AV_LAG_LOG_INTERVAL_S = 2.0
 # TEMPO_FOLLOW_MAX_DROP of the starting figure (U64 mhires drains ≈0.79
 # against its 0.88 start).
 TEMPO_FOLLOW_WARMUP_S = 5.0
+# The longest the sound waits for the first frame to be shown. A source that
+# decodes its first frame slower than this plays the sound over a held
+# picture rather than none.
+AUDIO_HOLD_MAX_S = 1.0
 TEMPO_FOLLOW_WINDOW_S = 4.0
 TEMPO_FOLLOW_DEADBAND = 0.01
 TEMPO_FOLLOW_STALL_S = 0.1
@@ -1339,6 +1343,11 @@ class VideoScene(MediaFileMixin, Scene):
         # (setup) so the transport clocks off the wall instead of a pump that
         # never armed; teardown puts it back for the next run.
         self._audio_set_aside: SceneAudio | None = None
+        # True from setup() until the first frame is shown (or
+        # AUDIO_HOLD_MAX_S passes): the sink is up but its clock is held, so
+        # the sound at clip time 0 starts with its picture.
+        self._audio_held = False
+        self._hold_since = 0.0
         # The resolved URL's yt-dlp attribution (None for a local file). Set
         # post-construction by scene_factory._build_video; read by
         # recording_metadata._video_source, nowhere in playback itself.
@@ -1431,6 +1440,7 @@ class VideoScene(MediaFileMixin, Scene):
         # Back onto the audio-master clock, untouched, rather than inheriting a
         # prior run's pause/seek/loop/mute.
         self.transport.reset()
+        self._audio_held = False
         self.transport.loop_store = make_loop_preset_store(self.filepath)
         if not ensure_pyav():
             log.warning(
@@ -1603,7 +1613,8 @@ class VideoScene(MediaFileMixin, Scene):
                     audio_end=self.audio.end_input,
                     audio_epoch=self.audio.current_flush_epoch,
                 )
-                self.audio.start()
+                self.audio.start(hold=True)
+                self._audio_held = True
             progress.complete("audio-start")
         elif has_audio and getattr(self.audio, "use_reu_pump", False):
             # audio_push=None makes the demuxer skip audio decode entirely: the
@@ -1633,7 +1644,9 @@ class VideoScene(MediaFileMixin, Scene):
                     chunk_size=chunk,
                     skip_irq_vector_hook=skip_hook,
                     on_progress=progress.reporter("upload"),
+                    hold=True,
                 )
+                self._audio_held = True
             except PumpInstallError:
                 # The streamer logged it and undid its bring-up. Without this the
                 # transport would clock off a pump that never armed and hold the
@@ -1642,7 +1655,8 @@ class VideoScene(MediaFileMixin, Scene):
             self.source.start(audio_push=None)
         elif has_audio:
             assert isinstance(self.audio, AudioStreamer)
-            self.audio.start_for_external_source()
+            self.audio.start_for_external_source(hold=True)
+            self._audio_held = True
             self.source.start(
                 audio_push=self.audio.push_samples,
                 audio_end=self.audio.end_input,
@@ -1651,10 +1665,30 @@ class VideoScene(MediaFileMixin, Scene):
         else:
             self.source.start(audio_push=None)
         progress.finish()
+        self._start_clocks()
+        self._hold_since = time.monotonic()
+
+    def _start_clocks(self) -> None:
         self.wall_start_time = time.time()
         # `_follow_drain` measures on this clock rather than the wall's, which
         # an NTP step or a sleep moves without the drain moving.
         self._follow_start = time.monotonic()
+
+    def release_audio_hold(self) -> None:
+        """Start the sound the scene held back at setup(), now that its first
+        frame is up (or the wait ran out, or the transport took over).
+        A release the REU pump cannot arm leaves the scene silent on the wall
+        clock, as a failed install in setup() does."""
+        if not self._audio_held:
+            return
+        self._audio_held = False
+        audio = self.audio
+        assert audio is not None
+        try:
+            audio.release_hold()
+        except PumpInstallError:
+            self._audio_set_aside, self.audio = audio, None
+        self._start_clocks()
 
     def _setup_segments(self) -> list[tuple[str, float]]:
         """The SegmentedProgress weights for this scene's blocking setup
@@ -1781,6 +1815,8 @@ class VideoScene(MediaFileMixin, Scene):
         # so it does not end the scene — unless its demux thread is gone, when
         # the wrap's seek would never land and the loop would hold its last
         # frame for good.
+        if self._audio_held and time.monotonic() - self._hold_since > AUDIO_HOLD_MAX_S:
+            self.release_audio_hold()
         if self.source is None or (
             self.source.finished
             and (self.transport.loop_state != "active" or not self.source.accepts_seeks)
@@ -1865,6 +1901,7 @@ class VideoScene(MediaFileMixin, Scene):
             # a paused one would stay unpainted until playback resumed.
             self._last_render_epoch = None
             raise
+        self.release_audio_hold()
         return True
 
     def _record_av_lag(self, clock_s: float, current_time: float) -> None:

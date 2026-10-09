@@ -44,6 +44,8 @@ An explicit `duration_s = 0` is the universal "run forever" sentinel, mapped to 
 
 It uses the audio playback position as the master clock and picks the closest video frame against it, so A/V never drift.
 
+**The sound starts with the first shown frame.** `setup()` brings the sink up with its clock held (`start(hold=True)` on the sampler, `start_for_external_source(hold=True)` on the DAC, `start_for_reu_staged(..., hold=True)` on the REU pump), and the scene calls `release_hold()` right after the first `process_frame` render lands. Starting the clock in `setup()` put it a whole activation step ahead of the first render: the DAC's clip-0 sound played about 110-136 ms before its picture, and the sampler's picture skipped the frames due in its first 0.2 s. While held every sink reads `position_seconds() == 0`, so the first frame chosen is the one at PTS 0. `AUDIO_HOLD_MAX_S` bounds the wait for a source that decodes its first frame slowly, a transport touch releases it too (the anchor is read after), and an REU pump whose arm fails at release is set aside like one that fails in `setup()`. A release restarts `wall_start_time` and the drain-following warm-up, which count from the audible start.
+
 Its lifetime is video-driven: `process_frame` returns False once the source reports `finished`, and `__init__` pins `self.duration_s = math.inf` so the base-class duration timer cannot truncate playback.
 
 `scene_factory.validate_scene_cfg` rejects any user-supplied `duration_s` on a video cfg, since the field would be either a silent no-op or a truncation footgun. `Scene.setup` formats the infinity as `duration=video-driven` in the startup log.

@@ -366,6 +366,12 @@ class AudioStreamer:
         # _reu_pump_start_time is what position_seconds() uses in REU mode: the
         # host never sees the samples, so the queue counter does not apply.
         self._reu_pump_armed = False
+        # Set while a start(hold=True) waits for release_hold(): the worker
+        # parks before it starts the NMI, and the REU pump's arm waits in
+        # _pending_arm. Set by stop() too, so a parked worker never outlives it.
+        self._start_hold = threading.Event()
+        self._start_hold.set()
+        self._pending_arm: Callable[[], None] | None = None
         # A failed install's $0314 restore that never confirmed: stop() owes
         # it even though no pump armed (_unwind_pump_install).
         self._irq_vector_restore_owed = False
@@ -1340,6 +1346,10 @@ class AudioStreamer:
 
                 bytes_prebuffered += n
                 if bytes_prebuffered >= prebuffer_bytes:
+                    while current() and not self._start_hold.wait(timeout=0.05):
+                        pass
+                    if not current():
+                        break
                     self.nmi.start(adaptive=self.nmi_rate_adaptive)
                     # The arm reads R and writes the CIA, and can park too.
                     if not current():
@@ -2632,12 +2642,21 @@ class AudioStreamer:
             f"{last_err}"
         )
 
-    def start_for_external_source(self) -> None:
+    def start_for_external_source(self, *, hold: bool = False) -> None:
         """Bring up NMI + worker without an input thread. Caller feeds samples
-        via push_samples()."""
+        via push_samples().
+
+        With ``hold`` the worker primes the ring but leaves the NMI off until
+        :meth:`release_hold`, and ``position_seconds`` reads 0 meanwhile: a
+        video scene holds the sound until its first frame is on screen, so the
+        clock starts from the picture."""
         self._listen_mode = False
         self._upload_nmi_and_buffers()
         self.reset_position()
+        if hold:
+            self._start_hold.clear()
+        else:
+            self._start_hold.set()
         self.running = True
         self._worker_thread = self._start_worker()
         # Report the achieved rate too: CIA latch quantization separates them
@@ -2689,8 +2708,15 @@ class AudioStreamer:
         *,
         skip_irq_vector_hook: bool = False,
         on_progress: Callable[[float], None] | None = None,
+        hold: bool = False,
     ) -> None:
         """Bring up audio with the entire track preloaded into REU.
+
+        With ``hold`` everything but step 5 and 6 below runs now, and
+        :meth:`release_hold` runs them: the NMI starts and the playback clock
+        begins there, and ``position_seconds`` reads 0 until then. A video
+        scene holds the sound until its first frame is on screen. A
+        PumpInstallError from those steps then comes out of release_hold().
 
         ``audio_4bit`` is a bytes blob of pre-encoded 4-bit DAC volume codes
         (1 byte = 1 sample). Caller is responsible for the encoding (use the
@@ -2894,28 +2920,52 @@ class AudioStreamer:
         # Arm the NMI on the pre-filled ring and patch $0314 at the pump entry,
         # skipped when the display mode's bank-swap dispatcher owns $0314 and
         # JMPs to $C100 itself.
-        self._arm_installed_pump(
-            program_rec_and_rate,
-            tracked=skip_irq_vector_hook,
-            dispatcher_owns_irq=skip_irq_vector_hook,
-        )
-        log.info(
-            "audio: REU pump installed at $%04X, chunk=%d, CIA #1 latch=$%04X",
-            REU_PUMP_HANDLER_ADDR,
-            chunk,
-            self._reu_cia1_latch_nominal,
-        )
+        def arm() -> None:
+            self._arm_installed_pump(
+                program_rec_and_rate,
+                tracked=skip_irq_vector_hook,
+                dispatcher_owns_irq=skip_irq_vector_hook,
+            )
+            log.info(
+                "audio: REU pump installed at $%04X, chunk=%d, CIA #1 latch=$%04X",
+                REU_PUMP_HANDLER_ADDR,
+                chunk,
+                self._reu_cia1_latch_nominal,
+            )
+            log.info(
+                "audio: REU pump armed; NMI consuming @ %d Hz (vector_hook=%s, governor=%s)",
+                self.sample_rate,
+                "skipped" if skip_irq_vector_hook else "set",
+                "on" if self.reu_pump_governor else "off",
+            )
 
+        if hold:
+            # Armed already, so cut/flush and stop() treat this as the pump
+            # path they are; position_seconds() stands at 0 until the arm.
+            self._pending_arm = arm
+        else:
+            arm()
         self.running = True
         self._reu_pump_armed = True
         self._reu_pump_total_samples = len(audio_4bit)
         self._pushed_count = 0
-        log.info(
-            "audio: REU pump armed; NMI consuming @ %d Hz (vector_hook=%s, governor=%s)",
-            self.sample_rate,
-            "skipped" if skip_irq_vector_hook else "set",
-            "on" if self.reu_pump_governor else "off",
-        )
+
+    def release_hold(self) -> None:
+        """Start what a ``start_for_external_source(hold=True)`` or
+        ``start_for_reu_staged(hold=True)`` held back; a no-op when nothing is
+        held. Raises PumpInstallError when the REU pump's arm never confirms,
+        with the NMI bring-up undone and this streamer no longer running: the
+        caller plays on without audio."""
+        self._start_hold.set()
+        arm, self._pending_arm = self._pending_arm, None
+        if arm is None:
+            return
+        try:
+            arm()
+        except PumpInstallError:
+            self.running = False
+            self._reu_pump_armed = False
+            raise
 
     def _disarm_reu_pump(self) -> None:
         """Restore IRQ vector to kernal default and CIA #1 Timer A to ~60 Hz.
@@ -3062,6 +3112,8 @@ class AudioStreamer:
         if not rate:
             return 0.0
         if self._reu_pump_armed:
+            if self._pending_arm is not None:
+                return 0.0
             elapsed = max(0.0, time.monotonic() - self._reu_pump_start_time)
             if not self._reu_pump_total_samples:
                 return elapsed
@@ -3469,6 +3521,8 @@ class AudioStreamer:
         # records is either counted before the bump or refused after it.
         with self._ring_pad_lock:
             self._worker_generation += 1
+        self._start_hold.set()
+        self._pending_arm = None
         # A listen-only session never touched the NMI/DAC/SID, so writing $D418
         # or the NMI vectors here would be spurious U64 traffic.
         if self._listen_mode:

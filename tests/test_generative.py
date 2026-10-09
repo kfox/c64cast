@@ -1952,8 +1952,8 @@ def _idle_polls_after_the_end(smp) -> Iterator[list[int]]:
                 idle[0] += 1
             raise
 
-    def patient_start() -> None:
-        start(prebuffer_timeout=_EVENT_WAIT_S)
+    def patient_start(**kw: bool) -> None:
+        start(prebuffer_timeout=_EVENT_WAIT_S, **kw)
 
     with (
         mock.patch.object(smp._q, "get", side_effect=counted),

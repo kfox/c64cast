@@ -300,6 +300,45 @@ class StreamerTest(unittest.TestCase):
         self.assertEqual(api.mem_writes[-1], ("DF20", "00"))
         self.assertFalse(smp._running)
 
+    def _held(self) -> tuple[_FakeBackend, s.UltimateAudioSampler]:
+        api = _FakeBackend()
+        smp = _make(
+            api, sample_rate=44100, bits=16, ring_base=0x200000, ring_size=8192, lead_seconds=0.01
+        )
+        smp.push_samples(np.zeros(2048, dtype=np.int16))
+        smp.start(prebuffer_timeout=0.1, hold=True)
+        return api, smp
+
+    def test_a_held_start_leaves_the_gate_off_and_the_clock_at_zero(self):
+        api, smp = self._held()
+        self.addCleanup(smp.stop)
+        self.assertNotIn("13", [v for a, v in api.mem_writes if a == "DF20"])
+        self.assertFalse(smp._running)
+        time.sleep(0.02)
+        self.assertEqual(smp.position_seconds(), 0.0)
+
+    def test_release_gates_the_ring_on_and_starts_the_clock(self):
+        api, smp = self._held()
+        self.addCleanup(smp.stop)
+        smp.release_hold()
+        self.assertIn("13", [v for a, v in api.mem_writes if a == "DF20"])
+        self.assertTrue(smp._running)
+        time.sleep(0.02)
+        self.assertGreater(smp.position_seconds(), 0.0)
+
+    def test_a_held_sampler_refuses_a_second_start(self):
+        _, smp = self._held()
+        self.addCleanup(smp.stop)
+        with self.assertRaises(RuntimeError):
+            smp.start(prebuffer_timeout=0.01)
+
+    def test_stop_while_held_leaves_the_release_a_no_op(self):
+        api, smp = self._held()
+        smp.stop()
+        smp.release_hold()
+        self.assertNotIn("13", [v for a, v in api.mem_writes if a == "DF20"])
+        self.assertFalse(smp._running)
+
     def test_prebuffer_target_decoupled_from_lead(self):
         # The runtime lead (1.0 s default) is deeper than the startup prebuffer
         # (0.5 s), so playback starts promptly while the writer keeps a cushion

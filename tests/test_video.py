@@ -19,7 +19,7 @@ from unittest import mock
 import numpy as np
 from _fakes import FakeAPI, FrozenClock
 
-from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import CHUNK_SIZE, PREBUFFER_CHUNKS
 from c64cast.audio.audio_servo import HOST_DMA_SERVO_TARGET_GAP
 from c64cast.audio.sampler import DEFAULT_LEAD_SECONDS, UltimateAudioSampler
@@ -4060,6 +4060,121 @@ class FollowDrainTest(unittest.TestCase):
         scene.audio = None
         self._play(scene, 0.79, 112.0)
         self.assertEqual(source.requests, [])
+
+
+class VideoSceneAudioHoldTest(unittest.TestCase):
+    """The sound at clip time 0 starts with its picture: setup() brings the
+    sink up with its clock held, and the first shown frame releases it."""
+
+    def _setup(self, audio: Any) -> VideoScene:
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource"),
+            mock.patch.object(VideoScene, "_preencode_audio_for_reu", return_value=b"\x07"),
+            mock.patch.object(scenes, "reu_pump_skips_irq_hook", return_value=False),
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=audio,
+                display_mode=mock.MagicMock(),
+                file=STUB_VIDEO_URL,
+                setup_progress=False,
+            )
+            scene.setup()
+        self.addCleanup(scene.teardown)
+        return scene
+
+    def test_the_dac_is_started_held(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = False
+        scene = self._setup(audio)
+        audio.start_for_external_source.assert_called_once_with(hold=True)
+        audio.release_hold.assert_not_called()
+        self.assertTrue(scene._audio_held)
+
+    def test_the_sampler_is_started_held(self):
+        audio = mock.create_autospec(UltimateAudioSampler, instance=True)
+        scene = self._setup(audio)
+        audio.start.assert_called_once_with(hold=True)
+        audio.release_hold.assert_not_called()
+        self.assertTrue(scene._audio_held)
+
+    def test_the_reu_pump_is_staged_held(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        scene = self._setup(audio)
+        self.assertIs(audio.start_for_reu_staged.call_args.kwargs["hold"], True)
+        audio.release_hold.assert_not_called()
+        self.assertTrue(scene._audio_held)
+
+    def test_a_failed_reu_install_holds_nothing(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        audio.start_for_reu_staged.side_effect = PumpInstallError("no")
+        scene = self._setup(audio)
+        self.assertFalse(scene._audio_held)
+
+    def _held_scene(self) -> tuple[VideoScene, _FakeSceneAudio, list[str]]:
+        events: list[str] = []
+        audio = _FakeSceneAudio()
+        audio.release_hold = lambda: events.append("release")  # type: ignore[attr-defined]
+        scene = _make_video_scene_stub(_StubSource())
+        scene.audio = audio  # type: ignore[assignment]  # duck-typed sink
+        scene._audio_held = True
+        scene._hold_since = 0.0
+        cast(Any, scene.api).delivery_epoch = 0
+        return scene, audio, events
+
+    def _process(self, scene: VideoScene, events: list[str], *, now: float = 0.0) -> None:
+        with (
+            mock.patch.object(
+                scenes, "_render_with_overlays", side_effect=lambda *a: events.append("render")
+            ),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes.time, "monotonic", return_value=now),
+        ):
+            scene.process_frame(0.0)
+
+    def test_the_first_shown_frame_releases_the_sound_after_its_render(self):
+        scene, _, events = self._held_scene()
+        self._process(scene, events)
+        self.assertEqual(events, ["render", "release"])
+        self.assertFalse(scene._audio_held)
+
+    def test_the_sound_is_released_once(self):
+        scene, _, events = self._held_scene()
+        self._process(scene, events)
+        self._process(scene, events)
+        self.assertEqual(events.count("release"), 1)
+
+    def test_no_frame_yet_keeps_the_sound_held(self):
+        scene, _, events = self._held_scene()
+        cast(Any, scene.source).current_frame = lambda _clock: None
+        self._process(scene, events, now=scenes.AUDIO_HOLD_MAX_S * 0.5)
+        self.assertEqual(events, [])
+        self.assertTrue(scene._audio_held)
+
+    def test_a_source_with_no_first_frame_gets_its_sound_after_the_cap(self):
+        scene, _, events = self._held_scene()
+        cast(Any, scene.source).current_frame = lambda _clock: None
+        self._process(scene, events, now=scenes.AUDIO_HOLD_MAX_S + 0.1)
+        self.assertEqual(events, ["release"])
+
+    def test_touching_the_transport_releases_the_sound(self):
+        scene, _, events = self._held_scene()
+        scene.transport.touch()
+        self.assertEqual(events, ["release"])
+
+    def test_a_pump_that_cannot_arm_leaves_the_scene_on_the_wall_clock(self):
+        scene, audio, events = self._held_scene()
+
+        def fail() -> None:
+            raise PumpInstallError("no")
+
+        audio.release_hold = fail  # type: ignore[attr-defined]
+        self._process(scene, events)
+        self.assertIsNone(scene.audio)
+        self.assertIs(scene._audio_set_aside, audio)
 
 
 if __name__ == "__main__":
