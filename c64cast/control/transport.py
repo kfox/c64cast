@@ -499,6 +499,9 @@ _RAMP_DOUBLE_S = 0.75
 _JOG_SECONDS_PER_TICK = 1.0
 
 _HOLD_ACTIONS = ("rw", "ff")
+# A scrub that has gone this long without a step is over, and its position is
+# sought exactly.
+_SCRUB_SETTLE_S = 0.15
 
 # Record/Stop are single-button hold-tracked modifiers for the loop_slot pad
 # chords (Stop-held+pad = save, Record-held+pad = clear) — distinct from
@@ -579,14 +582,44 @@ class TransportSession:
         # button was pressed, or None when released/expired.
         self._record_held_since: float | None = None
         self._stop_held_since: float | None = None
+        # The scene a scrub (a held rw/ff, a jog) last moved with approximate
+        # seeks, and when: it is settled onto the exact position once the
+        # scrub has been still for _SCRUB_SETTLE_S.
+        self._scrubbed: tuple[Any, float] | None = None
 
     def enqueue(self, event: TransportEvent) -> None:
         self._queue.put(event)
 
+    def _scrub(self, scene: Any, target: float, now: float) -> None:
+        """One step of a scrub: an approximate seek where the scene has one,
+        which lands a picture inside a tick on a long GOP where an exact one
+        would not (see ``VideoTransportControls.seek``)."""
+        scrub = getattr(scene, "transport_scrub", None)
+        if scrub is None:
+            scene.transport_seek(target)
+            return
+        scrub(target)
+        self._scrubbed = (scene, now)
+
+    def _settle_scrub(self, pl: Playlist, now: float) -> None:
+        if self._scrubbed is None or self._held:
+            return
+        scene, at = self._scrubbed
+        if pl.transitioning or pl.current is not scene:
+            self._scrubbed = None
+            return
+        if now - at < _SCRUB_SETTLE_S:
+            return
+        self._scrubbed = None
+        settle = getattr(scene, "transport_settle", None)
+        if settle is not None:
+            settle()
+
     def tick(self, pl: Playlist, now: float) -> None:
         """Drain queued events, dispatch each against ``pl.current``, then
-        advance any held rw/ff ramp. Called once per frame from
-        ``Playlist.run_one_frame``, right before ``scene.process_frame``."""
+        advance any held rw/ff ramp and settle a scrub that has gone still.
+        Called once per frame from ``Playlist.run_one_frame``, right before
+        ``scene.process_frame``."""
         dt = now - self._last_tick if self._last_tick is not None else 0.0
         self._last_tick = now
         while True:
@@ -595,7 +628,10 @@ class TransportSession:
             except queue.Empty:
                 break
             self._dispatch(pl, event, now)
-        if pl.transitioning or pl.current is None or dt <= 0.0:
+        if pl.transitioning or pl.current is None:
+            self._scrubbed = None
+            return
+        if dt <= 0.0:
             return
         scene = pl.current
         seek = getattr(scene, "transport_seek", None)
@@ -606,7 +642,8 @@ class TransportSession:
             elapsed = now - start
             speed = min(_MAX_HOLD_SPEED, 2.0 ** (elapsed / _RAMP_DOUBLE_S))
             delta = speed * dt * (-1.0 if action == "rw" else 1.0)
-            seek(position() + delta)
+            self._scrub(scene, position() + delta, now)
+        self._settle_scrub(pl, now)
 
     def _dispatch(self, pl: Playlist, event: TransportEvent, now: float) -> None:
         if event.action in _HOLD_ACTIONS:
@@ -672,7 +709,7 @@ class TransportSession:
                         save = (not clear) and self._chord_active(self._stop_held_since, now)
                     loop_slot(event.slot, save=save, clear=clear)
         elif event.action == "jog":
-            self._apply_jog(scene, event)
+            self._apply_jog(scene, event, now)
         elif event.action == "seek":
             seek = getattr(scene, "transport_seek", None)
             if event.pressed and event.target is not None and seek is not None:
@@ -682,8 +719,7 @@ class TransportSession:
     def _chord_active(held_since: float | None, now: float) -> bool:
         return held_since is not None and (now - held_since) < _CHORD_HOLD_WINDOW_S
 
-    @staticmethod
-    def _apply_jog(scene: Any, event: TransportEvent) -> None:
+    def _apply_jog(self, scene: Any, event: TransportEvent, now: float) -> None:
         seek = getattr(scene, "transport_seek", None)
         position = getattr(scene, "transport_position", None)
         duration = getattr(scene, "transport_duration", None)
@@ -697,7 +733,7 @@ class TransportSession:
             if ticks == 0:
                 return
             target = position() + ticks * _JOG_SECONDS_PER_TICK
-        seek(target)
+        self._scrub(scene, target, now)
 
 
 # One JSON file per video under `paths.loop_presets_dir()`, keyed by a

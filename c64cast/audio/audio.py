@@ -3153,6 +3153,19 @@ class AudioStreamer:
         consumed, heard = self._host_clock_bytes()
         return max(0.0, consumed - heard) / rate
 
+    def splice_position_seconds(self) -> float:
+        """Where a sample fed now is heard: `position_seconds()` plus
+        `ring_lead_seconds()`, from one read of the clock. Two reads put the
+        sum off by however far the clock moved between them. In the REU pump
+        mode there is no ring lead, and it is the position."""
+        rate = self.effective_rate
+        if not rate:
+            return 0.0
+        if self._reu_pump_armed:
+            return self.position_seconds()
+        consumed, heard = self._host_clock_bytes()
+        return max(consumed, heard) / rate
+
     def _host_clock_bytes(self) -> tuple[int, float]:
         """``(landed content, heard content)`` in bytes on the host-DMA path.
 

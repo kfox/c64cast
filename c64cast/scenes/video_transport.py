@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from c64cast.audio.audio_source import heard_seconds
 from c64cast.control.transport import LoopPresetStore, timecode
@@ -32,6 +32,38 @@ log = logging.getLogger(__name__)
 
 # C64 palette index painted to $D020 while a loop is armed (index 2 = red).
 RECORD_BORDER_COLOR = 2
+
+
+class _Anchor(NamedTuple):
+    """The transport's clock anchor, published as one object so a reader on
+    another thread (the web console's poll) never pairs one anchor's clock
+    with another's reference or rebase flag.
+
+    ``clock`` is the clock value at the anchor. ``ref`` is what the clock
+    advances against: on the resync path the heard audio position at the
+    anchor (None while a splice waits on its flush, which holds the clock at
+    ``clock``); on the mute path the wall time at the anchor. ``rebased`` is
+    True until a seek is requested: the clock is still the PTS timeline the
+    source rebased to 0 at start_s, which a touch alone does not change. A
+    pause or a loop mark between the touch and the first seek reads it, so
+    the offset back to a file position goes with the rebase rather than with
+    the touch."""
+
+    clock: float
+    ref: float | None
+    rebased: bool
+
+
+class _State(NamedTuple):
+    """The flags that say how to read the anchor, and the anchor, as one
+    reader sees them. The flags are read first: every writer stores the anchor
+    before the flag that makes it count, so a reader that took the anchor
+    first could pair an old anchor with the new flag."""
+
+    touched: bool
+    resync: bool
+    paused: bool
+    anchor: _Anchor
 
 
 class VideoTransportControls:
@@ -58,42 +90,33 @@ class VideoTransportControls:
         pause/seek/loop/mute."""
         self.touched = False
         self.paused = False
-        self.wall_anchor_clock_s = 0.0
-        self.wall_anchor_time = 0.0
         self.resync = False
-        # True until a seek is requested: the clock is still the PTS timeline
-        # the source rebased to 0 at start_s, which a touch alone does not
-        # change. A pause or a loop mark between the touch and the first seek
-        # reads it, so the offset back to a file position goes with the
-        # rebase rather than with the touch.
-        self.rebased = True
-        # The resync path's post-touch clock, in the scaled/PTS domain:
-        # clock + (heard_seconds(audio) - pos) for an anchor (clock, pos),
-        # held at clock while paused or while pos is None (a splice waiting on
-        # its flush), re-anchored at touch/pause/resume/seek. One tuple, so
-        # the web console's HTTP worker, which reads position() off the
-        # playlist thread, never pairs one anchor's clock with another's pos.
-        self.audio_anchor: tuple[float, float | None] = (0.0, 0.0)
+        # The post-touch clock, in the scaled/PTS domain. Resync path: clock +
+        # (heard_seconds(audio) - pos) for an anchor (clock, pos), held at
+        # clock while paused or while pos is None (a splice waiting on its
+        # flush). Mute path: clock + (wall - ref) x _clock_rate(), frozen at
+        # clock while paused. Re-anchored at touch/pause/resume/seek, each by
+        # one store, so the web console's HTTP worker, which reads position()
+        # off the playlist thread, sees an anchor whole.
+        self.anchor = _Anchor(0.0, 0.0, True)
         self.loop_a: float | None = None
         self.loop_b: float | None = None
         self.loop_state: Literal["none", "armed", "active"] = "none"
         self.record_border_active = False
+        self.scrubbing = False
 
-    @property
-    def audio_anchor_clock_s(self) -> float:
-        return self.audio_anchor[0]
-
-    @property
-    def audio_anchor_pos(self) -> float | None:
-        return self.audio_anchor[1]
+    def _state(self) -> _State:
+        touched, resync, paused = self.touched, self.resync, self.paused
+        return _State(touched, resync, paused, self.anchor)
 
     def clock_to_content(self, clk: float) -> float:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
-        After the first seek it is the identity except on the resync path over
-        the DAC+bitmap tempo scale: there the clock advances at
-        s×content-seconds, so invert the source's tempo map (offset + c×s once
-        a retune has run) to recover content seconds for the
-        transport surface (seek targets, loop A/B, OSD).
+        Under the DAC+bitmap tempo scale the clock stays in that domain on
+        both paths, resync and mute alike: it advances at s×content-seconds,
+        so invert the source's tempo map (offset + c×s once a retune has run)
+        to recover content seconds for the transport surface (seek targets,
+        loop A/B, OSD). Without a tempo scale it is the identity after the
+        first seek.
 
         Before the touch the clock is the PTS timeline the source rebased to 0
         at start_s and scaled by the tempo, so it is unscaled and offset back
@@ -101,25 +124,42 @@ class VideoTransportControls:
         here, before anything has touched transport. The start_s offset
         stays until the first seek (`rebased`), which re-anchors the clock to
         an absolute file position."""
+        return self._to_content(clk, self.anchor.rebased)
+
+    def content_to_clock(self, s: float) -> float:
+        """Inverse of clock_to_content: content seconds → internal clock domain."""
+        return self._to_clock(s, self.anchor.rebased)
+
+    def _to_content(self, clk: float, rebased: bool) -> float:
         sc = self._scene
         if self._clock_scaled():
             # The source's own map once there is one: a retune of the tempo
             # (VideoScene._follow_drain) moves it off a plain ratio.
             clk = sc.source.clock_to_content(clk) if sc.source else clk / (sc.tempo_scale or 1.0)
-        return clk + (sc.start_s if self.rebased else 0.0)
+        return clk + (sc.start_s if rebased else 0.0)
 
-    def content_to_clock(self, s: float) -> float:
-        """Inverse of clock_to_content: content seconds → internal clock domain."""
+    def _to_clock(self, s: float, rebased: bool) -> float:
         sc = self._scene
-        s -= sc.start_s if self.rebased else 0.0
+        s -= sc.start_s if rebased else 0.0
         if not self._clock_scaled():
             return s
         return sc.source.content_to_clock(s) if sc.source else s * (sc.tempo_scale or 1.0)
 
     def _clock_scaled(self) -> bool:
-        """Whether the clock runs at tempo_scale x content seconds: the
-        audio clock before the touch, and the resync path's after it."""
-        return not self.touched or (self.resync and self._scene.tempo_scale != 1.0)
+        """Whether the clock is in the source's scaled domain, where a frame's
+        stamp is offset + c x tempo_scale: before the touch, and after it on
+        either path whenever a tempo scale is in force. The source keeps
+        stamping its frames that way after the touch, muted or not."""
+        return not self.touched or self._scene.tempo_scale != 1.0
+
+    def _clock_rate(self) -> float:
+        """Clock seconds per wall second on the mute path: content plays at 1x
+        there, and each content second spans the source's tempo scale in
+        clock seconds."""
+        if not self._clock_scaled():
+            return 1.0
+        source = self._scene.source
+        return (source.tempo_scale if source is not None else self._scene.tempo_scale) or 1.0
 
     def clock_s(self) -> float:
         """The playback clock: the free-running audio position — or the wall
@@ -130,15 +170,22 @@ class VideoTransportControls:
         inherits its drift behavior on every backend — on DAC+bitmap the drain
         runs ≈0.88× wall, where a wall clock would desync ≈7 s/min. The mute
         path anchors to the wall clock instead, audio being muted there and its
-        position meaningless.
+        position meaningless: content plays at 1x, so under a tempo scale the
+        clock advances `_clock_rate` clock seconds per wall second.
         """
+        return self._clock(self._state())
+
+    def _clock(self, state: _State) -> float:
+        """clock_s() from one read of the flags and the anchor."""
         sc = self._scene
-        if self.touched:
-            if self.resync:
-                return self._resync_clock_s(self.audio_anchor)
-            if self.paused:
-                return self.wall_anchor_clock_s
-            return self.wall_anchor_clock_s + (time.time() - self.wall_anchor_time)
+        anchor = state.anchor
+        if state.touched:
+            if state.resync:
+                return self._resync_clock_s(state)
+            if state.paused:
+                return anchor.clock
+            assert anchor.ref is not None
+            return anchor.clock + (time.time() - anchor.ref) * self._clock_rate()
         if sc.audio and sc.audio.sample_rate:
             # The heard position, not the sink's raw clock: a sampler that
             # re-anchored late audio plays it that far behind its clock, and
@@ -147,14 +194,14 @@ class VideoTransportControls:
             return heard_seconds(sc.audio)
         return time.time() - sc.wall_start_time
 
-    def _resync_clock_s(self, anchor: tuple[float, float | None]) -> float:
-        """clock_s() on the resync path, from one read of the anchor."""
+    def _resync_clock_s(self, state: _State) -> float:
+        """clock_s() on the resync path, from one read of the state."""
         sc = self._scene
         assert sc.audio is not None
-        clock, pos = anchor
-        if self.paused or pos is None:
-            return clock
-        return clock + (heard_seconds(sc.audio) - pos)
+        anchor = state.anchor
+        if state.paused or anchor.ref is None:
+            return anchor.clock
+        return anchor.clock + (heard_seconds(sc.audio) - anchor.ref)
 
     def touch(self) -> None:
         """First call latches transport control for the rest of this scene's run
@@ -173,26 +220,29 @@ class VideoTransportControls:
         # BEFORE the flag flip: clock_s() branches on `touched`, so a read taken
         # after it returns the anchor's own unseeded default.
         clock_s = self.clock_s()
-        self.touched = True
-        self.resync = (
+        resync = (
             self.loop_audio == "on"
             and sc.audio is not None
             and sc.source is not None
             and sc.source.a_stream is not None
             and not getattr(sc.audio, "use_reu_pump", False)
         )
-        if self.resync:
+        if resync:
             assert sc.audio is not None
             # The pre-touch clock is the audio position in the scaled domain, so
             # the anchor delta starts at zero and playback carries on unbroken.
-            self.audio_anchor = (clock_s, heard_seconds(sc.audio))
+            ref = heard_seconds(sc.audio)
         else:
-            self.wall_anchor_clock_s = clock_s
-            self.wall_anchor_time = time.time()
-            if sc.source is not None:
-                sc.source.set_muted(True)
+            ref = time.time()
+        # `touched` last: a poll off the playlist thread reads the anchor and
+        # `resync` only once it sees it set.
+        self.anchor = self.anchor._replace(clock=clock_s, ref=ref)
+        self.resync = resync
+        self.touched = True
+        if not resync and sc.source is not None:
+            sc.source.set_muted(True)
 
-    def _splice(self, target_s: float, *, unmute: bool = False) -> None:
+    def _splice(self, target_s: float, *, unmute: bool = False, exact: bool = True) -> None:
         """Resync-path splice primitive (target_s in content seconds): re-anchor
         the audio clock to the target, arm the demuxer's stale-audio guard, and
         retire everything pushed before it. Order is load-bearing:
@@ -211,6 +261,9 @@ class VideoTransportControls:
         anchor, and the sound plays ahead of the picture."""
         sc = self._scene
         assert sc.audio is not None and sc.source is not None
+        # Every splice is the newest seek, so an exact one (a resume) leaves
+        # nothing for `settle` to make exact.
+        self.scrubbing = not exact
         # The anchor's pos is what the cut returns: where the target's
         # first sample is heard, one ring lead from now, read once on the
         # clock as it runs after the flush, which clears a sampler's
@@ -218,18 +271,19 @@ class VideoTransportControls:
         # estimate read before the flush paired a clamped position with the
         # unclamped clock the flush leaves, and the web console's poll read
         # the target plus the clamp's overrun.
-        self.rebased = False
-        clock = self.content_to_clock(target_s)
-        self.audio_anchor = (clock, None)
+        clock = self._to_clock(target_s, False)
+        self.anchor = _Anchor(clock, None, False)
         try:
-            cut = sc.source.request_seek(target_s, unmute=unmute, on_request=sc.audio.cut)
+            cut = sc.source.request_seek(
+                target_s, unmute=unmute, on_request=sc.audio.cut, exact=exact
+            )
             pos = sc.audio.flush(cut=cut)
         except BaseException:
             # Held at the target for good otherwise: run on from where the
             # sink's clock says the ring's last sample is heard.
-            self.audio_anchor = (clock, sc.audio.position_seconds() + sc.audio.ring_lead_seconds())
+            self.anchor = _Anchor(clock, sc.audio.splice_position_seconds(), False)
             raise
-        self.audio_anchor = (clock, pos)
+        self.anchor = _Anchor(clock, pos, False)
 
     def pause(self) -> None:
         sc = self._scene
@@ -244,12 +298,15 @@ class VideoTransportControls:
             assert sc.audio is not None and sc.source is not None
             # Held by the None pos as well as the flag, so a poll between the
             # two stores reads the frozen clock.
-            self.audio_anchor = (self.target_clock_s(), None)
+            self.anchor = self.anchor._replace(clock=self.target_clock_s(), ref=None)
             self.paused = True
             sc.source.set_muted(True)
             sc.audio.flush(silence_output=True)
         else:
-            self.wall_anchor_clock_s = self.clock_s()
+            # The new reference goes in with the frozen clock: a poll between
+            # the stores and the flag would otherwise add the time elapsed
+            # since the old reference a second time.
+            self.anchor = self.anchor._replace(clock=self.clock_s(), ref=time.time())
             self.paused = True
         sc.osd.post("PAUSED")
 
@@ -261,14 +318,17 @@ class VideoTransportControls:
             # Splice back to the paused position, unmuting the source as the
             # seek is requested (see _splice). The
             # sampler's wall position kept advancing through the pause, and the
-            # fresh audio_anchor_pos absorbs it (the DAC's position froze on
+            # fresh anchor ref absorbs it (the DAC's position froze on
             # its own).
             assert sc.source is not None
-            self._splice(self.clock_to_content(self.audio_anchor_clock_s), unmute=True)
+            self._splice(self.clock_to_content(self.anchor.clock), unmute=True)
             self.paused = False
         else:
+            # Re-anchored while still paused, which holds the clock at the
+            # anchor: a poll after the flag would otherwise run it from the
+            # reference the pause left, over the whole pause.
+            self.anchor = self.anchor._replace(ref=time.time())
             self.paused = False
-            self.wall_anchor_time = time.time()
         sc.osd.post("PLAY")
 
     def toggle_pause(self) -> None:
@@ -279,22 +339,33 @@ class VideoTransportControls:
         else:
             self.pause()
 
-    def seek(self, target_s: float) -> None:
+    def seek(self, target_s: float, *, exact: bool = True) -> None:
+        """Seek to ``target_s`` content seconds. ``exact=False`` is for the
+        steps of a held FF/RW or a jog, which the next step replaces within a
+        tick: each lands on the keyframe at or before its target, whose decode
+        costs one picture, where an exact one decodes the whole GOP between
+        and is interrupted by the next step before a picture lands. `settle`
+        makes the last step exact."""
         sc = self._scene
         self.touch()
         # Both target_s and duration() are content seconds, unscaled.
         duration = self.duration()
         hi = duration if duration is not None else max(target_s, 0.0)
         target_s = max(0.0, min(target_s, hi))
+        self.scrubbing = not exact
         if self.resync:
-            self._splice(target_s)
+            self._splice(target_s, exact=exact)
         else:
-            self.rebased = False
-            self.wall_anchor_clock_s = target_s
-            self.wall_anchor_time = time.time()
+            self.anchor = _Anchor(self._to_clock(target_s, False), time.time(), False)
             if sc.source is not None:
-                sc.source.request_seek(target_s)
+                sc.source.request_seek(target_s, exact=exact)
         sc.osd.post(f"SEEK {timecode(target_s)}")
+
+    def settle(self) -> None:
+        """Seek exactly to where the approximate seeks of a scrub left the
+        position; a no-op unless the last seek was one."""
+        if self.scrubbing:
+            self.seek(self.position())
 
     def loop_toggle(self) -> None:
         """3-state cycle: mark A -> mark B + start looping -> clear.
@@ -426,7 +497,8 @@ class VideoTransportControls:
         target is heard; this reports the target through that hold, because a
         held FF/RW and a relative jog seek to ``position() + delta`` and would
         otherwise lose the hold's length on every step."""
-        return self.clock_to_content(self.target_clock_s())
+        state = self._state()
+        return self._to_content(self._target_clock(state), state.anchor.rebased)
 
     def target_clock_s(self, clock_s: float | None = None) -> float:
         """clock_s(), except through a resync splice's hold, where it is the
@@ -437,11 +509,13 @@ class VideoTransportControls:
 
         A caller that already read ``clock_s`` passes it, and outside a hold
         gets that same value back; a second read of a running clock differs."""
-        if not (self.touched and self.resync):
-            return self.clock_s() if clock_s is None else clock_s
-        anchor = self.audio_anchor
-        clk = self._resync_clock_s(anchor) if clock_s is None else clock_s
-        return max(clk, anchor[0])
+        return self._target_clock(self._state(), clock_s)
+
+    def _target_clock(self, state: _State, clock_s: float | None = None) -> float:
+        if not (state.touched and state.resync):
+            return self._clock(state) if clock_s is None else clock_s
+        clk = self._resync_clock_s(state) if clock_s is None else clock_s
+        return max(clk, state.anchor.clock)
 
     def duration(self) -> float | None:
         source = self._scene.source
