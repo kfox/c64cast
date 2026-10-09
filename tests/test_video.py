@@ -29,6 +29,7 @@ from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
+from c64cast.scenes.video_transport import VideoTransportControls, _Anchor
 from c64cast.video import video as video_mod
 from c64cast.video.video import (
     AUDIO_DISCONTINUITY_S,
@@ -1024,7 +1025,7 @@ class VideoSceneClockTest(unittest.TestCase):
         with _freeze_time(10.0):
             scene.transport.touch()
         self.assertTrue(scene.transport.touched)
-        self.assertAlmostEqual(scene.transport.wall_anchor_clock_s, 6.0)
+        self.assertAlmostEqual(scene.transport.anchor.clock, 6.0)
         self.assertEqual(scene.source.muted_calls, [True])  # type: ignore[union-attr]
 
     def test_touch_transport_is_idempotent(self):
@@ -1049,7 +1050,7 @@ class VideoSceneClockTest(unittest.TestCase):
         with _freeze_time(15.0):
             scene.transport_pause()
             self.assertTrue(scene.transport.paused)
-        frozen = scene.transport.wall_anchor_clock_s
+        frozen = scene.transport.anchor.clock
         with _freeze_time(100.0):
             self.assertAlmostEqual(scene.transport.clock_s(), frozen)
 
@@ -1059,7 +1060,7 @@ class VideoSceneClockTest(unittest.TestCase):
             scene.transport.touch()
         with _freeze_time(15.0):
             scene.transport_pause()
-        frozen = scene.transport.wall_anchor_clock_s
+        frozen = scene.transport.anchor.clock
         with _freeze_time(20.0):
             scene.transport_resume()
         self.assertFalse(scene.transport.paused)
@@ -1076,7 +1077,7 @@ class VideoSceneClockTest(unittest.TestCase):
         scene = self._scene()
         with _freeze_time(10.0):
             scene.transport_seek(42.0)
-        self.assertEqual(scene.transport.wall_anchor_clock_s, 42.0)
+        self.assertEqual(scene.transport.anchor.clock, 42.0)
         self.assertEqual(scene.source.seeks, [42.0])  # type: ignore[union-attr]
         self.assertTrue(scene.transport.touched)
 
@@ -1084,13 +1085,13 @@ class VideoSceneClockTest(unittest.TestCase):
         scene = self._scene()  # duration=100.0
         with _freeze_time(10.0):
             scene.transport_seek(500.0)
-        self.assertEqual(scene.transport.wall_anchor_clock_s, 100.0)
+        self.assertEqual(scene.transport.anchor.clock, 100.0)
 
     def test_seek_clamps_negative_to_zero(self):
         scene = self._scene()
         with _freeze_time(10.0):
             scene.transport_seek(-20.0)
-        self.assertEqual(scene.transport.wall_anchor_clock_s, 0.0)
+        self.assertEqual(scene.transport.anchor.clock, 0.0)
 
     def test_toggle_pause_first_call_touches_and_pauses(self):
         scene = self._scene()
@@ -1121,6 +1122,9 @@ class _FakeSceneAudio:
 
     def ring_lead_seconds(self) -> float:
         return self.ring_lead
+
+    def splice_position_seconds(self) -> float:
+        return self._position + self.ring_lead
 
     def cut(self) -> FlushCut:
         if self._events is not None:
@@ -1251,7 +1255,7 @@ class SpliceKeepsPostSeekAudioTest(unittest.TestCase):
         self.assertEqual(dac._pushed_count, target_audio.size)
         epochs = [epoch for epoch, _ in list(dac.q.queue)]
         self.assertEqual(epochs, [dac._flush_epoch], "the target's audio was tagged stale")
-        self.assertEqual(scene.transport.audio_anchor_pos, 0.0)
+        self.assertEqual(scene.transport.anchor.ref, 0.0)
 
     def test_the_sampler_keeps_the_target_audio_pushed_before_its_flush(self):
         smp = UltimateAudioSampler(cast(Any, FakeAPI()), sample_rate=8000)
@@ -1989,7 +1993,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport.touch()
         self.assertTrue(scene.transport.resync)
         self.assertEqual(source.muted_calls, [])  # NOT muted
-        self.assertEqual(scene.transport.audio_anchor_pos, 7.0)
+        self.assertEqual(scene.transport.anchor.ref, 7.0)
 
     def test_touch_with_mute_setting_is_verbatim_phase2(self):
         scene, source, _ = self._resync_scene(position=7.0)
@@ -2023,7 +2027,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport_seek(42.0)
         self.assertEqual(source.seeks, [42.0])  # request_seek fired
         self.assertEqual(audio.flush_calls, [False])  # plain flush (not silence)
-        self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, 42.0)  # tempo 1.0
+        self.assertAlmostEqual(scene.transport.anchor.clock, 42.0)  # tempo 1.0
 
     def test_seek_waits_out_the_ring_lead(self):
         # The flush keeps the ring's unplayed lead, so the target is heard that
@@ -2059,7 +2063,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertAlmostEqual(scene.transport_position(), 50.0 + 7.0 / 0.88)
         scene.transport_resume()
         self.assertAlmostEqual(source.seeks[-1], 50.0 + 7.0 / 0.88)
-        self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, (50.0 + 7.0 / 0.88) * 0.88)
+        self.assertAlmostEqual(scene.transport.anchor.clock, (50.0 + 7.0 / 0.88) * 0.88)
 
     def test_pause_inside_the_ring_lead_freezes_at_the_seek_target(self):
         scene, source, audio = self._resync_scene(position=3.0)
@@ -2261,13 +2265,13 @@ class VideoSceneSpliceTest(unittest.TestCase):
         # content seconds. s=0.88.
         scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
         scene.transport_seek(100.0)
-        self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, 88.0)  # 100 × 0.88
+        self.assertAlmostEqual(scene.transport.anchor.clock, 88.0)  # 100 × 0.88
         self.assertAlmostEqual(scene.transport_position(), 100.0)  # back to content
         # Loop B stored in content seconds (10) wraps when clock ≥ 8.8.
         scene.transport.loop_a = 0.0
         scene.transport.loop_b = 10.0
         scene.transport.loop_state = "active"
-        scene.transport.audio_anchor = (0.0, 0.0)
+        scene.transport.anchor = _Anchor(0.0, 0.0, False)
         source.seeks.clear()
         source.seek_pending = False  # transport_seek(100) set it; clear for wrap
         source.finished = False
@@ -2280,7 +2284,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         # (an inverted conversion would double the tempo error into the label).
         scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
         scene.transport.touch()
-        scene.transport.audio_anchor = (88.0, 0.0)  # content 100 at s=0.88
+        scene.transport.anchor = _Anchor(88.0, 0.0, True)  # content 100 at s=0.88
         audio._position = 0.0  # clock = 88.0
         scene.show_frame_numbers = True
         source.video_fps = 30.0
@@ -2308,8 +2312,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport.loop_a = 0.0
         scene.transport.loop_b = 10.0
         scene.transport.loop_state = "active"
-        scene.transport.wall_anchor_clock_s = 9.0
-        scene.transport.wall_anchor_time = 10.0
+        scene.transport.anchor = _Anchor(9.0, 10.0, True)
         scene.source.finished = False  # type: ignore[union-attr]
         scene.source._frame = None  # type: ignore[union-attr]  # pre-roll → no render path
         with _freeze_time(10.0):
@@ -2769,13 +2772,12 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         scene.transport.loop_state = "active"
         scene.transport.loop_a = 5.0
         scene.transport.loop_b = 10.0
-        scene.transport.wall_anchor_clock_s = 10.0
-        scene.transport.wall_anchor_time = 0.0
+        scene.transport.anchor = _Anchor(10.0, 0.0, True)
         with _freeze_time(0.0):
             still_active = scene.process_frame(current_time=0.0)
         self.assertTrue(still_active)
         self.assertEqual(source.seeks, [5.0])
-        self.assertEqual(scene.transport.wall_anchor_clock_s, 5.0)
+        self.assertEqual(scene.transport.anchor.clock, 5.0)
 
     def test_wraps_to_a_when_source_hits_eof_before_b(self):
         source = _StubSource(duration=100.0)
@@ -2785,8 +2787,7 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         scene.transport.loop_state = "active"
         scene.transport.loop_a = 5.0
         scene.transport.loop_b = 50.0  # clock hasn't reached B yet
-        scene.transport.wall_anchor_clock_s = 20.0
-        scene.transport.wall_anchor_time = 0.0
+        scene.transport.anchor = _Anchor(20.0, 0.0, True)
         with _freeze_time(0.0):
             still_active = scene.process_frame(current_time=0.0)
         self.assertTrue(still_active)
@@ -2803,8 +2804,7 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         scene.transport.loop_state = "active"
         scene.transport.loop_a = 5.0
         scene.transport.loop_b = 50.0
-        scene.transport.wall_anchor_clock_s = 20.0
-        scene.transport.wall_anchor_time = 0.0
+        scene.transport.anchor = _Anchor(20.0, 0.0, True)
         with _freeze_time(0.0):
             still_active = scene.process_frame(current_time=0.0)
         self.assertFalse(still_active)
@@ -2886,9 +2886,8 @@ class VideoSceneFrameNumberLabelTest(unittest.TestCase):
         scene = _make_video_scene_stub(source, start_s=50.0)
         scene.show_frame_numbers = True
         scene.transport.touched = True
-        scene.transport.rebased = False  # a seek re-anchored the clock
-        scene.transport.wall_anchor_clock_s = 80.0  # already an absolute file position
-        scene.transport.wall_anchor_time = 0.0
+        # A seek re-anchored the clock to an absolute file position.
+        scene.transport.anchor = _Anchor(80.0, 0.0, False)
         label = self._run(scene)
         self.assertIn(timecode(80.0), label)
         self.assertNotIn(timecode(130.0), label)  # the double-counted (wrong) value
@@ -3592,6 +3591,45 @@ class SpliceAnchorTest(unittest.TestCase):
         scene.transport_seek(0.5)
         self.assertAlmostEqual(scene.transport.clock_s(), 0.5 - smp.ring_lead_seconds(), delta=0.05)
 
+    def _positions_through(self, scene: VideoScene, act: Callable[[], None]) -> list[float]:
+        """The position a poll off another thread would read after each store
+        the transport makes while ``act`` runs."""
+        polls: list[float] = []
+
+        class Traced(VideoTransportControls):
+            def __setattr__(self, name: str, value: object) -> None:
+                super().__setattr__(name, value)
+                if "anchor" in name or name == "rebased":
+                    polls.append(self.position())
+
+        scene.transport.__class__ = Traced
+        act()
+        return polls
+
+    def test_a_console_poll_between_the_stores_of_a_splice_never_reads_a_mixed_anchor(self):
+        # The rebase flag lived apart from the anchor, so a poll between the
+        # two stores read the old clock without the start_s it still carried:
+        # one wrong position on the scrub bar.
+        audio = _FakeSceneAudio(position=0.0)
+        scene = self._touched(audio)
+        scene.start_s = 50.0
+        before = scene.transport.position()
+        polls = self._positions_through(scene, lambda: scene.transport_seek(5.0))
+        self.assertTrue(polls)
+        for polled in polls:
+            self.assertIn(polled, (before, 5.0))
+
+    def test_a_console_poll_between_the_stores_of_a_mute_seek_never_reads_a_mixed_anchor(self):
+        scene = _make_video_scene_stub(_StubSource(duration=100.0), start_s=50.0)
+        scene.transport.loop_audio = "mute"
+        with _freeze_time(10.0):
+            scene.transport.touch()
+            before = scene.transport.position()
+            polls = self._positions_through(scene, lambda: scene.transport_seek(5.0))
+        self.assertTrue(polls)
+        for polled in polls:
+            self.assertIn(polled, (before, 5.0))
+
     def test_a_console_poll_during_the_flush_reads_the_target(self):
         # The web console reads position() off the playlist thread; read
         # against the previous anchor, a poll during the flush showed the
@@ -3649,6 +3687,34 @@ class SpliceAnchorTest(unittest.TestCase):
         audio._position = 41.0
         self.assertAlmostEqual(scene.transport.clock_s(), 6.0 - audio.ring_lead)
 
+    def test_a_failed_splice_anchors_on_one_read_of_the_sinks_clock(self):
+        # Position and ring lead read one after the other, with the clock
+        # moving between them, are off by that much from where the ring's
+        # last sample is heard.
+        class MovingAudio(_FakeSceneAudio):
+            landed = 50.0
+
+            def position_seconds(self) -> float:
+                self._position += 0.01
+                return self._position
+
+            def ring_lead_seconds(self) -> float:
+                self._position += 0.01
+                return self.landed - self._position
+
+            def splice_position_seconds(self) -> float:
+                self._position += 0.01
+                return self.landed
+
+        audio = MovingAudio(position=40.0)
+        scene = self._touched(audio)
+        with (
+            mock.patch.object(audio, "flush", side_effect=RuntimeError("link down")),
+            self.assertRaises(RuntimeError),
+        ):
+            scene.transport_seek(5.0)
+        self.assertEqual(scene.transport.anchor.ref, MovingAudio.landed)
+
     def test_a_cut_that_raises_leaves_the_clock_running(self):
         # The cut runs inside the seek request (a link read on the sampler):
         # raising there must take the same fallback as a raising flush.
@@ -3694,7 +3760,7 @@ class SpliceAnchorTest(unittest.TestCase):
         scene = self._touched(dac)
         dac._pushed_count, dac._queued_samples, dac._in_flight_samples = 1800, 800, 400
         scene.transport_seek(2.0)
-        pos = scene.transport.audio_anchor_pos
+        pos = scene.transport.anchor.ref
         assert pos is not None
         self.assertEqual(round(pos * dac.effective_rate, 6), 1400)
 

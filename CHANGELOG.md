@@ -307,6 +307,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The web console's scrub bar no longer jumps to a wrong position for one
+  poll around a seek or a resume.** The position was read from two pieces of
+  state the seek updates one after the other. A seek or pause that failed
+  half way through the audio cut also anchors on one reading of the sound
+  card's clock now, instead of two taken a moment apart.
+
 - **With `loop_audio = "mute"` on bitmap video with `$D418` DAC audio, a
   seek now lands on the frame you asked for and the picture plays at normal
   speed afterward.** The transport clock ran in content seconds while the
