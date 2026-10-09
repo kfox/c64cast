@@ -372,6 +372,7 @@ class AudioStreamer:
         self._start_hold = threading.Event()
         self._start_hold.set()
         self._pending_arm: Callable[[], None] | None = None
+        self._release_lock = threading.Lock()
         # A failed install's $0314 restore that never confirmed: stop() owes
         # it even though no pump armed (_unwind_pump_install).
         self._irq_vector_restore_owed = False
@@ -2955,17 +2956,21 @@ class AudioStreamer:
         ``start_for_reu_staged(hold=True)`` held back; a no-op when nothing is
         held. Raises PumpInstallError when the REU pump's arm never confirms,
         with the NMI bring-up undone and this streamer no longer running: the
-        caller plays on without audio."""
+        caller plays on without audio. A second call waits for the first and
+        arms nothing; ``position_seconds`` reads 0 until the arm has returned."""
         self._start_hold.set()
-        arm, self._pending_arm = self._pending_arm, None
-        if arm is None:
-            return
-        try:
-            arm()
-        except PumpInstallError:
-            self.running = False
-            self._reu_pump_armed = False
-            raise
+        with self._release_lock:
+            arm = self._pending_arm
+            if arm is None:
+                return
+            try:
+                arm()
+            except PumpInstallError:
+                self.running = False
+                self._reu_pump_armed = False
+                raise
+            finally:
+                self._pending_arm = None
 
     def _disarm_reu_pump(self) -> None:
         """Restore IRQ vector to kernal default and CIA #1 Timer A to ~60 Hz.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 import unittest
 from typing import cast
 from unittest import mock
@@ -241,6 +242,42 @@ class StartForReuStagedTest(unittest.TestCase):
         nmi_start.assert_called_once()
         self.assertIsNone(s._pending_arm)
         self.assertGreater(s._reu_pump_start_time, 0.0)
+
+    def test_the_clock_reads_zero_until_the_arm_returns(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        seen: list[float] = []
+
+        def read_clock(**kw: object) -> None:
+            time.sleep(0.01)
+            seen.append(s.position_seconds())
+
+        with mock.patch.object(s.nmi, "start", side_effect=read_clock):
+            s.release_hold()
+        self.assertEqual(seen, [0.0])
+
+    def test_a_second_release_does_not_arm_again(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        with mock.patch.object(s.nmi, "start") as nmi_start:
+            s.release_hold()
+            s.release_hold()
+        nmi_start.assert_called_once()
+
+    def test_a_release_whose_arm_fails_leaves_nothing_running_and_raises(self):
+        s = _new_streamer()
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, hold=True)
+        self.addCleanup(s.stop)
+        with (
+            mock.patch.object(s, "_arm_installed_pump", side_effect=PumpInstallError("no")),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.release_hold()
+        self.assertFalse(s.running)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertIsNone(s._pending_arm)
 
     def test_stop_while_held_drops_the_arm(self):
         s = _new_streamer()
