@@ -471,6 +471,14 @@ class ScrubSettleTests(unittest.TestCase):
         _tick(session, pl, 1.0)
         self.assertEqual(scene.settles, 0)
 
+    def test_a_held_ff_does_not_scrub_while_the_card_is_on_screen(self):
+        scene, pl, session = self._held_ff()
+        scrubs = len(scene.scrubs)
+        pl.on_card = True
+        _tick(session, pl, 0.3)
+        _tick(session, pl, 1.0)
+        self.assertEqual((len(scene.scrubs), scene.settles), (scrubs, 0))
+
     def test_a_scene_without_the_approximate_seek_is_scrubbed_with_its_seek(self):
         scene = _StubScene(position=10.0)
         pl = _FakePlaylist(scene)
