@@ -583,11 +583,7 @@ class Playlist:
             self._advance_single_scene()
             return
         if self.current is None:
-            resolved = self.ensemble_coord.resolve_next_index()
-            if resolved is None:
-                return  # stop_event fired during the gate wait
-            self.index = resolved
-            self._enter_interstitial()
+            self._resolve_and_announce()
         elif self.transitioning and self.current.is_done:
             self.fades.fade_out(self.current)
             self.safe_teardown(self.current)
@@ -595,12 +591,14 @@ class Playlist:
             if self.ensemble_coord.claim_lapsed(upcoming):
                 # The card's setup gave the slot up for a link outage and left
                 # it to be resolved again, which may skip a scene another
-                # system now holds the slot for.
+                # system now holds the slot for. Resolved here, not on the next
+                # call: the run loop ends the run when `_advance` leaves no
+                # current scene.
                 self.log.info(
                     "the slot for %r was released during its card; resolving again", upcoming.name
                 )
-                self.current = None
                 self.transitioning = False
+                self._resolve_and_announce()
                 return
             self.current = upcoming
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
@@ -667,12 +665,7 @@ class Playlist:
                 self.safe_setup(self.current)
                 self.transitioning = False
                 return
-            resolved = self.ensemble_coord.resolve_next_index()
-            if resolved is None:
-                self.current = None
-                return
-            self.index = resolved
-            self._enter_interstitial()
+            self._resolve_and_announce()
             return
         next_index = self.index + 1
         if next_index >= len(self.scenes):
@@ -683,6 +676,12 @@ class Playlist:
                 return
             next_index = 0
         self.index = next_index
+        self._resolve_and_announce()
+
+    def _resolve_and_announce(self) -> None:
+        """Resolve the scene to play from `self.index` and show its "UP
+        NEXT" card. `current` is left None only when `stop_event` fired
+        during the gate wait."""
         resolved = self.ensemble_coord.resolve_next_index()
         if resolved is None:
             self.current = None
