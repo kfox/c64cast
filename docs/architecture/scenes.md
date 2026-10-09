@@ -64,9 +64,9 @@ DJ-style seek, pause, and loop, driven by `transport.TransportSession` via `[mid
 2. Seeds `_wall_anchor_clock_s` / `_wall_anchor_time` from that reading.
 3. Calls `source.set_muted(True)` — idempotent, a no-op on later calls.
 
-From then on `_clock_s()` free-runs from the anchor as `_wall_anchor_clock_s + (time.time() - _wall_anchor_time)`, frozen at the anchor while `_paused`.
+From then on `_clock_s()` free-runs from the anchor as `_wall_anchor_clock_s + (time.time() - _wall_anchor_time) × rate`, frozen at the anchor while `_paused`; the rate is 1 without a tempo scale and the source's scale with one (see the `tempo_scale` domain seam below).
 
-**`transport_seek(target_s)`** clamps to `[0, duration_s or target_s]`, re-anchors the clock directly to `target_s`, and calls `source.request_seek(target_s)`. There is no separate offset bookkeeping: the wall clock **is** the file position once touched.
+**`transport_seek(target_s)`** clamps to `[0, duration_s or target_s]`, re-anchors the clock to `content_to_clock(target_s)` (`target_s` itself without a tempo scale), and calls `source.request_seek(target_s)`. There is no separate offset bookkeeping: the clock **is** the file position, in the source's stamp domain, once touched.
 
 **`transport_loop_toggle()`** is a minimal 3-state cycle — mark A, mark B and start looping, clear — read by `process_frame`. Two things change there:
 
@@ -121,7 +121,7 @@ It is used by `transport_seek`, the loop wrap, and resume-from-pause.
 
 They are the identity when `tempo_scale == 1.0`, i.e. sampler, DAC+char, and muted: those scenes build no atempo graph and never follow, so the source's map stays `offset 0, s 1.0`. Those common paths therefore carry zero risk; only DAC+bitmap actually scales. The first transport touch freezes the source's map (`freeze_tempo`), so every conversion after it, and a seek target stamped by the demux thread, read one map.
 
-The `"mute"` path uses the wall anchor and identity conversions throughout, which is why it carries the DAC+bitmap tempo quirk documented in [caveats.md](../caveats.md).
+The `"mute"` path is in the same domain (`_clock_scaled`): its wall anchor is a clock value, a seek anchors at `content_to_clock(target)`, and the clock advances `_clock_rate` (the source's frozen tempo scale) clock seconds per wall second, so content plays at 1x and the frames the source stamps `offset + c × s` come due at the content time the transport reports. Anchored in content seconds and advanced at 1x, the clock instead put a seek `c × (1 − s)` short of the frame it asked for, and ran the picture at `1/s` of real time afterward.
 
 ### Record workflow + loop preset pads (MIDI live-tune Phase 3)
 

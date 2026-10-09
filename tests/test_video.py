@@ -944,13 +944,28 @@ class _StubSource:
     scene: VideoScene | None = None
 
     def _scale(self) -> float:
+        if self._tempo_scale_set is not None:
+            return self._tempo_scale_set
         return (self.scene.tempo_scale if self.scene is not None else 1.0) or 1.0
 
+    # A retune leaves the clock stamp of content c at offset + c x scale.
+    offset = 0.0
+
+    _tempo_scale_set: float | None = None
+
+    @property
+    def tempo_scale(self) -> float:
+        return self._scale()
+
+    @tempo_scale.setter
+    def tempo_scale(self, value: float) -> None:
+        self._tempo_scale_set = value
+
     def clock_to_content(self, clock_s: float) -> float:
-        return clock_s / self._scale()
+        return (clock_s - self.offset) / self._scale()
 
     def content_to_clock(self, content_s: float) -> float:
-        return content_s * self._scale()
+        return self.offset + content_s * self._scale()
 
 
 def _freeze_time(t: float) -> ExitStack:
@@ -2281,8 +2296,10 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertTrue(labels, "frame-number label was not rendered")
         self.assertTrue(labels[0].startswith(timecode(100.0)), labels[0])
 
-    def test_mute_path_wrap_compare_unscaled(self):
-        # Guard: on the mute path tempo_scale must NOT scale the loop-B compare.
+    def test_mute_path_wrap_compare_scaled(self):
+        # The mute path's clock is in the scaled domain, like the frames'
+        # stamps: loop B at content 10 is clock 8.8 at s=0.88, so a clock
+        # reading 9.0 has passed it.
         scene = _make_video_scene_stub(_StubSource(duration=100.0))  # audio=None
         scene.transport.loop_audio = "mute"
         scene.tempo_scale = 0.88
@@ -2291,15 +2308,54 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport.loop_a = 0.0
         scene.transport.loop_b = 10.0
         scene.transport.loop_state = "active"
-        scene.transport.wall_anchor_clock_s = 9.0  # unscaled clock 9.0
+        scene.transport.wall_anchor_clock_s = 9.0
         scene.transport.wall_anchor_time = 10.0
         scene.source.finished = False  # type: ignore[union-attr]
         scene.source._frame = None  # type: ignore[union-attr]  # pre-roll → no render path
         with _freeze_time(10.0):
-            # content compare: 9.0 < 10.0 → NO wrap. A wrongly scaled threshold
-            # (8.8) would wrap here.
             scene.process_frame(0.0)
-        self.assertEqual(scene.source.seeks, [])  # type: ignore[union-attr]
+        self.assertEqual(scene.source.seeks, [0.0])  # type: ignore[union-attr]
+
+    def _mute_seek(self, scale: float, offset: float, target: float) -> tuple[VideoScene, float]:
+        scene = _make_video_scene_stub(_StubSource(duration=1000.0))
+        scene.transport.loop_audio = "mute"
+        scene.tempo_scale = scale
+        cast(_StubSource, scene.source).offset = offset
+        with _freeze_time(5.0):
+            scene.transport.touch()
+        with _freeze_time(100.0):
+            scene.transport.seek(target)
+        return scene, 100.0
+
+    def test_a_mute_path_seek_under_a_tempo_scale_shows_its_target_and_plays_at_1x(self):
+        # The source stamps content c at offset + c x scale; a clock in
+        # content seconds raced through about c x (1 - scale) of content.
+        for scale, offset in ((0.88, 0.0), (0.79, 10.8)):
+            with self.subTest(scale=scale, offset=offset):
+                scene, at = self._mute_seek(scale, offset, 200.0)
+                source = cast(_StubSource, scene.source)
+                asked: list[float] = []
+
+                def record(clock_s: float, asked: list[float] = asked) -> None:
+                    asked.append(clock_s)
+
+                source.current_frame = record  # type: ignore[method-assign]
+                for later in (0.0, 10.0):
+                    with _freeze_time(at + later):
+                        scene.process_frame(0.0)
+                    self.assertAlmostEqual(source.clock_to_content(asked[-1]), 200.0 + later)
+                with _freeze_time(at + 10.0):
+                    self.assertAlmostEqual(scene.transport_position(), 210.0)
+
+    def test_a_mute_path_pause_and_resume_keep_the_content_position(self):
+        scene, at = self._mute_seek(0.88, 0.0, 200.0)
+        with _freeze_time(at + 4.0):
+            scene.transport_pause()
+            self.assertAlmostEqual(scene.transport_position(), 204.0)
+        with _freeze_time(at + 50.0):
+            scene.transport_resume()
+        with _freeze_time(at + 53.0):
+            self.assertAlmostEqual(scene.transport_position(), 207.0)
 
 
 class VideoSceneIdentitySkipTest(unittest.TestCase):

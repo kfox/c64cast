@@ -1145,7 +1145,7 @@ anyway) if you want the save/clear pad chords; an MMC mapping still works
 fine for plain Record-arm / Stop-close-pause-quit presses and for the loop
 toggle / play-pause / RW / FF / jog actions that don't need a chord.
 
-## MIDI live-tune transport audio resync: splice latency + the mute-path tempo quirk
+## MIDI live-tune transport audio resync: splice latency
 
 Phase 4 makes a video's audio keep playing across every transport splice
 (`[midi_control].loop_audio = "on"`, the default). A few properties are by
@@ -1175,14 +1175,6 @@ design, not bugs:
   the moment transport is touched, and the clock switches to a self-owned wall
   anchor). Use it if the resync splices ever misbehave on unusual
   hardware/firmware.
-- **Mute-path DAC+bitmap tempo quirk.** On the `"mute"` path over
-  DAC+bitmap `tempo_scale` content, the wall-clock anchor runs at
-  1× while the video PTS timeline is scaled — so after transport is touched the
-  video plays at `1/s`, `s` being the tempo in force at the touch (≈1.14× at
-  0.88, more once the scene has followed a slower drain; audio is muted, so
-  only the picture is affected). It
-  does not occur on the default `"on"` path, whose audio-anchored clock stays
-  in the scaled domain.
 
 ## Video-scene border is always restored to black (`$00`), not a configured value
 

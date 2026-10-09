@@ -89,11 +89,12 @@ class VideoTransportControls:
 
     def clock_to_content(self, clk: float) -> float:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
-        After the first seek it is the identity except on the resync path over
-        the DAC+bitmap tempo scale: there the clock advances at
-        s×content-seconds, so invert the source's tempo map (offset + c×s once
-        a retune has run) to recover content seconds for the
-        transport surface (seek targets, loop A/B, OSD).
+        Under the DAC+bitmap tempo scale the clock stays in that domain on
+        both paths, resync and mute alike: it advances at s×content-seconds,
+        so invert the source's tempo map (offset + c×s once a retune has run)
+        to recover content seconds for the transport surface (seek targets,
+        loop A/B, OSD). Without a tempo scale it is the identity after the
+        first seek.
 
         Before the touch the clock is the PTS timeline the source rebased to 0
         at start_s and scaled by the tempo, so it is unscaled and offset back
@@ -117,9 +118,20 @@ class VideoTransportControls:
         return sc.source.content_to_clock(s) if sc.source else s * (sc.tempo_scale or 1.0)
 
     def _clock_scaled(self) -> bool:
-        """Whether the clock runs at tempo_scale x content seconds: the
-        audio clock before the touch, and the resync path's after it."""
-        return not self.touched or (self.resync and self._scene.tempo_scale != 1.0)
+        """Whether the clock is in the source's scaled domain, where a frame's
+        stamp is offset + c x tempo_scale: before the touch, and after it on
+        either path whenever a tempo scale is in force. The source keeps
+        stamping its frames that way after the touch, muted or not."""
+        return not self.touched or self._scene.tempo_scale != 1.0
+
+    def _clock_rate(self) -> float:
+        """Clock seconds per wall second on the mute path: content plays at 1x
+        there, and each content second spans the source's tempo scale in
+        clock seconds."""
+        if not self._clock_scaled():
+            return 1.0
+        source = self._scene.source
+        return (source.tempo_scale if source is not None else self._scene.tempo_scale) or 1.0
 
     def clock_s(self) -> float:
         """The playback clock: the free-running audio position — or the wall
@@ -130,7 +142,8 @@ class VideoTransportControls:
         inherits its drift behavior on every backend — on DAC+bitmap the drain
         runs ≈0.88× wall, where a wall clock would desync ≈7 s/min. The mute
         path anchors to the wall clock instead, audio being muted there and its
-        position meaningless.
+        position meaningless: content plays at 1x, so under a tempo scale the
+        clock advances `_clock_rate` clock seconds per wall second.
         """
         sc = self._scene
         if self.touched:
@@ -138,7 +151,9 @@ class VideoTransportControls:
                 return self._resync_clock_s(self.audio_anchor)
             if self.paused:
                 return self.wall_anchor_clock_s
-            return self.wall_anchor_clock_s + (time.time() - self.wall_anchor_time)
+            return self.wall_anchor_clock_s + (
+                (time.time() - self.wall_anchor_time) * self._clock_rate()
+            )
         if sc.audio and sc.audio.sample_rate:
             # The heard position, not the sink's raw clock: a sampler that
             # re-anchored late audio plays it that far behind its clock, and
@@ -289,7 +304,7 @@ class VideoTransportControls:
             self._splice(target_s)
         else:
             self.rebased = False
-            self.wall_anchor_clock_s = target_s
+            self.wall_anchor_clock_s = self.content_to_clock(target_s)
             self.wall_anchor_time = time.time()
             if sc.source is not None:
                 sc.source.request_seek(target_s)
