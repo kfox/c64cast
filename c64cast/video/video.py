@@ -85,6 +85,10 @@ DRY_FILL_MAX_PAST_NEWEST_S = 20.0
 # backpressure bound and a seek or close is seen between them.
 SILENCE_PIECE_SAMPLES = 1024
 
+# The smallest tempo compensation a single atempo stage can realize: content
+# is compressed by 1/tempo_scale, and one stage spans at most 2.0.
+TEMPO_SCALE_MIN = 0.5
+
 
 def place_audio_frame(
     start_s: float, duration_s: float, fed_s: float, rate: int
@@ -517,16 +521,19 @@ def ensure_pyav() -> bool:
     return PYAV_AVAILABLE
 
 
-def _build_atempo_graph(target_sample_rate: int, tempo_scale: float):
+def _build_atempo(target_sample_rate: int, tempo_scale: float) -> tuple[Any, Any]:
     """Build a one-stage `atempo` filter graph that time-compresses mono/s16
     audio (pitch-preserving) by ``1 / tempo_scale``. Fed the s16/mono/
     target_sample_rate frames the AVFileSource resampler already produces, so
     the abuffer format is fixed. Used by the bitmap+DAC tempo-compensation path
     (see AVFileSource + the `video.py` note in docs/architecture.md).
 
-    Callers keep ``tempo_scale`` in (0, 1) (validate_dac_bitmap_tempo_cfg bounds
-    it to 0.5..1.0), so ``1/tempo_scale`` lands in (1.0, 2.0] — inside atempo's
-    single-stage 0.5..2.0 range. Requires PyAV (`ensure_pyav()` first)."""
+    Callers keep ``tempo_scale`` in 0.5..1.0 (validate_dac_bitmap_tempo_cfg,
+    TEMPO_SCALE_MIN), so ``1/tempo_scale`` lands in 1.0..2.0 — inside atempo's
+    single-stage 0.5..2.0 range. Requires PyAV (`ensure_pyav()` first).
+
+    Returns the graph and its `atempo` filter, whose ``tempo`` command
+    retunes the ratio mid-stream (`AVFileSource._apply_pending_tempo`)."""
     graph = av.filter.Graph()
     abuffer = graph.add(
         "abuffer",
@@ -540,7 +547,7 @@ def _build_atempo_graph(target_sample_rate: int, tempo_scale: float):
     abuffer.link_to(atempo)
     atempo.link_to(sink)
     graph.configure()
-    return graph
+    return graph, atempo
 
 
 def decode_audio_full(
@@ -961,6 +968,15 @@ class WebcamSource:
 class AVFileSource:
     """PyAV-backed demuxer with shared PTS."""
 
+    # The clock stamp of content time c is _tempo_offset + c × _tempo_scale:
+    # an offset that keeps a mid-stream retune of the scale continuous
+    # (`_apply_pending_tempo`). The retune the scene asked for, applied by the
+    # demux thread at its next packet, and the atempo filter it retunes.
+    _tempo_offset = 0.0
+    _pending_tempo: float | None = None
+    _tempo_frozen = False
+    _atempo_filter: Any = None
+
     def __init__(
         self,
         path: str,
@@ -971,7 +987,11 @@ class AVFileSource:
         start_s: float = 0.0,
         decode_target_size: tuple[int, int] | None = None,
         tempo_scale: float = 1.0,
+        tempo_follow: bool = False,
     ):
+        """``tempo_follow`` builds the atempo graph even at ``tempo_scale``
+        1.0, so `request_tempo_scale` can retune it: a scene following the
+        drain may start a run from a followed 1.0."""
         if not ensure_pyav():
             raise RuntimeError(
                 "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
@@ -1053,8 +1073,8 @@ class AVFileSource:
         # because `av` is a lazily-imported module-global (`av: Any`), so
         # `av.filter.Graph` is not usable as a static type here.
         self._atempo_graph: Any = None
-        if self.a_stream is not None and tempo_scale < 1.0:
-            self._atempo_graph = _build_atempo_graph(target_sample_rate, tempo_scale)
+        if self.a_stream is not None and (tempo_scale < 1.0 or tempo_follow):
+            self._atempo_graph, self._atempo_filter = _build_atempo(target_sample_rate, tempo_scale)
             log.info(
                 "av %s: bitmap+DAC tempo compensation ON (s=%.4f → atempo=%.4f)",
                 os.path.basename(self.path),
@@ -1243,6 +1263,9 @@ class AVFileSource:
         target_s = max(0.0, target_s)
         with self._lock:
             self._pending_seek = target_s
+            # The caller converted target_s with the map in force; a retune
+            # applied after the seek would stamp the target off it.
+            self._pending_tempo = None
             self._video_buf.clear()
             if unmute:
                 self._muted = False
@@ -1351,7 +1374,9 @@ class AVFileSource:
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
         if self._atempo_graph is not None:
-            self._atempo_graph = _build_atempo_graph(self.target_sr, self._tempo_scale)
+            self._atempo_graph, self._atempo_filter = _build_atempo(
+                self.target_sr, self._tempo_scale
+            )
         self._pts_offset = None
         self._pts_anchor_target = target
         self._audio_fed_s = None
@@ -1409,12 +1434,87 @@ class AVFileSource:
         rebased ~0). Then the bitmap+DAC tempo compensation: compress the
         video timeline by tempo_scale so it stays in lock-step with the
         1/tempo_scale-compressed audio (both then net to real time under the
-        ~tempo_scale drain-clock slowdown). No-op when tempo_scale == 1.0."""
+        ~tempo_scale drain-clock slowdown), plus the offset a retune leaves
+        (`_apply_pending_tempo`)."""
         pts = float(frame.pts * self.video_time_base) if frame.pts is not None else 0.0
-        pts = self._content_time(pts)
-        if self._tempo_scale != 1.0:
-            pts *= self._tempo_scale
-        return pts
+        return self._tempo_offset + self._content_time(pts) * self._tempo_scale
+
+    def _clock_to_content(self, clock_s: float) -> float:
+        """A clock stamp back on the content timeline (rebased, unscaled)."""
+        return (clock_s - self._tempo_offset) / (self._tempo_scale or 1.0)
+
+    @property
+    def tempo_scale(self) -> float:
+        """The tempo compensation in force: 1.0 for none."""
+        with self._lock:
+            return self._tempo_scale
+
+    def content_to_clock(self, content_s: float) -> float:
+        """Content seconds on this pass's rebased timeline → clock stamp."""
+        with self._lock:
+            return self._tempo_offset + content_s * self._tempo_scale
+
+    def clock_to_content(self, clock_s: float) -> float:
+        """Inverse of `content_to_clock`."""
+        with self._lock:
+            return self._clock_to_content(clock_s)
+
+    def request_tempo_scale(self, tempo_scale: float) -> None:
+        """Retune the tempo compensation to ``tempo_scale``, which the demux
+        thread applies at its next packet. A no-op without an atempo graph:
+        compensation that was off at the start stays off, since nothing
+        compresses the audio there to retune. A no-op too once
+        `freeze_tempo` has run."""
+        if not TEMPO_SCALE_MIN <= tempo_scale <= 1.0:
+            raise ValueError(f"tempo_scale must be in {TEMPO_SCALE_MIN}..1.0, got {tempo_scale!r}")
+        with self._lock:
+            if self._atempo_graph is not None and not self._tempo_frozen:
+                self._pending_tempo = tempo_scale
+
+    def freeze_tempo(self) -> None:
+        """Fix the tempo map for the rest of this source's life: drop a
+        retune not yet applied and refuse later ones. The transport calls it
+        before it converts its first position through the map, since a seek
+        target converted with one map and stamped with another puts the
+        picture `target × change` seconds off the sound. A retune the demux
+        thread is applying finishes under the lock first, so every
+        conversion after this returns reads the final map."""
+        with self._lock:
+            self._tempo_frozen = True
+            self._pending_tempo = None
+
+    def _apply_pending_tempo(self) -> None:
+        """Demux-thread-only: apply a retune `request_tempo_scale` asked for.
+
+        The pivot is the content time the audio fed so far reaches, the point
+        from which the atempo filter compresses at the new ratio, and the
+        offset moves so the clock stamp of that point stays put: the picture
+        stamped from here on follows the new ratio without a jump. Pictures
+        already stamped keep their stamps; one decoded ahead of the audio by
+        a fraction of a second is off by that fraction times the change."""
+        with self._lock:
+            new = self._pending_tempo
+            self._pending_tempo = None
+            if new is None or new == self._tempo_scale or self._atempo_filter is None:
+                return
+            pivot = self._audio_fed_s
+            if pivot is None:
+                pivot = (
+                    self._video_read_s
+                    if self._video_read_s is not None
+                    else self._pts_anchor_target
+                )
+            old = self._tempo_scale
+            self._tempo_offset += (old - new) * pivot
+            self._tempo_scale = new
+        self._atempo_filter.process_command("tempo", f"{1.0 / new:.6f}")
+        log.info(
+            "av %s: tempo compensation retuned s=%.4f → %.4f at %.2fs",
+            os.path.basename(self.path),
+            old,
+            new,
+            pivot,
+        )
 
     def pin_timeline_origin(self) -> float | None:
         """Fix the content timeline's origin (stream seconds) before `start`,
@@ -1462,7 +1562,7 @@ class AVFileSource:
         in playback for a long time, then "catches up" near the end. Blocking
         the demuxer until the consumer drains is correct in both modes;
         host-DMA just doesn't hit the wait."""
-        self._video_read_s = pts / (self._tempo_scale or 1.0)
+        self._video_read_s = self._clock_to_content(pts)
         while True:
             if self._closed:
                 return False
@@ -1597,8 +1697,7 @@ class AVFileSource:
         the source is muted, or while the audio fed already reaches that far."""
         if not self._dry_fill_applies():
             return
-        scale = self._tempo_scale or 1.0
-        oldest, newest = oldest_pts / scale, newest_pts / scale
+        oldest, newest = self._clock_to_content(oldest_pts), self._clock_to_content(newest_pts)
         margin = max(DRY_FILL_INTERLEAVE_S, self._audio_lag_s + AUDIO_ALIGN_TOLERANCE_S)
         target = newest - margin
         if self._dry_stall_level:
@@ -1791,6 +1890,8 @@ class AVFileSource:
                     return "closed"
                 if self.seek_pending:
                     return "seek"
+                if self._pending_tempo is not None:
+                    self._apply_pending_tempo()
                 if packet.stream.type == "video":
                     for frame in packet.decode():
                         img = self._frame_to_bgr(frame)

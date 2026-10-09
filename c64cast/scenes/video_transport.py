@@ -91,7 +91,8 @@ class VideoTransportControls:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
         After the first seek it is the identity except on the resync path over
         the DAC+bitmap tempo scale: there the clock advances at
-        s×content-seconds, so divide by s to recover content seconds for the
+        s×content-seconds, so invert the source's tempo map (offset + c×s once
+        a retune has run) to recover content seconds for the
         transport surface (seek targets, loop A/B, OSD).
 
         Before the touch the clock is the PTS timeline the source rebased to 0
@@ -102,14 +103,18 @@ class VideoTransportControls:
         an absolute file position."""
         sc = self._scene
         if self._clock_scaled():
-            clk /= sc.tempo_scale or 1.0
+            # The source's own map once there is one: a retune of the tempo
+            # (VideoScene._follow_drain) moves it off a plain ratio.
+            clk = sc.source.clock_to_content(clk) if sc.source else clk / (sc.tempo_scale or 1.0)
         return clk + (sc.start_s if self.rebased else 0.0)
 
     def content_to_clock(self, s: float) -> float:
         """Inverse of clock_to_content: content seconds → internal clock domain."""
         sc = self._scene
         s -= sc.start_s if self.rebased else 0.0
-        return s * (sc.tempo_scale or 1.0) if self._clock_scaled() else s
+        if not self._clock_scaled():
+            return s
+        return sc.source.content_to_clock(s) if sc.source else s * (sc.tempo_scale or 1.0)
 
     def _clock_scaled(self) -> bool:
         """Whether the clock runs at tempo_scale x content seconds: the
@@ -162,6 +167,8 @@ class VideoTransportControls:
         if self.touched:
             return
         sc = self._scene
+        if sc.source is not None:
+            sc.source.freeze_tempo()
         # BEFORE the flag flip: clock_s() branches on `touched`, so a read taken
         # after it returns the anchor's own unseeded default.
         clock_s = self.clock_s()

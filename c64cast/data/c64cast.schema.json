@@ -408,14 +408,14 @@
             "number",
             "null"
           ],
-          "description": "Observed $D418-DAC playback-speed fraction on Hires / Hires-edges bitmap modes (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Unset = measured for the connected hardware: 0.89 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure for PAL."
+          "description": "Observed $D418-DAC playback-speed fraction on Hires / Hires-edges bitmap modes (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Unset = start from the figure for the connected hardware, 0.89 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced) or 0.97 (TeensyROM+ with sliced DMA writes), and follow the speed measured while the scene plays; a set value stays fixed."
         },
         "dac_bitmap_tempo_mhires": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Observed $D418-DAC playback-speed fraction on MultiHires bitmap mode (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Unset = measured for the connected hardware: 0.88 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure for PAL."
+          "description": "Observed $D418-DAC playback-speed fraction on MultiHires bitmap mode (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Unset = start from the figure for the connected hardware, 0.88 (Ultimate 64-II NTSC, and a TeensyROM writing unsliced) or 0.97 (TeensyROM+ with sliced DMA writes), and follow the speed measured while the scene plays; a set value stays fixed."
         }
       }
     },

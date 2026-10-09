@@ -966,10 +966,13 @@ class AudioCfg:
     # dac_bitmap_tempo_hires. No effect on the off-bus sampler, the REU pump, or char
     # modes.
     #
-    # Unset resolves per connected backend (C64Backend.dac_bitmap_tempo): the
-    # fraction depends on how the link's writes halt the NMI, so one number
-    # cannot serve the U64 and a slicing TR+ alike. Measure a platform with
-    # scripts/diags/mhires_tempo_clock_ab.py. 1.0 = compensation off.
+    # Unset starts from the figure for the connected backend
+    # (C64Backend.dac_bitmap_tempo): the fraction depends on how the link's
+    # writes halt the NMI, so one number cannot serve the U64 and a slicing TR+
+    # alike. It then follows the drain the scene measures while it plays
+    # (VideoScene._follow_drain), since the fraction also moves with how many
+    # frames a second the scene commits. A set value stays fixed. Measure a
+    # platform with scripts/diags/mhires_tempo_clock_ab.py. 1.0 = compensation off.
     dac_bitmap_tempo_hires: float | None = field(
         default=None,
         metadata={
@@ -977,10 +980,11 @@ class AudioCfg:
             "Hires-edges bitmap modes (measure via clock/wall). Content is "
             "time-compressed by 1/value (pitch-preserving) so bitmap+DAC video "
             "plays at real time. 1.0 = off. Host-DMA DAC path only — no effect "
-            "on the Ultimate Audio sampler or the REU pump. Unset = measured "
-            "for the connected hardware: 0.89 (Ultimate 64-II NTSC, and a "
-            "TeensyROM writing unsliced), 0.97 (TeensyROM+ with sliced DMA "
-            "writes); re-measure for PAL."
+            "on the Ultimate Audio sampler or the REU pump. Unset = start from "
+            "the figure for the connected hardware, 0.89 (Ultimate 64-II NTSC, "
+            "and a TeensyROM writing unsliced) or 0.97 (TeensyROM+ with sliced "
+            "DMA writes), and follow the speed measured while the scene plays; "
+            "a set value stays fixed."
         },
     )
     dac_bitmap_tempo_mhires: float | None = field(
@@ -990,10 +994,11 @@ class AudioCfg:
             "bitmap mode (measure via clock/wall). Content is time-compressed by "
             "1/value (pitch-preserving) so bitmap+DAC video plays at real time. "
             "1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio "
-            "sampler or the REU pump. Unset = measured for the connected "
-            "hardware: 0.88 (Ultimate 64-II NTSC, and a TeensyROM writing "
-            "unsliced), 0.97 (TeensyROM+ with sliced DMA writes); re-measure "
-            "for PAL."
+            "sampler or the REU pump. Unset = start from the figure for the "
+            "connected hardware, 0.88 (Ultimate 64-II NTSC, and a TeensyROM "
+            "writing unsliced) or 0.97 (TeensyROM+ with sliced DMA writes), "
+            "and follow the speed measured while the scene plays; a set value "
+            "stays fixed."
         },
     )
 
