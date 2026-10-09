@@ -74,11 +74,6 @@ log = logging.getLogger(__name__)
 
 # One pump read per interval. The PI gains below are per interval.
 MIC_LEAD_SERVO_INTERVAL_S = 1.0
-# The first read comes this soon after the stream opens, not a full interval
-# later: the write head starts on target, and a pump that runs slower than the
-# mic (~15 % under mhires) puts a second's drift on the first reading, with the
-# loop steering a second late.
-MIC_LEAD_FIRST_READ_S = 0.25
 # Proportional gain: the fraction of the lead error corrected per second.
 # The tracker reads quantize to the 128-byte pump chunk, so read jitter moves
 # the drop fraction by about ±0.4 % at 12 kHz.
@@ -480,7 +475,6 @@ class MicLeadServo:
         self._thread: threading.Thread | None = None
         self._fails = 0
         self._open_loop = False
-        self._ticked = False
         self._last_pump: tuple[int, float] | None = None
         # The tracker phase of the last reading this servo trusted.
         self._tracker_phase: int | None = None
@@ -530,7 +524,6 @@ class MicLeadServo:
                 self.drop_frac = 0.0
                 log.exception("audio[reu mic]: lead servo step failed; running open-loop")
                 return
-            self._ticked = True
             self._tick_ring_governor(ring)
 
     def _tick_ring_governor(self, ring: tuple[int, int] | None) -> None:
@@ -559,7 +552,7 @@ class MicLeadServo:
 
     def _next_wait(self) -> float:
         if not self._open_loop:
-            return self._interval if self._ticked else min(self._interval, MIC_LEAD_FIRST_READ_S)
+            return self._interval
         doublings = min(self._fails - MIC_LEAD_OPEN_LOOP_AFTER + 1, 16)
         ceiling = max(self._interval, MIC_LEAD_OPEN_LOOP_MAX_WAIT_S)
         return min(self._interval * 2.0**doublings, ceiling)

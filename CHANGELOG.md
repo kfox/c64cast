@@ -311,9 +311,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   head was placed relative to the ring start, so by the time the stream
   opened the pump had already consumed part of that lead and the microphone
   ran closer to underrun than the bootstrap margin promised. The head is now
-  placed relative to where the pump actually is, and the lead servo takes its
-  first reading a quarter second after the stream opens instead of a full
-  second, so it starts steering before a slow pump has piled up its drift.
+  placed relative to where the pump actually is.
 - **A multi-system start with a bad DAC curve on a later system no longer
   provisions the earlier ones first.** With `[audio].dac_curve = "calibrated"`
   and no calibration for the last system, the earlier systems had already
