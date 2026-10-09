@@ -1332,6 +1332,64 @@ class AuthorizationFlagTest(unittest.TestCase):
         _assert_linear_time(self, lambda s: "--authorization " * 8_000 * s)
 
 
+class QuotedFlagTest(unittest.TestCase):
+    def test_a_quoted_flag_masks_the_next_list_element(self):
+        for line, want in (
+            ("['--password', 'hunter2']", "['--password', 'REDACTED']"),
+            ('["--password", "hunter2"]', '["--password", "REDACTED"]'),
+            ("['--password','hunter2']", "['--password','REDACTED']"),
+            ("['--password' , 'hunter2']", "['--password' , 'REDACTED']"),
+            ("('--password', 'x')", "('--password', 'REDACTED')"),
+            ("['--password', 'hunter2', '--verbose']", "['--password', 'REDACTED', '--verbose']"),
+            ("['--password', 'a b c', 'd']", "['--password', 'REDACTED', 'd']"),
+            ("['--password', b'hunter2']", "['--password', b'REDACTED']"),
+            ("['--password', \"it's\"]", "['--password', \"REDACTED\"]"),
+            ("'--password' 'hunter2' x", "'--password' 'REDACTED' x"),
+            ("['--video-password', 'hunter2']", "['--video-password', 'REDACTED']"),
+            ("['--stream-key', 's3']", "['--stream-key', 'REDACTED']"),
+            ("['-token', 'abc']", "['-token', 'REDACTED']"),
+            ("['--authorization', 'Basic abc']", "['--authorization', 'Basic REDACTED']"),
+            ("%27--password%27%2C%20%27hunter2%27", "%27--password%27%2C%20%27REDACTED%27"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_an_escaped_list_element_is_masked(self):
+        for line in (
+            '\\"--password\\", \\"hunter2\\" x',
+            '"{\\"args\\": [\\"--password\\", \\"hunter2\\"]}"',
+        ):
+            with self.subTest(line=line):
+                self.assertNotIn("hunter2", redact_secrets(line))
+
+    def test_a_list_element_that_is_a_flag_or_a_lone_flag_is_not_a_value(self):
+        for line in (
+            "['--password', '--verbose']",
+            "['--password', \"--verbose\"]",
+            "['--password', b'-x']",
+            "['--password-file', 'x']",
+            "['--key', 'x']",
+            "['--password']",
+            "['--password', ]",
+            '["--password","--x"]',
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
+    def test_prose_around_a_quoted_flag_keeps_its_words(self):
+        line = 'the "--password", then enter it'
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_flag_value_that_starts_with_a_letter_and_a_dash_is_still_a_value(self):
+        self.assertEqual(redact_secrets("x --password b-x y"), "x --password REDACTED y")
+        self.assertEqual(redact_secrets("x --password '-abc' y"), "x --password 'REDACTED' y")
+
+    def test_a_long_run_of_quoted_flags_is_redacted_in_linear_time(self):
+        _assert_linear_time(self, lambda s: "['--password', " * 6_000 * s)
+        _assert_linear_time(self, lambda s: "'--password' " * 8_000 * s)
+        _assert_linear_time(self, lambda s: "\\" * 20_000 * s + "--password' 'x")
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""

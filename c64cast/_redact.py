@@ -556,26 +556,65 @@ def _key_values(line: _Line) -> Iterator[Span]:
 #: What separates a command-line flag from its value.
 _FLAG_GAP = re.compile(r"[ \t]+")
 
+#: What separates a quoted flag from its value: its closing quote, then a comma
+#: or whitespace, then the quote opening the value, as in a list repr of an argv
+#: (`['--password', 'hunter2']`). The quotes may be backslash-escaped, and the
+#: value's may follow a string prefix (`b'hunter2'`). A value
+#: that is no quoted string is not read: prose such as `the "--password", then`
+#: would otherwise lose its next word.
+_QUOTED_FLAG_GAP = re.compile(
+    r"""
+    (?P<close> \\*+ ["'] ) (?: [ \t]*+ , [ \t]*+ | [ \t]++ ) (?= [bBrRuUfF]{0,2}+ \\*+ ["'] )
+    """,
+    re.VERBOSE,
+)
+
+
+#: A dash, after the quote and string prefix that open a quoted list element.
+_LISTED_FLAG = re.compile(r"""[bBrRuUfF]{0,2}+ \\*+ ["'] -""", re.VERBOSE)
+
+
+def _flag_gap(text: str, run: int, end: int) -> tuple[Span, bool] | None:
+    """The gap between the flag whose run of name characters starts at `run`
+    and ends at `end`, and its value, and whether that value starts with a
+    `-`, which makes it another flag."""
+    gap = _FLAG_GAP.match(text, end)
+    if gap is not None:
+        return gap.span(), text.startswith("-", gap.end())
+    gap = _QUOTED_FLAG_GAP.match(text, end)
+    if gap is None:
+        return None
+    opening = run
+    while opening > 0 and text[opening - 1] == "\\":
+        opening -= 1
+    if opening == 0 or text[opening - 1] != gap.group("close")[-1]:
+        return None
+    return gap.span(), _LISTED_FLAG.match(text, gap.end()) is not None
+
 
 def _flag_value(line: _Line, name: re.Match[str]) -> Span | None:
     """The value after a flag such as `--password` or `--video-password` that
     `name` ends, given as the next word: a logged command line (yt-dlp's, say)
-    spells it that way. An `--authorization` value is a scheme and a credential,
-    so it is read as an `Authorization:` header's is. A next word that is
-    itself a flag is not a value, and
-    a short name that is the whole flag is left out: `--key 3.0:…` is a
-    keystroke and `C=-key pause` prose. After a component of its own it is
-    kept, or `--stream-key X` would keep `X` where `--streamkey X` does not."""
+    spells it that way, and a list repr of an argv, as the next element
+    (`['--password', 'hunter2']`). An `--authorization` value is a scheme and a
+    credential, so it is read as an `Authorization:` header's is. A next word
+    that is itself a flag is not a value, and a short name that is the whole
+    flag is left out: `--key 3.0:…` is a keystroke and `C=-key pause` prose.
+    After a component of its own it is kept, or `--stream-key X` would keep
+    `X` where `--streamkey X` does not."""
     text = line.text
     run = name.start()
     while run > 0 and _is_name_char(text[run - 1]):
         run -= 1
     if name.group("short") is not None and not text[run : name.start()].strip("-"):
         return None
-    gap = _FLAG_GAP.match(text, name.end())
-    if text[run] != "-" or gap is None or gap.end() == len(text) or text[gap.end()] == "-":
+    found = _flag_gap(text, run, name.end())
+    if text[run] != "-" or found is None:
         return None
-    v, d = gap.end(), line.deepest(*gap.span())
+    gap, is_flag = found
+    if gap[1] == len(text) or is_flag:
+        return None
+    v, d = gap[1], line.deepest(*gap)
     span = _value(line, v, d, "unquoted")
     return _past_scheme(line, v, d, span) if name.group("header") is not None else span
 

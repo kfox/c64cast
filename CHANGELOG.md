@@ -1660,6 +1660,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `--authorization Basic abc` kept the credential, because a flag's value was
   one word and an `Authorization` value is a scheme and a credential.
 
+- **The log redactor masks the value after a quoted flag in a list repr.**
+  `['--password', 'hunter2']`, how a logged argv looks, kept the password.
+
 - **The log redactor now reads a line instead of pattern-matching it, which
   closes a dozen shapes that let part or all of a secret through to
   `--log-file`, the web console's log tail and the scene snapshot.** Among
