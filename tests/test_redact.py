@@ -1369,6 +1369,10 @@ class QuotedFlagTest(unittest.TestCase):
                 "['--authorization','Basic','REDACTED']",
             ),
             (
+                "['--authorization', 'Basic' , 'abc', 'def']",
+                "['--authorization', 'Basic' , 'REDACTED', 'def']",
+            ),
+            (
                 "['--authorization', 'Digest', 'username=\"u\", response=\"x\"']",
                 "['--authorization', 'Digest', 'REDACTED']",
             ),

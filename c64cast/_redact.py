@@ -953,12 +953,14 @@ def _past_quoted_scheme(
     scheme = text[span[0] : end]
     if scheme.lower() not in _AUTH_SCHEMES:
         return None
-    gap = _SCHEME_GAP.match(text, span[1] + len(q))
-    if gap is None and listed:
-        gap = _LIST_GAP.match(text, span[1] + len(q))
-        element = None if gap is None else _opener(text, gap.end())
+    after = span[1] + len(q)
+    gap = _LIST_GAP.match(text, after) if listed else None
+    if gap is not None:
+        element = _opener(text, gap.end())
         if element is not None:
             closer = _opener_closer(line, element)
+    else:
+        gap = _SCHEME_GAP.match(text, after)
     if gap is None:
         return None
     d = line.deepest(*gap.span())
