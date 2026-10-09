@@ -1683,6 +1683,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   value of a `Set-Cookie` header, whose attributes (`Path`, `Expires`,
   `HttpOnly`, …) stay readable. `--cookie` is read the same way.
 
+- **The log redactor masks the credential of an `--authorization` flag whose scheme
+  is its own list element.** `['--authorization', 'Basic', 'abc']` kept `abc`.
+
 - **The log redactor now reads a line instead of pattern-matching it, which
   closes a dozen shapes that let part or all of a secret through to
   `--log-file`, the web console's log tail and the scene snapshot.** Among

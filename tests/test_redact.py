@@ -1354,6 +1354,47 @@ class QuotedFlagTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
+    def test_a_scheme_and_its_credential_in_separate_list_elements_are_both_masked(self):
+        for line, want in (
+            (
+                "['--authorization', 'Basic', 'abc']",
+                "['--authorization', 'Basic', 'REDACTED']",
+            ),
+            (
+                '["--authorization", "Basic", "abc", "--verbose"]',
+                '["--authorization", "Basic", "REDACTED", "--verbose"]',
+            ),
+            (
+                "['--authorization','Basic','abc']",
+                "['--authorization','Basic','REDACTED']",
+            ),
+            (
+                "['--authorization', 'Digest', 'username=\"u\", response=\"x\"']",
+                "['--authorization', 'Digest', 'REDACTED']",
+            ),
+        ):
+            with self.subTest(line=line):
+                got = redact_secrets(line)
+                self.assertEqual(got.count("abc"), 0)
+                self.assertNotIn("response=", got)
+                self.assertEqual(got, want)
+        self.assertNotIn("abc", redact_secrets('\\"--authorization\\", \\"Basic\\", \\"abc\\" x'))
+
+    def test_a_scheme_followed_by_a_flag_or_a_dict_key_keeps_the_next_element(self):
+        for line, want in (
+            (
+                "['--authorization', 'Basic', '--verbose']",
+                "['--authorization', 'REDACTED', '--verbose']",
+            ),
+            ("['--authorization', 'Basic']", "['--authorization', 'REDACTED']"),
+            (
+                "{'Authorization': 'Basic', 'next': 'v'}",
+                "{'Authorization': 'REDACTED', 'next': 'v'}",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
     def test_an_escaped_list_element_is_masked(self):
         for line in (
             '\\"--password\\", \\"hunter2\\" x',

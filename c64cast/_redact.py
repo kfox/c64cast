@@ -584,7 +584,7 @@ def _key_values(line: _Line) -> Iterator[Span]:
             continue
         span = _value(line, v, d, "unquoted")
         if name.group("header") is not None:
-            span = _past_scheme(line, v, d, span)
+            span = _past_scheme(line, v, d, span, listed=tail is None)
         if span is not None:
             yield span
 
@@ -724,11 +724,14 @@ def _cookie_items(text: str, start: int, end: int) -> Iterator[Span]:
         item = cut + 1
 
 
-def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
+def _past_scheme(
+    line: _Line, v: int, d: int, span: Span | None, listed: bool = False
+) -> Span | None:
     """The credential in an `Authorization` value at `v`, `d` deep, whose
     `span` is what a value there would cover. A known scheme before it is
     kept, as `Bearer` is; any other first word may be the credential itself,
-    so it goes with what follows it."""
+    so it goes with what follows it. `listed` is for a value that follows a
+    flag, where a quoted scheme may be a list element of its own."""
     text = line.text
     opener = _opener(text, v)
     deep = opener is not None and line.deepest(v, opener.end()) > d
@@ -737,7 +740,7 @@ def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
             return None
         scheme = _SCHEME_AND_GAP.match(text, span[0], span[1])
         if scheme is None:
-            return _past_quoted_scheme(line, opener, span) or span
+            return _past_quoted_scheme(line, opener, span, listed) or span
         if scheme.end() == span[1] or not _is_auth_scheme(scheme):
             return span
         return (scheme.end(), span[1])
@@ -770,12 +773,21 @@ def _widen_digest(line: _Line, scheme: str, credential: Span | None, c: int, d: 
     return (credential[0], max(credential[1], _params_end(line, c, d)))
 
 
-def _past_quoted_scheme(line: _Line, opener: re.Match[str], span: Span) -> Span | None:
+#: A comma between two list elements, when a quoted element that is no flag
+#: follows it.
+_LIST_GAP = re.compile(r"""[ \t]*+ , [ \t]*+ (?= [bBrRuUfF]{0,2}+ \\*+ ["'] (?!-) )""", re.VERBOSE)
+
+
+def _past_quoted_scheme(
+    line: _Line, opener: re.Match[str], span: Span, listed: bool = False
+) -> Span | None:
     """The credential after a quoted value that is exactly a registered scheme,
     when whitespace or a `+` follows its closing quote: `"Basic" ab rest`. The
     scheme stays in view, as it does with the credential inside the quotes.
     Closing quote and comma, as in `{'Authorization': 'Basic', 'next': 'v'}`,
-    leave the value a lone word, which goes."""
+    leave the value a lone word, which goes — unless `listed`, where the
+    comma separates list elements and the next quoted one that is no flag is
+    the credential: `['--authorization', 'Basic', 'abc']`."""
     text, q = line.text, opener.group("q")
     end = span[1] - len(opener.group("esc") or "")
     if end - span[0] > _SCHEME_REACH or not text.startswith(q, span[1]):
@@ -784,6 +796,8 @@ def _past_quoted_scheme(line: _Line, opener: re.Match[str], span: Span) -> Span 
     if scheme.lower() not in _AUTH_SCHEMES:
         return None
     gap = _SCHEME_GAP.match(text, span[1] + len(q))
+    if gap is None and listed:
+        gap = _LIST_GAP.match(text, span[1] + len(q))
     if gap is None:
         return None
     d = line.deepest(*gap.span())
