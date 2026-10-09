@@ -448,6 +448,29 @@ class ScrubSettleTests(unittest.TestCase):
         _tick(session, pl, 1.0)
         self.assertEqual((scene.settles, other.settles), (0, 0))
 
+    def test_a_clip_over_the_card_still_scrubs_and_settles(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene, on_card=False, transitioning=True)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 0.3)
+        self.assertEqual(scene.scrubs, [12.0])
+        self.assertEqual(scene.settles, 1)
+
+    def test_the_card_on_screen_drops_a_pending_scrub(self):
+        scene = _ScrubScene(position=10.0)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="jog", value=2, mode="rel"))
+        _tick(session, pl, 0.0)
+        pl.on_card = True
+        _tick(session, pl, 0.1)
+        pl.on_card = False
+        _tick(session, pl, 1.0)
+        self.assertEqual(scene.settles, 0)
+
     def test_a_scene_without_the_approximate_seek_is_scrubbed_with_its_seek(self):
         scene = _StubScene(position=10.0)
         pl = _FakePlaylist(scene)
