@@ -4379,7 +4379,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
     """The sound at clip time 0 starts with its picture: setup() brings the
     sink up with its clock held, and the first shown frame releases it."""
 
-    def _setup(self, audio: Any) -> VideoScene:
+    def _setup(self, audio: Any, *, start_s: float = 0.0) -> VideoScene:
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource"),
@@ -4392,6 +4392,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
                 display_mode=mock.MagicMock(),
                 file=STUB_VIDEO_URL,
                 setup_progress=False,
+                start_s=start_s,
             )
             scene.setup()
         self.addCleanup(scene.teardown)
@@ -4477,6 +4478,43 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         scene, _, events = self._held_scene()
         scene.transport.touch()
         self.assertEqual(events, ["release"])
+
+    def test_a_scrub_step_while_held_releases_the_sound_before_it_seeks(self):
+        scene, _, events = self._held_scene()
+        source = cast(_StubSource, scene.source)
+        source._events = cast(Any, events)
+        scene.wall_start_time = 100.0
+        with _freeze_time(105.0):
+            scene.transport_scrub(40.0)
+        with _freeze_time(105.5):
+            scene.transport_settle()
+        self.assertEqual(events[0], "release")
+        self.assertEqual(events.count("release"), 1)
+        self.assertEqual(source.seeks, [40.0, 40.5])
+        self.assertEqual(source.exacts, [False, True])
+
+    def test_a_touch_while_held_whose_pump_cannot_arm_anchors_at_the_restarted_wall_clock(self):
+        scene, audio, _ = self._held_scene()
+        audio.release_hold = mock.Mock(side_effect=PumpInstallError("no"))  # type: ignore[attr-defined]
+        scene.wall_start_time = 100.0
+        with _freeze_time(105.0):
+            scene.transport.touch()
+        self.assertIsNone(scene.audio)
+        self.assertEqual(scene.transport.anchor.clock, 0.0)
+
+    def test_start_s_with_a_held_reu_pump_arms_at_the_release_and_keeps_its_offset(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        with _freeze_time(100.0):
+            scene = self._setup(audio, start_s=12.0)
+        audio.release_hold.assert_not_called()
+        cast(Any, scene.source).clock_to_content = lambda clock: clock
+        self.assertEqual(scene.transport.clock_to_content(0.0), 12.0)
+        with _freeze_time(103.0):
+            scene.release_audio_hold()
+        audio.release_hold.assert_called_once_with()
+        self.assertEqual(scene.wall_start_time, 103.0)
+        self.assertEqual(scene.transport.clock_to_content(0.0), 12.0)
 
     def _release_in_flight(
         self, scene: VideoScene, audio: _FakeSceneAudio
