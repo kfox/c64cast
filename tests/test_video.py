@@ -3691,6 +3691,47 @@ class SpliceAnchorTest(unittest.TestCase):
         for polled in polls:
             self.assertAlmostEqual(polled, paused_at)
 
+    def _position_interrupted_by(self, scene: VideoScene, writer: Callable[[], None]) -> float:
+        """position() as a poll reads it when the playlist thread runs
+        ``writer`` after the poll's first read of the anchor or of the last
+        flag, whichever its order puts first."""
+        fired: list[bool] = []
+
+        class Interrupted(VideoTransportControls):
+            def __getattribute__(self, name: str) -> Any:
+                value = super().__getattribute__(name)
+                if name in ("anchor", "paused") and not fired:
+                    fired.append(True)
+                    writer()
+                return value
+
+        scene.transport.__class__ = Interrupted
+        return scene.transport.position()
+
+    def test_a_console_poll_that_reads_the_flags_first_sees_a_resume_whole(self):
+        # A poll holding the anchor from before the resume, then reading the
+        # cleared flag, ran the clock from the pause's reference over the
+        # whole pause.
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        scene.transport.loop_audio = "mute"
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        with _freeze_time(100.0):
+            scene.transport.pause()
+            paused_at = scene.transport.position()
+        with _freeze_time(500.0):
+            polled = self._position_interrupted_by(scene, scene.transport.resume)
+        self.assertAlmostEqual(polled, paused_at)
+
+    def test_a_console_poll_that_reads_the_flags_first_sees_the_first_touch_whole(self):
+        scene = _make_video_scene_stub(_StubSource(duration=100.0, a_stream=object()))
+        scene.audio = cast(Any, _FakeSceneAudio(position=3.0))
+        scene.transport.loop_audio = "mute"
+        with _freeze_time(10.0):
+            before = scene.transport.position()
+            polled = self._position_interrupted_by(scene, scene.transport.touch)
+        self.assertAlmostEqual(polled, before)
+
     def test_a_console_poll_during_the_first_touch_reads_the_untouched_position(self):
         # `touched` flipped before the audio policy and the anchor were set,
         # so a poll between read a clock run from the anchor's unseeded

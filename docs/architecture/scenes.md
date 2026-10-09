@@ -61,7 +61,7 @@ DJ-style seek, pause, and loop, driven by `transport.TransportSession` via `[mid
 **First touch.** Any of `transport_pause`/`_seek`/`_loop_toggle`/`_record`/`_stop`/`_loop_slot`, or a jog/rw/ff, routes through `_touch_transport()`. It:
 
 1. **Reads the current clock BEFORE flipping `_transport_touched`.** The order is load-bearing — `_clock_s()` branches on that flag, so seeding the anchor from a post-flip read would capture the anchor's own not-yet-seeded default rather than the real pre-touch position. `VideoSceneClockTest` pins the order.
-2. Seeds the anchor's `clock` and `ref` (the wall time) from that reading, then sets `resync`, and `touched` last: the web console's poll reads the anchor and `resync` only once it sees the flag, and a pause or resume likewise stores the anchor's new reference before the flag that makes it count.
+2. Seeds the anchor's `clock` and `ref` (the wall time) from that reading, then sets `resync`, and `touched` last, while a reader takes the flags before the anchor (`_state`): the web console's poll reads the anchor and `resync` only once it sees the flag, and a pause or resume likewise stores the anchor's new reference before the flag that makes it count.
 3. Calls `source.set_muted(True)` — idempotent, a no-op on later calls.
 
 From then on `_clock_s()` free-runs from the anchor as `anchor.clock + (time.time() - anchor.ref) × rate`, frozen at the anchor while `_paused`; the rate is 1 without a tempo scale and the source's scale with one (see the `tempo_scale` domain seam below).

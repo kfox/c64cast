@@ -54,6 +54,18 @@ class _Anchor(NamedTuple):
     rebased: bool
 
 
+class _State(NamedTuple):
+    """The flags that say how to read the anchor, and the anchor, as one
+    reader sees them. The flags are read first: every writer stores the anchor
+    before the flag that makes it count, so a reader that took the anchor
+    first could pair an old anchor with the new flag."""
+
+    touched: bool
+    resync: bool
+    paused: bool
+    anchor: _Anchor
+
+
 class VideoTransportControls:
     """Seek/pause/loop state for one VideoScene run.
 
@@ -91,6 +103,10 @@ class VideoTransportControls:
         self.loop_b: float | None = None
         self.loop_state: Literal["none", "armed", "active"] = "none"
         self.record_border_active = False
+
+    def _state(self) -> _State:
+        touched, resync, paused = self.touched, self.resync, self.paused
+        return _State(touched, resync, paused, self.anchor)
 
     def clock_to_content(self, clk: float) -> float:
         """Map an internal clock value (scaled/PTS domain) to content seconds.
@@ -156,15 +172,16 @@ class VideoTransportControls:
         position meaningless: content plays at 1x, so under a tempo scale the
         clock advances `_clock_rate` clock seconds per wall second.
         """
-        return self._clock(self.anchor)
+        return self._clock(self._state())
 
-    def _clock(self, anchor: _Anchor) -> float:
-        """clock_s() from one read of the anchor."""
+    def _clock(self, state: _State) -> float:
+        """clock_s() from one read of the flags and the anchor."""
         sc = self._scene
-        if self.touched:
-            if self.resync:
-                return self._resync_clock_s(anchor)
-            if self.paused:
+        anchor = state.anchor
+        if state.touched:
+            if state.resync:
+                return self._resync_clock_s(state)
+            if state.paused:
                 return anchor.clock
             assert anchor.ref is not None
             return anchor.clock + (time.time() - anchor.ref) * self._clock_rate()
@@ -176,11 +193,12 @@ class VideoTransportControls:
             return heard_seconds(sc.audio)
         return time.time() - sc.wall_start_time
 
-    def _resync_clock_s(self, anchor: _Anchor) -> float:
-        """clock_s() on the resync path, from one read of the anchor."""
+    def _resync_clock_s(self, state: _State) -> float:
+        """clock_s() on the resync path, from one read of the state."""
         sc = self._scene
         assert sc.audio is not None
-        if self.paused or anchor.ref is None:
+        anchor = state.anchor
+        if state.paused or anchor.ref is None:
             return anchor.clock
         return anchor.clock + (heard_seconds(sc.audio) - anchor.ref)
 
@@ -459,8 +477,8 @@ class VideoTransportControls:
         target is heard; this reports the target through that hold, because a
         held FF/RW and a relative jog seek to ``position() + delta`` and would
         otherwise lose the hold's length on every step."""
-        anchor = self.anchor
-        return self._to_content(self._target_clock(anchor), anchor.rebased)
+        state = self._state()
+        return self._to_content(self._target_clock(state), state.anchor.rebased)
 
     def target_clock_s(self, clock_s: float | None = None) -> float:
         """clock_s(), except through a resync splice's hold, where it is the
@@ -471,13 +489,13 @@ class VideoTransportControls:
 
         A caller that already read ``clock_s`` passes it, and outside a hold
         gets that same value back; a second read of a running clock differs."""
-        return self._target_clock(self.anchor, clock_s)
+        return self._target_clock(self._state(), clock_s)
 
-    def _target_clock(self, anchor: _Anchor, clock_s: float | None = None) -> float:
-        if not (self.touched and self.resync):
-            return self._clock(anchor) if clock_s is None else clock_s
-        clk = self._resync_clock_s(anchor) if clock_s is None else clock_s
-        return max(clk, anchor.clock)
+    def _target_clock(self, state: _State, clock_s: float | None = None) -> float:
+        if not (state.touched and state.resync):
+            return self._clock(state) if clock_s is None else clock_s
+        clk = self._resync_clock_s(state) if clock_s is None else clock_s
+        return max(clk, state.anchor.clock)
 
     def duration(self) -> float | None:
         source = self._scene.source
