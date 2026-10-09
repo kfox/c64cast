@@ -558,12 +558,24 @@ class EnsembleCoordinator:
         next_deadline = time.time()
         while not pl.broadcast_resume.is_set() and not pl.stop_event.is_set():
             next_deadline = pl.run_one_frame(follower_scene, next_deadline)
+            try:
+                if pl.follower_frame_rendered():
+                    next_deadline = time.time()
+            except Exception:
+                pl.log.exception(
+                    "broadcast: setting the follower up again after the machine restarted "
+                    "failed; ending the interlude"
+                )
+                break
+            if pl.current is None:
+                break
         pl.broadcast_resume.clear()
 
         pl.log.info(
             "broadcast: resume — tearing down follower, restoring scene index %d", saved_idx
         )
-        pl.safe_teardown(follower_scene)
+        if pl.current is not None:
+            pl.safe_teardown(follower_scene)
         pl.current = None
         # `_advance()` re-sets-up the scene at `playlist.index` on the next
         # iteration, so the broadcast's exit pins it back.

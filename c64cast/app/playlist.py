@@ -766,7 +766,21 @@ class Playlist:
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
 
-    def _set_up_again_after_restart(self) -> None:
+    def follower_frame_rendered(self) -> bool:
+        """Called after each frame of a broadcast follower scene, which the
+        run loop does not drive. A machine restart under it puts the run's
+        machine state back and sets the follower up again, and the interlude
+        goes on: its lifetime belongs to the orchestrator, so ending it was
+        rejected, and playing on against a machine that lost the follower's
+        setup was the defect. The follower never held the ensemble audio
+        slot (nothing claims one for it), so it does not wait to claim it.
+        True when it did. Raises what the new setup raises."""
+        if not self.restart_watch.after_frame(self._frame_landed, counted=True):
+            return False
+        self._set_up_again_after_restart(claim_audio=False)
+        return True
+
+    def _set_up_again_after_restart(self, *, claim_audio: bool = True) -> None:
         """The machine restarted under the current scene, so what its setup
         put there is gone. Tear the scene down, put back the run's machine
         state, and set the scene up again, keeping its pick, the way
@@ -774,7 +788,9 @@ class Playlist:
         with `loop = false` a one-scene show would stop on a power blip.
         The restore waits for the teardown because, as at startup, nothing
         of the scene's (its audio streamer, its mode's IRQ) should be
-        writing while the machine is provisioned and reset."""
+        writing while the machine is provisioned and reset. `claim_audio`
+        False skips waiting to claim the ensemble audio slot back, for a
+        scene that never held it."""
         scene = self.current
         if scene is None:
             return
@@ -792,7 +808,9 @@ class Playlist:
         self._restore_machine()
         # The scene is already torn down, so leaving it current would have the
         # run loop's exit tear it down a second time.
-        if self.stop_event.is_set() or not self.ensemble_coord.wait_for_audio_claim(scene):
+        if self.stop_event.is_set() or (
+            claim_audio and not self.ensemble_coord.wait_for_audio_claim(scene)
+        ):
             self.current = None
             return
         self.safe_setup(scene, announcing=announcing, after_restart=True)

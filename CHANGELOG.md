@@ -314,6 +314,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   that never landed. A lost write is now charged to the thread that sent it,
   and a launch refuses only for its own thread's losses.
 
+- **A machine restart during an ensemble broadcast interlude is now
+  noticed.** The follower scene's frames were not watched, so after a
+  power blip the follower played on against the BASIC screen until the
+  interlude ended. The machine's state is put back and the follower is
+  set up again, and the interlude continues.
+
 - **In an ensemble, a system waiting for the audio slot can no longer be
   starved by another system.** A system whose playlist was all
   audio-bearing scenes released the slot and took it back within
