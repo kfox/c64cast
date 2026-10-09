@@ -47,6 +47,7 @@ from c64cast.audio.audio_handlers import (
     REU_IRQ_HANDLER_GOVERNOR,
     REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS,
     REU_PUMP_CHUNK_SIZE,
+    REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
     REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
     REU_PUMP_HANDLER_STUB,
@@ -653,9 +654,10 @@ def _tracker_seed(src: int, dst: int) -> dict[int, int]:
     }
 
 
-def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int]):
-    """Run REU_PUMP_BODY_SUBROUTINE_GOVERNOR through a JSR / JMP $EA31 caller,
-    the way both of its callers reach it, and check it returned balanced."""
+def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int], body: bytes | None = None):
+    """Run REU_PUMP_BODY_SUBROUTINE_GOVERNOR (or ``body``, a chunk-patched
+    copy of it) through a JSR / JMP $EA31 caller, the way both of its callers
+    reach it, and check it returned balanced."""
     from c64cast.audio.audio_handlers import (
         REU_PUMP_BODY_SUBROUTINE_ADDR,
         REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
@@ -675,7 +677,11 @@ def _jsr_tracked_governor(test: unittest.TestCase, seed: dict[int, int]):
         caller,
         addr=0xC000,
         seed=seed,
-        images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR},
+        images={
+            REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR
+            if body is None
+            else body
+        },
     )
     test.assertEqual(run.exit_pc, 0xEA31, "the subroutine must RTS to its caller")
     test.assertEqual(run.mpu.sp, 0xFF)
@@ -903,11 +909,40 @@ class ReuTrackedGovernorTest(unittest.TestCase):
             REU_PUMP_BODY_SUBROUTINE_GOVERNOR.endswith(REU_PUMP_BODY_SUBROUTINE[:-1] + jmp_test)
         )
 
-    def test_one_call_catches_up_a_whole_lap_behind(self):
-        # The longest catch-up: the reader two pages past the write head.
+    def test_one_call_catches_up_from_the_deepest_overtake(self):
+        # The longest catch-up: the reader fourteen pages past the write head
+        # (gap 18, the first that reads as an overtake), so the write head
+        # has to travel 30 pages to reach the skip window.
         r = RING_BUFFER_ADDR + 0x1000
-        run = self._call(dst=r - 0x200, r=r)
-        self.assertTrue(self._pumped(run))
+        dst = r - 0xE00
+        self.assertEqual(((dst >> 8) - (r >> 8)) & 0x1F, REU_GOVERNOR_OVERTAKE_GAP_HI)
+        self.assertTrue(self._pumped(self._call(dst=dst, r=r)))
+
+    def test_the_heavy_bus_chunk_also_stops_at_the_skip_window(self):
+        # The bitmap scenes patch REU_PUMP_CHUNK_SIZE_HEAVY_BUS into the
+        # governed body, and only those scenes run it behind a dispatcher.
+        from c64cast.audio.audio_handlers import (
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
+        )
+
+        chunk = REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+        body = patch_chunk_size(
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
+            chunk,
+        )
+        r = RING_BUFFER_ADDR
+        dst = r + REU_PUMP_INITIAL_MARGIN - 0x100
+        seed = _tracker_seed(self.SRC, dst)
+        seed[READ_PTR_HI_ADDR] = r >> 8
+        run = _jsr_tracked_governor(self, seed, body)
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        ram = run.memory.ram
+        src_after = ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
+        dst_after = ram[t + 3] | (ram[t + 4] << 8)
+        self.assertEqual(src_after - self.SRC, 0x100, "one page of heavy-bus chunks")
+        self.assertEqual(dst_after, r + REU_PUMP_INITIAL_MARGIN)
 
 
 class TrackedPumpSelectionTest(unittest.TestCase):

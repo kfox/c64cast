@@ -470,10 +470,11 @@ assert len(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 86
 # host-side ring writes by. A chunk sized for the period at the requested rate
 # is the trap: 100 bytes fits the 125-cycle period at 8 kHz but outlasts the
 # 85-cycle period of the 12 kHz default, and REU-pump video audio then played
-# ~17 % slow against the picture (#661). 50 bytes fits the budget too but
-# measured worse than 40 on a U64 at 12 kHz (see REU_PUMP_CHUNK_SIZE_HEAVY_BUS
-# for the figures): a badline stretches any halt by up to 43 cycles, so the
-# slack under the budget is margin rather than waste. Below 32 the bitmap
+# ~17 % slow against the picture (#661). 50 bytes fits the budget too; 40 is
+# what the best U64 run at 12 kHz used, alongside a 32-byte pump chunk (see
+# REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the figures, which changed both chunks at
+# once): a badline stretches any halt by up to 43 cycles, so the slack under
+# the budget is margin rather than waste. Below 32 the bitmap
 # family's chunk count no longer fits the one-byte counter.
 #
 # After each chunk DMA, only the LENGTH register decrements to 0; the src/dst
