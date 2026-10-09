@@ -1421,6 +1421,11 @@ class QuotedFlagTest(unittest.TestCase):
         line = 'the "--password", then enter it'
         self.assertEqual(redact_secrets(line), line)
 
+    def test_a_flag_that_is_not_itself_quoted_does_not_read_a_quoted_gap(self):
+        for line in ("x --password' 'abc'", 'x --password" "abc\'', 'x --password", "abc"'):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), line)
+
     def test_a_flag_value_that_starts_with_a_letter_and_a_dash_is_still_a_value(self):
         self.assertEqual(redact_secrets("x --password b-x y"), "x --password REDACTED y")
         self.assertEqual(redact_secrets("x --password '-abc' y"), "x --password 'REDACTED' y")
@@ -1634,6 +1639,7 @@ class WordBeforeQuoteTest(unittest.TestCase):
             ("token=Qz'abc' rest", "token=REDACTED' rest"),
             ("token=Qz' x", "token=REDACTED' x"),
             ("token=Qz'", "token=REDACTED'"),
+            ('token=a",\'"&b', 'token=REDACTED",\'"&b'),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
