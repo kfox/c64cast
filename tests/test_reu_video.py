@@ -1600,7 +1600,7 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertLess(stub_idx, vec_idx)
 
     def test_pump_body_stub_uploaded_before_irq_vector_hook_mhires(self):
-        # #551: the chunked mhires dispatcher JSRs $C180 itself, so an RTS has
+        # #551: the chunked dispatchers JSR $C180 themselves, so an RTS has
         # to be there before $0314 is hooked — otherwise the first CIA #1 tick
         # that latches during a REC family calls power-on RAM or a previous
         # scene's pump body.
@@ -1937,7 +1937,7 @@ class ChunkedDispatcherExecutionTest(unittest.TestCase):
 
 class ReuPumpBodySubroutineTest(unittest.TestCase):
     """The open-loop pump body at $C180 is the tracked pump's one copy:
-    REU_IRQ_HANDLER_TRACKED and the chunked mhires bank-swap dispatcher
+    REU_IRQ_HANDLER_TRACKED and the chunked bank-swap dispatchers
     both JSR to it, so it ends with RTS. Caller is responsible for
     saving A; subroutine doesn't preserve registers (X / Y aren't
     touched anyway, A is dead at every call site)."""

@@ -601,7 +601,7 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         self.assertTrue(s.running)
 
     def test_skip_hook_uploads_pump_body_subroutine(self):
-        # The chunked mhires bank-swap dispatcher JSRs to $C180 between
+        # The chunked bank-swap dispatchers JSR to $C180 between
         # families (audio.REU_PUMP_BODY_SUBROUTINE_ADDR). Without the
         # body bytes there, the JSR returns from uninitialized RAM.
         # Verify both the body bytes and the address are uploaded.
@@ -821,7 +821,7 @@ class ReuTrackedHandlerTest(unittest.TestCase):
 
 class ReuTrackedGovernorTest(unittest.TestCase):
     """REU_PUMP_BODY_SUBROUTINE_GOVERNOR, executed through a JSR the way both
-    of its callers reach it (the $C100 entry and the chunked mhires
+    of its callers reach it (the $C100 entry and the chunked bank-swap
     dispatcher). Under the bank-swap video DMAs the open-loop tracked pump
     lapped the NMI reader every 10.5-12 s (#544); the governed one must skip
     a chunk while its write head is half a ring ahead of R, pump otherwise
@@ -948,7 +948,7 @@ class ReuTrackedGovernorTest(unittest.TestCase):
 class TrackedPumpSelectionTest(unittest.TestCase):
     """start_for_reu_staged on the bank-swap path uploads the governed or the
     open-loop pump body at $C180 per reu_pump_governor, with the scene's chunk
-    size patched in: the chunked mhires dispatcher calls that body directly,
+    size patched in: the chunked dispatchers call that body directly,
     so an unpatched one pumps the default chunk on every call it makes."""
 
     def _body(self, *, governor: bool, chunk: int | None = None) -> bytes:

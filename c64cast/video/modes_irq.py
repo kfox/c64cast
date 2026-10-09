@@ -441,8 +441,8 @@ def _make_merged_handler(base: bytes, audio_jmp_target: int = AUDIO_HANDLER_INST
 # Pre-built merged dispatchers. The 6-byte extension replaces base[-3:], so
 # merged = base - 3 + 6: hires 61 → 64 B, mhires 83 → 86 B. Neither is
 # installed: a scene combining REU video bank-swap with the REU audio pump
-# gets the chunked dispatchers below, and these monolithic merges are what
-# those are built and tested against.
+# gets the chunked dispatchers below, which are assembled separately. These
+# monolithic merges remain only as the one-REC-per-family reference.
 BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER = _make_merged_handler(BANK_SWAP_IRQ_HANDLER)
 MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER = _make_merged_handler(MHIRES_BANK_SWAP_IRQ_HANDLER)
 assert len(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 64
@@ -473,9 +473,10 @@ assert len(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 86
 # ~17 % slow against the picture (#661). 50 bytes fits the budget too; 40 is
 # what the best U64 run at 12 kHz used, alongside a 32-byte pump chunk (see
 # REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the figures, which changed both chunks at
-# once): a badline stretches any halt by up to 43 cycles, so the slack under
-# the budget is margin rather than waste. Below 32 the bitmap
-# family's chunk count no longer fits the one-byte counter.
+# once). A badline stretches any halt by up to 43 cycles, more than any chunk
+# the one-byte counter allows can leave free (below 32 the bitmap family's
+# chunk count no longer fits it), so a stretched chunk can still lose a tick;
+# a smaller one only leaves less of the stretch past the period.
 #
 # After each chunk DMA, only the LENGTH register decrements to 0; the src/dst
 # registers auto-increment and stay valid across chunks, so the per-chunk

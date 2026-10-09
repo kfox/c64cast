@@ -3,7 +3,7 @@
 Pure data + pure functions only: the handler byte arrays audio.AudioStreamer
 uploads to C64 RAM (the $C020 NMI DAC routine, the $C100 REU pump IRQ
 handlers, the $C180 pump-body subroutine that modes_irq.py's chunked bank-swap
-dispatcher JSRs into), the ring/pump memory-map constants those bytes are
+dispatchers JSR into), the ring/pump memory-map constants those bytes are
 assembled against, the streamer and pump tuning constants, and the pure ring helper
 stomp_spans. The host-side rate controllers that pace the ring live in
 audio_servo. Nothing here touches hardware or holds state — bring-up, the
@@ -1035,7 +1035,7 @@ def mic_ring_lead_ok(phase: int, chunk: int = REU_PUMP_CHUNK_SIZE) -> bool:
 # screen push rewrites $DF02-$DF08 between pump ticks.
 #
 # It runs at $C180 behind REU_IRQ_HANDLER_TRACKED at $C100, so the chunked
-# mhires dispatcher's inline JSR $C180 calls run the mic pump too, and a
+# bank-swap dispatchers' inline JSR $C180 calls run the mic pump too, and a
 # scene never leaves $C180 holding another pump's body.
 #
 # Byte layout (offsets relative to $C180):
