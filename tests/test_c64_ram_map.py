@@ -173,8 +173,6 @@ _REGIONS: tuple[Region, ...] = (
         _longest(
             mi.BANK_SWAP_IRQ_HANDLER,
             mi.MHIRES_BANK_SWAP_IRQ_HANDLER,
-            mi.BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER,
-            mi.MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER,
             mi.BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             mi.MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             mi.HOSTDMA_SWAP_IRQ_HANDLER,
@@ -193,6 +191,13 @@ _REGIONS: tuple[Region, ...] = (
             mi.FLICKER_TRACKER_LEN,
         ),
         f"{_MI}:FRAME_TRACKER_ADDR",
+    ),
+    Region(
+        "bank_swap",
+        "REU dispatcher state + tracker snapshot",
+        mi.BANK_SWAP_STATE_ADDR,
+        mi.BANK_SWAP_STATE_LEN,
+        f"{_MI}:BANK_SWAP_STATE_ADDR",
     ),
     Region(
         "asid",
@@ -233,6 +238,7 @@ _NOT_A_REGION: dict[str, str] = {
     f"{_API}:_AUDIO_REGION_LO": "lower bound the SID-player relocator keeps clear",
     f"{_API}:_AUDIO_REGION_HI": "upper bound the SID-player relocator keeps clear",
     "c64cast.hw.c64:KERNAL_CIA1_LATCH_PAL": "a CIA #1 timer latch value, not an address",
+    f"{_MI}:REU_VIDEO_SLOT_STRIDE": "the distance between REU staging slots, not an address",
     "c64cast.hw.c64:KERNAL_CIA1_LATCH_NTSC": "a CIA #1 timer latch value, not an address",
     "c64cast.hw.vdc_rom:FRAMEBUF_ADDR": (
         "the frame staging buffer in C128 RAM, used only by the native-128-mode "

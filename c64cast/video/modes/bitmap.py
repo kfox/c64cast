@@ -141,6 +141,9 @@ class BitmapDisplayMode(DisplayMode):
     # or host-DMA): 0 ⇒ bank 0 on screen / paint bank 2 next, 1 ⇒ bank 2 on
     # screen / paint bank 0 next. Subclasses reset it in __init__/setup.
     _displayed_bank: int = 0
+    # The REU staging slot the next REU-staged frame goes into; the push
+    # helpers take it modulo modes_irq.REU_VIDEO_SLOTS.
+    _reu_slot: int = 0
 
     def _hostdma_swap_target(self) -> tuple[int, int, int, int, int, int]:
         """Resolve the current off-screen bank to

@@ -135,17 +135,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
       Each frame's bitmap + screen + color RAM are REUWRITE-staged
       (bus-clean) then dropped into the OFF-SCREEN VIC bank (bitmap +
       screen) and shared $D800 (color) via three REU→main DMAs triggered
-      by a C64-side raster IRQ at vblank. The handler then writes the
-      new bg0 to $D021 and swaps $DD00 to bring up the new bank.
+      by a C64-side raster IRQ. On a later vblank the handler writes the
+      new bg0 to $D021, swaps $DD00 to bring up the new bank, and copies
+      color RAM ahead of the raster.
 
       Runs alongside [audio].use_reu_pump. Both arm $0314, so setup()
       installs MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER — the
-      chunked merged dispatcher — whenever audio_reu_pump_active is
-      set. The color RAM DMA writes to shared $D800 mid-handler,
-      which produces a brief c3-mismatch window across the bank-swap
-      tear line — bounded to one VIC cell row (~8 raster lines) and
-      typically imperceptible on real content (color changes between
-      consecutive frames are small).
+      merged dispatcher — whenever audio_reu_pump_active is set.
     """
 
     name = "mhires"
@@ -277,8 +273,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # None = no prior pick, so the first frame takes the raw argmax.
         self._bg0: int | None = None
         self.use_reu_staged = use_reu_staged
-        # Color RAM ($D800) is shared and un-banked, so the c3 slot still tears
-        # briefly. Mutually exclusive with use_reu_staged
+        # The host-DMA page flip: color RAM ($D800) is shared and un-banked, so
+        # its c3 slot still tears briefly. Mutually exclusive with use_reu_staged
         # (resolve_double_buffer ensures it).
         self.double_buffer = double_buffer
         self.audio_reu_pump_active = audio_reu_pump_active
@@ -464,11 +460,11 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 "mhires: REU bank-swap pipeline armed "
                 "(bank 0 ↔ bank 2, IRQ @ $%04X, tracker @ $%04X, "
                 "color RAM via vblank DMA, audio_pump=%s, "
-                "REC=%s)",
+                "REC=chunked-%dB)",
                 BANK_SWAP_IRQ_HANDLER_ADDR,
                 FRAME_TRACKER_ADDR,
                 self.audio_reu_pump_active,
-                f"chunked-{BANK_SWAP_CHUNK_SIZE}B" if self.audio_reu_pump_active else "monolithic",
+                BANK_SWAP_CHUNK_SIZE,
             )
 
     def teardown(self, api):
@@ -588,9 +584,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._displayed_bank = target
             return
         if self.use_reu_staged:
-            target_bank = 1 - self._displayed_bank
-            push_mhires_via_reu(api, bitmap_bytes, screen_bytes, color_bytes, bg0, target_bank)
-            self._displayed_bank = target_bank
+            push_mhires_via_reu(api, bitmap_bytes, screen_bytes, color_bytes, bg0, self._reu_slot)
+            self._reu_slot += 1
             return
         if self.double_buffer:
             # Color RAM goes into the shared $D800 LAST, just before arming, so
