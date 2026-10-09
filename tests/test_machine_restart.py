@@ -1101,7 +1101,7 @@ class _Follower(_PaintingScene):
 
 class RestartUnderABroadcastFollowerTest(unittest.TestCase):
     def _interlude(
-        self, *, fail_resetup: bool = False
+        self, *, fail_resetup: bool = False, stop_during_restore: bool = False
     ) -> tuple[Playlist, _Follower, list[int], Any]:
         api = _Machine()
         stop = threading.Event()
@@ -1127,7 +1127,13 @@ class RestartUnderABroadcastFollowerTest(unittest.TestCase):
         pl.broadcast_resume = resume
         pl.build_follower_scene = lambda cfg: follower
         restores: list[int] = []
-        pl.on_machine_restart = lambda: restores.append(follower.teardown_count)
+
+        def restore() -> None:
+            restores.append(follower.teardown_count)
+            if stop_during_restore:
+                stop.set()
+
+        pl.on_machine_restart = restore
         pl.broadcast_interrupt.set()
         with self.assertLogs("c64cast.app.playlist", level="WARNING") as logs:
             pl.ensemble_coord.handle_broadcast_interrupt()
@@ -1154,6 +1160,12 @@ class RestartUnderABroadcastFollowerTest(unittest.TestCase):
         self.assertIsNone(pl.current)
         self.assertEqual(pl.index, 0)
         self.assertTrue(any("ending the interlude" in line for line in logs.output), logs.output)
+
+    def test_a_stop_while_the_follower_is_set_up_again_tears_it_down_once(self):
+        pl, follower, _, _ = self._interlude(stop_during_restore=True)
+        self.assertEqual(follower.setup_count, 1)
+        self.assertEqual(follower.teardown_count, 1, "the torn-down follower was torn down again")
+        self.assertIsNone(pl.current)
 
 
 class _Launcher(FakeScene):
