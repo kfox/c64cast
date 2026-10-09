@@ -999,6 +999,34 @@ class FlushOrRaiseOwnWritesTest(unittest.TestCase):
             self.api._emit(0xD021, b"\x00")
             self.api._flush_or_raise("launch", mark)
 
+    def _lose_a_write_mid_setup(self, *_args, **_kwargs):
+        self.api._emit(0xD020, b"\x0e")
+        self.fake1.peer_reset = True
+        self.api._emit(0xD021, b"\x00")
+
+    def test_a_sid_launch_refuses_over_a_write_lost_while_it_uploaded(self):
+        launch = MagicMock()
+        with (
+            patch.object(self.api, "_write_sid_blobs", side_effect=self._lose_a_write_mid_setup),
+            patch.object(self.api, "_post_prg") as post,
+            self._redial_socket(),
+            self.assertLogs("c64cast.hw", level="DEBUG"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "run_sid_player: .*refusing to launch"):
+                self.api._launch_sid_player(launch)
+        post.assert_not_called()
+
+    def test_a_char_rom_dump_refuses_over_a_write_lost_while_it_uploaded_the_stub(self):
+        with (
+            patch.object(self.api, "write_memory_file", side_effect=self._lose_a_write_mid_setup),
+            patch.object(self.api, "_post_prg") as post,
+            self._redial_socket(),
+            self.assertLogs("c64cast.hw", level="DEBUG"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "dump_char_rom: .*refusing to launch"):
+                self.api.dump_char_rom()
+        post.assert_not_called()
+
     def test_a_loss_charged_after_the_mark_still_refuses_the_launch(self):
         self.api._emit(0xD020, b"\x0e")
         self.fake1.peer_reset = True
