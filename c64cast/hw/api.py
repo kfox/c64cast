@@ -2378,8 +2378,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         (the SID payload, the re-INIT stub, ...), so those call sites abort
         the launch instead. Only this thread's writes count: another
         thread's lost write is its own to repeat, and a flush it already
-        consumed the report of must not hide this thread's."""
+        consumed the report of must not hide this thread's.
+
+        A `CommandsMayBeLostError` is a drained flush reporting a loss
+        charged to this thread, possibly before `mark` (a frame the render
+        path lost and never flushed); `mark` alone decides whether it took
+        a write issued since."""
         failure = self._flush_failure()
+        if isinstance(failure, CommandsMayBeLostError):
+            failure = None
         if failure is not None or self.writes_lost_since(mark):
             raise RuntimeError(f"{action}: dma flush failed — refusing to launch")
 

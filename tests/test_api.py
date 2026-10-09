@@ -984,6 +984,26 @@ class FlushOrRaiseOwnWritesTest(unittest.TestCase):
         self.assertFalse(self.api.writes_lost_since(mark))
         self.assertEqual(self.api.delivery_epoch, 1)
 
+    def test_a_loss_charged_before_the_mark_does_not_refuse_the_launch(self):
+        # The render path never flushes, so a frame lost mid-scene is still
+        # pending on the playlist thread when the next scene's launch writes.
+        self.api._emit(0xD020, b"\x0e")
+        self.fake1.peer_reset = True
+        with self._redial_socket(), self.assertLogs("c64cast.hw", level="DEBUG"):
+            self.assertEqual(self.api.delivery_epoch, 1)
+            mark = self.api.write_loss_mark()
+            self.api._emit(0xD021, b"\x00")
+            self.api._flush_or_raise("launch", mark)
+
+    def test_a_loss_charged_after_the_mark_still_refuses_the_launch(self):
+        self.api._emit(0xD020, b"\x0e")
+        self.fake1.peer_reset = True
+        mark = self.api.write_loss_mark()
+        with self._redial_socket(), self.assertLogs("c64cast.hw", level="DEBUG"):
+            self.assertEqual(self.api.delivery_epoch, 1)
+            with self.assertRaisesRegex(RuntimeError, "refusing to launch"):
+                self.api._flush_or_raise("launch", mark)
+
 
 class PutConfigItemTest(unittest.TestCase):
     """put_config_item() issues the REST config-write the REU auto-provisioner
