@@ -307,6 +307,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **After a seek, one badly stamped audio packet no longer slows the
+  recovery from a gap in the sound for the rest of the file.** A packet
+  stamped far behind its picture widened the margin the silence fill keeps
+  for as long as the file played; a seek now starts that measurement over.
+
 - **On a variable-frame-rate video, a stalled picture's silence fill now
   reaches as far past its frames as intended.** How many extra frames the
   buffer reads ahead was sized from the file's nominal frame rate; it now

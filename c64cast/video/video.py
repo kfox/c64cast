@@ -1108,9 +1108,9 @@ class AVFileSource:
         # Resampled samples still to drop from the front of the next audio:
         # the part of a packet that overlaps audio already fed.
         self._audio_trim = 0
-        # Content time of the newest decoded picture this pass, reset by a
-        # seek; and the furthest behind it the file has written a packet of
-        # audio, kept for the file. See `_fill_dry_stretch`.
+        # Content time of the newest decoded picture this pass, and the
+        # furthest behind it the file has written a packet of audio; both
+        # reset by a seek. See `_fill_dry_stretch`.
         self._video_read_s: float | None = None
         self._audio_lag_s = 0.0
         # How far this pass's audio timestamps are shifted to follow on past
@@ -1382,6 +1382,7 @@ class AVFileSource:
         self._audio_fed_s = None
         self._audio_trim = 0
         self._video_read_s = None
+        self._audio_lag_s = 0.0
         self._dry_stall_level, self._dry_window = 0, None
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False

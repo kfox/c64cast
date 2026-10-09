@@ -1749,6 +1749,7 @@ class AlignedAudioTest(unittest.TestCase):
         src._audio_fed_s, src._audio_trim = 40.0, 123
         src._video_read_s, src._dry_stall_level, src._dry_window = 41.0, 2, (5.0, 1, 0.0)
         src._audio_shift_s, src._audio_jump_warned = 1e6, True
+        src._audio_lag_s = 25.0
         self.assertTrue(src._apply_pending_seek())
         self.assertEqual(
             (
@@ -1757,8 +1758,9 @@ class AlignedAudioTest(unittest.TestCase):
                 src._video_read_s,
                 src._dry_stall_level,
                 src._dry_window,
+                src._audio_lag_s,
             ),
-            (None, 0, None, 0, None),
+            (None, 0, None, 0, None, 0.0),
         )
         # A jump the old pass followed on from is no part of the new pass's
         # timeline, and the new pass warns of its own.
