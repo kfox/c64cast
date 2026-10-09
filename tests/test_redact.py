@@ -1551,6 +1551,48 @@ class QuotedSchemeTest(unittest.TestCase):
                 _assert_linear_time(self, make)
 
 
+class WordBeforeQuoteTest(unittest.TestCase):
+    def test_any_word_before_a_quote_that_closes_around_whitespace_opens_a_value(self):
+        for line, want in (
+            ("token=Qz'abc def' rest", "token=REDACTED' rest"),
+            ('token=Qz"abc def" rest', 'token=REDACTED" rest'),
+            ("token=Qz'''abc def''' rest", "token=REDACTED''' rest"),
+            ("token=Qz\\'abc def\\' rest", "token=REDACTED' rest"),
+            ("token=ab12'cd ef' rest", "token=REDACTED' rest"),
+            ("token=ab_cd'ef gh' rest", "token=REDACTED' rest"),
+            ("token=çz'abc def' rest", "token=REDACTED' rest"),
+            ("Bearer Qz'abc def' rest", "Bearer REDACTED' rest"),
+            ("--password Qz'abc def' rest", "--password REDACTED' rest"),
+            ("Authorization: Qz'abc def' rest", "Authorization: REDACTED' rest"),
+            ("token=Qz%27abc def%27 rest", "token=REDACTED rest"),
+            ("x_token=Qz'abc def' and the user's name", "x_token=REDACTED' and the user's name"),
+            ("token=rU'abc def' x", "token=REDACTED' x"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_word_before_a_quote_that_does_not_close_around_whitespace_is_one_word(self):
+        for line, want in (
+            ("token=it's@er2 next", "token=REDACTED next"),
+            ("token=Qz'abc def", "token=REDACTED def"),
+            ("token=Qz'abc' rest", "token=REDACTED' rest"),
+            ("token=Qz' x", "token=REDACTED' x"),
+            ("token=Qz'", "token=REDACTED'"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_long_run_of_words_before_quotes_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "token=Qz'" * 8_000 * s,
+            lambda s: "token=Qz'a " * 4_000 * s,
+            lambda s: "token=" + "a" * 20_000 * s + "'",
+            lambda s: "Bearer " + "Qz'a b' " * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""

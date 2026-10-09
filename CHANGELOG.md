@@ -1674,6 +1674,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 - **The log redactor masks the credential after a quoted scheme.**
   `Authorization: "Basic" ab rest` masked `Basic` and kept `ab`.
 
+- **The log redactor masks a quoted value that follows any word.**
+  `token=Qz'abc def' rest` masked `Qz'abc` and kept `def'`.
+
 - **The log redactor now reads a line instead of pattern-matching it, which
   closes a dozen shapes that let part or all of a secret through to
   `--log-file`, the web console's log tail and the scene snapshot.** Among

@@ -115,6 +115,11 @@ _OPENER = re.compile(
     r"""(?P<prefix> [bBrRuUfF]{0,2} ) (?P<esc> \\+ )? (?P<q> "{3} | '{3} | ["'] )""", re.VERBOSE
 )
 
+#: A word run before a quote that no Python string prefix spells (`Qz'abc def'`).
+_WORD_OPENER = re.compile(
+    r"""(?P<prefix> \w++ ) (?P<esc> \\+ )? (?P<q> "{3} | '{3} | ["'] )""", re.VERBOSE
+)
+
 #: The string prefixes Python accepts, lowercased.
 _STRING_PREFIXES = frozenset({"", "b", "r", "u", "f", "br", "rb", "fr", "rf"})
 
@@ -473,11 +478,28 @@ def _opener(text: str, p: int) -> re.Match[str] | None:
     return m if m is not None and m.group("prefix").lower() in _STRING_PREFIXES else None
 
 
+def _word_opener(line: _Line, v: int) -> re.Match[str] | None:
+    """The quote after a word run at `v` that is no string prefix, when it may
+    have opened the value. Letters a prefix could be (`rU'x`) always may. Any
+    other run only when the quote closes before the end of the line with
+    whitespace inside: `it's@er2 next` is one word and then another, and
+    reading the `'` there as an opener would swallow `next`."""
+    shaped = _OPENER.match(line.text, v)
+    if shaped is not None:
+        return shaped
+    shaped = _WORD_OPENER.match(line.text, v)
+    if shaped is None:
+        return None
+    quoted = _quoted_end(line, shaped, shaped.end())
+    space = line.stops("space").first(shaped.end(), _UNREACHABLE)
+    return shaped if quoted < len(line.text) and space is not None and space < quoted else None
+
+
 def _value(line: _Line, v: int, d: int, kind: str) -> Span | None:
     """The span of the value starting at `v`, quoted or not; an unquoted one
     ends at a `kind` stop no deeper than `d`, which is its separator's depth."""
     opener = _opener(line.text, v)
-    if opener is None and (shaped := _OPENER.match(line.text, v)) is not None:
+    if opener is None and (shaped := _word_opener(line, v)) is not None:
         # Letters no Python prefix spells, then a quote: the letters start the
         # value, and the quote may still have opened it, so the mask runs to
         # whichever end is later. Read as unquoted alone, `rU'abc def'` left
@@ -529,7 +551,7 @@ def _credential(line: _Line, c: int, gap: str, d: int) -> Span | None:
     if c >= len(line.text):
         return None
     kind = "unquoted+" if "+" in gap else "unquoted"
-    if _OPENER.match(line.text, c) is not None:
+    if _word_opener(line, c) is not None or _OPENER.match(line.text, c) is not None:
         return _value(line, c, d, kind)
     return (c, line.stop(kind, c + 1, d))
 
@@ -839,7 +861,8 @@ def redact_secrets(text: str) -> str:
     `'''` or `\"\"\"`, perhaps backslash-escaped or after a string prefix
     Python accepts (`b`, `rb`, …) — runs to the matching quote that no
     backslash escapes and no letter or digit follows; when nothing closes a
-    prefixed one, the prefix letters are masked too. A quote deeper than the
+    prefixed one, the prefix letters are masked too, and so is any other word
+    before a quote that closes around whitespace. A quote deeper than the
     value's separator (`pwd=%22…`) runs to its match as well, and the value
     goes on from there to the separator's own next stop.
 
