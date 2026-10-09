@@ -1390,6 +1390,75 @@ class QuotedFlagTest(unittest.TestCase):
         _assert_linear_time(self, lambda s: "\\" * 20_000 * s + "--password' 'x")
 
 
+class DigestParametersTest(unittest.TestCase):
+    def test_every_digest_parameter_is_masked(self):
+        for line, want in (
+            (
+                'Authorization: Digest username="u", response="abc123", cnonce="zz"',
+                "Authorization: Digest REDACTED",
+            ),
+            ("Proxy-Authorization: Digest abc", "Proxy-Authorization: Digest REDACTED"),
+            ("Authorization: Digest abc", "Authorization: Digest REDACTED"),
+            (
+                'Authorization: Digest username="u", uri="/x?a=1&b=2", response="abc" tail',
+                "Authorization: Digest REDACTED",
+            ),
+            ("Authorization: digest a=b, c=\"d e\", f='g h'", "Authorization: digest REDACTED"),
+            ('Authorization: Digest username="u", response="abc', "Authorization: Digest REDACTED"),
+            (
+                "Authorization: Digest username=u, response=abc&n=1",
+                "Authorization: Digest REDACTED&n=1",
+            ),
+            (
+                'x --authorization Digest username="u", response="abc"',
+                "x --authorization Digest REDACTED",
+            ),
+            (
+                "h=Authorization%3A%20Digest%20username%3D%22u%22%2C%20response%3D%22abc%22&x=1",
+                "h=Authorization%3A%20Digest%20REDACTED&x=1",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_the_value_ends_at_the_quote_that_closes_the_header(self):
+        for line, want in (
+            (
+                "{'Authorization': 'Digest username=\"u\", response=\"abc\"', 'next': 'v'}",
+                "{'Authorization': 'Digest REDACTED', 'next': 'v'}",
+            ),
+            (
+                '{"Authorization": "Digest username=\\"u\\", response=\\"abc\\"", "next": "v"}',
+                '{"Authorization": "Digest REDACTED", "next": "v"}',
+            ),
+            (
+                '"Authorization: Digest username=\\"u\\", response=\\"abc\\"" next',
+                '"Authorization: Digest REDACTED" next',
+            ),
+            (
+                '\'Authorization: Digest username="u", response="abc"\' next',
+                "'Authorization: Digest REDACTED' next",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_another_scheme_still_ends_at_its_first_word(self):
+        self.assertEqual(
+            redact_secrets("Authorization: Basic abc, d=e"), "Authorization: Basic REDACTED, d=e"
+        )
+
+    def test_a_long_run_of_digest_headers_is_redacted_in_linear_time(self):
+        for make in (
+            lambda s: "Authorization: Digest a=b " * 4_000 * s,
+            lambda s: 'Authorization: Digest a="' * 4_000 * s,
+            lambda s: "Authorization: Digest " + 'a="b" ' * 8_000 * s + "'",
+            lambda s: 'Authorization: Digest \\\\"' * 4_000 * s,
+        ):
+            with self.subTest(line=make(1)[:30]):
+                _assert_linear_time(self, make)
+
+
 class ConfigureLoggingWiringTest(RestoresLogging):
     """`configure_logging` reconfigures the root logger and the held-back
     library loggers, so each test undoes all of it."""

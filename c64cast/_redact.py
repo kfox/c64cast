@@ -339,6 +339,7 @@ class _Line:
         self.text = text
         self._depth = depth
         self._stops: dict[str, _Stops] = {}
+        self.params_scanned: Span = (0, 0)
 
     def depth(self, i: int) -> int:
         return 0 if self._depth is None else self._depth[i]
@@ -646,8 +647,50 @@ def _past_scheme(line: _Line, v: int, d: int, span: Span | None) -> Span | None:
         # `_value`: bounded by the quoted span alone, `%22Basic%22 x` kept `x`.
         credential = (gap_end, max(span[1], gap_end if credential is None else credential[1]))
     if _is_auth_scheme(scheme):
+        if credential is not None and scheme.group("scheme").lower() == "digest":
+            return (credential[0], max(credential[1], _params_end(line, gap_end, d)))
         return credential
     return span if credential is None else (v, credential[1])
+
+
+def _params_end(line: _Line, c: int, d: int) -> int:
+    """Where the parameter list of a `Digest` credential starting at `c` ends
+    in a value `d` deep: at the end of the line, at an `&` outside every quoted
+    parameter that is no deeper than `d`, or at a quote that opens none, which
+    is the quote closing the header. A parameter's quote opens it when an `=`
+    comes before it, and closes at the next such quote with as many backslashes
+    before it, so `response=\\"a\\"` inside a JSON string is read whole. The
+    list holds spaces, commas and quotes, which end an ordinary value, so the
+    response and the cnonce would be left in view. A `Digest` that starts
+    inside a stretch already read ends at the end of the line instead of
+    reading it again, which a run of `Digest` words would make quadratic."""
+    text = line.text
+    if line.params_scanned[0] < c < line.params_scanned[1]:
+        return len(text)
+    quote: tuple[str, int] | None = None
+    backslashes = 0
+    i = c
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            backslashes += 1
+        else:
+            if quote is None:
+                if ch == "&" and line.depth(i) <= d:
+                    break
+                if ch in "\"'":
+                    if i - backslashes - 1 < c or text[i - backslashes - 1] != "=":
+                        i -= backslashes
+                        break
+                    quote = (ch, backslashes)
+            elif (ch, backslashes) == quote:
+                quote = None
+            backslashes = 0
+        i += 1
+    else:
+        i = len(text)
+    line.params_scanned = (c, i)
+    return i
 
 
 def _is_auth_scheme(m: re.Match[str]) -> bool:
@@ -718,9 +761,12 @@ def redact_secrets(text: str) -> str:
       (`--password X`), a space or tab, except where a `_`/`-` name is the
       whole flag (`--key X`);
     * the credential after `Bearer` and a space, and in an `Authorization:`
-      value or an `--authorization` flag's, after a registered scheme (`Basic`, `token`, …) and any
-      punctuation around it, which stay in view; a first word that is no
-      known scheme is masked with the rest, punctuation and all;
+      value or an `--authorization` flag's, after a registered scheme
+      (`Basic`, `token`, …) and any punctuation around it, which stay in view;
+      a first word that is no known scheme is masked with the rest,
+      punctuation and all, and after `Digest` the whole parameter list goes,
+      to the end of the line, an `&` outside a quoted parameter, or the quote
+      closing the header;
     * the userinfo of a URL (`https://user:pass@host` comes back as
       `https://REDACTED@host`) — a private media file is legitimately reached
       that way, and FFmpeg quotes the URL it failed on into its errors.
