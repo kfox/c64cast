@@ -338,6 +338,140 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertIsNone(idx)
 
 
+class _WaitSignalEvent(threading.Event):
+    """A stop event that says when somebody first sleeps on it, which is how a
+    test knows a wait loop has taken its place without guessing at a delay."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.slept = threading.Event()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.slept.set()
+        return super().wait(timeout)
+
+
+class FairAudioHandoffTest(unittest.TestCase):
+    """The ensemble audio slot goes to whoever has waited longest, so a holder
+    that releases and claims again at once cannot starve a waiting system."""
+
+    def _ensemble(self, names):
+        return Ensemble(stacks=[fake_system_stack(n) for n in names], stop_event=threading.Event())
+
+    def _waiting_playlist(self, scenes):
+        pl = _build_playlist(scenes)
+        pl.stop_event = _WaitSignalEvent()
+        ens = self._ensemble(["sys", "other", "third"])
+        pl.ensemble = ens
+        ens.stop_event = pl.stop_event
+        ens.try_claim_audio("other")
+        return pl, ens
+
+    def _in_thread(self, pl, fn):
+        result: list = []
+        t = threading.Thread(target=lambda: result.append(fn()))
+        t.start()
+
+        def finish() -> None:
+            pl.stop_event.set()
+            t.join(5)
+
+        self.addCleanup(finish)
+        self.assertTrue(pl.stop_event.slept.wait(5), "the waiter never went to sleep")
+        return t, result
+
+    def test_a_free_slot_goes_to_the_longest_waiter(self):
+        ens = self._ensemble(["a", "b", "c"])
+        ens.try_claim_audio("a")
+        ens.join_audio_queue("b")
+        ens.join_audio_queue("c")
+        ens.release_audio("a")
+        self.assertFalse(ens.try_claim_audio("a"))
+        self.assertFalse(ens.try_claim_audio("c"))
+        self.assertTrue(ens.try_claim_audio("b"))
+        self.assertEqual(ens.audio_queue, ["c"])
+
+    def test_joining_twice_keeps_the_first_place(self):
+        ens = self._ensemble(["a", "b"])
+        ens.join_audio_queue("a")
+        ens.join_audio_queue("b")
+        ens.join_audio_queue("a")
+        self.assertEqual(ens.audio_queue, ["a", "b"])
+
+    def test_the_holder_re_claiming_its_own_slot_ignores_the_line(self):
+        ens = self._ensemble(["a", "b"])
+        ens.try_claim_audio("a")
+        ens.join_audio_queue("b")
+        self.assertTrue(ens.try_claim_audio("a"))
+
+    def test_a_holder_that_releases_and_claims_again_cannot_starve_wait_for_audio_claim(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, lambda: pl.ensemble_coord.wait_for_audio_claim(scene))
+            ens.release_audio("other")
+            self.assertFalse(
+                ens.try_claim_audio("other"),
+                "the holder took the slot back from the waiter",
+            )
+            t.join(5)
+        self.assertEqual(result, [True])
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertEqual(ens.audio_queue, [])
+
+    def test_a_holder_that_releases_and_claims_again_cannot_starve_resolve_next_index(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, pl.ensemble_coord.resolve_next_index)
+            ens.release_audio("other")
+            self.assertFalse(
+                ens.try_claim_audio("other"),
+                "the holder took the slot back from the waiter",
+            )
+            t.join(5)
+        self.assertEqual(result, [0])
+        self.assertEqual(ens.audio_holder, "sys")
+        self.assertEqual(ens.audio_queue, [])
+
+    def test_a_waiter_that_stops_leaves_the_line(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, lambda: pl.ensemble_coord.wait_for_audio_claim(scene))
+            self.assertEqual(ens.audio_queue, ["sys"])
+            pl.stop_event.set()
+            t.join(5)
+        self.assertEqual(result, [False])
+        self.assertEqual(ens.audio_queue, [])
+        ens.release_audio("other")
+        self.assertTrue(ens.try_claim_audio("third"))
+
+    def test_a_resolver_that_stops_leaves_the_line(self):
+        scene = FakePlaylistScene("video", wants_audio=True)
+        pl, ens = self._waiting_playlist([scene])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            t, result = self._in_thread(pl, pl.ensemble_coord.resolve_next_index)
+            self.assertEqual(ens.audio_queue, ["sys"])
+            pl.stop_event.set()
+            t.join(5)
+        self.assertEqual(result, [None])
+        self.assertEqual(ens.audio_queue, [])
+        ens.release_audio("other")
+        self.assertTrue(ens.try_claim_audio("third"))
+
+    def test_a_rotation_with_a_runnable_scene_skips_without_joining_the_line(self):
+        gated = FakePlaylistScene("video", wants_audio=True)
+        live = FakePlaylistScene("live", wants_audio=False)
+        pl = _build_playlist([gated, live])
+        ens = self._ensemble(["sys", "other"])
+        pl.ensemble = ens
+        ens.try_claim_audio("other")
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            self.assertEqual(pl.ensemble_coord.resolve_next_index(), 1)
+        self.assertEqual(ens.audio_queue, [])
+
+
 class SafeTeardownReleasesLockTest(unittest.TestCase):
     def test_teardown_releases_audio_slot_when_flag_set(self):
         scene = FakePlaylistScene("video", wants_audio=True)

@@ -591,7 +591,18 @@ class Playlist:
         elif self.transitioning and self.current.is_done:
             self.fades.fade_out(self.current)
             self.safe_teardown(self.current)
-            self.current = self.scenes[self.index]
+            upcoming = self.scenes[self.index]
+            if self.ensemble_coord.claim_lapsed(upcoming):
+                # The card's setup gave the slot up for a link outage and left
+                # it to be resolved again, which may skip a scene another
+                # system now holds the slot for.
+                self.log.info(
+                    "the slot for %r was released during its card; resolving again", upcoming.name
+                )
+                self.current = None
+                self.transitioning = False
+                return
+            self.current = upcoming
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
             self.safe_setup(self.current)
             self.transitioning = False
@@ -890,8 +901,15 @@ class Playlist:
                 self.log.exception("teardown of %r before its setup retry failed", scene.name)
             # Not before the teardown: a half-set-up scene the link reaches
             # again can sound (a MIDI scene's reader drives the SID) while
-            # another system holds the slot.
-            if claimant is not None and not self.ensemble_coord.wait_for_audio_claim(claimant):
+            # another system holds the slot. A card does not claim it back for
+            # the scene it announces: waiting here would hold the card's setup
+            # on a slot that scene may never get, so the playlist resolves the
+            # announced scene again when the card ends (`claim_lapsed`).
+            if (
+                claimant is not None
+                and claimant is scene
+                and not self.ensemble_coord.wait_for_audio_claim(claimant)
+            ):
                 return False
 
     def _release_audio_for_wait(
@@ -902,8 +920,10 @@ class Playlist:
         return the scene to claim it back for. The wait for the link has no
         bound, and holding the slot through it would skip another system's
         audio-bearing scenes, or hold a single-scene one, for as long as
-        this machine is unplugged. Claiming it back can wait on the system
-        that took it meanwhile."""
+        this machine is unplugged. Claiming it back for `scene` itself can
+        wait on the system that took it meanwhile, in line behind any
+        system already waiting; for an announced scene it is left to the
+        run loop (`claim_lapsed`)."""
         claimant = self.ensemble_coord.audio_claimant(scene, announcing)
         if claimant is None or not self.ensemble_coord.release_audio_claim(claimant):
             return None

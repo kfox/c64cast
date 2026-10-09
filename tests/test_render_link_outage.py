@@ -928,20 +928,56 @@ class SetupOutageReleasesTheEnsembleAudioSlotTest(unittest.TestCase):
         self.assertTrue(scene.__dict__.get("_audio_lock_held"))
         self.assertEqual(scene.setup_count, 2)
 
-    def test_an_interstitial_waiting_on_the_link_frees_the_slot_claimed_for_the_next_scene(self):
+    def _card_that_waited_out_an_outage(self) -> tuple[Playlist, Any, _AudioScene, Any]:
         api = _OutageApi(down_probes=3)
         upcoming = _AudioScene(api, lossy_setups=0)
         pl, ens = self._ensemble_playlist(api, upcoming)
         card = _LossySetupScene(api, lossy_setups=1)
         pl.interstitial_factory = lambda name: card
+        pl.scenes = [upcoming, _LossySetupScene(api, lossy_setups=0)]
+        pl.single_scene = False
         holders: list[str | None] = []
         api.on_probe = lambda: holders.append(ens.audio_holder)
         with self.assertLogs("c64cast.app.playlist", level="INFO"):
             pl._enter_interstitial()
         self.assertEqual(holders, ["sys"] + [None] * 3, "the slot stayed held through the wait")
+        self.assertEqual(card.setup_count, 2)
+        return pl, ens, upcoming, card
+
+    def test_an_interstitial_waiting_on_the_link_frees_the_slot_claimed_for_the_next_scene(self):
+        _, ens, upcoming, _ = self._card_that_waited_out_an_outage()
+        self.assertIsNone(ens.audio_holder, "the card waited on a slot for a scene it is not")
+        self.assertFalse(upcoming.__dict__.get("_audio_lock_held"))
+
+    def test_the_scene_a_card_announced_is_resolved_again_when_the_card_ends(self):
+        pl, ens, upcoming, card = self._card_that_waited_out_an_outage()
+        self.assertTrue(ens.try_claim_audio("other"))
+        card.is_done = True
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._advance()
+        self.assertIsNone(pl.current)
+        self.assertEqual(upcoming.setup_count, 0, "the scene set up without the slot")
+        ens.release_audio("other")
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._advance()
         self.assertEqual(ens.audio_holder, "sys")
         self.assertTrue(upcoming.__dict__.get("_audio_lock_held"))
-        self.assertEqual(card.setup_count, 2)
+        self.assertTrue(pl.transitioning)
+
+    def test_a_card_whose_slot_was_never_released_goes_straight_to_its_scene(self):
+        api = _OutageApi(down_probes=0)
+        upcoming = _AudioScene(api, lossy_setups=0)
+        pl, ens = self._ensemble_playlist(api, upcoming)
+        card = _LossySetupScene(api, lossy_setups=0)
+        pl.interstitial_factory = lambda name: card
+        pl.scenes = [upcoming, _LossySetupScene(api, lossy_setups=0)]
+        pl.single_scene = False
+        pl._enter_interstitial()
+        card.is_done = True
+        pl._advance()
+        self.assertIs(pl.current, upcoming)
+        self.assertEqual(upcoming.setup_count, 1)
+        self.assertEqual(ens.audio_holder, "sys")
 
     def test_a_scene_that_announces_nothing_leaves_another_scenes_slot_alone(self):
         # A broadcast follower or a launched clip replacing an "UP NEXT" card

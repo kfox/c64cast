@@ -329,25 +329,34 @@ class EnsembleCoordinator:
         Used by single-scene mode (which can't skip itself, so the
         only sensible option is to wait). Multi-scene playlists use
         `resolve_next_index` instead — that one skips past gated
-        scenes to a runnable one before falling back to wait."""
+        scenes to a runnable one before falling back to wait.
+
+        The wait is a place in the ensemble's first-come-first-served line
+        (`Ensemble.audio_queue`), left however the wait ends: a holder that
+        releases and claims again at once cannot take the slot from a
+        system already waiting for it."""
         pl = self._pl
         if pl.ensemble is None or not scene.competes_for_audio_lock():
             return True
         poll_interval = 0.1
         first_wait = True
-        while not pl.stop_event.is_set():
-            if pl.ensemble.try_claim_audio(pl.name):
-                scene.__dict__["_audio_lock_held"] = True
-                return True
-            if first_wait:
-                pl.log.info(
-                    "audio-bearing scene %r waiting — slot held by %s",
-                    scene.name,
-                    pl.ensemble.audio_holder,
-                )
-                first_wait = False
-            pl.stop_event.wait(timeout=poll_interval)
-        return False
+        pl.ensemble.join_audio_queue(pl.name)
+        try:
+            while not pl.stop_event.is_set():
+                if pl.ensemble.try_claim_audio(pl.name):
+                    scene.__dict__["_audio_lock_held"] = True
+                    return True
+                if first_wait:
+                    pl.log.info(
+                        "audio-bearing scene %r waiting — slot held by %s",
+                        scene.name,
+                        pl.ensemble.audio_holder or "a system ahead of it in line",
+                    )
+                    first_wait = False
+                pl.stop_event.wait(timeout=poll_interval)
+            return False
+        finally:
+            pl.ensemble.leave_audio_queue(pl.name)
 
     def resolve_next_index(self) -> int | None:
         """Walk forward from playlist.index in ensemble mode to find the
@@ -362,6 +371,11 @@ class EnsembleCoordinator:
         Side effect: on a successful audio-bearing claim, marks the
         chosen scene so its eventual release releases the slot.
 
+        Only the wait for every scene to be gated takes a place in the
+        ensemble's audio line (see `wait_for_audio_claim`); a rotation that
+        has a runnable scene skips past a gated one without queueing, and
+        is refused the slot while others wait for it like any other claim.
+
         In single-system mode (ensemble is None) returns playlist.index
         directly — no gating possible."""
         pl = self._pl
@@ -370,27 +384,31 @@ class EnsembleCoordinator:
         n = len(pl.scenes)
         poll_interval = 0.1
         first_full_wait = True
-        while not pl.stop_event.is_set():
-            first_pass_log = first_full_wait
-            for offset in range(n):
-                idx = (pl.index + offset) % n
-                scene = pl.scenes[idx]
-                if not scene.competes_for_audio_lock():
-                    return idx
-                if pl.ensemble.try_claim_audio(pl.name):
-                    scene.__dict__["_audio_lock_held"] = True
-                    return idx
-                if first_pass_log:
-                    pl.log.info(
-                        "skipping audio-bearing %r — slot held by %s",
-                        scene.name,
-                        pl.ensemble.audio_holder,
-                    )
-            if first_full_wait:
-                pl.log.info("all scenes audio-gated; waiting for ensemble audio slot to free")
-                first_full_wait = False
-            pl.stop_event.wait(timeout=poll_interval)
-        return None
+        try:
+            while not pl.stop_event.is_set():
+                first_pass_log = first_full_wait
+                for offset in range(n):
+                    idx = (pl.index + offset) % n
+                    scene = pl.scenes[idx]
+                    if not scene.competes_for_audio_lock():
+                        return idx
+                    if pl.ensemble.try_claim_audio(pl.name):
+                        scene.__dict__["_audio_lock_held"] = True
+                        return idx
+                    if first_pass_log:
+                        pl.log.info(
+                            "skipping audio-bearing %r — slot held by %s",
+                            scene.name,
+                            pl.ensemble.audio_holder or "a system ahead of it in line",
+                        )
+                if first_full_wait:
+                    pl.log.info("all scenes audio-gated; waiting for ensemble audio slot to free")
+                    first_full_wait = False
+                pl.ensemble.join_audio_queue(pl.name)
+                pl.stop_event.wait(timeout=poll_interval)
+            return None
+        finally:
+            pl.ensemble.leave_audio_queue(pl.name)
 
     def maybe_install_conductor(self, scene: Scene) -> None:
         """If this scene's SceneCfg has `orchestrate = true` AND we're
@@ -461,6 +479,16 @@ class EnsembleCoordinator:
             if candidate is not None and candidate.__dict__.get("_audio_lock_held", False):
                 return candidate
         return None
+
+    def claim_lapsed(self, scene: Scene) -> bool:
+        """Whether `scene` contends for the ensemble audio slot and this
+        playlist no longer holds it for it: a scene whose slot was released
+        while its "UP NEXT" card waited out a link outage."""
+        return (
+            self._pl.ensemble is not None
+            and scene.competes_for_audio_lock()
+            and not scene.__dict__.get("_audio_lock_held", False)
+        )
 
     def release_audio_claim(self, scene: Scene) -> bool:
         """Release the ensemble audio slot if `scene` holds it, and say

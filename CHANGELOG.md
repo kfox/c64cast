@@ -314,6 +314,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   that never landed. A lost write is now charged to the thread that sent it,
   and a launch refuses only for its own thread's losses.
 
+- **In an ensemble, a system waiting for the audio slot can no longer be
+  starved by another system.** A system whose playlist was all
+  audio-bearing scenes released the slot and took it back within
+  microseconds, so a system waiting for it (a single looping scene, a
+  jump, a setup that had waited out a link outage) could wait for ever.
+  The slot now goes to whichever system has waited longest. A scene's
+  "UP NEXT" card that waited out an outage no longer waits for the slot
+  on the next scene's behalf; the playlist resolves that scene again when
+  the card ends.
+
 - **A scene's setup is no longer run again because something else lost a
   write.** The playlist judged whether a setup had landed by whether any
   write on the link had failed meanwhile, so a failed audio or poll-thread
