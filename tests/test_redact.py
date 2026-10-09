@@ -1690,7 +1690,10 @@ class CookieTest(unittest.TestCase):
                 "Set-Cookie: sid=REDACTED; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600; Domain=x.com",
             ),
             ('set-cookie: sid="a;b"; Path=/', "set-cookie: sid=REDACTED; Path=/"),
-            ("Set-Cookie: sid=abc, other=def; Path=/", "Set-Cookie: sid=REDACTED; Path=/"),
+            (
+                "Set-Cookie: sid=abc, other=def; Path=/",
+                "Set-Cookie: sid=REDACTED, other=REDACTED; Path=/",
+            ),
             ("Set-Cookie: sid=abc", "Set-Cookie: sid=REDACTED"),
             ("Set-Cookie: sid=abc;", "Set-Cookie: sid=REDACTED;"),
             ("Set-Cookie: =abc; Path=/", "Set-Cookie: REDACTED; Path=/"),
@@ -1701,6 +1704,39 @@ class CookieTest(unittest.TestCase):
                 "{'Set-Cookie': 'sid=abc; Path=/', 'next': 'v'}",
                 "{'Set-Cookie': 'sid=REDACTED; Path=/', 'next': 'v'}",
             ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_each_cookie_in_a_joined_set_cookie_header_loses_its_value(self):
+        for line, want in (
+            (
+                "Set-Cookie: tracker=1; Path=/, session=s; HttpOnly",
+                "Set-Cookie: tracker=REDACTED; Path=/, session=REDACTED; HttpOnly",
+            ),
+            (
+                "{'Set-Cookie': 'tracker=1; Path=/, session=s; HttpOnly'}",
+                "{'Set-Cookie': 'tracker=REDACTED; Path=/, session=REDACTED; HttpOnly'}",
+            ),
+            (
+                "Set-Cookie: a=1; Expires=Wed, 09 Jun 2021 10:18:14 GMT, b=s; Path=/",
+                "Set-Cookie: a=REDACTED; Expires=Wed, 09 Jun 2021 10:18:14 GMT, b=REDACTED; Path=/",
+            ),
+            ("Set-Cookie: a=1,path=s; Path=/", "Set-Cookie: a=REDACTED,path=REDACTED; Path=/"),
+            (
+                'Set-Cookie: a=1; x="q, b=c"; HttpOnly',
+                "Set-Cookie: a=REDACTED; x=REDACTED; HttpOnly",
+            ),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_secrets(line), want)
+
+    def test_a_set_cookie_item_naming_no_attribute_is_masked(self):
+        for line, want in (
+            ("Set-Cookie: x; session=s", "Set-Cookie: REDACTED; session=REDACTED"),
+            ("Set-Cookie: =; session=s", "Set-Cookie: REDACTED; session=REDACTED"),
+            ("Set-Cookie: a=1; s; Secure", "Set-Cookie: a=REDACTED; REDACTED; Secure"),
+            ("Cookie: a=1; path=s; Domain=t", "Cookie: a=REDACTED; path=REDACTED; Domain=REDACTED"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
@@ -1795,6 +1831,14 @@ class CookieTest(unittest.TestCase):
                 "h=Cookie:%20a%3Db%3B%20c%3Dd%26x%3D1",
                 "h=Cookie:%20a%3DREDACTED%3B%20c%3DREDACTED",
             ),
+            (
+                "h=Cookie%3A%20a%3Dx%26y%3B%20s%3Dt&n=1",
+                "h=Cookie%3A%20a%3DREDACTED%3B%20s%3DREDACTED&n=1",
+            ),
+            (
+                "h=Set-Cookie%3A%20a%3Dx%26y%3B%20Path%3D%2F%2C%20s%3Dt&n=1",
+                "h=Set-Cookie%3A%20a%3DREDACTED%3B%20Path%3D%2F%2C%20s%3DREDACTED&n=1",
+            ),
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
@@ -1824,6 +1868,10 @@ class CookieTest(unittest.TestCase):
             lambda s: "'Cookie: a=b' " * 4_000 * s,
             lambda s: "'Cookie: '" + " " * 40_000 * s + "x",
             lambda s: "cookie=" + "a b=" * 8_000 * s,
+            lambda s: "Set-Cookie: " + ",a=" * 8_000 * s,
+            lambda s: "Set-Cookie: " + ",    " * 8_000 * s,
+            lambda s: "Set-Cookie: a=1" + "; Path=/" * 8_000 * s,
+            lambda s: "Cookie%3A%20" + "a%3Dx%26" * 4_000 * s,
         ):
             with self.subTest(line=make(1)[:30]):
                 _assert_linear_time(self, make)

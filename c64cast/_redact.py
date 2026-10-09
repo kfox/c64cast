@@ -581,8 +581,8 @@ def _key_values(line: _Line) -> Iterator[Span]:
             v, d = tail.end(), line.depth(tail.start("sep"))
         closer = _enclosing_quote(line, name)
         if name.group("cookie") is not None:
-            first_only = name.group("cookie").lower().startswith("set")
-            yield from _cookie_values(line, v, d, first_only, closer)
+            set_cookie = name.group("cookie").lower().startswith("set")
+            yield from _cookie_values(line, v, d, set_cookie, closer)
             continue
         span = _value(line, v, d, "unquoted")
         if name.group("header") is not None:
@@ -685,21 +685,26 @@ def _flag_value_start(line: _Line, name: re.Match[str]) -> tuple[int, int] | Non
 
 
 def _cookie_values(
-    line: _Line, v: int, d: int, first_only: bool, closer: _Closer | None
+    line: _Line, v: int, d: int, set_cookie: bool, closer: _Closer | None
 ) -> list[Span]:
     """The values in a `Cookie` header's `name=value; name=value` list that
-    starts at `v`, `d` deep, or in a `Set-Cookie` header's first pair when
-    `first_only`: the attributes after it (`Path`, `Expires`, `HttpOnly`) are
-    no secret. A quoted list ends at its closing quote, unless a `;` follows
-    that quote, which makes the quoted string the list's first item
-    (`"a"; b=c`). An unquoted list ends where `_params_end` stops, given
-    `closer`, the quote of the string the header is written in; an `&` ends
-    it only in an encoded value, since a raw cookie may hold one. A list
-    inside a stretch already read is masked whole rather than split again,
-    which keeps a run of `cookie=` linear. An item is masked whole when what
-    comes before its first `=` is no cookie name, or nothing but `=` comes
-    after it: `cookie=S x=y` and `cookie=dGVzdA==` are a cookie with its name
-    left off."""
+    starts at `v`, `d` deep, or in a `Set-Cookie` header when `set_cookie`.
+    There the first pair is the cookie and the attributes after it (`Path`,
+    `Expires`, `HttpOnly`) are no secret, so an item naming one of
+    `_COOKIE_ATTRIBUTES` stays and any other is masked like a cookie. A `,`
+    before a cookie name and `=` starts another cookie, whose first pair is
+    masked whatever its name: a client joins repeated `Set-Cookie` headers
+    that way, and an `Expires` date's comma is followed by no `=`. A quoted
+    list ends at its closing quote, unless a `;` follows that quote, which
+    makes the quoted string the list's first item (`"a"; b=c`). An unquoted
+    list ends where `_params_end` stops, given `closer`, the quote of the
+    string the header is written in; an `&` ends it only when it is
+    shallower than the header's separator, since a cookie may hold one, raw
+    or encoded as deep as the header. A list inside a stretch already read
+    is masked whole rather than split again, which keeps a run of `cookie=`
+    linear. An item is masked whole when what comes before its first `=` is
+    no cookie name, or nothing but `=` comes after it: `cookie=S x=y` and
+    `cookie=dGVzdA==` are a cookie with its name left off."""
     text = line.text
     opener = _opener(text, v)
     span = None
@@ -713,22 +718,25 @@ def _cookie_values(
         if text.startswith(";", after):
             span = None
             opener = None
-            start, end = v, _params_end(line, after, d, closer, amp_ends=d > 0)
+            start, end = v, _params_end(line, after, d, closer, amp_below=d)
         else:
             start, end = span
             if not line.params_scanned[0] < start < line.params_scanned[1]:
                 line.params_scanned = span
     elif opener is None:
-        start, end = v, _params_end(line, v, d, closer, amp_ends=d > 0)
+        start, end = v, _params_end(line, v, d, closer, amp_below=d)
     else:
         start = opener.end()
-        end = _params_end(line, start, d, _opener_closer(line, opener), amp_ends=d > 0)
+        end = _params_end(line, start, d, _opener_closer(line, opener), amp_below=d)
     if line.params_scanned[0] < start < line.params_scanned[1]:
         return [(start, len(text) if span is None else end)] if start < end else []
     spans: list[Span] = []
-    for a, b in _cookie_items(text, start, end):
+    for a, b, first in _cookie_items(text, start, end, set_cookie):
         eq = text.find("=", a, b)
-        if eq >= 0 and _COOKIE_NAME.fullmatch(text, a, len(text[a:eq].rstrip()) + a):
+        name_end = len(text[a : b if eq < 0 else eq].rstrip()) + a
+        if set_cookie and not first and text[a:name_end].lower() in _COOKIE_ATTRIBUTES:
+            continue
+        if eq >= 0 and _COOKIE_NAME.fullmatch(text, a, name_end):
             value = eq + 1
             while value < b and text[value].isspace():
                 value += 1
@@ -736,8 +744,6 @@ def _cookie_values(
                 a = value
         if a < b:
             spans.append((a, b))
-        if first_only:
-            break
     return spans
 
 
@@ -745,12 +751,40 @@ def _cookie_values(
 #: tail of a query or a quoted string rather than a name.
 _COOKIE_NAME = re.compile(r"""[^\s()<>@,;:\\"'/\[\]?={}&]+""")
 
+#: A `,` that starts another cookie in a joined `Set-Cookie` value.
+_NEXT_SET_COOKIE = re.compile(r"""\s*+[^\s()<>@,;:\\"'/\[\]?={}&]++\s*+=""")
 
-def _cookie_items(text: str, start: int, end: int) -> Iterator[Span]:
+#: The `Set-Cookie` attributes, lowercased: RFC 6265's, the ones browsers
+#: added since, and RFC 2965's.
+_COOKIE_ATTRIBUTES = frozenset(
+    {
+        "expires",
+        "max-age",
+        "domain",
+        "path",
+        "secure",
+        "httponly",
+        "samesite",
+        "partitioned",
+        "priority",
+        "comment",
+        "commenturl",
+        "discard",
+        "port",
+        "version",
+    }
+)
+
+
+def _cookie_items(
+    text: str, start: int, end: int, set_cookie: bool = False
+) -> Iterator[tuple[int, int, bool]]:
     """The non-blank items of the `;`-separated list in `text[start:end]`,
-    trimmed. A `;` inside a quoted value (`a="x;y"`) does not end an item, and
-    a quote nothing closes runs to the end of the list."""
-    cuts: list[int] = []
+    trimmed, and whether each is a cookie's first pair. A `;` inside a quoted
+    value (`a="x;y"`) does not end an item, and a quote nothing closes runs to
+    the end of the list. In a `Set-Cookie` list a `,` before a cookie name
+    and `=` ends an item too, and the next one is a first pair."""
+    cuts: list[tuple[int, bool]] = []
     quote: tuple[str, int] | None = None
     backslashes = 0
     for i in range(start, end):
@@ -764,19 +798,24 @@ def _cookie_items(text: str, start: int, end: int) -> Iterator[Span]:
         elif ch in "\"'" and i - backslashes > start and text[i - backslashes - 1] == "=":
             quote = (ch, backslashes)
         elif ch == ";":
-            cuts.append(i)
+            cuts.append((i, False))
+        elif ch == "," and set_cookie and _NEXT_SET_COOKIE.match(text, i + 1, end):
+            cuts.append((i, True))
         backslashes = 0
-    cuts.append(end)
-    item = start
-    for cut in cuts:
+    cuts.append((end, False))
+    item, first = start, True
+    for cut, starts_cookie in cuts:
         a, b = item, cut
         while a < b and text[a].isspace():
             a += 1
         while b > a and text[b - 1].isspace():
             b -= 1
         if a < b:
-            yield a, b
+            yield a, b, first
+            first = False
         item = cut + 1
+        if starts_cookie:
+            first = True
 
 
 def _past_scheme(
@@ -902,10 +941,13 @@ def _unknown_scheme(line: _Line, v: int) -> Span | None:
     return None if credential is None else (v, credential[1])
 
 
-def _params_end(line: _Line, c: int, d: int, closer: _Closer | None, amp_ends: bool = True) -> int:
+def _params_end(
+    line: _Line, c: int, d: int, closer: _Closer | None, amp_below: int | None = None
+) -> int:
     """Where a header's parameter list starting at `c` ends in a value `d`
     deep: at the end of the line, at an `&` outside every quoted parameter
-    that is no deeper than `d` (when `amp_ends`), or at the quote closing the
+    that is shallower than `amp_below` (`d + 1` when not given, so no deeper
+    than `d`), or at the quote closing the
     header: `closer`'s quote, with as many backslashes before it and as deep,
     where it opens no parameter and neither a letter or digit nor a `;`
     follows it. Any other
@@ -921,6 +963,8 @@ def _params_end(line: _Line, c: int, d: int, closer: _Closer | None, amp_ends: b
     text = line.text
     if line.params_scanned[0] < c < line.params_scanned[1]:
         return len(text)
+    if amp_below is None:
+        amp_below = d + 1
     quote: tuple[str, int] | None = None
     backslashes = 0
     i = c
@@ -930,7 +974,7 @@ def _params_end(line: _Line, c: int, d: int, closer: _Closer | None, amp_ends: b
             backslashes += 1
         else:
             if quote is None:
-                if amp_ends and ch == "&" and line.depth(i) <= d:
+                if ch == "&" and line.depth(i) < amp_below:
                     break
                 if ch in "\"'":
                     if i - backslashes - 1 >= c and text[i - backslashes - 1] == "=":
@@ -1031,10 +1075,12 @@ def redact_secrets(text: str) -> str:
       punctuation and all, and after `Digest` the whole parameter list goes,
       to the end of the line, an `&` outside a quoted parameter, or the quote
       closing the header;
-    * the value of every `name=value` pair in a `Cookie` header, and of the
-      first pair only in a `Set-Cookie` header, whose attributes (`Path`,
-      `Expires`, `HttpOnly`, …) stay; the list ends at the end of the line, at
-      the quote closing the header, or at the `&` ending an encoded one;
+    * the value of every `name=value` pair in a `Cookie` header, and of
+      every one in a `Set-Cookie` header but its attributes (`Path`,
+      `Expires`, `HttpOnly`, …), which stay, as do their values; a `,` before
+      a name and `=` starts another cookie there. The list ends at the end of
+      the line, at the quote closing the header, or at the `&`, shallower
+      than the header, ending an encoded one;
     * the userinfo of a URL (`https://user:pass@host` comes back as
       `https://REDACTED@host`) — a private media file is legitimately reached
       that way, and FFmpeg quotes the URL it failed on into its errors.

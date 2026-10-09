@@ -1679,9 +1679,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 - **The log redactor masks the values in a `Cookie` or `Set-Cookie` header.**
   `Cookie: session=abc123def` kept the session, because `session` is no secret
-  name on its own. Every value in a `Cookie` header is masked, and the first
-  value of a `Set-Cookie` header, whose attributes (`Path`, `Expires`,
-  `HttpOnly`, …) stay readable. `--cookie` is read the same way.
+  name on its own. Every value in a `Cookie` header is masked. In a
+  `Set-Cookie` header the attributes (`Path`, `Expires`, `HttpOnly`, …) stay
+  readable and everything else is masked, including each cookie of a header
+  that a client joined with commas. `--cookie` is read the same way.
 
 - **The log redactor masks the credential of an `--authorization` flag whose scheme
   is its own list element.** `['--authorization', 'Basic', 'abc']` kept `abc`.
