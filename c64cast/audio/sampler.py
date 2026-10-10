@@ -1161,7 +1161,7 @@ class UltimateAudioSampler:
                 elif not self._failed and now - failing_since >= WRITER_GIVE_UP_S:
                     self._give_up(e, gen)
                 backoff = min(WRITER_BACKOFF_MAX_S, max(WRITER_BACKOFF_MIN_S, backoff * 2))
-                time.sleep(backoff)
+                time.sleep(self._backoff_wait(backoff))
                 continue
             if wrote and failing_since is not None:
                 log.info(
@@ -1170,6 +1170,20 @@ class UltimateAudioSampler:
                 )
                 failing_since = None
                 backoff = 0.0
+
+    def _backoff_wait(self, backoff: float) -> float:
+        """The back-off, cut short where the read head comes within the guard
+        of the deadline, the pass that restarts the channel (`_writer_step`).
+        A deadline held for a loss raises on every pass until then, and the
+        doubling slept past that point: a decoder a lead ahead whose length
+        write was lost stopped 80 ms before the restart."""
+        deadline = self._deadline
+        if deadline is None:
+            return backoff
+        left = deadline - self._deadline_guard - self._read_consumed_bytes()
+        if left <= 0:
+            return backoff
+        return min(backoff, (left + self.bps) / (self._actual_rate * self.bps))
 
     def _give_up(self, error: Exception, gen: int) -> None:
         """Stop writing audio after WRITER_GIVE_UP_S of failing writes, until
@@ -1295,13 +1309,26 @@ class UltimateAudioSampler:
         """One writer pass: restart a channel that ran into its deadline,
         else a ring pass (`_ring_step`) and then the deadline moved up behind
         what it wrote. Returns whether it wrote. Raises when the link lost a
-        write, like the ring writes themselves."""
-        deadline = self._deadline
-        if deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline:
+        write, like the ring writes themselves. The check runs again after
+        the ring pass, which can wait out a queue gather: a deadline held for
+        a loss raises at the refresh, and the back-off it bought on top of
+        that wait stopped the voice 40 ms before the next pass restarted it
+        (a stream 0.6 s ahead)."""
+        if self._deadline_reached():
             return self._restart_channel(gen)
         wrote = self._ring_step(gen)
+        if self._deadline_reached():
+            return self._restart_channel(gen) or wrote
         self._advance_deadline(gen)
         return wrote
+
+    def _deadline_reached(self) -> bool:
+        """Whether the read head is within the guard of the deadline, where
+        the channel is taken as stopped."""
+        deadline = self._deadline
+        return (
+            deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline
+        )
 
     def _ring_off(self, pos: int) -> int:
         """The ring offset that holds absolute byte position ``pos``."""

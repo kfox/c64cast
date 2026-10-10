@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import logging
 import unittest
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
-from test_sampler_deadline import LENGTH, _Channel, _run
+import numpy as np
+from test_sampler_deadline import LENGTH, RING_BASE, _Channel, _run, _Writer
+from test_sampler_long_outage import _SteppedClock, _WaitingQueue
+
+from c64cast.audio import sampler as s
 
 SECONDS = 30.0
 
@@ -57,6 +61,48 @@ class _QuietlyLosingChannel(_Channel):
         super().write_regs(base_addr, *values)
 
 
+def _looped_run(*, ahead_s: float, nth: int, seconds: float = 6.0) -> _QuietlyLosingChannel:
+    """The real writer loop on a clock its own sleeps and queue waits
+    advance, a producer ``ahead_s`` ahead, and the ``nth`` length write lost
+    after its send: `_run` steps the writer every 10 ms whatever it slept."""
+    clock = _SteppedClock()
+    smp = s.UltimateAudioSampler(
+        cast(Any, None),
+        sample_rate=8000,
+        bits=16,
+        ring_base=RING_BASE,
+        ring_size=0x30000,
+        ref_clock_hz=s.SAMPLER_REF_CLOCK_DEFAULT,
+    )
+    chan = _QuietlyLosingChannel(
+        clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2, nth=nth
+    )
+    smp.api = cast(Any, chan)
+    smp._q = cast(Any, _WaitingQueue(clock))
+    tone = np.full(80, 8000, dtype=np.int16)  # 10 ms
+    produced = [0.0]
+
+    def produce(until: float) -> None:
+        while produced[0] < until:
+            smp.push_samples(tone)
+            produced[0] += 0.01
+
+    def tick() -> None:
+        produce(clock.now + ahead_s)
+        chan.advance()
+        if clock.now >= seconds:
+            smp._running = False
+
+    with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+        # At least the prebuffer: start() waits for it on a clock that does not pass.
+        produce(max(ahead_s, 0.6))
+        smp.start(prebuffer_timeout=1.0)
+        clock.tick = tick
+        smp._writer_loop(smp._writer_gen)
+        smp.stop()
+    return chan
+
+
 class DeferredConfirmationTest(unittest.TestCase):
     def test_a_length_write_lost_after_its_send_is_covered_by_a_restart(self):
         # Found one refresh later: the refresh sets the deadline back to the
@@ -84,6 +130,19 @@ class DeferredConfirmationTest(unittest.TestCase):
                 self.assertIn("reached its deadline", "\n".join(logs.output))
                 self.assertEqual(smp._restarts, 1)
                 self.assertEqual((chan.state, chan.stale, chan.hazards), ("playing", 0, 0))
+
+    def test_the_writers_back_off_never_outlasts_the_voice(self):
+        # The refresh that finds the loss raises, and the writer backs off:
+        # slept past the pass that restarts the channel, on top of a ring
+        # pass waiting out a gather, it stopped the voice 40 to 80 ms first.
+        for ahead in (0.6, 1.0):
+            for nth in (3, 9):
+                with self.subTest(ahead=ahead, nth=nth):
+                    with self.assertLogs("c64cast.audio.sampler", logging.WARNING) as logs:
+                        chan = _looped_run(ahead_s=ahead, nth=nth)
+                    self.assertGreaterEqual(chan.seen, nth)
+                    self.assertIn("reached its deadline", "\n".join(logs.output))
+                    self.assertIsNone(chan.finished_at)
 
     def test_the_deadline_never_moves_past_unconfirmed_ring_audio(self):
         # A ring write charged lost at the refresh's flush holds the deadline
