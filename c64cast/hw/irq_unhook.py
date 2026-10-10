@@ -44,7 +44,7 @@ from collections.abc import Callable, Sequence
 
 from c64cast._teardown import run_teardown_steps
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA1, KERNAL, VECTORS
+from c64cast.hw.c64 import CIA1, CIA2, KERNAL, VECTORS
 from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
 CIA1_MASK = "CIA1 mask"
@@ -205,3 +205,36 @@ def unhook_raster_irq(
     ]
     run_teardown_steps(log, who, steps)
     return vector_restored
+
+
+def release_leaked_raster_irq(
+    api: C64Backend,
+    log: logging.Logger,
+    who: str,
+    *,
+    drain: Callable[[], None] | None = None,
+) -> bool:
+    """Defeat a raster handler a teardown may have left on `$0314`, and give
+    the keyboard back: the unhook, with VIC bank 0 pinned between its ack and
+    its CIA #1 unmask.
+
+    A bank-swap teardown that failed before its unmask, or a `big_text` one
+    whose restore never landed, leaves CIA #1 masked; with the raster source
+    off nothing else runs SCNKEY, and the `$028D` key poller (pause, skip)
+    stays dead until something unmasks it. The interstitial card runs this,
+    and so does every playlist path that sets the next scene up straight
+    after a teardown, with no card between them. Pinned after the restore and
+    the ack, because a pin any earlier leaves a window in which a leaked
+    handler re-flips `$DD00` to bank 2. Returns whether the restore landed."""
+    return unhook_raster_irq(
+        api,
+        log,
+        who,
+        drain=drain,
+        before_unmask=(
+            (
+                "VIC bank 0",
+                lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}"),
+            ),
+        ),
+    )

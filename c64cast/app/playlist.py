@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from c64cast.control.transport import LiveTuneTracker, TransportSession
 from c64cast.hw import hardware_palette
 from c64cast.hw.backend import C64Backend, LinkError
+from c64cast.hw.irq_unhook import release_leaked_raster_irq
 from c64cast.scenes.scenes import Scene
 
 from .playlist_support import (
@@ -544,6 +545,7 @@ class Playlist:
         self.drop_current()
         if not self.ensemble_coord.wait_for_audio_claim(new_scene):
             return False
+        self._release_leaked_irq()
         self.safe_setup(new_scene)
         self.current = new_scene
         return True
@@ -663,6 +665,7 @@ class Playlist:
                     "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
                 )
                 self.current = scene
+                self._release_leaked_irq()
                 self.safe_setup(self.current)
                 self.transitioning = False
                 return
@@ -703,6 +706,19 @@ class Playlist:
         self.current = self._card = self.interstitial_factory(nxt.name)
         self.safe_setup(self.current, announcing=nxt)
         self.transitioning = True
+
+    def _release_leaked_irq(self) -> None:
+        """What the "UP NEXT" card's setup does for a handler the last
+        teardown left on $0314, for the paths that set the next scene up with
+        no card between: a cut (`request_jump(skip_interstitial=True)`) and a
+        clip launch. Without it a teardown that left CIA #1 masked keeps the
+        keyboard dead through every scene that never hooks an IRQ of its own.
+        No drain: a clip launch is quantized to the beat, and a leaked copy
+        lands on a scene that repaints every frame, not on a static card."""
+        try:
+            release_leaked_raster_irq(self.api, self.log, "playlist cut")
+        except Exception:
+            self.log.exception("releasing a leaked raster IRQ failed")
 
     def _safe_prepare_next(self, scene: Scene) -> None:
         """Invoke a scene's prepare_next() hook defensively. A failure here

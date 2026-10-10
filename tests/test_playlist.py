@@ -119,6 +119,7 @@ class FakeApi:
             "bytes": 0,
         }
         self.calls = []
+        self.writes: list[tuple[str, object]] = []
         # A test simulating a lossy link moves these.
         self._delivery_epoch = 0
         self._thread_losses: dict[int, int] = {}
@@ -146,6 +147,14 @@ class FakeApi:
 
     def format_write_latency(self):
         return None
+
+    # The cut paths release a raster IRQ the last teardown may have leaked,
+    # through these: each write lands in `.writes` as (address, value).
+    def write_memory(self, address, value):
+        self.writes.append((str(address).upper(), value))
+
+    def write_regs(self, address, *values):
+        self.writes.append((str(address).upper(), values))
 
     def link_answers(self):
         return self.answers
@@ -726,6 +735,32 @@ class PlaylistTest(unittest.TestCase):
         assert baseline is not None, "startup interstitial never completed"
         self.assertEqual(counter["n"], baseline, "a cut jump must never build an interstitial")
         self.assertGreaterEqual(scenes[1].setup_count, 1)
+
+    def _writes_seen_by_the_next_setup(self, cut: str) -> list[tuple[str, object]]:
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl.current = scenes[0]
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[1].setup
+        scenes[1].setup = lambda: (seen_at_setup.append(list(api.writes)), setup())
+        if cut == "jump":
+            pl.request_jump(1, skip_interstitial=True)
+            scenes[0].is_done = True
+            pl._advance_after_scene()
+        else:
+            self.assertTrue(pl.perf_swap_scene(scenes[1]))
+        self.assertEqual(len(seen_at_setup), 1)
+        return seen_at_setup[0]
+
+    def test_a_cut_releases_a_leaked_raster_irq_before_the_next_setup(self):
+        # The card is what re-arms CIA #1 after a teardown left it masked; a
+        # cut has no card, so it has to do the same itself.
+        for cut in ("jump", "clip"):
+            with self.subTest(cut=cut):
+                writes = self._writes_seen_by_the_next_setup(cut)
+                self.assertIn(("0314", (0x31, 0xEA)), writes)
+                self.assertEqual(writes[-1], ("DC0D", "81"), "the keyboard is re-armed last")
 
     def test_request_jump_interstitial_transition_uses_the_card(self):
         scenes = [
