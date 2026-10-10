@@ -1165,7 +1165,16 @@ class UltimateAudioSampler:
         if deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline:
             return self._restart_channel(gen)
         wrote = self._ring_step(gen)
-        self._advance_deadline(gen)
+        try:
+            self._advance_deadline(gen)
+        except ConnectionError as e:
+            if not wrote:
+                raise
+            # The ring write landed, and a lost write on another thread reads
+            # as this refresh's loss, so failing the pass would count toward a
+            # give-up on a link that carries the ring. The old deadline stands:
+            # the next pass retries, and reaching it restarts the channel.
+            log.debug("sampler: %s; retrying next pass", e)
         return wrote
 
     def _ring_off(self, pos: int) -> int:
@@ -1266,7 +1275,7 @@ class UltimateAudioSampler:
     def _restart_channel(self, gen: int) -> bool:
         """Gate a channel that reached its deadline on again, at the read
         head: the gate-on starts it from ring offset 0, so `_ring_phase`
-        moves to the read head as of the gate-on and the ring holds nothing
+        moves to the read head just before the gate-on and the ring holds nothing
         for the new phase yet. A lead target of it is blanked before the
         gate-on and the deadline set at its end, as at the first gate-on;
         the writer's audio overwrites the blank, and what is late is
@@ -1283,6 +1292,11 @@ class UltimateAudioSampler:
                 epoch = self.api.delivery_epoch
                 fresh = self._lead_target
                 self._write_wrapped(0, self._neutral_unit * (fresh // self.bps))
+                # Read before the gate-on goes out, not after its flush: the
+                # FPGA then runs behind the read head by the round trip rather
+                # than ahead of it, where a slow link would let it reach the
+                # deadline unseen and stop with a refresh still taken as on time.
+                phase = self._read_consumed_bytes()
                 # `finished` is left only through a gate-off; the next gate-on
                 # starts the channel from offset 0.
                 self._send_gate_off()
@@ -1303,7 +1317,6 @@ class UltimateAudioSampler:
                 )
                 if self.api.delivery_epoch != epoch:
                     raise ConnectionError("sampler: the link lost the channel restart")
-                phase = self._read_consumed_bytes()
                 self._ring_phase = phase
                 self._written = phase + fresh
                 self._deadline = phase + fresh

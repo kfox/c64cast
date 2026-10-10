@@ -447,6 +447,65 @@ class OutageTest(unittest.TestCase):
         self.assertFalse(smp._output_silenced)
         self.assertEqual(volumes[-1], s.SAMPLER_VOLUME_MAX)
 
+    def test_a_restart_over_a_slow_link_leaves_the_channel_behind_the_read_head(self):
+        # The restart's flush takes 0.3 s to return. A channel running ahead
+        # of where the writer thinks it reads reaches the deadline first, and
+        # stops with the refresh still taken as on time.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            clock.now = 5.0
+            chan.advance()
+            self.assertEqual(chan.state, "finished")
+            fast = chan.flush
+
+            def slow_flush() -> None:
+                fast()
+                clock.now += 0.3
+
+            chan.flush = slow_flush  # type: ignore[method-assign]
+            with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
+                self.assertTrue(smp._writer_step(smp._writer_gen))
+            chan.flush = fast  # type: ignore[method-assign]
+            chan.advance()
+            self.assertEqual(chan.state, "playing")
+            self.assertGreaterEqual(smp._ring_off(smp._read_consumed_bytes()), chan.played)
+            smp.stop()
+
+
+class WriterStepTest(unittest.TestCase):
+    def _sampler(self) -> s.UltimateAudioSampler:
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        smp._deadline = None
+        return smp
+
+    def test_a_lost_refresh_after_a_landed_ring_write_is_not_a_failure(self):
+        # The ring carried its write; counting the pass as failed would give
+        # the channel up on a link that works.
+        smp = self._sampler()
+        with (
+            mock.patch.object(smp, "_ring_step", return_value=True),
+            mock.patch.object(smp, "_advance_deadline", side_effect=ConnectionError("lost")),
+        ):
+            self.assertTrue(smp._writer_step(smp._writer_gen))
+
+    def test_a_lost_refresh_with_no_ring_write_still_raises(self):
+        smp = self._sampler()
+        with (
+            mock.patch.object(smp, "_ring_step", return_value=False),
+            mock.patch.object(smp, "_advance_deadline", side_effect=ConnectionError("lost")),
+            self.assertRaises(ConnectionError),
+        ):
+            smp._writer_step(smp._writer_gen)
+
 
 class NextDeadlineTest(unittest.TestCase):
     def _sampler(self, rate: int) -> s.UltimateAudioSampler:
