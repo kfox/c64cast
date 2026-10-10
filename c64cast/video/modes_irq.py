@@ -390,6 +390,7 @@ def _bank_swap_dispatcher(
     bg0_off: int | None,
     ready_off: int,
     pump: bool,
+    last_line: int = RASTER_COMMIT_LAST_SAFE_LINE,
 ) -> bytes:
     """Assemble a REU bank-swap dispatcher for $C500.
 
@@ -419,13 +420,20 @@ def _bank_swap_dispatcher(
     the new colors under the old bitmap for a field, and copying it right
     after the flip outruns the raster — a 40-byte chunk costs ~100 cycles
     with NMIs taken, against the ~500 the beam spends on one 40-cell row —
-    so it lands ahead of every row it changes.
+    so it lands ahead of every row it changes, once the commit starts early
+    enough for the first chunk to beat row 0 (``last_line``).
 
     ``pump`` routes non-raster IRQs to the REU audio pump at $C100 and checks
     for a pending pump tick after each family; without it they chain to the
     kernal.
+
+    ``last_line`` is the last raster line the commit may start on, which a
+    commit that copies after the flip has to pull in (see
+    MHIRES_COMMIT_LAST_SAFE_LINE).
     """
     assert tracker_len <= MHIRES_FRAME_TRACKER_LEN
+    gate_limit = _RASTER_GATE_BIAS + last_line + 1
+    assert gate_limit <= _RASTER_GATE_LIMIT, "a commit window cannot reach past the first badline"
     ready = FRAME_TRACKER_ADDR + ready_off
     nonraster = AUDIO_HANDLER_INSTALL_ADDR if pump else KERNAL.IRQ_HANDLER
     bg0 = f"LDA ${_SNAPSHOT + bg0_off:04X}\n STA $D021" if bg0_off is not None else ""
@@ -449,7 +457,7 @@ def _bank_swap_dispatcher(
             LDA $D012
             CLC
             ADC #${_RASTER_GATE_BIAS:02X}
-            CMP #${_RASTER_GATE_LIMIT:02X}
+            CMP #${gate_limit:02X}
             BCC commit
             JMP chain
         commit:
@@ -512,6 +520,18 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
     )
 
 
+# The last raster line an mhires commit may start on. Its color-RAM copy runs
+# after the flip, and the chunk holding cell row 0's colors has to land before
+# row 0's badline (51) fetches them, or that frame shows the new bitmap under
+# the previous frame's colors in the top row. From the raster read to the end
+# of that chunk the handler spends about 165 cycles of its own; audio NMIs at
+# the fastest rate the streamer arms take over half the CPU on top of that,
+# and one host DMA halt can land in it. That comes to about 9 PAL lines, so
+# the full window's line 45 finished the chunk around line 54. The worst case
+# is computed from these bytes in tests/test_commit_window.py.
+MHIRES_COMMIT_LAST_SAFE_LINE = 40
+
+
 def _mhires_dispatcher(*, pump: bool) -> bytes:
     return _bank_swap_dispatcher(
         tracker_len=MHIRES_FRAME_TRACKER_LEN,
@@ -523,6 +543,7 @@ def _mhires_dispatcher(*, pump: bool) -> bytes:
         bg0_off=MHIRES_TRACKER_OFF_BG0,
         ready_off=MHIRES_TRACKER_OFF_READY_FLAG,
         pump=pump,
+        last_line=MHIRES_COMMIT_LAST_SAFE_LINE,
     )
 
 
