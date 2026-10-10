@@ -696,25 +696,31 @@ class NetworkCollectTest(unittest.TestCase):
             ov._poll_once()
         self.assertEqual(ov.compute_strings(t=0.0), ["1.2.3.4"])
 
-    def test_setup_parses_ping_target_from_base_url(self):
+    def _set_up(self, api):
+        # setup() starts the poll at once. Its real ping resolves the target
+        # first, and a resolver slower than the join left the thread running
+        # past the test.
+        import c64cast.scenes.overlays.network as net
+
+        for name in ("_outbound_ip", "_tcp_ping_ms"):
+            patcher = patch.object(net, name, side_effect=OSError("no network in tests"))
+            patcher.start()
+            self.addCleanup(patcher.stop)
         ov = self._ov(["ping"])
+        ov.setup(api, scene=MagicMock())
+        self.addCleanup(ov.teardown, api, scene=MagicMock())
+        return ov
+
+    def test_setup_parses_ping_target_from_base_url(self):
         api = MagicMock()
         api.base_url = "http://ultimate.lan:8080"
-        ov.setup(api, scene=MagicMock())
-        try:
-            self.assertEqual(ov._target_host, "ultimate.lan")
-            self.assertEqual(ov._target_port, 8080)
-        finally:
-            ov.teardown(api, scene=MagicMock())
+        ov = self._set_up(api)
+        self.assertEqual(ov._target_host, "ultimate.lan")
+        self.assertEqual(ov._target_port, 8080)
 
     def test_setup_without_base_url_leaves_target_unset(self):
-        ov = self._ov(["ping"])
-        api = MagicMock(spec=[])  # no base_url attribute
-        ov.setup(api, scene=MagicMock())
-        try:
-            self.assertIsNone(ov._target_host)
-        finally:
-            ov.teardown(api, scene=MagicMock())
+        ov = self._set_up(MagicMock(spec=[]))  # no base_url attribute
+        self.assertIsNone(ov._target_host)
 
 
 # ---------------------------------------------------------------------------
