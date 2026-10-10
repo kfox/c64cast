@@ -150,7 +150,8 @@ class BigTextOverlay(Overlay):
     COMPATIBLE_MODES = ("blank", "mcm")
     # MCM writes through the scene's buffers and hooks nothing; every other
     # mode gets the shadow-register raster IRQ (_install_raster_irq). setup()
-    # and teardown() decide by the same rule, through _scene_is_mcm.
+    # decides through _scene_is_mcm; teardown() unhooks only what this
+    # instance's own setup() hooked, so a never-set-up overlay unhooks nothing.
     HOOKS_IRQ_ON_MODES = tuple(m for m in COMPATIBLE_MODES if m != _BUFFER_MODE)
     HELP = "Demo-scene 8×-scaled horizontally-scrolling big text (blank/mcm only)."
     PARAM_HELP = {
@@ -233,6 +234,7 @@ class BigTextOverlay(Overlay):
         # smooth scroll needs the shadow X-scroll byte written every
         # frame for the raster IRQ handler to commit.
         self._api = None
+        self._raster_hooked = False
         self._last_xscroll_byte = -1
         self._next_page = 1  # 0 = $0400, 1 = $0C00
         self._last_coarse_x_px = None  # last frame's cell-snapped scroll
@@ -320,6 +322,8 @@ class BigTextOverlay(Overlay):
         # Page 0 is displayed first, so the first cell-shift writes page 1.
         if not self._scene_is_mcm(scene):
             api.write_memory_file("0C00", bytes([SC_BLANK] * 1000))
+            # Set before the install, so a partial install still gets unhooked.
+            self._raster_hooked = True
             self._install_raster_irq(api)
             self._last_xscroll_byte = 0x08
 
@@ -346,7 +350,8 @@ class BigTextOverlay(Overlay):
                 self._orchestrator.begin(scene_cfg)
 
     def teardown(self, api, scene):
-        if not self._scene_is_mcm(scene):
+        if self._raster_hooked:
+            self._raster_hooked = False
             self._uninstall_raster_irq(api)
             # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
             # coalesced write, so the next scene never sees a half restore.
