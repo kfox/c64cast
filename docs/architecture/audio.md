@@ -867,7 +867,7 @@ The sampler is constructed as the scene's audio object; `VideoScene` drives it p
 
 Since `VideoScene` dedups, re-pushing only on a genuinely new source frame, the effective push rate equals the source video's own fps: a 24 fps clip pushes 24/s, a 60 fps clip 60/s. That is source-rate playback capped at the VIC refresh, with no artificial cap. Hardware-verified: real ≤30 fps content pushes at source rate with no added shimmer, and audio stayed clean at a genuine 60/s push.
 
-> Continuous-motion shimmer scales with push rate and appears only on true >30 fps sources. That is the separate unsynced-bank-swap-timing issue, not a consequence of this fps default.
+> Continuous-motion shimmer scales with push rate and appears only on true >30 fps sources. It was attributed to the REU bank swap's unsynced flip, which now waits for vblank ([the two REU pipelines](video-color.md#the-two-reu-pipelines)), not to this fps default.
 
 ### Provisioning
 
