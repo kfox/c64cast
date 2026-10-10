@@ -45,6 +45,7 @@ import _diaglib as d
 
 SILENT_DB = -60.0  # AC level below which a window counts as silent
 END_MARGIN_S = 5.0  # the outage ends at least this long before the clip does
+SHORT_CAPTURE_RATIO = 0.95  # a WAV shorter than this share of the request gets a warning
 
 
 def make_clip(seconds: float) -> Path:
@@ -194,6 +195,26 @@ def analyze(path: str, window: float = 0.25) -> None:
     )
 
 
+def warn_short_capture(path: str, requested_s: float, marks: list[tuple[str, float]]) -> None:
+    """Warn when the WAV holds clearly less audio than was asked for.
+
+    The markers are wall-clock seconds and the level table is WAV seconds, so a
+    capture that drops audio puts the two on different clocks.
+    """
+    with wave.open(path) as w:
+        got_s = w.getnframes() / w.getframerate()
+    if got_s >= SHORT_CAPTURE_RATIO * requested_s:
+        return
+    ratio = got_s / requested_s
+    print(
+        f"warning: the capture holds {got_s:.1f} s of audio but {requested_s:.1f} s was "
+        f"requested ({ratio:.0%}). The markers above are wall-clock time and the level "
+        "table below is capture time, so they cannot be compared directly."
+    )
+    for name, at in marks:
+        print(f"{name:18s} ~{at * ratio:7.2f} s in capture time (scaled estimate)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -298,6 +319,7 @@ def main() -> int:
         return 1
     if rec.returncode != 0:
         print(f"ffmpeg exited {rec.returncode}: the capture may be cut short")
+    warn_short_capture(wav, record_s, outage.marks)
     analyze(wav)
     if not any(name == "outage start" for name, _ in outage.marks):
         print(
