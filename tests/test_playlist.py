@@ -894,6 +894,28 @@ class PlaylistTest(unittest.TestCase):
                 self.assertEqual(scenes[0].setup_count, 1)
                 self.assertEqual(api.writes, [])
 
+    def test_a_reload_releases_a_leaked_raster_irq_before_the_next_setup(self):
+        # A one-scene reload sets its scene up with no card between.
+        api = FakeApi()
+        pl = Playlist(
+            [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+        )
+        pl.current = pl.scenes[0]
+        reloaded = FakeScene("C")
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = reloaded.setup
+        reloaded.setup = lambda: (seen_at_setup.append(list(api.writes)), setup())
+        pl.request_reload([reloaded])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+            pl._advance()
+        self.assertEqual(len(seen_at_setup), 1)
+        self.assertIn(("0314", (0x31, 0xEA)), seen_at_setup[0])
+        self.assertEqual(seen_at_setup[0][-1], ("DC0D", "81"))
+
     def test_request_jump_interstitial_transition_uses_the_card(self):
         scenes = [
             FakeScene("A", frames_until_done=10_000_000),

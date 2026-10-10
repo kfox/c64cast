@@ -206,6 +206,23 @@ class BroadcastInterruptTest(unittest.TestCase):
         self.assertFalse(interrupt.is_set())
         self.assertFalse(resume.is_set())
 
+    def test_the_follower_setup_releases_a_leaked_raster_irq_first(self):
+        # The follower replaces the dropped scene with no card between.
+        from unittest.mock import call
+
+        pl = _build_playlist()
+        pl.current = _FakeScene("initial")
+        follower = _FakeScene("follower")
+        _, resume = self._wire_broadcast(pl, _FakeOrchestrator(), follower)
+        resume.set()
+        seen_at_setup: list[list[Any]] = []
+        setup = follower.setup
+        follower.setup = lambda: (seen_at_setup.append(list(pl.api.mock_calls)), setup())
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.ensemble_coord.handle_broadcast_interrupt()
+        self.assertEqual(len(seen_at_setup), 1)
+        self.assertIn(call.write_regs("0314", 0x31, 0xEA), seen_at_setup[0])
+
     def test_interrupt_stamps_orchestrator_role_on_follower(self):
         pl = _build_playlist()
         follower = _FakeScene("follower")
