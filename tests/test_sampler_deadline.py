@@ -420,6 +420,38 @@ class OutageTest(unittest.TestCase):
                 self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual((smp._restarts, chan.gates, chan.state), (1, 2, "playing"))
 
+    def test_a_length_write_landing_after_the_old_deadline_restarts(self):
+        # The flush returned in time, but the length write's own send sat in
+        # a redial past the old deadline: the voice stopped there before the
+        # new one landed, and the next pass restarts it.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._written = old + smp._lead_target
+            smp._ring_mark = chan.write_loss_mark()
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            slow = chan.write_regs
+
+            def late_write(base_addr: str, *values: int) -> None:
+                clock.now = old / 2 / smp._actual_rate
+                slow(base_addr, *values)
+
+            chan.write_regs = late_write  # type: ignore[method-assign]
+            smp._advance_deadline(smp._writer_gen)
+            chan.write_regs = slow  # type: ignore[method-assign]
+            self.assertEqual(smp._deadline, old)
+            with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
+                self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual((smp._restarts, chan.gates, chan.state), (1, 2, "playing"))
+
     def test_a_refresh_after_a_counted_ring_loss_sends_nothing(self):
         # Nothing is left to confirm, and on a dead link the flush logs a
         # warning for every refresh until the restart.
