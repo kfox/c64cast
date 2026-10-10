@@ -140,7 +140,7 @@ class LongOutageTest(unittest.TestCase):
         self.assertFalse(seen["failed_at_end"])
         self.assertEqual((seen["state"], seen["stale"]), ("playing", 0))
         self.assertLess(seen["offset_error_s"], 0.001)
-        self.assertIn("taking audio again", text)
+        self.assertIn("writing audio again", text)
         # The audio kept its anchor through the give-up: a producer a lead
         # ahead is on time again at once, so nothing is re-anchored behind
         # the picture.

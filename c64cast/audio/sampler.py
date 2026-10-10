@@ -1287,7 +1287,7 @@ class UltimateAudioSampler:
             self._last_write_head = None
             self._gave_up_gen = None
             self._failed = False
-        log.info("sampler: the channel is back; taking audio again")
+        log.info("sampler: the channel is back; writing audio again")
         return True
 
     def _gate_off_landed(self, gen: int) -> bool | None:
