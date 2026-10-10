@@ -31,7 +31,6 @@ from c64cast.video.modes_irq import (
     MHIRES_FRAME_TRACKER_LEN,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
-    mask_irq_sources,
     push_mhires_via_reu,
 )
 from c64cast.video.palette import (
@@ -395,6 +394,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # on the first REAL swap (the ready flag starts zeroed — see
         # install_bank_swap_irq), so this closes the gap until then.
         single_buffer = not self.use_reu_staged and not self.double_buffer
+        if not single_buffer or self._blend_table is not None:
+            self._quiesce_irqs_for_double_buffer(api)
         engage_bitmap_mode(
             api,
             d011="3b",
@@ -439,8 +440,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             # So the off-screen bank shows no garbage on the first swap. $D800
             # is not banked, so it keeps whatever the prior scene left there
             # until the first IRQ overwrites it from REU.
-            # Before the clears and the bank pin: a leaked handler could undo both.
-            mask_irq_sources(api, drain_reu_copy=True)
             zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
             zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
             api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)

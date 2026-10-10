@@ -159,6 +159,19 @@ class BitmapDisplayMode(DisplayMode):
     use_reu_staged: bool
     _blend_table: BlendTable | None
 
+    def _quiesce_irqs_for_double_buffer(self, api: C64Backend) -> None:
+        """Mask both IRQ sources and wait out a leaked REU dispatcher's copy,
+        before a double-buffer setup's engage pokes, bank clears and bank pin,
+        any of which a leaked handler could undo. A leaked flicker handler's
+        $D018 page B would otherwise stand all scene under a swap handler that
+        never writes $D018.
+
+        Recorded as hooked first, so a setup the link cuts short still gets
+        the teardown that unmasks CIA #1."""
+        self._bank_swap_hooked = True
+        # Only a REU dispatcher copies, and a backend with no REU runs none.
+        mask_irq_sources(api, drain_reu_copy=api.profile.supports_reu)
+
     def _install_bank_swap_irq(
         self,
         api: C64Backend,
@@ -274,8 +287,6 @@ class BitmapDisplayMode(DisplayMode):
         """Zero both banks' bitmap + both screen pages, pin bank 0, and install
         the flicker swap IRQ with its page pair pre-seeded (see
         install_bank_swap_irq's tracker_init)."""
-        # Before the clears and the bank pin: a leaked handler could undo both.
-        mask_irq_sources(api, drain_reu_copy=True)
         zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
         zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
         for addr in (
@@ -375,8 +386,6 @@ class BitmapDisplayMode(DisplayMode):
         the caller has already set $D011/$D018/$D016 and the initial bg0/border.
         audio_pump_active is always False: NMI audio is on the $FFFA vector,
         independent of this $0314 raster IRQ."""
-        # Before the clears and the bank pin: a leaked handler could undo both.
-        mask_irq_sources(api, drain_reu_copy=True)
         zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
         zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
         api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)

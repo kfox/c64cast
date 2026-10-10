@@ -31,7 +31,6 @@ from c64cast.video.modes_irq import (
     FRAME_TRACKER_ADDR,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
-    mask_irq_sources,
     push_bitmap_via_reu,
 )
 from c64cast.video.palette import (
@@ -257,6 +256,8 @@ class HiresDisplayMode(BitmapDisplayMode):
         # here and the first push(); hires ignores $D021, so bg0=0x00 just keeps
         # the register off the previous scene's value.
         single_buffer = not self.use_reu_staged and not self.double_buffer
+        if not single_buffer or self._blend_table is not None:
+            self._quiesce_irqs_for_double_buffer(api)
         engage_bitmap_mode(
             api,
             d011="3b",
@@ -284,8 +285,6 @@ class HiresDisplayMode(BitmapDisplayMode):
             )
         if self.use_reu_staged:
             # So the off-screen bank shows no garbage on the first swap.
-            # Before the clears and the bank pin: a leaked handler could undo both.
-            mask_irq_sources(api, drain_reu_copy=True)
             zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
             zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
             api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)

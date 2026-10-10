@@ -86,8 +86,32 @@ class InstallOrderTest(unittest.TestCase):
                 disable = _first(ops, "write_memory", "D01A", "00")
                 pin = _first(ops, "write_memory", f"{CIA2.PORT_A:04X}")
                 clear = _first(ops, "write_memory_file", f"{VIC_BANK_2.BITMAP:04X}")
+                engage = [_first(ops, "write_memory", reg) for reg in ("D018", "D016", "D011")] + [
+                    _first(ops, "write_regs", reg) for reg in ("D020", "D021")
+                ]
                 self.assertLess(max(mask, disable), drain)
-                self.assertLess(drain, min(pin, clear))
+                self.assertLess(drain, min(pin, clear, *engage))
+
+    def test_a_setup_cut_short_after_the_mask_still_unmasks_on_teardown(self):
+        class _LinkCut(FakeAPI):
+            def write_memory_file(self, address, data):
+                raise ConnectionError("link down")
+
+        for mode in (
+            HiresDisplayMode(use_reu_staged=True),
+            HiresDisplayMode(double_buffer=True),
+            MultiHiresDisplayMode(flicker_tolerance="clean"),
+        ):
+            with self.subTest(mode=type(mode).__name__, reu=mode.use_reu_staged):
+                api = _LinkCut()
+                with mock.patch.object(modes_irq, "time"):
+                    with quiet_logging():
+                        with self.assertRaises(ConnectionError):
+                            mode.setup(cast(Ultimate64API, api))
+                        mode.teardown(cast(Ultimate64API, api))
+                mask = _first(api.ops, "write_memory", _CIA1_ICR, "7F")
+                unmask = _first(api.ops, "write_memory", _CIA1_ICR, "81")
+                self.assertLess(mask, unmask)
 
     def test_big_text_install_masks_before_it_uploads(self):
         api = FakeAPI()
