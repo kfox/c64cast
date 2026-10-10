@@ -1,9 +1,8 @@
 """big_text's raster IRQ teardown over a link that loses writes.
 
-A backend reports a lost write by moving `delivery_epoch` rather than by
-raising. The kernal handler never acks `$D019`, so restoring `$0314` with the
-raster source still live re-enters the IRQ on every RTI, and unmasking CIA #1
-with `$0314` still hooked vectors the jiffy IRQ through the overlay's handler.
+The teardown runs the shared `hw/irq_unhook.unhook_raster_irq` sequence, whose
+retry rules `tests/test_bank_swap_teardown.py` pins in full; these check what
+big_text adds to it and that a lost write still ends with the handler off.
 """
 
 from __future__ import annotations
@@ -45,44 +44,40 @@ def _uninstall(api: FakeAPI) -> None:
 
 class BigTextIrqTeardownTest(unittest.TestCase):
     def test_a_write_lost_once_is_written_again(self):
-        for address in (0xD01A, 0x0314, 0xDC0D):
+        # $DC0D carries the mask and the unmask, so a lost mask makes it three.
+        for address, count in ((0xD01A, 2), (0x0314, 2), (0xDC0D, 3)):
             with self.subTest(address=f"{address:04X}"):
                 api = _lossy(address, 1)
                 _uninstall(api)
-                self.assertEqual(_order(api).count(f"{address:04X}"), 2)
+                self.assertEqual(_order(api).count(f"{address:04X}"), count)
                 self.assertEqual(api.memories["D01A"], "00")
                 self.assertEqual(api.regs["0314"], _KERNAL_VECTOR)
                 self.assertEqual(api.memories["DC0D"], "81")
 
-    def test_a_raster_disable_that_never_lands_keeps_the_handler_hooked(self):
+    def test_a_raster_disable_that_never_lands_is_written_again_behind_the_restore(self):
         api = _lossy(0xD01A, CONFIRM_TRIES)
-        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
+        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR"):
             _uninstall(api)
-        self.assertNotIn("0314", _order(api))
-        self.assertNotIn("DC0D", _order(api))
-        self.assertTrue(any("skipping the vector restore" in m for m in logs.output))
-        self.assertTrue(any("skipping the CIA1 unmask" in m for m in logs.output))
+        order = _order(api)
+        restore = order.index("0314")
+        self.assertEqual(order[restore:].count("D01A"), 1)
+        self.assertEqual(api.memories["D01A"], "00")
+        self.assertEqual(api.memories["DC0D"], "81")
 
-    def test_a_hooked_handler_commits_the_default_registers(self):
-        api = _lossy(0xD01A, CONFIRM_TRIES)
-        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
-            _uninstall(api)
-        self.assertEqual(api.regs[_SHADOWS], (DEFAULT_D016, DEFAULT_D018))
-        self.assertTrue(any("stays hooked" in m for m in logs.output))
-
-    def test_a_restore_that_never_lands_leaves_cia1_masked(self):
+    def test_a_restore_that_never_lands_leaves_cia1_masked_and_resets_the_shadows(self):
         api = _lossy(0x0314, CONFIRM_TRIES)
         with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
             _uninstall(api)
-        self.assertNotIn("DC0D", _order(api))
-        self.assertTrue(any("skipping the CIA1 unmask" in m for m in logs.output))
+        self.assertEqual(api.memories["DC0D"], "7F")
+        self.assertTrue(any("leaving CIA #1 Timer A masked" in m for m in logs.output))
         self.assertEqual(api.regs[_SHADOWS], (DEFAULT_D016, DEFAULT_D018), "still hooked")
         self.assertTrue(any("stays hooked" in m for m in logs.output))
 
-    def test_a_clean_teardown_runs_in_install_reverse_order(self):
+    def test_a_clean_teardown_runs_the_shared_unhook(self):
         api = FakeAPI()
         _uninstall(api)
-        self.assertEqual(_order(api), ["D01A", "0314", "D019", "DC0D"])
+        self.assertEqual(_order(api), ["DC0D", "D01A", "0314", "D019", "DC0D"])
+        self.assertNotIn(_SHADOWS, api.regs, "a restored vector leaves the shadows alone")
 
 
 if __name__ == "__main__":
