@@ -25,6 +25,8 @@ Not every step is an independent promise, so the order is the contract:
   IRQ up to the restore could have started a copy the first drain never saw),
   and when the restore failed but a retry masked the last live source (the
   handler is out of reach from then on, and a copy it started may still run).
+* **An unconfirmed restore is read back** once the link answers, since a redial
+  during it moves the loss mark whether or not the write landed.
 * **CIA #1 is unmasked only once the restore landed.** With `$0314` still on
   the handler, every jiffy IRQ vectors through RAM the next scene writes over;
   a masked Timer A costs the keyboard scan, an unmasked one the machine.
@@ -48,6 +50,8 @@ from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 CIA1_MASK = "CIA1 mask"
 RASTER_DISABLE = "VIC IRQ disable"
 
+_KERNAL_VECTOR_BYTES = bytes([KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF])
+
 _MASKS = {
     CIA1_MASK: (f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}"),
     RASTER_DISABLE: ("D01A", "00"),
@@ -59,6 +63,30 @@ def confirm(api: C64Backend, what: str, write: Callable[[], None]) -> None:
     `run_teardown_steps` logs the step against its label."""
     if not write_confirmed(api, write):
         raise RuntimeError(f"the {what} write was not confirmed after {CONFIRM_TRIES} tries")
+
+
+def _vector_reads_back_kernal(api: C64Backend, log: logging.Logger, who: str) -> bool:
+    """Whether `$0314/$0315` reads back as `$EA31`, asked once the link answers.
+
+    An unconfirmed restore is not always a lost one: a redial during it moves
+    the loss mark although the write may have landed, and counting it as lost
+    leaves CIA #1 masked, and the keyboard dead, with the vector already on the
+    kernal. `link_answers` comes first, so the read runs only over a link that
+    carries it and behind every write sent before it. A read that cannot be
+    made, or fails, answers False: the restore stays unconfirmed and CIA #1
+    masked."""
+    try:
+        if not api.link_answers():
+            return False
+        got = api.read_memory(VECTORS.IRQ, 2)
+    except Exception as e:
+        # BackendCapabilityError on a backend with no reads, or the transport's own.
+        log.debug("%s: reading back $0314 failed: %s", who, e)
+        return False
+    if got != _KERNAL_VECTOR_BYTES:
+        return False
+    log.warning("%s: the $0314 restore went unconfirmed but reads back as $EA31", who)
+    return True
 
 
 def unhook_raster_irq(
@@ -103,13 +131,18 @@ def unhook_raster_irq(
 
     def restore_kernal_vector() -> None:
         nonlocal vector_restored
-        confirm(
+        landed = write_confirmed(
             api,
-            "$0314 restore",
             lambda: api.write_regs(
                 f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
             ),
         )
+        if not landed and _vector_reads_back_kernal(api, log, who):
+            landed = True
+        if not landed:
+            raise RuntimeError(
+                f"the $0314 restore write was not confirmed after {CONFIRM_TRIES} tries"
+            )
         vector_restored = True
 
     def drain_once() -> None:
