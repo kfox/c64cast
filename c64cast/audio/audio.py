@@ -36,6 +36,7 @@ from c64cast.hw.c64 import (
     CIA2,
     CIA_TIMER_LATCH_MAX,
     KERNAL,
+    NMI_CEILING_LATCH,
     REU,
     SID,
     VECTORS,
@@ -868,9 +869,14 @@ class AudioStreamer:
         65-byte quantum (188 writes/s) produced 1744 full underruns and lapped
         the ring. Backing off costs little — 4-20 Hz modulation is 1.96 at 128 B
         against 2.41 at 64 B — since what matters is clearing that band at all.
+
+        A slower rate's longer period is not let grow the write past the size
+        the fastest rate gets: the bank-swap raster commit window is sized for
+        that one halt (tests/test_commit_window.py), and a 1024-byte write at
+        a low rate would land a commit's flip about 10 lines into the picture.
         """
         period_cycles = (self.nmi.latch or self.nmi.compensated_latch()) + 1
-        quantum = halt_quantum_bytes(period_cycles)
+        quantum = halt_quantum_bytes(min(period_cycles, NMI_CEILING_LATCH + 1))
         # Straight through, no getattr: both names are declared, so a rename
         # fails type-checking here instead of silently yielding max_hz = None
         # and dropping the floor this method's docstring depends on.

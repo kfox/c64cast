@@ -8,7 +8,7 @@ next, and it runs under py65 here so the window's edges are the real bytes'.
 from __future__ import annotations
 
 import unittest
-from functools import partial
+from functools import cache, partial
 
 from c64cast.audio.audio_handlers import (
     CHUNK_SIZE,
@@ -23,6 +23,7 @@ from c64cast.audio.audio_handlers import (
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
+    CIA_TIMER_LATCH_MAX,
     D018_HIRES_PAGE_A,
     D018_HIRES_PAGE_B,
     KERNAL,
@@ -180,29 +181,33 @@ def nmi_cycles(read_ptr: int) -> int:
     raise AssertionError("NMI routine never returned")
 
 
+@cache
 def largest_ring_write() -> int:
-    """The longest audio-ring write the DAC streamer sends, in bytes, at the
-    fastest rate it arms, on either backend and either system.
+    """The longest audio-ring write the DAC streamer sends, in bytes, at any
+    rate it arms, on either backend and either system.
 
     The streamer cuts its writes to fit an NMI period, then raises them to
-    what the link's write rate can carry, which at that rate is the larger
-    figure. Its own sizing code is run here on a stand-in for the streamer."""
+    what the link's write rate can carry. Its own sizing code is run here on
+    a stand-in for the streamer, at every latch from the fastest to the
+    slowest the CIA timer holds."""
     from types import SimpleNamespace
 
     from c64cast.audio.audio import AudioStreamer
     from c64cast.hw.backend import BASE_PROFILES
 
-    sizes = []
+    largest = 0
     for profile in BASE_PROFILES.values():
         for system in ("PAL", "NTSC"):
-            streamer = SimpleNamespace(
-                nmi=SimpleNamespace(latch=NMI_CEILING_LATCH),
-                api=SimpleNamespace(profile=profile),
-                chunk_size=CHUNK_SIZE,
-                effective_rate=actual_rate_for_latch(NMI_CEILING_LATCH, system),
-            )
-            sizes.append(AudioStreamer._halt_quantum(streamer))  # type: ignore[arg-type]
-    return max(sizes)
+            for latch in range(NMI_CEILING_LATCH, CIA_TIMER_LATCH_MAX + 1):
+                streamer = SimpleNamespace(
+                    nmi=SimpleNamespace(latch=latch),
+                    api=SimpleNamespace(profile=profile),
+                    chunk_size=CHUNK_SIZE,
+                    effective_rate=actual_rate_for_latch(latch, system),
+                )
+                size = AudioStreamer._halt_quantum(streamer)  # type: ignore[arg-type]
+                largest = max(largest, size)
+    return largest
 
 
 def worst_case_cycles(own: int) -> int:

@@ -1,6 +1,6 @@
 - **Double-buffered `hires` and `mhires` video can no longer start a bank
   swap too late to finish before the picture begins.** A swap that started
-  late in its window, with DAC audio running at a high sample rate, could
+  late in its window, with DAC audio running, could
   land on the first picture line, and on REU-staged `mhires` could still be
   copying the top cell row's colors there, so that frame showed its top row
   in the previous frame's colors. Swaps now start no later than raster line
