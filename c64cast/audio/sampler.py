@@ -611,6 +611,11 @@ class UltimateAudioSampler:
         # a channel loops the whole ring, as it did before the deadline.
         self._uses_deadline = self._lead_target >= 8 * self._deadline_guard
         self._restarts = 0
+        # The writer thread's `write_loss_mark` as of the last deadline write
+        # that landed: a refresh confirmed against its own write alone moved
+        # the deadline over ring audio lost since, and the last lap played
+        # there. None until the writer's first refresh takes it.
+        self._ring_mark: int | None = None
 
         self._underrun_pads = 0
         self._lead_min: int | None = None
@@ -694,6 +699,7 @@ class UltimateAudioSampler:
             self._last_write_head = None
             self._ring_phase = 0
             self._deadline = None
+            self._ring_mark = None
         self._output_silenced = False
         self._restarts = 0
         self._underrun_pads = 0
@@ -1166,6 +1172,8 @@ class UltimateAudioSampler:
         what it wrote. Returns whether it wrote. Raises when the link lost a
         write, like the ring writes themselves."""
         deadline = self._deadline
+        if self._ring_mark is None and deadline is not None:
+            self._ring_mark = self.api.write_loss_mark()
         if deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline:
             return self._restart_channel(gen)
         wrote = self._ring_step(gen)
@@ -1204,7 +1212,9 @@ class UltimateAudioSampler:
     def _advance_deadline(self, gen: int) -> None:
         """Move the deadline up to what the ring holds, once the read head is
         within `_deadline_refresh` of it. Confirmed against
-        `writes_lost_since`, so only this thread's losses count (another
+        `writes_lost_since` from the last refresh that landed (`_ring_mark`),
+        so a ring write lost since holds the deadline too; only this thread's
+        losses count (another
         thread's, counted here, would add up to a give-up on a link that
         carries the ring): a lost refresh raises, and the writer backs off and
         tries again. A refresh that may have landed after the channel reached
@@ -1223,15 +1233,20 @@ class UltimateAudioSampler:
         with self._gate_lock:
             if not (self._running and gen == self._writer_gen):
                 return
-            mark = self.api.write_loss_mark()
+            mark = self._ring_mark
+            if mark is None:
+                mark = self.api.write_loss_mark()
             self._write_length(self._deadline_offset(new))
             if not self.api.writes_lost_since(mark):
                 self.api.flush()
             if self.api.writes_lost_since(mark):
-                raise ConnectionError("sampler: the link lost a deadline write")
+                # Held there, the deadline stops the voice ahead of the lost
+                # span, and the restart that follows blanks the ring.
+                raise ConnectionError("sampler: the link lost ring audio or a deadline write")
             if self._read_consumed_bytes() + self._deadline_guard >= old:
                 return
             self._deadline = new
+            self._ring_mark = self.api.write_loss_mark()
 
     def _next_deadline(self, old: int, target: int, consumed: int) -> int | None:
         """The furthest deadline in ``(old, target]`` whose write is safe, or
@@ -1328,6 +1343,7 @@ class UltimateAudioSampler:
                 self._ring_phase = phase
                 self._written = phase + fresh
                 self._deadline = phase + fresh
+                self._ring_mark = self.api.write_loss_mark()
                 self._restarts += 1
                 restarts = self._restarts
         log.log(

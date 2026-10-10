@@ -83,7 +83,9 @@ class _Channel:
     flush is lost and moves ``delivery_epoch``, as the Ultimate's backend
     does. ``lose`` loses one register write when it returns True; ``foreign``
     counts a loss on some other thread at a register write that lands, moving
-    ``delivery_epoch`` but not this thread's loss mark. ``ahead``
+    ``delivery_epoch`` but not this thread's loss mark. ``drop_ring`` loses a
+    REU write without raising, counted lost later, as a redial charges the
+    writes it could not confirm. ``ahead``
     is how far (s) the FPGA runs ahead of the moment its gate-on lands."""
 
     def __init__(
@@ -99,6 +101,7 @@ class _Channel:
         self.lose: Any = None
         self.foreign: Any = None
         self.foreign_losses = 0
+        self.drop_ring: Any = None
         self.ctrl = 0
         self.length = [0, 0, 0]
         self.state = "idle"
@@ -155,6 +158,9 @@ class _Channel:
         self.advance()
         if self.down:
             raise ConnectionError("link down")
+        if self.drop_ring is not None and self.drop_ring():
+            self.delivery_epoch += 1
+            return
         at = offset - RING_BASE
         self.written_at[at : at + len(data)] = self.clock.now
 
@@ -214,6 +220,7 @@ def _run(
     ahead: float = 0.0,
     lose: Any = None,
     foreign: Any = None,
+    drop_ring: Any = None,
     frame_s: float = 0.01,
     ahead_s: float | None = None,
 ) -> tuple[s.UltimateAudioSampler, _Channel, dict[str, Any]]:
@@ -237,6 +244,7 @@ def _run(
     )
     chan.lose = lose
     chan.foreign = foreign
+    chan.drop_ring = drop_ring
     smp.api = cast(Any, chan)
     q = _Queue()
     smp._q = cast(Any, q)
@@ -323,13 +331,25 @@ class HealthyLinkTest(unittest.TestCase):
         smp, chan, _ = _run(ahead=0.02)
         self.assertEqual((smp._restarts, chan.hazards, chan.stale), (0, 0, 0))
 
-    def test_lost_length_writes_are_retried(self):
-        # One in twenty register writes lost: each lost refresh is sent again
-        # on the next pass, long before the read head gets near.
+    def test_lost_length_writes_restart_rather_than_trust_the_ring(self):
+        # One in twenty register writes lost. A loss the writer is charged
+        # with may have taken its ring writes along, so the deadline holds
+        # and the channel restarts over a blanked ring: no stale audio, and
+        # playing at the end.
         rng = random.Random(645)
-        with self.assertNoLogs("c64cast.audio.sampler", logging.WARNING):
+        with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
             smp, chan, _ = _run(lose=lambda: rng.random() < 0.05)
-        self.assertEqual(smp._restarts, 0)
+        self.assertGreater(smp._restarts, 0)
+        self.assertEqual((chan.state, chan.stale, chan.hazards), ("playing", 0, 0))
+
+    def test_a_ring_write_lost_between_refreshes_is_not_played(self):
+        # The write went out and was charged lost after it: a refresh that
+        # checked only its own write moved the deadline over the gap, and the
+        # last lap played there.
+        drops = iter([False] * 400 + [True])
+        with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
+            smp, chan, _ = _run(drop_ring=lambda: next(drops, False))
+        self.assertEqual(smp._restarts, 1)
         self.assertEqual((chan.state, chan.stale), ("playing", 0))
 
 
