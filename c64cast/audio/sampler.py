@@ -630,6 +630,10 @@ class UltimateAudioSampler:
         # lap played there. None until the first refresh: what the writer sends
         # before then lands in a ring prefilled with silence.
         self._ring_mark: int | None = None
+        # Set when flush()'s cut-over blank, written on the playlist thread,
+        # may have been lost: the writer's refresh then treats the ring as
+        # unconfirmed until a restart blanks it. Set and cleared under _io_lock.
+        self._cut_over_lost = False
 
         self._underrun_pads = 0
         self._lead_min: int | None = None
@@ -714,6 +718,7 @@ class UltimateAudioSampler:
             self._ring_phase = 0
             self._deadline = None
             self._ring_mark = None
+            self._cut_over_lost = False
         self._output_silenced = False
         self._restarts = 0
         self._underrun_pads = 0
@@ -1073,7 +1078,16 @@ class UltimateAudioSampler:
                 # (new_written < old _written: blank [consumed+margin, old W))
                 # and the rare lead<margin case (new_written > old _written:
                 # blank the lap-stale region the reader is about to enter).
+                mark = self.api.write_loss_mark()
                 self._blank(lo, hi)
+                # Confirmed here, on the thread that wrote it: the writer's
+                # refresh checks only its own thread's losses, and moved the
+                # deadline over a blank the link had lost. A loss holds the
+                # deadline into a restart, as a lost writer write does.
+                if not self.api.writes_lost_since(mark):
+                    self.api.flush()
+                if self.api.writes_lost_since(mark):
+                    self._cut_over_lost = True
             self._written = new_written
             self._content_pos = anchor
             # The splice re-aligns sound and picture, and its own late drops
@@ -1226,7 +1240,8 @@ class UltimateAudioSampler:
         within `_deadline_refresh` of it. The ring writes since the last
         confirmation (`_ring_mark`) are flushed and checked first: one lost
         holds the deadline, which raises on every refresh until the channel
-        reaches it and the restart blanks the ring. Then the length write is
+        reaches it and the restart blanks the ring, and so does a cut-over
+        blank flush() could not confirm (`_cut_over_lost`). Then the length write is
         checked on its own, and a lost one raises and is sent again next pass:
         a restart for it would skip a lead of audio that did land. Only this
         thread's losses count (`writes_lost_since`; another thread's, counted
@@ -1248,13 +1263,16 @@ class UltimateAudioSampler:
             if not (self._running and gen == self._writer_gen):
                 return
             mark = self._ring_mark
-            if mark is not None:
-                if not self.api.writes_lost_since(mark):
-                    self.api.flush()
-                if self.api.writes_lost_since(mark):
-                    # Held there, the deadline stops the voice ahead of the
-                    # lost span, and the restart that follows blanks the ring.
-                    raise _WritesLost("the link lost ring audio")
+            if (
+                mark is not None
+                and not self._cut_over_lost
+                and not self.api.writes_lost_since(mark)
+            ):
+                self.api.flush()
+            if self._cut_over_lost or (mark is not None and self.api.writes_lost_since(mark)):
+                # Held there, the deadline stops the voice ahead of the
+                # lost span, and the restart that follows blanks the ring.
+                raise _WritesLost("the link lost ring audio")
             mark = self.api.write_loss_mark()
             self._ring_mark = mark
             self._write_length(self._deadline_offset(new))
@@ -1369,6 +1387,7 @@ class UltimateAudioSampler:
                 self._written = phase + fresh
                 self._deadline = phase + fresh
                 self._ring_mark = mark
+                self._cut_over_lost = False
                 self._restarts += 1
                 restarts = self._restarts
         log.log(

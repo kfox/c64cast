@@ -1,5 +1,7 @@
-"""How the sampler's writer reports and accounts for writes the link lost
-(c64cast/audio/sampler.py): the log line names the write that was lost."""
+"""How the sampler reports and accounts for writes the link lost
+(c64cast/audio/sampler.py): the log line names the write that was lost, a
+restart in flight cannot undo stop(), and a cut-over blank lost on the
+playlist thread counts against the writer's deadline."""
 
 from __future__ import annotations
 
@@ -130,6 +132,92 @@ class StopDuringRestartTest(unittest.TestCase):
         self.assertFalse(restart.is_alive() or stop.is_alive())
         self.assertEqual(chan.state, "idle")
         self.assertFalse(chan.ctrl & s.CTRL_GATE)
+
+
+class _PerThreadChannel(_Channel):
+    """`_Channel` whose dropped ring writes are charged, at the next flush,
+    to the thread that sent them, as the Ultimate's backend charges them."""
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.lost_by: dict[int, int] = {}
+        self.dropped_by: set[int] = set()
+
+    def write_loss_mark(self) -> int:
+        return self.lost_by.get(threading.get_ident(), 0)
+
+    def reu_write(self, offset: int, data: bytes) -> None:
+        if self.drop_ring is not None and self.drop_ring():
+            self.dropped_by.add(threading.get_ident())
+            return
+        super().reu_write(offset, data)
+
+    def flush(self) -> None:
+        me = threading.get_ident()
+        if me in self.dropped_by:
+            self.dropped_by.discard(me)
+            self.lost_by[me] = self.lost_by.get(me, 0) + 1
+        super().flush()
+
+
+class CutOverBlankTest(unittest.TestCase):
+    def _due_refresh(self, *, lose_blank: bool) -> tuple[s.UltimateAudioSampler, int]:
+        """A splice flushed on a thread of its own, its blank lost when
+        ``lose_blank``, and then a writer with a refresh due. Returns the
+        sampler and the deadline before the refresh."""
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _PerThreadChannel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        smp._q = cast(Any, _Queue())
+        self.addCleanup(smp.stop)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._written = old + smp._lead_target
+            smp._ring_mark = chan.write_loss_mark()
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            playlist = threading.Thread(target=smp.flush)
+            chan.drop_ring = (lambda: True) if lose_blank else None
+            playlist.start()
+            playlist.join(5.0)
+            chan.drop_ring = None
+            self.assertFalse(playlist.is_alive())
+            # The writer has since written past the old deadline.
+            smp._written = old + smp._lead_target
+        return smp, old
+
+    def test_a_lost_blank_holds_the_deadline(self):
+        # The blank went out on the playlist thread and was charged lost
+        # there: a refresh that checked only the writer's own losses moved
+        # the deadline over pre-splice audio the blank should have cleared.
+        smp, old = self._due_refresh(lose_blank=True)
+        with mock.patch.object(s, "time", _Clock()) as clock:
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            with self.assertRaisesRegex(ConnectionError, "lost ring audio"):
+                smp._advance_deadline(smp._writer_gen)
+        self.assertEqual(smp._deadline, old)
+        self.assertTrue(smp._cut_over_lost)
+
+    def test_a_landed_blank_lets_the_deadline_move(self):
+        smp, old = self._due_refresh(lose_blank=False)
+        with mock.patch.object(s, "time", _Clock()) as clock:
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            smp._advance_deadline(smp._writer_gen)
+        self.assertGreater(smp._deadline or 0, old)
+        self.assertFalse(smp._cut_over_lost)
+
+    def test_the_restart_clears_it(self):
+        smp, _ = self._due_refresh(lose_blank=True)
+        with (
+            mock.patch.object(s, "time", _Clock()),
+            self.assertLogs("c64cast.audio.sampler", logging.WARNING),
+        ):
+            self.assertTrue(smp._restart_channel(smp._writer_gen))
+        self.assertFalse(smp._cut_over_lost)
 
 
 if __name__ == "__main__":
