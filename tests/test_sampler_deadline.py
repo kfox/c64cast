@@ -84,8 +84,8 @@ class _Channel:
     does. ``lose`` loses one register write when it returns True; ``foreign``
     counts a loss on some other thread at a register write that lands, moving
     ``delivery_epoch`` but not this thread's loss mark. ``drop_ring`` loses a
-    REU write without raising, counted lost later, as a redial charges the
-    writes it could not confirm. ``ahead``
+    REU write without raising, counted lost at the next flush, as an
+    unanswered IDENTIFY charges the writes it could not confirm. ``ahead``
     is how far (s) the FPGA runs ahead of the moment its gate-on lands."""
 
     def __init__(
@@ -102,6 +102,8 @@ class _Channel:
         self.foreign: Any = None
         self.foreign_losses = 0
         self.drop_ring: Any = None
+        self.dropped = False  # a dropped ring write the next flush charges
+        self.flushes = 0
         self.ctrl = 0
         self.length = [0, 0, 0]
         self.state = "idle"
@@ -159,7 +161,7 @@ class _Channel:
         if self.down:
             raise ConnectionError("link down")
         if self.drop_ring is not None and self.drop_ring():
-            self.delivery_epoch += 1
+            self.dropped = True
             return
         at = offset - RING_BASE
         self.written_at[at : at + len(data)] = self.clock.now
@@ -205,8 +207,10 @@ class _Channel:
 
     def flush(self) -> None:
         self.advance()
-        if self.down:
+        self.flushes += 1
+        if self.down or self.dropped:
             self.delivery_epoch += 1
+        self.dropped = False
 
 
 def _run(
