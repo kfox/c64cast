@@ -82,6 +82,7 @@ class InterstitialSceneTest(unittest.TestCase):
         self.assertIn("RESTORE_IRQ", fake.regs)
         self.assertEqual(fake.memories["D01A"], "00")
         self.assertEqual(fake.memories["D019"], "01")
+        self.assertEqual(fake.memories["DC0D"], "81")
         self.assertEqual(fake.memories["DD00"], "97")
         self.assertEqual(fake.cache_invalidations, 1)
         self.assertEqual(scene.lines, [LABEL, "WEBCAM SHOW"])

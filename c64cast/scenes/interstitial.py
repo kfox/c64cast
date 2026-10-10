@@ -15,7 +15,7 @@ import numpy as np
 
 from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, VIC, RegionID
+from c64cast.hw.c64 import CIA1, CIA2, VIC, RegionID
 from c64cast.video.palette import C64_COLORS, resolve_color
 
 from .backgrounds import build as build_background
@@ -108,6 +108,9 @@ class InterstitialScene(Scene):
         self.api.restore_kernal_irq_vector()
         self.api.write_memory("d01a", "00")
         self.api.write_memory("d019", "01")
+        # The leaked hook masked CIA #1, and with the raster source now off
+        # nothing else would run SCNKEY, leaving the $028D key poller dead.
+        self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
         self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
         # Standard PETSCII char mode, black border/bg.
         self.api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
