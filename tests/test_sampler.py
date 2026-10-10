@@ -737,19 +737,40 @@ class SamplerWriterFailureTest(unittest.TestCase):
         assert smp._writer is not None
         self.assertTrue(smp._writer.is_running())
 
-    def test_a_dead_link_gates_the_channel_off_and_stops_parking_the_producer(self):
+    def test_a_dead_link_gates_the_channel_off_and_keeps_the_producer_moving(self):
+        # The writer that gave up still takes queued audio as the read head
+        # passes it, so a producer pushing more than the queue holds gets
+        # through at real time instead of parking for the rest of the scene.
         api = _FailingBackend(failures=-1)
-        with mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1):
-            with self.assertLogs("c64cast.audio.sampler", level="ERROR"):
-                smp = self._started(api)
-                self.assertTrue(self._wait(lambda: smp._failed), "the writer never gave up")
-        self.assertEqual(api.mem_writes[-1], ("DF20", "00"), "the channel still loops stale audio")
-        smp._q = s.queue.Queue(maxsize=1)
-        smp._q.put((smp._flush_epoch, b""))  # a full queue nothing drains
-        smp._q.put = mock.Mock(  # type: ignore[method-assign]
-            side_effect=AssertionError("the producer parked on a dead sampler")
+        smp = _make(
+            api,
+            sample_rate=8000,
+            bits=8,
+            lead_seconds=0.2,
+            prebuffer_seconds=0.01,
+            queue_max_chunks=2,
         )
-        self.assertEqual(smp.push_samples(self.TONE), 0)
+        with (
+            mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1),
+            mock.patch.object(s, "WRITER_BACKOFF_MAX_S", 0.01),
+            quiet_logging(),
+        ):
+            smp.start(prebuffer_timeout=0.01)
+            self.addCleanup(smp.stop)
+            self.assertTrue(self._wait(lambda: smp._failed), "the writer never gave up")
+            self.assertEqual(
+                api.mem_writes[-1], ("DF20", "00"), "the channel still loops stale audio"
+            )
+            accepted: list[int] = []
+            producer = threading.Thread(
+                target=lambda: accepted.extend(smp.push_samples(self.TONE) for _ in range(12))
+            )
+            producer.start()
+            producer.join(self.WAIT_S)
+            self.assertFalse(producer.is_alive(), "the producer parked on a sampler that gave up")
+            assert smp._writer is not None
+            self.assertTrue(smp._writer.is_running(), "the writer ended at the give-up")
+        self.assertEqual(accepted, [len(self.TONE)] * 12)
 
     def test_a_gate_off_lost_to_the_outage_is_sent_until_it_lands(self):
         # The gate-off travels the link that failed. Sent once and lost, the
@@ -796,15 +817,15 @@ class SamplerWriterFailureTest(unittest.TestCase):
         # accepted, so a refused chunk must not be reported as taken.
         smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
         self.assertEqual(smp.push_samples(self.TONE), len(self.TONE))
-        smp._failed = True
-        self.assertEqual(smp.push_samples(self.TONE), 0)
-        smp._failed = False
         smp._stopped = True
         self.assertEqual(smp.push_samples(self.TONE), 0)
 
     def test_a_producer_parked_when_the_writer_gives_up_is_released(self):
-        smp = _make(_FakeBackend(), sample_rate=8000, bits=8, queue_max_chunks=1)
-        smp._q.put((smp._flush_epoch, b""))
+        # A writer that gave up takes what the read head has passed, as late,
+        # which frees the full queue the producer waits on.
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=8000, bits=8, queue_max_chunks=1)
+        smp._q.put((smp._flush_epoch, b"\x01" * 64))
         parked = _signal_on_put(smp)
         t = threading.Thread(target=smp.push_samples, args=(self.TONE,))
         self.addCleanup(t.join, 1.0)
@@ -812,8 +833,14 @@ class SamplerWriterFailureTest(unittest.TestCase):
         t.start()
         self.assertTrue(parked.wait(2.0), "the producer never reached the full queue")
         smp._failed = True
+        # The write floor is the queued chunk's end, so the tone stays queued.
+        floor_at = 64 - smp._flush_margin
+        smp._read_consumed_bytes = lambda: floor_at  # type: ignore[method-assign]
+        smp._drop_passed(smp._writer_gen)
         t.join(timeout=2.0)
         self.assertFalse(t.is_alive(), "the producer stays parked on a sampler that gave up")
+        self.assertEqual((smp._content_pos, smp._late_bytes), (64, 64))
+        self.assertEqual(api.reu_writes, [])
 
     def test_a_write_head_the_reader_passed_skips_ahead_of_it(self):
         api = _FakeBackend()
@@ -1603,12 +1630,11 @@ class SamplerLateReanchorTest(unittest.TestCase):
             smp.content_lag_seconds, before_lag + shift / smp.bps / smp._actual_rate, places=9
         )
 
-    def test_a_pending_reanchor_counts_in_the_content_lag_until_the_writer_gives_up(self):
+    def test_a_pending_reanchor_counts_in_the_content_lag_through_the_give_up(self):
         # The writer retries at the pending anchor, so once the link is back
         # the sound lags by it. Left out of the lag, an audio-file scene's
-        # end read the clock as caught up and cut the scene mid-outage. Once
-        # the writer gives up nothing more lands, and the scene would sit the
-        # pending shift out on silence, so only what landed counts.
+        # end read the clock as caught up and cut the scene mid-outage. A
+        # writer that gave up keeps the anchor and lands it with the link.
         smp = self.smp
         self._reanchor_once()
         before_lag, before_pos = smp.content_lag_seconds, smp._content_pos
@@ -1616,53 +1642,10 @@ class SamplerLateReanchorTest(unittest.TestCase):
         assert smp._unlanded_reanchor is not None
         pending = smp._content_pos - before_pos
         self.assertEqual(smp._unlanded_reanchor[0], pending)
-        self.assertAlmostEqual(
-            smp.content_lag_seconds, before_lag + pending / smp.bps / smp._actual_rate, places=9
-        )
+        with_pending = before_lag + pending / smp.bps / smp._actual_rate
+        self.assertAlmostEqual(smp.content_lag_seconds, with_pending, places=9)
         smp._failed = True
-        self.assertEqual(smp.content_lag_seconds, before_lag)
-
-    def test_a_reanchor_given_up_inside_its_hold_leaves_the_landed_lag_whole(self):
-        # The writer gives up with the read head still inside the hold of the
-        # latest re-anchor, whose write never landed. The part of its shift
-        # the head has not crossed is already out of the lag; taking the
-        # whole shift off on top took that part twice, and the heard position
-        # ran ahead of the sound that did land by as much.
-        smp = self.smp
-        self._reanchor_once()
-        landed = smp.content_lag_seconds
-        self._fail_reanchors(3)
-        uncrossed = (smp._content_pos - self.consumed) / smp.bps / smp._actual_rate
-        self.assertGreater(uncrossed, 0.0)  # inside the latest hold
-        self.assertAlmostEqual(
-            smp.reanchor_lag_seconds(), smp.content_lag_seconds - uncrossed, places=9
-        )
-        smp._failed = True
-        self.assertAlmostEqual(smp.reanchor_lag_seconds(), landed, places=9)
-        self.consumed = smp._content_pos + 40  # and past it
-        self.assertAlmostEqual(smp.reanchor_lag_seconds(), landed, places=9)
-
-    def test_a_reanchor_given_up_inside_a_landed_hold_leaves_that_hold_in_the_lag(self):
-        # A sticky re-anchor can come up to a flush margin before the landed
-        # one's anchor, with the head still inside that one's hold. Given up,
-        # the lag is the landed one's as it was: the head has not crossed the
-        # rest of its hold, so the heard sample must not jump past it.
-        smp = self.smp
-        self._reanchor_once()
-        hold_end = smp._reanchor_lag[1][-1][1]
-        self.consumed = smp._content_pos - smp._flush_margin + smp.bps  # late by one sample
-        self.assertLess(self.consumed, hold_end)
-        before = smp.reanchor_lag_seconds()
-        self.assertLess(before, smp.content_lag_seconds)  # inside the landed hold
-        with mock.patch.object(self.api, "reu_write", side_effect=OSError("link down")):
-            with self.assertNoLogs("c64cast.audio.sampler"), self.assertRaises(OSError):
-                self._write(40)
-        smp._carry = None
-        self.assertIsNotNone(smp._unlanded_reanchor)
-        smp._failed = True
-        self.assertAlmostEqual(smp.reanchor_lag_seconds(), before, places=9)
-        self.consumed = hold_end + 40
-        self.assertAlmostEqual(smp.reanchor_lag_seconds(), smp.content_lag_seconds, places=9)
+        self.assertAlmostEqual(smp.content_lag_seconds, with_pending, places=9)
 
     def test_a_given_up_lag_is_taken_at_its_own_head_for_an_earlier_position(self):
         # A position read before the head the lag was worked out at gets the

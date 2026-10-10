@@ -124,7 +124,9 @@ FLUSH_GUARD_S = 0.15
 # channel stops at its deadline once the lead runs out (DEADLINE_GUARD_S);
 # after WRITER_GIVE_UP_S of unbroken failure (two of socket_dma's 5 s connect
 # timeouts) the writer also gates it off and stops taking audio, so the
-# producer is not parked on a queue nothing drains for the rest of the scene.
+# producer is not parked on a queue nothing drains, and goes on trying to
+# restart the channel at the back-off's ceiling. The first restart that lands
+# takes audio again, anchored at the read head, for the rest of the scene.
 WRITER_BACKOFF_MIN_S = 0.02
 WRITER_BACKOFF_MAX_S = 0.5
 WRITER_GIVE_UP_S = 10.0
@@ -503,9 +505,12 @@ class UltimateAudioSampler:
         # the next accepted push (a video's demuxer pushes again after a seek
         # back), so it is not a "track finished" signal.
         self._input_ended = False
-        # Set when the writer gave up on a dead link; push_samples then drops
-        # rather than park the producer on a queue nothing drains.
+        # Set while the writer has given up on a dead link: it then takes
+        # queued audio only as the read head passes its slot (_drop_passed),
+        # and tries to bring the channel back (_recover), which clears it.
         self._failed = False
+        # Whether the give-up's gate-off has landed (_recover).
+        self._gate_off_landed_once = False
 
         self._gate_time = 0.0
         self._held = False
@@ -562,9 +567,8 @@ class UltimateAudioSampler:
         # takes a re-anchor in when it is made, since the heard sample holds
         # from then on whether or not the write lands; the count and the log
         # line wait for a ring write to land at it. Until then it is also
-        # _unlanded_reanchor, (shift in bytes, the log line's span), which the
-        # lag leaves out again once the writer has given up (_failed_lag_bytes),
-        # and the writer's retries of a failed write go back to its anchor.
+        # _unlanded_reanchor, (shift in bytes, the log line's span), and the
+        # writer's retries of a failed write go back to its anchor.
         self._reanchors = 0
         self._reanchor_lag: tuple[int, tuple[tuple[int, int], ...], int] = (0, (), 0)
         self._unlanded_reanchor: tuple[int, str] | None = None
@@ -595,9 +599,11 @@ class UltimateAudioSampler:
         # still waiting on the queue when stop() and the next start() land
         # cannot write into the new activation's ring.
         self._writer_gen = 0
-        # The generation whose writer gave up on the link. That writer touches
-        # no ring state, only the channel control register, so a later
-        # activation need not refuse while it lingers in a link call.
+        # The generation whose writer gave up on the link and has not brought
+        # the channel back. That writer writes only a gate-off and restarts,
+        # each under _gate_lock and _io_lock behind a generation and _running
+        # check, so a later activation need not refuse while it lingers in a
+        # link call: arm() waits out the restart in flight instead.
         self._gave_up_gen: int | None = None
         # Held across the give-up writer's gate-off and start()'s gate-on, so
         # a gate-off still in flight from a retired writer cannot land after
@@ -684,8 +690,10 @@ class UltimateAudioSampler:
         Raises RuntimeError while the last activation's writer is still alive
         (it outlived stop()'s bounded join), since two writers would share the
         ring and the write head. A writer that had given up on the link is
-        let go instead: it no longer touches the ring, and `_gate_lock` keeps
-        its last gate-off from landing after the next gate-on."""
+        let go instead: it writes only a gate-off and restarts, each behind a
+        generation check under `_gate_lock`, which also keeps either from
+        landing after the next gate-on, and a restart in flight holds
+        `_io_lock`, which this waits for."""
         self._refuse_if_writer_survives()
         self._flush_epoch += 1
         while True:
@@ -695,6 +703,7 @@ class UltimateAudioSampler:
                 break
         self._stopped = False
         self._failed = False
+        self._gate_off_landed_once = False
         self._eof = False
         self._input_ended = False
         # The scene reinstalls its analyzer every activation, so a failure on an
@@ -909,10 +918,11 @@ class UltimateAudioSampler:
         playback rate (same backpressure as the DAC's ``push_samples``).
         ``epoch`` is the flush epoch (:meth:`current_flush_epoch`) the
         producer read alongside its decision to push; without one, the epoch
-        at entry. Returns the samples accepted: 0 once stopped, after the
-        writer has given up on the link, or when a splice made the chunk
-        stale."""
-        if self._stopped or self._failed:
+        at entry. Returns the samples accepted: 0 once stopped, or when a
+        splice made the chunk stale. While the writer has given up on the
+        link it still drains the queue at the read head's pace, so the
+        producer is throttled, not parked."""
+        if self._stopped:
             return 0
         # The chunk carries the epoch it was produced in. A splice that lands
         # while this call waits on a full queue makes the put pointless, so the
@@ -927,7 +937,7 @@ class UltimateAudioSampler:
             floats = self._dsp.process(floats)
         out_i16 = np.clip(np.rint(floats * 32767.0), -32768, 32767).astype(np.int16)
         pack = pack_pcm(out_i16, self.bits)
-        while not (self._stopped or self._failed):
+        while not self._stopped:
             if self._flush_epoch != epoch:
                 return 0
             try:
@@ -1106,28 +1116,27 @@ class UltimateAudioSampler:
             self._cut_epoch = max(self._cut_epoch, epoch)
 
     def _writer_loop(self, gen: int) -> None:
-        """Run writer steps until stopped, superseded, or the link is given up.
+        """Run writer steps until stopped or superseded.
 
         A step that raises (a REU write the link could not deliver) is
         retried after a doubling back-off rather than ending the thread: a
         dead writer leaves the channel gated (looping the ring's stale audio
         when it has no deadline) while the producer parks on a queue nothing
-        drains. Past
-        WRITER_GIVE_UP_S of unbroken failure it gates the channel off, and
-        stays to retry that until it lands."""
+        drains. Past WRITER_GIVE_UP_S of unbroken failure it stops taking
+        audio (`_give_up`), and each pass after that tries to bring the
+        channel back instead (`_recover`), until one lands."""
         failing_since: float | None = None
         backoff = 0.0
         while self._running and gen == self._writer_gen:
             try:
-                wrote = self._writer_step(gen)
+                wrote = self._recover(gen) if self._failed else self._writer_step(gen)
             except Exception as e:
                 now = time.monotonic()
                 if failing_since is None:
                     failing_since = now
                     log.warning("sampler: %s; retrying", _failure_text(e))
-                elif now - failing_since >= WRITER_GIVE_UP_S:
+                elif not self._failed and now - failing_since >= WRITER_GIVE_UP_S:
                     self._give_up(e, gen)
-                    return
                 backoff = min(WRITER_BACKOFF_MAX_S, max(WRITER_BACKOFF_MIN_S, backoff * 2))
                 time.sleep(backoff)
                 continue
@@ -1140,38 +1149,90 @@ class UltimateAudioSampler:
                 backoff = 0.0
 
     def _give_up(self, error: Exception, gen: int) -> None:
-        """Stop taking audio, and gate the channel off once the link carries
-        the write.
-
-        The gate-off goes over the link that just failed, and `write_memory`
-        does not raise when a write is lost, so it is confirmed against
-        `writes_lost_since` and sent again every WRITER_BACKOFF_MAX_S until it
-        lands or the writer is stopped or superseded. Sent once, it was lost
-        to the outage it answered, and the ring went on looping stale audio
-        after the link came back, under a scene that survives the outage."""
+        """Stop writing audio after WRITER_GIVE_UP_S of failing writes, until
+        `_recover` brings the channel back. The deadline has already stopped
+        the voice; the gate-off sent here, and by `_recover` until one lands,
+        covers a channel without one."""
         self._failed = True
         self._gave_up_gen = gen
         log.error(
-            "sampler: writes failing for %.0f s (last: %s); gating the channel off",
+            "sampler: writes failing for %.0f s (last: %s); dropping audio and "
+            "restarting the channel once the link answers",
             WRITER_GIVE_UP_S,
             _failure_text(error),
         )
-        retrying = False
-        while True:
+        landed = self._gate_off_landed(gen)
+        self._gate_off_landed_once = bool(landed)
+        if landed is False:
+            log.warning(
+                "sampler: the gate-off did not reach the machine; retrying until the link answers"
+            )
+
+    def _drop_passed(self, gen: int) -> None:
+        """While given up: take queued audio whose slot the read head has
+        reached as late, as `_write_payload` would, without writing it. The
+        producer is then throttled at real time rather than parked on a full
+        queue, and the audio it delivers once the link is back keeps its
+        anchor, in step with the picture. Dropped on arrival instead, an
+        audio-file producer ran to the end of its track during the outage."""
+        with self._io_lock:
+            if gen != self._writer_gen or self._cut_epoch != self._flush_epoch:
+                return
+            floor = self._read_consumed_bytes() + self._flush_margin
+            while self._content_pos < floor:
+                item: tuple[int, bytes | memoryview]
+                if self._carry is not None:
+                    item, self._carry = self._carry, None
+                else:
+                    try:
+                        item = self._q.get_nowait()
+                    except queue.Empty:
+                        return
+                epoch, data = item
+                if epoch != self._flush_epoch:
+                    continue
+                take = min(len(data), floor - self._content_pos)
+                if take < len(data):
+                    self._carry = (epoch, memoryview(data)[take:])
+                self._content_pos += take
+                self._late_bytes += take
+
+    def _recover(self, gen: int) -> bool:
+        """One attempt, after `_give_up`, to bring the channel back. Returns
+        whether it did; raises when the link lost the attempt.
+
+        Queued audio the read head has passed is dropped first
+        (`_drop_passed`). Then the gate-off, sent until one lands:
+        `write_memory` does not raise when it loses a write, so it is
+        confirmed against `writes_lost_since`, and a ring with no deadline
+        loops its last lap until it lands. Then the channel is restarted at
+        the read head (`_restart_channel`), which raises on a dead link at
+        its first REU write. The writer then goes on at the audio's anchor,
+        with the outage left out of the lateness trend."""
+        self._drop_passed(gen)
+        if not self._gate_off_landed_once:
             landed = self._gate_off_landed(gen)
             if landed is None:
-                return
-            if landed:
-                if retrying:
-                    log.info("sampler: the link is back; channel gated off")
-                return
-            if not retrying:
-                retrying = True
-                log.warning(
-                    "sampler: the gate-off did not reach the machine; "
-                    "retrying until the link answers"
-                )
-            time.sleep(WRITER_BACKOFF_MAX_S)
+                return False
+            if not landed:
+                raise _WritesLost("the link lost the gate-off")
+            self._gate_off_landed_once = True
+            log.info("sampler: the gate-off landed; channel gated off")
+        if not self._restart_channel(gen, cause="the link answers again after the give-up"):
+            return False
+        with self._io_lock:
+            if gen != self._writer_gen:
+                return False
+            # An outage says nothing about the producer (_write_payload).
+            self._late_ref = None
+            self._burst_start = self._prev_start = None
+            self._last_try = self._last_late = None
+            self._late_from = None
+            self._last_write_head = None
+            self._gave_up_gen = None
+            self._failed = False
+        log.info("sampler: the channel is back; taking audio again")
+        return True
 
     def _gate_off_landed(self, gen: int) -> bool | None:
         """One gate-off, and whether the link vouches it arrived: nothing it
@@ -1332,7 +1393,12 @@ class UltimateAudioSampler:
                 return False
         return True
 
-    def _restart_channel(self, gen: int) -> bool:
+    def _restart_channel(
+        self,
+        gen: int,
+        *,
+        cause: str = "the channel reached its deadline (ring writes stopped landing)",
+    ) -> bool:
         """Gate a channel that reached its deadline on again, at the read
         head: the gate-on starts it from ring offset 0, so `_ring_phase`
         moves to the read head just before the gate-on and the ring holds nothing
@@ -1340,7 +1406,9 @@ class UltimateAudioSampler:
         gate-on and the deadline set at its end, as at the first gate-on;
         the writer's audio overwrites the blank, and what is late is
         dropped. Raises when the link lost any of it, so the writer backs
-        off and tries again.
+        off and tries again. A channel without a deadline (`_uses_deadline`)
+        is programmed to loop the whole ring again, as at its first gate-on.
+        ``cause`` opens the log line.
 
         The blank goes first: on a dead link `reu_write` raises at once,
         where a register write is lost quietly and its flush logs a warning,
@@ -1359,7 +1427,7 @@ class UltimateAudioSampler:
                     self.api,
                     self.channel,
                     reu_offset=self.ring_base,
-                    length=fresh,
+                    length=fresh if self._uses_deadline else self.ring_size,
                     rate=self._actual_rate,
                     bits=self.bits,
                     volume=0 if self._output_silenced else self._volume,
@@ -1393,15 +1461,15 @@ class UltimateAudioSampler:
                     raise _WritesLost("the link lost the channel restart")
                 self._ring_phase = phase
                 self._written = phase + fresh
-                self._deadline = phase + fresh
+                self._deadline = phase + fresh if self._uses_deadline else None
                 self._ring_mark = mark
                 self._cut_over_lost = False
                 self._restarts += 1
                 restarts = self._restarts
         log.log(
             logging.WARNING if restarts == 1 else logging.DEBUG,
-            "sampler: the channel reached its deadline (ring writes stopped landing); "
-            "restarted it at the read head%s",
+            "sampler: %s; restarted the channel at the read head%s",
+            cause,
             "" if restarts == 1 else f" (restart {restarts})",
         )
         return True
@@ -1834,22 +1902,11 @@ class UltimateAudioSampler:
         A re-anchor whose write has not landed yet counts too: the writer
         retries at its anchor, so the sound will lag by it once the link is
         back, and left out, an audio-file scene's end read the clock as
-        caught up and cut the scene during the outage. Once the writer has
-        given up nothing more lands, and only what did counts
-        (`_failed_lag_bytes`). Read without _io_lock, which the writer holds
-        for a whole REU write."""
-        lag = self._reanchor_lag[0] - self._failed_lag_bytes()
-        return max(0, lag) / self.bps / self._actual_rate
-
-    def _failed_lag_bytes(self) -> int:
-        """The shift of a re-anchor that never landed because the writer gave
-        up on the link: nothing more lands, so the sound lags by none of it,
-        and both lag figures leave it out. 0 while the writer is still
-        retrying, or once the re-anchor landed."""
-        unlanded = self._unlanded_reanchor
-        if unlanded is None or not self._failed:
-            return 0
-        return unlanded[0]
+        caught up and cut the scene during the outage. That holds past the
+        give-up too: the writer keeps the anchor through it (`_drop_passed`)
+        and lands it once the link is back. Read without _io_lock, which the
+        writer holds for a whole REU write."""
+        return max(0, self._reanchor_lag[0]) / self.bps / self._actual_rate
 
     def reanchor_lag_seconds(self, position: float | None = None) -> float:
         """How far re-anchors have put the audio behind `position_seconds()`
@@ -1879,8 +1936,7 @@ class UltimateAudioSampler:
         lag still in flight is waited out (there is no I/O inside it) rather
         than read stale against a head past the writer's.
 
-        A re-anchor the writer gave up on comes off again (`_failed_lag_bytes`),
-        as in `content_lag_seconds`, which is this lag with every hold crossed.
+        `content_lag_seconds` is this lag with every hold crossed.
 
         0 on a stopped sampler, whose `position_seconds()` is 0: its lag was
         worked out at heads of a clock that has stopped, and taken at the
@@ -1900,20 +1956,7 @@ class UltimateAudioSampler:
             if self._lag_seq == seq:
                 break
         at = max(head, lag[2])
-        lag_bytes = self._lag_bytes(lag, at)
-        failed = self._failed_lag_bytes()
-        if failed:
-            # The given-up shift's own hold is part of what the head has not
-            # crossed, which _lag_bytes already left out: taking the whole
-            # shift off on top took it twice, and inside that hold read short
-            # of the lag that did land. Without the given-up re-anchors the
-            # lag is the content lag, less any of the landed holds' rest the
-            # head has not crossed, so it is the smaller of the two. Taken at
-            # the lag's own head like the rest of it: worked out after the
-            # step back below, an earlier position's heard sample fell behind
-            # the one heard at that head.
-            lag_bytes = min(lag_bytes, lag[0] - failed)
-        lag_bytes -= at - head
+        lag_bytes = self._lag_bytes(lag, at) - (at - head)
         return lag_bytes / self.bps / self._actual_rate
 
     def _end_lag_window(self) -> None:
