@@ -14,9 +14,10 @@ a trace, or the VDC itself, and only swapping the VDC separates those.
     scripts/diags/vdc_bit_soak.py --serial <PORT> --mixed         # five cases, top half only
 
 The full-frame run writes all 24000 B of the 640x200 bitmap + attributes, so
-the whole 80-column screen flashes. A 16 KB VDC aliases everything above
-$3FFF onto the bottom 16 KB, so there the full-frame run covers only the 16384 B
-that exist and the screen shows the wrap. ``--mixed`` covers only the first 8000 B
+the whole 80-column screen flashes. On a 16 KB VDC the run selects 16 KB
+addressing first (the cartridge programs 64 KB on every machine), where
+everything above $3FFF aliases onto the bottom 16 KB, so there the full-frame
+run covers only the 16384 B that exist and the screen shows the wrap. ``--mixed`` covers only the first 8000 B
 (the top half of the bitmap) and cycles $FF over $00, $FF over $FF, $00 over
 $FF, a ramp over its inverse, and a ramp over itself.
 
@@ -35,6 +36,7 @@ from collections import Counter
 
 import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work from any cwd)
 import vdc_c128 as v
+import vdc_second_machine as sm
 
 from c64cast.hw import vdc, vdc_rom
 from c64cast.hw.teensyrom_dma import TRClient
@@ -168,16 +170,24 @@ def run_case(
 def soak_bytes(port: vdc.VdcPorthole, mixed: bool) -> int | None:
     """How many bytes each blit covers, or None when VRAM size can't be read.
 
+    The cartridge programs 64 KB addressing on every machine, which a 16 KB
+    VDC decodes wrong, so the size comes from the Editor ROM's aliasing test
+    and a 16 KB VDC is switched to 16 KB addressing before anything is blitted.
+    ``vdc.probe_ram_size_kib`` is not used: it wants the whole inverted byte to
+    alias, so a lost bit on the line this tool is hunting reads as 64 KB.
     Writing past the end of a 16 KB VRAM wraps onto its start, and the second
     write over a byte would hide whatever the first one lost."""
-    kib = vdc.probe_ram_size_kib(port)
-    if kib is None:
+    small = sm.vram_is_16k(port)
+    if small is None:
         print("could not read the VRAM size through the porthole", flush=True)
         return None
-    print(f"VDC video RAM: {kib} KB", flush=True)
+    print(f"VDC video RAM: {16 if small else 64} KB", flush=True)
+    if small and not sm.select_16k_addressing(port):
+        print("could not read R28 to select 16 KB addressing", flush=True)
+        return None
     if mixed:
         return MIXED_BYTES
-    if kib == 16:
+    if small:
         print(f"    full frame capped at {SMALL_VRAM_BYTES} B, all of VRAM", flush=True)
         return SMALL_VRAM_BYTES
     return vdc.FRAME_BYTES
