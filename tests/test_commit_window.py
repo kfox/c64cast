@@ -32,7 +32,7 @@ from c64cast.hw.c64 import (
     RASTER_VBLANK_LINE,
     REU,
     SCREEN,
-    cpu_clock,
+    actual_rate_for_latch,
 )
 from c64cast.video import modes_irq
 from c64cast.video.modes_irq import (
@@ -190,16 +190,16 @@ def largest_ring_write() -> int:
     from types import SimpleNamespace
 
     from c64cast.audio.audio import AudioStreamer
-    from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
+    from c64cast.hw.backend import BASE_PROFILES
 
     sizes = []
-    for profile in (ULTIMATE_PROFILE, TEENSYROM_PROFILE):
+    for profile in BASE_PROFILES.values():
         for system in ("PAL", "NTSC"):
             streamer = SimpleNamespace(
                 nmi=SimpleNamespace(latch=NMI_CEILING_LATCH),
                 api=SimpleNamespace(profile=profile),
                 chunk_size=CHUNK_SIZE,
-                effective_rate=cpu_clock(system) / (NMI_CEILING_LATCH + 1),
+                effective_rate=actual_rate_for_latch(NMI_CEILING_LATCH, system),
             )
             sizes.append(AudioStreamer._halt_quantum(streamer))  # type: ignore[arg-type]
     return max(sizes)
