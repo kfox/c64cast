@@ -44,8 +44,8 @@ SCREEN_PAGE_ADDRS = (0x0400, 0x0C00)
 # D018 hi-nibble = screen address / $400; low nibble (bits 1-3 = 010) =
 # charset at $1000 (standard ROM). $14 → screen=$0400, $34 → screen=$0C00.
 D018_PAGE_VALUES = (0x14, 0x34)
-# What teardown leaves in $D016/$D018: 40 columns, no X-scroll, page 0. The
-# shadow reset writes the same pair, so a handler left hooked commits them.
+# What teardown leaves in $D016/$D018: 40 columns, no X-scroll, page 0; and what
+# install seeds the shadows with.
 DEFAULT_D016 = 0x08
 DEFAULT_D018 = D018_PAGE_VALUES[0]
 
@@ -84,6 +84,20 @@ RASTER_IRQ_HANDLER = bytes(
 )
 assert IRQ_HANDLER_ADDR + len(RASTER_IRQ_HANDLER) <= SHADOW_D016_ADDR, (
     "big_text raster handler runs into its own shadow bytes"
+)
+# The handler with its two register stores turned into loads of the same
+# registers ($8D STA abs → $AD LDA abs): it still acks $D019 and chains to the
+# kernal, but commits nothing, so a handler a teardown could not unhook stops
+# overriding the next scene's $D016/$D018. Every instruction keeps its length
+# and offset, so one write of it lands at an instruction boundary of the old
+# bytes whatever the 6510 was executing.
+_STA_ABS, _LDA_ABS = 0x8D, 0xAD
+_COMMIT_STORES = (3, 9)
+DISARMED_RASTER_IRQ_HANDLER = bytes(
+    _LDA_ABS if i in _COMMIT_STORES else b for i, b in enumerate(RASTER_IRQ_HANDLER)
+)
+assert all(RASTER_IRQ_HANDLER[i] == _STA_ABS for i in _COMMIT_STORES), (
+    "the commit stores moved; recompute _COMMIT_STORES"
 )
 RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 251 — first line below the picture
 
@@ -398,22 +412,22 @@ class BigTextOverlay(Overlay):
     def _uninstall_raster_irq(self, api):
         """Tear down in the reverse order of install, through
         `hw/irq_unhook.unhook_raster_irq`, whose docstring has the order and
-        the retry rules. Whenever the handler stays hooked it can keep
-        committing its shadows every frame, so they are reset to the values
-        `teardown` writes to $D016/$D018."""
+        the retry rules. A handler that stays hooked would keep committing its
+        shadows every frame, over whatever the next scene writes to
+        $D016/$D018 (an MCM scene's multicolor bit and charset among them), so
+        it is disarmed in place instead."""
 
-        def reset_shadows() -> None:
-            log.error(
-                "big_text: the raster handler stays hooked; resetting its shadows to the "
-                "default $D016/$D018"
-            )
+        def disarm() -> None:
+            log.error("big_text: the raster handler stays hooked; disarming its $D016/$D018 commit")
             confirm(
                 api,
-                "shadow reset",
-                lambda: api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018),
+                "handler disarm",
+                lambda: api.write_memory_file(
+                    f"{IRQ_HANDLER_ADDR:04X}", DISARMED_RASTER_IRQ_HANDLER
+                ),
             )
 
-        unhook_raster_irq(api, log, "big_text raster IRQ", if_still_hooked=reset_shadows)
+        unhook_raster_irq(api, log, "big_text raster IRQ", if_still_hooked=disarm)
 
     def is_busy(self) -> bool:
         # A conductor keeps the scene running until the message has scrolled off
