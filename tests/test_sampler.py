@@ -735,11 +735,15 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
         self.assertFalse(smp._failed, "a superseded writer gave up on the running one")
         self.assertIsNone(smp._gave_up_gen)
 
-    def _retire_during_gate_off(self, smp, landed):
-        # The gate-off sits in the transport through stop() and arm().
+    def _retire_during_gate_off(self, smp, landed, *, next_runs=False):
+        # The gate-off sits in the transport through stop() and arm(), and
+        # with next_runs through the next release_hold() as well.
         def gate_off(gen):
             smp._running = False
             smp.arm()
+            if next_runs:
+                smp._writer_gen += 1
+                smp._running = True
             return landed
 
         return mock.patch.object(smp, "_gate_off_landed", side_effect=gate_off)
@@ -767,6 +771,30 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
         ):
             self.assertFalse(smp._recover(1))
         self.assertFalse(smp._gate_off_landed_once)
+
+    def test_a_give_up_superseded_in_its_gate_off_leaves_the_running_writer_alone(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._running = True
+        smp._writer_gen = 1
+        with (
+            self._retire_during_gate_off(smp, True, next_runs=True),
+            self.assertLogs("c64cast.audio.sampler", "WARNING") as logs,
+        ):
+            smp._give_up(s._WritesLost("the link lost a write"), 1)
+        self.assertEqual([r.levelname for r in logs.records], ["ERROR"], logs.output)
+        self.assertFalse(smp._gate_off_landed_once, "set for the running writer")
+
+    def test_a_recovery_superseded_in_its_gate_off_leaves_the_running_writer_alone(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._running = True
+        smp._writer_gen = 1
+        smp._failed = True
+        with (
+            self._retire_during_gate_off(smp, True, next_runs=True),
+            self.assertNoLogs("c64cast.audio.sampler", "INFO"),
+        ):
+            self.assertFalse(smp._recover(1))
+        self.assertFalse(smp._gate_off_landed_once, "set for the running writer")
 
 
 class _StallingUnconfirmedGateOffBackend(_FailingBackend):
