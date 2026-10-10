@@ -72,7 +72,7 @@ REU_VIDEO_SCREEN_LEN = SCREEN.N_CELLS  # 1000 bytes of PETSCII screen codes
 # REUWRITE-staged into REU SRAM (bus-clean), then a pair of REU→main DMAs drop
 # the bitmap + screen into the OFF-SCREEN VIC bank's addresses while the
 # on-screen bank keeps being rendered (no visible tearing during the transfer).
-# A C64-side raster IRQ at line $F8 does the copy and, on a later field, writes
+# A C64-side raster IRQ at line $FB does the copy and, on a later field, writes
 # the new $DD00 value to flip which bank VIC fetches from — a 1-cycle swap,
 # held to the raster gate. The C64 side picks the bank, not the host: see
 # BANK_SWAP_STATE_ADDR.
@@ -256,18 +256,18 @@ PUMP_BODY_STUB = bytes([0x60])  # RTS
 # frame holds the previous one a field longer; it never shows two at once.
 #
 # Committing is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
-# i.e. $D012 in [248, 255] u [0, 45]. Adding 8 rotates that split range into a
-# contiguous 0..53, which is why the check costs one compare and one branch
+# i.e. $D012 in [251, 255] u [0, 45]. Adding 5 rotates that split range into a
+# contiguous 0..50, which is why the check costs one compare and one branch
 # instead of two of each.
-_RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $08
-_RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $36
+_RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $05
+_RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $33
 assert _RASTER_GATE_LIMIT <= 0xFF
 
 # $D012 is 8 bits and cannot tell line n from line n+256, but every line that
 # aliases lands in the safe set on both systems: NTSC 256-261 and PAL 256-301
 # read back as 0-45, and all of them really are in vblank. PAL 302-311 alias
 # onto 46-55 and are conservatively rejected, which only forgoes a commit
-# opportunity. No genuinely unsafe line (46-247) can alias into the window,
+# opportunity. No genuinely unsafe line (46-250) can alias into the window,
 # since none of them exceed 255. One formulation is correct for PAL and NTSC.
 
 
@@ -587,9 +587,9 @@ HOSTDMA_SWAP_IRQ_HANDLER = bytes(
         0xD0,  # 15 LDA $D012         ; where is the raster NOW?
         0x18,  # 18 CLC
         0x69,
-        _RASTER_GATE_BIAS,  # 19 ADC #$08         ; 248..255 → 0..7, 0..45 → 8..53
+        _RASTER_GATE_BIAS,  # 19 ADC #$05         ; 251..255 → 0..4, 0..45 → 5..50
         0xC9,
-        _RASTER_GATE_LIMIT,  # 21 CMP #$36
+        _RASTER_GATE_LIMIT,  # 21 CMP #$33
         0xB0,
         0x11,  # 23 BCS +17 → 42      ; past the window → leave staged, chain
         0xAD,
@@ -701,9 +701,9 @@ FLICKER_SWAP_IRQ_HANDLER = bytes(
         0xD0,  # 33 LDA $D012         ; where is the raster NOW?
         0x18,  # 36 CLC
         0x69,
-        _RASTER_GATE_BIAS,  # 37 ADC #$08         ; 248..255 → 0..7, 0..45 → 8..53
+        _RASTER_GATE_BIAS,  # 37 ADC #$05         ; 251..255 → 0..4, 0..45 → 5..50
         0xC9,
-        _RASTER_GATE_LIMIT,  # 39 CMP #$36
+        _RASTER_GATE_LIMIT,  # 39 CMP #$33
         0xB0,
         0x11,  # 41 BCS +17 → 60      ; past the window → leave staged, chain
         0xAD,
@@ -817,9 +817,9 @@ def install_bank_swap_irq(
         BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF,
         (BANK_SWAP_IRQ_HANDLER_ADDR >> 8) & 0xFF,
     )
-    # RASTER_VBLANK_LINE = 248 is the first line past the last badline, so the
-    # final row's video matrix has already been fetched and the bank swap lands
-    # after it. $D011 bit 7 is the raster MSB, left 0 (lines 0-255 only).
+    # RASTER_VBLANK_LINE = 251 is the first line below the picture, so the bank
+    # swap lands after the final row's last bitmap fetch. $D011 bit 7 is the
+    # raster MSB, left 0 (lines 0-255 only).
     api.write_memory("D012", f"{RASTER_VBLANK_LINE:02X}")
     # Ack any latent raster flag before enabling the raster IRQ source.
     api.write_memory("D019", "01")

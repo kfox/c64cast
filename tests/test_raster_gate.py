@@ -1,7 +1,7 @@
 """The $D012 window gate shared by both host-DMA bank-swap IRQ handlers.
 
 A host DMA write halts the 6510 for ~1 us/byte, so a bitmap push can defer the
-line-248 raster IRQ ~128 lines into the visible frame. The gate is what stops
+line-251 raster IRQ ~128 lines into the visible frame. The gate is what stops
 the swap from committing there and splitting the picture between two frames.
 
 These execute the real handler bytes under py65: a byte-comparison test cannot
@@ -35,10 +35,11 @@ BG0 = 0x05
 
 # Lines on which a commit is invisible. The set wraps through 0, and both edges
 # are included because the handler's rotate-then-compare has to get both right.
-IN_WINDOW = (RASTER_VBLANK_LINE, 0xFB, 0xFF, 0, 1, RASTER_COMMIT_LAST_SAFE_LINE)
+IN_WINDOW = (RASTER_VBLANK_LINE, 0xFD, 0xFF, 0, 1, RASTER_COMMIT_LAST_SAFE_LINE)
 # Lines inside the picture, where a commit tears. The first is one past the
-# window's far edge; the last is one short of the IRQ line.
-OUT_OF_WINDOW = (RASTER_COMMIT_LAST_SAFE_LINE + 1, 51, 128, 200, RASTER_VBLANK_LINE - 1)
+# window's far edge; the last is one short of the IRQ line, and 248-250 are
+# the bottom cell row's last pixel lines, past its badline but still drawn.
+OUT_OF_WINDOW = (RASTER_COMMIT_LAST_SAFE_LINE + 1, 51, 128, 200, 248, 249, RASTER_VBLANK_LINE - 1)
 
 
 class _HandlerHarness:
