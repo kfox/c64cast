@@ -324,7 +324,7 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     # staged then DMA'd into the off-screen
                                     # VIC bank (bank 2 @ $A000/$8400 while
                                     # bank 0 is displayed, and vice versa).
-                                    # A C64-side raster IRQ at line 248 flips
+                                    # A C64-side raster IRQ at line 251 flips
                                     # $DD00 at vblank for a tear-free swap.
                                     # MHires additionally DMAs shared $D800
                                     # color RAM and writes $D021 (bg0) before

@@ -87,7 +87,7 @@ RASTER_IRQ_HANDLER = bytes(
 assert IRQ_HANDLER_ADDR + len(RASTER_IRQ_HANDLER) <= SHADOW_D016_ADDR, (
     "big_text raster handler runs into its own shadow bytes"
 )
-RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 248 — first line past the last badline
+RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 251 — first line below the picture
 
 # The one display mode big_text paints through the scene's buffers instead of
 # hooking the raster IRQ.
@@ -392,7 +392,7 @@ class BigTextOverlay(Overlay):
         api.write_memory("D012", f"{RASTER_IRQ_LINE:02X}")
         api.write_memory("D011", "1B")
         # Ack any pending raster IRQ, then enable: the handler now fires once
-        # per frame at line 248.
+        # per frame at line 251.
         api.write_memory("D019", "01")
         api.write_memory("D01A", "01")
 

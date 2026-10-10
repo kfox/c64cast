@@ -110,6 +110,24 @@ class ErrorTest(unittest.TestCase):
         image = asm6502.assemble("buf2:   RTS\n        JMP buf2\n", 0x2000)
         self.assertEqual(image, bytes([0x60, 0x4C, 0x00, 0x20]))
 
+    def test_a_branch_past_its_reach_is_refused(self):
+        # py65 encodes this as $F0 $C8, a branch 56 bytes backwards.
+        with self.assertRaisesRegex(asm6502.AsmError, "line 1.*reach"):
+            asm6502.assemble("BEQ far\n.res 200\nfar: RTS\n", 0x2000)
+        with self.assertRaisesRegex(asm6502.AsmError, "reach"):
+            asm6502.assemble("back: .res 127\nBNE back\n", 0x2000)
+        with self.assertRaisesRegex(asm6502.AsmError, "reach"):
+            asm6502.assemble("BEQ\tfar\n.res 200\nfar: RTS\n", 0x2000)
+
+    def test_a_branch_across_the_top_of_memory_assembles(self):
+        self.assertEqual(asm6502.assemble("BNE $0010\n", 0xFFF0), bytes([0xD0, 0x1E]))
+
+    def test_a_branch_at_the_edge_of_its_reach_assembles(self):
+        forward = asm6502.assemble("BEQ far\n.res 127\nfar: RTS\n", 0x2000)
+        self.assertEqual(forward[:2], bytes([0xF0, 0x7F]))
+        backward = asm6502.assemble("back: .res 126\nBNE back\n", 0x2000)
+        self.assertEqual(backward[-2:], bytes([0xD0, 0x80]))
+
     def test_unknown_directive_is_reported(self):
         with self.assertRaisesRegex(asm6502.AsmError, "unknown directive"):
             asm6502.assemble(".quux 1\n", 0x2000)

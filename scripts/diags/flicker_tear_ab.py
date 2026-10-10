@@ -2,7 +2,7 @@
 """Does the bank swap ever land inside the visible picture? Measure how often,
 and where.
 
-The tear under test: the swap IRQ at line 248 writes $DD00 to make the newly
+The tear under test: the swap IRQ at line 251 writes $DD00 to make the newly
 staged frame visible. A host-DMA write in flight halts the 6510 at ~1 cycle per
 byte, deferring that write to the end of the halt; an 8000-byte bitmap push
 caught mid-flight has ~4000 bytes left on average = ~62 raster lines, landing
@@ -44,7 +44,7 @@ Two phases:
   * flicker   — flicker_tolerance on. Commits only on phase 0, so it gets half as
                 many commit opportunities and was the louder of the two.
   * plain     — flicker OFF, plain hires double-buffer. Control: that path
-                swaps banks from the same line-248 IRQ, so if it tears too the
+                swaps banks from the same line-251 IRQ, so if it tears too the
                 fault is the host-DMA swap in general, not anything flicker
                 added. It did, which is why the fix went into both handlers.
 

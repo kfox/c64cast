@@ -75,8 +75,8 @@ from c64cast.video.modes_irq import (
     REU_VIDEO_SLOT_STRIDE,
     REU_VIDEO_SLOTS,
     TRACKER_OFF_BITMAP_REGS,
+    TRACKER_OFF_BORDER,
     TRACKER_OFF_READY_FLAG,
-    TRACKER_OFF_RESERVED,
     TRACKER_OFF_SCREEN_REGS,
     uninstall_bank_swap_irq,
 )
@@ -545,7 +545,7 @@ class ReuHiresTrackerLayoutTest(unittest.TestCase):
         # sides together — but the ready flag has to stay the blob's last byte.
         self.assertEqual(TRACKER_OFF_BITMAP_REGS, 0)
         self.assertEqual(TRACKER_OFF_SCREEN_REGS, 7)
-        self.assertEqual(TRACKER_OFF_RESERVED, 14)
+        self.assertEqual(TRACKER_OFF_BORDER, 14)
         self.assertEqual(TRACKER_OFF_READY_FLAG, 15)
         self.assertEqual(FRAME_TRACKER_LEN, 16)
 
@@ -604,10 +604,10 @@ class ReuHiresSetupTest(unittest.TestCase):
         )
 
     def test_setup_programs_raster_line(self):
-        # Raster compare at line 248 ($F8) is inside vblank on both PAL and NTSC, so
+        # Raster compare at line 251 ($FB) is below the picture on both PAL and NTSC, so
         # the $DD00 swap is tear-free.
         fake, _ = self._setup()
-        self.assertEqual(fake.memories["D012"], "F8")
+        self.assertEqual(fake.memories["D012"], "FB")
 
     def test_setup_enables_raster_irq(self):
         # $D01A = $01 enables raster as the only VIC IRQ source.
@@ -724,7 +724,6 @@ class ReuHiresPushTest(unittest.TestCase):
         blob = self._tracker(self._render(mode, self._frame()))
         self.assertEqual(blob[TRACKER_OFF_BITMAP_REGS : TRACKER_OFF_BITMAP_REGS + 2], b"\x00\x20")
         self.assertEqual(blob[TRACKER_OFF_SCREEN_REGS : TRACKER_OFF_SCREEN_REGS + 2], b"\x00\x04")
-        self.assertEqual(blob[TRACKER_OFF_RESERVED], 0)
 
     def test_tracker_carries_reu_src_and_length_for_both_dmas(self):
         # The IRQ handler copies bitmap regs to $DF02-$DF08 and triggers, then the
@@ -966,7 +965,7 @@ class ReuMHiresSetupTest(unittest.TestCase):
 
     def test_setup_programs_raster_line(self):
         fake, _ = self._setup()
-        self.assertEqual(fake.memories["D012"], "F8")
+        self.assertEqual(fake.memories["D012"], "FB")
 
     def test_setup_enables_raster_irq(self):
         fake, _ = self._setup()
@@ -1118,7 +1117,8 @@ class BankSwapIrqTeardownGuardTest(unittest.TestCase):
             HiresDisplayMode(flicker_tolerance="clean"),
             MultiHiresDisplayMode(flicker_tolerance="clean"),
         ):
-            with self.subTest(mode=type(mode).__name__):
+            # flicker_tolerance="visible" warns at setup; test_flicker_blend asserts it.
+            with self.subTest(mode=type(mode).__name__), quiet_logging():
                 self.assertEqual(self._teardown_sleeps(mode), [])
 
 
@@ -1464,7 +1464,7 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
     # registers, or a newer frame's, shows up in the transfer log.
     SRC_BANK = 0xE1
     PUMP_CALLS = 0x02A7  # where the clobbering pump-body stub counts its calls
-    IN_WINDOW = 250  # vblank on both systems
+    IN_WINDOW = 255  # below the picture on both systems
     OUT_OF_WINDOW = 100  # mid-picture
 
     class Machine:
@@ -1627,16 +1627,22 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 m = self.Machine(self, handler, mhires=mhires)
                 m.stage(slot=0)
                 m.irq(line=self.IN_WINDOW)
-                for line in (self.OUT_OF_WINDOW, 46, 247):
+                for line in (self.OUT_OF_WINDOW, 46, 247, 249, 250):
                     _, log, _ = m.irq(line=line)
                     self.assertEqual(log, [], f"line {line}")
                 _, log, _ = m.irq(line=self.IN_WINDOW)
                 self.assertIn(("dd00", CIA2.PORT_A_BANK_2, 0), log)
 
     def test_every_line_of_the_window_commits(self):
-        # [248, 255] and [0, 45], and the lines the 8-bit $D012 aliases there.
+        # [251, 255] and [0, 42] (mhires: 38), and the lines the 8-bit $D012
+        # aliases there.
         for name, handler, mhires, _ in self.CASES[:2]:
-            for line in (248, 255, 0, 45):
+            last = (
+                modes_irq.MHIRES_COMMIT_LAST_SAFE_LINE
+                if mhires
+                else modes_irq.HIRES_COMMIT_LAST_SAFE_LINE
+            )
+            for line in (251, 255, 0, last):
                 with self.subTest(mode=name, line=line):
                     m = self.Machine(self, handler, mhires=mhires)
                     m.stage(slot=0)

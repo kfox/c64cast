@@ -266,6 +266,14 @@ LANDING_PACE_WINDOW_S = 1.0
 LANDING_PACE_MIN_INTERVALS = 2
 LANDING_PACE_MAX_LANDINGS = 64
 
+# The longest ring write the NMI period alone may ask for: what the fastest
+# rate's write already is on either backend, after the link's write-rate floor.
+# The bank-swap commit window is budgeted for one write's halt
+# (tests/test_commit_window.py). Capping the period-derived size at the
+# fastest rate's instead split a 64-byte chunk at 8 kHz into a 55-byte and a
+# 9-byte write, and write count, not size, is what costs on the link.
+RING_WRITE_HALT_CAP_BYTES = 147
+
 
 class PumpInstallError(RuntimeError):
     """The tracked REU pump could not be installed with every write confirmed
@@ -856,9 +864,9 @@ class AudioStreamer:
         """Bytes per ring write, sized so each write's CPU halt fits inside one
         NMI period.
 
-        Derived from the live latch rather than a constant, so it tracks the
-        configured rate, PAL vs NTSC, and any pitch-multiplier retune — the
-        period it has to fit inside is exactly ``latch + 1`` cycles.
+        The period it has to fit inside is exactly ``latch + 1`` cycles of the
+        live latch, and the size that gives stops at RING_WRITE_HALT_CAP_BYTES
+        (see below).
 
         That halt-derived size is then floored by what the link can actually
         carry, because the quantum sets the write *rate* (chunk_size/quantum
@@ -868,9 +876,15 @@ class AudioStreamer:
         65-byte quantum (188 writes/s) produced 1744 full underruns and lapped
         the ring. Backing off costs little — 4-20 Hz modulation is 1.96 at 128 B
         against 2.41 at 64 B — since what matters is clearing that band at all.
+
+        A slower rate's longer period is not let grow the write past
+        RING_WRITE_HALT_CAP_BYTES: the bank-swap raster commit window is sized
+        for one halt that long (tests/test_commit_window.py), and a 1024-byte
+        write at a low rate would land a commit's flip about 10 lines into the
+        picture.
         """
         period_cycles = (self.nmi.latch or self.nmi.compensated_latch()) + 1
-        quantum = halt_quantum_bytes(period_cycles)
+        quantum = min(halt_quantum_bytes(period_cycles), RING_WRITE_HALT_CAP_BYTES)
         # Straight through, no getattr: both names are declared, so a rename
         # fails type-checking here instead of silently yielding max_hz = None
         # and dropping the floor this method's docstring depends on.

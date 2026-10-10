@@ -346,20 +346,22 @@ class KEYBUF:
     CRSR_LEFT: Final = 0x9D
 
 
-# First raster line past the last badline (51 + 24*8 = 243 at the default
-# YSCROLL=3), on both PAL and NTSC — the final row's video matrix has already
-# been fetched by here, so a VIC register commit at this line is safe from
-# tearing. NOT the start of vblank (vblank is ~line 300+ on PAL, ~13-40 on
-# NTSC) — a narrower property than that, and one that stops holding if
-# YSCROLL or the row count changes.
-RASTER_VBLANK_LINE: Final = 0xF8
+# First raster line below the picture, on both PAL and NTSC: the last badline
+# is 51 + 24*8 = 243 at the default YSCROLL=3, and that cell row's eighth pixel
+# line is 250. A bank or page commit at 248, just past the badline, still
+# changed the bitmap fetches for lines 249-250. NOT the start of vblank (vblank
+# is ~line 300+ on PAL, ~13-40 on NTSC) — a narrower property than that, and
+# one that stops holding if YSCROLL or the row count changes.
+RASTER_VBLANK_LINE: Final = 0xFB
 
 # Last raster line on which a bank/page commit is still invisible. The VIC
 # starts fetching a frame's video matrix on its first badline (51 with the
 # default YSCROLL=3), so anything committed at or before this line is fetched
-# consistently for the whole picture. Kept below 51 rather than at it because
-# the commit runs a few instructions after the compare.
-RASTER_COMMIT_LAST_SAFE_LINE: Final = 45
+# consistently for the whole picture. Kept below 51 because the flip lands a
+# few instructions after the compare, and audio NMIs plus one host DMA halt can
+# stretch those to about 7 PAL lines; tests/test_commit_window.py computes
+# that worst case from the handlers' bytes. At 45 a flip could land on 51.
+RASTER_COMMIT_LAST_SAFE_LINE: Final = 43
 
 
 class U64_API:

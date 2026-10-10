@@ -72,7 +72,7 @@ REU_VIDEO_SCREEN_LEN = SCREEN.N_CELLS  # 1000 bytes of PETSCII screen codes
 # REUWRITE-staged into REU SRAM (bus-clean), then a pair of REU→main DMAs drop
 # the bitmap + screen into the OFF-SCREEN VIC bank's addresses while the
 # on-screen bank keeps being rendered (no visible tearing during the transfer).
-# A C64-side raster IRQ at line $F8 does the copy and, on a later field, writes
+# A C64-side raster IRQ at line $FB does the copy and, on a later field, writes
 # the new $DD00 value to flip which bank VIC fetches from — a 1-cycle swap,
 # held to the raster gate. The C64 side picks the bank, not the host: see
 # BANK_SWAP_STATE_ADDR.
@@ -150,7 +150,7 @@ FRAME_TRACKER_ADDR = 0xC700
 #   $C700-$C706 : bitmap REU regs ($DF02-$DF08 pre-staged values, 7 bytes)
 #                 c64_lo, c64_hi, reu_lo, reu_mi, reu_hi, len_lo, len_hi
 #   $C707-$C70D : screen REU regs (same layout, 7 bytes)
-#   $C70E       : reserved, written 0
+#   $C70E       : border value to write to $D020
 #   $C70F       : ready flag (1 = frame staged, 0 = no new frame)
 #
 # The host sets $C70F = 1 (last byte of the DMAWRITE blob) to arm, and the
@@ -159,7 +159,7 @@ FRAME_TRACKER_ADDR = 0xC700
 FRAME_TRACKER_LEN = 16
 TRACKER_OFF_BITMAP_REGS = 0  # 7 bytes
 TRACKER_OFF_SCREEN_REGS = 7  # 7 bytes
-TRACKER_OFF_RESERVED = 14  # 1 byte
+TRACKER_OFF_BORDER = 14  # 1 byte
 TRACKER_OFF_READY_FLAG = 15  # 1 byte
 
 # MultiHires tracker (24 bytes at $C700), the hires layout plus a third REC
@@ -202,13 +202,22 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 # The commit writes bg0 and copies color RAM a field or more after the copy
 # started, by when the host has usually staged a newer frame: reading those
 # from the live tracker put the next frame's colors under this frame's bitmap.
+#
+# The hires commit writes the border only when it differs from the value it
+# last wrote, kept here. The host pokes $D020 itself to show a loop is armed,
+# and a commit that rewrote the border every frame would erase that at once.
+# The host marks the value stale (bit 7 set) whenever it would have rewritten
+# $D020 itself, so the next commit writes it.
 BANK_SWAP_STATE_ADDR = 0xC718
 assert FRAME_TRACKER_ADDR + MHIRES_FRAME_TRACKER_LEN == BANK_SWAP_STATE_ADDR
 _DISPLAYED_BANK = BANK_SWAP_STATE_ADDR  # $DD00 value of the bank on screen
 _HIDDEN_BANK_HI = BANK_SWAP_STATE_ADDR + 1  # $80 when the hidden bank is bank 2
 _COPIED = BANK_SWAP_STATE_ADDR + 2  # nonzero: the hidden bank holds a frame to show
-_SNAPSHOT = BANK_SWAP_STATE_ADDR + 3  # the copied frame's tracker
-BANK_SWAP_STATE_INIT = bytes([CIA2.PORT_A_BANK_0, 0x00, 0x00])
+BORDER_SHOWN_ADDR = BANK_SWAP_STATE_ADDR + 3  # the $D020 value the last commit wrote
+BORDER_STALE = 0x80  # bit 7 set: never a color, so the next commit writes its border
+_SNAPSHOT = BANK_SWAP_STATE_ADDR + 4  # the copied frame's tracker
+BANK_SWAP_STATE_INIT = bytes([CIA2.PORT_A_BANK_0, 0x00, 0x00, BORDER_STALE])
+assert BANK_SWAP_STATE_ADDR + len(BANK_SWAP_STATE_INIT) == _SNAPSHOT
 BANK_SWAP_STATE_LEN = len(BANK_SWAP_STATE_INIT) + MHIRES_FRAME_TRACKER_LEN
 
 # The audio pump's entry points the merged dispatchers route to.
@@ -255,19 +264,20 @@ PUMP_BODY_STUB = bytes([0x60])  # RTS
 # flag), so it simply commits on a later field. A deferred
 # frame holds the previous one a field longer; it never shows two at once.
 #
-# Committing is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
-# i.e. $D012 in [248, 255] u [0, 45]. Adding 8 rotates that split range into a
-# contiguous 0..53, which is why the check costs one compare and one branch
-# instead of two of each.
-_RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $08
-_RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $36
+# A flip is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
+# i.e. $D012 in [251, 255] u [0, 43]; a commit that writes after its flip ends
+# earlier (HIRES_COMMIT_LAST_SAFE_LINE, MHIRES_COMMIT_LAST_SAFE_LINE). Adding 5
+# rotates that split range into a contiguous 0..48, which is why the check
+# costs one compare and one branch instead of two of each.
+_RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $05
+_RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $31
 assert _RASTER_GATE_LIMIT <= 0xFF
 
 # $D012 is 8 bits and cannot tell line n from line n+256, but every line that
-# aliases lands in the safe set on both systems: NTSC 256-261 and PAL 256-301
-# read back as 0-45, and all of them really are in vblank. PAL 302-311 alias
-# onto 46-55 and are conservatively rejected, which only forgoes a commit
-# opportunity. No genuinely unsafe line (46-247) can alias into the window,
+# aliases into the window is below the picture on both systems: NTSC 256-262
+# and PAL 256-299 read back as 0-43. PAL 300-311 alias onto 44-55 and are
+# conservatively rejected, which only forgoes a commit opportunity. No
+# genuinely unsafe line (44-250) can alias into the window,
 # since none of them exceed 255. One formulation is correct for PAL and NTSC.
 
 
@@ -388,8 +398,10 @@ def _bank_swap_dispatcher(
     hidden: tuple[tuple[int, int], ...],
     after_flip: tuple[tuple[int, int], ...],
     bg0_off: int | None,
+    border_off: int | None,
     ready_off: int,
     pump: bool,
+    last_line: int,
 ) -> bytes:
     """Assemble a REU bank-swap dispatcher for $C500.
 
@@ -397,7 +409,8 @@ def _bank_swap_dispatcher(
 
     * **Commit** the frame the hidden bank holds, and only while the raster
       gate says the beam is outside the picture: write bg0, flip $DD00 to the
-      hidden bank, copy the ``after_flip`` families. Out of the window the
+      hidden bank, write the border if it changed, copy the ``after_flip``
+      families. Out of the window the
       frame waits for the next field, and nothing is copied over it.
     * **Copy** a staged frame (ready flag set) into the now-hidden bank: clear
       the ready flag, snapshot the tracker, copy the ``hidden`` families, mark
@@ -419,16 +432,37 @@ def _bank_swap_dispatcher(
     the new colors under the old bitmap for a field, and copying it right
     after the flip outruns the raster — a 40-byte chunk costs ~100 cycles
     with NMIs taken, against the ~500 the beam spends on one 40-cell row —
-    so it lands ahead of every row it changes.
+    so it lands ahead of every row it changes, once the commit starts early
+    enough for the first chunk to beat row 0 (``last_line``).
 
     ``pump`` routes non-raster IRQs to the REU audio pump at $C100 and checks
     for a pending pump tick after each family; without it they chain to the
     kernal.
+
+    ``last_line`` is the last raster line the commit may start on, which a
+    commit that writes or copies after the flip has to pull in (see
+    HIRES_COMMIT_LAST_SAFE_LINE and MHIRES_COMMIT_LAST_SAFE_LINE).
     """
     assert tracker_len <= MHIRES_FRAME_TRACKER_LEN
+    gate_limit = _RASTER_GATE_BIAS + last_line + 1
+    assert gate_limit <= _RASTER_GATE_LIMIT, (
+        "a commit window cannot reach past RASTER_COMMIT_LAST_SAFE_LINE"
+    )
     ready = FRAME_TRACKER_ADDR + ready_off
     nonraster = AUDIO_HANDLER_INSTALL_ADDR if pump else KERNAL.IRQ_HANDLER
     bg0 = f"LDA ${_SNAPSHOT + bg0_off:04X}\n STA $D021" if bg0_off is not None else ""
+    border = (
+        f"""
+            LDA ${_SNAPSHOT + border_off:04X}
+            CMP ${BORDER_SHOWN_ADDR:04X}
+            BEQ border_done
+            STA $D020
+            STA ${BORDER_SHOWN_ADDR:04X}
+        border_done:
+        """
+        if border_off is not None
+        else ""
+    )
     commit_families = "".join(
         _family_source(f"f{i}", _SNAPSHOT + off, n, banked=False, pump=pump)
         for i, (off, n) in enumerate(after_flip)
@@ -449,7 +483,7 @@ def _bank_swap_dispatcher(
             LDA $D012
             CLC
             ADC #${_RASTER_GATE_BIAS:02X}
-            CMP #${_RASTER_GATE_LIMIT:02X}
+            CMP #${gate_limit:02X}
             BCC commit
             JMP chain
         commit:
@@ -458,6 +492,7 @@ def _bank_swap_dispatcher(
             EOR #${CIA2.PORT_A_BANK_0 ^ CIA2.PORT_A_BANK_2:02X}
             STA ${_DISPLAYED_BANK:04X}
             STA ${CIA2.PORT_A:04X}
+            {border}
             {commit_families}
             LDA #$00
             STA ${_COPIED:04X}
@@ -498,6 +533,15 @@ assert VIC_BANK_2.BITMAP == VIC_BANK_0.BITMAP | 0x8000
 assert VIC_BANK_2.SCREEN == VIC_BANK_0.SCREEN | 0x8000
 
 
+# The last raster line a hires commit may start on. Its border write lands 14
+# cycles after the flip and has to beat the picture's first line too, whose
+# side border would otherwise show the previous frame's color beside the new
+# picture. Under the same worst case as the flip, a commit read on line 43
+# wrote the border on line 51. The worst case is computed from these bytes in
+# tests/test_commit_window.py.
+HIRES_COMMIT_LAST_SAFE_LINE = RASTER_COMMIT_LAST_SAFE_LINE - 1
+
+
 def _hires_dispatcher(*, pump: bool) -> bytes:
     return _bank_swap_dispatcher(
         tracker_len=FRAME_TRACKER_LEN,
@@ -507,9 +551,23 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
         ),
         after_flip=(),
         bg0_off=None,
+        border_off=TRACKER_OFF_BORDER,
         ready_off=TRACKER_OFF_READY_FLAG,
         pump=pump,
+        last_line=HIRES_COMMIT_LAST_SAFE_LINE,
     )
+
+
+# The last raster line an mhires commit may start on. Its color-RAM copy runs
+# after the flip, and the chunk holding cell row 0's colors has to land before
+# row 0's badline (51) fetches them, or that frame shows the new bitmap under
+# the previous frame's colors in the top row. From the raster read to the end
+# of that chunk the handler spends about 165 cycles of its own; audio NMIs at
+# the fastest rate the streamer arms take over half the CPU on top of that,
+# and one audio-ring write's DMA halt can land in it. That comes to about 12
+# PAL lines, so a commit read on line 45 finished the chunk around line 57. The
+# worst case is computed from these bytes in tests/test_commit_window.py.
+MHIRES_COMMIT_LAST_SAFE_LINE = 38
 
 
 def _mhires_dispatcher(*, pump: bool) -> bytes:
@@ -521,8 +579,10 @@ def _mhires_dispatcher(*, pump: bool) -> bytes:
         ),
         after_flip=((MHIRES_TRACKER_OFF_COLOR_REGS, REU_VIDEO_BITMAP_COLOR_LEN),),
         bg0_off=MHIRES_TRACKER_OFF_BG0,
+        border_off=None,
         ready_off=MHIRES_TRACKER_OFF_READY_FLAG,
         pump=pump,
+        last_line=MHIRES_COMMIT_LAST_SAFE_LINE,
     )
 
 
@@ -545,7 +605,7 @@ MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = _mhires_dispatcher(pump=True)
 # Unlike the REU handlers, this does NO in-IRQ DMA — it just writes $D021 (bg0)
 # and flips $DD00 from a tiny 3-byte tracker. So the swap lands cleanly inside
 # vblank with no past-vblank overrun → no shimmer, and text overlays folded into
-# the bitmap render crisply (which the REU path can't claim). NMI audio lives on
+# the bitmap render crisply. NMI audio lives on
 # the $FFFA vector, independent of this $0314 raster IRQ, so they coexist; the
 # handler chains to kernal $EA31 so SCNKEY keeps $028D live for the key pollers.
 #
@@ -587,9 +647,9 @@ HOSTDMA_SWAP_IRQ_HANDLER = bytes(
         0xD0,  # 15 LDA $D012         ; where is the raster NOW?
         0x18,  # 18 CLC
         0x69,
-        _RASTER_GATE_BIAS,  # 19 ADC #$08         ; 248..255 → 0..7, 0..45 → 8..53
+        _RASTER_GATE_BIAS,  # 19 ADC #$05         ; 251..255 → 0..4, 0..43 → 5..48
         0xC9,
-        _RASTER_GATE_LIMIT,  # 21 CMP #$36
+        _RASTER_GATE_LIMIT,  # 21 CMP #$31
         0xB0,
         0x11,  # 23 BCS +17 → 42      ; past the window → leave staged, chain
         0xAD,
@@ -701,9 +761,9 @@ FLICKER_SWAP_IRQ_HANDLER = bytes(
         0xD0,  # 33 LDA $D012         ; where is the raster NOW?
         0x18,  # 36 CLC
         0x69,
-        _RASTER_GATE_BIAS,  # 37 ADC #$08         ; 248..255 → 0..7, 0..45 → 8..53
+        _RASTER_GATE_BIAS,  # 37 ADC #$05         ; 251..255 → 0..4, 0..43 → 5..48
         0xC9,
-        _RASTER_GATE_LIMIT,  # 39 CMP #$36
+        _RASTER_GATE_LIMIT,  # 39 CMP #$31
         0xB0,
         0x11,  # 41 BCS +17 → 60      ; past the window → leave staged, chain
         0xAD,
@@ -817,9 +877,9 @@ def install_bank_swap_irq(
         BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF,
         (BANK_SWAP_IRQ_HANDLER_ADDR >> 8) & 0xFF,
     )
-    # RASTER_VBLANK_LINE = 248 is the first line past the last badline, so the
-    # final row's video matrix has already been fetched and the bank swap lands
-    # after it. $D011 bit 7 is the raster MSB, left 0 (lines 0-255 only).
+    # RASTER_VBLANK_LINE = 251 is the first line below the picture, so the bank
+    # swap lands after the final row's last bitmap fetch. $D011 bit 7 is the
+    # raster MSB, left 0 (lines 0-255 only).
     api.write_memory("D012", f"{RASTER_VBLANK_LINE:02X}")
     # Ack any latent raster flag before enabling the raster IRQ source.
     api.write_memory("D019", "01")
@@ -1012,7 +1072,7 @@ def _stage_bitmap_and_screen(
 
 
 def push_bitmap_via_reu(
-    api: C64Backend, bitmap_bytes: bytes, screen_bytes: bytes, slot: int
+    api: C64Backend, bitmap_bytes: bytes, screen_bytes: bytes, border: int, slot: int
 ) -> None:
     """REUWRITE bitmap + screen into REU staging slot ``slot``, then DMAWRITE
     the 16-byte frame tracker to $C700-$C70F. The C64-side raster IRQ copies
@@ -1021,6 +1081,7 @@ def push_bitmap_via_reu(
 
     ``slot`` is the caller's rotation through REU_VIDEO_SLOTS (see the REU
     staging layout). The destinations are bank 0's; the IRQ re-aims them.
+    ``border`` is the frame's $D020 value, which the IRQ writes as it flips.
 
     Per-frame host work: 2 REUWRITEs (bus-clean) + 1 DMAWRITE (16 bytes,
     halts C64 bus for ~16 cycles — negligible vs the ~9000 cycles the
@@ -1028,7 +1089,7 @@ def push_bitmap_via_reu(
     offset, regs = _stage_bitmap_and_screen(api, bitmap_bytes, screen_bytes, slot)
     # Order matches the IRQ handler's layout exactly, and the ready flag is the
     # LAST byte, so the regs are consistent before ready flips.
-    tracker = regs + bytes([0x00, 0x01])  # reserved, ready flag
+    tracker = regs + bytes([border & 0x0F, 0x01])  # border, ready flag
     assert len(tracker) == FRAME_TRACKER_LEN
     api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
 
