@@ -834,9 +834,9 @@ class AudioFileSource:
         accepted.
 
         Not the samples handed over: the DAC drops a blob its queue held full
-        past the put timeout, and a sampler that gave up on its link takes
-        nothing. Counted, those put the length `finished` waits for past
-        anything the sink's clock reaches, and the scene sat out the deadline
+        past the put timeout, and a stopped sampler takes nothing. Counted,
+        those put the length `finished` waits for past anything the sink's
+        clock reaches, and the scene sat out the deadline
         on silence, the rest of the track when the sink died mid-file."""
         import numpy as np
 

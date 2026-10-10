@@ -1374,7 +1374,7 @@ class _FileSink:
         self.pushed = 0
         self._played = played
         # Pushes from this one on are refused, as a DAC drops a blob its full
-        # queue would not take and a sampler that gave up takes nothing.
+        # queue would not take and a stopped sampler takes nothing.
         self.refuse_from: int | None = None
         self._calls = 0
 

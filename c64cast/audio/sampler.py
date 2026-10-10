@@ -123,7 +123,7 @@ FLUSH_GUARD_S = 0.15
 # redial) is retried with a doubling back-off between these bounds. The
 # channel stops at its deadline once the lead runs out (DEADLINE_GUARD_S);
 # after WRITER_GIVE_UP_S of unbroken failure (two of socket_dma's 5 s connect
-# timeouts) the writer also gates it off and stops taking audio, so the
+# timeouts) the writer also gates it off and stops writing audio, so the
 # producer is not parked on a queue nothing drains, and goes on trying to
 # restart the channel at the back-off's ceiling. The first restart that lands
 # takes audio again, anchored at the read head, for the rest of the scene.
@@ -2181,7 +2181,7 @@ class UltimateAudioSampler:
             )
         if self._restarts > 1:
             log.warning(
-                "sampler: restarted the channel at its deadline %d times this session",
+                "sampler: restarted the channel %d times this session",
                 self._restarts,
             )
         if self._lead_min is not None:
