@@ -31,6 +31,16 @@ def _first(ops: list[tuple[Any, ...]], name: str, address: str, value: Any = Non
     raise AssertionError(f"no {name} to {address}")
 
 
+def _label(mode: HiresDisplayMode | MultiHiresDisplayMode) -> str:
+    if mode.use_reu_staged:
+        path = "reu"
+    elif mode.double_buffer:
+        path = "double_buffer"
+    else:
+        path = "flicker"
+    return f"{type(mode).__name__}/{path}"
+
+
 class InstallOrderTest(unittest.TestCase):
     def _assert_masked_before_uploads(
         self, ops: list[tuple[Any, ...]], mask_value: str, *, unmasks: bool
@@ -76,7 +86,7 @@ class InstallOrderTest(unittest.TestCase):
             MultiHiresDisplayMode(double_buffer=True),
             MultiHiresDisplayMode(flicker_tolerance="clean"),
         ):
-            with self.subTest(mode=type(mode).__name__, reu=mode.use_reu_staged):
+            with self.subTest(mode=_label(mode)):
                 api = FakeAPI()
                 with mock.patch.object(modes_irq, "time") as clock:
                     clock.sleep.side_effect = lambda s, ops=api.ops: ops.append(("sleep", s))
@@ -110,8 +120,9 @@ class InstallOrderTest(unittest.TestCase):
             HiresDisplayMode(double_buffer=True),
             HiresDisplayMode(flicker_tolerance="clean"),
             MultiHiresDisplayMode(double_buffer=True),
+            MultiHiresDisplayMode(flicker_tolerance="clean"),
         ):
-            with self.subTest(mode=type(mode).__name__):
+            with self.subTest(mode=_label(mode)):
                 api = FakeAPI()
                 api.profile = replace(api.profile, supports_reu=False)
                 with mock.patch.object(modes_irq, "time") as clock:
