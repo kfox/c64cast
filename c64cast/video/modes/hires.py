@@ -161,8 +161,8 @@ class HiresDisplayMode(BitmapDisplayMode):
         # Selects BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER in setup(), whose dispatcher
         # falls through to the $C100 audio pump on non-raster (CIA #1) IRQs.
         self.audio_reu_pump_active = audio_reu_pump_active
-        # Which VIC bank is displayed: 0 = bank 0 (paint bank 2 next),
-        # 1 = bank 2 (paint bank 0 next).
+        # See BitmapDisplayMode._displayed_bank: the host-DMA page flips' bank,
+        # which the REU path leaves at 0.
         self._displayed_bank = 0
 
     @property
