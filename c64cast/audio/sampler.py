@@ -1358,6 +1358,11 @@ class UltimateAudioSampler:
                 # among it, and the sound played that much behind the picture.
                 phase = self._read_consumed_bytes()
                 self._send_gate_on()
+                if not self._running:
+                    # stop() cleared it after the generation check above, and
+                    # its gate-off may have gone out ahead of this gate-on.
+                    gate_off(self.api, self.channel)
+                    return False
                 if self.api.writes_lost_since(mark):
                     raise _WritesLost("the link lost the channel restart")
                 self._ring_phase = phase
@@ -2001,7 +2006,10 @@ class UltimateAudioSampler:
         stalled link) stays referenced, so the next arm()/start() refuses
         rather than run a second writer beside it, unless it had given up on
         the link (see `arm`). With `_running` cleared,
-        it writes nothing more once that write returns."""
+        it writes nothing more once that write returns. A restart such a
+        writer has in flight sees `_running` cleared after its gate-on and
+        gates the channel off again, so the stop holds whichever order the
+        two land in."""
         self._stopped = True
         self._running = False
         self._held = False
@@ -2009,6 +2017,9 @@ class UltimateAudioSampler:
             self._writer.stop()
             if not self._writer.is_running():
                 self._writer = None
+        # Not under _gate_lock: a given-up writer holds it across a gate-off
+        # that can sit in a dial for seconds, and teardown would wait it out.
+        # A restart in flight gates off again itself (_restart_channel).
         try:
             gate_off(self.api, self.channel)
         except Exception as e:  # best-effort; teardown must not raise

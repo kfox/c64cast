@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import logging
+import threading
 import unittest
 from typing import Any, cast
 from unittest import mock
+
+from test_sampler_deadline import RING_BASE, _Channel, _Clock, _Queue, _Writer
 
 from c64cast.audio import sampler as s
 
@@ -71,6 +74,62 @@ class FailureMessageTest(unittest.TestCase):
             smp._give_up(s._WritesLost("the link lost ring audio"), smp._writer_gen)
         self.assertIn("(last: the link lost ring audio)", logs.output[0])
         self.assertNotIn("ring write", logs.output[0])
+
+
+def _finished(clock: _Clock) -> tuple[s.UltimateAudioSampler, _Channel]:
+    """A started sampler whose channel ran into its first deadline, on
+    ``clock`` (the one patched in as the sampler's ``time``)."""
+    smp = s.UltimateAudioSampler(
+        cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+    )
+    chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+    smp.api = cast(Any, chan)
+    smp._q = cast(Any, _Queue())
+    smp.start(prebuffer_timeout=0.0)
+    clock.now = 5.0
+    chan.advance()
+    return smp, chan
+
+
+class StopDuringRestartTest(unittest.TestCase):
+    def test_the_gate_off_lands_after_a_restart_in_flight(self):
+        # The writer outlived stop()'s join inside a restart, its blank held
+        # up on a slow link. A gate-off sent meanwhile was overtaken by the
+        # restart's gate-on, and the channel played on after the stop.
+        clock = _Clock()
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp, chan = _finished(clock)
+            self.assertEqual(chan.state, "finished")
+            in_blank, release = threading.Event(), threading.Event()
+            plain_reu = chan.reu_write
+
+            def slow_reu(offset: int, data: bytes) -> None:
+                in_blank.set()
+                release.wait(5.0)
+                plain_reu(offset, data)
+
+            chan.reu_write = slow_reu  # type: ignore[method-assign]
+            gen = smp._writer_gen
+            restart = threading.Thread(target=smp._restart_channel, args=(gen,))
+            stop = threading.Thread(target=smp.stop)
+            restart.start()
+            try:
+                self.assertTrue(in_blank.wait(5.0))
+                stop.start()
+                stop.join(5.0)
+                # stop() does not wait for the restart: a given-up writer's
+                # gate-off can hold the same lock across a whole dial.
+                self.assertFalse(stop.is_alive())
+                release.set()
+                restart.join(5.0)
+            finally:
+                release.set()
+                restart.join(5.0)
+                if stop.ident is not None:
+                    stop.join(5.0)
+        self.assertFalse(restart.is_alive() or stop.is_alive())
+        self.assertEqual(chan.state, "idle")
+        self.assertFalse(chan.ctrl & s.CTRL_GATE)
 
 
 if __name__ == "__main__":
