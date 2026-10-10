@@ -648,6 +648,9 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
             survivor = smp._writer
             assert survivor is not None
             self.addCleanup(survivor.stop)
+            # Runs before the cleanup stop (LIFO), so a failure before the
+            # release below does not spend that stop's join on a stalled write.
+            self.addCleanup(api.release.set)
             survivor._join_timeout = 0.05
             smp.stop()
             self.assertTrue(survivor.is_running(), "the survivor did not outlive the join")
