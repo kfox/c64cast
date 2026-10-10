@@ -11,73 +11,74 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, lose_writes_to
 
 from c64cast.hw.c64 import KERNAL
 from c64cast.hw.delivery import CONFIRM_TRIES
-from c64cast.scenes.overlays.big_text import BigTextOverlay
+from c64cast.scenes.overlays.big_text import (
+    D018_PAGE_VALUES,
+    SHADOW_D016_ADDR,
+    BigTextOverlay,
+)
 
 _KERNAL_VECTOR = (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+_SHADOWS = f"{SHADOW_D016_ADDR:04X}"
+_WRITES = ("write_memory", "write_regs", "lost")
 
 
-class _LossyAPI(FakeAPI):
-    """Loses the first `losses[address]` writes to `address`: the call
-    returns and the epoch moves."""
-
-    def __init__(self, losses: dict[str, int]):
-        super().__init__()
-        self.losses = dict(losses)
-        self.order: list[str] = []
-
-    def _lost(self, address: str) -> bool:
-        address = address.upper()
-        self.order.append(address)
-        if self.losses.get(address, 0) > 0:
-            self.losses[address] -= 1
-            self.delivery_epoch += 1
-            return True
-        return False
-
-    def write_memory(self, address, *args, **kwargs):
-        return None if self._lost(address) else super().write_memory(address, *args, **kwargs)
-
-    def write_regs(self, address, *args, **kwargs):
-        return None if self._lost(address) else super().write_regs(address, *args, **kwargs)
+def _lossy(address: int, times: int) -> FakeAPI:
+    api = FakeAPI()
+    lose_writes_to(api, address, times)
+    return api
 
 
-def _uninstall(api: _LossyAPI) -> None:
+def _order(api: FakeAPI) -> list[str]:
+    """Every write the teardown attempted, lost or landed, by address."""
+    return [op[1] for op in api.ops if op[0] in _WRITES]
+
+
+def _uninstall(api: FakeAPI) -> None:
     overlay: Any = BigTextOverlay(messages=[{"text": "HI"}], charset_path="")
     overlay._uninstall_raster_irq(api)
 
 
 class BigTextIrqTeardownTest(unittest.TestCase):
     def test_a_write_lost_once_is_written_again(self):
-        for address in ("D01A", "0314", "DC0D"):
-            with self.subTest(address=address):
-                api = _LossyAPI({address: 1})
+        for address in (0xD01A, 0x0314, 0xDC0D):
+            with self.subTest(address=f"{address:04X}"):
+                api = _lossy(address, 1)
                 _uninstall(api)
-                self.assertEqual(api.order.count(address), 2)
+                self.assertEqual(_order(api).count(f"{address:04X}"), 2)
                 self.assertEqual(api.memories["D01A"], "00")
                 self.assertEqual(api.regs["0314"], _KERNAL_VECTOR)
                 self.assertEqual(api.memories["DC0D"], "81")
 
     def test_a_raster_disable_that_never_lands_keeps_the_handler_hooked(self):
-        api = _LossyAPI({"D01A": CONFIRM_TRIES})
+        api = _lossy(0xD01A, CONFIRM_TRIES)
+        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
+            _uninstall(api)
+        self.assertNotIn("0314", _order(api))
+        self.assertNotIn("DC0D", _order(api))
+        self.assertTrue(any("skipping the vector restore" in m for m in logs.output))
+        self.assertTrue(any("skipping the CIA1 unmask" in m for m in logs.output))
+
+    def test_a_hooked_handler_commits_the_default_registers(self):
+        api = _lossy(0xD01A, CONFIRM_TRIES)
         with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR"):
             _uninstall(api)
-        self.assertNotIn("0314", api.order)
-        self.assertNotIn("DC0D", api.order)
+        self.assertEqual(api.regs[_SHADOWS], (0x08, D018_PAGE_VALUES[0]))
 
     def test_a_restore_that_never_lands_leaves_cia1_masked(self):
-        api = _LossyAPI({"0314": CONFIRM_TRIES})
-        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR"):
+        api = _lossy(0x0314, CONFIRM_TRIES)
+        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
             _uninstall(api)
-        self.assertNotIn("DC0D", api.order)
+        self.assertNotIn("DC0D", _order(api))
+        self.assertTrue(any("skipping the CIA1 unmask" in m for m in logs.output))
 
     def test_a_clean_teardown_runs_in_install_reverse_order(self):
-        api = _LossyAPI({})
+        api = FakeAPI()
         _uninstall(api)
-        self.assertEqual(api.order, ["D01A", "0314", "D019", "DC0D"])
+        self.assertEqual(_order(api), ["D01A", "0314", "D019", "DC0D"])
 
 
 if __name__ == "__main__":
