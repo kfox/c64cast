@@ -44,6 +44,7 @@ from c64cast.hw.c64 import (
     VIC_BANK_2,
     halt_quantum_bytes,
 )
+from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
 log = logging.getLogger(__name__)
 
@@ -843,16 +844,36 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
     Timer A masked — which stops the kernal keyboard scan, and with it the
     C= / CTRL / SHIFT poller, for the rest of the session.
 
-    Every step but one is an independent promise. The CIA #1 unmask is not: it
+    Every step but two is an independent promise. The CIA #1 unmask is not: it
     re-arms the jiffy IRQ only once `$0314` is back at the kernal, which is
     why it reads `vector_restored` rather than firing unconditionally. See
-    the comment on `unmask_cia1`."""
+    the comment on `unmask_cia1`. Nor is the second drain, which runs only
+    when a mask never confirmed: see the comment on `drain_unmasked_dispatcher`.
+
+    The two masks and the vector restore are confirmed delivered, with
+    retries. A backend write reports a lost write by moving
+    `delivery_epoch` rather than by raising, so an unconfirmed mask would
+    otherwise pass as landed."""
     vector_restored = False
+    unconfirmed_masks: list[str] = []
+
+    def confirm(what: str, write: Callable[[], None]) -> None:
+        if not write_confirmed(api, write):
+            raise RuntimeError(f"the {what} write was not confirmed after {CONFIRM_TRIES} tries")
+
+    def mask(what: str, address: str, value: str) -> None:
+        # Listed first, so a write that raises past `confirm` counts as unconfirmed.
+        unconfirmed_masks.append(what)
+        confirm(what, lambda: api.write_memory(address, value))
+        unconfirmed_masks.remove(what)
 
     def restore_kernal_vector() -> None:
         nonlocal vector_restored
-        api.write_regs(
-            f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+        confirm(
+            "$0314 restore",
+            lambda: api.write_regs(
+                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+            ),
         )
         vector_restored = True
 
@@ -876,14 +897,32 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
         if drain_reu_copy:
             time.sleep(_REU_SLOT_MAX_IN_USE_S)
 
+    def drain_unmasked_dispatcher() -> None:
+        # With a source still unmasked, any IRQ up to the vector restore can
+        # enter $C500 and start a copy the first drain never saw. The restore
+        # landing mid-copy is harmless, since the 6510 reads $0314 only on IRQ
+        # entry. What the copy cannot survive is the bank flip below and the
+        # next scene's setup writing over $C500, so both wait for it here.
+        # Leaving the handler hooked instead would keep it reachable while
+        # that setup writes over it, which is also why no wait helps once the
+        # restore itself failed.
+        if not (unconfirmed_masks and drain_reu_copy and vector_restored):
+            return
+        log.error(
+            "bank-swap IRQ: the %s write was not confirmed, so the dispatcher may have "
+            "started a copy after the drain; waiting it out before releasing the bank",
+            " and ".join(unconfirmed_masks),
+        )
+        time.sleep(_REU_SLOT_MAX_IN_USE_S)
+
     steps: tuple[tuple[str, Callable[[], object]], ...] = (
         # Mask CIA #1 + disable VIC IRQ first, so no source can fire into the
         # about-to-be-unhooked handler.
         (
             "CIA1 mask",
-            lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}"),
+            lambda: mask("CIA1 mask", f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}"),
         ),
-        ("VIC IRQ disable", lambda: api.write_memory("D01A", "00")),
+        ("VIC IRQ disable", lambda: mask("VIC IRQ disable", "D01A", "00")),
         # A dispatcher already inside an REU copy keeps running from $C500 and
         # writing the hidden bank after the masks land. Waiting it out is
         # cheaper than a handshake, which would need a REST read of the C64 on
@@ -891,6 +930,7 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
         ("drain dispatcher", drain_dispatcher),
         # Restore $0314/$0315 → kernal $EA31.
         ("kernal IRQ vector", restore_kernal_vector),
+        ("drain unmasked dispatcher", drain_unmasked_dispatcher),
         # Ack any pending raster IRQ flag so the next $D019 read is clean.
         ("raster flag ack", lambda: api.write_memory("D019", "01")),
         # Restore VIC bank 0 (kernal default) so the next scene paints into the
