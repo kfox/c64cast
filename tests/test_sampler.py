@@ -1624,6 +1624,19 @@ class SamplerLateReanchorTest(unittest.TestCase):
         self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
         self.assertEqual(smp.reanchor_lag_seconds(0.0), 0.0)
 
+    def test_a_stop_during_the_lag_read_s_head_read_has_no_reanchor_lag(self):
+        smp = self.smp
+        self._reanchor_late()
+        self.consumed += 2 * smp._reanchor_lead
+        self.assertGreater(smp.reanchor_lag_seconds(), 0.0)
+
+        def stopped_mid_read() -> int:
+            smp._running = False
+            return 0
+
+        smp._read_consumed_bytes = stopped_mid_read  # type: ignore[method-assign]
+        self.assertEqual(smp.reanchor_lag_seconds(), 0.0)
+
     def test_a_producer_catching_up_lines_up_without_a_reanchor(self):
         # A decoder with a backlog after a stall: its late chunks are dropped
         # and the rest land at their own slots, so sync is unchanged.

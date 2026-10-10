@@ -2050,6 +2050,9 @@ class UltimateAudioSampler:
             return 0.0
         if position is None:
             head = self._read_consumed_bytes()
+            # A stop() since the check above already read the head as 0.
+            if not self._running:
+                return 0.0
         else:
             head = int(position * self._actual_rate) * self.bps
         while True:
