@@ -386,8 +386,14 @@ class AudioFileSourceDrainTest(unittest.TestCase):
         )
         # And the streamer, for an overlay FFTing its tap, until teardown.
         self.assertAlmostEqual(sink.content_scale, 0.9)
-        src._reset_content_scale()
+        src._set_streamer_scale(1.0)
         self.assertEqual(sink.content_scale, 1.0)
+
+        # A decode thread that outlived teardown's join leaves it alone.
+        src._stop.set()
+        src._note_content_rate(7200, 8000)
+        self.assertEqual(sink.content_scale, 1.0)
+        src._stop.clear()
 
         features.reset_mock()
         sink.pushed = 0
@@ -521,6 +527,12 @@ class AnalyzerContentRateTest(unittest.TestCase):
         analyzer.set_content_rate(followed)
         analyzer.update(window, now + 1 / 60)
         self.assertLess(analyzer._onset, 0.01)
+
+    def test_a_rate_that_keeps_the_layout_keeps_the_onset_baseline(self):
+        analyzer = AudioFeatureAnalyzer(REF_RATE, n_bands=BANDS, fft_size=FFT)
+        analyzer.update(np.zeros(FFT, dtype=np.float32), 0.0)
+        analyzer.set_content_rate(REF_RATE)
+        self.assertIsNotNone(analyzer._prev_log_mags)
 
 
 class _Overlay(_SpectrumBands):

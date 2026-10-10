@@ -814,12 +814,14 @@ class AudioFileSource:
         features = self._features
         if features is not None:
             features.set_content_rate(rate)
-        if not self._is_sampler:
-            cast("AudioStreamer", self._audio).content_scale = rate / base
+        # A decode thread that outlived teardown's join would otherwise leave
+        # its scale on the shared streamer for the next scene's overlay.
+        if not self._stop.is_set():
+            self._set_streamer_scale(rate / base)
 
-    def _reset_content_scale(self) -> None:
+    def _set_streamer_scale(self, scale: float) -> None:
         if not self._is_sampler:
-            cast("AudioStreamer", self._audio).content_scale = 1.0
+            cast("AudioStreamer", self._audio).content_scale = scale
 
     @staticmethod
     def _drained_rate(rate: int, scale: float) -> int:
@@ -928,7 +930,7 @@ class AudioFileSource:
         steps.append(("audio stop", self._audio.stop))
         if thread is not None:
             steps.append(("decode thread join", partial(self._join_decode_thread, thread)))
-        steps.append(("content scale reset", self._reset_content_scale))
+        steps.append(("content scale reset", partial(self._set_streamer_scale, 1.0)))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _join_decode_thread(self, thread: threading.Thread) -> None:

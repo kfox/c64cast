@@ -247,11 +247,14 @@ class AudioFeatureAnalyzer:
         """Lay the bands out for windows sampled at ``rate`` rather than
         `sample_rate`, so a tone reads in the band it does at `sample_rate`.
         A file the DAC source resamples to follow a slow drain is the caller."""
-        self._edges = rescaled_band_edges(
-            self.n_bands, self.fft_size, self.sample_rate / float(rate)
-        )
+        edges = rescaled_band_edges(self.n_bands, self.fft_size, self.sample_rate / float(rate))
+        if np.array_equal(edges, self._edges):
+            return
+        self._edges = edges
         # The last window's magnitudes are per band of the old layout;
-        # differenced against the new one they read as a transient.
+        # differenced against the new one they read as a transient. Dropped
+        # only when the layout moves: a dropped baseline skips the next
+        # window's onset, which may be a real one.
         self._prev_log_mags = None
 
     def update(self, window: np.ndarray, now: float) -> None:
