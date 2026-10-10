@@ -184,6 +184,19 @@ MIN_WRITE_INTERVAL_S = 0.02
 DEADLINE_GUARD_S = 0.05
 
 
+class _WritesLost(ConnectionError):
+    """Raised by the sampler's own loss check, for a write the link took
+    without an error and may not have delivered; its message names the write."""
+
+
+def _failure_text(error: Exception) -> str:
+    """What the writer's log lines say failed: a transport error raised out
+    of a REU write is the ring's, a `_WritesLost` names its own write."""
+    if isinstance(error, _WritesLost):
+        return str(error)
+    return f"ring write failed ({error})"
+
+
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
     """Sample-rate divider for the sampler reference clock (≥ 1). ``ref_clock``
     defaults to the nominal 6.25 MHz; pass a per-unit calibrated value to
@@ -1094,7 +1107,7 @@ class UltimateAudioSampler:
                 now = time.monotonic()
                 if failing_since is None:
                     failing_since = now
-                    log.warning("sampler: ring write failed (%s); retrying", e)
+                    log.warning("sampler: %s; retrying", _failure_text(e))
                 elif now - failing_since >= WRITER_GIVE_UP_S:
                     self._give_up(e, gen)
                     return
@@ -1103,7 +1116,7 @@ class UltimateAudioSampler:
                 continue
             if wrote and failing_since is not None:
                 log.info(
-                    "sampler: ring writes recovered after %.1f s",
+                    "sampler: writes recovered after %.1f s",
                     time.monotonic() - failing_since,
                 )
                 failing_since = None
@@ -1122,9 +1135,9 @@ class UltimateAudioSampler:
         self._failed = True
         self._gave_up_gen = gen
         log.error(
-            "sampler: ring writes failing for %.0f s (%s); gating the channel off",
+            "sampler: writes failing for %.0f s (last: %s); gating the channel off",
             WRITER_GIVE_UP_S,
-            error,
+            _failure_text(error),
         )
         retrying = False
         while True:
@@ -1241,7 +1254,7 @@ class UltimateAudioSampler:
                 if self.api.writes_lost_since(mark):
                     # Held there, the deadline stops the voice ahead of the
                     # lost span, and the restart that follows blanks the ring.
-                    raise ConnectionError("sampler: the link lost ring audio")
+                    raise _WritesLost("the link lost ring audio")
             mark = self.api.write_loss_mark()
             self._ring_mark = mark
             self._write_length(self._deadline_offset(new))
@@ -1250,7 +1263,7 @@ class UltimateAudioSampler:
             if self.api.writes_lost_since(mark):
                 # Only the length write went out since the ring was confirmed.
                 self._ring_mark = self.api.write_loss_mark()
-                raise ConnectionError("sampler: the link lost a deadline write")
+                raise _WritesLost("the link lost a deadline (length register) write")
             if self._read_consumed_bytes() + self._deadline_guard >= old:
                 return
             self._deadline = new
@@ -1346,7 +1359,7 @@ class UltimateAudioSampler:
                 phase = self._read_consumed_bytes()
                 self._send_gate_on()
                 if self.api.writes_lost_since(mark):
-                    raise ConnectionError("sampler: the link lost the channel restart")
+                    raise _WritesLost("the link lost the channel restart")
                 self._ring_phase = phase
                 self._written = phase + fresh
                 self._deadline = phase + fresh
