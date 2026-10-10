@@ -1269,8 +1269,6 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         writing real bytes doesn't vector into uninitialized RAM."""
 
     def test_hires_uses_chunked_merged_handler_when_audio_active(self):
-        # #661: the monolithic merge (64 B) halts the bus for the whole 8 ms
-        # bitmap DMA and collapses ~95 NMIs into one.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         m = HiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
@@ -1279,9 +1277,8 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertEqual(handler, BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER)
 
     def test_mhires_uses_chunked_merged_handler_when_audio_active(self):
-        # mhires + REU audio uses the CHUNKED merged variant (176 B). The monolithic
-        # merged variant (86 B) stays in modes_irq.py for A/B testing: only chunked
-        # keeps NMI alive across the bitmap's 8 ms REC DMA.
+        # mhires + REU audio uses the merged variant, whose non-raster branch
+        # runs the pump at $C100.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         m = MultiHiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
