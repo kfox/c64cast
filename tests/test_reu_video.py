@@ -1111,10 +1111,12 @@ class BankSwapIrqTeardownGuardTest(unittest.TestCase):
             with self.subTest(mode=type(mode).__name__):
                 self.assertEqual(self._teardown_sleeps(mode), [modes_irq._REU_SLOT_MAX_IN_USE_S])
 
-    def test_a_host_dma_page_flip_does_not_wait_for_a_copy(self):
+    def test_a_host_dma_or_flicker_page_flip_does_not_wait_for_a_copy(self):
         for mode in (
             HiresDisplayMode(double_buffer=True),
             MultiHiresDisplayMode(double_buffer=True),
+            HiresDisplayMode(flicker_tolerance="visible"),
+            MultiHiresDisplayMode(flicker_tolerance="visible"),
         ):
             with self.subTest(mode=type(mode).__name__):
                 self.assertEqual(self._teardown_sleeps(mode), [])
