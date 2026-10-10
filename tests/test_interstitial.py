@@ -127,6 +127,61 @@ class InterstitialSceneTest(unittest.TestCase):
         self.assertEqual(len(fake.ops), ops_before, "an inert teardown issues no C64 writes")
 
 
+class InterstitialCia1RearmTest(unittest.TestCase):
+    """The CIA #1 unmask waits for a confirmed $0314 restore: unmasked with the
+    vector still on a leaked handler, every jiffy IRQ would run it."""
+
+    def _scene(self) -> tuple[InterstitialScene, FakeAPI]:
+        fake = FakeAPI()
+        scene = InterstitialScene(
+            cast(C64Backend, fake), "Next", InterstitialCfg(background="none")
+        )
+        return scene, fake
+
+    def _record_restore(self, fake: FakeAPI, *, lost: bool) -> None:
+        def restore() -> None:
+            fake.ops.append(("restore_kernal_irq_vector",))
+            if lost:
+                fake.delivery_epoch += 1
+
+        fake.restore_kernal_irq_vector = restore  # type: ignore[method-assign]
+
+    def test_unmask_follows_the_restore_and_precedes_the_bank_pin(self):
+        scene, fake = self._scene()
+        self._record_restore(fake, lost=False)
+        scene.setup()
+        ops = [op[:3] for op in fake.ops]
+        restore = ops.index(("restore_kernal_irq_vector",))
+        unmask = ops.index(("write_memory", "DC0D", "81"))
+        pin = ops.index(("write_memory", "DD00", "97"))
+        self.assertLess(restore, unmask)
+        self.assertLess(unmask, pin)
+
+    def test_unconfirmed_restore_leaves_cia1_masked(self):
+        scene, fake = self._scene()
+        self._record_restore(fake, lost=True)
+        with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
+            scene.setup()
+        self.assertNotIn("DC0D", fake.memories)
+        self.assertIn("$0314 restore", cm.output[0])
+        # The rest of the card's setup still runs.
+        self.assertEqual(fake.memories["DD00"], "97")
+
+    def test_unconfirmed_unmask_is_logged(self):
+        scene, fake = self._scene()
+        write_memory = fake.write_memory
+
+        def lossy_write_memory(addr: str, data_hex: str) -> None:
+            write_memory(addr, data_hex)
+            if str(addr).upper() == "DC0D":
+                fake.delivery_epoch += 1
+
+        fake.write_memory = lossy_write_memory  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
+            scene.setup()
+        self.assertIn("unmask was not confirmed", cm.output[0])
+
+
 class DefaultFactoryTest(unittest.TestCase):
     def test_factory_mints_named_scenes(self):
         api = _api()

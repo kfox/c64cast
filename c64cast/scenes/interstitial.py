@@ -16,6 +16,7 @@ import numpy as np
 from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, CIA2, VIC, RegionID
+from c64cast.hw.delivery import write_confirmed
 from c64cast.video.palette import C64_COLORS, resolve_color
 
 from .backgrounds import build as build_background
@@ -105,12 +106,10 @@ class InterstitialScene(Scene):
         # then pin the bank — anything else leaves a window in which $DD00 can
         # be re-flipped to bank 2 after the pin. See
         # docs/architecture/scenes.md#interstitialpy--backgroundspy.
-        self.api.restore_kernal_irq_vector()
+        vector_restored = write_confirmed(self.api, self.api.restore_kernal_irq_vector)
         self.api.write_memory("d01a", "00")
         self.api.write_memory("d019", "01")
-        # The leaked hook masked CIA #1, and with the raster source now off
-        # nothing else would run SCNKEY, leaving the $028D key poller dead.
-        self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}")
+        self._rearm_cia1(vector_restored)
         self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
         # Standard PETSCII char mode, black border/bg.
         self.api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
@@ -127,6 +126,25 @@ class InterstitialScene(Scene):
         self.line_colors = _resolve_line_colors(self.cfg.text_color, len(self.lines))
 
         self.bg = build_background(self.cfg.background)
+
+    def _rearm_cia1(self, vector_restored: bool) -> None:
+        """Unmask CIA #1 Timer A, which a leaked hook left masked; with the
+        raster source off nothing else would run SCNKEY, leaving the $028D key
+        poller dead. Only once the $0314 restore landed: unmasked with the
+        vector still on a leaked handler, every jiffy IRQ runs RAM the next
+        scene's setup writes over, so a masked keyboard is the cheaper loss."""
+        if not vector_restored:
+            log.error(
+                "interstitial: leaving CIA #1 Timer A as found — the $0314 restore "
+                "was not confirmed, so re-arming the jiffy IRQ could vector through "
+                "a leaked handler"
+            )
+            return
+        if not write_confirmed(
+            self.api,
+            lambda: self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"),
+        ):
+            log.error("interstitial: the CIA #1 Timer A unmask was not confirmed delivered")
 
     def process_frame(self, current_time: float) -> bool:
         elapsed = current_time - self.start_time
