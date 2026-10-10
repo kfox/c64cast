@@ -568,7 +568,7 @@ MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = _mhires_dispatcher(pump=True)
 # Unlike the REU handlers, this does NO in-IRQ DMA — it just writes $D021 (bg0)
 # and flips $DD00 from a tiny 3-byte tracker. So the swap lands cleanly inside
 # vblank with no past-vblank overrun → no shimmer, and text overlays folded into
-# the bitmap render crisply (which the REU path can't claim). NMI audio lives on
+# the bitmap render crisply. NMI audio lives on
 # the $FFFA vector, independent of this $0314 raster IRQ, so they coexist; the
 # handler chains to kernal $EA31 so SCNKEY keeps $028D live for the key pollers.
 #
