@@ -379,6 +379,7 @@ class VolumeRestoreTest(unittest.TestCase):
 
     def test_a_restart_settles_the_owed_restore(self):
         smp, chan = self._resumed(lose_restore=True)
+        self.assertTrue(smp._volume_owed)
         with mock.patch.object(s, "time", chan.clock), self.assertLogs("c64cast.audio.sampler"):
             self.assertTrue(smp._restart_channel(smp._writer_gen))
         self.assertEqual(chan.volume, smp._volume)
@@ -400,6 +401,7 @@ class VolumeRestoreTest(unittest.TestCase):
         smp, _chan = self._resumed(lose_restore=True)
         with quiet_logging():
             smp.stop()
+        self.assertTrue(smp._volume_owed)
         smp.arm()
         self.assertFalse(smp._volume_owed)
 
