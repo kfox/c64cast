@@ -304,13 +304,13 @@ class HealthyLinkTest(unittest.TestCase):
         self.assertGreater(chan.length_writes, 20)
 
     def test_a_channel_running_ahead_of_its_clock(self):
-        # The gate-on lands up to one flush before gate_time is read.
+        # The FPGA's clock runs ahead of the host's.
         smp, chan, _ = _run(ahead=0.02)
         self.assertEqual((smp._restarts, chan.hazards, chan.stale), (0, 0, 0))
 
     def test_lost_length_writes_are_retried(self):
-        # One in twenty register writes lost: each lost refresh raises, and the
-        # next pass sends it again, long before the read head gets near.
+        # One in twenty register writes lost: each lost refresh is sent again
+        # on the next pass, long before the read head gets near.
         rng = random.Random(645)
         with self.assertNoLogs("c64cast.audio.sampler", logging.WARNING):
             smp, chan, _ = _run(lose=lambda: rng.random() < 0.05)
@@ -475,7 +475,38 @@ class OutageTest(unittest.TestCase):
             chan.flush = fast  # type: ignore[method-assign]
             chan.advance()
             self.assertEqual(chan.state, "playing")
-            self.assertGreaterEqual(smp._ring_off(smp._read_consumed_bytes()), chan.played)
+            # Behind, and only by the gate-on's send: a lag that took in the
+            # register flush would play the sound that much behind the picture.
+            lag = smp._ring_off(smp._read_consumed_bytes()) - chan.played
+            self.assertGreaterEqual(lag, 0)
+            self.assertLess(lag, smp._deadline_guard)
+            smp.stop()
+
+    def test_a_start_over_a_slow_link_leaves_the_channel_behind_the_read_head(self):
+        # As at a restart: a clock read after the gate-on's flush puts the
+        # voice ahead of the read head, where it can reach the first deadline
+        # unseen.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        fast = chan.flush
+
+        def slow_flush() -> None:
+            fast()
+            clock.now += 0.3
+
+        chan.flush = slow_flush  # type: ignore[method-assign]
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            chan.advance()
+            self.assertEqual(chan.state, "playing")
+            lag = smp._ring_off(smp._read_consumed_bytes()) - chan.played
+            self.assertGreaterEqual(lag, 0)
+            self.assertLess(lag, smp._deadline_guard)
             smp.stop()
 
 

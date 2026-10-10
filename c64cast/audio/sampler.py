@@ -178,8 +178,9 @@ MIN_WRITE_INTERVAL_S = 0.02
 # loop replaying the last lap until the link returns: the give-up's gate-off
 # travels the dead link too. A deadline the read head gets within this much
 # of is taken as reached, and the channel is restarted on the next write that
-# lands. It covers how far the FPGA may run ahead of the computed read head:
-# the gate-on lands up to one flush before gate_time is read.
+# lands. It covers how far the FPGA may run ahead of the computed read head;
+# the clock is read just before the gate-on goes out, so the gate-on itself
+# never puts it ahead.
 DEADLINE_GUARD_S = 0.05
 
 
@@ -790,10 +791,14 @@ class UltimateAudioSampler:
                 repeat=True,
                 repeat_a=0,
                 repeat_b=self.ring_size,
-                gate=True,
+                gate=False,
                 ref_clock=self._ref_clock,
             )
-        self._gate_time = time.monotonic()
+            # Read before the gate-on goes out, as at a restart: read after
+            # its flush, the voice ran ahead of the read head by the round
+            # trip and could reach the first deadline unseen.
+            self._gate_time = time.monotonic()
+            self._send_gate_on()
         self._running = True
         # The loop stops on self._running and its generation, not the PollThread
         # event; the poll supplies only the daemon-thread start/join lifecycle.
@@ -1160,7 +1165,8 @@ class UltimateAudioSampler:
         """One writer pass: restart a channel that ran into its deadline,
         else a ring pass (`_ring_step`) and then the deadline moved up behind
         what it wrote. Returns whether it wrote. Raises when the link lost a
-        write, like the ring writes themselves."""
+        write, like the ring writes themselves, except a refresh lost in a
+        pass whose ring write went out: that one is retried on the next pass."""
         deadline = self._deadline
         if deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline:
             return self._restart_channel(gen)
@@ -1194,6 +1200,13 @@ class UltimateAudioSampler:
         """Clear the channel's control register, unflushed: the
         `program_channel` that follows flushes it with the registers."""
         self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
+
+    def _send_gate_on(self) -> None:
+        """Gate the looping ring on and flush: the step `program_channel`
+        takes last, split out so the caller reads the clock just before it."""
+        ctrl = control_byte(gate=True, repeat=True, bits=self.bits)
+        self.api.write_memory(f"{channel_base(self.channel):04X}", f"{ctrl:02X}")
+        self.api.flush()
 
     def _write_length(self, offset: int) -> None:
         addr = channel_base(self.channel) + REG_LENGTH
@@ -1292,11 +1305,6 @@ class UltimateAudioSampler:
                 epoch = self.api.delivery_epoch
                 fresh = self._lead_target
                 self._write_wrapped(0, self._neutral_unit * (fresh // self.bps))
-                # Read before the gate-on goes out, not after its flush: the
-                # FPGA then runs behind the read head by the round trip rather
-                # than ahead of it, where a slow link would let it reach the
-                # deadline unseen and stop with a refresh still taken as on time.
-                phase = self._read_consumed_bytes()
                 # `finished` is left only through a gate-off; the next gate-on
                 # starts the channel from offset 0.
                 self._send_gate_off()
@@ -1312,9 +1320,18 @@ class UltimateAudioSampler:
                     repeat=True,
                     repeat_a=0,
                     repeat_b=self.ring_size,
-                    gate=True,
+                    gate=False,
                     ref_clock=self._ref_clock,
                 )
+                # Read before the gate-on goes out, not after its flush: the
+                # FPGA then runs behind the read head by the gate-on's send
+                # rather than ahead of it by the round trip, where a slow link
+                # let it reach the deadline unseen and stop with a refresh
+                # still taken as on time. Read before the gate-off, the lag
+                # took in the register flush too, a redial after an outage
+                # among it, and the sound played that much behind the picture.
+                phase = self._read_consumed_bytes()
+                self._send_gate_on()
                 if self.api.delivery_epoch != epoch:
                     raise ConnectionError("sampler: the link lost the channel restart")
                 self._ring_phase = phase
