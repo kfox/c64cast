@@ -882,9 +882,10 @@ class Playlist:
         back leaves it already torn down. Either way the caller's teardown
         still runs on it.
 
-        A setup lost a write when it raised a `LinkError` or, by the end of
-        a `flush()` after it, the backend's `write_loss_mark()` for this
-        thread had moved. Only this thread's writes count: another thread's
+        A setup lost a write when it raised a `LinkError`, when by the end
+        of a `flush()` after it the backend's `write_loss_mark()` for this
+        thread had moved, or when the leaked-IRQ release run ahead of it
+        did not land its `$0314` restore. Only this thread's writes count: another thread's
         failed write (the audio worker's, a poll thread's) is that thread's
         to repeat, and must not make a setup that landed run again. Most
         setup steps swallow a dead link rather than raise it (`_emit`,
@@ -931,7 +932,13 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
-            if error is None and not self.api.writes_lost_since(mark):
+            # A release still owed lost its restore ahead of the mark, and keeping
+            # this setup would leave the leaked handler hooked through the scene.
+            if (
+                error is None
+                and not self.api.writes_lost_since(mark)
+                and not self._irq_release_owed
+            ):
                 self.link_outage.frame_ok(self.api.stats["writes"])
                 return True
             if error is None:
