@@ -283,9 +283,10 @@ frame and part of the new one. Both fixes give the machine two banks and flip
 between them.
 
 **REU staging** writes the frame into expansion memory — which touches no bus —
-and a raster interrupt at the start of vblank then triggers the transfers into
-the off-screen bank and flips `$DD00`. The flip is a single store and lands
-inside vblank, so the swap is invisible.
+and a raster interrupt then triggers the transfers into the off-screen bank.
+The transfers take a few fields, so the flip of `$DD00` waits for a later
+interrupt that finds the raster in vblank. The flip is a single store, so the
+swap is invisible.
 
 **Host-DMA double-buffering** does the same page flip without needing an REU:
 the host writes the off-screen bank directly, then arms a three-byte tracker,
@@ -293,10 +294,8 @@ and the interrupt does nothing but change two registers.
 
 They are mutually exclusive — both flip the same register — and `"auto"`
 chooses between them. REU staging wins on a machine that has one, except for a
-bitmap scene carrying a text overlay: the transfers inside that interrupt run
-long enough to push the flip past vblank into the visible rows, and fine glyphs
-in the bottom rows shimmer. Those scenes take the host-DMA page flip instead,
-whose interrupt does no transfers at all and therefore always lands in time.
+bitmap scene carrying a text overlay, which takes the host-DMA page flip: its
+interrupt does no transfers at all, and it renders fine glyphs crisply.
 Character modes stay on plain writes under `"auto"`, because their dirty cache
 makes a full per-frame transfer a regression.
 

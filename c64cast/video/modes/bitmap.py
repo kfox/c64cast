@@ -137,10 +137,15 @@ class BitmapDisplayMode(DisplayMode):
     is_bitmapped = True
     supports_compose = True
     is_bitmap_text_compatible = True
-    # Which VIC bank is currently displayed under double-buffering (REU staging
-    # or host-DMA): 0 ⇒ bank 0 on screen / paint bank 2 next, 1 ⇒ bank 2 on
-    # screen / paint bank 0 next. Subclasses reset it in __init__/setup.
+    # Which VIC bank is currently displayed under the host-DMA page flips
+    # (plain and flicker): 0 ⇒ bank 0 on screen / paint bank 2 next, 1 ⇒ bank 2
+    # on screen / paint bank 0 next. Subclasses reset it in __init__/setup. The
+    # REU path never moves it: the C64 owns that bank (BANK_SWAP_STATE_ADDR).
     _displayed_bank: int = 0
+    # The REU staging slot the next REU-staged frame goes into; the push
+    # helpers take it modulo modes_irq.REU_VIDEO_SLOTS. It advances only after
+    # a push returns.
+    _reu_slot: int = 0
 
     def _hostdma_swap_target(self) -> tuple[int, int, int, int, int, int]:
         """Resolve the current off-screen bank to

@@ -181,14 +181,14 @@ def resolve_use_reu_staged(
     "auto" → True only for a bitmap display mode (see _REU_BITMAP_MODES) AND
     only when the hardware probe confirmed the REU is usable (reu_available) AND
     the scene has no buffer-painting (text) overlay. Such overlays fold fine
-    high-contrast glyphs into the bitmap, and the REU bank-swap's mid-frame
-    $DD00 swap (the ~9000-cycle REU→bank DMA runs the swap past vblank into the
-    visible rows) makes bottom-row text shimmer; the host-DMA delta path renders
-    it crisply. So a bitmap scene WITH text overlays resolves to host-DMA under
-    auto — overlay-free bitmap video still gets the tear-free REU pipeline.
+    high-contrast glyphs into the bitmap, which the host-DMA page flip is
+    hardware-verified to render crisply; the REU dispatcher once flipped past
+    vblank and made them shimmer, and moving them back is #666. So a bitmap
+    scene WITH text overlays resolves to host-DMA under auto — overlay-free
+    bitmap video still gets the tear-free REU pipeline.
 
     Explicit true/false pass straight through (true forces REU even with text
-    overlays — the caller has opted into the shimmer for tear-free cuts). The
+    overlays). The
     loader guarantees the only legal string is "auto"; any other string is
     treated as auto (False here) rather than silently truthy-True.
 
@@ -230,10 +230,9 @@ def resolve_double_buffer(
         visibly tears there; or
       * a bitmap scene with a buffer-painting text overlay (has_buffer_overlays)
         on a REU backend — resolve_use_reu_staged turns the REU path OFF for
-        these to dodge the bank-swap shimmer, which otherwise leaves them on
-        single-buffer host-DMA that tears on scene cuts. The host-DMA double-
-        buffer gives them tear-free frames AND crisp text (its swap IRQ does no
-        in-IRQ DMA, so the $DD00 flip lands in vblank — no shimmer).
+        these (#666), which otherwise leaves them on single-buffer host-DMA
+        that tears on scene cuts. The host-DMA double-buffer gives them
+        tear-free frames AND crisp text (its swap IRQ does no in-IRQ DMA).
     Overlay-free bitmap video on a REU backend stays untouched (the REU path is
     the better tear-free option there). Explicit true/false pass through (still
     scoped to bitmap modes — true on a char mode is a no-op).

@@ -119,8 +119,8 @@ REU_SIZE_FIELD = "REU Size"
 
 # The firmware's "REU Size" enum labels (1541ultimate software/io/c64/c64.cc
 # reu_size[]) → capacity in bytes. c64cast's highest REU offset is the video
-# staging region near 14 MB (modes_irq.REU_VIDEO_BITMAP_COLOR_BASE =
-# $E13000), and 16 MB is FPGA-backed, so the provisioner always sizes to max.
+# staging region near 14 MB (modes_irq.REU_VIDEO_TOP = $E4F3E7), and 16 MB
+# is FPGA-backed, so the provisioner always sizes to max.
 _REU_SIZE_BYTES: dict[str, int] = {
     "128 KB": 128 << 10,
     "256 KB": 256 << 10,

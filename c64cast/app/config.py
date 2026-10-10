@@ -606,7 +606,7 @@ class VideoCfg:
     # single-buffered mhires frame. The host writes each frame's bitmap+screen into the
     # OFF-screen VIC bank, then a tiny raster IRQ flips $DD00 at vblank. mhires color
     # RAM, the un-banked $D800, still tears briefly. Unlike REU staging the IRQ does no
-    # in-IRQ DMA, so the flip is shimmer-free.
+    # in-IRQ DMA.
     #
     # Tri-state — true | false | "auto" (default):
     #   * "auto" enables it for bitmap modes when REU staging is NOT active (both flip
@@ -621,7 +621,7 @@ class VideoCfg:
             'REU staging can\'t help. "auto" (default) enables it for bitmap modes '
             "(hires/mhires) when REU staging is off and either the backend has no "
             "REU (e.g. TeensyROM) or the scene has a text overlay (whose presence "
-            "turns the REU path off to dodge bank-swap shimmer, otherwise leaving "
+            "turns the REU path off, otherwise leaving "
             "single-buffer host-DMA that tears on cuts). true forces it on for "
             "bitmap modes, false off; gated off when the REU mic pump is active "
             "(shared $0314). Independent of [video].use_reu_staged (the REU path)."

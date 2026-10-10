@@ -93,17 +93,15 @@ class HiresDisplayMode(BitmapDisplayMode):
     use_reu_staged: opt into the REU bank-swap double-buffer pipeline.
       Each frame's bitmap + screen are REUWRITE-staged into REU SRAM
       (bus-clean) then dropped into the OFF-SCREEN VIC bank via two
-      REU→main DMAs while VIC keeps rendering the on-screen bank. A
-      C64-side raster IRQ at vblank flips $DD00 to bring up the new
-      bank tear-free. See push_bitmap_via_reu / install_bank_swap_irq
+      REU→main DMAs while VIC keeps rendering the on-screen bank. On a
+      later field the C64-side raster IRQ flips $DD00 at vblank to bring
+      up the new bank tear-free. See push_bitmap_via_reu / install_bank_swap_irq
       and the REU_VIDEO_BITMAP_* constants in modes_irq.py.
 
       Runs alongside [audio].use_reu_pump. Both drive REC and $0314,
       so setup() installs BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER — the
-      chunked merged dispatcher — whenever audio_reu_pump_active is set. Color RAM
-      isn't used by hires (color is in screen RAM nibbles), so the
-      shared-$D800 mid-frame-mismatch problem the other display modes
-      would have doesn't apply.
+      merged dispatcher — whenever audio_reu_pump_active is set. Color RAM
+      isn't used by hires (color is in screen RAM nibbles).
     """
 
     name = "hires"
@@ -163,8 +161,8 @@ class HiresDisplayMode(BitmapDisplayMode):
         # Selects BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER in setup(), whose dispatcher
         # falls through to the $C100 audio pump on non-raster (CIA #1) IRQs.
         self.audio_reu_pump_active = audio_reu_pump_active
-        # Which VIC bank is displayed: 0 = bank 0 (paint bank 2 next),
-        # 1 = bank 2 (paint bank 0 next).
+        # See BitmapDisplayMode._displayed_bank: the host-DMA page flips' bank,
+        # which the REU path leaves at 0.
         self._displayed_bank = 0
 
     @property
@@ -312,7 +310,7 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def teardown(self, api):
         if self.use_reu_staged or self.double_buffer or self._blend_table is not None:
-            uninstall_bank_swap_irq(api)
+            uninstall_bank_swap_irq(api, drain_reu_copy=self.use_reu_staged)
             if self._blend_table is not None:
                 # uninstall restores $DD00 but not $D018, which the flicker
                 # handler may have left on the $0C00 page — a char scene would
@@ -457,9 +455,8 @@ class HiresDisplayMode(BitmapDisplayMode):
             self._displayed_bank = target
             return
         if self.use_reu_staged:
-            target_bank = 1 - self._displayed_bank
-            push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, target_bank)
-            self._displayed_bank = target_bank
+            push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, self._reu_slot)
+            self._reu_slot += 1
             return
         if self.double_buffer:
             # Hires has no color RAM, so this swap is fully tear-free.

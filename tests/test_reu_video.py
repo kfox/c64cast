@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import unittest
 from typing import cast
+from unittest import mock
 
 import numpy as np
 from _fakes import FakeAPI, quiet_logging
@@ -51,18 +52,16 @@ from c64cast.video.modes_irq import (
     BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
-    BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER,
     FRAME_TRACKER_ADDR,
     FRAME_TRACKER_LEN,
     MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     MHIRES_BANK_SWAP_IRQ_HANDLER,
-    MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER,
     MHIRES_FRAME_TRACKER_LEN,
-    MHIRES_TRACKER_OFF_BANK_VALUE,
     MHIRES_TRACKER_OFF_BG0,
     MHIRES_TRACKER_OFF_BITMAP_REGS,
     MHIRES_TRACKER_OFF_COLOR_REGS,
     MHIRES_TRACKER_OFF_READY_FLAG,
+    MHIRES_TRACKER_OFF_RESERVED,
     MHIRES_TRACKER_OFF_SCREEN_REGS,
     PUMP_BODY_STUB,
     REU_VIDEO_BITMAP_BASE,
@@ -73,9 +72,11 @@ from c64cast.video.modes_irq import (
     REU_VIDEO_BITMAP_SCREEN_LEN,
     REU_VIDEO_SCREEN_BASE,
     REU_VIDEO_SCREEN_LEN,
-    TRACKER_OFF_BANK_VALUE,
+    REU_VIDEO_SLOT_STRIDE,
+    REU_VIDEO_SLOTS,
     TRACKER_OFF_BITMAP_REGS,
     TRACKER_OFF_READY_FLAG,
+    TRACKER_OFF_RESERVED,
     TRACKER_OFF_SCREEN_REGS,
     uninstall_bank_swap_irq,
 )
@@ -535,92 +536,16 @@ class ReuBuildDisplayModeTest(unittest.TestCase):
         self.assertFalse(m.use_reu_staged)
 
 
-class ReuHiresHandlerIntegrityTest(unittest.TestCase):
-    """The bank-swap IRQ handler is hand-encoded 6502. The four branches
-    (2× forward BEQ to JMP $EA31, 2× backward BPL for the reg-copy loops)
-    must land on instruction boundaries. The module-level assert catches
-    length drift; this test pins the exact bytes so any change has to be
-    deliberate."""
-
-    def test_handler_length(self):
-        # 61 bytes: ack + ready check + 2× (LDX loop + trigger) +
-        # bank swap + clear flag + JMP $EA31.
-        self.assertEqual(len(BANK_SWAP_IRQ_HANDLER), 61)
-
-    def test_handler_pinned_bytes(self):
-        expected = bytes(
-            [
-                0xAD,
-                0x19,
-                0xD0,  # LDA $D019
-                0x29,
-                0x01,  # AND #$01
-                0xF0,
-                0x33,  # BEQ +51 → JMP $EA31 at offset 58
-                0x8D,
-                0x19,
-                0xD0,  # STA $D019 (ack raster)
-                0xAD,
-                0x0F,
-                0xC7,  # LDA $C70F (ready flag)
-                0xF0,
-                0x2B,  # BEQ +43 → JMP $EA31
-                0xA2,
-                0x06,  # LDX #$06
-                0xBD,
-                0x00,
-                0xC7,  # LDA $C700,X (bitmap regs)
-                0x9D,
-                0x02,
-                0xDF,  # STA $DF02,X
-                0xCA,  # DEX
-                0x10,
-                0xF7,  # BPL -9
-                0xA9,
-                0x91,  # LDA #$91
-                0x8D,
-                0x01,
-                0xDF,  # STA $DF01 (trigger bitmap)
-                0xA2,
-                0x06,  # LDX #$06
-                0xBD,
-                0x07,
-                0xC7,  # LDA $C707,X (screen regs)
-                0x9D,
-                0x02,
-                0xDF,  # STA $DF02,X
-                0xCA,  # DEX
-                0x10,
-                0xF7,  # BPL -9
-                0xA9,
-                0x91,  # LDA #$91
-                0x8D,
-                0x01,
-                0xDF,  # STA $DF01 (trigger screen)
-                0xAD,
-                0x0E,
-                0xC7,  # LDA $C70E (bank value)
-                0x8D,
-                0x00,
-                0xDD,  # STA $DD00 (swap)
-                0xA9,
-                0x00,  # LDA #$00
-                0x8D,
-                0x0F,
-                0xC7,  # STA $C70F (clear flag)
-                0x4C,
-                0x31,
-                0xEA,  # JMP $EA31
-            ]
-        )
-        self.assertEqual(BANK_SWAP_IRQ_HANDLER, expected)
+class ReuHiresTrackerLayoutTest(unittest.TestCase):
+    """The hires tracker the host writes and the dispatcher snapshots.
+    BankSwapDispatcherExecutionTest runs the handler against it."""
 
     def test_tracker_offsets_match_handler(self):
-        # The handler's hardcoded $C700/$C707/$C70E/$C70F must match the host's
-        # TRACKER_OFF_* layout, or it reads the bank value as the ready flag.
+        # The dispatcher is assembled from these offsets, so drift moves both
+        # sides together — but the ready flag has to stay the blob's last byte.
         self.assertEqual(TRACKER_OFF_BITMAP_REGS, 0)
         self.assertEqual(TRACKER_OFF_SCREEN_REGS, 7)
-        self.assertEqual(TRACKER_OFF_BANK_VALUE, 14)
+        self.assertEqual(TRACKER_OFF_RESERVED, 14)
         self.assertEqual(TRACKER_OFF_READY_FLAG, 15)
         self.assertEqual(FRAME_TRACKER_LEN, 16)
 
@@ -689,11 +614,13 @@ class ReuHiresSetupTest(unittest.TestCase):
         fake, _ = self._setup()
         self.assertEqual(fake.memories["D01A"], "01")
 
-    def test_setup_displayed_bank_tracker_initialized(self):
-        # _displayed_bank drives target_bank alternation in render(); 0 means the
-        # first frame paints bank 2.
-        _, mode = self._setup()
-        self.assertEqual(mode._displayed_bank, 0)
+    def test_setup_seeds_the_dispatcher_with_bank_0_on_screen(self):
+        # Setup pins $DD00 to bank 0, and the dispatcher flips from its own
+        # copy of that: a stale one would aim the first copy at the screen.
+        fake, _ = self._setup()
+        key = f"{modes_irq.BANK_SWAP_STATE_ADDR:04X}"
+        self.assertEqual(fake.mem_files[key], modes_irq.BANK_SWAP_STATE_INIT)
+        self.assertEqual(fake.mem_files[key][0], CIA2.PORT_A_BANK_0)
 
     def test_setup_off_path_does_not_install_irq(self):
         fake = FakeAPI()
@@ -774,34 +701,30 @@ class ReuHiresPushTest(unittest.TestCase):
         self.assertEqual(len(blob), FRAME_TRACKER_LEN)
         return blob
 
-    def test_first_frame_targets_bank2(self):
-        # _displayed_bank starts at 0, so target_bank = 1 → bank 2 dests.
+    def test_frames_rotate_through_the_staging_slots(self):
+        # The C64 may still be copying the previous frame's slot, so each
+        # frame goes into the next one and the tracker names it.
         mode = HiresDisplayMode(use_reu_staged=True)
-        mode._displayed_bank = 0
-        fake = self._render(mode, self._frame())
-        blob = self._tracker(fake)
-        # Bank value byte in the tracker = $95 (bank 2).
-        self.assertEqual(blob[TRACKER_OFF_BANK_VALUE], CIA2.PORT_A_BANK_2)
-        # Bitmap regs slot points at $A000 (bank 2 bitmap).
-        self.assertEqual(blob[TRACKER_OFF_BITMAP_REGS + 0], VIC_BANK_2.BITMAP & 0xFF)
-        self.assertEqual(blob[TRACKER_OFF_BITMAP_REGS + 1], (VIC_BANK_2.BITMAP >> 8) & 0xFF)
-        # Screen regs slot points at $8400 (bank 2 screen).
-        self.assertEqual(blob[TRACKER_OFF_SCREEN_REGS + 0], VIC_BANK_2.SCREEN & 0xFF)
-        self.assertEqual(blob[TRACKER_OFF_SCREEN_REGS + 1], (VIC_BANK_2.SCREEN >> 8) & 0xFF)
-        # Tracker advances to bank 2.
-        self.assertEqual(mode._displayed_bank, 1)
+        for frame in range(REU_VIDEO_SLOTS + 1):
+            offset = (frame % REU_VIDEO_SLOTS) * REU_VIDEO_SLOT_STRIDE
+            fake = self._render(mode, self._frame())
+            blob = self._tracker(fake)
+            src = blob[TRACKER_OFF_BITMAP_REGS + 2 : TRACKER_OFF_BITMAP_REGS + 5]
+            self.assertEqual(int.from_bytes(src, "little"), REU_VIDEO_BITMAP_BASE + offset)
+            src = blob[TRACKER_OFF_SCREEN_REGS + 2 : TRACKER_OFF_SCREEN_REGS + 5]
+            self.assertEqual(int.from_bytes(src, "little"), REU_VIDEO_BITMAP_SCREEN_BASE + offset)
+            self.assertEqual(
+                {off for off, _ in fake.socket_dma.reuwrites},
+                {REU_VIDEO_BITMAP_BASE + offset, REU_VIDEO_BITMAP_SCREEN_BASE + offset},
+            )
 
-    def test_second_frame_targets_bank0(self):
-        # _displayed_bank = 1 means bank 2 is showing; the next render paints bank 0.
+    def test_tracker_destinations_are_bank_0s(self):
+        # The dispatcher re-aims them at whichever bank is hidden.
         mode = HiresDisplayMode(use_reu_staged=True)
-        mode._displayed_bank = 1
-        fake = self._render(mode, self._frame())
-        blob = self._tracker(fake)
-        self.assertEqual(blob[TRACKER_OFF_BANK_VALUE], CIA2.PORT_A_BANK_0)
-        self.assertEqual(blob[TRACKER_OFF_BITMAP_REGS + 0], VIC_BANK_0.BITMAP & 0xFF)
-        self.assertEqual(blob[TRACKER_OFF_BITMAP_REGS + 1], (VIC_BANK_0.BITMAP >> 8) & 0xFF)
-        self.assertEqual(blob[TRACKER_OFF_SCREEN_REGS + 0], VIC_BANK_0.SCREEN & 0xFF)
-        self.assertEqual(mode._displayed_bank, 0)
+        blob = self._tracker(self._render(mode, self._frame()))
+        self.assertEqual(blob[TRACKER_OFF_BITMAP_REGS : TRACKER_OFF_BITMAP_REGS + 2], b"\x00\x20")
+        self.assertEqual(blob[TRACKER_OFF_SCREEN_REGS : TRACKER_OFF_SCREEN_REGS + 2], b"\x00\x04")
+        self.assertEqual(blob[TRACKER_OFF_RESERVED], 0)
 
     def test_tracker_carries_reu_src_and_length_for_both_dmas(self):
         # The IRQ handler copies bitmap regs to $DF02-$DF08 and triggers, then the
@@ -968,114 +891,17 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
 
-class ReuMHiresHandlerIntegrityTest(unittest.TestCase):
-    """Like the hires handler, the mhires handler is hand-encoded 6502 with
-    pinned branch offsets. Length-pin + byte-pin so changes are deliberate."""
-
-    def test_handler_length(self):
-        # 83 bytes: ack + ready check + 3× (LDX loop + trigger) +
-        # bg0 reg write + bank swap + clear flag + JMP $EA31.
-        self.assertEqual(len(MHIRES_BANK_SWAP_IRQ_HANDLER), 83)
-
-    def test_handler_pinned_bytes(self):
-        expected = bytes(
-            [
-                0xAD,
-                0x19,
-                0xD0,  # LDA $D019
-                0x29,
-                0x01,  # AND #$01
-                0xF0,
-                0x49,  # BEQ +73 → JMP $EA31 at offset 80
-                0x8D,
-                0x19,
-                0xD0,  # STA $D019 (ack raster)
-                0xAD,
-                0x17,
-                0xC7,  # LDA $C717 (ready flag)
-                0xF0,
-                0x41,  # BEQ +65 → JMP $EA31
-                0xA2,
-                0x06,  # LDX #$06
-                0xBD,
-                0x00,
-                0xC7,  # LDA $C700,X (bitmap regs)
-                0x9D,
-                0x02,
-                0xDF,  # STA $DF02,X
-                0xCA,  # DEX
-                0x10,
-                0xF7,  # BPL -9
-                0xA9,
-                0x91,  # LDA #$91
-                0x8D,
-                0x01,
-                0xDF,  # STA $DF01 (trigger bitmap)
-                0xA2,
-                0x06,  # LDX #$06
-                0xBD,
-                0x07,
-                0xC7,  # LDA $C707,X (screen regs)
-                0x9D,
-                0x02,
-                0xDF,  # STA $DF02,X
-                0xCA,  # DEX
-                0x10,
-                0xF7,  # BPL -9
-                0xA9,
-                0x91,  # LDA #$91
-                0x8D,
-                0x01,
-                0xDF,  # STA $DF01 (trigger screen)
-                0xA2,
-                0x06,  # LDX #$06
-                0xBD,
-                0x0E,
-                0xC7,  # LDA $C70E,X (color regs)
-                0x9D,
-                0x02,
-                0xDF,  # STA $DF02,X
-                0xCA,  # DEX
-                0x10,
-                0xF7,  # BPL -9
-                0xA9,
-                0x91,  # LDA #$91
-                0x8D,
-                0x01,
-                0xDF,  # STA $DF01 (trigger color)
-                0xAD,
-                0x15,
-                0xC7,  # LDA $C715 (bg0)
-                0x8D,
-                0x21,
-                0xD0,  # STA $D021
-                0xAD,
-                0x16,
-                0xC7,  # LDA $C716 (bank value)
-                0x8D,
-                0x00,
-                0xDD,  # STA $DD00 (swap)
-                0xA9,
-                0x00,  # LDA #$00
-                0x8D,
-                0x17,
-                0xC7,  # STA $C717 (clear flag)
-                0x4C,
-                0x31,
-                0xEA,  # JMP $EA31
-            ]
-        )
-        self.assertEqual(MHIRES_BANK_SWAP_IRQ_HANDLER, expected)
+class ReuMHiresTrackerLayoutTest(unittest.TestCase):
+    """The mhires tracker the host writes and the dispatcher snapshots."""
 
     def test_tracker_offsets_match_handler(self):
         # 24-byte tracker; bitmap=$C700, screen=$C707, color=$C70E, bg0=$C715,
-        # bank=$C716, ready=$C717. Drift here means the handler reads
-        # the wrong byte at vblank — silent corruption.
+        # reserved=$C716, ready=$C717.
         self.assertEqual(MHIRES_TRACKER_OFF_BITMAP_REGS, 0)
         self.assertEqual(MHIRES_TRACKER_OFF_SCREEN_REGS, 7)
         self.assertEqual(MHIRES_TRACKER_OFF_COLOR_REGS, 14)
         self.assertEqual(MHIRES_TRACKER_OFF_BG0, 21)
-        self.assertEqual(MHIRES_TRACKER_OFF_BANK_VALUE, 22)
+        self.assertEqual(MHIRES_TRACKER_OFF_RESERVED, 22)
         self.assertEqual(MHIRES_TRACKER_OFF_READY_FLAG, 23)
         self.assertEqual(MHIRES_FRAME_TRACKER_LEN, 24)
         # Ready flag must be the LAST byte so the atomic DMAWRITE arrives
@@ -1146,9 +972,13 @@ class ReuMHiresSetupTest(unittest.TestCase):
         fake, _ = self._setup()
         self.assertEqual(fake.memories["D01A"], "01")
 
-    def test_setup_displayed_bank_tracker_initialized(self):
-        _, mode = self._setup()
-        self.assertEqual(mode._displayed_bank, 0)
+    def test_setup_seeds_the_dispatcher_with_bank_0_on_screen(self):
+        # Setup pins $DD00 to bank 0, and the dispatcher flips from its own
+        # copy of that: a stale one would aim the first copy at the screen.
+        fake, _ = self._setup()
+        key = f"{modes_irq.BANK_SWAP_STATE_ADDR:04X}"
+        self.assertEqual(fake.mem_files[key], modes_irq.BANK_SWAP_STATE_INIT)
+        self.assertEqual(fake.mem_files[key][0], CIA2.PORT_A_BANK_0)
 
     def test_setup_off_path_does_not_install_irq(self):
         fake = FakeAPI()
@@ -1241,6 +1071,56 @@ class BankSwapIrqTeardownGuardTest(unittest.TestCase):
         )
         self.assertEqual(fake.memories[self._CIA1_ICR], f"{modes_irq._CIA1_ICR_ENABLE_TIMER_A:02X}")
 
+    def test_an_in_flight_copy_drains_before_the_handler_is_released(self):
+        fake = FakeAPI()
+        order: list[str] = []
+        write_memory, write_regs = fake.write_memory, fake.write_regs
+
+        def logged_write_memory(address, *args, **kwargs):
+            order.append(address.upper())
+            return write_memory(address, *args, **kwargs)
+
+        def logged_write_regs(address, *args, **kwargs):
+            order.append(address.upper())
+            return write_regs(address, *args, **kwargs)
+
+        fake.write_memory = logged_write_memory  # type: ignore[method-assign]
+        fake.write_regs = logged_write_regs  # type: ignore[method-assign]
+        with mock.patch.object(modes_irq, "time") as clock:
+            clock.sleep.side_effect = lambda s: order.append(f"sleep {s}")
+            uninstall_bank_swap_irq(cast(Ultimate64API, fake))
+        drain = order.index(f"sleep {modes_irq._REU_SLOT_MAX_IN_USE_S}")
+        self.assertLess(order.index("D01A"), drain, "sources masked before the wait")
+        self.assertLess(order.index(self._CIA1_ICR), drain, "sources masked before the wait")
+        self.assertLess(drain, order.index(f"{VECTORS.IRQ:04X}"), "vector held until drained")
+        self.assertLess(drain, order.index(f"{CIA2.PORT_A:04X}"), "bank held until drained")
+
+    def _teardown_sleeps(self, mode) -> list[float]:
+        fake = FakeAPI()
+        api = cast(Ultimate64API, fake)
+        mode.setup(api)
+        with mock.patch.object(modes_irq, "time") as clock:
+            mode.teardown(api)
+        return [call.args[0] for call in clock.sleep.call_args_list]
+
+    def test_a_reu_staged_mode_drains_its_dispatcher(self):
+        for mode in (
+            HiresDisplayMode(use_reu_staged=True),
+            MultiHiresDisplayMode(use_reu_staged=True),
+        ):
+            with self.subTest(mode=type(mode).__name__):
+                self.assertEqual(self._teardown_sleeps(mode), [modes_irq._REU_SLOT_MAX_IN_USE_S])
+
+    def test_a_host_dma_or_flicker_page_flip_does_not_wait_for_a_copy(self):
+        for mode in (
+            HiresDisplayMode(double_buffer=True),
+            MultiHiresDisplayMode(double_buffer=True),
+            HiresDisplayMode(flicker_tolerance="visible"),
+            MultiHiresDisplayMode(flicker_tolerance="visible"),
+        ):
+            with self.subTest(mode=type(mode).__name__):
+                self.assertEqual(self._teardown_sleeps(mode), [])
+
 
 class ReuMHiresPushTest(unittest.TestCase):
     """Per-frame render() in REU-staged mhires mode must REUWRITE bitmap +
@@ -1263,43 +1143,45 @@ class ReuMHiresPushTest(unittest.TestCase):
         self.assertEqual(len(blob), MHIRES_FRAME_TRACKER_LEN)
         return blob
 
-    def test_first_frame_targets_bank2(self):
+    def test_frames_rotate_through_the_staging_slots(self):
         mode = MultiHiresDisplayMode(use_reu_staged=True)
-        mode._displayed_bank = 0
-        fake = self._render(mode, self._frame())
-        blob = self._tracker(fake)
-        # Bank value byte in the tracker = $95 (bank 2).
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_BANK_VALUE], CIA2.PORT_A_BANK_2)
-        # Bitmap regs point at $A000 (bank 2 bitmap).
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_BITMAP_REGS + 0], VIC_BANK_2.BITMAP & 0xFF)
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_BITMAP_REGS + 1], (VIC_BANK_2.BITMAP >> 8) & 0xFF)
-        # Screen regs point at $8400.
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_SCREEN_REGS + 0], VIC_BANK_2.SCREEN & 0xFF)
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_SCREEN_REGS + 1], (VIC_BANK_2.SCREEN >> 8) & 0xFF)
-        # Tracker advances to bank 2.
-        self.assertEqual(mode._displayed_bank, 1)
+        for frame in range(REU_VIDEO_SLOTS + 1):
+            offset = (frame % REU_VIDEO_SLOTS) * REU_VIDEO_SLOT_STRIDE
+            fake = self._render(mode, self._frame())
+            blob = self._tracker(fake)
+            for off, base in (
+                (MHIRES_TRACKER_OFF_BITMAP_REGS, REU_VIDEO_BITMAP_BASE),
+                (MHIRES_TRACKER_OFF_SCREEN_REGS, REU_VIDEO_BITMAP_SCREEN_BASE),
+                (MHIRES_TRACKER_OFF_COLOR_REGS, REU_VIDEO_BITMAP_COLOR_BASE),
+            ):
+                src = int.from_bytes(blob[off + 2 : off + 5], "little")
+                self.assertEqual(src, base + offset)
+            self.assertEqual(
+                {off for off, _ in fake.socket_dma.reuwrites},
+                {
+                    REU_VIDEO_BITMAP_BASE + offset,
+                    REU_VIDEO_BITMAP_SCREEN_BASE + offset,
+                    REU_VIDEO_BITMAP_COLOR_BASE + offset,
+                },
+            )
 
-    def test_second_frame_targets_bank0(self):
+    def test_tracker_destinations_are_bank_0s(self):
         mode = MultiHiresDisplayMode(use_reu_staged=True)
-        mode._displayed_bank = 1
-        fake = self._render(mode, self._frame())
-        blob = self._tracker(fake)
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_BANK_VALUE], CIA2.PORT_A_BANK_0)
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_BITMAP_REGS + 0], VIC_BANK_0.BITMAP & 0xFF)
-        self.assertEqual(blob[MHIRES_TRACKER_OFF_SCREEN_REGS + 0], VIC_BANK_0.SCREEN & 0xFF)
-        self.assertEqual(mode._displayed_bank, 0)
+        blob = self._tracker(self._render(mode, self._frame()))
+        regs = MHIRES_TRACKER_OFF_BITMAP_REGS
+        self.assertEqual(blob[regs : regs + 2], b"\x00\x20")
+        regs = MHIRES_TRACKER_OFF_SCREEN_REGS
+        self.assertEqual(blob[regs : regs + 2], b"\x00\x04")
+        self.assertEqual(blob[MHIRES_TRACKER_OFF_RESERVED], 0)
 
     def test_color_regs_target_d800_regardless_of_bank(self):
-        # $D800 isn't VIC-banked, so both bank destinations hit the same color RAM;
-        # getting it wrong leaves c3 stale on every other frame.
+        # $D800 isn't VIC-banked, so every frame's color DMA hits the same
+        # color RAM, and the dispatcher copies it un-aimed.
         mode = MultiHiresDisplayMode(use_reu_staged=True)
-        # Frame 1: target_bank=1, color dest must still be $D800.
-        mode._displayed_bank = 0
         fake = self._render(mode, self._frame())
         blob = self._tracker(fake)
         self.assertEqual(blob[MHIRES_TRACKER_OFF_COLOR_REGS + 0], 0x00)
         self.assertEqual(blob[MHIRES_TRACKER_OFF_COLOR_REGS + 1], 0xD8)
-        # Frame 2: target_bank=0, color dest must STILL be $D800.
         fake = self._render(mode, self._frame())
         blob = self._tracker(fake)
         self.assertEqual(blob[MHIRES_TRACKER_OFF_COLOR_REGS + 0], 0x00)
@@ -1430,92 +1312,6 @@ class ReuMHiresFlagDefaultTest(unittest.TestCase):
         self.assertFalse(MultiHiresDisplayMode().use_reu_staged)
 
 
-class MergedDispatcherIntegrityTest(unittest.TestCase):
-    """The merged $C500 dispatcher is derived mechanically from the base
-    bank-swap handler: the trailing `JMP $EA31` is replaced with a
-    JMP $EA31 chain (for raster path) followed by a JMP $C100 audio
-    handler fallthrough (for non-raster path). The first BEQ is
-    retargeted from chain to the audio JMP.
-
-    See _make_merged_handler in modes_irq.py for the empirical rationale
-    behind not inserting a CIA #1 ICR check between chain and
-    fallthrough (Cam Link envelope FFT confirmed the check itself
-    drove a 60 Hz envelope harmonic that's not present when the
-    fallthrough is plain)."""
-
-    EXTENSION = bytes(
-        [
-            0x4C,
-            0x31,
-            0xEA,  # JMP $EA31 (chain to kernal)
-            0x4C,
-            0x00,
-            0xC1,  # JMP $C100 (audio handler fallthrough)
-        ]
-    )
-
-    def test_hires_merged_length(self):
-        # 61 - 3 (drop trailing JMP $EA31) + 6 (extension) = 64 bytes.
-        self.assertEqual(len(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER), 64)
-
-    def test_mhires_merged_length(self):
-        # 83 - 3 + 6 = 86 bytes.
-        self.assertEqual(len(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER), 86)
-
-    def test_hires_merged_ends_with_extension(self):
-        # Last 6 bytes = JMP $EA31 + JMP $C100.
-        self.assertEqual(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[-6:], self.EXTENSION)
-
-    def test_mhires_merged_ends_with_extension(self):
-        self.assertEqual(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[-6:], self.EXTENSION)
-
-    def test_hires_merged_first_beq_targets_audio_jmp(self):
-        # First BEQ at offset 5/6. Body length = 58 (= 61 base - 3 JMP).
-        # JMP $C100 opcode is at body_len + 3 = 61. BEQ target offset
-        # is (5+2) + displacement = 7 + displacement = 61, so
-        # displacement = 54 = $36.
-        self.assertEqual(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[5], 0xF0)
-        self.assertEqual(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[6], 0x36)
-        target_offset = 7 + BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[6]
-        self.assertEqual(target_offset, 61)
-        self.assertEqual(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[target_offset], 0x4C)  # JMP opcode
-
-    def test_mhires_merged_first_beq_targets_audio_jmp(self):
-        # Body = 80, JMP $C100 at 80 + 3 = 83. Displacement = 83 - 7 = 76 = $4C.
-        self.assertEqual(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[5], 0xF0)
-        self.assertEqual(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[6], 0x4C)
-        target_offset = 7 + MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[6]
-        self.assertEqual(target_offset, 83)
-        self.assertEqual(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER[target_offset], 0x4C)
-
-    def test_hires_bank_swap_path_bytes_unchanged(self):
-        # Every byte EXCEPT the first BEQ displacement (offset 6) and the
-        # trailing JMP $EA31 (last 3 bytes of base) should match base. The
-        # last 3 bytes of base become offsets 58..60 of merged, replaced
-        # by the chain + audio fallthrough extension (6 bytes total).
-        base = BANK_SWAP_IRQ_HANDLER
-        merged = BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER
-        self.assertEqual(merged[:6], base[:6])
-        # Bytes 7..len(base)-3 are the bank-swap work bytes; preserved.
-        self.assertEqual(merged[7 : len(base) - 3], base[7:-3])
-        # Suffix = chain + audio extension (6 bytes).
-        self.assertEqual(merged[len(base) - 3 :], self.EXTENSION)
-
-    def test_mhires_bank_swap_path_bytes_unchanged(self):
-        base = MHIRES_BANK_SWAP_IRQ_HANDLER
-        merged = MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER
-        self.assertEqual(merged[:6], base[:6])
-        self.assertEqual(merged[7 : len(base) - 3], base[7:-3])
-        self.assertEqual(merged[len(base) - 3 :], self.EXTENSION)
-
-    def test_audio_handler_install_addr_matches_jmp_target(self):
-        # The merged dispatcher hardcodes $C100; if audio.py relocates its handler,
-        # both must move together.
-        self.assertEqual(AUDIO_HANDLER_INSTALL_ADDR, 0xC100)
-        # And the stub is a JMP $EA31 (the kernal IRQ chain target).
-        self.assertEqual(AUDIO_HANDLER_STUB, bytes([0x4C, 0x31, 0xEA]))
-
-
 class MergedDispatcherSetupTest(unittest.TestCase):
     """Setup with audio_reu_pump_active=True must:
     (1) write the MERGED handler bytes (not the plain bank-swap) to $C500
@@ -1524,8 +1320,6 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         writing real bytes doesn't vector into uninitialized RAM."""
 
     def test_hires_uses_chunked_merged_handler_when_audio_active(self):
-        # #661: the monolithic merge (64 B) halts the bus for the whole 8 ms
-        # bitmap DMA and collapses ~95 NMIs into one.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         m = HiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
@@ -1534,9 +1328,8 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertEqual(handler, BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER)
 
     def test_mhires_uses_chunked_merged_handler_when_audio_active(self):
-        # mhires + REU audio uses the CHUNKED merged variant (176 B). The monolithic
-        # merged variant (86 B) stays in modes_irq.py for A/B testing: only chunked
-        # keeps NMI alive across the bitmap's 8 ms REC DMA.
+        # mhires + REU audio uses the merged variant, whose non-raster branch
+        # runs the pump at $C100.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         m = MultiHiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
@@ -1659,280 +1452,314 @@ class MergedDispatcherFlagWiringTest(unittest.TestCase):
         self.assertFalse(m.audio_reu_pump_active)
 
 
-class MhiresChunkedHandlerIntegrityTest(unittest.TestCase):
-    """The chunked mhires merged dispatcher splits each per-frame REC
-    DMA into BANK_SWAP_CHUNK_SIZE-byte sub-DMAs so the per-chunk bus halt
-    stays under the shortest NMI period (fixing NMI loss → restored pitch).
-    After each family's chunk loop ends, a pump check reads $DC0D and
-    runs the pump body if CIA #1 was pending — keeping the audio ring
-    refilled across the bank-swap I-flag window (fixing the
-    ring drain that the split alone makes WORSE). These tests pin the
-    byte layout, branch displacements, chunk counts, and the three
-    end-of-family pump JSRs."""
+class BankSwapDispatcherExecutionTest(unittest.TestCase):
+    """Runs every REU bank-swap dispatcher on py65, one IRQ at a time, over
+    one persistent machine. The REU controller is modeled at $DF01: each
+    trigger records the transfer the REC registers describe, then advances
+    the C64 address and zeroes the length, as the REU does. Byte-offset pins
+    cannot see a flip outside vblank, a copy into the bank on screen, or a
+    commit that reads a newer frame's colors."""
 
-    HANDLER = MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER
+    # Distinct REU sources per family, so a family that re-used another's
+    # registers, or a newer frame's, shows up in the transfer log.
+    SRC_BANK = 0xE1
+    PUMP_CALLS = 0x02A7  # where the clobbering pump-body stub counts its calls
+    IN_WINDOW = 250  # vblank on both systems
+    OUT_OF_WINDOW = 100  # mid-picture
 
-    def test_length_176(self):
-        # 21 header + 3 × 44 family (11 copy + 4 counter + 19 chunk
-        # loop + 10 pump check) + 17 tail + 6 exits = 176.
-        self.assertEqual(len(self.HANDLER), 176)
+    class Machine:
+        def __init__(self, test, handler, *, mhires):
+            from py65.memory import ObservableMemory
 
-    def test_chunk_halt_fits_the_shortest_nmi_period(self):
-        # #661: 100 bytes fit the 125-cycle period at 8 kHz but not the
-        # 85-cycle period of the 12 kHz default. The bound is the shortest
-        # period the streamer arms, less the halt-to-ack margin.
-        self.assertLessEqual(BANK_SWAP_CHUNK_SIZE, halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES))
+            self.test = test
+            self.mhires = mhires
+            self.mem = ObservableMemory()
+            for i, b in enumerate(handler):
+                self.mem[BANK_SWAP_IRQ_HANDLER_ADDR + i] = b
+            # The pump body stub: like the real body it rewrites $DF02-$DF06
+            # with its own addresses, then counts the call and returns.
+            body = [0xA9, 0xEE]  # LDA #$EE
+            for reg in range(REU.C64_ADDR_LO, REU.REU_ADDR_HI + 1):
+                body += [0x8D, reg & 0xFF, reg >> 8]  # STA reg
+            body += [0xEE, test.PUMP_CALLS & 0xFF, test.PUMP_CALLS >> 8, 0x60]
+            for i, b in enumerate(body):
+                self.mem[REU_PUMP_BODY_SUBROUTINE_ADDR + i] = b
+            for i, b in enumerate(modes_irq.BANK_SWAP_STATE_INIT):
+                self.mem[modes_irq.BANK_SWAP_STATE_ADDR + i] = b
+            # (c64 dest, length) per transfer, plus every $DD00/$D021 write,
+            # all in one ordered log.
+            self.log: list[tuple[str, int, int]] = []
+            # The REC registers as the handler last wrote them (the REU's own
+            # advance applied), kept apart from py65's untyped memory.
+            self.rec: dict[int, int] = {}
+            self.mem.subscribe_to_write(range(REU.C64_ADDR_LO, REU.LENGTH_HI + 1), self._store)
+            self.mem.subscribe_to_write([REU.COMMAND], self._trigger)
+            self.mem.subscribe_to_write([CIA2.PORT_A], self._register("dd00"))
+            self.mem.subscribe_to_write([0xD021], self._register("d021"))
 
-    def test_exit_paths_jmp_kernal_then_audio(self):
-        # Last 6 bytes: chain to kernal, then audio fallthrough.
-        self.assertEqual(
-            self.HANDLER[-6:],
-            bytes(
-                [
-                    0x4C,
-                    0x31,
-                    0xEA,  # JMP $EA31
-                    0x4C,
-                    AUDIO_HANDLER_INSTALL_ADDR & 0xFF,
-                    (AUDIO_HANDLER_INSTALL_ADDR >> 8) & 0xFF,
-                ]
-            ),
-        )
+        def _store(self, address, value):
+            self.rec[address] = value
 
-    def test_header_dispatch_uses_bne_jmp_form(self):
-        # First branch: BNE +3 / JMP audio_fallthrough.
-        # (Plain BEQ would be out-of-range to the audio JMP at offset 173.)
-        self.assertEqual(self.HANDLER[5], 0xD0)  # BNE
-        self.assertEqual(self.HANDLER[6], 0x03)  # +3 → offset 10
-        self.assertEqual(self.HANDLER[7], 0x4C)  # JMP
-        # Target = $C500 + 173 = $C5AD.
-        self.assertEqual(self.HANDLER[8], 0xAD)
-        self.assertEqual(self.HANDLER[9], 0xC5)
+        def _register(self, name):
+            def write(address, value):
+                self.log.append((name, value, 0))
 
-    def test_ready_flag_gate_uses_bne_jmp_form(self):
-        # Second branch: BNE +3 / JMP chain_to_kernal.
-        self.assertEqual(self.HANDLER[16], 0xD0)
-        self.assertEqual(self.HANDLER[17], 0x03)
-        self.assertEqual(self.HANDLER[18], 0x4C)
-        # Target = $C500 + 170 = $C5AA.
-        self.assertEqual(self.HANDLER[19], 0xAA)
-        self.assertEqual(self.HANDLER[20], 0xC5)
+            return write
 
-    def test_bitmap_chunk_count(self):
-        # LDA #chunks at offset 32.
-        self.assertEqual(self.HANDLER[32], 0xA9)
-        self.assertEqual(self.HANDLER[33], REU_VIDEO_BITMAP_LEN // BANK_SWAP_CHUNK_SIZE)
-
-    def test_screen_chunk_count(self):
-        # LDA #chunks at offset 76.
-        self.assertEqual(self.HANDLER[76], 0xA9)
-        self.assertEqual(self.HANDLER[77], REU_VIDEO_BITMAP_SCREEN_LEN // BANK_SWAP_CHUNK_SIZE)
-
-    def test_color_chunk_count(self):
-        # LDA #chunks at offset 120.
-        self.assertEqual(self.HANDLER[120], 0xA9)
-        self.assertEqual(self.HANDLER[121], REU_VIDEO_BITMAP_COLOR_LEN // BANK_SWAP_CHUNK_SIZE)
-
-    def test_each_chunk_loop_uses_bne_back_19(self):
-        # Three BNE -19 branches at offsets 53, 97, 141 — the chunk-loop
-        # bodies are 19 bytes long, so the displacement is 256-19 = $ED.
-        for bne_off in (53, 97, 141):
-            with self.subTest(bne_off=bne_off):
-                self.assertEqual(self.HANDLER[bne_off], 0xD0, f"expected BNE opcode at {bne_off}")
-                self.assertEqual(self.HANDLER[bne_off + 1], 0xED)
-
-    def test_each_chunk_loop_triggers_df01_with_91(self):
-        # Per chunk: LDA #$91 / STA $DF01 (the REU exec command).
-        # The STA is at offsets 48, 92, 136 (start of chunk loop body + 12).
-        for sta_off in (48, 92, 136):
-            with self.subTest(sta_off=sta_off):
-                # Preceding LDA #$91.
-                self.assertEqual(self.HANDLER[sta_off - 2], 0xA9)
-                self.assertEqual(self.HANDLER[sta_off - 1], 0x91)
-                # STA $DF01.
-                self.assertEqual(self.HANDLER[sta_off], 0x8D)
-                self.assertEqual(self.HANDLER[sta_off + 1], 0x01)
-                self.assertEqual(self.HANDLER[sta_off + 2], 0xDF)
-
-    def test_each_chunk_loop_reloads_length(self):
-        # Per chunk: write chunk_size to $DF07 (length lo). Verifies the
-        # REC's auto-decrement-on-transfer is being countered correctly
-        # (without the reload, the 2nd+ trigger transfers 0 / 64K bytes).
-        for sta_off in (38, 82, 126):
-            with self.subTest(sta_off=sta_off):
-                self.assertEqual(self.HANDLER[sta_off - 2], 0xA9)
-                self.assertEqual(self.HANDLER[sta_off - 1], BANK_SWAP_CHUNK_SIZE)
-                self.assertEqual(self.HANDLER[sta_off], 0x8D)
-                self.assertEqual(self.HANDLER[sta_off + 1], 0x07)
-                self.assertEqual(self.HANDLER[sta_off + 2], 0xDF)
-
-    def test_each_family_runs_pump_check_jsr_at_end(self):
-        # End-of-family pump check: LDA $DC0D / AND #$01 / BEQ +3 /
-        # JSR $C180. The LDA $DC0D opcode is at offsets 55 (bitmap),
-        # 99 (screen), 143 (color) — immediately after each chunk loop
-        # BNE.
-        for lda_off in (55, 99, 143):
-            with self.subTest(lda_off=lda_off):
-                # LDA $DC0D
-                self.assertEqual(self.HANDLER[lda_off], 0xAD)
-                self.assertEqual(self.HANDLER[lda_off + 1], 0x0D)
-                self.assertEqual(self.HANDLER[lda_off + 2], 0xDC)
-                # AND #$01
-                self.assertEqual(self.HANDLER[lda_off + 3], 0x29)
-                self.assertEqual(self.HANDLER[lda_off + 4], 0x01)
-                # BEQ +3 (skip the 3-byte JSR if CIA #1 not pending)
-                self.assertEqual(self.HANDLER[lda_off + 5], 0xF0)
-                self.assertEqual(self.HANDLER[lda_off + 6], 0x03)
-                # JSR REU_PUMP_BODY_SUBROUTINE_ADDR (pump body in audio.py)
-                self.assertEqual(self.HANDLER[lda_off + 7], 0x20)
-                self.assertEqual(self.HANDLER[lda_off + 8], REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF)
-                self.assertEqual(
-                    self.HANDLER[lda_off + 9], (REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF
-                )
-
-
-class ChunkedDispatcherExecutionTest(unittest.TestCase):
-    """Runs both chunked dispatchers on py65 with the REU controller modeled
-    at $DF01: each trigger records the transfer the REC registers describe,
-    then advances the C64 address and zeroes the length, as the REU does.
-    Byte-offset pins cannot see a chunk loop that covers the wrong span or
-    issues a transfer longer than the NMI budget."""
-
-    CASES = (
-        (
-            "hires",
-            BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
-            (TRACKER_OFF_BITMAP_REGS, TRACKER_OFF_SCREEN_REGS),
-            (REU_VIDEO_BITMAP_LEN, REU_VIDEO_BITMAP_SCREEN_LEN),
-            TRACKER_OFF_BANK_VALUE,
-            TRACKER_OFF_READY_FLAG,
-        ),
-        (
-            "mhires",
-            MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
-            (
-                MHIRES_TRACKER_OFF_BITMAP_REGS,
-                MHIRES_TRACKER_OFF_SCREEN_REGS,
-                MHIRES_TRACKER_OFF_COLOR_REGS,
-            ),
-            (REU_VIDEO_BITMAP_LEN, REU_VIDEO_BITMAP_SCREEN_LEN, REU_VIDEO_BITMAP_COLOR_LEN),
-            MHIRES_TRACKER_OFF_BANK_VALUE,
-            MHIRES_TRACKER_OFF_READY_FLAG,
-        ),
-    )
-    # Distinct C64 destinations per family, so a family that re-used another's
-    # registers shows up as a wrong span.
-    DESTS = (0xA000, 0x8400, 0xD800)
-
-    # Where the clobbering pump-body stub counts its calls.
-    PUMP_CALLS = 0x02A7
-
-    def _run(
-        self, handler, families, lens, bank_off, ready_off, *, raster=True, ready=1, cia1_tick=False
-    ):
-        from py65.devices.mpu6502 import MPU
-        from py65.memory import ObservableMemory
-
-        mem = ObservableMemory()
-        for i, b in enumerate(handler):
-            mem[BANK_SWAP_IRQ_HANDLER_ADDR + i] = b
-        # The pump body stub: like the real body it rewrites $DF02-$DF06 with
-        # its own addresses, then counts the call and returns.
-        body = [0xA9, 0xEE]  # LDA #$EE
-        for reg in range(REU.C64_ADDR_LO, REU.REU_ADDR_HI + 1):
-            body += [0x8D, reg & 0xFF, reg >> 8]  # STA reg
-        body += [0xEE, self.PUMP_CALLS & 0xFF, self.PUMP_CALLS >> 8, 0x60]  # INC count; RTS
-        for i, b in enumerate(body):
-            mem[REU_PUMP_BODY_SUBROUTINE_ADDR + i] = b
-        mem[CIA1.ICR] = 0x01 if cia1_tick else 0x00
-        for off, dst, length in zip(families, self.DESTS[: len(lens)], lens, strict=True):
-            regs = [dst & 0xFF, dst >> 8, 0x00, 0x00, 0xE1, length & 0xFF, length >> 8]
-            for i, b in enumerate(regs):
-                mem[FRAME_TRACKER_ADDR + off + i] = b
-        mem[FRAME_TRACKER_ADDR + bank_off] = 0x95
-        mem[FRAME_TRACKER_ADDR + ready_off] = ready
-        mem[0xD019] = 0x01 if raster else 0x00
-        transfers: list[tuple[int, int]] = []
-        # The REC registers as the handler last wrote them (the REU's own
-        # advance applied), kept apart from py65's untyped memory.
-        rec: dict[int, int] = {}
-
-        def store(address, value):
-            rec[address] = value
-
-        def trigger(address, value):
+        def _trigger(self, address, value):
+            rec = self.rec
             dst = rec[REU.C64_ADDR_LO] | (rec[REU.C64_ADDR_HI] << 8)
+            src = rec[REU.REU_ADDR_LO] | (rec[REU.REU_ADDR_MI] << 8) | (rec[REU.REU_ADDR_HI] << 16)
             length = rec[REU.LENGTH_LO] | (rec[REU.LENGTH_HI] << 8)
-            self.assertEqual(value, REU.CMD_FETCH_EXEC)
-            # The staged REU bank is $E1; the pump stub leaves $EE behind.
-            self.assertEqual(rec[REU.REU_ADDR_HI], 0xE1, "a chunk fired from the pump's registers")
-            transfers.append((dst, length))
-            end = dst + length
+            self.test.assertEqual(value, REU.CMD_FETCH_EXEC)
+            self.test.assertEqual(
+                rec[REU.REU_ADDR_HI], self.test.SRC_BANK, "a chunk fired from the pump's registers"
+            )
+            self.log.append(("rec", dst, length))
+            self.sources.append(src)
+            end, src_end = dst + length, src + length
             rec[REU.C64_ADDR_LO], rec[REU.C64_ADDR_HI] = end & 0xFF, (end >> 8) & 0xFF
+            rec[REU.REU_ADDR_LO], rec[REU.REU_ADDR_MI] = src_end & 0xFF, (src_end >> 8) & 0xFF
             rec[REU.LENGTH_LO] = rec[REU.LENGTH_HI] = 0
 
-        mem.subscribe_to_write(range(REU.C64_ADDR_LO, REU.LENGTH_HI + 1), store)
-        mem.subscribe_to_write([REU.COMMAND], trigger)
-        mpu = MPU(memory=mem)
-        mpu.pc = BANK_SWAP_IRQ_HANDLER_ADDR
-        for _ in range(20000):
-            if mpu.pc in (0xEA31, AUDIO_HANDLER_INSTALL_ADDR):
-                return mpu.pc, transfers, mem
-            mpu.step()
-        self.fail(f"dispatcher never exited (PC=${mpu.pc:04X})")
+        sources: list[int]
 
-    def test_each_family_is_copied_whole_in_chunks_that_fit_the_nmi_budget(self):
-        budget = halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES)
-        for name, handler, families, lens, bank_off, ready_off in self.CASES:
-            with self.subTest(mode=name):
-                exit_pc, transfers, mem = self._run(handler, families, lens, bank_off, ready_off)
-                self.assertEqual(exit_pc, 0xEA31)
-                self.assertTrue(all(0 < n <= budget for _, n in transfers), transfers[:3])
-                covered = []
-                for dst, n in transfers:
-                    if covered and covered[-1][1] == dst:
-                        covered[-1][1] = dst + n
-                    else:
-                        covered.append([dst, dst + n])
-                self.assertEqual(
-                    covered,
-                    [[d, d + n] for d, n in zip(self.DESTS[: len(lens)], lens, strict=True)],
-                    "spans copied",
+        def stage(self, slot, *, bg0=0):
+            """Write a tracker as the host does: one blob, ready flag last."""
+            if self.mhires:
+                blob = bytearray(MHIRES_FRAME_TRACKER_LEN)
+                regs = (
+                    (MHIRES_TRACKER_OFF_BITMAP_REGS, VIC_BANK_0.BITMAP, REU_VIDEO_BITMAP_LEN),
+                    (
+                        MHIRES_TRACKER_OFF_SCREEN_REGS,
+                        VIC_BANK_0.SCREEN,
+                        REU_VIDEO_BITMAP_SCREEN_LEN,
+                    ),
+                    (MHIRES_TRACKER_OFF_COLOR_REGS, 0xD800, REU_VIDEO_BITMAP_COLOR_LEN),
                 )
-                self.assertEqual(mem[0xDD00], 0x95)
-                self.assertEqual(mem[FRAME_TRACKER_ADDR + ready_off], 0)
+                blob[MHIRES_TRACKER_OFF_BG0] = bg0
+                blob[MHIRES_TRACKER_OFF_READY_FLAG] = 1
+            else:
+                blob = bytearray(FRAME_TRACKER_LEN)
+                regs = (
+                    (TRACKER_OFF_BITMAP_REGS, VIC_BANK_0.BITMAP, REU_VIDEO_BITMAP_LEN),
+                    (TRACKER_OFF_SCREEN_REGS, VIC_BANK_0.SCREEN, REU_VIDEO_BITMAP_SCREEN_LEN),
+                )
+                blob[TRACKER_OFF_READY_FLAG] = 1
+            for family, (off, dst, length) in enumerate(regs):
+                # Source: slot in bit 15, family in bits 13-14 of the REU
+                # address, below which the longest family (8000 bytes) fits,
+                # so every chunk's source names both.
+                src = (self.test.SRC_BANK << 16) | (slot << 15) | (family << 13)
+                blob[off : off + 7] = bytes(
+                    [dst & 0xFF, dst >> 8, src & 0xFF, (src >> 8) & 0xFF, src >> 16]
+                    + [length & 0xFF, length >> 8]
+                )
+            for i, b in enumerate(blob):
+                self.mem[FRAME_TRACKER_ADDR + i] = b
+
+        def irq(self, *, line, raster=True, cia1_tick=False):
+            """One IRQ through $C500. Returns the exit PC, this IRQ's log and
+            the REU source of each transfer it made."""
+            from py65.devices.mpu6502 import MPU
+
+            self.log, self.sources = [], []
+            self.mem[0xD019] = 0x01 if raster else 0x00
+            self.mem[0xD012] = line
+            self.mem[CIA1.ICR] = 0x01 if cia1_tick else 0x00
+            mpu = MPU(memory=self.mem)
+            mpu.pc = BANK_SWAP_IRQ_HANDLER_ADDR
+            for _ in range(40000):
+                if mpu.pc in (KERNAL.IRQ_HANDLER, AUDIO_HANDLER_INSTALL_ADDR):
+                    return mpu.pc, self.log, self.sources
+                mpu.step()
+            raise AssertionError(f"dispatcher never exited (PC=${mpu.pc:04X})")
+
+    CASES = (
+        ("hires", BANK_SWAP_IRQ_HANDLER, False, False),
+        ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, True, False),
+        ("hires+pump", BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, False, True),
+        ("mhires+pump", MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, True, True),
+    )
+
+    @staticmethod
+    def _slot(src):
+        return (src >> 15) & 1
+
+    @staticmethod
+    def _spans(log):
+        """Coalesce the transfers into contiguous (start, end) spans."""
+        spans: list[list[int]] = []
+        for kind, dst, n in log:
+            if kind != "rec":
+                continue
+            if spans and spans[-1][1] == dst:
+                spans[-1][1] = dst + n
+            else:
+                spans.append([dst, dst + n])
+        return [tuple(s) for s in spans]
+
+    def _banked_spans(self, bank_base):
+        return [
+            (bank_base | VIC_BANK_0.BITMAP, (bank_base | VIC_BANK_0.BITMAP) + REU_VIDEO_BITMAP_LEN),
+            (
+                bank_base | VIC_BANK_0.SCREEN,
+                (bank_base | VIC_BANK_0.SCREEN) + REU_VIDEO_BITMAP_SCREEN_LEN,
+            ),
+        ]
+
+    def test_a_staged_frame_is_copied_into_the_hidden_bank_without_a_flip(self):
+        budget = halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES)
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                # Out of the window on purpose: copying never waits for vblank.
+                exit_pc, log, _ = m.irq(line=self.OUT_OF_WINDOW)
+                self.assertEqual(exit_pc, KERNAL.IRQ_HANDLER)
+                self.assertEqual(self._spans(log), self._banked_spans(0x8000))
+                self.assertTrue(all(0 < n <= budget for k, _, n in log if k == "rec"))
+                self.assertNotIn("dd00", [k for k, _, _ in log])
+
+    def test_the_flip_waits_for_the_raster_window(self):
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                m.irq(line=self.IN_WINDOW)
+                for line in (self.OUT_OF_WINDOW, 46, 247):
+                    _, log, _ = m.irq(line=line)
+                    self.assertEqual(log, [], f"line {line}")
+                _, log, _ = m.irq(line=self.IN_WINDOW)
+                self.assertIn(("dd00", CIA2.PORT_A_BANK_2, 0), log)
+
+    def test_every_line_of_the_window_commits(self):
+        # [248, 255] and [0, 45], and the lines the 8-bit $D012 aliases there.
+        for name, handler, mhires, _ in self.CASES[:2]:
+            for line in (248, 255, 0, 45):
+                with self.subTest(mode=name, line=line):
+                    m = self.Machine(self, handler, mhires=mhires)
+                    m.stage(slot=0)
+                    m.irq(line=self.OUT_OF_WINDOW)
+                    _, log, _ = m.irq(line=line)
+                    self.assertEqual(log[0 if not mhires else 1][:2], ("dd00", CIA2.PORT_A_BANK_2))
+
+    def test_frames_alternate_banks(self):
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                m.irq(line=self.IN_WINDOW)
+                m.stage(slot=1)
+                # Commit frame 0 to bank 2, then copy frame 1 into bank 0.
+                _, log, _ = m.irq(line=self.IN_WINDOW)
+                flips = [v for k, v, _ in log if k == "dd00"]
+                self.assertEqual(flips, [CIA2.PORT_A_BANK_2])
+                banked = [s for s in self._spans(log) if s[0] != 0xD800]
+                self.assertEqual(banked, self._banked_spans(0x0000))
+                _, log, _ = m.irq(line=self.IN_WINDOW)
+                self.assertEqual([v for k, v, _ in log if k == "dd00"], [CIA2.PORT_A_BANK_0])
+
+    def test_color_ram_and_bg0_follow_the_flip(self):
+        # Color RAM is not banked: before the flip it would sit under the old
+        # bitmap for a field, so it goes right after, ahead of the raster.
+        for name, handler, mhires, _ in self.CASES[1::2]:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0, bg0=0x06)
+                m.irq(line=self.IN_WINDOW)
+                _, log, _ = m.irq(line=self.IN_WINDOW)
+                kinds = [k for k, _, _ in log]
+                self.assertEqual(kinds[:2], ["d021", "dd00"])
+                self.assertEqual(log[0][1], 0x06)
+                self.assertEqual(self._spans(log), [(0xD800, 0xD800 + REU_VIDEO_BITMAP_COLOR_LEN)])
+
+    def test_the_commit_shows_the_copied_frame_not_a_newer_one(self):
+        # The host stages again before the copied frame's vblank: the commit
+        # must still write that frame's bg0 and color RAM, from its own slot.
+        for name, handler, mhires, _ in self.CASES[1::2]:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0, bg0=0x06)
+                m.irq(line=self.OUT_OF_WINDOW)
+                m.stage(slot=1, bg0=0x0E)
+                _, log, sources = m.irq(line=self.IN_WINDOW)
+                self.assertEqual(log[0], ("d021", 0x06, 0))
+                color = (self.SRC_BANK << 16) | (0 << 15) | (2 << 13)
+                self.assertEqual(sources[0], color, "the first commit transfer is slot 0's color")
+                # And the newer frame is then copied, from its own slot.
+                color_chunks = REU_VIDEO_BITMAP_COLOR_LEN // BANK_SWAP_CHUNK_SIZE
+                self.assertTrue(all(self._slot(s) == 1 for s in sources[color_chunks:]))
+
+    def test_a_restage_while_a_frame_waits_is_not_lost(self):
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                m.irq(line=self.OUT_OF_WINDOW)
+                m.stage(slot=1)
+                # Out of the window nothing happens, not even the newer copy:
+                # the hidden bank still holds the frame waiting to be shown.
+                _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
+                self.assertEqual(log, [])
+                _, log, sources = m.irq(line=self.IN_WINDOW)
+                self.assertIn(("dd00", CIA2.PORT_A_BANK_2, 0), log)
+                banked = [s for s in sources if (s >> 13) & 3 != 2]
+                self.assertTrue(banked and all(self._slot(s) == 1 for s in banked))
+
+    def test_a_tracker_written_during_the_snapshot_is_snapshotted_again(self):
+        # The host's tracker DMA can land between two of the snapshot loop's
+        # reads; the loop re-reads the ready flag and starts over.
+        for name, handler, mhires, _ in self.CASES:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                fired = []
+
+                def host_dma(address, value, m=m, fired=fired):
+                    if not fired:
+                        fired.append(address)
+                        m.stage(slot=1)
+
+                snapshot = modes_irq.BANK_SWAP_STATE_ADDR + len(modes_irq.BANK_SWAP_STATE_INIT)
+                m.mem.subscribe_to_write([snapshot + 3], host_dma)
+                _, _, sources = m.irq(line=self.OUT_OF_WINDOW)
+                self.assertEqual(len(fired), 1)
+                self.assertTrue(sources and all(self._slot(s) == 1 for s in sources))
 
     def test_a_pending_cia1_tick_runs_the_pump_between_families(self):
         # The pump body rewrites $DF02-$DF06, so each family has to reload
-        # its own registers from the tracker after the end-of-family JSR.
-        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+        # its own registers from the snapshot after the end-of-family JSR.
+        for name, handler, mhires, pump in self.CASES:
             with self.subTest(mode=name):
-                exit_pc, transfers, mem = self._run(
-                    handler, families, lens, bank_off, ready_off, cia1_tick=True
-                )
-                self.assertEqual(exit_pc, 0xEA31)
-                self.assertEqual(mem[self.PUMP_CALLS], len(families))
-                firsts = [t for t in transfers if t[0] in self.DESTS]
-                self.assertEqual([d for d, _ in firsts], list(self.DESTS[: len(lens)]))
-                self.assertEqual(sum(n for _, n in transfers), sum(lens))
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                m.irq(line=self.OUT_OF_WINDOW, cia1_tick=True)
+                m.irq(line=self.IN_WINDOW, cia1_tick=True)
+                families = 3 if mhires else 2
+                self.assertEqual(m.mem[self.PUMP_CALLS], families if pump else 0)
 
-    def test_non_raster_irq_falls_through_to_the_pump(self):
-        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+    def test_non_raster_irq_goes_to_the_pump_or_the_kernal(self):
+        for name, handler, mhires, pump in self.CASES:
             with self.subTest(mode=name):
-                exit_pc, transfers, _ = self._run(
-                    handler, families, lens, bank_off, ready_off, raster=False
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                exit_pc, log, _ = m.irq(line=self.IN_WINDOW, raster=False)
+                self.assertEqual(
+                    exit_pc, AUDIO_HANDLER_INSTALL_ADDR if pump else KERNAL.IRQ_HANDLER
                 )
-                self.assertEqual(exit_pc, AUDIO_HANDLER_INSTALL_ADDR)
-                self.assertEqual(transfers, [])
+                self.assertEqual(log, [])
 
     def test_unstaged_frame_chains_without_a_transfer(self):
-        for name, handler, families, lens, bank_off, ready_off in self.CASES:
+        for name, handler, mhires, _ in self.CASES:
             with self.subTest(mode=name):
-                exit_pc, transfers, _ = self._run(
-                    handler, families, lens, bank_off, ready_off, ready=0
-                )
-                self.assertEqual(exit_pc, 0xEA31)
-                self.assertEqual(transfers, [])
+                m = self.Machine(self, handler, mhires=mhires)
+                exit_pc, log, _ = m.irq(line=self.IN_WINDOW)
+                self.assertEqual(exit_pc, KERNAL.IRQ_HANDLER)
+                self.assertEqual(log, [])
+
+    def test_chunk_halt_fits_the_shortest_nmi_period(self):
+        self.assertLessEqual(BANK_SWAP_CHUNK_SIZE, halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES))
 
 
 class ReuPumpBodySubroutineTest(unittest.TestCase):
