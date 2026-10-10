@@ -90,6 +90,7 @@ class LockPathsTest(unittest.TestCase):
         with patch.dict(os.environ, {hw_lock.RIGS_ENV: rigs}):
             self.assertEqual(hw_lock.lock_paths("Cam Link"), expected)
 
+    @unittest.skipIf(sys.platform == "win32", "hw_lock is POSIX only")
     def test_an_unopenable_lock_file_refuses_to_run(self) -> None:
         (self.dir / "stray.lock").mkdir()
         err = io.StringIO()
