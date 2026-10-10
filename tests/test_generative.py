@@ -1411,6 +1411,12 @@ class _SamplerLink:
 
     delivery_epoch = 0
 
+    def write_loss_mark(self) -> int:
+        return 0
+
+    def writes_lost_since(self, mark: int) -> bool:
+        return False
+
     def reu_write(self, offset: int, data: bytes) -> None:
         pass
 
