@@ -19,6 +19,7 @@ See docs/architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-pus
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from c64cast._teardown import run_teardown_steps
@@ -874,6 +875,11 @@ def uninstall_bank_swap_irq(api: C64Backend) -> None:
             lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}"),
         ),
         ("VIC IRQ disable", lambda: api.write_memory("D01A", "00")),
+        # A dispatcher already inside an REU copy keeps running from $C500 and
+        # writing the hidden bank after the masks land. Waiting it out is
+        # cheaper than a handshake, which would need a REST read of the C64 on
+        # every scene change.
+        ("drain dispatcher", lambda: time.sleep(_REU_SLOT_MAX_IN_USE_S)),
         # Restore $0314/$0315 → kernal $EA31.
         ("kernal IRQ vector", restore_kernal_vector),
         # Ack any pending raster IRQ flag so the next $D019 read is clean.

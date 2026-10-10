@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import unittest
 from typing import cast
+from unittest import mock
 
 import numpy as np
 from _fakes import FakeAPI, quiet_logging
@@ -1069,6 +1070,31 @@ class BankSwapIrqTeardownGuardTest(unittest.TestCase):
             (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF),
         )
         self.assertEqual(fake.memories[self._CIA1_ICR], f"{modes_irq._CIA1_ICR_ENABLE_TIMER_A:02X}")
+
+    def test_an_in_flight_copy_drains_before_the_handler_is_released(self):
+        fake = FakeAPI()
+        order: list[str] = []
+        write_memory, write_regs = fake.write_memory, fake.write_regs
+
+        def logged_write_memory(address, *args, **kwargs):
+            order.append(address.upper())
+            return write_memory(address, *args, **kwargs)
+
+        def logged_write_regs(address, *args, **kwargs):
+            order.append(address.upper())
+            return write_regs(address, *args, **kwargs)
+
+        fake.write_memory = logged_write_memory  # type: ignore[method-assign]
+        fake.write_regs = logged_write_regs  # type: ignore[method-assign]
+        with mock.patch.object(
+            modes_irq.time, "sleep", side_effect=lambda s: order.append(f"sleep {s}")
+        ):
+            uninstall_bank_swap_irq(cast(Ultimate64API, fake))
+        drain = order.index(f"sleep {modes_irq._REU_SLOT_MAX_IN_USE_S}")
+        self.assertLess(order.index("D01A"), drain, "sources masked before the wait")
+        self.assertLess(order.index(self._CIA1_ICR), drain, "sources masked before the wait")
+        self.assertLess(drain, order.index(f"{VECTORS.IRQ:04X}"), "vector held until drained")
+        self.assertLess(drain, order.index(f"{CIA2.PORT_A:04X}"), "bank held until drained")
 
 
 class ReuMHiresPushTest(unittest.TestCase):
