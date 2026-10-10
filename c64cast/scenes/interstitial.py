@@ -100,17 +100,20 @@ class InterstitialScene(Scene):
         # A mode switch, so the dirty cache would otherwise suppress a needed
         # frame-0 write that happens to match the last scene.
         self.api.invalidate_cache()
-        # Defeat a leaked bitmap-scene bank-swap raster IRQ, in this order:
-        # unhook the handler (restoring $0314 → $EA31 puts it out of reach of
-        # any IRQ), disable the raster source, ack the latched flag, and only
-        # then pin the bank — anything else leaves a window in which $DD00 can
-        # be re-flipped to bank 2 after the pin. See
+        # Defeat a leaked bitmap-scene raster IRQ, in this order: disable the
+        # raster source, unhook the handler (restoring $0314 → $EA31 puts it out
+        # of reach of any IRQ), ack the latched flag, and only then pin the
+        # bank — a pin any earlier leaves a window in which $DD00 can be
+        # re-flipped to bank 2 after it. The disable goes first, and is written
+        # again behind the restore when it did not confirm, because the kernal
+        # handler at $EA31 never acks $D019: a raster source left enabled behind
+        # the restore re-enters the IRQ on every RTI. See
         # docs/architecture/scenes.md#interstitialpy--backgroundspy.
+        raster_disabled = write_confirmed(self.api, lambda: self.api.write_memory("d01a", "00"))
         vector_restored = write_confirmed(self.api, self.api.restore_kernal_irq_vector)
-        # Confirmed because the kernal handler at $EA31 never acks $D019: a
-        # raster source left enabled behind the restore re-enters the IRQ on
-        # every RTI.
-        if not write_confirmed(self.api, lambda: self.api.write_memory("d01a", "00")):
+        if not raster_disabled and not write_confirmed(
+            self.api, lambda: self.api.write_memory("d01a", "00")
+        ):
             log.error("interstitial: the VIC raster IRQ disable was not confirmed delivered")
         self.api.write_memory("d019", "01")
         self._rearm_cia1(vector_restored)

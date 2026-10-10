@@ -19,6 +19,7 @@ from _fakes import FakeAPI
 
 from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
+from c64cast.hw.delivery import CONFIRM_TRIES
 from c64cast.scenes.interstitial import (
     LABEL,
     LEGIBLE_COLORS,
@@ -151,9 +152,11 @@ class InterstitialCia1RearmTest(unittest.TestCase):
         self._record_restore(fake, lost=False)
         scene.setup()
         ops = [op[:3] for op in fake.ops]
+        disable = ops.index(("write_memory", "D01A", "00"))
         restore = ops.index(("restore_kernal_irq_vector",))
         unmask = ops.index(("write_memory", "DC0D", "81"))
         pin = ops.index(("write_memory", "DD00", "97"))
+        self.assertLess(disable, restore, "a raster source live behind $EA31 never acks")
         self.assertLess(restore, unmask)
         self.assertLess(unmask, pin)
 
@@ -194,6 +197,10 @@ class InterstitialCia1RearmTest(unittest.TestCase):
         with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
             scene.setup()
         self.assertIn("raster IRQ disable was not confirmed", cm.output[0])
+        disables = [op for op in fake.ops if op[:2] == ("write_memory", "D01A")]
+        self.assertEqual(
+            len(disables), 2 * CONFIRM_TRIES, "confirmed, then again behind the restore"
+        )
         self.assertEqual(fake.memories["DC0D"], "81")
 
 

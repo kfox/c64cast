@@ -399,7 +399,7 @@ class BigTextOverlay(Overlay):
         unmasking CIA #1 with $0314 still on the raster handler keeps vectoring
         the jiffy IRQ into RAM the next scene may overwrite. So the restore
         waits for the disable, and the unmask for the restore, each logging
-        what it left undone. A disable that never lands leaves the handler
+        what it left undone. Whenever the handler stays hooked it can keep
         committing its shadows every frame, so they are reset to the values
         `teardown` writes to $D016/$D018."""
         done: set[str] = set()
@@ -418,7 +418,7 @@ class BigTextOverlay(Overlay):
             confirmed(what, write)
 
         def reset_shadows_if_hooked() -> None:
-            if "raster disable" in done:
+            if "vector restore" in done:
                 return
             log.error(
                 "big_text: the raster handler stays hooked; resetting its shadows to the "

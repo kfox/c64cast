@@ -76,6 +76,7 @@ class BigTextIrqTeardownTest(unittest.TestCase):
             _uninstall(api)
         self.assertNotIn("DC0D", _order(api))
         self.assertTrue(any("skipping the CIA1 unmask" in m for m in logs.output))
+        self.assertEqual(api.regs[_SHADOWS], (DEFAULT_D016, DEFAULT_D018), "still hooked")
 
     def test_a_clean_teardown_runs_in_install_reverse_order(self):
         api = FakeAPI()
