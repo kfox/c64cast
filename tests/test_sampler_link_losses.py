@@ -377,6 +377,13 @@ class VolumeRestoreTest(unittest.TestCase):
             smp._writer_step(smp._writer_gen)
         self.assertTrue(smp._volume_owed)
 
+    def test_a_restart_settles_the_owed_restore(self):
+        smp, chan = self._resumed(lose_restore=True)
+        with mock.patch.object(s, "time", chan.clock), self.assertLogs("c64cast.audio.sampler"):
+            self.assertTrue(smp._restart_channel(smp._writer_gen))
+        self.assertEqual(chan.volume, smp._volume)
+        self.assertFalse(smp._volume_owed)
+
     def test_a_restore_still_lost_does_not_hold_off_the_restart(self):
         # Sent ahead of the deadline check, a restore the link kept losing
         # raised on every pass, and the channel stopped at its deadline.
@@ -387,6 +394,13 @@ class VolumeRestoreTest(unittest.TestCase):
         with mock.patch.object(s, "time", chan.clock), self.assertLogs("c64cast.audio.sampler"):
             self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual(chan.volume, smp._volume)
+        self.assertFalse(smp._volume_owed)
+
+    def test_arm_clears_the_owed_restore(self):
+        smp, _chan = self._resumed(lose_restore=True)
+        with quiet_logging():
+            smp.stop()
+        smp.arm()
         self.assertFalse(smp._volume_owed)
 
 
