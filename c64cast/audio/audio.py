@@ -36,7 +36,6 @@ from c64cast.hw.c64 import (
     CIA2,
     CIA_TIMER_LATCH_MAX,
     KERNAL,
-    NMI_CEILING_LATCH,
     REU,
     SID,
     VECTORS,
@@ -266,6 +265,14 @@ TRACKED_PUMP_ENTRY_DRAIN_S = 0.08
 LANDING_PACE_WINDOW_S = 1.0
 LANDING_PACE_MIN_INTERVALS = 2
 LANDING_PACE_MAX_LANDINGS = 64
+
+# The longest ring write the NMI period alone may ask for: what the fastest
+# rate's write already is on the Ultimate, after the link's write-rate floor.
+# The bank-swap commit window is budgeted for one write's halt
+# (tests/test_commit_window.py). Capping the period-derived size at the
+# fastest rate's instead split a 64-byte chunk at 8 kHz into a 56-byte and an
+# 8-byte write, and write count, not size, is what costs on the link.
+RING_WRITE_HALT_CAP_BYTES = 147
 
 
 class PumpInstallError(RuntimeError):
@@ -858,9 +865,8 @@ class AudioStreamer:
         NMI period.
 
         The period it has to fit inside is exactly ``latch + 1`` cycles of the
-        live latch, but capped at the shortest period the streamer arms (see
-        below), so at any latch the handler budget allows the halt-derived size
-        is that one period's.
+        live latch, and the size that gives stops at RING_WRITE_HALT_CAP_BYTES
+        (see below).
 
         That halt-derived size is then floored by what the link can actually
         carry, because the quantum sets the write *rate* (chunk_size/quantum
@@ -871,13 +877,14 @@ class AudioStreamer:
         the ring. Backing off costs little — 4-20 Hz modulation is 1.96 at 128 B
         against 2.41 at 64 B — since what matters is clearing that band at all.
 
-        A slower rate's longer period is not let grow the write past the size
-        the fastest rate gets: the bank-swap raster commit window is sized for
-        that one halt (tests/test_commit_window.py), and a 1024-byte write at
-        a low rate would land a commit's flip about 10 lines into the picture.
+        A slower rate's longer period is not let grow the write past
+        RING_WRITE_HALT_CAP_BYTES: the bank-swap raster commit window is sized
+        for one halt that long (tests/test_commit_window.py), and a 1024-byte
+        write at a low rate would land a commit's flip about 10 lines into the
+        picture.
         """
         period_cycles = (self.nmi.latch or self.nmi.compensated_latch()) + 1
-        quantum = halt_quantum_bytes(min(period_cycles, NMI_CEILING_LATCH + 1))
+        quantum = min(halt_quantum_bytes(period_cycles), RING_WRITE_HALT_CAP_BYTES)
         # Straight through, no getattr: both names are declared, so a rename
         # fails type-checking here instead of silently yielding max_hz = None
         # and dropping the floor this method's docstring depends on.
