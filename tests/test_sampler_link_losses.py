@@ -389,6 +389,7 @@ class VolumeRestoreTest(unittest.TestCase):
         # Sent ahead of the deadline check, a restore the link kept losing
         # raised on every pass, and the channel stopped at its deadline.
         smp, chan = self._resumed(lose_restore=True)
+        self.assertTrue(smp._volume_owed)
         chan.lose_volume = True
         assert smp._deadline is not None
         chan.clock.now = smp._deadline / (smp._actual_rate * smp.bps) + 1.0
