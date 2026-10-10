@@ -905,6 +905,23 @@ def _rec_regs(c64_dest: int, reu_src: int, length: int) -> bytes:
     )
 
 
+def _stage_bitmap_and_screen(
+    api: C64Backend, bitmap_bytes: bytes, screen_bytes: bytes, slot: int
+) -> tuple[int, bytes]:
+    """REUWRITE bitmap + screen into staging slot ``slot`` (bus-clean — no C64
+    halt). Returns the slot's REU offset and the two families' 14 tracker
+    bytes, aimed at bank 0 (the IRQ re-aims them)."""
+    offset = (slot % REU_VIDEO_SLOTS) * REU_VIDEO_SLOT_STRIDE
+    api.reu_write(REU_VIDEO_BITMAP_BASE + offset, bitmap_bytes)
+    api.reu_write(REU_VIDEO_BITMAP_SCREEN_BASE + offset, screen_bytes)
+    regs = _rec_regs(
+        VIC_BANK_0.BITMAP, REU_VIDEO_BITMAP_BASE + offset, REU_VIDEO_BITMAP_LEN
+    ) + _rec_regs(
+        VIC_BANK_0.SCREEN, REU_VIDEO_BITMAP_SCREEN_BASE + offset, REU_VIDEO_BITMAP_SCREEN_LEN
+    )
+    return offset, regs
+
+
 def push_bitmap_via_reu(
     api: C64Backend, bitmap_bytes: bytes, screen_bytes: bytes, slot: int
 ) -> None:
@@ -919,19 +936,10 @@ def push_bitmap_via_reu(
     Per-frame host work: 2 REUWRITEs (bus-clean) + 1 DMAWRITE (16 bytes,
     halts C64 bus for ~16 cycles — negligible vs the ~9000 cycles the
     REU→main DMAs themselves consume)."""
-    offset = (slot % REU_VIDEO_SLOTS) * REU_VIDEO_SLOT_STRIDE
-    # Stage bitmap + screen into REU SRAM (bus-clean — no C64 halt).
-    api.reu_write(REU_VIDEO_BITMAP_BASE + offset, bitmap_bytes)
-    api.reu_write(REU_VIDEO_BITMAP_SCREEN_BASE + offset, screen_bytes)
+    offset, regs = _stage_bitmap_and_screen(api, bitmap_bytes, screen_bytes, slot)
     # Order matches the IRQ handler's layout exactly, and the ready flag is the
     # LAST byte, so the regs are consistent before ready flips.
-    tracker = (
-        _rec_regs(VIC_BANK_0.BITMAP, REU_VIDEO_BITMAP_BASE + offset, REU_VIDEO_BITMAP_LEN)
-        + _rec_regs(
-            VIC_BANK_0.SCREEN, REU_VIDEO_BITMAP_SCREEN_BASE + offset, REU_VIDEO_BITMAP_SCREEN_LEN
-        )
-        + bytes([0x00, 0x01])  # reserved, ready flag
-    )
+    tracker = regs + bytes([0x00, 0x01])  # reserved, ready flag
     assert len(tracker) == FRAME_TRACKER_LEN
     api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
 
@@ -952,18 +960,12 @@ def push_mhires_via_reu(
     halts C64 bus ~24 cycles — negligible). The big halts (bitmap ~8000,
     screen ~1000, color ~1000 = ~10000 cycles total) happen on the C64
     side, triggered by the raster IRQ."""
-    offset = (slot % REU_VIDEO_SLOTS) * REU_VIDEO_SLOT_STRIDE
-    # Bus-clean: an ARM-side memcpy into FPGA SRAM, no C64 halts.
-    api.reu_write(REU_VIDEO_BITMAP_BASE + offset, bitmap_bytes)
-    api.reu_write(REU_VIDEO_BITMAP_SCREEN_BASE + offset, screen_bytes)
+    offset, regs = _stage_bitmap_and_screen(api, bitmap_bytes, screen_bytes, slot)
     api.reu_write(REU_VIDEO_BITMAP_COLOR_BASE + offset, color_bytes)
     # Order matches the IRQ handler's layout exactly, and the ready flag is the
     # LAST byte, so the regs are consistent whenever the handler sees ready=1.
     tracker = (
-        _rec_regs(VIC_BANK_0.BITMAP, REU_VIDEO_BITMAP_BASE + offset, REU_VIDEO_BITMAP_LEN)
-        + _rec_regs(
-            VIC_BANK_0.SCREEN, REU_VIDEO_BITMAP_SCREEN_BASE + offset, REU_VIDEO_BITMAP_SCREEN_LEN
-        )
+        regs
         + _rec_regs(
             SCREEN.COLOR_RAM, REU_VIDEO_BITMAP_COLOR_BASE + offset, REU_VIDEO_BITMAP_COLOR_LEN
         )
