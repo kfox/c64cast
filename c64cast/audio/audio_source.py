@@ -81,6 +81,9 @@ DRAIN_FOLLOW_DEADBAND = 0.01
 DRAIN_FOLLOW_STALL_S = 0.25
 DRAIN_FOLLOW_RETUNE_S = 2.0
 DRAIN_FOLLOW_MIN = 0.80
+# The first scale is predicted from the link's byte rate over this long after
+# the clock starts, rather than waited out over the warm-up and a window.
+DRAIN_PREDICT_SPAN_S = 1.0
 
 
 class DrainFollower:
@@ -96,30 +99,49 @@ class DrainFollower:
     rise with it. See
     docs/architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source.
 
-    Pure: the caller supplies the time, the clock and the trust stamp."""
+    With ``predict``, the first scale comes sooner: ``DRAIN_PREDICT_SPAN_S``
+    after the clock starts, the CPU time the writes halted over that span
+    predicts the drain as the fraction of the span the CPU was left. The
+    measured window then trims it as before.
 
-    def __init__(self, scale: float = 1.0) -> None:
+    Pure: the caller supplies the time, the clock, the trust stamp and the
+    CPU time halted."""
+
+    def __init__(self, scale: float = 1.0, predict: bool = False) -> None:
         self.scale = scale
+        self.measured = False  # a window has read the drain
         self._marks: deque[tuple[float, float]] = deque()
         self._started_at: float | None = None
         self._trust: object = None
         # (wall, clock) the stall check measures its span from.
         self._stall_anchor: tuple[float, float] | None = None
         self._last_retune = -math.inf
+        self._predicted = not predict
+        # (wall, halted) the prediction's span starts at.
+        self._predict_from: tuple[float, float] | None = None
 
-    def observe(self, now: float, clock_s: float, trust: object) -> float | None:
+    def observe(
+        self, now: float, clock_s: float, trust: object, halted_s: float | None = None
+    ) -> float | None:
         """Take one reading; returns the new scale when it moved by the
         deadband or more, else None. ``trust`` is anything that changes at
-        an underrun (a window across one is not the drain)."""
+        an underrun (a window across one is not the drain); ``halted_s`` is
+        the running total of CPU seconds the link's writes halted, None
+        where nothing counts it."""
         marks = self._marks
         if clock_s <= 0.0:
             # The consumer has not started: nothing drains yet.
             self._started_at = None
             self._stall_anchor = None
+            self._predict_from = None
             marks.clear()
             return None
         if self._started_at is None:
             self._started_at = now
+        if not self._predicted and halted_s is not None:
+            predicted = self._predict(now, halted_s)
+            if predicted is not None:
+                return predicted
         if now - self._started_at < DRAIN_FOLLOW_WARMUP_S:
             marks.clear()
             self._trust = trust
@@ -143,7 +165,24 @@ class DrainFollower:
             or now - self._last_retune < DRAIN_FOLLOW_RETUNE_S
         ):
             return None
-        drain = min(1.0, max(DRAIN_FOLLOW_MIN, (c1 - c0) / (w1 - w0)))
+        self.measured = True
+        return self._retune(now, (c1 - c0) / (w1 - w0))
+
+    def _predict(self, now: float, halted_s: float) -> float | None:
+        """The drain the CPU time halted since the clock started predicts,
+        once it spans ``DRAIN_PREDICT_SPAN_S``, as `_retune` takes it; once."""
+        start = self._predict_from
+        if start is None:
+            self._predict_from = (now, halted_s)
+            return None
+        w0, h0 = start
+        if now - w0 < DRAIN_PREDICT_SPAN_S:
+            return None
+        self._predicted = True
+        return self._retune(now, 1.0 - max(0.0, halted_s - h0) / (now - w0))
+
+    def _retune(self, now: float, drain: float) -> float | None:
+        drain = min(1.0, max(DRAIN_FOLLOW_MIN, drain))
         if abs(drain - self.scale) < DRAIN_FOLLOW_DEADBAND:
             return None
         self.scale = drain
@@ -444,8 +483,10 @@ class AudioFileSource:
         # the playlist's polling logs it once per decode.
         self._lag_cap_logged = False
         # The DAC drain the last activation followed: the next starts from it
-        # rather than playing its first window slow. Decode thread only.
+        # rather than playing its first window slow, and predicts none once
+        # one was measured. Decode thread only.
         self._drain_scale = 1.0
+        self._drain_measured = False
         # At build time, so a misconfigured single scene raises there
         # (parity with SidFileAudioSource.__init__).
         self._pick_and_probe()
@@ -689,6 +730,7 @@ class AudioFileSource:
             container.close()
             if follower is not None:
                 self._drain_scale = follower.scale
+                self._drain_measured = self._drain_measured or follower.measured
         if not self._stop.is_set():
             self._mark_decode_done(pushed)
 
@@ -698,7 +740,32 @@ class AudioFileSource:
         without underrun telemetry offers no window to trust."""
         if self._is_sampler or not callable(getattr(self._audio, "stats", None)):
             return None
-        return DrainFollower(self._drain_scale)
+        predict = not self._drain_measured and self._halted_s() is not None
+        return DrainFollower(self._drain_scale, predict=predict)
+
+    def _halted_s(self) -> float | None:
+        """CPU seconds the link's writes have halted the 6510 for so far: the
+        bytes written at the profile's `halt_cycles_per_byte`, over the CPU
+        clock. None where the link counts no bytes or the figure is unmeasured.
+
+        A REU-staged bitmap's REC copies are not counted, so on a bitmap
+        mode this predicts a drain nearer 1.0 than it is and the window
+        finishes the job. Counted at the REC's cycle per byte staged, they
+        predicted 0.80 on hardware where mhires drained at 0.95, so far from
+        every staged byte is copied."""
+        from c64cast.hw.c64 import cpu_clock
+
+        api = getattr(self._audio, "api", None)
+        profile = getattr(api, "profile", None)
+        link_stats = getattr(api, "stats", None)
+        cycles_per_byte = float(getattr(profile, "halt_cycles_per_byte", 0.0) or 0.0)
+        if not isinstance(link_stats, dict) or cycles_per_byte <= 0.0:
+            return None
+        try:
+            clock = cpu_clock(str(getattr(profile, "system", "NTSC")))
+        except ValueError:
+            return None
+        return cycles_per_byte * link_stats.get("bytes", 0) / clock
 
     def _observe_drain(self, follower: DrainFollower | None, rate: int) -> float | None:
         """Feed ``follower`` one reading of the sink's clock; returns the scale
@@ -712,8 +779,18 @@ class AudioFileSource:
             getattr(api, "delivery_epoch", 0),
         )
         before = follower.scale
-        retuned = follower.observe(time.monotonic(), self._audio.position_seconds() or 0.0, trust)
-        if retuned is not None:
+        retuned = follower.observe(
+            time.monotonic(), self._audio.position_seconds() or 0.0, trust, self._halted_s()
+        )
+        if retuned is not None and not follower.measured:
+            log.info(
+                "audio file: the link's writes predict the DAC drains at %.3f of real "
+                "time — resampling %s to %d Hz until a window measures it",
+                retuned,
+                os.path.basename(self._path),
+                self._drained_rate(rate, retuned),
+            )
+        elif retuned is not None:
             log.info(
                 "audio file: the DAC drains at %.3f of real time (was following %.3f) — "
                 "resampling %s to %d Hz so it plays at its own speed and pitch",

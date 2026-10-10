@@ -2109,6 +2109,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 supports_system_mode=has_system_mode,
                 supports_video_stream=has_system_mode,
             )
+        if not has_system_mode and self.profile.halt_cycles_per_byte:
+            # The halt figure is the Ultimate 64's; nobody has measured the II+.
+            self.profile = replace(self.profile, halt_cycles_per_byte=0.0)
 
         missing = [c for c in SID_CONFIG_CATEGORIES if c not in categories]
         if not missing or not self.profile.supports_sid_config:

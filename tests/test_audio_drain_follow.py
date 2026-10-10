@@ -9,6 +9,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 import wave
+from collections.abc import Callable
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 from unittest import mock
@@ -29,12 +31,22 @@ from c64cast.audio.audio_source import (
     DRAIN_FOLLOW_STALL_S,
     DRAIN_FOLLOW_WARMUP_S,
     DRAIN_FOLLOW_WINDOW_S,
+    DRAIN_PREDICT_SPAN_S,
     AudioFileSource,
     DrainFollower,
 )
+from c64cast.hw.api import Ultimate64API
+from c64cast.hw.backend import SYSTEM_MODE_CATEGORY, ULTIMATE_PROFILE
+from c64cast.hw.c64 import CLOCK_NTSC
 from c64cast.video.video import ensure_pyav
 
 STEP_S = 0.1
+# The Ultimate 64's halt, NTSC.
+HALT_S_PER_BYTE = 1.27 / CLOCK_NTSC
+# The byte rate a generative halo scene writes in mcm, and the drain it
+# predicts there: 1 - 48 KiB/s x 1.27 cycles/B / 1.0227 MHz.
+HALO_BPS = 48 * 1024
+HALO_DRAIN = 1.0 - HALO_BPS * HALT_S_PER_BYTE
 
 
 def _feed(
@@ -144,6 +156,90 @@ class DrainFollowerTest(unittest.TestCase):
         self.assertEqual(retunes, [])
 
 
+def _feed_bytes(
+    follower: DrainFollower, drain: float, seconds: float, byte_rate: float | None
+) -> list[tuple[float, float]]:
+    """`_feed` with the link writing ``byte_rate`` B/s; returns the retunes
+    as (wall since the clock started, scale)."""
+    now, clock = 0.0, 0.01
+    retunes = []
+    for _ in range(int(round(seconds / STEP_S))):
+        now += STEP_S
+        clock += drain * STEP_S
+        halted = None if byte_rate is None else byte_rate * now * HALT_S_PER_BYTE
+        got = follower.observe(now, clock, 0, halted)
+        if got is not None:
+            retunes.append((now, got))
+    return retunes
+
+
+class DrainPredictionTest(unittest.TestCase):
+    def test_the_first_scale_is_the_byte_rate_s_prediction_after_one_span(self):
+        follower = DrainFollower(predict=True)
+        retunes = _feed_bytes(follower, 0.94, 2.0, HALO_BPS)
+        self.assertEqual(len(retunes), 1)
+        when, scale = retunes[0]
+        self.assertAlmostEqual(scale, 0.9390, places=3)
+        self.assertAlmostEqual(scale, HALO_DRAIN, places=4)
+        self.assertLessEqual(when, DRAIN_PREDICT_SPAN_S + 2 * STEP_S)
+        self.assertFalse(follower.measured)
+
+    def test_the_window_then_trims_the_prediction(self):
+        follower = DrainFollower(predict=True)
+        retunes = _feed_bytes(follower, 0.90, 12.0, HALO_BPS)
+        self.assertEqual([round(s, 3) for _, s in retunes], [round(HALO_DRAIN, 3), 0.9])
+        self.assertTrue(follower.measured)
+
+    def test_a_quiet_link_predicts_no_change(self):
+        follower = DrainFollower(predict=True)
+        self.assertEqual(_feed_bytes(follower, 1.0, 12.0, 2000.0), [])
+
+    def test_no_halt_count_or_no_prediction_waits_for_the_window(self):
+        for follower, byte_rate in (
+            (DrainFollower(predict=True), None),
+            (DrainFollower(), HALO_BPS),
+        ):
+            retunes = _feed_bytes(follower, 0.94, 12.0, byte_rate)
+            self.assertGreaterEqual(retunes[0][0], DRAIN_FOLLOW_WARMUP_S)
+            self.assertTrue(follower.measured)
+
+    def test_it_predicts_once(self):
+        follower = DrainFollower(predict=True)
+        _feed_bytes(follower, 0.94, 2.0, HALO_BPS)
+        follower.scale = 1.0
+        self.assertEqual(_feed_bytes(follower, 0.94, 2.0, HALO_BPS), [])
+
+
+class UltimateHaltFigureTest(unittest.TestCase):
+    """The Ultimate 64's figure stays; the II+ (no System Mode category) has
+    none measured, so it predicts nothing."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.api = Ultimate64API("http://example.invalid")
+        get = mock.patch.object(self.api.session, "get").start()
+        self.addCleanup(mock.patch.stopall)
+        get.return_value.raise_for_status.return_value = None
+        get.return_value.status_code = 200
+        self.get = get
+
+    def _refine(self, categories: list[str]) -> None:
+        self.get.return_value.json.return_value = {"categories": categories, "errors": []}
+        with self.assertLogs("c64cast.hw.api", "DEBUG"):
+            self.api.refine_capabilities()
+
+    def test_an_ultimate_64_keeps_its_halt_figure(self):
+        self.assertEqual(ULTIMATE_PROFILE.halt_cycles_per_byte, 1.27)
+        self._refine([SYSTEM_MODE_CATEGORY, "C64 and Cartridge Settings"])
+        self.assertEqual(self.api.profile.halt_cycles_per_byte, 1.27)
+
+    def test_an_ultimate_ii_plus_has_none(self):
+        self._refine(["Audio Output Settings", "C64 and Cartridge Settings"])
+        self.assertEqual(self.api.profile.halt_cycles_per_byte, 0.0)
+
+
 class _DrainingSink:
     """A DAC sink that drains at ``drain`` of its effective rate: each push
     blocks for as long as the sink takes to play it, as a full queue does,
@@ -177,6 +273,21 @@ class _DrainingSink:
 
 class _Api:
     delivery_epoch = 0
+
+
+class _LinkApi:
+    """A link whose running byte count ``written()`` reads, on an Ultimate
+    64 profile."""
+
+    delivery_epoch = 0
+    profile = ULTIMATE_PROFILE
+
+    def __init__(self, written: Callable[[], int]) -> None:
+        self._written = written
+
+    @property
+    def stats(self) -> dict[str, int]:
+        return {"bytes": self._written()}
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
@@ -262,6 +373,34 @@ class AudioFileSourceDrainTest(unittest.TestCase):
         sink.pushed = 0
         self._play(src, sink)
         self.assertEqual(features.set_content_rate.call_args_list, [mock.call(7200)])
+
+    def test_the_link_s_writes_set_the_first_scale_within_a_span(self):
+        sink = _DrainingSink(self.now, 0.9)
+        start = self.now[0]
+        # A link writing what halts the CPU for 10 % of its cycles.
+        rate = 0.1 / HALT_S_PER_BYTE
+        sink.api = _LinkApi(lambda: int((self.now[0] - start) * rate))  # type: ignore[attr-defined]
+        src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
+        wall = self._play(src, sink)
+        self.assertIn("predict the DAC drains at 0.900", self.logs[0])
+        # Only the first span plays slow, not the warm-up and a window.
+        self.assertLess(wall, self.SECONDS + DRAIN_PREDICT_SPAN_S * (1 / 0.9 - 1) + 0.2)
+        self.assertTrue(src._drain_measured)
+
+        follower = src._new_drain_follower()
+        assert follower is not None
+        self.assertTrue(follower._predicted)
+
+    def test_an_unmeasured_link_predicts_nothing(self):
+        sink = _DrainingSink(self.now, 1.0)
+        sink.api = _LinkApi(lambda: 1000)  # type: ignore[attr-defined]
+        src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
+        self.assertAlmostEqual(src._halted_s() or 0.0, 1000 * 1.27 / CLOCK_NTSC)
+        sink.api.profile = replace(ULTIMATE_PROFILE, halt_cycles_per_byte=0.0)  # type: ignore[attr-defined]
+        self.assertIsNone(src._halted_s())
+        follower = src._new_drain_follower()
+        assert follower is not None
+        self.assertTrue(follower._predicted)
 
     def test_the_sampler_is_not_followed(self):
         sink = _DrainingSink(self.now, 0.9)
