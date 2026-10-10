@@ -204,7 +204,9 @@ class InterstitialCia1RearmTest(unittest.TestCase):
         disables = [op for op in fake.ops[:restore] if op[:2] == ("write_memory", "D01A")]
         self.assertEqual(len(disables), 2 * CONFIRM_TRIES, "every retry ahead of the restore")
         after = [op for op in fake.ops[restore:] if op[:2] == ("write_memory", "D01A")]
-        self.assertEqual(after, [])
+        self.assertEqual(
+            len(after), CONFIRM_TRIES, "a source live behind $EA31 storms until one lands"
+        )
         self.assertEqual(fake.memories["DC0D"], "81")
 
 

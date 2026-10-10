@@ -113,7 +113,12 @@ class InterstitialScene(Scene):
             self.api, lambda: self.api.write_memory("d01a", "00"), tries=2 * CONFIRM_TRIES
         )
         vector_restored = write_confirmed(self.api, self.api.restore_kernal_irq_vector)
-        if not raster_disabled:
+        # Written again behind the restore rather than given up on: a source
+        # still live there storms until a disable lands, and with no further
+        # write it never does.
+        if not raster_disabled and not write_confirmed(
+            self.api, lambda: self.api.write_memory("d01a", "00")
+        ):
             log.error("interstitial: the VIC raster IRQ disable was not confirmed delivered")
         self.api.write_memory("d019", "01")
         self._rearm_cia1(vector_restored)
