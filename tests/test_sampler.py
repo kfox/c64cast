@@ -803,13 +803,18 @@ class SamplerWriterFailureTest(unittest.TestCase):
             prebuffer_seconds=0.01,
             queue_max_chunks=2,
         )
+
+        def quiet_stop() -> None:
+            with quiet_logging():  # the outage's pads are timing, not the subject
+                smp.stop()
+
         with (
             mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1),
             mock.patch.object(s, "WRITER_BACKOFF_MAX_S", 0.01),
             quiet_logging(),
         ):
             smp.start(prebuffer_timeout=0.01)
-            self.addCleanup(smp.stop)
+            self.addCleanup(quiet_stop)
             self.assertTrue(self._wait(lambda: smp._failed), "the writer never gave up")
             self.assertEqual(
                 api.mem_writes[-1], ("DF20", "00"), "the channel still loops stale audio"
