@@ -611,21 +611,34 @@ class UltimateAudioSampler:
         self._gate_lock = threading.Lock()
 
         # The dead-man deadline (DEADLINE_GUARD_S): the absolute position the
-        # channel's length register stops it at, as last confirmed landed;
-        # None until a gate-on programs one. _ring_phase is the absolute
-        # position at ring offset 0: a restart gates the channel on again,
-        # which starts it from offset 0 at the read head of the moment.
+        # channel's length register stops it at, as last sent; None until a
+        # gate-on programs one. A refresh's length write is confirmed by the
+        # next refresh's flush, and until then _deadline_confirmed is the one
+        # before it, where the voice stops if that write was lost.
+        # _ring_phase is the absolute position at ring offset 0: a restart
+        # gates the channel on again, which starts it from offset 0 at the
+        # read head of the moment.
         self._deadline: int | None = None
+        self._deadline_confirmed: int | None = None
         self._ring_phase = 0
         self._deadline_guard = int(DEADLINE_GUARD_S * self._actual_rate) * self.bps
         # Refreshed once the read head is this close, by at least the step.
         # The ring is kept no less than the low watermark ahead of the reader
-        # (a live stream sits there), so that is the distance: a refresh then
-        # still finds a step to take before the guard. A decoder a whole lead
-        # ahead costs a refresh every 0.75 s, a stream at the watermark one
-        # every 1/16 of the lead target.
+        # (a live stream sits there), so that is the distance. The step is
+        # what the watermark leaves past three guards, so a stream there still
+        # refreshes with the deadline that far ahead of the reader; below
+        # that distance any step at all is taken (_deadline_urgent), since a
+        # deadline stopped short of its target at a 64 KB block
+        # (_next_deadline) can leave less than a step to the target. A decoder
+        # a whole lead ahead costs a refresh every 0.75 s, a stream at the
+        # watermark one every lead/4 less 0.15 s (0.1 s at a 1 s lead).
         self._deadline_refresh = max(self._lead_panic, 3 * self._deadline_guard)
-        self._deadline_step = max(self.bps, self._deadline_refresh // 4)
+        self._deadline_urgent = 3 * self._deadline_guard
+        self._deadline_step = max(
+            self.bps,
+            self._deadline_refresh // 4,
+            self._lead_panic - self._deadline_urgent,
+        )
         # The underrun pad keeps the ring a quarter of the lead target ahead
         # of the reader, and the deadline has to stay further ahead than its
         # guard, so a lead under eight guards (0.4 s; only the constructor
@@ -728,7 +741,7 @@ class UltimateAudioSampler:
             # the new one passed it, and a clip shorter than a quantum forever.
             self._last_write_head = None
             self._ring_phase = 0
-            self._deadline = None
+            self._deadline = self._deadline_confirmed = None
             self._ring_mark = None
             self._cut_over_lost = False
         self._output_silenced = False
@@ -810,6 +823,7 @@ class UltimateAudioSampler:
             # The prefill made the whole first lap NEUTRAL, so the first
             # deadline may sit a lead target in whatever the prebuffer held.
             self._deadline = max(self._written, self._lead_target) if self._uses_deadline else None
+            self._deadline_confirmed = self._deadline
             # A voice stopped at a deadline stays in `finished` until a gate-off,
             # and the last stop()'s gate-off may have been lost to the outage
             # that stopped it: a gate-on onto it alone plays nothing.
@@ -1303,24 +1317,36 @@ class UltimateAudioSampler:
 
     def _advance_deadline(self, gen: int) -> None:
         """Move the deadline up to what the ring holds, once the read head is
-        within `_deadline_refresh` of it. The ring writes since the last
-        confirmation (`_ring_mark`) are flushed and checked first: one lost
-        holds the deadline, which raises on every refresh until the channel
-        reaches it and the restart blanks the ring, and so does a cut-over
-        blank flush() could not confirm (`_cut_over_lost`). Then the length write is
-        checked on its own, and a lost one raises and is sent again next pass:
-        a restart for it would skip a lead of audio that did land. Only this
-        thread's losses count (`writes_lost_since`; another thread's, counted
-        here, would add up to a give-up on a link that carries the ring). A
-        refresh that may have landed after the channel reached
-        the old deadline leaves the old one standing, so the next pass
-        restarts the channel: one that stopped silently would stay silent."""
+        within `_deadline_refresh` of it, with one flush per refresh.
+
+        That flush confirms everything this thread sent since the last
+        refresh (`_ring_mark`): the ring writes, and that refresh's length
+        write, which the DMA service ran first since it drains in order. A
+        loss there holds the deadline, set back to the last confirmed one
+        (`_deadline_confirmed`), where the voice stops if it was the length
+        write that was lost; it raises on every refresh until the channel
+        reaches it and the restart blanks the ring. So does a cut-over blank
+        flush() could not confirm (`_cut_over_lost`). So the deadline never
+        moves over ring audio that is not confirmed, and a lost length write
+        costs at most the silence between the two deadlines before the
+        restart. Flushing the length write on its own, as well, cost a
+        second round trip per refresh, about 20 a second for a live stream
+        near the watermark. A length write already counted lost when it is
+        sent raises and is sent again next pass. Only this thread's losses
+        count (`writes_lost_since`; another thread's, counted here, would add
+        up to a give-up on a link that carries the ring). A read head within
+        the guard of the old deadline once the flush returns leaves the old
+        one standing, and the next pass restarts the channel: a voice that
+        stopped there silently would stay silent."""
         old = self._deadline
         if old is None:
             return
         consumed = self._read_consumed_bytes()
         target = self._written
-        if old - consumed >= self._deadline_refresh or target - old < self._deadline_step:
+        if old - consumed >= self._deadline_refresh:
+            return
+        urgent = old - consumed < self._deadline_urgent
+        if target - old < (self.bps if urgent else self._deadline_step):
             return
         new = self._next_deadline(old, target, consumed)
         if new is None:
@@ -1336,20 +1362,20 @@ class UltimateAudioSampler:
             ):
                 self.api.flush()
             if self._cut_over_lost or (mark is not None and self.api.writes_lost_since(mark)):
-                # Held there, the deadline stops the voice ahead of the
-                # lost span, and the restart that follows blanks the ring.
-                raise _WritesLost("the link lost ring audio")
+                # Held where the voice may stop, ahead of the lost span, and
+                # the restart that follows blanks the ring.
+                self._deadline = self._deadline_confirmed
+                raise _WritesLost("the link lost ring audio or a deadline write")
+            self._deadline_confirmed = old
+            if self._read_consumed_bytes() + self._deadline_guard >= old:
+                return
             mark = self.api.write_loss_mark()
             self._ring_mark = mark
             self._write_length(self._deadline_offset(new))
-            if not self.api.writes_lost_since(mark):
-                self.api.flush()
             if self.api.writes_lost_since(mark):
                 # Only the length write went out since the ring was confirmed.
                 self._ring_mark = self.api.write_loss_mark()
                 raise _WritesLost("the link lost a deadline (length register) write")
-            if self._read_consumed_bytes() + self._deadline_guard >= old:
-                return
             self._deadline = new
 
     def _next_deadline(self, old: int, target: int, consumed: int) -> int | None:
@@ -1464,6 +1490,7 @@ class UltimateAudioSampler:
                 self._ring_phase = phase
                 self._written = phase + fresh
                 self._deadline = phase + fresh if self._uses_deadline else None
+                self._deadline_confirmed = self._deadline
                 self._ring_mark = mark
                 self._cut_over_lost = False
                 self._restarts += 1

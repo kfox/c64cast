@@ -403,6 +403,8 @@ class OutageTest(unittest.TestCase):
             old = smp._deadline
             assert old is not None
             smp._written = old + smp._lead_target
+            # A refresh after the first, whose flush confirms what went before.
+            smp._ring_mark = chan.write_loss_mark()
             clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
             slow = chan.flush
 
