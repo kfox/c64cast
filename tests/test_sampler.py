@@ -723,6 +723,18 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
             self.assertFalse(survivor.is_running())
         self.assertFalse(smp._failed, "a retired writer gave up on the next activation")
 
+    def test_a_superseded_writer_does_not_give_up_once_the_next_one_runs(self):
+        # The survivor's give-up can come after release_hold() has set
+        # _running for the next writer, so the generation alone refuses it.
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._running = True
+        smp._writer_gen = 2
+        with mock.patch.object(smp, "_gate_off_landed") as gate_off:
+            smp._give_up(s._WritesLost("the link lost the gate-off"), 1)
+        gate_off.assert_not_called()
+        self.assertFalse(smp._failed, "a superseded writer gave up on the running one")
+        self.assertIsNone(smp._gave_up_gen)
+
 
 class _StallingUnconfirmedGateOffBackend(_FailingBackend):
     """A link that stays down for REU writes, and on which every writer-thread
