@@ -34,7 +34,8 @@ These are **dev tools, not part of the shipped package** — they live under
   | `C64_DIAG_AVF_AUDIO` | unset | audio input for the ffmpeg/avfoundation tools: an index (`:N` or `N`) or a name substring. Unset, a tool records from the one audio input named like the capture camera (the tool's own `--device` where it has one, else `C64_DIAG_CAMERA`, else the auto-picked one); with none or several, it exits listing the inputs. The system default input is never used |
   | `C64_DIAG_SD_AUDIO` | unset | the same, for the sounddevice tools (`N` is a sounddevice index) |
   | `C64_DIAG_VERIFY_WIDTH` | `960` | longest-edge px for captures saved via `save_image` (downscale default) |
-  | `C64_DIAG_LOCK_DIR` | `~/.cache/c64cast/locks` | where `hw_lock.py` keeps its per-device lock files |
+  | `C64_DIAG_LOCK_DIR` | `~/.cache/c64cast/locks` | where `hw_lock.py` keeps its lock files |
+  | `C64_DIAG_RIGS` | unset | multi-rig machines only: `NAME=DEVICE[,DEVICE…];…` gives each rig its own `hw_lock.py` lock. Unset, every `hw_lock.py` call shares one lock; a device the map does not list waits on every rig; a malformed map is an error |
 - **One user of a rig at a time.** The DMA service takes a single connection
   and the capture device a single reader, so when more than one shell or agent
   can reach the rig, run every command that touches it under
@@ -45,7 +46,7 @@ These are **dev tools, not part of the shipped package** — they live under
 
 | Tool | What it does |
 |------|--------------|
-| [`hw_lock.py`](hw_lock.py) | Run a command under an exclusive per-user lock on one rig: waits (naming the holder on stderr), then execs the command, so its exit code and Ctrl-C are its own. `--device URL` keys the lock on the URL's host (`u64://H` and `http://H` share one); the default key suits a one-rig machine. Stdlib only, POSIX only. |
+| [`hw_lock.py`](hw_lock.py) | Run a command under an exclusive per-user lock on one rig: waits (naming the holder on stderr), then execs the command, so its exit code and Ctrl-C are its own. Every call takes the one rig lock, whatever its `--device` (none, a URL in any scheme, a capture device's name), and also every older per-device lock file in the directory, so it excludes callers from before the one-rig lock; a nested call runs without waiting when the enclosing call holds the rig lock it needs, and is an error when it needs another rig's. Separate locks per rig only through `C64_DIAG_RIGS`. Stdlib only, POSIX only. |
 | [`u64_probe.py`](u64_probe.py) | REST reachability + DMA-service (port 64) check; `--reset` / `--reset-only`. |
 | [`hdmi_capture.py`](hdmi_capture.py) | Grab still frame(s) from the Cam Link (VIC ground-truth) → `out/`. Downscales to `--width` (default 960px) so captures read back cheaply; `--full` keeps native 1080p for pixel-peeking. New capture tools should write via `_diaglib.save_image` for the same default, and read their kept frame through `_diaglib.read_frame`, which retries a no-frame read for `NO_FRAME_RETRY_S` (5 s) and then fails naming the likely causes. |
 | [`audio_capture.py`](audio_capture.py) | Record Cam Link audio via ffmpeg/avfoundation + `volumedetect` level summary. |
