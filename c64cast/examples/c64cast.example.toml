@@ -376,24 +376,16 @@ double_buffer = "auto"              # Host-DMA double-buffer (page flip) for
                                     # into the OFF-screen VIC bank, then a tiny
                                     # raster IRQ flips $DD00 at vblank — so the
                                     # visible bank is never written mid-display.
-                                    # No REU needed. Unlike use_reu_staged the
-                                    # swap IRQ does no in-IRQ DMA, so the flip is
-                                    # shimmer-free and text overlays render crisp.
+                                    # No REU needed.
                                     # Tri-state: true | false | "auto" (default).
                                     #   "auto" enables it for bitmap modes
                                     #     (hires/mhires) when use_reu_staged is
                                     #     NOT active (mutually exclusive — both
-                                    #     flip $DD00) AND either the backend has
-                                    #     no REU at all (e.g. TeensyROM — its
-                                    #     only tear-free path) OR the scene has a
-                                    #     text overlay. A text overlay turns the
-                                    #     REU path off (to dodge the bank-swap
-                                    #     shimmer), otherwise leaving single-
-                                    #     buffer host-DMA that tears on scene
-                                    #     cuts; here the flip is tear-free AND
-                                    #     keeps the text crisp. Overlay-free
-                                    #     bitmap video on a REU backend stays on
-                                    #     the REU path (the better option there).
+                                    #     flip $DD00) AND the backend has no REU
+                                    #     at all (e.g. TeensyROM — its only
+                                    #     tear-free path). Bitmap video on a REU
+                                    #     backend stays on the REU path (the
+                                    #     better option there).
                                     #   true forces it on for bitmap modes (any
                                     #     backend); false off. Gated off when the
                                     #     REU mic pump is active (shared $0314).

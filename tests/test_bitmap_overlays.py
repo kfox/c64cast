@@ -146,23 +146,9 @@ class MhiresOverlayTest(unittest.TestCase):
         surf = buffers["text"]
         self.assertEqual((surf.cols, surf.rows), (20, 12))
 
-    def test_auto_reu_prefers_host_dma_with_text_overlays(self):
-        # use_reu_staged="auto" stages bitmap video, but a bitmap scene with a
-        # buffer-painting text overlay prefers crisp host-DMA (the REU bank-swap
-        # shimmers fine glyphs). Overlay-free bitmap still stages.
-        from c64cast.app.scene_factory import resolve_use_reu_staged
-
-        self.assertTrue(resolve_use_reu_staged("auto", "mhires", reu_available=True))
-        self.assertFalse(
-            resolve_use_reu_staged("auto", "mhires", reu_available=True, has_buffer_overlays=True)
-        )
-        self.assertTrue(
-            resolve_use_reu_staged(True, "mhires", reu_available=True, has_buffer_overlays=True)
-        )
-
-    def test_scene_with_text_overlay_resolves_host_dma(self):
+    def test_scene_with_text_overlay_resolves_reu_staged(self):
         # End-to-end: a generative mhires scene + clock under auto + REU
-        # available builds a host-DMA (not staged) display mode.
+        # available builds a REU-staged display mode, not the host-DMA flip.
         import os
         import tempfile
         from typing import cast
@@ -186,7 +172,8 @@ class MhiresOverlayTest(unittest.TestCase):
         finally:
             os.unlink(path)
         mode = cast(MultiHiresDisplayMode, scenes[0].display_mode)
-        self.assertFalse(mode.use_reu_staged)
+        self.assertTrue(mode.use_reu_staged)
+        self.assertFalse(mode.double_buffer)
 
     def test_config_threads_text_double_height(self):
         # The SceneCfg field reaches MultiHiresDisplayMode via _build_display_mode.

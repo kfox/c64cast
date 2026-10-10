@@ -619,10 +619,8 @@ class VideoCfg:
         metadata={
             "help": "Host-DMA double-buffer (page flip) for tear-free bitmap video where "
             'REU staging can\'t help. "auto" (default) enables it for bitmap modes '
-            "(hires/mhires) when REU staging is off and either the backend has no "
-            "REU (e.g. TeensyROM) or the scene has a text overlay (whose presence "
-            "turns the REU path off, otherwise leaving "
-            "single-buffer host-DMA that tears on cuts). true forces it on for "
+            "(hires/mhires) when REU staging is off and the backend has no "
+            "REU (e.g. TeensyROM). true forces it on for "
             "bitmap modes, false off; gated off when the REU mic pump is active "
             "(shared $0314). Independent of [video].use_reu_staged (the REU path)."
         },

@@ -293,10 +293,8 @@ the host writes the off-screen bank directly, then arms a three-byte tracker,
 and the interrupt does nothing but change two registers.
 
 They are mutually exclusive — both flip the same register — and `"auto"`
-chooses between them. REU staging wins on a machine that has one, except for a
-bitmap scene carrying a text overlay, which takes the host-DMA page flip: its
-interrupt does no transfers at all, and it renders fine glyphs crisply.
-Character modes stay on plain writes under `"auto"`, because their dirty cache
+chooses between them. REU staging wins on a machine that has one, text
+overlays included. Character modes stay on plain writes under `"auto"`, because their dirty cache
 makes a full per-frame transfer a regression.
 
 Any uncertainty — no REU, a failed query, `--skip-probe`, a backend without one

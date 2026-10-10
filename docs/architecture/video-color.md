@@ -645,17 +645,16 @@ A standard PETSCII char mode with no video input — every cell is `SC_SPACE` (0
 
 Routes video pushes through the REU. Tri-state `true | false | "auto"`, default `"auto"`.
 
-**Resolution.** `scene_factory.resolve_use_reu_staged(setting, display, reu_available)` resolves per scene's display mode at build time. `"auto"` yields True only when *all three* hold:
+**Resolution.** `scene_factory.resolve_use_reu_staged(setting, display, reu_available)` resolves per scene's display mode at build time. `"auto"` yields True only when *both* hold:
 
 1. The mode is a bitmap mode (`_REU_BITMAP_MODES` = hires, hires_edges, mhires).
 2. The startup probe confirmed the REU is on.
-3. The scene has no buffer-painting (text) overlay.
 
 Char modes (petscii, blank) stay on host-DMA under auto, because their delta cache makes a full per-frame REU→main DMA a net regression.
 
-**Why bitmap + text overlay also stays on host-DMA.** Determined by `has_buffer_overlays`, computed from the scene's overlay types via `overlays.paints_into_buffers`. The bank-swap dispatcher used to flip `$DD00` at the end of its in-IRQ copy, past vblank, and fine high-contrast glyphs in the bottom rows shimmered — hardware-confirmed. The dispatchers now flip inside the raster window (see [the two REU pipelines](#the-two-reu-pipelines)), so that cause is gone; until a hardware check confirms text renders crisply on the REU path, these scenes keep the host-DMA page flip (#666).
+**Text overlays take the REU path too.** A buffer-painting overlay (`overlays.paints_into_buffers`) folds fine high-contrast glyphs into the bitmap, and a bank-swap flip that lands past vblank makes the bottom rows shimmer. The dispatchers flip inside the raster window (see [the two REU pipelines](#the-two-reu-pipelines)), so the glyphs render as crisply as on the host-DMA page flip — hardware-confirmed on `hires` and `mhires` — and `"auto"` does not look at overlays.
 
-Explicit `true`/`false` ignore both the probe and the overlay check.
+Explicit `true`/`false` ignore the probe.
 
 **Where `reu_available` comes from.** Computed once in `cli._resolve_reu_available` — gated on `"auto"`, `api.profile.supports_reu`, and not `--skip-probe`, via `hw_provision.reu_is_enabled` — then stashed on `SystemStack.reu_available` and threaded through `scenes_from_config`/`build_scene`, including SIGHUP/control-plane reloads and ensemble-follower rebuilds. A `display = "random"` slideshow stores the raw tri-state plus `reu_available` and re-resolves per concrete mode at each setup.
 
@@ -686,14 +685,9 @@ MCM does not support staging yet.
 
 The host-DMA page-flip sibling of `use_reu_staged` — tear-free bitmap video without needing a REU at all. Tri-state `true | false | "auto"`, default `"auto"`.
 
-**Resolution.** `scene_factory.resolve_double_buffer(setting, display, *, use_reu_staged, backend_supports_reu, has_buffer_overlays, audio_reu_pump_active)` enables it only for a bitmap mode (`_REU_BITMAP_MODES`), and only when `use_reu_staged` resolved False — the two are mutually exclusive, since both flip `$DD00`.
+**Resolution.** `scene_factory.resolve_double_buffer(setting, display, *, use_reu_staged, backend_supports_reu, audio_reu_pump_active)` enables it only for a bitmap mode (`_REU_BITMAP_MODES`), and only when `use_reu_staged` resolved False — the two are mutually exclusive, since both flip `$DD00`.
 
-Under `"auto"` it fires when REU staging offers no tear-free alternative for the scene, which is either:
-
-* The backend has **no REU at all** (`not api.profile.supports_reu`) — TeensyROM serial and TCP, both ≈106 KiB/s, so the bus rather than the link is the wall.
-* The scene has a buffer-painting text overlay (`has_buffer_overlays`).
-
-**The overlay case is the U64 path**, and it is the interesting one. `resolve_use_reu_staged` turns the REU bank-swap *off* for bitmap+text (#666) — which would otherwise leave single-buffer host-DMA that tears on scene cuts. Host-DMA double-buffer gives those scenes tear-free frames **and** crisp text. Overlay-free bitmap video on a REU backend stays on the REU path, the better tear-free option there.
+Under `"auto"` it fires when REU staging offers no tear-free alternative for the scene: the backend has **no REU at all** (`not api.profile.supports_reu`) — TeensyROM serial and TCP, both ≈106 KiB/s, so the bus rather than the link is the wall. Bitmap video on a REU backend stays on the REU path, the better tear-free option there.
 
 Explicit `true`/`false` pass through, still scoped to bitmap modes.
 
@@ -701,7 +695,7 @@ Explicit `true`/`false` pass through, still scoped to bitmap modes.
 
 **When it is gated off.** When the REU mic pump is active (`audio_reu_pump_active`) — they share `$0314`, and unlike the REU bank-swap path there is no merged dispatcher for this pair — and by `force_host_dma`, for SID-audio scenes whose SID player owns `$0314` for PLAY.
 
-`backend_supports_reu`, `has_buffer_overlays`, and `audio.use_reu_pump` are threaded from `build_scene`; a `display = "random"` slideshow re-resolves per concrete mode at setup.
+`backend_supports_reu` and `audio.use_reu_pump` are threaded from `build_scene`; a `display = "random"` slideshow re-resolves per concrete mode at setup.
 
 #### Mechanism
 
