@@ -110,6 +110,15 @@ class DrainFollowerTest(unittest.TestCase):
         retunes, _ = _feed(f, 0.9, 0.7 * DRAIN_FOLLOW_WINDOW_S, start=last, trust=1)
         self.assertEqual(retunes, [])
 
+    def test_a_window_after_an_underrun_waits_out_a_warmup(self):
+        # The catch-up after an underrun reads as a drain that is not there.
+        f = DrainFollower()
+        _, last = _feed(f, 1.0, DRAIN_FOLLOW_WARMUP_S + 0.5 * DRAIN_FOLLOW_WINDOW_S)
+        retunes, last = _feed(f, 0.9, DRAIN_FOLLOW_WARMUP_S + 0.5, start=last, trust=1)
+        self.assertEqual(retunes, [])
+        retunes, _ = _feed(f, 0.9, 0.75 * DRAIN_FOLLOW_WINDOW_S, start=last, trust=1)
+        self.assertEqual(len(retunes), 1)
+
     def test_the_scale_is_bounded(self):
         f = DrainFollower()
         retunes, _ = _feed(f, 0.5, DRAIN_FOLLOW_WARMUP_S + DRAIN_FOLLOW_WINDOW_S)

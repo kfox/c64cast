@@ -65,7 +65,7 @@ def heard_seconds(audio: AudioStreamer | UltimateAudioSampler) -> float:
 
 # Following the DAC's drain (DrainFollower). The window is read from
 # DRAIN_FOLLOW_WARMUP_S after the clock starts, while the servo still settles
-# the ring lead; a window restarts at an underrun, at a lost write, and across
+# the ring lead; a window restarts, warming up again, at an underrun, at a lost write, and across
 # a span of DRAIN_FOLLOW_STALL_S or more over which the clock ran at under half
 # the slowest drain followed (a stalled link, a pause), since none is the
 # drain. The span is measured from an anchor rather than between neighboring
@@ -126,7 +126,13 @@ class DrainFollower:
             self._stall_anchor = (now, clock_s)
             return None
         if self._stalled(now, clock_s) or trust != self._trust:
+            # The worker drips its backlog in after the stall or underrun and
+            # the servo re-settles the ring lead, so the clock runs fast for
+            # a while: warm up again, as at the start.
+            self._started_at = now
+            self._trust = trust
             marks.clear()
+            return None
         self._trust = trust
         marks.append((now, clock_s))
         while len(marks) > 2 and marks[1][0] <= now - DRAIN_FOLLOW_WINDOW_S:
