@@ -9,6 +9,8 @@ with a real-time producer pushing through ``push_samples``."""
 from __future__ import annotations
 
 import logging
+import threading
+import time
 import unittest
 from typing import Any, cast
 from unittest import mock
@@ -21,16 +23,23 @@ from c64cast.audio import sampler as s
 
 class _SteppedClock:
     """The sampler module's ``time``: sleeps advance it, and every advance
-    runs ``tick`` (the producer, the link, the channel model)."""
+    runs ``tick`` (the producer, the link, the channel model). Only the
+    thread that made it advances it: a writer another test leaked into this
+    worker process sleeps on whatever ``s.time`` is patched to, and stepping
+    the clock from there stopped this test's voice at random."""
 
     def __init__(self) -> None:
         self.now = 0.0
         self.tick: Any = None
+        self._owner = threading.get_ident()
 
     def monotonic(self) -> float:
         return self.now
 
     def sleep(self, seconds: float) -> None:
+        if threading.get_ident() != self._owner:
+            time.sleep(seconds)
+            return
         self.now += max(seconds, 0.001)
         if self.tick is not None:
             self.tick()

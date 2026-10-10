@@ -648,9 +648,15 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
             survivor = smp._writer
             assert survivor is not None
             self.addCleanup(survivor.stop)
+            # Runs before the cleanup stop (LIFO), so a failure before the
+            # release below does not spend that stop's join on a stalled write.
+            self.addCleanup(api.release.set)
             survivor._join_timeout = 0.05
             smp.stop()
             self.assertTrue(survivor.is_running(), "the survivor did not outlive the join")
+            # The stops below, and the cleanup's, join with a real bound: at
+            # 50 ms a slow worker left the writer running into later tests.
+            survivor._join_timeout = 5.0
             smp.arm()  # refused before: the lap played silent
             starter = threading.Thread(target=smp.start, kwargs={"prebuffer_timeout": 0.01})
             starter.start()
@@ -713,6 +719,11 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
             survivor = smp._writer
             assert survivor is not None
             self.addCleanup(survivor.stop)
+            # Both run before the cleanup stop (LIFO): a failure before the
+            # lines below must not leave that stop a 50 ms join on a stalled
+            # write, or the writer outlives the test.
+            self.addCleanup(api.release.set)
+            self.addCleanup(setattr, survivor, "_join_timeout", 2.0)
             survivor._join_timeout = 0.05
             smp.stop()
             self.assertTrue(survivor.is_running(), "the survivor did not outlive the join")
