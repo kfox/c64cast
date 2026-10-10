@@ -23,6 +23,7 @@ from _fakes import FakeAPI
 from c64cast.control.performance import ClipEvent, PerformanceSession
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import CIA1, CIA2, KERNAL, VECTORS
+from c64cast.hw.delivery import CONFIRM_TRIES
 from c64cast.video import modes_irq
 from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode
 from c64cast.video.modes_irq import uninstall_bank_swap_irq
@@ -136,7 +137,7 @@ class UnconfirmedMaskTest(unittest.TestCase):
     def test_an_unconfirmed_mask_drains_again_before_the_bank_is_released(self):
         for address in (_CIA1_ICR, "D01A"):
             with self.subTest(address=address):
-                api = _LossyAPI({address: modes_irq.CONFIRM_TRIES})
+                api = _LossyAPI({address: CONFIRM_TRIES})
                 with self.assertLogs("c64cast.video.modes_irq", level="ERROR") as logs:
                     _teardown(api)
                 self.assertTrue(any("not confirmed" in line for line in logs.output))
@@ -147,7 +148,7 @@ class UnconfirmedMaskTest(unittest.TestCase):
                 self.assertLess(drains[1], api.order.index(_DD00), "bank held until drained")
 
     def test_a_page_flip_with_no_copy_does_not_drain_again(self):
-        api = _LossyAPI({"D01A": modes_irq.CONFIRM_TRIES})
+        api = _LossyAPI({"D01A": CONFIRM_TRIES})
         with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
             _teardown(api, drain_reu_copy=False)
         self.assertNotIn(_DRAIN, api.order)
@@ -155,7 +156,7 @@ class UnconfirmedMaskTest(unittest.TestCase):
     def test_an_unconfirmed_restore_leaves_cia1_masked(self):
         # The loss is silent, so this used to count as restored and re-arm
         # Timer A with $0314 still on the in-RAM handler.
-        api = _LossyAPI({_VECTOR: modes_irq.CONFIRM_TRIES})
+        api = _LossyAPI({_VECTOR: CONFIRM_TRIES})
         with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
             _teardown(api)
         self.assertEqual(api.memories[_CIA1_ICR], f"{modes_irq._CIA1_ICR_DISABLE_TIMER_A:02X}")
@@ -182,27 +183,27 @@ class MaskRetryBehindTheRestoreTest(unittest.TestCase):
     def test_an_unconfirmed_vic_mask_is_written_again_before_the_ack(self):
         # The kernal handler never acks $D019, so a raster source left live
         # behind the restore re-enters the IRQ on every RTI.
-        api = _LossyAPI({"D01A": modes_irq.CONFIRM_TRIES + 1})
+        api = _LossyAPI({"D01A": CONFIRM_TRIES + 1})
         with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
             _teardown(api)
         writes = [i for i, op in enumerate(api.order) if op == "D01A"]
-        self.assertEqual(len(writes), modes_irq.CONFIRM_TRIES + 2)
+        self.assertEqual(len(writes), CONFIRM_TRIES + 2)
         self.assertLess(api.order.index(_VECTOR), writes[-1])
         self.assertLess(writes[-1], api.order.index("D019"), "masked before the ack")
         self.assertEqual(api.memories["D01A"], "00")
 
     def test_a_restored_vector_skips_the_cia1_mask_retry(self):
-        api = _LossyAPI({_CIA1_ICR: modes_irq.CONFIRM_TRIES})
+        api = _LossyAPI({_CIA1_ICR: CONFIRM_TRIES})
         with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
             _teardown(api)
-        self.assertEqual(api.order.count(_CIA1_ICR), modes_irq.CONFIRM_TRIES + 1, "only the unmask")
+        self.assertEqual(api.order.count(_CIA1_ICR), CONFIRM_TRIES + 1, "only the unmask")
         self.assertEqual(api.memories[_CIA1_ICR], f"{modes_irq._CIA1_ICR_ENABLE_TIMER_A:02X}")
 
     def test_a_hooked_handler_gets_its_cia1_mask_written_again(self):
-        api = _LossyAPI({_CIA1_ICR: modes_irq.CONFIRM_TRIES + 1, _VECTOR: modes_irq.CONFIRM_TRIES})
+        api = _LossyAPI({_CIA1_ICR: CONFIRM_TRIES + 1, _VECTOR: CONFIRM_TRIES})
         with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
             _teardown(api)
-        self.assertEqual(api.order.count(_CIA1_ICR), modes_irq.CONFIRM_TRIES + 2, "never unmasked")
+        self.assertEqual(api.order.count(_CIA1_ICR), CONFIRM_TRIES + 2, "never unmasked")
         self.assertEqual(api.memories[_CIA1_ICR], f"{modes_irq._CIA1_ICR_DISABLE_TIMER_A:02X}")
 
     def test_a_hooked_handler_masked_on_retry_drains_before_the_bank_is_released(self):
@@ -210,9 +211,7 @@ class MaskRetryBehindTheRestoreTest(unittest.TestCase):
         # every source masked after it nothing reaches $C500 again.
         for address in (_CIA1_ICR, "D01A"):
             with self.subTest(address=address):
-                api = _LossyAPI(
-                    {address: modes_irq.CONFIRM_TRIES + 1, _VECTOR: modes_irq.CONFIRM_TRIES}
-                )
+                api = _LossyAPI({address: CONFIRM_TRIES + 1, _VECTOR: CONFIRM_TRIES})
                 with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
                     _teardown(api)
                 drains = [i for i, op in enumerate(api.order) if op == _DRAIN]
@@ -222,13 +221,13 @@ class MaskRetryBehindTheRestoreTest(unittest.TestCase):
                 self.assertLess(drains[1], api.order.index(_DD00), "bank held until drained")
 
     def test_a_hooked_handler_still_reachable_gets_no_second_drain(self):
-        api = _LossyAPI({_CIA1_ICR: 2 * modes_irq.CONFIRM_TRIES, _VECTOR: modes_irq.CONFIRM_TRIES})
+        api = _LossyAPI({_CIA1_ICR: 2 * CONFIRM_TRIES, _VECTOR: CONFIRM_TRIES})
         with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
             _teardown(api)
         self.assertEqual(api.order.count(_DRAIN), 1, "no wait helps a handler left reachable")
 
     def test_a_page_flip_masked_on_retry_does_not_drain_again(self):
-        api = _LossyAPI({"D01A": modes_irq.CONFIRM_TRIES + 1, _VECTOR: modes_irq.CONFIRM_TRIES})
+        api = _LossyAPI({"D01A": CONFIRM_TRIES + 1, _VECTOR: CONFIRM_TRIES})
         with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
             _teardown(api, drain_reu_copy=False)
         self.assertNotIn(_DRAIN, api.order)

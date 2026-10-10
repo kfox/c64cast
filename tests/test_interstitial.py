@@ -13,14 +13,16 @@ from __future__ import annotations
 
 import unittest
 from typing import cast
+from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI
+from _fakes import FakeAPI, lose_writes_to
 
 from c64cast.app.config import InterstitialCfg
-from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA1
+from c64cast.hw.backend import C64Backend, HardwareProfile
+from c64cast.hw.c64 import CIA1, VECTORS
 from c64cast.hw.delivery import CONFIRM_TRIES
+from c64cast.scenes import interstitial
 from c64cast.scenes.interstitial import (
     LABEL,
     LEGIBLE_COLORS,
@@ -30,6 +32,7 @@ from c64cast.scenes.interstitial import (
     default_factory,
 )
 from c64cast.scenes.overlays import ascii_to_screen
+from c64cast.video import modes_irq
 from c64cast.video.palette import C64_COLORS
 
 
@@ -81,7 +84,7 @@ class InterstitialSceneTest(unittest.TestCase):
         # $0314/$0315 → kernal $EA31, IRQ source off, latched flag acked, VIC
         # bank pinned to 0. Otherwise a CTRL-skip racing the prior teardown
         # leaves the handler re-flipping $DD00 to bank 2: wrong glyphs.
-        self.assertIn("RESTORE_IRQ", fake.regs)
+        self.assertEqual(fake.regs["0314"], (0x31, 0xEA))
         self.assertEqual(fake.memories["D01A"], "00")
         self.assertEqual(fake.memories["D019"], "01")
         self.assertEqual(fake.memories["DC0D"], "81")
@@ -130,45 +133,88 @@ class InterstitialSceneTest(unittest.TestCase):
 
 
 class InterstitialCia1RearmTest(unittest.TestCase):
-    """The CIA #1 unmask waits for a confirmed $0314 restore: unmasked with the
-    vector still on a leaked handler, every jiffy IRQ would run it."""
+    """The card unhooks through the shared `unhook_raster_irq` sequence, its
+    bank pin between the ack and the CIA #1 unmask. The unmask waits for a
+    confirmed $0314 restore: unmasked with the vector still on a leaked
+    handler, every jiffy IRQ would run it."""
 
-    def _scene(self) -> tuple[InterstitialScene, FakeAPI]:
+    def _scene(self, lose: int | None = None, times: int | None = None):
         fake = FakeAPI()
+        if lose is not None:
+            lose_writes_to(fake, lose, times)
         scene = InterstitialScene(
             cast(C64Backend, fake), "Next", InterstitialCfg(background="none")
         )
         return scene, fake
 
-    def _record_restore(self, fake: FakeAPI, *, lost: bool) -> None:
-        def restore() -> None:
-            fake.ops.append(("restore_kernal_irq_vector",))
-            if lost:
-                fake.delivery_epoch += 1
-
-        fake.restore_kernal_irq_vector = restore  # type: ignore[method-assign]
-
-    def test_unmask_follows_the_restore_and_precedes_the_bank_pin(self):
+    def test_the_card_runs_the_shared_unhook_with_its_bank_pin(self):
         scene, fake = self._scene()
-        self._record_restore(fake, lost=False)
         scene.setup()
-        ops = [op[:3] for op in fake.ops]
-        disable = ops.index(("write_memory", "D01A", "00"))
-        restore = ops.index(("restore_kernal_irq_vector",))
-        unmask = ops.index(("write_memory", "DC0D", "81"))
-        pin = ops.index(("write_memory", "DD00", "97"))
-        self.assertLess(disable, restore, "a raster source live behind $EA31 never acks")
-        self.assertEqual([op for op in ops if op[:2] == ("write_memory", "D01A")], [ops[disable]])
-        self.assertLess(restore, unmask)
-        self.assertLess(unmask, pin)
+        ops = [op[1:3] for op in fake.ops if op[0] in ("write_memory", "write_regs")]
+        self.assertEqual(
+            ops[:6],
+            [
+                ("DC0D", f"{CIA1.ICR_DISABLE_ALL:02X}"),
+                ("D01A", "00"),
+                ("0314", (0x31, 0xEA)),
+                ("D019", "01"),
+                ("DD00", "97"),
+                ("DC0D", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"),
+            ],
+        )
 
-    def test_unconfirmed_restore_masks_cia1(self):
+    def test_a_leaked_copy_is_waited_out_before_the_card_writes(self):
+        # A leaked REU dispatcher mid-copy writes bank 0's screen and color RAM,
+        # which the dirty cache would never repaint over.
         scene, fake = self._scene()
-        self._record_restore(fake, lost=True)
+        with mock.patch.object(modes_irq, "time") as clock:
+            clock.sleep.side_effect = lambda s: fake.ops.append(("sleep", s))
+            scene.setup()
+            scene.process_frame(scene.start_time)
+        ops = fake.ops
+        drain = ops.index(("sleep", modes_irq._REU_SLOT_MAX_IN_USE_S))
+        masks = [i for i, op in enumerate(ops) if op[1:3] in (("DC0D", "7F"), ("D01A", "00"))]
+        restore = next(i for i, op in enumerate(ops) if op[:2] == ("write_regs", "0314"))
+        first_card_write = next(
+            i
+            for i, op in enumerate(ops)
+            if op[:2] in (("write_memory", "D018"),) or op[0] == "write_region"
+        )
+        self.assertLess(max(masks), drain)
+        self.assertLess(drain, restore)
+        self.assertLess(drain, first_card_write)
+
+    def test_the_drain_does_not_shorten_the_card(self):
+        scene, _fake = self._scene()
+        now = [1000.0]
+
+        def sleep(s):
+            now[0] += s
+
+        with (
+            mock.patch.object(modes_irq, "time") as drain_clock,
+            mock.patch.object(interstitial, "time") as card_clock,
+        ):
+            drain_clock.sleep.side_effect = sleep
+            card_clock.time.side_effect = lambda: now[0]
+            scene.setup()
+        self.assertGreaterEqual(scene.start_time, 1000.0 + modes_irq._REU_SLOT_MAX_IN_USE_S)
+
+    def test_a_backend_with_no_reu_skips_the_drain(self):
+        # Only a REU dispatcher copies; the host-DMA flip a no-REU backend runs
+        # has nothing in flight to wait out.
+        scene, fake = self._scene()
+        fake.profile = HardwareProfile(name="Fake TR", family="fake", supports_reu=False)
+        with mock.patch.object(modes_irq, "time") as clock:
+            scene.setup()
+        clock.sleep.assert_not_called()
+
+    def test_unconfirmed_restore_leaves_cia1_masked(self):
+        scene, fake = self._scene(VECTORS.IRQ)
         with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
             scene.setup()
         self.assertEqual(fake.memories["DC0D"], f"{CIA1.ICR_DISABLE_ALL:02X}")
-        self.assertIn("$0314 restore", cm.output[0])
+        self.assertTrue(any("leaving CIA #1 Timer A masked" in m for m in cm.output))
         # The rest of the card's setup still runs.
         self.assertEqual(fake.memories["DD00"], "97")
 
@@ -178,35 +224,23 @@ class InterstitialCia1RearmTest(unittest.TestCase):
 
         def lossy_write_memory(addr: str, data_hex: str) -> None:
             write_memory(addr, data_hex)
-            if str(addr).upper() == "DC0D":
+            if str(addr).upper() == "DC0D" and data_hex == "81":
                 fake.delivery_epoch += 1
 
         fake.write_memory = lossy_write_memory  # type: ignore[method-assign]
         with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
             scene.setup()
-        self.assertIn("unmask was not confirmed", cm.output[0])
+        self.assertTrue(any("'CIA1 unmask'" in m for m in cm.output))
 
-    def test_unconfirmed_raster_disable_is_logged(self):
-        scene, fake = self._scene()
-        write_memory = fake.write_memory
-
-        def lossy_write_memory(addr: str, data_hex: str) -> None:
-            write_memory(addr, data_hex)
-            if str(addr).upper() == "D01A":
-                fake.delivery_epoch += 1
-
-        fake.write_memory = lossy_write_memory  # type: ignore[method-assign]
-        self._record_restore(fake, lost=False)
-        with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
+    def test_unconfirmed_raster_disable_is_written_again_behind_the_restore(self):
+        scene, fake = self._scene(0xD01A, CONFIRM_TRIES)
+        with self.assertLogs("c64cast.scenes.interstitial", level="ERROR"):
             scene.setup()
-        self.assertIn("raster IRQ disable was not confirmed", cm.output[0])
-        restore = [op[:1] for op in fake.ops].index(("restore_kernal_irq_vector",))
-        disables = [op for op in fake.ops[:restore] if op[:2] == ("write_memory", "D01A")]
-        self.assertEqual(len(disables), 2 * CONFIRM_TRIES, "every retry ahead of the restore")
-        after = [op for op in fake.ops[restore:] if op[:2] == ("write_memory", "D01A")]
-        self.assertEqual(
-            len(after), CONFIRM_TRIES, "a source live behind $EA31 storms until one lands"
-        )
+        order = [op[1] for op in fake.ops if op[0] in ("write_memory", "write_regs", "lost")]
+        restore = order.index("0314")
+        self.assertEqual(order[:restore].count("D01A"), CONFIRM_TRIES)
+        self.assertEqual(order[restore:].count("D01A"), 1, "a source live behind $EA31 storms")
+        self.assertEqual(fake.memories["D01A"], "00")
         self.assertEqual(fake.memories["DC0D"], "81")
 
 

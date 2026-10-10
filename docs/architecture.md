@@ -106,6 +106,7 @@ the two lists account for every module in the tree.
 | `control/web_static.py` | [Control surfaces & live performance](architecture/control.md#web_staticpy--the-consoles-built-ui-committed-and-served) |
 | `video/modes/` | [Video input & the color pipeline](architecture/video-color.md#modes--displaymode-hierarchy) |
 | `video/modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
+| `hw/irq_unhook.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
 | `app/orchestrator.py` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `app/orchestrators/` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `scenes/overlays/` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |

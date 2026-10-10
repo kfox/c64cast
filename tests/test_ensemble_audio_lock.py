@@ -243,6 +243,8 @@ def _build_playlist(scenes, name="sys"):
     api = MagicMock()
     api.stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
     api.format_write_latency.return_value = None
+    # A clip launch confirms the writes that release a leaked raster IRQ.
+    api.writes_lost_since.return_value = False
     return Playlist(
         scenes=scenes,
         api=api,

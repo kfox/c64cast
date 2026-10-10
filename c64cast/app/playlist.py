@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from c64cast.control.transport import LiveTuneTracker, TransportSession
 from c64cast.hw import hardware_palette
 from c64cast.hw.backend import C64Backend, LinkError
+from c64cast.hw.irq_unhook import release_leaked_raster_irq
 from c64cast.scenes.scenes import Scene
 
 from .playlist_support import (
@@ -196,6 +197,10 @@ class Playlist:
         self._content_done = False
         # A restart found on the frame a scene ended: `safe_teardown` restores.
         self._restore_after_teardown = False
+        # A scene was torn down since the last setup, so a raster IRQ its
+        # teardown failed to unhook may still be on $0314: `safe_setup` runs
+        # `_release_leaked_irq` before the next scene that is not the card.
+        self._irq_release_owed = False
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -704,6 +709,36 @@ class Playlist:
         self.safe_setup(self.current, announcing=nxt)
         self.transitioning = True
 
+    def _release_leaked_irq_if_owed(self) -> None:
+        # Still owed when the release lost any write: a teardown leaks a
+        # handler by losing writes, and the link that lost them can lose these
+        # too. With the restore landed, a lost bank 0 pin still leaves a static
+        # scene reading its matrix from bank 2. The card's release runs inside
+        # its setup's loss mark and is held to the same rule.
+        if self._irq_release_owed:
+            mark = self.api.write_loss_mark()
+            landed = self._release_leaked_irq()
+            self._irq_release_owed = not landed or self.api.writes_lost_since(mark)
+
+    def _release_leaked_irq(self) -> bool:
+        """What the "UP NEXT" card's setup does for a handler the last
+        teardown left on $0314, for whatever follows a teardown with no card
+        between: a cut (`request_jump(skip_interstitial=True)`), a clip
+        launch, a broadcast follower, a single-scene lap, reload or resume,
+        and a pause, whose idle on the TeensyROM keeps the machine running
+        and needs the keyboard scan for its resume hold. Without it a
+        teardown that left CIA #1 masked keeps the keyboard dead through
+        every scene that never hooks an IRQ of its own.
+        No drain, because a clip launch is quantized to the beat: a
+        double-buffer setup drains before it clears its banks, but a leaked
+        copy still in flight can land on a static scene that follows.
+        Returns whether the `$0314` restore and the CIA #1 unmask landed."""
+        try:
+            return release_leaked_raster_irq(self.api, self.log, "scene change")
+        except Exception:
+            self.log.exception("releasing a leaked raster IRQ failed")
+            return False
+
     def _safe_prepare_next(self, scene: Scene) -> None:
         """Invoke a scene's prepare_next() hook defensively. A failure here
         must not strand the transition — the scene's own setup() re-picks
@@ -724,6 +759,10 @@ class Playlist:
         claimed for that scene is the one a link outage in this setup
         releases and claims back. `after_restart`: a machine restart under
         `scene` called for this setup (`MachineRestartWatch.arm`)."""
+        # The card's own setup runs the release, with its REU drain, and a
+        # restart has already put the machine's vectors back.
+        if scene is self._card or after_restart:
+            self._irq_release_owed = False
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
@@ -848,11 +887,13 @@ class Playlist:
         back leaves it already torn down. Either way the caller's teardown
         still runs on it.
 
-        A setup lost a write when it raised a `LinkError` or, by the end of
-        a `flush()` after it, the backend's `write_loss_mark()` for this
-        thread had moved. Only this thread's writes count: another thread's
-        failed write (the audio worker's, a poll thread's) is that thread's
-        to repeat, and must not make a setup that landed run again. Most
+        A setup lost a write when it raised a `LinkError`, when by the end
+        of a `flush()` after it the backend's `write_loss_mark()` for this
+        thread had moved, or when the leaked-IRQ release run ahead of it
+        lost a write or did not land its `$0314` restore and CIA #1 unmask.
+        Only this thread's writes count: another thread's failed write (the
+        audio worker's, a poll thread's) is that thread's to repeat, and
+        must not make a setup that landed run again. Most
         setup steps swallow a dead link rather than raise it (`_emit`,
         `write_confirmed`, a scene that ends itself when its SID player
         cannot start), so a raise alone would let a setup that never
@@ -877,10 +918,15 @@ class Playlist:
             # the mark is taken, too, and drained by a round trip, so a write
             # the restore loses is not charged to the setup.
             if self.restart_watch.restarted_before_setup():
+                # The restart put $0314 and CIA #1 back, as after `after_restart`.
+                self._irq_release_owed = False
                 self._put_machine_back(
                     "the machine restarted before %r set up; putting its state back first",
                     scene.name,
                 )
+            # Inside the retry loop, where the card's own release runs: a link
+            # outage that cost this release its writes retries it with the setup.
+            self._release_leaked_irq_if_owed()
             started = self.link_outage.now()
             mark = self.api.write_loss_mark()
             error: LinkError | None = None
@@ -892,7 +938,14 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
-            if error is None and not self.api.writes_lost_since(mark):
+            # A release still owed lost a write ahead of the mark, and keeping
+            # this setup could leave the leaked handler hooked, the bank on 2 or
+            # the keyboard dead through the scene.
+            if (
+                error is None
+                and not self.api.writes_lost_since(mark)
+                and not self._irq_release_owed
+            ):
                 self.link_outage.frame_ok(self.api.stats["writes"])
                 return True
             if error is None:
@@ -909,6 +962,10 @@ class Playlist:
                         where,
                         lossy_tries,
                     )
+                    # The card's own release may be among the lost writes, and
+                    # its teardown marks nothing owed for the scene behind it.
+                    if scene is self._card:
+                        self._irq_release_owed = True
                     return True
                 if self.stop_event.wait(SETUP_RETRY_S):
                     return False
@@ -921,6 +978,9 @@ class Playlist:
                 scene.teardown()
             except Exception:
                 self.log.exception("teardown of %r before its setup retry failed", scene.name)
+            # As `safe_teardown` marks it, on the link that cost the setup its writes.
+            if scene is not self._card:
+                self._irq_release_owed = True
             # Not before the teardown: a half-set-up scene the link reaches
             # again can sound (a MIDI scene's reader drives the SID) while
             # another system holds the slot. A card does not claim it back for
@@ -1013,11 +1073,15 @@ class Playlist:
             scene.teardown()
         except Exception:
             self.log.exception("teardown of %r failed", scene.name)
+        # The card hooks nothing, and its setup already ran the release.
+        if scene is not self._card:
+            self._irq_release_owed = True
         # Runs even when teardown raised, so a crashing scene cannot strand the
         # conductor slot or the ensemble audio lock.
         self.ensemble_coord.release_scene(scene)
         if self._restore_after_teardown:
             self._restore_after_teardown = False
+            self._irq_release_owed = False
             self._restore_machine()
 
     def _maybe_heartbeat(self, now: float) -> None:
@@ -1444,6 +1508,7 @@ class Playlist:
         the next `_advance()` call when we leave this method."""
         self.log.info("paused — hold Commodore key to resume")
         self.drop_current()
+        self._release_leaked_irq_if_owed()
         # Before idling, not after: the poller can set `resume_event` the moment
         # it sees a 3 s C= hold, which can land *during* a slow `pause_idle`, and
         # clearing afterwards would wipe a legitimate resume and strand the pause.

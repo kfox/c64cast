@@ -5,9 +5,11 @@
   disable behind a restored vector re-entered the IRQ on every frame, and a
   lost restore behind a re-armed CIA #1 sent the jiffy IRQ into RAM the next
   scene overwrites. Each write is now confirmed and retried, and anything left
-  undone is logged. The overlay's restore waits for its disable; the card
-  retries its disable before it restores, and once more behind the restore
-  if none of those landed. Both re-arms wait for the restore,
-  and the card masks CIA #1 instead when its restore is not confirmed. The
-  card now also re-arms CIA #1 after unhooking a leaked handler, so pause and
-  skip keep working.
+  undone is logged. Both unhook through the same sequence as the hires and
+  mhires teardown: CIA #1 and the raster source are masked first, `$0314` is
+  restored whether or not those landed, a mask that was lost is written again
+  behind the restore, and CIA #1 is re-armed only once the restore is
+  confirmed, staying masked otherwise. When the big-text overlay's restore
+  never lands, its handler is made to stop writing the scroll and screen
+  registers, so a multicolor scene after it keeps its own. The card now also re-arms CIA #1 after
+  unhooking a leaked handler, so pause and skip keep working.

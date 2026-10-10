@@ -394,6 +394,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # on the first REAL swap (the ready flag starts zeroed — see
         # install_bank_swap_irq), so this closes the gap until then.
         single_buffer = not self.use_reu_staged and not self.double_buffer
+        if not single_buffer or self._blend_table is not None:
+            self._quiesce_irqs_for_double_buffer(api)
         engage_bitmap_mode(
             api,
             d011="3b",

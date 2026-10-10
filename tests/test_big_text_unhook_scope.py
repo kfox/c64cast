@@ -75,6 +75,36 @@ class BigTextTeardownReleasesFollowersTest(unittest.TestCase):
             overlay.teardown(api, scene)
         orchestrator.end.assert_called_once_with()
 
+    def test_a_failing_end_leaves_the_link_error_primary(self):
+        api = _D016LinkDropAPI()
+        overlay, scene = _overlay(), _scene()
+        orchestrator = MagicMock()
+        orchestrator.is_active.return_value = True
+        orchestrator.end.side_effect = RuntimeError("follower gone")
+        scene._orchestrator = orchestrator
+        scene._is_conductor = True
+        scene._cfg = None
+        overlay.setup(api, scene)
+        with (
+            self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs,
+            self.assertRaises(LinkError),
+        ):
+            overlay.teardown(api, scene)
+        self.assertTrue(any("follower gone" in m for m in logs.output))
+
+    def test_a_failing_end_after_a_clean_restore_propagates(self):
+        api = FakeAPI()
+        overlay, scene = _overlay(), _scene()
+        orchestrator = MagicMock()
+        orchestrator.is_active.return_value = True
+        orchestrator.end.side_effect = RuntimeError("follower gone")
+        scene._orchestrator = orchestrator
+        scene._is_conductor = True
+        scene._cfg = None
+        overlay.setup(api, scene)
+        with self.assertRaises(RuntimeError):
+            overlay.teardown(api, scene)
+
 
 class SafeTeardownOfADisabledOverlayTest(unittest.TestCase):
     def test_a_disabled_overlay_still_unhooks_what_its_setup_hooked(self):

@@ -35,6 +35,7 @@ from c64cast.video.modes_irq import (
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
     install_bank_swap_irq,
+    mask_irq_sources,
     uninstall_bank_swap_irq,
 )
 from c64cast.video.palette import build_fade_lut
@@ -149,14 +150,28 @@ class BitmapDisplayMode(DisplayMode):
     # helpers take it modulo modes_irq.REU_VIDEO_SLOTS. It advances only after
     # a push returns.
     _reu_slot: int = 0
-    # Set as setup() starts bringing up the bank-swap IRQ, so teardown() unhooks
-    # only a handler this mode hooked. Gating on the mode's options instead
-    # unhooked the handler of whatever scene was on screen whenever a scene
-    # built but never set up was torn down.
+    # Set before setup() first masks the IRQ sources, so teardown() unhooks only
+    # on a mode whose setup began bringing up the bank-swap IRQ, even one the
+    # link cut short before $0314 named this mode's handler. Gating on the
+    # mode's options instead unhooked the handler of whatever scene was on
+    # screen whenever a scene built but never set up was torn down.
     _bank_swap_hooked: bool = False
     # Both set by the subclasses' __init__.
     use_reu_staged: bool
     _blend_table: BlendTable | None
+
+    def _quiesce_irqs_for_double_buffer(self, api: C64Backend) -> None:
+        """Mask both IRQ sources and wait out a leaked REU dispatcher's copy,
+        before a double-buffer setup's engage pokes, bank clears and bank pin,
+        any of which a leaked handler could undo. A leaked flicker handler's
+        $D018 page B would otherwise stand all scene under a swap handler that
+        never writes $D018.
+
+        Recorded as hooked first, so a setup the link cuts short still gets
+        the teardown that unmasks CIA #1."""
+        self._bank_swap_hooked = True
+        # Only a REU dispatcher copies, and a backend with no REU runs none.
+        mask_irq_sources(api, drain_reu_copy=api.profile.supports_reu)
 
     def _install_bank_swap_irq(
         self,

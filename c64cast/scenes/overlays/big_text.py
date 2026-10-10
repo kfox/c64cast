@@ -8,15 +8,14 @@ from __future__ import annotations
 import logging
 import random
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from c64cast._teardown import run_teardown_steps
-from c64cast.hw.c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN, VECTORS
-from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
+from c64cast.hw.c64 import RASTER_VBLANK_LINE, SCREEN, VECTORS
+from c64cast.hw.irq_unhook import confirm, unhook_raster_irq
 from c64cast.video.palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
 
 from . import (
@@ -46,8 +45,8 @@ SCREEN_PAGE_ADDRS = (0x0400, 0x0C00)
 # D018 hi-nibble = screen address / $400; low nibble (bits 1-3 = 010) =
 # charset at $1000 (standard ROM). $14 → screen=$0400, $34 → screen=$0C00.
 D018_PAGE_VALUES = (0x14, 0x34)
-# What teardown leaves in $D016/$D018: 40 columns, no X-scroll, page 0. The
-# shadow reset writes the same pair, so a handler left hooked commits them.
+# What teardown leaves in $D016/$D018: 40 columns, no X-scroll, page 0; and what
+# install seeds the shadows with and a teardown that cannot unhook resets them to.
 DEFAULT_D016 = 0x08
 DEFAULT_D018 = D018_PAGE_VALUES[0]
 
@@ -86,6 +85,20 @@ RASTER_IRQ_HANDLER = bytes(
 )
 assert IRQ_HANDLER_ADDR + len(RASTER_IRQ_HANDLER) <= SHADOW_D016_ADDR, (
     "big_text raster handler runs into its own shadow bytes"
+)
+# The handler with its two register stores turned into loads of the same
+# registers ($8D STA abs → $AD LDA abs): it still acks $D019 and chains to the
+# kernal, but commits nothing, so a handler a teardown could not unhook stops
+# overriding the next scene's $D016/$D018. Every instruction keeps its length
+# and offset, so one write of it lands at an instruction boundary of the old
+# bytes whatever the 6510 was executing.
+_STA_ABS, _LDA_ABS = 0x8D, 0xAD
+_COMMIT_STORES = (3, 9)
+DISARMED_RASTER_IRQ_HANDLER = bytes(
+    _LDA_ABS if i in _COMMIT_STORES else b for i, b in enumerate(RASTER_IRQ_HANDLER)
+)
+assert all(RASTER_IRQ_HANDLER[i] == _STA_ABS for i in _COMMIT_STORES), (
+    "the commit stores moved; recompute _COMMIT_STORES"
 )
 RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 251 — first line below the picture
 
@@ -357,15 +370,26 @@ class BigTextOverlay(Overlay):
                 # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
                 # coalesced write, so the next scene never sees a half restore.
                 api.write_regs("d016", DEFAULT_D016, 0x00, DEFAULT_D018)
-        finally:
-            # Releases the followers when the conductor's scene tears down mid
-            # broadcast (a CTRL skip, a stop_event), even when the link failed
-            # the restore above. end() is idempotent.
-            orchestrator = self._orchestrator
-            self._orchestrator = None
-            self._api = None
-            if orchestrator is not None and self._is_conductor and orchestrator.is_active():
-                orchestrator.end()
+        except BaseException:
+            # The restore's error stays the one that propagates: a failing end()
+            # raised from a `finally` would replace it, leaving it only as
+            # __context__ to a caller that tells a dead link by its type.
+            try:
+                self._release_orchestrator()
+            except Exception:
+                log.exception("big_text: ending the broadcast failed during a failed teardown")
+            raise
+        self._release_orchestrator()
+
+    def _release_orchestrator(self) -> None:
+        """Release the followers when the conductor's scene tears down mid
+        broadcast (a CTRL skip, a stop_event), even when the link failed the
+        restore. end() is idempotent."""
+        orchestrator = self._orchestrator
+        self._orchestrator = None
+        self._api = None
+        if orchestrator is not None and self._is_conductor and orchestrator.is_active():
+            orchestrator.end()
 
     def _install_raster_irq(self, api):
         """Bring up the shadow-register raster IRQ.
@@ -374,14 +398,15 @@ class BigTextOverlay(Overlay):
         with $0314/$0315 half-updated and an IRQ source live, or the next
         IRQ will JMP through a torn vector and crash.
         """
-        api.write_memory_file(f"{IRQ_HANDLER_ADDR:04X}", RASTER_IRQ_HANDLER)
-        api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018)
         # Mask every CIA #1 IRQ source so the kernal jiffy IRQ cannot fire while
-        # $0314 changes. Timer A keeps running — only the interrupt line is
-        # blocked — and the raster handler chains to $EA31 below.
+        # the handler is uploaded or $0314 changes: a teardown whose restore
+        # never landed leaves $0314 on $C000. Timer A keeps running — only the
+        # interrupt line is blocked — and the raster handler chains to $EA31.
         api.write_memory("DC0D", "7F")
         # VIC IRQ sources off too: nothing can fire until the enable below.
         api.write_memory("D01A", "00")
+        api.write_memory_file(f"{IRQ_HANDLER_ADDR:04X}", RASTER_IRQ_HANDLER)
+        api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018)
         # One coalesced PUT, so the two-byte vector lands as a single DMA
         # transaction with no torn-vector window.
         api.write_regs(
@@ -397,79 +422,46 @@ class BigTextOverlay(Overlay):
         api.write_memory("D01A", "01")
 
     def _uninstall_raster_irq(self, api):
-        """Tear down in the reverse order of install. Each step keeps the
-        IRQ environment self-consistent so any IRQ that fires mid-teardown
-        lands somewhere sane.
+        """Tear down in the reverse order of install, through
+        `hw/irq_unhook.unhook_raster_irq`, whose docstring has the order and
+        the retry rules. A handler that stays hooked would keep committing its
+        shadows every frame, over whatever the next scene writes to
+        $D016/$D018 (an MCM scene's multicolor bit and charset among them), so
+        it is disarmed in place instead. Its shadows are reset to the defaults
+        first: should the disarm be lost too, an armed handler then commits
+        the pair `teardown` writes rather than the strip's last page and
+        X-scroll."""
 
-        The raster disable, the vector restore and the CIA #1 unmask are
-        confirmed delivered, since a lost write moves `delivery_epoch` without
-        raising. The kernal handler at $EA31 never acks $D019, so a raster
-        source left live behind the restore re-enters the IRQ on every RTI; and
-        unmasking CIA #1 with $0314 still on the raster handler keeps vectoring
-        the jiffy IRQ into RAM the next scene may overwrite. So the restore
-        waits for the disable, and the unmask for the restore, each logging
-        what it left undone. Whenever the handler stays hooked it can keep
-        committing its shadows every frame, so they are reset to the values
-        `teardown` writes to $D016/$D018."""
-        done: set[str] = set()
-
-        def confirmed(what: str, write: Callable[[], None]) -> None:
-            if not write_confirmed(api, write):
-                raise RuntimeError(
-                    f"the {what} write was not confirmed after {CONFIRM_TRIES} tries"
-                )
-            done.add(what)
-
-        def after(needed: str, what: str, write: Callable[[], None]) -> None:
-            if needed not in done:
-                log.error("big_text: skipping the %s — the %s did not land", what, needed)
-                return
-            confirmed(what, write)
-
-        def reset_shadows_if_hooked() -> None:
-            if "vector restore" in done:
-                return
-            log.error(
-                "big_text: the raster handler stays hooked; resetting its shadows to the "
-                "default $D016/$D018"
-            )
-            confirmed(
-                "shadow reset",
-                lambda: api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018),
-            )
-
-        # Raster IRQ off first, so it cannot fire after the vector is restored.
-        steps: list[tuple[str, Callable[[], object]]] = [
-            (
-                "raster disable",
-                lambda: confirmed("raster disable", lambda: api.write_memory("D01A", "00")),
-            ),
-            # Back to the kernal default ($EA31); with the raster and CIA #1
-            # IRQs both masked, no source is live.
-            (
-                "vector restore",
-                lambda: after(
-                    "raster disable",
-                    "vector restore",
-                    lambda: api.write_regs(
-                        f"{VECTORS.IRQ:04X}",
-                        KERNAL.IRQ_HANDLER & 0xFF,
-                        (KERNAL.IRQ_HANDLER >> 8) & 0xFF,
+        def disarm() -> None:
+            log.error("big_text: the raster handler stays hooked; disarming its $D016/$D018 commit")
+            run_teardown_steps(
+                log,
+                "big_text raster IRQ",
+                [
+                    (
+                        "shadow reset",
+                        lambda: confirm(
+                            api,
+                            "shadow reset",
+                            lambda: api.write_regs(
+                                f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018
+                            ),
+                        ),
                     ),
-                ),
-            ),
-            # Ack any pending raster IRQ before re-enabling CIA #1.
-            ("raster flag ack", lambda: api.write_memory("D019", "01")),
-            # Kernal jiffy / keyboard scan resumes via the restored $0314.
-            (
-                "CIA1 unmask",
-                lambda: after(
-                    "vector restore", "CIA1 unmask", lambda: api.write_memory("DC0D", "81")
-                ),
-            ),
-            ("shadow reset", reset_shadows_if_hooked),
-        ]
-        run_teardown_steps(log, "big_text raster IRQ", steps)
+                    (
+                        "handler disarm",
+                        lambda: confirm(
+                            api,
+                            "handler disarm",
+                            lambda: api.write_memory_file(
+                                f"{IRQ_HANDLER_ADDR:04X}", DISARMED_RASTER_IRQ_HANDLER
+                            ),
+                        ),
+                    ),
+                ],
+            )
+
+        unhook_raster_irq(api, log, "big_text raster IRQ", if_still_hooked=disarm)
 
     def is_busy(self) -> bool:
         # A conductor keeps the scene running until the message has scrolled off

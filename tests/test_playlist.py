@@ -119,6 +119,7 @@ class FakeApi:
             "bytes": 0,
         }
         self.calls = []
+        self.writes: list[tuple[str, object]] = []
         # A test simulating a lossy link moves these.
         self._delivery_epoch = 0
         self._thread_losses: dict[int, int] = {}
@@ -146,6 +147,14 @@ class FakeApi:
 
     def format_write_latency(self):
         return None
+
+    # The cut paths release a raster IRQ the last teardown may have leaked,
+    # through these: each write lands in `.writes` as (address, value).
+    def write_memory(self, address, value):
+        self.writes.append((str(address).upper(), value))
+
+    def write_regs(self, address, *values):
+        self.writes.append((str(address).upper(), values))
 
     def link_answers(self):
         return self.answers
@@ -726,6 +735,303 @@ class PlaylistTest(unittest.TestCase):
         assert baseline is not None, "startup interstitial never completed"
         self.assertEqual(counter["n"], baseline, "a cut jump must never build an interstitial")
         self.assertGreaterEqual(scenes[1].setup_count, 1)
+
+    def _writes_seen_by_the_next_setup(self, cut: str) -> list[tuple[str, object]]:
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        if cut == "lap":
+            scenes = scenes[:1]
+        api = FakeApi()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl.current = scenes[0]
+        nxt = scenes[-1]
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = nxt.setup
+        nxt.setup = lambda: (seen_at_setup.append(list(api.writes)), setup())
+        if cut == "jump":
+            pl.request_jump(1, skip_interstitial=True)
+            scenes[0].is_done = True
+            pl._advance_after_scene()
+        elif cut == "clip":
+            self.assertTrue(pl.perf_swap_scene(nxt))
+        else:
+            nxt.is_done = True
+            pl._advance_single_scene()
+        self.assertEqual(len(seen_at_setup), 1)
+        return seen_at_setup[0]
+
+    def test_the_first_setup_of_a_run_sends_no_release(self):
+        # Nothing has been torn down yet, so there is nothing to release.
+        scenes = [FakeScene("A")]
+        api = FakeApi()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl._advance_single_scene()
+        self.assertEqual(scenes[0].setup_count, 1)
+        self.assertEqual(api.writes, [])
+
+    def test_the_scene_after_its_card_sends_no_second_release(self):
+        # The card's own setup runs the release, with its REU drain.
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        factory, _ = _transition_factory()
+        pl = Playlist(
+            scenes, api, target_fps=200.0, heartbeat_interval=0.0, interstitial_factory=factory
+        )
+        pl.current = scenes[0]
+        scenes[0].is_done = True
+        pl._advance_after_scene()
+        card = pl.current
+        assert card is not None and pl.on_card
+        card.is_done = True
+        pl._advance()
+        self.assertIs(pl.current, scenes[1])
+        self.assertEqual(api.writes, [])
+
+    def test_a_pause_releases_a_leaked_raster_irq_before_it_idles(self):
+        # The TeensyROM's idle does not reset, and the resume hold needs SCNKEY.
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        stop = threading.Event()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0, stop_event=stop)
+        pl.current = scenes[0]
+        seen_at_idle: list[list[tuple[str, object]]] = []
+        api.pause_idle = lambda: (seen_at_idle.append(list(api.writes)), stop.set())
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._handle_pause()
+        self.assertEqual(len(seen_at_idle), 1)
+        self.assertIn(("0314", (0x31, 0xEA)), seen_at_idle[0])
+        self.assertEqual(seen_at_idle[0][-1], ("DC0D", "81"))
+
+    def test_a_cut_releases_a_leaked_raster_irq_before_the_next_setup(self):
+        # The card is what re-arms CIA #1 after a teardown left it masked; a
+        # cut has no card, so it has to do the same itself.
+        for cut in ("jump", "clip", "lap"):
+            with self.subTest(cut=cut):
+                writes = self._writes_seen_by_the_next_setup(cut)
+                self.assertIn(("0314", (0x31, 0xEA)), writes)
+                self.assertEqual(writes[-1], ("DC0D", "81"), "the keyboard is re-armed last")
+
+    def test_a_release_the_link_lost_is_retried_with_the_setup(self):
+        # A teardown leaks a handler by losing writes, so the release after it
+        # can lose them too; the card's release is retried with its setup.
+        from unittest import mock
+
+        self.enterContext(mock.patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0))
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        lossy = [True]
+        write_regs = api.write_regs
+
+        def lossy_write_regs(address, *values):
+            if lossy[0]:
+                api.delivery_epoch += 1
+            write_regs(address, *values)
+
+        api.write_regs = lossy_write_regs
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl.current = scenes[0]
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[1].setup
+
+        def setup_b():
+            seen_at_setup.append(list(api.writes))
+            setup()
+            if lossy[0]:
+                lossy[0] = False
+                api.delivery_epoch += 1
+
+        scenes[1].setup = setup_b
+        pl.request_jump(1, skip_interstitial=True)
+        scenes[0].is_done = True
+        with self.assertLogs("c64cast", level="WARNING"):
+            pl._advance_after_scene()
+        self.assertEqual(len(seen_at_setup), 2)
+        self.assertNotIn(("DC0D", "81"), seen_at_setup[0], "a lost restore must not unmask")
+        retried = seen_at_setup[1][len(seen_at_setup[0]) :]
+        self.assertIn(("0314", (0x31, 0xEA)), retried)
+        self.assertEqual(retried[-1], ("DC0D", "81"), "the retried release re-arms the keyboard")
+
+    def test_a_release_the_link_lost_is_retried_when_the_setup_lands(self):
+        # The release runs ahead of the setup's loss mark, so a setup that lands
+        # cannot be what keeps a lost restore from being kept as the scene plays.
+        from unittest import mock
+
+        self.enterContext(mock.patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0))
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        lossy = [True]
+        write_regs = api.write_regs
+
+        def lossy_write_regs(address, *values):
+            if lossy[0]:
+                api.delivery_epoch += 1
+            write_regs(address, *values)
+
+        api.write_regs = lossy_write_regs
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl.current = scenes[0]
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[1].setup
+
+        def setup_b():
+            lossy[0] = False
+            seen_at_setup.append(list(api.writes))
+            setup()
+
+        scenes[1].setup = setup_b
+        pl.request_jump(1, skip_interstitial=True)
+        scenes[0].is_done = True
+        with self.assertLogs("c64cast", level="WARNING"):
+            pl._advance_after_scene()
+        self.assertEqual(len(seen_at_setup), 2)
+        self.assertNotIn(("DC0D", "81"), seen_at_setup[0], "a lost restore must not unmask")
+        retried = seen_at_setup[1][len(seen_at_setup[0]) :]
+        self.assertIn(("0314", (0x31, 0xEA)), retried)
+        self.assertEqual(retried[-1], ("DC0D", "81"), "the retried release re-arms the keyboard")
+        self.assertFalse(pl._irq_release_owed)
+
+    def test_a_release_that_lost_its_bank_pin_is_retried_with_the_setup(self):
+        # The restore landed, but a lost pin leaves a static scene on bank 2.
+        from unittest import mock
+
+        self.enterContext(mock.patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0))
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        lossy = [True]
+        write_memory = api.write_memory
+
+        def lossy_write_memory(address, value):
+            if lossy[0] and str(address).upper() == "DD00":
+                api.delivery_epoch += 1
+            write_memory(address, value)
+
+        api.write_memory = lossy_write_memory
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl.current = scenes[0]
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[1].setup
+
+        def setup_b():
+            lossy[0] = False
+            seen_at_setup.append(list(api.writes))
+            setup()
+
+        scenes[1].setup = setup_b
+        pl.request_jump(1, skip_interstitial=True)
+        scenes[0].is_done = True
+        with self.assertLogs("c64cast", level="WARNING"):
+            pl._advance_after_scene()
+        self.assertEqual(len(seen_at_setup), 2, "a release that lost its pin is retried")
+        retried = seen_at_setup[1][len(seen_at_setup[0]) :]
+        self.assertIn(("DD00", "97"), retried)
+        self.assertFalse(pl._irq_release_owed)
+
+    def test_a_card_kept_after_lossy_setups_leaves_the_release_owed(self):
+        # The card's release may be among the writes it lost, and the card's
+        # teardown owes nothing for the scene behind it.
+        from unittest import mock
+
+        self.enterContext(mock.patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0))
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        factory, _ = _transition_factory()
+        pl = Playlist(
+            scenes, api, target_fps=200.0, heartbeat_interval=0.0, interstitial_factory=factory
+        )
+        pl.current = scenes[0]
+        built = factory
+
+        def lossy_card(name):
+            card = built(name)
+            setup = card.setup
+
+            def lossy_setup():
+                setup()
+                api.delivery_epoch += 1
+
+            card.setup = lossy_setup
+            return card
+
+        pl.interstitial_factory = lossy_card
+        scenes[0].is_done = True
+        with self.assertLogs("c64cast", level="WARNING"):
+            pl._advance_after_scene()
+        card = pl.current
+        assert card is not None and pl.on_card
+        self.assertTrue(pl._irq_release_owed)
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[1].setup
+        scenes[1].setup = lambda: (seen_at_setup.append(list(api.writes)), setup())
+        card.is_done = True
+        pl._advance()
+        self.assertIs(pl.current, scenes[1])
+        self.assertEqual(len(seen_at_setup), 1)
+        self.assertIn(("0314", (0x31, 0xEA)), seen_at_setup[0])
+
+    def test_a_setup_retry_releases_what_its_teardown_may_have_leaked(self):
+        # The retry's teardown unhooks on the link that just lost the setup's writes.
+        from unittest import mock
+
+        self.enterContext(mock.patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0))
+        scenes = [FakeScene("A")]
+        api = FakeApi()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[0].setup
+
+        def lossy_once():
+            seen_at_setup.append(list(api.writes))
+            setup()
+            if len(seen_at_setup) == 1:
+                api.delivery_epoch += 1
+
+        scenes[0].setup = lossy_once
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl._advance_single_scene()
+        self.assertEqual(seen_at_setup[0], [], "the first setup of a run has nothing to release")
+        self.assertIn(("0314", (0x31, 0xEA)), seen_at_setup[1])
+        self.assertEqual(seen_at_setup[1][-1], ("DC0D", "81"))
+
+    def test_a_setup_after_a_restart_sends_no_release(self):
+        # The restart already put $0314 and CIA #1 back.
+        for found in ("as the scene ended", "before the setup"):
+            with self.subTest(found=found):
+                scenes = [FakeScene("A")]
+                api = FakeApi()
+                pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+                pl.current = scenes[0]
+                scenes[0].is_done = True
+                if found == "as the scene ended":
+                    pl._restore_after_teardown = True
+                    pl._advance_single_scene()
+                else:
+                    restarts = iter([True])
+                    pl.restart_watch.restarted_before_setup = lambda r=restarts: next(r, False)
+                    with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+                        pl._advance_single_scene()
+                self.assertEqual(scenes[0].setup_count, 1)
+                self.assertEqual(api.writes, [])
+
+    def test_a_reload_releases_a_leaked_raster_irq_before_the_next_setup(self):
+        # A one-scene reload sets its scene up with no card between.
+        api = FakeApi()
+        pl = Playlist(
+            [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+        )
+        pl.current = pl.scenes[0]
+        reloaded = FakeScene("C")
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = reloaded.setup
+        reloaded.setup = lambda: (seen_at_setup.append(list(api.writes)), setup())
+        pl.request_reload([reloaded])
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+            pl._advance()
+        self.assertEqual(len(seen_at_setup), 1)
+        self.assertIn(("0314", (0x31, 0xEA)), seen_at_setup[0])
+        self.assertEqual(seen_at_setup[0][-1], ("DC0D", "81"))
 
     def test_request_jump_interstitial_transition_uses_the_card(self):
         scenes = [

@@ -252,6 +252,7 @@ files = [
     "c64cast/hw/teensyrom_dma.py",
     "c64cast/scenes/scenes.py",
     "c64cast/video/modes_irq.py",
+    "c64cast/hw/irq_unhook.py",
     "c64cast/app/config.py",
     "c64cast/app/scene_factory.py",
     "c64cast/app/ensemble.py",

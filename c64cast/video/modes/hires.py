@@ -256,6 +256,8 @@ class HiresDisplayMode(BitmapDisplayMode):
         # here and the first push(); hires ignores $D021, so bg0=0x00 just keeps
         # the register off the previous scene's value.
         single_buffer = not self.use_reu_staged and not self.double_buffer
+        if not single_buffer or self._blend_table is not None:
+            self._quiesce_irqs_for_double_buffer(api)
         engage_bitmap_mode(
             api,
             d011="3b",
