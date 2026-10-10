@@ -810,6 +810,70 @@ class PlaylistTest(unittest.TestCase):
                 self.assertIn(("0314", (0x31, 0xEA)), writes)
                 self.assertEqual(writes[-1], ("DC0D", "81"), "the keyboard is re-armed last")
 
+    def test_a_release_the_link_lost_is_retried_with_the_setup(self):
+        # A teardown leaks a handler by losing writes, so the release after it
+        # can lose them too; the card's release is retried with its setup.
+        from unittest import mock
+
+        self.enterContext(mock.patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0))
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        lossy = [True]
+        write_regs = api.write_regs
+
+        def lossy_write_regs(address, *values):
+            if lossy[0]:
+                api.delivery_epoch += 1
+            write_regs(address, *values)
+
+        api.write_regs = lossy_write_regs
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl.current = scenes[0]
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[1].setup
+
+        def setup_b():
+            seen_at_setup.append(list(api.writes))
+            setup()
+            if lossy[0]:
+                lossy[0] = False
+                api.delivery_epoch += 1
+
+        scenes[1].setup = setup_b
+        pl.request_jump(1, skip_interstitial=True)
+        scenes[0].is_done = True
+        with self.assertLogs("c64cast", level="WARNING"):
+            pl._advance_after_scene()
+        self.assertEqual(len(seen_at_setup), 2)
+        self.assertNotIn(("DC0D", "81"), seen_at_setup[0], "a lost restore must not unmask")
+        retried = seen_at_setup[1][len(seen_at_setup[0]) :]
+        self.assertIn(("0314", (0x31, 0xEA)), retried)
+        self.assertEqual(retried[-1], ("DC0D", "81"), "the retried release re-arms the keyboard")
+
+    def test_a_setup_retry_releases_what_its_teardown_may_have_leaked(self):
+        # The retry's teardown unhooks on the link that just lost the setup's writes.
+        from unittest import mock
+
+        self.enterContext(mock.patch("c64cast.app.playlist.SETUP_RETRY_S", 0.0))
+        scenes = [FakeScene("A")]
+        api = FakeApi()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        seen_at_setup: list[list[tuple[str, object]]] = []
+        setup = scenes[0].setup
+
+        def lossy_once():
+            seen_at_setup.append(list(api.writes))
+            setup()
+            if len(seen_at_setup) == 1:
+                api.delivery_epoch += 1
+
+        scenes[0].setup = lossy_once
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl._advance_single_scene()
+        self.assertEqual(seen_at_setup[0], [], "the first setup of a run has nothing to release")
+        self.assertIn(("0314", (0x31, 0xEA)), seen_at_setup[1])
+        self.assertEqual(seen_at_setup[1][-1], ("DC0D", "81"))
+
     def test_request_jump_interstitial_transition_uses_the_card(self):
         scenes = [
             FakeScene("A", frames_until_done=10_000_000),

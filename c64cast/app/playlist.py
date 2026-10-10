@@ -710,11 +710,12 @@ class Playlist:
         self.transitioning = True
 
     def _release_leaked_irq_if_owed(self) -> None:
+        # Still owed when the restore did not land: a teardown leaks a handler
+        # by losing writes, and the link that lost them can lose these too.
         if self._irq_release_owed:
-            self._irq_release_owed = False
-            self._release_leaked_irq()
+            self._irq_release_owed = not self._release_leaked_irq()
 
-    def _release_leaked_irq(self) -> None:
+    def _release_leaked_irq(self) -> bool:
         """What the "UP NEXT" card's setup does for a handler the last
         teardown left on $0314, for whatever follows a teardown with no card
         between: a cut (`request_jump(skip_interstitial=True)`), a clip
@@ -725,11 +726,13 @@ class Playlist:
         every scene that never hooks an IRQ of its own.
         No drain, because a clip launch is quantized to the beat: a
         double-buffer setup drains before it clears its banks, but a leaked
-        copy still in flight can land on a static scene that follows."""
+        copy still in flight can land on a static scene that follows.
+        Returns whether the `$0314` restore landed."""
         try:
-            release_leaked_raster_irq(self.api, self.log, "scene change")
+            return release_leaked_raster_irq(self.api, self.log, "scene change")
         except Exception:
             self.log.exception("releasing a leaked raster IRQ failed")
+            return False
 
     def _safe_prepare_next(self, scene: Scene) -> None:
         """Invoke a scene's prepare_next() hook defensively. A failure here
@@ -755,7 +758,6 @@ class Playlist:
         # restart has already put the machine's vectors back.
         if scene is self._card or after_restart:
             self._irq_release_owed = False
-        self._release_leaked_irq_if_owed()
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
@@ -913,6 +915,9 @@ class Playlist:
                     "the machine restarted before %r set up; putting its state back first",
                     scene.name,
                 )
+            # Inside the retry loop, where the card's own release runs: a link
+            # outage that cost this release its writes retries it with the setup.
+            self._release_leaked_irq_if_owed()
             started = self.link_outage.now()
             mark = self.api.write_loss_mark()
             error: LinkError | None = None
@@ -953,6 +958,9 @@ class Playlist:
                 scene.teardown()
             except Exception:
                 self.log.exception("teardown of %r before its setup retry failed", scene.name)
+            # As `safe_teardown` marks it, on the link that cost the setup its writes.
+            if scene is not self._card:
+                self._irq_release_owed = True
             # Not before the teardown: a half-set-up scene the link reaches
             # again can sound (a MIDI scene's reader drives the SID) while
             # another system holds the slot. A card does not claim it back for
