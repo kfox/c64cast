@@ -290,14 +290,26 @@ class _VolumeChannel(_Channel):
     """`_Channel` that keeps the channel volume register."""
 
     volume: int | None = None
+    lose_volume = False  # lose every live volume write, and nothing else
 
     def write_memory(self, address: str, data_hex: str) -> None:
         if int(address, 16) == s.channel_base(0) + s.REG_VOLUME:
             self.advance()
-            if not self._lost():
+            if self.lose_volume:
+                self.delivery_epoch += 1
+            elif not self._lost():
                 self.volume = int(data_hex, 16)
             return
         super().write_memory(address, data_hex)
+
+    def write_regs(self, base_addr: str, *values: int) -> None:
+        # A restart programs the volume among the channel's registers.
+        if int(base_addr, 16) == s.channel_base(0) + s.REG_VOLUME:
+            self.advance()
+            if not self._lost():
+                self.volume = values[0]
+            return
+        super().write_regs(base_addr, *values)
 
 
 class VolumeRestoreTest(unittest.TestCase):
@@ -364,6 +376,18 @@ class VolumeRestoreTest(unittest.TestCase):
         ):
             smp._writer_step(smp._writer_gen)
         self.assertTrue(smp._volume_owed)
+
+    def test_a_restore_still_lost_does_not_hold_off_the_restart(self):
+        # Sent ahead of the deadline check, a restore the link kept losing
+        # raised on every pass, and the channel stopped at its deadline.
+        smp, chan = self._resumed(lose_restore=True)
+        chan.lose_volume = True
+        assert smp._deadline is not None
+        chan.clock.now = smp._deadline / (smp._actual_rate * smp.bps) + 1.0
+        with mock.patch.object(s, "time", chan.clock), self.assertLogs("c64cast.audio.sampler"):
+            self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(chan.volume, smp._volume)
+        self.assertFalse(smp._volume_owed)
 
 
 if __name__ == "__main__":

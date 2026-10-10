@@ -1339,10 +1339,13 @@ class UltimateAudioSampler:
         since its flush can sit in a redial into the guard too, where
         `_backoff_wait` no longer cuts the back-off short: raised, a 20 ms
         back-off took most of the guard, and a stream 0.6 s ahead stopped."""
-        if self._volume_owed:
-            self._restore_owed_volume(gen)
         if self._deadline_reached():
             return self._restart_channel(gen)
+        # After the deadline check: the restart programs the volume too, and a
+        # restore lost ahead of it raised every pass, so the channel stayed
+        # stopped until the give-up.
+        if self._volume_owed:
+            self._restore_owed_volume(gen)
         wrote = self._ring_step(gen)
         if not self._deadline_reached():
             try:
