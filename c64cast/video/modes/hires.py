@@ -417,10 +417,10 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     @staticmethod
     def _write_border(api: C64Backend, bg: int) -> None:
-        """$D020 from the host, for the page flips whose IRQ does not carry it.
-        Written after the frame's banks and just before it is armed, so the
-        border leads its frame by less than a field rather than by the whole
-        frame write."""
+        """$D020 from the host, on every path whose IRQ does not carry it. The
+        page flips write it after the frame's banks and just before arming, so
+        the border leads its frame by the wait for the flip rather than by the
+        whole frame write."""
         api.write_region(0xD020, bytes([bg & 0xFF, bg & 0xFF]), region_id=RegionID.VIC_D020)
 
     def push(self, api: C64Backend, buffers: BitmapComposeBuffers) -> None:
