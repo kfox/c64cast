@@ -4,16 +4,19 @@
 The cartridge launches once; then, for each case, the host stages a "before"
 and an "after" payload in C128 RAM, blits the before, reads VRAM back, blits
 the after, reads it back, and tallies each wrong bit of either blit by data
-line (D0-D7) and by what that bit held before the write. A fault in one VRAM chip, its socket,
-or the VDC's own data bus shows up as one line. Swapping the two 64K x 4 VRAM
-chips moves a chip fault by four lines; a fault that stays put is the socket,
+line (D0-D7) and by what that bit held before the write. A fault in one VRAM
+chip, its socket, or the VDC's own data bus shows up as one line. Each of the
+two VRAM chips holds four of the eight lines (64K x 4, or 16K x 4 on a stock
+16 KB VDC), so swapping them moves a chip fault by four lines; a fault that stays put is the socket,
 a trace, or the VDC itself, and only swapping the VDC separates those.
 
     scripts/diags/vdc_bit_soak.py --serial <PORT>                 # 16 full frames, $FF over $FF
     scripts/diags/vdc_bit_soak.py --serial <PORT> --mixed         # five cases, top half only
 
 The full-frame run writes all 24000 B of the 640x200 bitmap + attributes, so
-the whole 80-column screen flashes. ``--mixed`` covers only the first 8000 B
+the whole 80-column screen flashes. A 16 KB VDC aliases everything above
+$3FFF onto the bottom 16 KB, so there the full-frame run covers only the 16384 B
+that exist and the screen shows the wrap. ``--mixed`` covers only the first 8000 B
 (the top half of the bitmap) and cycles $FF over $00, $FF over $FF, $00 over
 $FF, a ramp over its inverse, and a ramp over itself.
 
@@ -37,6 +40,7 @@ from c64cast.hw import vdc, vdc_rom
 from c64cast.hw.teensyrom_dma import TRClient
 
 MIXED_BYTES = 8000  # under 0x2000, so the before and after payloads sit side by side
+SMALL_VRAM_BYTES = 0x4000
 CHUNK = 4096
 
 
@@ -161,6 +165,24 @@ def run_case(
         )
 
 
+def soak_bytes(port: vdc.VdcPorthole, mixed: bool) -> int | None:
+    """How many bytes each blit covers, or None when VRAM size can't be read.
+
+    Writing past the end of a 16 KB VRAM wraps onto its start, and the second
+    write over a byte would hide whatever the first one lost."""
+    kib = vdc.probe_ram_size_kib(port)
+    if kib is None:
+        print("could not read the VRAM size through the porthole", flush=True)
+        return None
+    print(f"VDC video RAM: {kib} KB", flush=True)
+    if mixed:
+        return MIXED_BYTES
+    if kib == 16:
+        print(f"    full frame capped at {SMALL_VRAM_BYTES} B, all of VRAM", flush=True)
+        return SMALL_VRAM_BYTES
+    return vdc.FRAME_BYTES
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -177,12 +199,14 @@ def main() -> int:
     if args.trials is not None and args.trials < 1:
         ap.error("--trials must be at least 1")
 
-    nbytes = MIXED_BYTES if args.mixed else vdc.FRAME_BYTES
     trials = args.trials if args.trials is not None else (5 if args.mixed else 16)
     client = v.connect(tcp=args.tcp, serial=args.serial)
     offsets: list[int] = []
     try:
         if not v.stage_launch(client, args.reset_settle):
+            return 1
+        nbytes = soak_bytes(v.make_porthole(client), args.mixed)
+        if nbytes is None:
             return 1
         for name, prev, nxt in cases(nbytes, args.mixed):
             run_case(client, name, prev, nxt, trials, offsets)
