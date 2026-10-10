@@ -770,6 +770,7 @@ class SamplerWriterFailureTest(unittest.TestCase):
             self.assertFalse(producer.is_alive(), "the producer parked on a sampler that gave up")
             assert smp._writer is not None
             self.assertTrue(smp._writer.is_running(), "the writer ended at the give-up")
+            smp.stop()
         self.assertEqual(accepted, [len(self.TONE)] * 12)
 
     def test_a_gate_off_lost_to_the_outage_is_sent_until_it_lands(self):
