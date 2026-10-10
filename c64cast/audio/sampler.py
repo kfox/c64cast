@@ -772,6 +772,10 @@ class UltimateAudioSampler:
             # The prefill made the whole first lap NEUTRAL, so the first
             # deadline may sit a lead target in whatever the prebuffer held.
             self._deadline = max(self._written, self._lead_target) if self._uses_deadline else None
+            # A voice stopped at a deadline stays in `finished` until a gate-off,
+            # and the last stop()'s gate-off may have been lost to the outage
+            # that stopped it: a gate-on onto it alone plays nothing.
+            self._send_gate_off()
             program_channel(
                 self.api,
                 self.channel,
@@ -1173,6 +1177,11 @@ class UltimateAudioSampler:
             raise ValueError(f"sampler: no deadline can sit at ring offset 0 (position {pos})")
         return off
 
+    def _send_gate_off(self) -> None:
+        """Clear the channel's control register, unflushed: the
+        `program_channel` that follows flushes it with the registers."""
+        self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
+
     def _write_length(self, offset: int) -> None:
         addr = channel_base(self.channel) + REG_LENGTH
         self.api.write_regs(f"{addr:04X}", *_be_bytes(offset, 3))
@@ -1272,7 +1281,7 @@ class UltimateAudioSampler:
                 self._write_wrapped(0, self._neutral_unit * (fresh // self.bps))
                 # `finished` is left only through a gate-off; the next gate-on
                 # starts the channel from offset 0.
-                self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
+                self._send_gate_off()
                 program_channel(
                     self.api,
                     self.channel,

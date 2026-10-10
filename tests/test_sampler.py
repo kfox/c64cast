@@ -755,8 +755,11 @@ class SamplerWriterFailureTest(unittest.TestCase):
             self.assertLogs("c64cast.audio.sampler", level="INFO") as logs,
         ):
             smp = self._started(api)
+            # start() gates the channel off before its gate-on, so look past it.
+            gate_on = max(i for i, (a, d) in enumerate(api.mem_writes) if a == "DF20" and d != "00")
             self.assertTrue(
-                self._wait(lambda: ("DF20", "00") in api.mem_writes), "the gate-off never landed"
+                self._wait(lambda: ("DF20", "00") in api.mem_writes[gate_on:]),
+                "the gate-off never landed",
             )
         self.assertEqual(api.lost, 0)
         self.assertTrue(smp._failed)

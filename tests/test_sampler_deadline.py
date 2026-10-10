@@ -378,6 +378,31 @@ class OutageTest(unittest.TestCase):
                 self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual((smp._restarts, chan.gates, chan.state), (1, 2, "playing"))
 
+    def test_the_next_activation_plays_after_a_stop_lost_to_the_outage(self):
+        # The channel stops at its deadline during the outage, and the scene's
+        # stop() sends its gate-off over the same dead link. The voice is left
+        # gated in `finished`, which only a gate-off leaves, so the next
+        # activation's gate-on alone would not start it.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            chan.down = True
+            clock.now = 5.0
+            chan.advance()
+            self.assertEqual(chan.state, "finished")
+            smp.stop()
+            self.assertEqual(chan.state, "finished")
+            chan.down = False
+            smp.start(prebuffer_timeout=0.0)
+            self.assertEqual(chan.state, "playing")
+            smp.stop()
+
 
 class NextDeadlineTest(unittest.TestCase):
     def _sampler(self, rate: int) -> s.UltimateAudioSampler:
