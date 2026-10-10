@@ -857,9 +857,10 @@ class AudioStreamer:
         """Bytes per ring write, sized so each write's CPU halt fits inside one
         NMI period.
 
-        Derived from the live latch rather than a constant, so it tracks the
-        configured rate, PAL vs NTSC, and any pitch-multiplier retune — the
-        period it has to fit inside is exactly ``latch + 1`` cycles.
+        The period it has to fit inside is exactly ``latch + 1`` cycles of the
+        live latch, but capped at the shortest period the streamer arms (see
+        below), so at any latch the handler budget allows the halt-derived size
+        is that one period's.
 
         That halt-derived size is then floored by what the link can actually
         carry, because the quantum sets the write *rate* (chunk_size/quantum
