@@ -64,6 +64,12 @@ class DrainFollowerTest(unittest.TestCase):
         retunes, _ = _feed(f, 0.948, 20.0)
         self.assertEqual(retunes, [])
 
+    def test_a_drain_just_past_the_deadband_is_followed(self):
+        f = DrainFollower(0.94)
+        retunes, _ = _feed(f, 0.952, DRAIN_FOLLOW_WARMUP_S + DRAIN_FOLLOW_WINDOW_S)
+        self.assertEqual(len(retunes), 1)
+        self.assertAlmostEqual(retunes[0], 0.952, places=3)
+
     def test_no_reading_before_the_consumer_starts_counts(self):
         f = DrainFollower()
         for i in range(200):
