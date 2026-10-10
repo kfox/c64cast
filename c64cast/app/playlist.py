@@ -759,6 +759,10 @@ class Playlist:
             if mode_name:
                 self.audio.set_nmi_latch_for_mode(mode_name, self.audio_calibration)
         for ov in getattr(scene, "overlays", ()):
+            # Cleared per activation: a raise that disabled the overlay on an
+            # earlier lap (a link drop in its setup) would otherwise keep it
+            # dark for the rest of the run while its setup still ran.
+            ov.disabled = False
             try:
                 ov.setup(self.api, scene)
             except Exception:

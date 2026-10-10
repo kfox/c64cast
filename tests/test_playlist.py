@@ -1335,6 +1335,26 @@ class PlaylistUserDimTest(unittest.TestCase):
         self.assertEqual(a.display_mode.user_dim, 0.7)
 
 
+class OverlayDisabledPerActivationTest(unittest.TestCase):
+    def test_an_overlay_disabled_on_an_earlier_lap_runs_again_after_setup(self):
+        from c64cast.scenes.overlays import Overlay
+
+        scene = FakeScene("A")
+        overlay = Overlay()
+        scene.overlays = [overlay]
+        pl = Playlist(
+            [scene],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            fade_duration_s=0.0,
+        )
+        overlay.disabled = True
+        pl.safe_setup(scene)
+        self.assertFalse(overlay.disabled)
+
+
 class PlaylistAudioTempoDriveTest(unittest.TestCase):
     """tempo_source = "audio": the playlist forwards the current scene's analyzer
     BPM into its TempoClock each frame, so the detected beat drives the grid."""
