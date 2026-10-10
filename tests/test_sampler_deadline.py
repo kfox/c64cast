@@ -604,6 +604,28 @@ class OutageTest(unittest.TestCase):
         self.assertFalse(smp._output_silenced)
         self.assertEqual(volumes[-1], s.SAMPLER_VOLUME_MAX)
 
+    def test_a_plain_splice_does_not_wait_on_the_gate_lock(self):
+        # The writer holds _gate_lock across a refresh's flush and a given-up
+        # gate-off, a redial each; a seek that writes no volume waited it out,
+        # and the wait went into the splice's lateness.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            with smp._gate_lock:
+                splice = threading.Thread(target=smp.flush)
+                splice.start()
+                splice.join(1.0)
+                blocked = splice.is_alive()
+            splice.join(5.0)
+            smp.stop()
+        self.assertFalse(blocked)
+
     def test_a_restart_over_a_slow_link_leaves_the_channel_behind_the_read_head(self):
         # The restart's flush takes 0.3 s to return. A channel running ahead
         # of where the writer thinks it reads reaches the deadline first, and

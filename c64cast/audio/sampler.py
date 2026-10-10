@@ -1094,21 +1094,25 @@ class UltimateAudioSampler:
         # Under _gate_lock: a restart programs the volume it read from
         # _output_silenced, and a restore landing between that read and its
         # write was overwritten, leaving the channel muted after the resume.
-        with self._gate_lock:
-            if silence_output:
-                self._write_volume(0)
-                self._output_silenced = True
-                self._volume_owed = False
-            elif self._output_silenced:
-                mark = self.api.write_loss_mark()
-                self._write_volume(self._volume)
-                self._output_silenced = False
-                if self.api.writes_lost_since(mark):
-                    # Taken as restored all the same: nothing else sends the
-                    # volume again, so the channel stayed muted for the rest
-                    # of the scene.
-                    self._volume_owed = True
-                    log.warning("sampler: the link lost the volume restore; retrying")
+        # A plain splice writes no volume and does not wait for the lock: the
+        # writer holds it across a refresh's flush and a given-up gate-off, a
+        # redial each, and that wait went into the splice's lateness.
+        if silence_output or self._output_silenced:
+            with self._gate_lock:
+                if silence_output:
+                    self._write_volume(0)
+                    self._output_silenced = True
+                    self._volume_owed = False
+                elif self._output_silenced:
+                    mark = self.api.write_loss_mark()
+                    self._write_volume(self._volume)
+                    self._output_silenced = False
+                    if self.api.writes_lost_since(mark):
+                        # Taken as restored all the same: nothing else sends the
+                        # volume again, so the channel stayed muted for the rest
+                        # of the scene.
+                        self._volume_owed = True
+                        log.warning("sampler: the link lost the volume restore; retrying")
         # The queue is not drained: the writer and the prebuffer drop stale
         # tags, and a drain would also take post-splice audio pushed since the
         # bump above, losing the start of the seek target.
