@@ -49,7 +49,15 @@ from c64cast.audio.audio_servo import (
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS, cpu_clock, kernal_cia1_latch
+from c64cast.hw.c64 import (
+    CIA1,
+    CIA2,
+    SID,
+    VECTORS,
+    cpu_clock,
+    halt_quantum_bytes,
+    kernal_cia1_latch,
+)
 
 
 def _make(**kw: Any) -> AudioStreamer:
@@ -380,6 +388,17 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         slots = -(-s.chunk_size // budgeted)
         writes_hz = slots / (s.chunk_size / s.effective_rate)
         self.assertLessEqual(writes_hz, 200.0 * audio_mod.AUDIO_WRITE_RATE_SHARE + 1.0)
+
+    def test_a_slower_rates_write_grows_with_its_period_up_to_the_cap(self):
+        # Write count is the cost on the link, so a slower rate's longer NMI
+        # period has to buy it a longer write rather than the fastest rate's,
+        # up to the cap the bank-swap commit window is budgeted for.
+        s = _make(sample_rate=8000)
+        period = (s.nmi.latch or s.nmi.compensated_latch()) + 1
+        self.assertEqual(s._halt_quantum(), halt_quantum_bytes(period))
+
+        s = _make(sample_rate=2000)
+        self.assertEqual(s._halt_quantum(), audio_mod.RING_WRITE_HALT_CAP_BYTES)
 
     def test_unaffordable_link_collapses_to_one_write(self):
         # A backend too slow to carry the split degrades to a single write per

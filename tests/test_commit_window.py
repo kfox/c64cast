@@ -305,33 +305,39 @@ def nmi_cycles(read_ptr: int) -> int:
     raise AssertionError("NMI routine never returned")
 
 
+def ring_write_size(profile: object, system: str, latch: int) -> int:
+    """The audio-ring write the DAC streamer sends at `latch` on `system`
+    over a link with `profile`, in bytes: its own sizing code, run on a
+    stand-in for the streamer."""
+    from types import SimpleNamespace
+
+    from c64cast.audio.audio import AudioStreamer
+
+    streamer = SimpleNamespace(
+        nmi=SimpleNamespace(latch=latch),
+        api=SimpleNamespace(profile=profile),
+        chunk_size=CHUNK_SIZE,
+        effective_rate=actual_rate_for_latch(latch, system),
+    )
+    return AudioStreamer._halt_quantum(streamer)  # type: ignore[arg-type]
+
+
 @cache
 def largest_ring_write() -> int:
     """The longest audio-ring write the DAC streamer sends, in bytes, at any
     rate it arms, on either backend and either system.
 
     The streamer cuts its writes to fit an NMI period, then raises them to
-    what the link's write rate can carry. Its own sizing code is run here on
-    a stand-in for the streamer, at every latch from the fastest to the
-    slowest the CIA timer holds."""
-    from types import SimpleNamespace
-
-    from c64cast.audio.audio import AudioStreamer
+    what the link's write rate can carry. Its own sizing code is run at every
+    latch from the fastest to the slowest the CIA timer holds."""
     from c64cast.hw.backend import BASE_PROFILES
 
-    largest = 0
-    for profile in BASE_PROFILES.values():
-        for system in ("PAL", "NTSC"):
-            for latch in range(NMI_CEILING_LATCH, CIA_TIMER_LATCH_MAX + 1):
-                streamer = SimpleNamespace(
-                    nmi=SimpleNamespace(latch=latch),
-                    api=SimpleNamespace(profile=profile),
-                    chunk_size=CHUNK_SIZE,
-                    effective_rate=actual_rate_for_latch(latch, system),
-                )
-                size = AudioStreamer._halt_quantum(streamer)  # type: ignore[arg-type]
-                largest = max(largest, size)
-    return largest
+    return max(
+        ring_write_size(profile, system, latch)
+        for profile in BASE_PROFILES.values()
+        for system in ("PAL", "NTSC")
+        for latch in range(NMI_CEILING_LATCH, CIA_TIMER_LATCH_MAX + 1)
+    )
 
 
 def worst_case_cycles(own: int) -> int:
@@ -403,6 +409,23 @@ def last_commit_line(handler: bytes, prime) -> int:
     ]
     assert lines == list(range(len(lines))), f"the window has a hole: {lines}"
     return lines[-1]
+
+
+class RingWriteCapTest(unittest.TestCase):
+    """RING_WRITE_HALT_CAP_BYTES is the write the fastest rate already gets
+    on each backend, so a slower rate's write never outgrows it."""
+
+    def test_the_cap_is_the_fastest_rates_write(self):
+        from c64cast.audio.audio import RING_WRITE_HALT_CAP_BYTES
+        from c64cast.hw.backend import BASE_PROFILES
+
+        for name, profile in BASE_PROFILES.items():
+            for system in ("PAL", "NTSC"):
+                with self.subTest(backend=name, system=system):
+                    self.assertEqual(
+                        ring_write_size(profile, system, NMI_CEILING_LATCH),
+                        RING_WRITE_HALT_CAP_BYTES,
+                    )
 
 
 class CommitBudgetTest(unittest.TestCase):
