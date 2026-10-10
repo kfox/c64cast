@@ -19,9 +19,10 @@ import numpy as np
 from _fakes import FakeAPI, lose_writes_to
 
 from c64cast.app.config import InterstitialCfg
-from c64cast.hw.backend import C64Backend
+from c64cast.hw.backend import C64Backend, HardwareProfile
 from c64cast.hw.c64 import CIA1, VECTORS
 from c64cast.hw.delivery import CONFIRM_TRIES
+from c64cast.scenes import interstitial
 from c64cast.scenes.interstitial import (
     LABEL,
     LEGIBLE_COLORS,
@@ -182,6 +183,31 @@ class InterstitialCia1RearmTest(unittest.TestCase):
         self.assertLess(max(masks), drain)
         self.assertLess(drain, restore)
         self.assertLess(drain, first_card_write)
+
+    def test_the_drain_does_not_shorten_the_card(self):
+        scene, _fake = self._scene()
+        now = [1000.0]
+
+        def sleep(s):
+            now[0] += s
+
+        with (
+            mock.patch.object(modes_irq, "time") as drain_clock,
+            mock.patch.object(interstitial, "time") as card_clock,
+        ):
+            drain_clock.sleep.side_effect = sleep
+            card_clock.time.side_effect = lambda: now[0]
+            scene.setup()
+        self.assertGreaterEqual(scene.start_time, 1000.0 + modes_irq._REU_SLOT_MAX_IN_USE_S)
+
+    def test_a_backend_with_no_reu_skips_the_drain(self):
+        # Only a REU dispatcher copies; the host-DMA flip a no-REU backend runs
+        # has nothing in flight to wait out.
+        scene, fake = self._scene()
+        fake.profile = HardwareProfile(name="Fake TR", family="fake", supports_reu=False)
+        with mock.patch.object(modes_irq, "time") as clock:
+            scene.setup()
+        clock.sleep.assert_not_called()
 
     def test_unconfirmed_restore_leaves_cia1_masked(self):
         scene, fake = self._scene(VECTORS.IRQ)

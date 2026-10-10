@@ -90,7 +90,6 @@ class InterstitialScene(Scene):
 
     def setup(self):
         self.is_done = False
-        self.start_time = time.time()
         log.info(
             "interstitial: UP NEXT %r (bg=%s color=%s, %.1fs)",
             self.next_scene_name,
@@ -107,7 +106,14 @@ class InterstitialScene(Scene):
         # $D800 — the card's own screen and colors, which the dirty cache would
         # then never repaint. See
         # docs/architecture/scenes.md#interstitialpy--backgroundspy.
-        release_leaked_raster_irq(self.api, log, "interstitial", drain=wait_out_reu_copy)
+        # A backend with no REU can only have leaked a host-DMA page flip,
+        # which copies nothing.
+        release_leaked_raster_irq(
+            self.api,
+            log,
+            "interstitial",
+            drain=wait_out_reu_copy if self.api.profile.supports_reu else None,
+        )
         # Standard PETSCII char mode, black border/bg.
         self.api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
         self.api.write_memory("d016", "08")
@@ -123,6 +129,9 @@ class InterstitialScene(Scene):
         self.line_colors = _resolve_line_colors(self.cfg.text_color, len(self.lines))
 
         self.bg = build_background(self.cfg.background)
+        # Timed from here, not from the top: the unhook's drain would otherwise
+        # come out of the card's time on screen.
+        self.start_time = time.time()
 
     def process_frame(self, current_time: float) -> bool:
         elapsed = current_time - self.start_time
