@@ -3,8 +3,8 @@
 
 The cartridge launches once; then, for each case, the host stages a "before"
 and an "after" payload in C128 RAM, blits the before, reads VRAM back, blits
-the after, reads it back, and tallies each wrong bit by data line (D0-D7) and
-by what that bit held before the write. A fault in one VRAM chip, its socket,
+the after, reads it back, and tallies each wrong bit of either blit by data
+line (D0-D7) and by what that bit held before the write. A fault in one VRAM chip, its socket,
 or the VDC's own data bus shows up as one line. Swapping the two 64K x 4 VRAM
 chips moves a chip fault by four lines; a fault that stays put is the socket,
 a trace, or the VDC itself, and only swapping the VDC separates those.
@@ -17,9 +17,10 @@ the whole 80-column screen flashes. ``--mixed`` covers only the first 8000 B
 (the top half of the bitmap) and cycles $FF over $00, $FF over $FF, $00 over
 $FF, a ramp over its inverse, and a ramp over itself.
 
-Staging is read back and retried before every case, so a TR+ link fault is
-never scored as a VRAM error; clear the link with ``tr_dma_integrity.py``
-first anyway. Blanks the VDC and resets the C128 on exit.
+Staging is read back and retried before every case and checked again after
+it, so a TR+ write fault into staging is flagged rather than scored as VRAM
+loss. The VRAM readback crosses the same link and is only cross-checked by
+reading twice, so clear the link with ``tr_dma_integrity.py`` first. Blanks the VDC and resets the C128 on exit.
 """
 
 from __future__ import annotations
@@ -54,15 +55,17 @@ def cases(nbytes: int, mixed: bool) -> list[tuple[str, bytes, bytes]]:
     ]
 
 
+def read_staging(client: TRClient, addr: int, nbytes: int) -> bytes:
+    return b"".join(
+        client.read_segment(addr + off, min(CHUNK, nbytes - off)) for off in range(0, nbytes, CHUNK)
+    )
+
+
 def stage(client: TRClient, addr: int, data: bytes) -> None:
     for _ in range(4):
         for off in range(0, len(data), CHUNK):
             client.write_segment(addr + off, data[off : off + CHUNK])
-        back = b"".join(
-            client.read_segment(addr + off, min(CHUNK, len(data) - off))
-            for off in range(0, len(data), CHUNK)
-        )
-        if back == data:
+        if read_staging(client, addr, len(data)) == data:
             return
     raise SystemExit("staging into C128 RAM will not stick; fix the DMA link first")
 
@@ -70,6 +73,37 @@ def stage(client: TRClient, addr: int, data: bytes) -> None:
 def blit(client: TRClient, src: int, nbytes: int) -> None:
     before = v.issue(client, vdc_rom.CMD_BLIT, dst=vdc.BITMAP_BASE, count=nbytes, src=src)
     v.wait_done(client, before, timeout=10.0)
+
+
+class Tally:
+    def __init__(self) -> None:
+        self.by_line: Counter[int] = Counter()
+        self.by_move: Counter[tuple[bool, bool]] = Counter()
+        self.offsets: list[int] = []
+
+    def score(self, held: bytes | None, want: bytes, got: bytes, skip: set[int]) -> int:
+        """Tally every bit of ``got`` that differs from ``want``; returns the
+        byte count. ``held`` is what VRAM held before the blit, or None when
+        that is unknown, in which case the bits count by line only."""
+        wrong = 0
+        for i in range(len(want)):
+            if i in skip or got[i] == want[i]:
+                continue
+            wrong += 1
+            self.offsets.append(i)
+            for bit in range(8):
+                mask = 1 << bit
+                if (got[i] ^ want[i]) & mask:
+                    self.by_line[bit] += 1
+                    if held is not None:
+                        self.by_move[(bool(held[i] & mask), bool(want[i] & mask))] += 1
+        return wrong
+
+
+def spans_text(offsets: list[int], limit: int = 40) -> str:
+    spans = v._spans(sorted(set(offsets)), gap=1)
+    text = " ".join(f"{a}" if b == a + 1 else f"{a}-{b - 1}" for a, b in spans[:limit])
+    return f"{len(spans)} spans: {text}{' ...' if len(spans) > limit else ''}"
 
 
 def run_case(
@@ -80,42 +114,51 @@ def run_case(
     # A full frame leaves no room for a second payload, and its cases blit the
     # same bytes twice anyway.
     src_next = src_prev if prev == nxt else src_prev + 0x2000
-    stage(client, src_prev, prev)
-    if src_next != src_prev:
-        stage(client, src_next, nxt)
+    staged = {src_prev: prev, src_next: nxt}
+    for addr, data in staged.items():
+        stage(client, addr, data)
 
-    tally: Counter[object] = Counter()
-    wrong = 0
-    for _ in range(trials):
-        blit(client, src_prev, nbytes)
-        port = v.make_porthole(client)
-        held, noise_a = v._truth_read(port, vdc.BITMAP_BASE, nbytes)
-        time.sleep(0.05)
-        blit(client, src_next, nbytes)
-        got, noise_b = v._truth_read(port, vdc.BITMAP_BASE, nbytes)
-        for i in range(nbytes):
-            if i in noise_a or i in noise_b or got[i] == nxt[i]:
-                continue
-            wrong += 1
-            offsets.append(i)
-            for bit in range(8):
-                mask = 1 << bit
-                if (got[i] ^ nxt[i]) & mask:
-                    tally[(bool(held[i] & mask), bool(nxt[i] & mask))] += 1
-                    tally[f"D{bit}"] += 1
+    port = v.make_porthole(client)
+    tally = Tally()
+    wrong_before = wrong_after = unread = 0
+    last: bytes | None = None
+    last_noise: set[int] = set()
+    try:
+        for _ in range(trials):
+            blit(client, src_prev, nbytes)
+            held, noise_a = v._truth_read(port, vdc.BITMAP_BASE, nbytes)
+            wrong_before += tally.score(last, prev, held, noise_a | last_noise)
+            time.sleep(0.05)
+            blit(client, src_next, nbytes)
+            got, noise_b = v._truth_read(port, vdc.BITMAP_BASE, nbytes)
+            wrong_after += tally.score(held, nxt, got, noise_a | noise_b)
+            unread += len(noise_a) + len(noise_b)
+            last, last_noise = got, noise_b
+    finally:
+        offsets.extend(tally.offsets)
 
-    bits = sum(n for k, n in tally.items() if isinstance(k, tuple))
+    bits = sum(tally.by_line.values())
     transitions = "  ".join(
-        f"{int(p)}->{int(w)}:{tally[(p, w)]}"
+        f"{int(p)}->{int(w)}:{tally.by_move[(p, w)]}"
         for p in (False, True)
         for w in (False, True)
-        if tally[(p, w)]
+        if tally.by_move[(p, w)]
     )
-    lines = " ".join(f"{k}:{n}" for k, n in sorted(tally.items(), key=str) if isinstance(k, str))
+    lines = " ".join(f"D{b}:{n}" for b, n in sorted(tally.by_line.items()))
     print(
-        f"{name:16s} {trials}x{nbytes} B: {wrong} B wrong, {bits} bits   {transitions}   {lines}",
+        f"{name:16s} {trials}x{nbytes} B: {wrong_after} B wrong after, {wrong_before} before, "
+        f"{bits} bits, {unread} B unread   {transitions}   {lines}",
         flush=True,
     )
+    if tally.offsets:
+        print(f"{'':16s} offsets {spans_text(tally.offsets)}", flush=True)
+    moved = [f"${a:04X}" for a, data in staged.items() if read_staging(client, a, nbytes) != data]
+    if moved:
+        print(
+            f"{'':16s} STAGING CHANGED at {', '.join(moved)} during the case: "
+            "the errors above may be link faults, not VRAM",
+            flush=True,
+        )
 
 
 def main() -> int:
@@ -131,9 +174,11 @@ def main() -> int:
     ap.add_argument("--trials", type=int, help="passes per case (default 16 full, 5 mixed)")
     ap.add_argument("--reset-settle", type=float, default=5.0)
     args = ap.parse_args()
+    if args.trials is not None and args.trials < 1:
+        ap.error("--trials must be at least 1")
 
     nbytes = MIXED_BYTES if args.mixed else vdc.FRAME_BYTES
-    trials = args.trials or (5 if args.mixed else 16)
+    trials = args.trials if args.trials is not None else (5 if args.mixed else 16)
     client = v.connect(tcp=args.tcp, serial=args.serial)
     offsets: list[int] = []
     try:
@@ -145,12 +190,16 @@ def main() -> int:
         print("HANG: the resident loop stopped answering", flush=True)
         return 1
     finally:
-        print(f"offsets: {sorted(offsets)}", flush=True)
+        if offsets:
+            print(f"all offsets: {spans_text(offsets)}", flush=True)
         try:
             v.blank_screen(v.make_porthole(client))
         except Exception as e:  # noqa: BLE001  (best effort on the way out)
             print(f"blank failed: {e}")
-        client.reset()
+        try:
+            client.reset()
+        except Exception as e:  # noqa: BLE001  (an exception already in flight outranks this one)
+            print(f"reset failed: {e}; reset the C128 by hand", flush=True)
     return 0
 
 
