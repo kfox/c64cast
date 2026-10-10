@@ -604,10 +604,11 @@ class UltimateAudioSampler:
         # cannot write into the new activation's ring.
         self._writer_gen = 0
         # The generation whose writer gave up on the link and has not brought
-        # the channel back. That writer writes only a gate-off and restarts,
-        # each under _gate_lock and _io_lock behind a generation and _running
-        # check, so a later activation need not refuse while it lingers in a
-        # link call: arm() waits out the restart in flight instead.
+        # the channel back. That writer writes only a gate-off, under
+        # _gate_lock, and restarts, under _gate_lock and _io_lock, each behind
+        # a generation and _running check, so a later activation need not
+        # refuse while it lingers in a link call: arm() waits out the restart
+        # in flight instead.
         self._gave_up_gen: int | None = None
         # Held across the give-up writer's gate-off and start()'s gate-on, so
         # a gate-off still in flight from a retired writer cannot land after
