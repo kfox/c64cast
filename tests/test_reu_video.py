@@ -76,8 +76,8 @@ from c64cast.video.modes_irq import (
     REU_VIDEO_SLOT_STRIDE,
     REU_VIDEO_SLOTS,
     TRACKER_OFF_BITMAP_REGS,
+    TRACKER_OFF_BORDER,
     TRACKER_OFF_READY_FLAG,
-    TRACKER_OFF_RESERVED,
     TRACKER_OFF_SCREEN_REGS,
     uninstall_bank_swap_irq,
 )
@@ -546,7 +546,7 @@ class ReuHiresTrackerLayoutTest(unittest.TestCase):
         # sides together — but the ready flag has to stay the blob's last byte.
         self.assertEqual(TRACKER_OFF_BITMAP_REGS, 0)
         self.assertEqual(TRACKER_OFF_SCREEN_REGS, 7)
-        self.assertEqual(TRACKER_OFF_RESERVED, 14)
+        self.assertEqual(TRACKER_OFF_BORDER, 14)
         self.assertEqual(TRACKER_OFF_READY_FLAG, 15)
         self.assertEqual(FRAME_TRACKER_LEN, 16)
 
@@ -725,7 +725,6 @@ class ReuHiresPushTest(unittest.TestCase):
         blob = self._tracker(self._render(mode, self._frame()))
         self.assertEqual(blob[TRACKER_OFF_BITMAP_REGS : TRACKER_OFF_BITMAP_REGS + 2], b"\x00\x20")
         self.assertEqual(blob[TRACKER_OFF_SCREEN_REGS : TRACKER_OFF_SCREEN_REGS + 2], b"\x00\x04")
-        self.assertEqual(blob[TRACKER_OFF_RESERVED], 0)
 
     def test_tracker_carries_reu_src_and_length_for_both_dmas(self):
         # The IRQ handler copies bitmap regs to $DF02-$DF08 and triggers, then the

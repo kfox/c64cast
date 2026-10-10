@@ -150,7 +150,7 @@ FRAME_TRACKER_ADDR = 0xC700
 #   $C700-$C706 : bitmap REU regs ($DF02-$DF08 pre-staged values, 7 bytes)
 #                 c64_lo, c64_hi, reu_lo, reu_mi, reu_hi, len_lo, len_hi
 #   $C707-$C70D : screen REU regs (same layout, 7 bytes)
-#   $C70E       : reserved, written 0
+#   $C70E       : border value to write to $D020
 #   $C70F       : ready flag (1 = frame staged, 0 = no new frame)
 #
 # The host sets $C70F = 1 (last byte of the DMAWRITE blob) to arm, and the
@@ -159,7 +159,7 @@ FRAME_TRACKER_ADDR = 0xC700
 FRAME_TRACKER_LEN = 16
 TRACKER_OFF_BITMAP_REGS = 0  # 7 bytes
 TRACKER_OFF_SCREEN_REGS = 7  # 7 bytes
-TRACKER_OFF_RESERVED = 14  # 1 byte
+TRACKER_OFF_BORDER = 14  # 1 byte
 TRACKER_OFF_READY_FLAG = 15  # 1 byte
 
 # MultiHires tracker (24 bytes at $C700), the hires layout plus a third REC
@@ -202,13 +202,22 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 # The commit writes bg0 and copies color RAM a field or more after the copy
 # started, by when the host has usually staged a newer frame: reading those
 # from the live tracker put the next frame's colors under this frame's bitmap.
+#
+# The hires commit writes the border only when it differs from the value it
+# last wrote, kept here. The host pokes $D020 itself to show a loop is armed,
+# and a commit that rewrote the border every frame would erase that at once.
+# The host marks the value stale (bit 7 set) whenever it would have rewritten
+# $D020 itself, so the next commit writes it.
 BANK_SWAP_STATE_ADDR = 0xC718
 assert FRAME_TRACKER_ADDR + MHIRES_FRAME_TRACKER_LEN == BANK_SWAP_STATE_ADDR
 _DISPLAYED_BANK = BANK_SWAP_STATE_ADDR  # $DD00 value of the bank on screen
 _HIDDEN_BANK_HI = BANK_SWAP_STATE_ADDR + 1  # $80 when the hidden bank is bank 2
 _COPIED = BANK_SWAP_STATE_ADDR + 2  # nonzero: the hidden bank holds a frame to show
-_SNAPSHOT = BANK_SWAP_STATE_ADDR + 3  # the copied frame's tracker
-BANK_SWAP_STATE_INIT = bytes([CIA2.PORT_A_BANK_0, 0x00, 0x00])
+BORDER_SHOWN_ADDR = BANK_SWAP_STATE_ADDR + 3  # the $D020 value the last commit wrote
+BORDER_STALE = 0x80  # bit 7 set: never a color, so the next commit writes its border
+_SNAPSHOT = BANK_SWAP_STATE_ADDR + 4  # the copied frame's tracker
+BANK_SWAP_STATE_INIT = bytes([CIA2.PORT_A_BANK_0, 0x00, 0x00, BORDER_STALE])
+assert BANK_SWAP_STATE_ADDR + len(BANK_SWAP_STATE_INIT) == _SNAPSHOT
 BANK_SWAP_STATE_LEN = len(BANK_SWAP_STATE_INIT) + MHIRES_FRAME_TRACKER_LEN
 
 # The audio pump's entry points the merged dispatchers route to.
@@ -388,6 +397,7 @@ def _bank_swap_dispatcher(
     hidden: tuple[tuple[int, int], ...],
     after_flip: tuple[tuple[int, int], ...],
     bg0_off: int | None,
+    border_off: int | None = None,
     ready_off: int,
     pump: bool,
     last_line: int = RASTER_COMMIT_LAST_SAFE_LINE,
@@ -398,7 +408,8 @@ def _bank_swap_dispatcher(
 
     * **Commit** the frame the hidden bank holds, and only while the raster
       gate says the beam is outside the picture: write bg0, flip $DD00 to the
-      hidden bank, copy the ``after_flip`` families. Out of the window the
+      hidden bank, write the border if it changed, copy the ``after_flip``
+      families. Out of the window the
       frame waits for the next field, and nothing is copied over it.
     * **Copy** a staged frame (ready flag set) into the now-hidden bank: clear
       the ready flag, snapshot the tracker, copy the ``hidden`` families, mark
@@ -439,6 +450,18 @@ def _bank_swap_dispatcher(
     ready = FRAME_TRACKER_ADDR + ready_off
     nonraster = AUDIO_HANDLER_INSTALL_ADDR if pump else KERNAL.IRQ_HANDLER
     bg0 = f"LDA ${_SNAPSHOT + bg0_off:04X}\n STA $D021" if bg0_off is not None else ""
+    border = (
+        f"""
+            LDA ${_SNAPSHOT + border_off:04X}
+            CMP ${BORDER_SHOWN_ADDR:04X}
+            BEQ border_done
+            STA $D020
+            STA ${BORDER_SHOWN_ADDR:04X}
+        border_done:
+        """
+        if border_off is not None
+        else ""
+    )
     commit_families = "".join(
         _family_source(f"f{i}", _SNAPSHOT + off, n, banked=False, pump=pump)
         for i, (off, n) in enumerate(after_flip)
@@ -468,6 +491,7 @@ def _bank_swap_dispatcher(
             EOR #${CIA2.PORT_A_BANK_0 ^ CIA2.PORT_A_BANK_2:02X}
             STA ${_DISPLAYED_BANK:04X}
             STA ${CIA2.PORT_A:04X}
+            {border}
             {commit_families}
             LDA #$00
             STA ${_COPIED:04X}
@@ -517,6 +541,7 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
         ),
         after_flip=(),
         bg0_off=None,
+        border_off=TRACKER_OFF_BORDER,
         ready_off=TRACKER_OFF_READY_FLAG,
         pump=pump,
     )
@@ -1035,7 +1060,7 @@ def _stage_bitmap_and_screen(
 
 
 def push_bitmap_via_reu(
-    api: C64Backend, bitmap_bytes: bytes, screen_bytes: bytes, slot: int
+    api: C64Backend, bitmap_bytes: bytes, screen_bytes: bytes, border: int, slot: int
 ) -> None:
     """REUWRITE bitmap + screen into REU staging slot ``slot``, then DMAWRITE
     the 16-byte frame tracker to $C700-$C70F. The C64-side raster IRQ copies
@@ -1044,6 +1069,7 @@ def push_bitmap_via_reu(
 
     ``slot`` is the caller's rotation through REU_VIDEO_SLOTS (see the REU
     staging layout). The destinations are bank 0's; the IRQ re-aims them.
+    ``border`` is the frame's $D020 value, which the IRQ writes as it flips.
 
     Per-frame host work: 2 REUWRITEs (bus-clean) + 1 DMAWRITE (16 bytes,
     halts C64 bus for ~16 cycles — negligible vs the ~9000 cycles the
@@ -1051,7 +1077,7 @@ def push_bitmap_via_reu(
     offset, regs = _stage_bitmap_and_screen(api, bitmap_bytes, screen_bytes, slot)
     # Order matches the IRQ handler's layout exactly, and the ready flag is the
     # LAST byte, so the regs are consistent before ready flips.
-    tracker = regs + bytes([0x00, 0x01])  # reserved, ready flag
+    tracker = regs + bytes([border & 0x0F, 0x01])  # border, ready flag
     assert len(tracker) == FRAME_TRACKER_LEN
     api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
 

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import unittest
 from functools import cache, partial
+from typing import cast
+
+import numpy as np
+from _fakes import FakeAPI
 
 from c64cast.audio.audio_handlers import (
     CHUNK_SIZE,
@@ -20,6 +24,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
 )
+from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
@@ -33,13 +38,17 @@ from c64cast.hw.c64 import (
     RASTER_VBLANK_LINE,
     REU,
     SCREEN,
+    RegionID,
     actual_rate_for_latch,
 )
 from c64cast.video import modes_irq
+from c64cast.video.modes.hires import HiresDisplayMode
 from c64cast.video.modes_irq import (
     BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
+    BORDER_SHOWN_ADDR,
+    BORDER_STALE,
     DD00_BANK_2,
     FLICKER_SWAP_IRQ_HANDLER,
     FRAME_TRACKER_ADDR,
@@ -49,7 +58,9 @@ from c64cast.video.modes_irq import (
     MHIRES_FRAME_TRACKER_LEN,
     MHIRES_TRACKER_OFF_COLOR_REGS,
     REU_VIDEO_BITMAP_COLOR_LEN,
+    TRACKER_OFF_BORDER,
 )
+from c64cast.video.palette import C64_PALETTE_BGR
 
 # The VIC's picture at the default YSCROLL with 25 rows: the first badline,
 # and the last pixel line of cell row 24.
@@ -154,6 +165,119 @@ class WindowStartTest(unittest.TestCase):
         for name, handler, mhires in DISPATCHERS:
             with self.subTest(mode=name):
                 self.assertTrue(commits(handler, mhires=mhires, line=LAST_PICTURE_LINE + 1))
+
+
+# --- Border (#668) -----------------------------------------------------------
+
+HIRES_DISPATCHERS = tuple(d for d in DISPATCHERS if not d[2])
+MHIRES_DISPATCHERS = tuple(d for d in DISPATCHERS if d[2])
+
+
+def prime_border(mem, *, border: int, shown: int) -> None:
+    """A hires commit waiting with `border` in its snapshot, after a commit
+    that wrote `shown` (or a host stale mark)."""
+    prime_reu(mem, mhires=False)
+    mem[modes_irq._SNAPSHOT + TRACKER_OFF_BORDER] = border
+    mem[BORDER_SHOWN_ADDR] = shown
+
+
+def run_border_commit(handler: bytes, *, border: int, shown: int, line: int):
+    """The commit's events and the border state it leaves: ($D020, memo)."""
+    seen = {}
+
+    def prime(mem):
+        prime_border(mem, border=border, shown=shown)
+        mem[0xD020] = 0xFF
+        seen["mem"] = mem
+
+    events = run_commit(handler, prime=prime, line=line)
+    mem = seen["mem"]
+    return [n for n, _ in events], mem[0xD020], mem[BORDER_SHOWN_ADDR]
+
+
+class BorderCommitTest(unittest.TestCase):
+    """The hires commit writes the frame's border as it flips to the frame,
+    so the border cannot change ahead of the picture (#668)."""
+
+    def test_a_stale_border_is_written_after_the_flip(self):
+        for name, handler, _ in HIRES_DISPATCHERS:
+            with self.subTest(mode=name):
+                names, d020, shown = run_border_commit(
+                    handler, border=0x06, shown=BORDER_STALE | 0x06, line=0
+                )
+                self.assertEqual([n for n in names if n != "chunk"], ["dd00", "d020"])
+                self.assertEqual((d020, shown), (0x06, 0x06))
+
+    def test_a_changed_border_is_written(self):
+        for name, handler, _ in HIRES_DISPATCHERS:
+            with self.subTest(mode=name):
+                _, d020, shown = run_border_commit(handler, border=0x02, shown=0x06, line=0)
+                self.assertEqual((d020, shown), (0x02, 0x02))
+
+    def test_a_border_already_shown_is_left_alone(self):
+        # The host pokes $D020 red while a loop is armed; a commit that
+        # rewrote an unchanged border would erase it at the next frame.
+        for name, handler, _ in HIRES_DISPATCHERS:
+            with self.subTest(mode=name):
+                names, d020, _ = run_border_commit(handler, border=0x06, shown=0x06, line=0)
+                self.assertNotIn("d020", names)
+                self.assertEqual(d020, 0xFF)
+
+    def test_no_border_is_written_outside_the_window(self):
+        for name, handler, _ in HIRES_DISPATCHERS:
+            with self.subTest(mode=name):
+                names, d020, _ = run_border_commit(
+                    handler, border=0x06, shown=BORDER_STALE, line=LAST_PICTURE_LINE
+                )
+                self.assertEqual(names, [])
+                self.assertEqual(d020, 0xFF)
+
+    def test_the_state_starts_with_the_border_stale(self):
+        self.assertEqual(
+            modes_irq.BANK_SWAP_STATE_INIT[BORDER_SHOWN_ADDR - modes_irq.BANK_SWAP_STATE_ADDR],
+            BORDER_STALE,
+        )
+
+    def test_mhires_leaves_the_border_to_the_host(self):
+        for name, handler, mhires in MHIRES_DISPATCHERS:
+            with self.subTest(mode=name):
+                events = run_commit(handler, prime=partial(prime_reu, mhires=mhires), line=0)
+                self.assertNotIn("d020", [n for n, _ in events])
+
+
+class HiresBorderPushTest(unittest.TestCase):
+    """What the host sends for the border on each hires path."""
+
+    def _push(self, mode, color_index):
+        fake = FakeAPI()
+        frame = np.zeros((200, 320, 3), dtype=np.uint8)
+        frame[:] = C64_PALETTE_BGR[color_index]
+        mode.render(cast(Ultimate64API, fake), frame)
+        return fake
+
+    def test_reu_staging_carries_the_border_in_the_tracker(self):
+        fake = self._push(HiresDisplayMode(use_reu_staged=True), 6)
+        tracker = fake.mem_files[f"{FRAME_TRACKER_ADDR:04X}"]
+        border = tracker[TRACKER_OFF_BORDER]
+        self.assertNotIn(0xD020, fake.regions, "the border must not be written ahead of its frame")
+        self.assertEqual(fake.regions[BORDER_SHOWN_ADDR], bytes([BORDER_STALE | border]))
+        stale_at = next(
+            i for i, op in enumerate(fake.ops) if op[:2] == ("write_region", BORDER_SHOWN_ADDR)
+        )
+        tracker_at = next(
+            i
+            for i, op in enumerate(fake.ops)
+            if op[:2] == ("write_memory_file", f"{FRAME_TRACKER_ADDR:04X}")
+        )
+        self.assertLess(stale_at, tracker_at)
+        self.assertEqual(fake.ops[stale_at][3], RegionID.VIC_D020)
+
+    def test_a_host_dma_flip_writes_the_border_just_before_arming(self):
+        fake = self._push(HiresDisplayMode(double_buffer=True), 6)
+        kinds = [(op[0], op[1]) for op in fake.ops if op[0] != "write_memory"]
+        border_at = kinds.index(("write_region", 0xD020))
+        arm_at = kinds.index(("write_memory_file", f"{FRAME_TRACKER_ADDR:04X}"))
+        self.assertEqual(border_at, arm_at - 1)
 
 
 # --- Commit budget (#669) ---------------------------------------------------

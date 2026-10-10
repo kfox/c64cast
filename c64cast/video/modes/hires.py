@@ -25,6 +25,8 @@ from c64cast.video.modes_irq import (
     BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
+    BORDER_SHOWN_ADDR,
+    BORDER_STALE,
     DD00_BANK_0,
     FRAME_TRACKER_ADDR,
     REU_VIDEO_BITMAP_LEN,
@@ -413,11 +415,16 @@ class HiresDisplayMode(BitmapDisplayMode):
         }
         return flicker
 
+    @staticmethod
+    def _write_border(api: C64Backend, bg: int) -> None:
+        """$D020 from the host, for the page flips whose IRQ does not carry it.
+        Written after the frame's banks and just before it is armed, so the
+        border leads its frame by less than a field rather than by the whole
+        frame write."""
+        api.write_region(0xD020, bytes([bg & 0xFF, bg & 0xFF]), region_id=RegionID.VIC_D020)
+
     def push(self, api: C64Backend, buffers: BitmapComposeBuffers) -> None:
         bg = buffers["bg"]
-        # $D020 is a single global register the REU bank-swap IRQ does not
-        # manage, so the host writes it on both paths.
-        api.write_region(0xD020, bytes([bg & 0xFF, bg & 0xFF]), region_id=RegionID.VIC_D020)
         bitmap_bytes = buffers["bitmap"].tobytes()
         screen_bytes = buffers["screen"].tobytes()
         if self._blend_table is not None:
@@ -438,11 +445,19 @@ class HiresDisplayMode(BitmapDisplayMode):
             api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
             api.write_region(page_a, screen_bytes, region_id=page_a_id)
             api.write_region(page_b, page_b_bytes, region_id=page_b_id)
+            self._write_border(api, bg)
             self._arm_flicker_swap(api, bg, dd00)
             self._displayed_bank = target
             return
         if self.use_reu_staged:
-            push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, self._reu_slot)
+            # The dispatcher writes $D020 as it flips to this frame, so the
+            # border cannot change ahead of the picture. The host sends only
+            # the stale mark, and only when it would have written $D020 itself,
+            # so a poke over the border (the armed-loop red) holds until then.
+            api.write_region(
+                BORDER_SHOWN_ADDR, bytes([BORDER_STALE | (bg & 0x0F)]), region_id=RegionID.VIC_D020
+            )
+            push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, bg, self._reu_slot)
             self._reu_slot += 1
             return
         if self.double_buffer:
@@ -450,8 +465,10 @@ class HiresDisplayMode(BitmapDisplayMode):
             target, bm_addr, scr_addr, bm_id, scr_id, dd00 = self._hostdma_swap_target()
             api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
             api.write_region(scr_addr, screen_bytes, region_id=scr_id)
+            self._write_border(api, bg)
             self._arm_hostdma_swap(api, bg, dd00)
             self._displayed_bank = target
             return
+        self._write_border(api, bg)
         api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)
         api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
