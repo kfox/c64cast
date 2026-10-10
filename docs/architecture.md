@@ -69,6 +69,7 @@ the two lists account for every module in the tree.
 | `audio/dac_capture_device.py` | [Audio output](architecture/audio.md#picking-the-capture-device) |
 | `audio/dac_curve_resolve.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
 | `audio/dac_curves.py` | [Audio output](architecture/audio.md#audiodac_curve--mahoney-8-bit-d418-companding) |
+| `audio/dac_pair.py` | [Audio output](architecture/audio.md#dac_pairpy--two-sid-d418-dac) |
 | `audio/dac_slot_ring.py` | [Audio output](architecture/audio.md#the-slot-ring-reading-signed-levels-directly) |
 | `app/doctor.py` | [Config, CLI & ensemble](architecture/config.md#doctorpy--config-and-environment-diagnostics) |
 | `video/dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |

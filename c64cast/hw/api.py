@@ -392,6 +392,14 @@ REINIT_STUB_TEMPLATE = bytes(
 # layouts overlapping it are refused.
 _AUDIO_REGION_LO = 0xC000
 _AUDIO_REGION_HI = 0xC300  # exclusive
+# The two-SID DAC's lookup tables (audio/dac_pair.py) sit above the player's
+# default base, so they are a second range rather than a wider first one.
+_DAC_PAIR_TABLES_LO = 0xCE00
+_DAC_PAIR_TABLES_HI = 0xD000  # exclusive
+_AUDIO_KEEP_CLEAR = (
+    (_AUDIO_REGION_LO, _AUDIO_REGION_HI),
+    (_DAC_PAIR_TABLES_LO, _DAC_PAIR_TABLES_HI),
+)
 
 # Highest legal end address for the player bundle. $D000+ is I/O space.
 _PLAYER_BUNDLE_HI_MAX = 0xD000
@@ -482,7 +490,7 @@ def _layout_fits(
         end = base + size
         if base < _PLAYER_BASE_MIN or end > _PLAYER_BUNDLE_HI_MAX:
             return False
-        if base < _AUDIO_REGION_HI and end > _AUDIO_REGION_LO:
+        if any(base < hi and end > lo for lo, hi in _AUDIO_KEEP_CLEAR):
             return False
         if base < payload_hi and end > payload_lo:
             return False
@@ -516,7 +524,7 @@ def _find_free_layout(parsed: ParsedPsid, avoid: bytes | bytearray) -> _PlayerLa
     def _blocked(addr: int) -> bool:
         if payload_lo <= addr < payload_hi:
             return True
-        if _AUDIO_REGION_LO <= addr < _AUDIO_REGION_HI:
+        if any(lo <= addr < hi for lo, hi in _AUDIO_KEEP_CLEAR):
             return True
         return bool(avoid[addr])
 

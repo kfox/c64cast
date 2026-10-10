@@ -539,6 +539,43 @@ Old pre-multi-socket calibration files used both a different schema and a differ
 
 A file written before the slot ring keeps loading (its `sidtable` is all a reader needs) but its table came from the two-reference scheme described above, which measured 4.8 dB *worse* than no calibration at all on the one chip it was compared on. Re-run `--calibrate-dac` once; it takes ≈50 s per socket.
 
+### `dac_pair.py` — two-SID `$D418` DAC
+
+A second SID at a lower mixer level fills in between the first chip's steps, and the two play as one DAC (c64cast#590). The coarse chip answers `$D400` and plays its calibrated Mahoney ladder; the fine chip answers a second base and plays its volume nibble only.
+
+#### Measured before it was built
+
+`scripts/diags/two_sid_dac_probe.py` answered the issue's open questions in one hardware session per configuration, on an Ultimate 64 with an ARM2SID (its two channels reach the mixer as two sources, so each gets its own level):
+
+* **The outputs add.** Random `(coarse, fine)` pairs measured against the sum of the two ladders agree to 0.04–0.07% of span RMS. The Ultimate's mixer is digital, so this is the expected answer, and it makes a pair table a fold of two one-chip ladders rather than a 65,536-entry measurement.
+* **The gain ratio is the mixer setting.** The fine chip's `$0F` read 0.117, 0.0549, 0.0362 and 0.0238 of the coarse chip's at −18, −24, −27 and −30 dB.
+* **The ladders hold.** The coarse ladder measured again ≈6 min later agreed at corr 0.9999998, 0.01–0.06% of span RMS.
+* **It pays.** Level-matched tone SNDR, 6581 mode, fine chip at −24 dB:
+
+| table | 0 dBFS | −12 dBFS | −30 dBFS |
+|---|---|---|---|
+| coarse chip's 4-bit volume nibble | 26.8 dB | 14.0 dB | 6.6 dB |
+| coarse chip calibrated (one chip) | 35.7 dB | 31.0 dB | 14.1 dB |
+| both volume nibbles (4+4) | 36.2 dB | 30.5 dB | 15.2 dB |
+| coarse calibrated + fine volume nibble | **40.0 dB** | **35.8 dB** | **22.4 dB** |
+| coarse calibrated + fine calibrated | 39.1 dB | 33.5 dB | 14.0 dB |
+
+8580 mode measured the same shape (+3, +8 and +12 dB over the one-chip table at −24 dB). The gain is largest on quiet material, where the one-chip ladder's coarse steps near silence are what a listener hears.
+
+**The fine chip plays its volume nibble only** (`FINE_CODES`, `$00`–`$0F`). Letting it use its filter-mode codes as well reaches far more distinct levels on paper and plays worse — the last row. Those codes switch the fine chip's filter routing, and at −24 dB its plain volume ladder is already as fine as the coarse ladder's gaps need.
+
+**The fine level is −24 dB** (`FINE_GAIN_DB`, ≈1/16, so the fine chip's whole volume ladder spans one coarse volume step). Against −18, −27 and −30 dB it was best, or within 1.5 dB of best, at every playback level in both models.
+
+#### The ring is unchanged
+
+The obvious player — a second ring for the fine chip, one more `LDA`/`STA` per sample — doubles the ring traffic, needs a second read pointer, and leaves every REU pump variant, which fills only the one ring, behind. So each ring byte stays one 8-bit amplitude index, and the pair routine looks it up in two 256-byte tables on the C64 (`COARSE_TABLE_ADDR` `$CE00`, `FINE_TABLE_ADDR` `$CF00`) and writes both chips. Every producer and every reader of the ring — host DMA, the REU pumps, the offline pre-encode, the servos and governors reading `R` at `$C025`/`$C026` — is the one-chip path's, and the encoder plays the pair through the identity curve.
+
+`pair_nmi_routine(fine_base)` is `NMI_ROUTINE` with its `STA $D418` replaced: the index is stored into the low operand bytes of the two table loads, which then feed `STA $D418` and `STA fine_base+$18`. Self-modifying operands rather than `TAX` and indexed loads, so X and Y stay untouched as in the one-chip routine, at two cycles' cost; the fast path is 61 cycles against 41. The tables are page-aligned, so the loads never pay a page-cross cycle, and they sit in a second range the SID-player relocator keeps clear (`api._AUDIO_KEEP_CLEAR`), checked by `tests/test_c64_ram_map.py`.
+
+The 8-bit index is a ceiling the two-ring player would not have: a ladder of 256 uniform targets cannot exceed 8 bits, where the measurements above used 1024. It is the cheaper ceiling — every pipeline stays as it is — and at 0 and −12 dBFS the measured pair sits below it anyway.
+
+`fold_pair_table` maps 256 uniform targets across the coarse ladder's span to the `(coarse, fine)` pair whose summed level is nearest. The span is the coarse ladder's own rather than the sum's, so no index steps go on the fine chip's two thin slivers past the coarse ends.
+
 ### Host-DMA pitch compensation — why two of the three knobs default off
 
 Three knobs, and understanding why two of them are off matters more than the knobs themselves.

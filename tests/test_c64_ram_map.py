@@ -26,6 +26,7 @@ import unittest
 from dataclasses import dataclass
 
 from c64cast.audio import audio_handlers as ah
+from c64cast.audio import dac_pair as dp
 from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr
 from c64cast.scenes.overlays import big_text
@@ -103,10 +104,24 @@ _REGIONS: tuple[Region, ...] = (
     ),
     Region(
         "dac_nmi",
-        "NMI DAC routine",
+        "NMI DAC routine (one SID or a pair)",
         ah.NMI_ROUTINE_ADDR,
-        len(ah.NMI_ROUTINE),
+        _longest(ah.NMI_ROUTINE, dp.pair_nmi_routine(0xD420)),
         f"{_AH}:NMI_ROUTINE_ADDR",
+    ),
+    Region(
+        "dac_nmi",
+        "two-SID coarse table",
+        dp.COARSE_TABLE_ADDR,
+        256,
+        "c64cast.audio.dac_pair:COARSE_TABLE_ADDR",
+    ),
+    Region(
+        "dac_nmi",
+        "two-SID fine table",
+        dp.FINE_TABLE_ADDR,
+        256,
+        "c64cast.audio.dac_pair:FINE_TABLE_ADDR",
     ),
     Region(
         "reu_pump",
@@ -237,6 +252,7 @@ _REGIONS: tuple[Region, ...] = (
 _NOT_A_REGION: dict[str, str] = {
     f"{_API}:_AUDIO_REGION_LO": "lower bound the SID-player relocator keeps clear",
     f"{_API}:_AUDIO_REGION_HI": "upper bound the SID-player relocator keeps clear",
+    f"{_API}:_DAC_PAIR_TABLES_LO": "lower bound of the second range the relocator keeps clear",
     "c64cast.hw.c64:KERNAL_CIA1_LATCH_PAL": "a CIA #1 timer latch value, not an address",
     f"{_MI}:REU_VIDEO_SLOT_STRIDE": "the distance between REU staging slots, not an address",
     "c64cast.hw.c64:KERNAL_CIA1_LATCH_NTSC": "a CIA #1 timer latch value, not an address",
@@ -329,8 +345,12 @@ class CoResidencyTest(unittest.TestCase):
         # so the region has to cover every byte the DAC NMI and the REU pump
         # place in the handler page.
         audio = [r for r in _REGIONS if r.owner in ("dac_nmi", "reu_pump") and r.start >= 0xC000]
-        self.assertLessEqual(api._AUDIO_REGION_LO, min(r.start for r in audio))
-        self.assertGreaterEqual(api._AUDIO_REGION_HI, max(r.end for r in audio))
+        for r in audio:
+            with self.subTest(region=str(r)):
+                self.assertTrue(
+                    any(lo <= r.start and r.end <= hi for lo, hi in api._AUDIO_KEEP_CLEAR),
+                    "the SID-player relocator could place its bundle over this handler",
+                )
 
     def test_big_text_shares_no_byte_with_the_audio_handlers(self):
         # The #559 instance by literal address: the symbolic check above moves
