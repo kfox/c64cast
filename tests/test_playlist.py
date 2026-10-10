@@ -738,25 +738,73 @@ class PlaylistTest(unittest.TestCase):
 
     def _writes_seen_by_the_next_setup(self, cut: str) -> list[tuple[str, object]]:
         scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        if cut == "lap":
+            scenes = scenes[:1]
         api = FakeApi()
         pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
         pl.current = scenes[0]
+        nxt = scenes[-1]
         seen_at_setup: list[list[tuple[str, object]]] = []
-        setup = scenes[1].setup
-        scenes[1].setup = lambda: (seen_at_setup.append(list(api.writes)), setup())
+        setup = nxt.setup
+        nxt.setup = lambda: (seen_at_setup.append(list(api.writes)), setup())
         if cut == "jump":
             pl.request_jump(1, skip_interstitial=True)
             scenes[0].is_done = True
             pl._advance_after_scene()
+        elif cut == "clip":
+            self.assertTrue(pl.perf_swap_scene(nxt))
         else:
-            self.assertTrue(pl.perf_swap_scene(scenes[1]))
+            nxt.is_done = True
+            pl._advance_single_scene()
         self.assertEqual(len(seen_at_setup), 1)
         return seen_at_setup[0]
+
+    def test_the_first_setup_of_a_run_sends_no_release(self):
+        # Nothing has been torn down yet, so there is nothing to release.
+        scenes = [FakeScene("A")]
+        api = FakeApi()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+        pl._advance_single_scene()
+        self.assertEqual(scenes[0].setup_count, 1)
+        self.assertEqual(api.writes, [])
+
+    def test_the_scene_after_its_card_sends_no_second_release(self):
+        # The card's own setup runs the release, with its REU drain.
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        factory, _ = _transition_factory()
+        pl = Playlist(
+            scenes, api, target_fps=200.0, heartbeat_interval=0.0, interstitial_factory=factory
+        )
+        pl.current = scenes[0]
+        scenes[0].is_done = True
+        pl._advance_after_scene()
+        card = pl.current
+        assert card is not None and pl.on_card
+        card.is_done = True
+        pl._advance()
+        self.assertIs(pl.current, scenes[1])
+        self.assertEqual(api.writes, [])
+
+    def test_a_pause_releases_a_leaked_raster_irq_before_it_idles(self):
+        # The TeensyROM's idle does not reset, and the resume hold needs SCNKEY.
+        scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
+        api = FakeApi()
+        stop = threading.Event()
+        pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0, stop_event=stop)
+        pl.current = scenes[0]
+        seen_at_idle: list[list[tuple[str, object]]] = []
+        api.pause_idle = lambda: (seen_at_idle.append(list(api.writes)), stop.set())
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._handle_pause()
+        self.assertEqual(len(seen_at_idle), 1)
+        self.assertIn(("0314", (0x31, 0xEA)), seen_at_idle[0])
+        self.assertEqual(seen_at_idle[0][-1], ("DC0D", "81"))
 
     def test_a_cut_releases_a_leaked_raster_irq_before_the_next_setup(self):
         # The card is what re-arms CIA #1 after a teardown left it masked; a
         # cut has no card, so it has to do the same itself.
-        for cut in ("jump", "clip"):
+        for cut in ("jump", "clip", "lap"):
             with self.subTest(cut=cut):
                 writes = self._writes_seen_by_the_next_setup(cut)
                 self.assertIn(("0314", (0x31, 0xEA)), writes)

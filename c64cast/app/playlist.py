@@ -197,6 +197,10 @@ class Playlist:
         self._content_done = False
         # A restart found on the frame a scene ended: `safe_teardown` restores.
         self._restore_after_teardown = False
+        # A scene was torn down since the last setup, so a raster IRQ its
+        # teardown failed to unhook may still be on $0314: `safe_setup` runs
+        # `_release_leaked_irq` before the next scene that is not the card.
+        self._irq_release_owed = False
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -545,7 +549,6 @@ class Playlist:
         self.drop_current()
         if not self.ensemble_coord.wait_for_audio_claim(new_scene):
             return False
-        self._release_leaked_irq()
         self.safe_setup(new_scene)
         self.current = new_scene
         return True
@@ -665,7 +668,6 @@ class Playlist:
                     "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
                 )
                 self.current = scene
-                self._release_leaked_irq()
                 self.safe_setup(self.current)
                 self.transitioning = False
                 return
@@ -707,16 +709,25 @@ class Playlist:
         self.safe_setup(self.current, announcing=nxt)
         self.transitioning = True
 
+    def _release_leaked_irq_if_owed(self) -> None:
+        if self._irq_release_owed:
+            self._irq_release_owed = False
+            self._release_leaked_irq()
+
     def _release_leaked_irq(self) -> None:
         """What the "UP NEXT" card's setup does for a handler the last
-        teardown left on $0314, for the paths that set the next scene up with
-        no card between: a cut (`request_jump(skip_interstitial=True)`) and a
-        clip launch. Without it a teardown that left CIA #1 masked keeps the
-        keyboard dead through every scene that never hooks an IRQ of its own.
-        No drain: a clip launch is quantized to the beat, and a leaked copy
-        lands on a scene that repaints every frame, not on a static card."""
+        teardown left on $0314, for whatever follows a teardown with no card
+        between: a cut (`request_jump(skip_interstitial=True)`), a clip
+        launch, a broadcast follower, a single-scene lap, reload or resume,
+        and a pause, whose idle on the TeensyROM keeps the machine running
+        and needs the keyboard scan for its resume hold. Without it a
+        teardown that left CIA #1 masked keeps the keyboard dead through
+        every scene that never hooks an IRQ of its own.
+        No drain, because a clip launch is quantized to the beat: a
+        double-buffer setup drains before it clears its banks, but a leaked
+        copy still in flight can land on a static scene that follows."""
         try:
-            release_leaked_raster_irq(self.api, self.log, "playlist cut")
+            release_leaked_raster_irq(self.api, self.log, "scene change")
         except Exception:
             self.log.exception("releasing a leaked raster IRQ failed")
 
@@ -740,6 +751,11 @@ class Playlist:
         claimed for that scene is the one a link outage in this setup
         releases and claims back. `after_restart`: a machine restart under
         `scene` called for this setup (`MachineRestartWatch.arm`)."""
+        # The card's own setup runs the release, with its REU drain, and a
+        # restart has already put the machine's vectors back.
+        if scene is self._card or after_restart:
+            self._irq_release_owed = False
+        self._release_leaked_irq_if_owed()
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
@@ -1029,6 +1045,9 @@ class Playlist:
             scene.teardown()
         except Exception:
             self.log.exception("teardown of %r failed", scene.name)
+        # The card hooks nothing, and its setup already ran the release.
+        if scene is not self._card:
+            self._irq_release_owed = True
         # Runs even when teardown raised, so a crashing scene cannot strand the
         # conductor slot or the ensemble audio lock.
         self.ensemble_coord.release_scene(scene)
@@ -1460,6 +1479,7 @@ class Playlist:
         the next `_advance()` call when we leave this method."""
         self.log.info("paused — hold Commodore key to resume")
         self.drop_current()
+        self._release_leaked_irq_if_owed()
         # Before idling, not after: the poller can set `resume_event` the moment
         # it sees a 3 s C= hold, which can land *during* a slow `pause_idle`, and
         # clearing afterwards would wipe a legitimate resume and strand the pause.
