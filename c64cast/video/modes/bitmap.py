@@ -150,10 +150,11 @@ class BitmapDisplayMode(DisplayMode):
     # helpers take it modulo modes_irq.REU_VIDEO_SLOTS. It advances only after
     # a push returns.
     _reu_slot: int = 0
-    # Set as setup() starts bringing up the bank-swap IRQ, so teardown() unhooks
-    # only a handler this mode hooked. Gating on the mode's options instead
-    # unhooked the handler of whatever scene was on screen whenever a scene
-    # built but never set up was torn down.
+    # Set before setup() first masks the IRQ sources, so teardown() unhooks only
+    # on a mode whose setup began bringing up the bank-swap IRQ, even one the
+    # link cut short before $0314 named this mode's handler. Gating on the
+    # mode's options instead unhooked the handler of whatever scene was on
+    # screen whenever a scene built but never set up was torn down.
     _bank_swap_hooked: bool = False
     # Both set by the subclasses' __init__.
     use_reu_staged: bool

@@ -8,6 +8,7 @@ the raster source is still live lets an IRQ run a half-written handler.
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from typing import Any, cast
 from unittest import mock
 
@@ -73,6 +74,7 @@ class InstallOrderTest(unittest.TestCase):
             HiresDisplayMode(flicker_tolerance="clean"),
             MultiHiresDisplayMode(use_reu_staged=True),
             MultiHiresDisplayMode(double_buffer=True),
+            MultiHiresDisplayMode(flicker_tolerance="clean"),
         ):
             with self.subTest(mode=type(mode).__name__, reu=mode.use_reu_staged):
                 api = FakeAPI()
@@ -91,6 +93,32 @@ class InstallOrderTest(unittest.TestCase):
                 ]
                 self.assertLess(max(mask, disable), drain)
                 self.assertLess(drain, min(pin, clear, *engage))
+
+    def test_a_single_buffer_setup_leaves_the_irq_sources_alone(self):
+        # Nothing in a single-buffer scene would ever re-arm CIA #1.
+        for mode in (HiresDisplayMode(), MultiHiresDisplayMode()):
+            with self.subTest(mode=type(mode).__name__):
+                api = FakeAPI()
+                with quiet_logging():
+                    mode.setup(cast(Ultimate64API, api))
+                    mode.teardown(cast(Ultimate64API, api))
+                self.assertNotIn(("write_memory", _CIA1_ICR, "7F"), api.ops)
+                self.assertNotIn(("write_memory", "D01A", "00"), api.ops)
+
+    def test_a_double_buffer_setup_on_a_backend_with_no_reu_skips_the_drain(self):
+        for mode in (
+            HiresDisplayMode(double_buffer=True),
+            HiresDisplayMode(flicker_tolerance="clean"),
+            MultiHiresDisplayMode(double_buffer=True),
+        ):
+            with self.subTest(mode=type(mode).__name__):
+                api = FakeAPI()
+                api.profile = replace(api.profile, supports_reu=False)
+                with mock.patch.object(modes_irq, "time") as clock:
+                    with quiet_logging():
+                        mode.setup(cast(Ultimate64API, api))
+                clock.sleep.assert_not_called()
+                _first(api.ops, "write_memory", _CIA1_ICR, "7F")
 
     def test_a_setup_cut_short_after_the_mask_still_unmasks_on_teardown(self):
         class _LinkCut(FakeAPI):

@@ -817,8 +817,9 @@ def mask_irq_sources(api: C64Backend, *, drain_reu_copy: bool = False) -> None:
     `drain_reu_copy` then waits out a copy a leaked REU dispatcher may have in
     flight: the masks keep new IRQs out of $C500, but one already inside a copy
     keeps writing a VIC bank for fields at a time. The double-buffer setups
-    pass it before they clear both banks and pin bank 0, so neither the clear
-    nor the pin is undone behind them."""
+    pass it on a backend with a REU, before their engage pokes, their clears
+    of both banks and their bank 0 pin, so none of those is undone behind
+    them."""
     api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
     api.write_memory("D01A", "00")
     if drain_reu_copy:
