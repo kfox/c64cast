@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.flicker import (
@@ -29,9 +29,7 @@ from c64cast.video.modes_irq import (
     FRAME_TRACKER_ADDR,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
-    install_bank_swap_irq,
     push_bitmap_via_reu,
-    uninstall_bank_swap_irq,
 )
 from c64cast.video.palette import (
     C64_PALETTE_BGR,
@@ -298,7 +296,7 @@ class HiresDisplayMode(BitmapDisplayMode):
                 if self.audio_reu_pump_active
                 else BANK_SWAP_IRQ_HANDLER
             )
-            install_bank_swap_irq(api, handler, audio_pump_active=self.audio_reu_pump_active)
+            self._install_bank_swap_irq(api, handler, audio_pump_active=self.audio_reu_pump_active)
             log.info(
                 "hires: REU bank-swap pipeline armed "
                 "(bank 0 ↔ bank 2, IRQ @ $%04X, tracker @ $%04X, "
@@ -307,17 +305,6 @@ class HiresDisplayMode(BitmapDisplayMode):
                 FRAME_TRACKER_ADDR,
                 self.audio_reu_pump_active,
             )
-
-    def teardown(self, api):
-        if self.use_reu_staged or self.double_buffer or self._blend_table is not None:
-            uninstall_bank_swap_irq(api, drain_reu_copy=self.use_reu_staged)
-            if self._blend_table is not None:
-                # uninstall restores $DD00 but not $D018, which the flicker
-                # handler may have left on the $0C00 page — a char scene would
-                # then read its matrix from the wrong offset. Only safe after
-                # uninstall: before it, the next field's IRQ restores the page.
-                api.write_memory(f"{VIC.D018_MEMORY:04X}", f"{VIC.D018_CHAR_DEFAULT:02X}")
-            api.invalidate_cache()
 
     def cycle_style(self, api):
         idx = HIRES_STYLES.index(self.style)

@@ -1115,8 +1115,8 @@ class BankSwapIrqTeardownGuardTest(unittest.TestCase):
         for mode in (
             HiresDisplayMode(double_buffer=True),
             MultiHiresDisplayMode(double_buffer=True),
-            HiresDisplayMode(flicker_tolerance="visible"),
-            MultiHiresDisplayMode(flicker_tolerance="visible"),
+            HiresDisplayMode(flicker_tolerance="clean"),
+            MultiHiresDisplayMode(flicker_tolerance="clean"),
         ):
             with self.subTest(mode=type(mode).__name__):
                 self.assertEqual(self._teardown_sleeps(mode), [])

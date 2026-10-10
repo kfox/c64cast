@@ -759,6 +759,10 @@ class Playlist:
             if mode_name:
                 self.audio.set_nmi_latch_for_mode(mode_name, self.audio_calibration)
         for ov in getattr(scene, "overlays", ()):
+            # Cleared per activation: a raise that disabled the overlay on an
+            # earlier lap (a link drop in its setup) would otherwise keep it
+            # dark for the rest of the run while its setup still ran.
+            ov.disabled = False
             try:
                 ov.setup(self.api, scene)
             except Exception:
@@ -997,9 +1001,10 @@ class Playlist:
             self.ensemble_coord.release_audio_claim(announced)
 
     def safe_teardown(self, scene: Scene) -> None:
+        # A disabled overlay is torn down too: disabling stops its per-frame
+        # work, but what its setup hooked or started (a raster IRQ, a poll
+        # thread) is still live until its teardown undoes it.
         for ov in getattr(scene, "overlays", ()):
-            if getattr(ov, "disabled", False):
-                continue
             try:
                 ov.teardown(self.api, scene)
             except Exception:

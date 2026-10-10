@@ -506,20 +506,14 @@ class PerformanceSession:
 
     def _cancel_arm(self) -> None:
         """Drop the pending arm. A scene already built but never swapped in is
-        best-effort torn down (it was constructed but never ``setup``, so this is
-        just to release any file/decoder handle the constructor opened)."""
-        armed = self._armed
+        dropped without a teardown: a scene's constructor opens nothing (its
+        source, decoder and audio come up in ``setup``), and a teardown reaches
+        what the scene on screen is using — the machine, the bank-swap IRQ at
+        ``$0314`` and the audio streamer the two share."""
         self._armed = None
         # Any look-recall effect state was tied to this arm; drop it so an
         # unrelated later launch can't inherit it.
         self._pending_look_effects = None
-        if armed is None:
-            return
-        if armed.built.is_set() and armed.scene is not None:
-            try:
-                armed.scene.teardown()
-            except Exception:
-                log.debug("performance: discarded clip teardown failed", exc_info=True)
 
     def _progress_armed(self, pl: Playlist) -> None:
         armed = self._armed

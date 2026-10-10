@@ -8,12 +8,15 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
-from c64cast.hw.c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN
+from c64cast._teardown import run_teardown_steps
+from c64cast.hw.c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN, VECTORS
+from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 from c64cast.video.palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
 
 from . import (
@@ -43,6 +46,10 @@ SCREEN_PAGE_ADDRS = (0x0400, 0x0C00)
 # D018 hi-nibble = screen address / $400; low nibble (bits 1-3 = 010) =
 # charset at $1000 (standard ROM). $14 → screen=$0400, $34 → screen=$0C00.
 D018_PAGE_VALUES = (0x14, 0x34)
+# What teardown leaves in $D016/$D018: 40 columns, no X-scroll, page 0. The
+# shadow reset writes the same pair, so a handler left hooked commits them.
+DEFAULT_D016 = 0x08
+DEFAULT_D018 = D018_PAGE_VALUES[0]
 
 # $C000-$C01F is big_text's: the raster handler from the bottom, its two shadow
 # bytes at the top. The audio NMI routine starts at $C020 and the REU pump at
@@ -143,7 +150,8 @@ class BigTextOverlay(Overlay):
     COMPATIBLE_MODES = ("blank", "mcm")
     # MCM writes through the scene's buffers and hooks nothing; every other
     # mode gets the shadow-register raster IRQ (_install_raster_irq). setup()
-    # and teardown() decide by the same rule, through _scene_is_mcm.
+    # decides through _scene_is_mcm; teardown() unhooks only what this
+    # instance's own setup() hooked, so a never-set-up overlay unhooks nothing.
     HOOKS_IRQ_ON_MODES = tuple(m for m in COMPATIBLE_MODES if m != _BUFFER_MODE)
     HELP = "Demo-scene 8×-scaled horizontally-scrolling big text (blank/mcm only)."
     PARAM_HELP = {
@@ -226,6 +234,7 @@ class BigTextOverlay(Overlay):
         # smooth scroll needs the shadow X-scroll byte written every
         # frame for the raster IRQ handler to commit.
         self._api = None
+        self._raster_hooked = False
         self._last_xscroll_byte = -1
         self._next_page = 1  # 0 = $0400, 1 = $0C00
         self._last_coarse_x_px = None  # last frame's cell-snapped scroll
@@ -313,6 +322,8 @@ class BigTextOverlay(Overlay):
         # Page 0 is displayed first, so the first cell-shift writes page 1.
         if not self._scene_is_mcm(scene):
             api.write_memory_file("0C00", bytes([SC_BLANK] * 1000))
+            # Set before the install, so a partial install still gets unhooked.
+            self._raster_hooked = True
             self._install_raster_irq(api)
             self._last_xscroll_byte = 0x08
 
@@ -339,17 +350,22 @@ class BigTextOverlay(Overlay):
                 self._orchestrator.begin(scene_cfg)
 
     def teardown(self, api, scene):
-        if not self._scene_is_mcm(scene):
-            self._uninstall_raster_irq(api)
-            # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
-            # coalesced write, so the next scene never sees a half restore.
-            api.write_regs("d016", 0x08, 0x00, 0x14)
-        # Releases the followers when the conductor's scene tears down mid
-        # broadcast (a CTRL skip, a stop_event). end() is idempotent.
-        if self._orchestrator is not None and self._is_conductor and self._orchestrator.is_active():
-            self._orchestrator.end()
-        self._orchestrator = None
-        self._api = None
+        try:
+            if self._raster_hooked:
+                self._raster_hooked = False
+                self._uninstall_raster_irq(api)
+                # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
+                # coalesced write, so the next scene never sees a half restore.
+                api.write_regs("d016", DEFAULT_D016, 0x00, DEFAULT_D018)
+        finally:
+            # Releases the followers when the conductor's scene tears down mid
+            # broadcast (a CTRL skip, a stop_event), even when the link failed
+            # the restore above. end() is idempotent.
+            orchestrator = self._orchestrator
+            self._orchestrator = None
+            self._api = None
+            if orchestrator is not None and self._is_conductor and orchestrator.is_active():
+                orchestrator.end()
 
     def _install_raster_irq(self, api):
         """Bring up the shadow-register raster IRQ.
@@ -359,7 +375,7 @@ class BigTextOverlay(Overlay):
         IRQ will JMP through a torn vector and crash.
         """
         api.write_memory_file(f"{IRQ_HANDLER_ADDR:04X}", RASTER_IRQ_HANDLER)
-        api.write_regs(f"{SHADOW_D016_ADDR:04X}", 0x08, D018_PAGE_VALUES[0])
+        api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018)
         # Mask every CIA #1 IRQ source so the kernal jiffy IRQ cannot fire while
         # $0314 changes. Timer A keeps running — only the interrupt line is
         # blocked — and the raster handler chains to $EA31 below.
@@ -368,7 +384,9 @@ class BigTextOverlay(Overlay):
         api.write_memory("D01A", "00")
         # One coalesced PUT, so the two-byte vector lands as a single DMA
         # transaction with no torn-vector window.
-        api.write_regs("0314", IRQ_HANDLER_ADDR & 0xFF, (IRQ_HANDLER_ADDR >> 8) & 0xFF)
+        api.write_regs(
+            f"{VECTORS.IRQ:04X}", IRQ_HANDLER_ADDR & 0xFF, (IRQ_HANDLER_ADDR >> 8) & 0xFF
+        )
         # Raster compare at VBLANK. $D011 = $1B is the kernal default, whose
         # bit 7 = 0 keeps the compare line below 256.
         api.write_memory("D012", f"{RASTER_IRQ_LINE:02X}")
@@ -381,16 +399,77 @@ class BigTextOverlay(Overlay):
     def _uninstall_raster_irq(self, api):
         """Tear down in the reverse order of install. Each step keeps the
         IRQ environment self-consistent so any IRQ that fires mid-teardown
-        lands somewhere sane."""
+        lands somewhere sane.
+
+        The raster disable, the vector restore and the CIA #1 unmask are
+        confirmed delivered, since a lost write moves `delivery_epoch` without
+        raising. The kernal handler at $EA31 never acks $D019, so a raster
+        source left live behind the restore re-enters the IRQ on every RTI; and
+        unmasking CIA #1 with $0314 still on the raster handler keeps vectoring
+        the jiffy IRQ into RAM the next scene may overwrite. So the restore
+        waits for the disable, and the unmask for the restore, each logging
+        what it left undone. Whenever the handler stays hooked it can keep
+        committing its shadows every frame, so they are reset to the values
+        `teardown` writes to $D016/$D018."""
+        done: set[str] = set()
+
+        def confirmed(what: str, write: Callable[[], None]) -> None:
+            if not write_confirmed(api, write):
+                raise RuntimeError(
+                    f"the {what} write was not confirmed after {CONFIRM_TRIES} tries"
+                )
+            done.add(what)
+
+        def after(needed: str, what: str, write: Callable[[], None]) -> None:
+            if needed not in done:
+                log.error("big_text: skipping the %s — the %s did not land", what, needed)
+                return
+            confirmed(what, write)
+
+        def reset_shadows_if_hooked() -> None:
+            if "vector restore" in done:
+                return
+            log.error(
+                "big_text: the raster handler stays hooked; resetting its shadows to the "
+                "default $D016/$D018"
+            )
+            confirmed(
+                "shadow reset",
+                lambda: api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018),
+            )
+
         # Raster IRQ off first, so it cannot fire after the vector is restored.
-        api.write_memory("D01A", "00")
-        # Back to the kernal default ($EA31); with the raster and CIA #1 IRQs
-        # both masked, no source is live.
-        api.write_regs("0314", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
-        # Ack any pending raster IRQ before re-enabling CIA #1.
-        api.write_memory("D019", "01")
-        # Kernal jiffy / keyboard scan resumes via the restored $0314.
-        api.write_memory("DC0D", "81")
+        steps: list[tuple[str, Callable[[], object]]] = [
+            (
+                "raster disable",
+                lambda: confirmed("raster disable", lambda: api.write_memory("D01A", "00")),
+            ),
+            # Back to the kernal default ($EA31); with the raster and CIA #1
+            # IRQs both masked, no source is live.
+            (
+                "vector restore",
+                lambda: after(
+                    "raster disable",
+                    "vector restore",
+                    lambda: api.write_regs(
+                        f"{VECTORS.IRQ:04X}",
+                        KERNAL.IRQ_HANDLER & 0xFF,
+                        (KERNAL.IRQ_HANDLER >> 8) & 0xFF,
+                    ),
+                ),
+            ),
+            # Ack any pending raster IRQ before re-enabling CIA #1.
+            ("raster flag ack", lambda: api.write_memory("D019", "01")),
+            # Kernal jiffy / keyboard scan resumes via the restored $0314.
+            (
+                "CIA1 unmask",
+                lambda: after(
+                    "vector restore", "CIA1 unmask", lambda: api.write_memory("DC0D", "81")
+                ),
+            ),
+            ("shadow reset", reset_shadows_if_hooked),
+        ]
+        run_teardown_steps(log, "big_text raster IRQ", steps)
 
     def is_busy(self) -> bool:
         # A conductor keeps the scene running until the message has scrolled off

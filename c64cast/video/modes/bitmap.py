@@ -12,6 +12,7 @@ from c64cast.hw.c64 import (
     D018_HIRES_PAGE_A,
     D018_HIRES_PAGE_B,
     SCREEN,
+    VIC,
     VIC_BANK_0,
     VIC_BANK_2,
     RegionID,
@@ -28,11 +29,13 @@ from c64cast.video.modes_irq import (
     FLICKER_SWAP_IRQ_HANDLER,
     FLICKER_TRACKER_LEN,
     FRAME_TRACKER_ADDR,
+    FRAME_TRACKER_LEN,
     HOSTDMA_SWAP_IRQ_HANDLER,
     HOSTDMA_TRACKER_LEN,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
     install_bank_swap_irq,
+    uninstall_bank_swap_irq,
 )
 from c64cast.video.palette import build_fade_lut
 
@@ -146,6 +149,47 @@ class BitmapDisplayMode(DisplayMode):
     # helpers take it modulo modes_irq.REU_VIDEO_SLOTS. It advances only after
     # a push returns.
     _reu_slot: int = 0
+    # Set as setup() starts bringing up the bank-swap IRQ, so teardown() unhooks
+    # only a handler this mode hooked. Gating on the mode's options instead
+    # unhooked the handler of whatever scene was on screen whenever a scene
+    # built but never set up was torn down.
+    _bank_swap_hooked: bool = False
+    # Both set by the subclasses' __init__.
+    use_reu_staged: bool
+    _blend_table: BlendTable | None
+
+    def _install_bank_swap_irq(
+        self,
+        api: C64Backend,
+        handler_bytes: bytes,
+        tracker_len: int = FRAME_TRACKER_LEN,
+        *,
+        audio_pump_active: bool,
+        tracker_init: bytes | None = None,
+    ) -> None:
+        """install_bank_swap_irq, recorded for teardown(). Recorded first, so
+        an install the link cuts short is still unhooked."""
+        self._bank_swap_hooked = True
+        install_bank_swap_irq(
+            api,
+            handler_bytes,
+            tracker_len,
+            audio_pump_active=audio_pump_active,
+            tracker_init=tracker_init,
+        )
+
+    def teardown(self, api: C64Backend) -> None:
+        if not self._bank_swap_hooked:
+            return
+        self._bank_swap_hooked = False
+        uninstall_bank_swap_irq(api, drain_reu_copy=self.use_reu_staged)
+        if self._blend_table is not None:
+            # uninstall restores $DD00 but not $D018, which the flicker
+            # handler may have left on the $0C00 page — a char scene would
+            # then read its matrix from the wrong offset. Only safe after
+            # uninstall: before it, the next field's IRQ restores the page.
+            api.write_memory(f"{VIC.D018_MEMORY:04X}", f"{VIC.D018_CHAR_DEFAULT:02X}")
+        api.invalidate_cache()
 
     def _hostdma_swap_target(self) -> tuple[int, int, int, int, int, int]:
         """Resolve the current off-screen bank to
@@ -245,7 +289,7 @@ class BitmapDisplayMode(DisplayMode):
             api.write_memory_file(f"{addr:04X}", zeros_screen)
         api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
         self._displayed_bank = 0
-        install_bank_swap_irq(
+        self._install_bank_swap_irq(
             api,
             FLICKER_SWAP_IRQ_HANDLER,
             FLICKER_TRACKER_LEN,
@@ -336,7 +380,7 @@ class BitmapDisplayMode(DisplayMode):
         api.write_memory_file(f"{VIC_BANK_2.SCREEN:04X}", zeros_screen)
         api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
         self._displayed_bank = 0
-        install_bank_swap_irq(
+        self._install_bank_swap_irq(
             api, HOSTDMA_SWAP_IRQ_HANDLER, HOSTDMA_TRACKER_LEN, audio_pump_active=False
         )
 
