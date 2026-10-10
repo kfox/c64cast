@@ -264,6 +264,25 @@ class CutOverBlankTest(unittest.TestCase):
             self.assertTrue(smp._restart_channel(smp._writer_gen))
         self.assertFalse(smp._cut_over_lost)
 
+    def test_a_channel_with_no_deadline_does_not_flush_the_blank(self):
+        # Nothing holds a deadline the channel does not have, so the round
+        # trip would only keep the writer off _io_lock.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, lead_seconds=0.3, ring_base=RING_BASE
+        )
+        self.assertFalse(smp._uses_deadline)
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        smp._q = cast(Any, _Queue())
+        self.addCleanup(smp.stop)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp.start(prebuffer_timeout=0.0)
+            smp._written = smp._lead_target
+            before = chan.flushes
+            smp.flush()
+        self.assertEqual(chan.flushes, before)
+
 
 if __name__ == "__main__":
     unittest.main()

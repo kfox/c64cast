@@ -1096,11 +1096,13 @@ class UltimateAudioSampler:
                 # Confirmed here, on the thread that wrote it: the writer's
                 # refresh checks only its own thread's losses, and moved the
                 # deadline over a blank the link had lost. A loss holds the
-                # deadline into a restart, as a lost writer write does.
-                if not self.api.writes_lost_since(mark):
-                    self.api.flush()
-                if self.api.writes_lost_since(mark):
-                    self._cut_over_lost = True
+                # deadline into a restart, as a lost writer write does. A
+                # channel with no deadline has nothing to hold.
+                if self._uses_deadline:
+                    if not self.api.writes_lost_since(mark):
+                        self.api.flush()
+                    if self.api.writes_lost_since(mark):
+                        self._cut_over_lost = True
             self._written = new_written
             self._content_pos = anchor
             # The splice re-aligns sound and picture, and its own late drops
