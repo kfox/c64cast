@@ -736,8 +736,10 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
         self.assertIsNone(smp._gave_up_gen)
 
     def _retire_during_gate_off(self, smp, landed, *, next_runs=False):
-        # The gate-off sits in the transport through stop() and arm(), and
-        # with next_runs through the next release_hold() as well.
+        # The gate-off sits in the transport through stop() and arm(). With
+        # next_runs the next release_hold() runs too, which waits on
+        # _gate_lock and so lands after the gate-off returns, before its
+        # re-check.
         def gate_off(gen):
             smp._running = False
             smp.arm()
