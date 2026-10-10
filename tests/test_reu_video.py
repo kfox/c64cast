@@ -31,7 +31,6 @@ from c64cast.hw.c64 import (
     CIA2,
     KERNAL,
     NMI_SAFE_MIN_PERIOD_CYCLES,
-    RASTER_COMMIT_LAST_SAFE_LINE,
     REU,
     SCREEN,
     VECTORS,
@@ -1634,11 +1633,13 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 self.assertIn(("dd00", CIA2.PORT_A_BANK_2, 0), log)
 
     def test_every_line_of_the_window_commits(self):
-        # [251, 255] and [0, 43] (mhires: 38), and the lines the 8-bit $D012
+        # [251, 255] and [0, 42] (mhires: 38), and the lines the 8-bit $D012
         # aliases there.
         for name, handler, mhires, _ in self.CASES[:2]:
             last = (
-                modes_irq.MHIRES_COMMIT_LAST_SAFE_LINE if mhires else RASTER_COMMIT_LAST_SAFE_LINE
+                modes_irq.MHIRES_COMMIT_LAST_SAFE_LINE
+                if mhires
+                else modes_irq.HIRES_COMMIT_LAST_SAFE_LINE
             )
             for line in (251, 255, 0, last):
                 with self.subTest(mode=name, line=line):

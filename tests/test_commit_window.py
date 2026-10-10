@@ -371,15 +371,16 @@ def latest_safe_read_line(cycles: int) -> int:
 
 
 # Each handler with the state its commit needs, and the write that has to
-# land before the first badline: the flip, or on mhires the first color-RAM
-# chunk, which holds cell row 0's colors.
+# land before the first badline: the flip, on REU hires the border written
+# after it (the picture's first line has a side border too), or on mhires the
+# first color-RAM chunk, which holds cell row 0's colors.
 HANDLERS = (
-    ("hires", BANK_SWAP_IRQ_HANDLER, partial(prime_reu, mhires=False), "dd00"),
+    ("hires", BANK_SWAP_IRQ_HANDLER, partial(prime_reu, mhires=False), "d020"),
     (
         "hires+pump",
         BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
         partial(prime_reu, mhires=False),
-        "dd00",
+        "d020",
     ),
     ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, partial(prime_reu, mhires=True), "chunk"),
     (
@@ -430,6 +431,20 @@ class CommitBudgetTest(unittest.TestCase):
         )
         own = next(t for n, t in events if n == "chunk")
         self.assertLess(latest_safe_read_line(worst_case_cycles(own)), RASTER_COMMIT_LAST_SAFE_LINE)
+
+    def test_the_full_window_was_too_long_for_the_hires_border(self):
+        """Pins the measurement behind HIRES_COMMIT_LAST_SAFE_LINE: the flip
+        fits the shared window, and the border written after it does not."""
+        for name, handler, _ in HIRES_DISPATCHERS:
+            with self.subTest(mode=name):
+                events = run_commit(handler, prime=partial(prime_reu, mhires=False), line=0)
+                flip, border = (next(t for n, t in events if n == w) for w in ("dd00", "d020"))
+                self.assertGreaterEqual(
+                    latest_safe_read_line(worst_case_cycles(flip)), RASTER_COMMIT_LAST_SAFE_LINE
+                )
+                self.assertLess(
+                    latest_safe_read_line(worst_case_cycles(border)), RASTER_COMMIT_LAST_SAFE_LINE
+                )
 
 
 if __name__ == "__main__":

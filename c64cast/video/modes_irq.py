@@ -439,8 +439,8 @@ def _bank_swap_dispatcher(
     kernal.
 
     ``last_line`` is the last raster line the commit may start on, which a
-    commit that copies after the flip has to pull in (see
-    MHIRES_COMMIT_LAST_SAFE_LINE).
+    commit that writes or copies after the flip has to pull in (see
+    HIRES_COMMIT_LAST_SAFE_LINE and MHIRES_COMMIT_LAST_SAFE_LINE).
     """
     assert tracker_len <= MHIRES_FRAME_TRACKER_LEN
     gate_limit = _RASTER_GATE_BIAS + last_line + 1
@@ -532,6 +532,15 @@ assert VIC_BANK_2.BITMAP == VIC_BANK_0.BITMAP | 0x8000
 assert VIC_BANK_2.SCREEN == VIC_BANK_0.SCREEN | 0x8000
 
 
+# The last raster line a hires commit may start on. Its border write lands 14
+# cycles after the flip and has to beat the picture's first line too, whose
+# side border would otherwise show the previous frame's color beside the new
+# picture. Under the same worst case as the flip, a commit read on line 43
+# wrote the border on line 51. The worst case is computed from these bytes in
+# tests/test_commit_window.py.
+HIRES_COMMIT_LAST_SAFE_LINE = RASTER_COMMIT_LAST_SAFE_LINE - 1
+
+
 def _hires_dispatcher(*, pump: bool) -> bytes:
     return _bank_swap_dispatcher(
         tracker_len=FRAME_TRACKER_LEN,
@@ -544,6 +553,7 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
         border_off=TRACKER_OFF_BORDER,
         ready_off=TRACKER_OFF_READY_FLAG,
         pump=pump,
+        last_line=HIRES_COMMIT_LAST_SAFE_LINE,
     )
 
 
