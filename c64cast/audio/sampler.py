@@ -840,23 +840,11 @@ class UltimateAudioSampler:
             # A voice stopped at a deadline stays in `finished` until a gate-off,
             # and the last stop()'s gate-off may have been lost to the outage
             # that stopped it: a gate-on onto it alone plays nothing.
-            self._send_gate_off()
-            program_channel(
-                self.api,
-                self.channel,
-                reu_offset=self.ring_base,
+            self._program_ring(
                 length=self.ring_size
                 if self._deadline is None
                 else self._deadline_offset(self._deadline),
-                rate=self._actual_rate,
-                bits=self.bits,
                 volume=self._volume,
-                pan=self._pan,
-                repeat=True,
-                repeat_a=0,
-                repeat_b=self.ring_size,
-                gate=False,
-                ref_clock=self._ref_clock,
             )
             # Read before the gate-on goes out, as at a restart: read after
             # its flush, the voice ran ahead of the read head by the round
@@ -1027,6 +1015,13 @@ class UltimateAudioSampler:
         if not self.api.writes_lost_since(mark):
             self.api.flush()
 
+    def _volume_restore_landed(self) -> bool:
+        """Write the channel volume back, and whether the link vouches it
+        arrived (`writes_lost_since`, this thread's writes only)."""
+        mark = self.api.write_loss_mark()
+        self._write_volume(self._volume)
+        return not self.api.writes_lost_since(mark)
+
     def current_flush_epoch(self) -> int:
         """The flush epoch a push made now is tagged with; see
         :meth:`push_samples`."""
@@ -1109,10 +1104,9 @@ class UltimateAudioSampler:
                     self._output_silenced = True
                     self._volume_owed = False
                 elif self._output_silenced:
-                    mark = self.api.write_loss_mark()
-                    self._write_volume(self._volume)
+                    landed = self._volume_restore_landed()
                     self._output_silenced = False
-                    if self.api.writes_lost_since(mark):
+                    if not landed:
                         # Taken as restored all the same: nothing else sends the
                         # volume again, so the channel stayed muted for the rest
                         # of the scene.
@@ -1161,6 +1155,12 @@ class UltimateAudioSampler:
             self._eof = False
             self._cut_epoch = max(self._cut_epoch, epoch)
 
+    def _is_current(self, gen: int) -> bool:
+        """Whether the writer of ``gen`` is neither stopped nor superseded.
+        `_running` is read first: release_hold() bumps the generation before
+        it sets it."""
+        return self._running and gen == self._writer_gen
+
     def _writer_loop(self, gen: int) -> None:
         """Run writer steps until stopped or superseded.
 
@@ -1173,7 +1173,7 @@ class UltimateAudioSampler:
         channel back instead (`_recover`), until one lands."""
         failing_since: float | None = None
         backoff = 0.0
-        while self._running and gen == self._writer_gen:
+        while self._is_current(gen):
             try:
                 wrote = self._recover(gen) if self._failed else self._writer_step(gen)
             except Exception as e:
@@ -1217,9 +1217,8 @@ class UltimateAudioSampler:
         Nothing for a writer stopped or superseded: one that outlived stop()
         inside `_recover`'s gate-off reaches here once arm() has cleared
         `_failed`, and would put the next activation's writer into
-        `_recover`. `_running` is read first: release_hold() bumps the
-        generation before it sets it."""
-        if not (self._running and gen == self._writer_gen):
+        `_recover`."""
+        if not self._is_current(gen):
             return
         self._failed = True
         self._gave_up_gen = gen
@@ -1231,7 +1230,7 @@ class UltimateAudioSampler:
         )
         landed = self._gate_off_landed(gen)
         # The gate-off can sit in the transport past stop() and arm().
-        if not (self._running and gen == self._writer_gen):
+        if not self._is_current(gen):
             return
         self._gate_off_landed_once = bool(landed)
         if landed is False:
@@ -1249,7 +1248,7 @@ class UltimateAudioSampler:
         with self._io_lock:
             # A stopped writer's read head is 0, so past arm() it would take
             # the next activation's first audio from the queue as late.
-            if not self._running or gen != self._writer_gen or self._cut_epoch != self._flush_epoch:
+            if not self._is_current(gen) or self._cut_epoch != self._flush_epoch:
                 return
             consumed = self._read_consumed_bytes()
             # A stop() since the check above already read the head as 0.
@@ -1291,7 +1290,7 @@ class UltimateAudioSampler:
             landed = self._gate_off_landed(gen)
             if landed is None:
                 return False
-            if not (self._running and gen == self._writer_gen):
+            if not self._is_current(gen):
                 return False
             if not landed:
                 raise _WritesLost("the link lost the gate-off")
@@ -1300,7 +1299,7 @@ class UltimateAudioSampler:
         if not self._restart_channel(gen, cause="the link answers again after the give-up"):
             return False
         with self._io_lock:
-            if not (self._running and gen == self._writer_gen):
+            if not self._is_current(gen):
                 return False
             # An outage says nothing about the producer (_write_payload).
             self._late_ref = None
@@ -1324,11 +1323,11 @@ class UltimateAudioSampler:
         one retry every WRITER_BACKOFF_MAX_S floods the log for as long as
         the outage lasts."""
         with self._gate_lock:
-            if not (self._running and gen == self._writer_gen):
+            if not self._is_current(gen):
                 return None
             mark = self.api.write_loss_mark()
             try:
-                self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
+                self._send_gate_off()
                 if self.api.writes_lost_since(mark):
                     return False
                 self.api.flush()
@@ -1388,11 +1387,9 @@ class UltimateAudioSampler:
         """Send the volume restore a resume lost (`_volume_owed`) again.
         Raises when the link lost it, so the writer backs off and retries."""
         with self._gate_lock:
-            if not (self._volume_owed and self._running and gen == self._writer_gen):
+            if not (self._volume_owed and self._is_current(gen)):
                 return
-            mark = self.api.write_loss_mark()
-            self._write_volume(self._volume)
-            if self.api.writes_lost_since(mark):
+            if not self._volume_restore_landed():
                 raise _WritesLost("the link lost the volume restore")
             self._volume_owed = False
         log.info("sampler: the volume restore landed")
@@ -1419,9 +1416,29 @@ class UltimateAudioSampler:
         return off
 
     def _send_gate_off(self) -> None:
-        """Clear the channel's control register, unflushed: the
-        `program_channel` that follows flushes it with the registers."""
+        """Clear the channel's control register, unflushed: the caller
+        flushes it, alone or with the registers that follow it."""
         self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
+
+    def _program_ring(self, *, length: int, volume: int) -> None:
+        """Gate the channel off and program it as the looping ring, gated
+        off, flushed: the gate-on (`_send_gate_on`) follows."""
+        self._send_gate_off()
+        program_channel(
+            self.api,
+            self.channel,
+            reu_offset=self.ring_base,
+            length=length,
+            rate=self._actual_rate,
+            bits=self.bits,
+            volume=volume,
+            pan=self._pan,
+            repeat=True,
+            repeat_a=0,
+            repeat_b=self.ring_size,
+            gate=False,
+            ref_clock=self._ref_clock,
+        )
 
     def _send_gate_on(self) -> None:
         """Gate the looping ring on and flush: the step `program_channel`
@@ -1481,7 +1498,7 @@ class UltimateAudioSampler:
         if new is None and not confirm:
             return
         with self._gate_lock:
-            if not (self._running and gen == self._writer_gen):
+            if not self._is_current(gen):
                 return
             mark = self._ring_mark
             if (
@@ -1578,7 +1595,7 @@ class UltimateAudioSampler:
         where a register write is lost quietly and its flush logs a warning,
         one per retry for as long as the outage lasts."""
         with self._gate_lock:
-            if not (self._running and gen == self._writer_gen):
+            if not self._is_current(gen):
                 return False
             with self._io_lock:
                 mark = self.api.write_loss_mark()
@@ -1586,21 +1603,9 @@ class UltimateAudioSampler:
                 self._write_wrapped(0, self._neutral_unit * (fresh // self.bps))
                 # `finished` is left only through a gate-off; the next gate-on
                 # starts the channel from offset 0.
-                self._send_gate_off()
-                program_channel(
-                    self.api,
-                    self.channel,
-                    reu_offset=self.ring_base,
+                self._program_ring(
                     length=fresh if self._uses_deadline else self.ring_size,
-                    rate=self._actual_rate,
-                    bits=self.bits,
                     volume=0 if self._output_silenced else self._volume,
-                    pan=self._pan,
-                    repeat=True,
-                    repeat_a=0,
-                    repeat_b=self.ring_size,
-                    gate=False,
-                    ref_clock=self._ref_clock,
                 )
                 # Read before the gate-on goes out, not after its flush: the
                 # FPGA then runs behind the read head by the gate-on's send
