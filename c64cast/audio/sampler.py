@@ -1345,7 +1345,16 @@ class UltimateAudioSampler:
         # restore lost ahead of it raised every pass, so the channel stayed
         # stopped until the give-up.
         if self._volume_owed:
-            self._restore_owed_volume(gen)
+            try:
+                self._restore_owed_volume(gen)
+            except _WritesLost as e:
+                # Raised here, a restore whose flush ran into the guard bought
+                # a back-off `_backoff_wait` no longer cuts short, as the
+                # refresh below did.
+                if not self._deadline_reached():
+                    raise
+                log.warning("sampler: %s; restarting the channel", _failure_text(e))
+                return self._restart_channel(gen)
         wrote = self._ring_step(gen)
         if not self._deadline_reached():
             try:

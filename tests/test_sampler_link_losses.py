@@ -397,6 +397,25 @@ class VolumeRestoreTest(unittest.TestCase):
         self.assertEqual(chan.volume, smp._volume)
         self.assertFalse(smp._volume_owed)
 
+    def test_a_restore_lost_into_the_guard_restarts_the_channel(self):
+        # The restore's flush ran into the guard and then raised: the full
+        # back-off it bought stopped the voice before the next pass restarted.
+        smp, chan = self._resumed(lose_restore=True)
+        chan.lose_volume = True
+        assert smp._deadline is not None
+        past = smp._deadline / (smp._actual_rate * smp.bps) + 1.0
+        plain_write = chan.write_memory
+
+        def slow_write(address: str, data_hex: str) -> None:
+            chan.clock.now = past
+            plain_write(address, data_hex)
+
+        chan.write_memory = slow_write  # type: ignore[method-assign]
+        with mock.patch.object(s, "time", chan.clock), self.assertLogs("c64cast.audio.sampler"):
+            self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual(chan.volume, smp._volume)
+        self.assertFalse(smp._volume_owed)
+
     def test_arm_clears_the_owed_restore(self):
         smp, _chan = self._resumed(lose_restore=True)
         with quiet_logging():
