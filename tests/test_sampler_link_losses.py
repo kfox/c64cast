@@ -377,6 +377,20 @@ class VolumeRestoreTest(unittest.TestCase):
             smp._writer_step(smp._writer_gen)
         self.assertTrue(smp._volume_owed)
 
+    def test_a_refused_restore_is_not_flushed(self):
+        # Flushed after the link refused it, every retry on a dead link logged
+        # a "dma flush failed" warning, and nothing could confirm it.
+        smp, chan = self._resumed(lose_restore=True)
+        chan.lose_volume = True
+        before = chan.flushes
+        with (
+            mock.patch.object(s, "time", _Clock()),
+            self.assertRaisesRegex(ConnectionError, "volume restore"),
+        ):
+            smp._restore_owed_volume(smp._writer_gen)
+        self.assertEqual(chan.flushes, before)
+        self.assertTrue(smp._volume_owed)
+
     def test_a_restart_settles_the_owed_restore(self):
         smp, chan = self._resumed(lose_restore=True)
         self.assertTrue(smp._volume_owed)

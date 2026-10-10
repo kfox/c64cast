@@ -1017,10 +1017,15 @@ class UltimateAudioSampler:
 
     def _write_volume(self, value: int) -> None:
         """Write channel volume (0..63) live, without reprogramming the channel.
-        Used by the pause fast mute ($DF21 for channel 0) and its restore."""
+        Used by the pause fast mute ($DF21 for channel 0) and its restore.
+        A write the link already refused is not flushed: no flush can
+        confirm it, and on a dead link the writer's retry of a lost restore
+        logged a "dma flush failed" warning every pass."""
         addr = channel_base(self.channel) + REG_VOLUME
+        mark = self.api.write_loss_mark()
         self.api.write_memory(f"{addr:04X}", f"{value & 0x3F:02X}")
-        self.api.flush()
+        if not self.api.writes_lost_since(mark):
+            self.api.flush()
 
     def current_flush_epoch(self) -> int:
         """The flush epoch a push made now is tagged with; see
