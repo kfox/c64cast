@@ -159,9 +159,25 @@ def _emit_pass(lines: list[_Line], labels: dict[str, int], origin: int) -> bytes
         else:
             stmt = _substitute(line.stmt, labels, pass1=False)
             chunk = bytes(_assemble_one(line, stmt, pc))
+            _check_branch_reach(line, stmt, pc)
         out += chunk
         pc += len(chunk)
     return bytes(out)
+
+
+def _check_branch_reach(line: _Line, stmt: str, pc: int) -> None:
+    """Refuse a branch whose target is out of its signed 8-bit reach. py65
+    encodes one without complaint, keeping the low byte of the displacement,
+    so the branch lands somewhere else in the payload."""
+    mnemonic, _, operand = stmt.partition(" ")
+    if mnemonic.upper() not in _BRANCHES:
+        return
+    displacement = int(operand.strip().lstrip("$"), 16) - (pc + 2)
+    if not -0x80 <= displacement <= 0x7F:
+        raise AsmError(
+            f"line {line.lineno}: {line.stmt!r} is {displacement} bytes from its target, "
+            "past a branch's -128..127 reach"
+        )
 
 
 def _assemble_one(line: _Line, stmt: str, pc: int) -> list[int]:
