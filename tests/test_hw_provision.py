@@ -163,6 +163,12 @@ class ProvisionReuTest(unittest.TestCase):
         self.assertEqual(api.put_calls, [("C64 and Cartridge Settings", "REU Size", "16 MB")])
         self.assertEqual(restore, {"REU Size": "2 MB"})
 
+    def test_provisioned_size_holds_every_video_staging_slot(self):
+        from c64cast.video.modes_irq import REU_VIDEO_TOP
+
+        provisioned = hw_provision._REU_SIZE_BYTES[hw_provision.REU_PROVISION_SIZE]
+        self.assertLess(REU_VIDEO_TOP, provisioned)
+
     def test_skipped_when_auto_reu_off(self):
         api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
         cfg = _cfg("""
