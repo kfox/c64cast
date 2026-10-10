@@ -1,12 +1,13 @@
 """Taking a raster IRQ handler off `$0314` over a link that can lose writes.
 
-Three callers unhook one: a bitmap mode's bank-swap teardown
-(`video/modes_irq.uninstall_bank_swap_irq`), `big_text`'s teardown, and the
-interstitial card, which defeats a handler a teardown leaked. They used to
-carry a sequence each, with retry rules of their own, and the copies drifted:
-one restored `$0314` only once its raster disable landed, another restored it
-regardless and wrote the disable again behind it. `unhook_raster_irq` is the
-one sequence all three run.
+Four callers unhook one: a bitmap mode's bank-swap teardown
+(`video/modes_irq.uninstall_bank_swap_irq`), `big_text`'s teardown, and,
+through `release_leaked_raster_irq`, the interstitial card and the playlist's
+scene changes that have no card, which defeat a handler a teardown leaked.
+They used to carry a sequence each, with retry rules of their own, and the
+copies drifted: one restored `$0314` only once its raster disable landed,
+another restored it regardless and wrote the disable again behind it.
+`unhook_raster_irq` is the one sequence all of them run.
 
 Not every step is an independent promise, so the order is the contract:
 
@@ -234,7 +235,11 @@ def release_leaked_raster_irq(
         before_unmask=(
             (
                 "VIC bank 0",
-                lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}"),
+                lambda: confirm(
+                    api,
+                    "VIC bank 0",
+                    lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}"),
+                ),
             ),
         ),
     )
