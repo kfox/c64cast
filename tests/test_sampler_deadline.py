@@ -403,6 +403,8 @@ class OutageTest(unittest.TestCase):
             old = smp._deadline
             assert old is not None
             smp._written = old + smp._lead_target
+            # A refresh after the first, whose flush confirms what went before.
+            smp._ring_mark = chan.write_loss_mark()
             clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
             slow = chan.flush
 
@@ -414,6 +416,38 @@ class OutageTest(unittest.TestCase):
             smp._advance_deadline(smp._writer_gen)
             self.assertEqual(smp._deadline, old)
             chan.flush = slow  # type: ignore[method-assign]
+            with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
+                self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertEqual((smp._restarts, chan.gates, chan.state), (1, 2, "playing"))
+
+    def test_a_length_write_landing_after_the_old_deadline_restarts(self):
+        # The flush returned in time, but the length write's own send sat in
+        # a redial past the old deadline: the voice stopped there before the
+        # new one landed, and the next pass restarts it.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._written = old + smp._lead_target
+            smp._ring_mark = chan.write_loss_mark()
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            slow = chan.write_regs
+
+            def late_write(base_addr: str, *values: int) -> None:
+                clock.now = old / 2 / smp._actual_rate
+                slow(base_addr, *values)
+
+            chan.write_regs = late_write  # type: ignore[method-assign]
+            smp._advance_deadline(smp._writer_gen)
+            chan.write_regs = slow  # type: ignore[method-assign]
+            self.assertEqual(smp._deadline, old)
             with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
                 self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual((smp._restarts, chan.gates, chan.state), (1, 2, "playing"))
@@ -437,9 +471,68 @@ class OutageTest(unittest.TestCase):
             smp._written = old + smp._lead_target
             clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
             flushes, length_writes = chan.flushes, chan.length_writes
-            with self.assertRaises(ConnectionError):
+            with self.assertRaisesRegex(s._WritesLost, "lost ring audio"):
                 smp._advance_deadline(smp._writer_gen)
             self.assertEqual((chan.flushes, chan.length_writes), (flushes, length_writes))
+            self.assertEqual(smp._deadline, old)
+            smp.stop()
+
+    def test_a_lost_length_write_is_found_with_nothing_more_to_step_to(self):
+        # The ring holds nothing past the unconfirmed deadline, so the refresh
+        # due near the confirmed one only flushes; it still finds the loss
+        # and holds the deadline where the voice stops.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._ring_mark = chan.write_loss_mark()
+            smp._written = old + smp._lead_target
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            sent = chan.write_regs
+
+            def quietly_lost(base_addr: str, *values: int) -> None:
+                chan.dropped = True  # charged at the next flush
+
+            chan.write_regs = quietly_lost  # type: ignore[method-assign]
+            smp._advance_deadline(smp._writer_gen)
+            chan.write_regs = sent  # type: ignore[method-assign]
+            new = smp._deadline
+            assert new is not None and new > old
+            smp._written = new
+            clock.now = (old - smp._deadline_confirm_by) / 2 / smp._actual_rate + 0.01
+            with self.assertRaisesRegex(s._WritesLost, "deadline write"):
+                smp._advance_deadline(smp._writer_gen)
+            self.assertEqual(smp._deadline, old)
+            smp.stop()
+
+    def test_a_lost_length_write_raises_naming_it(self):
+        # The ring was confirmed; only the length write is lost, and the
+        # raise names it rather than the ring.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._ring_mark = chan.write_loss_mark()
+            smp._written = old + smp._lead_target
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            chan.lose = lambda: True
+            with self.assertRaisesRegex(s._WritesLost, "length register"):
+                smp._advance_deadline(smp._writer_gen)
+            chan.lose = None
             self.assertEqual(smp._deadline, old)
             smp.stop()
 
@@ -480,12 +573,13 @@ class OutageTest(unittest.TestCase):
         volume_reg = CTRL + s.REG_VOLUME
         volumes: list[int] = []
         resume: list[threading.Thread] = []
+        anchors: list[float] = []
         plain_regs, plain_mem = chan.write_regs, chan.write_memory
 
         def write_regs(base_addr: str, *values: int) -> None:
             if int(base_addr, 16) == volume_reg:
                 if smp._output_silenced and not resume:
-                    resume.append(threading.Thread(target=smp.flush))
+                    resume.append(threading.Thread(target=lambda: anchors.append(smp.flush())))
                     resume[0].start()
                     resume[0].join(0.2)
                 volumes.append(values[0])
@@ -508,8 +602,35 @@ class OutageTest(unittest.TestCase):
                 self.assertTrue(smp._writer_step(smp._writer_gen))
             resume[0].join(5.0)
             self.assertFalse(resume[0].is_alive())
+        self.assertEqual(len(anchors), 1)
         self.assertFalse(smp._output_silenced)
         self.assertEqual(volumes[-1], s.SAMPLER_VOLUME_MAX)
+
+    def test_a_plain_splice_does_not_wait_on_the_gate_lock(self):
+        # The writer holds _gate_lock across a refresh's flush and a given-up
+        # gate-off, a redial each; a seek that writes no volume waited it out,
+        # and the wait went into the splice's lateness.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            anchors: list[float] = []
+            epoch = smp._flush_epoch
+            with smp._gate_lock:
+                splice = threading.Thread(target=lambda: anchors.append(smp.flush()))
+                splice.start()
+                splice.join(1.0)
+                blocked = splice.is_alive()
+            splice.join(5.0)
+            smp.stop()
+        self.assertFalse(blocked)
+        self.assertEqual(len(anchors), 1)
+        self.assertEqual((smp._flush_epoch, smp._cut_epoch), (epoch + 1, epoch + 1))
 
     def test_a_restart_over_a_slow_link_leaves_the_channel_behind_the_read_head(self):
         # The restart's flush takes 0.3 s to return. A channel running ahead
@@ -648,7 +769,7 @@ class ForeignLossTest(unittest.TestCase):
         with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
             smp, chan = self._finished(clock)
             chan.lose = lambda: True
-            with self.assertRaises(ConnectionError):
+            with self.assertRaisesRegex(s._WritesLost, "lost the channel restart"):
                 smp._writer_step(smp._writer_gen)
             chan.lose = None
             self.assertEqual((smp._restarts, chan.state), (0, "finished"))

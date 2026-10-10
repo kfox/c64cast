@@ -1374,7 +1374,7 @@ class _FileSink:
         self.pushed = 0
         self._played = played
         # Pushes from this one on are refused, as a DAC drops a blob its full
-        # queue would not take and a sampler that gave up takes nothing.
+        # queue would not take and a stopped sampler takes nothing.
         self.refuse_from: int | None = None
         self._calls = 0
 
@@ -1737,8 +1737,8 @@ class AudioFileSourceEndTest(unittest.TestCase):
         self.assertTrue(src.finished)
 
     def test_audio_the_sink_refused_is_not_waited_for(self):
-        # A sink that stops taking samples mid-file (a sampler whose writer
-        # gave up on the link, a DAC blob dropped at the put timeout) never
+        # A sink that stops taking samples mid-file (a stopped sampler,
+        # a DAC blob dropped at the put timeout) never
         # plays them, so its clock stops short of the file's length; counted,
         # they held the scene to the deadline on silence.
         sink = _FileSink()

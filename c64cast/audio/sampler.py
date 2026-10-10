@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from c64cast._pollthread import PollThread
-from c64cast.hw.backend import ULTIMATE_PROFILE, HardwareProfile
+from c64cast.hw.backend import ULTIMATE_PROFILE, HardwareProfile, LinkError
 from c64cast.hw.c64 import ULTIMATE_AUDIO
 from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
@@ -123,8 +123,10 @@ FLUSH_GUARD_S = 0.15
 # redial) is retried with a doubling back-off between these bounds. The
 # channel stops at its deadline once the lead runs out (DEADLINE_GUARD_S);
 # after WRITER_GIVE_UP_S of unbroken failure (two of socket_dma's 5 s connect
-# timeouts) the writer also gates it off and stops taking audio, so the
-# producer is not parked on a queue nothing drains for the rest of the scene.
+# timeouts) the writer also gates it off and stops writing audio, so the
+# producer is not parked on a queue nothing drains, and goes on trying to
+# restart the channel at the back-off's ceiling. The first restart that lands
+# writes audio again, anchored at the read head, for the rest of the scene.
 WRITER_BACKOFF_MIN_S = 0.02
 WRITER_BACKOFF_MAX_S = 0.5
 WRITER_GIVE_UP_S = 10.0
@@ -182,6 +184,22 @@ MIN_WRITE_INTERVAL_S = 0.02
 # the clock is read just before the gate-on goes out, so the gate-on itself
 # never puts it ahead.
 DEADLINE_GUARD_S = 0.05
+
+
+class _WritesLost(ConnectionError):
+    """Raised by the sampler's own loss check, for a write the link took
+    without an error and may not have delivered; its message names the write."""
+
+
+def _failure_text(error: Exception) -> str:
+    """What the writer's log lines say failed: a transport error raised out
+    of a REU write is the ring's, a `_WritesLost` names its own write, and
+    anything else is named by its type rather than blamed on the link."""
+    if isinstance(error, _WritesLost):
+        return str(error)
+    if isinstance(error, (OSError, LinkError)):
+        return f"ring write failed ({error})"
+    return f"writer step raised {type(error).__name__} ({error})"
 
 
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
@@ -487,9 +505,12 @@ class UltimateAudioSampler:
         # the next accepted push (a video's demuxer pushes again after a seek
         # back), so it is not a "track finished" signal.
         self._input_ended = False
-        # Set when the writer gave up on a dead link; push_samples then drops
-        # rather than park the producer on a queue nothing drains.
+        # Set while the writer has given up on a dead link: it then takes
+        # queued audio only as the read head passes its slot (_drop_passed),
+        # and tries to bring the channel back (_recover), which clears it.
         self._failed = False
+        # Whether the give-up's gate-off has landed (_recover).
+        self._gate_off_landed_once = False
 
         self._gate_time = 0.0
         self._held = False
@@ -546,9 +567,8 @@ class UltimateAudioSampler:
         # takes a re-anchor in when it is made, since the heard sample holds
         # from then on whether or not the write lands; the count and the log
         # line wait for a ring write to land at it. Until then it is also
-        # _unlanded_reanchor, (shift in bytes, the log line's span), which the
-        # lag leaves out again once the writer has given up (_failed_lag_bytes),
-        # and the writer's retries of a failed write go back to its anchor.
+        # _unlanded_reanchor, (shift in bytes, the log line's span), and the
+        # writer's retries of a failed write go back to its anchor.
         self._reanchors = 0
         self._reanchor_lag: tuple[int, tuple[tuple[int, int], ...], int] = (0, (), 0)
         self._unlanded_reanchor: tuple[int, str] | None = None
@@ -574,14 +594,21 @@ class UltimateAudioSampler:
         self._cut_epoch = 0
         self._io_lock = threading.Lock()
         self._output_silenced = False
+        # A resume's volume restore the link lost, owed until the writer's
+        # retry (`_restore_owed_volume`) or a restart lands it. Retried on the
+        # playlist thread, a dead link held the resume for a dial per try.
+        self._volume_owed = False
         # Bumped by every start(). A writer carries the generation it was
         # started with and stops writing once that is no longer current, so one
         # still waiting on the queue when stop() and the next start() land
         # cannot write into the new activation's ring.
         self._writer_gen = 0
-        # The generation whose writer gave up on the link. That writer touches
-        # no ring state, only the channel control register, so a later
-        # activation need not refuse while it lingers in a link call.
+        # The generation whose writer gave up on the link and has not brought
+        # the channel back. That writer writes only a gate-off, under
+        # _gate_lock, and restarts, under _gate_lock and _io_lock, each behind
+        # a generation and _running check, so a later activation need not
+        # refuse while it lingers in a link call: arm() waits out the restart
+        # in flight instead.
         self._gave_up_gen: int | None = None
         # Held across the give-up writer's gate-off and start()'s gate-on, so
         # a gate-off still in flight from a retired writer cannot land after
@@ -589,21 +616,41 @@ class UltimateAudioSampler:
         self._gate_lock = threading.Lock()
 
         # The dead-man deadline (DEADLINE_GUARD_S): the absolute position the
-        # channel's length register stops it at, as last confirmed landed;
-        # None until a gate-on programs one. _ring_phase is the absolute
-        # position at ring offset 0: a restart gates the channel on again,
-        # which starts it from offset 0 at the read head of the moment.
+        # channel's length register stops it at, as last sent; None until a
+        # gate-on programs one. A refresh's length write is confirmed by the
+        # next refresh's flush, and until then _deadline_confirmed is the one
+        # before it, where the voice stops if that write was lost.
+        # _ring_phase is the absolute position at ring offset 0: a restart
+        # gates the channel on again, which starts it from offset 0 at the
+        # read head of the moment.
         self._deadline: int | None = None
+        self._deadline_confirmed: int | None = None
         self._ring_phase = 0
         self._deadline_guard = int(DEADLINE_GUARD_S * self._actual_rate) * self.bps
         # Refreshed once the read head is this close, by at least the step.
         # The ring is kept no less than the low watermark ahead of the reader
-        # (a live stream sits there), so that is the distance: a refresh then
-        # still finds a step to take before the guard. A decoder a whole lead
-        # ahead costs a refresh every 0.75 s, a stream at the watermark one
-        # every 1/16 of the lead target.
+        # (a live stream sits there), so that is the distance. The step is
+        # what the watermark leaves past three guards, so a stream there still
+        # refreshes with the deadline that far ahead of the reader; below
+        # that distance any step at all is taken (_deadline_urgent), since a
+        # deadline stopped short of its target at a 64 KB block
+        # (_next_deadline) can leave less than a step to the target. With the
+        # confirmation below, a decoder a whole lead ahead refreshes about
+        # twice a second at a 1 s lead, and a stream near the watermark about
+        # ten times.
         self._deadline_refresh = max(self._lead_panic, 3 * self._deadline_guard)
-        self._deadline_step = max(self.bps, self._deadline_refresh // 4)
+        self._deadline_urgent = 3 * self._deadline_guard
+        # A refresh is also due once the read head is this close to
+        # _deadline_confirmed while the length write after it is unconfirmed:
+        # waiting for the step alone, a decoder a lead ahead next flushed
+        # about half a second after the voice had stopped at a lost one. Two
+        # guards leave the restart a guard of slack before the voice gets there.
+        self._deadline_confirm_by = 2 * self._deadline_guard
+        self._deadline_step = max(
+            self.bps,
+            self._deadline_refresh // 4,
+            self._lead_panic - self._deadline_urgent,
+        )
         # The underrun pad keeps the ring a quarter of the lead target ahead
         # of the reader, and the deadline has to stay further ahead than its
         # guard, so a lead under eight guards (0.4 s; only the constructor
@@ -617,6 +664,10 @@ class UltimateAudioSampler:
         # lap played there. None until the first refresh: what the writer sends
         # before then lands in a ring prefilled with silence.
         self._ring_mark: int | None = None
+        # Set when flush()'s cut-over blank, written on the playlist thread,
+        # may have been lost: the writer's refresh then treats the ring as
+        # unconfirmed until a restart blanks it. Set and cleared under _io_lock.
+        self._cut_over_lost = False
 
         self._underrun_pads = 0
         self._lead_min: int | None = None
@@ -664,8 +715,10 @@ class UltimateAudioSampler:
         Raises RuntimeError while the last activation's writer is still alive
         (it outlived stop()'s bounded join), since two writers would share the
         ring and the write head. A writer that had given up on the link is
-        let go instead: it no longer touches the ring, and `_gate_lock` keeps
-        its last gate-off from landing after the next gate-on."""
+        let go instead: it writes only a gate-off and restarts, each behind a
+        generation check under `_gate_lock`, which also keeps either from
+        landing after the next gate-on, and a restart in flight holds
+        `_io_lock`, which this waits for."""
         self._refuse_if_writer_survives()
         self._flush_epoch += 1
         while True:
@@ -675,6 +728,7 @@ class UltimateAudioSampler:
                 break
         self._stopped = False
         self._failed = False
+        self._gate_off_landed_once = False
         self._eof = False
         self._input_ended = False
         # The scene reinstalls its analyzer every activation, so a failure on an
@@ -699,9 +753,11 @@ class UltimateAudioSampler:
             # the new one passed it, and a clip shorter than a quantum forever.
             self._last_write_head = None
             self._ring_phase = 0
-            self._deadline = None
+            self._deadline = self._deadline_confirmed = None
             self._ring_mark = None
+            self._cut_over_lost = False
         self._output_silenced = False
+        self._volume_owed = False
         self._restarts = 0
         self._underrun_pads = 0
         self._late_bytes = 0
@@ -780,6 +836,7 @@ class UltimateAudioSampler:
             # The prefill made the whole first lap NEUTRAL, so the first
             # deadline may sit a lead target in whatever the prebuffer held.
             self._deadline = max(self._written, self._lead_target) if self._uses_deadline else None
+            self._deadline_confirmed = self._deadline
             # A voice stopped at a deadline stays in `finished` until a gate-off,
             # and the last stop()'s gate-off may have been lost to the outage
             # that stopped it: a gate-on onto it alone plays nothing.
@@ -888,10 +945,11 @@ class UltimateAudioSampler:
         playback rate (same backpressure as the DAC's ``push_samples``).
         ``epoch`` is the flush epoch (:meth:`current_flush_epoch`) the
         producer read alongside its decision to push; without one, the epoch
-        at entry. Returns the samples accepted: 0 once stopped, after the
-        writer has given up on the link, or when a splice made the chunk
-        stale."""
-        if self._stopped or self._failed:
+        at entry. Returns the samples accepted: 0 once stopped, or when a
+        splice made the chunk stale. While the writer has given up on the
+        link it still drains the queue at the read head's pace, so the
+        producer is throttled, not parked."""
+        if self._stopped:
             return 0
         # The chunk carries the epoch it was produced in. A splice that lands
         # while this call waits on a full queue makes the put pointless, so the
@@ -906,7 +964,7 @@ class UltimateAudioSampler:
             floats = self._dsp.process(floats)
         out_i16 = np.clip(np.rint(floats * 32767.0), -32768, 32767).astype(np.int16)
         pack = pack_pcm(out_i16, self.bits)
-        while not (self._stopped or self._failed):
+        while not self._stopped:
             if self._flush_epoch != epoch:
                 return 0
             try:
@@ -959,10 +1017,15 @@ class UltimateAudioSampler:
 
     def _write_volume(self, value: int) -> None:
         """Write channel volume (0..63) live, without reprogramming the channel.
-        Used by the pause fast mute ($DF21 for channel 0) and its restore."""
+        Used by the pause fast mute ($DF21 for channel 0) and its restore.
+        A write the link already refused is not flushed: no flush can
+        confirm it, and on a dead link the writer's retry of a lost restore
+        logged a "dma flush failed" warning every pass."""
         addr = channel_base(self.channel) + REG_VOLUME
+        mark = self.api.write_loss_mark()
         self.api.write_memory(f"{addr:04X}", f"{value & 0x3F:02X}")
-        self.api.flush()
+        if not self.api.writes_lost_since(mark):
+            self.api.flush()
 
     def current_flush_epoch(self) -> int:
         """The flush epoch a push made now is tagged with; see
@@ -1036,13 +1099,25 @@ class UltimateAudioSampler:
         # Under _gate_lock: a restart programs the volume it read from
         # _output_silenced, and a restore landing between that read and its
         # write was overwritten, leaving the channel muted after the resume.
-        with self._gate_lock:
-            if silence_output:
-                self._write_volume(0)
-                self._output_silenced = True
-            elif self._output_silenced:
-                self._write_volume(self._volume)
-                self._output_silenced = False
+        # A plain splice writes no volume and does not wait for the lock: the
+        # writer holds it across a refresh's flush and a given-up gate-off, a
+        # redial each, and that wait went into the splice's lateness.
+        if silence_output or self._output_silenced:
+            with self._gate_lock:
+                if silence_output:
+                    self._write_volume(0)
+                    self._output_silenced = True
+                    self._volume_owed = False
+                elif self._output_silenced:
+                    mark = self.api.write_loss_mark()
+                    self._write_volume(self._volume)
+                    self._output_silenced = False
+                    if self.api.writes_lost_since(mark):
+                        # Taken as restored all the same: nothing else sends the
+                        # volume again, so the channel stayed muted for the rest
+                        # of the scene.
+                        self._volume_owed = True
+                        log.warning("sampler: the link lost the volume restore; retrying")
         # The queue is not drained: the writer and the prebuffer drop stale
         # tags, and a drain would also take post-splice audio pushed since the
         # bump above, losing the start of the seek target.
@@ -1060,7 +1135,18 @@ class UltimateAudioSampler:
                 # (new_written < old _written: blank [consumed+margin, old W))
                 # and the rare lead<margin case (new_written > old _written:
                 # blank the lap-stale region the reader is about to enter).
+                mark = self.api.write_loss_mark()
                 self._blank(lo, hi)
+                # Confirmed here, on the thread that wrote it: the writer's
+                # refresh checks only its own thread's losses, and moved the
+                # deadline over a blank the link had lost. A loss holds the
+                # deadline into a restart, as a lost writer write does. A
+                # channel with no deadline has nothing to hold.
+                if self._uses_deadline:
+                    if not self.api.writes_lost_since(mark):
+                        self.api.flush()
+                    if self.api.writes_lost_since(mark):
+                        self._cut_over_lost = True
             self._written = new_written
             self._content_pos = anchor
             # The splice re-aligns sound and picture, and its own late drops
@@ -1076,72 +1162,156 @@ class UltimateAudioSampler:
             self._cut_epoch = max(self._cut_epoch, epoch)
 
     def _writer_loop(self, gen: int) -> None:
-        """Run writer steps until stopped, superseded, or the link is given up.
+        """Run writer steps until stopped or superseded.
 
         A step that raises (a REU write the link could not deliver) is
         retried after a doubling back-off rather than ending the thread: a
         dead writer leaves the channel gated (looping the ring's stale audio
         when it has no deadline) while the producer parks on a queue nothing
-        drains. Past
-        WRITER_GIVE_UP_S of unbroken failure it gates the channel off, and
-        stays to retry that until it lands."""
+        drains. Past WRITER_GIVE_UP_S of unbroken failure it stops writing
+        audio (`_give_up`), and each pass after that tries to bring the
+        channel back instead (`_recover`), until one lands."""
         failing_since: float | None = None
         backoff = 0.0
         while self._running and gen == self._writer_gen:
             try:
-                wrote = self._writer_step(gen)
+                wrote = self._recover(gen) if self._failed else self._writer_step(gen)
             except Exception as e:
                 now = time.monotonic()
                 if failing_since is None:
                     failing_since = now
-                    log.warning("sampler: ring write failed (%s); retrying", e)
-                elif now - failing_since >= WRITER_GIVE_UP_S:
+                    log.warning("sampler: %s; retrying", _failure_text(e))
+                elif not self._failed and now - failing_since >= WRITER_GIVE_UP_S:
                     self._give_up(e, gen)
-                    return
                 backoff = min(WRITER_BACKOFF_MAX_S, max(WRITER_BACKOFF_MIN_S, backoff * 2))
-                time.sleep(backoff)
+                time.sleep(self._backoff_wait(backoff))
                 continue
             if wrote and failing_since is not None:
                 log.info(
-                    "sampler: ring writes recovered after %.1f s",
+                    "sampler: writes recovered after %.1f s",
                     time.monotonic() - failing_since,
                 )
                 failing_since = None
                 backoff = 0.0
 
-    def _give_up(self, error: Exception, gen: int) -> None:
-        """Stop taking audio, and gate the channel off once the link carries
-        the write.
+    def _backoff_wait(self, backoff: float) -> float:
+        """The back-off, cut short where the read head comes within the guard
+        of the deadline, the pass that restarts the channel (`_writer_step`).
+        A deadline held for a loss raises on every pass until then, and the
+        doubling slept past that point: a decoder a lead ahead whose length
+        write was lost stopped 80 ms before the restart."""
+        deadline = self._deadline
+        if deadline is None:
+            return backoff
+        left = deadline - self._deadline_guard - self._read_consumed_bytes()
+        if left <= 0:
+            return backoff
+        return min(backoff, (left + self.bps) / (self._actual_rate * self.bps))
 
-        The gate-off goes over the link that just failed, and `write_memory`
-        does not raise when a write is lost, so it is confirmed against
-        `writes_lost_since` and sent again every WRITER_BACKOFF_MAX_S until it
-        lands or the writer is stopped or superseded. Sent once, it was lost
-        to the outage it answered, and the ring went on looping stale audio
-        after the link came back, under a scene that survives the outage."""
+    def _give_up(self, error: Exception, gen: int) -> None:
+        """Stop writing audio after WRITER_GIVE_UP_S of failing writes, until
+        `_recover` brings the channel back. The deadline has already stopped
+        the voice; the gate-off sent here, and by `_recover` until one lands,
+        covers a channel without one.
+
+        Nothing for a writer stopped or superseded: one that outlived stop()
+        inside `_recover`'s gate-off reaches here once arm() has cleared
+        `_failed`, and would put the next activation's writer into
+        `_recover`. `_running` is read first: release_hold() bumps the
+        generation before it sets it."""
+        if not (self._running and gen == self._writer_gen):
+            return
         self._failed = True
         self._gave_up_gen = gen
         log.error(
-            "sampler: ring writes failing for %.0f s (%s); gating the channel off",
+            "sampler: writes failing for %.0f s (last: %s); dropping audio and "
+            "restarting the channel once the link answers",
             WRITER_GIVE_UP_S,
-            error,
+            _failure_text(error),
         )
-        retrying = False
-        while True:
+        landed = self._gate_off_landed(gen)
+        # The gate-off can sit in the transport past stop() and arm().
+        if not (self._running and gen == self._writer_gen):
+            return
+        self._gate_off_landed_once = bool(landed)
+        if landed is False:
+            log.warning(
+                "sampler: the gate-off did not reach the machine; retrying until the link answers"
+            )
+
+    def _drop_passed(self, gen: int) -> None:
+        """While given up: take queued audio whose slot the read head has
+        reached as late, as `_write_payload` would, without writing it. The
+        producer is then throttled at real time rather than parked on a full
+        queue, and the audio it delivers once the link is back keeps its
+        anchor, in step with the picture. Dropped on arrival instead, an
+        audio-file producer ran to the end of its track during the outage."""
+        with self._io_lock:
+            # A stopped writer's read head is 0, so past arm() it would take
+            # the next activation's first audio from the queue as late.
+            if not self._running or gen != self._writer_gen or self._cut_epoch != self._flush_epoch:
+                return
+            consumed = self._read_consumed_bytes()
+            # A stop() since the check above already read the head as 0.
+            if not self._running:
+                return
+            floor = consumed + self._flush_margin
+            while self._content_pos < floor:
+                item: tuple[int, bytes | memoryview]
+                if self._carry is not None:
+                    item, self._carry = self._carry, None
+                else:
+                    try:
+                        item = self._q.get_nowait()
+                    except queue.Empty:
+                        return
+                epoch, data = item
+                if epoch != self._flush_epoch:
+                    continue
+                take = min(len(data), floor - self._content_pos)
+                if take < len(data):
+                    self._carry = (epoch, memoryview(data)[take:])
+                self._content_pos += take
+                self._late_bytes += take
+
+    def _recover(self, gen: int) -> bool:
+        """One attempt, after `_give_up`, to bring the channel back. Returns
+        whether it did; raises when the link lost the attempt.
+
+        Queued audio the read head has passed is dropped first
+        (`_drop_passed`). Then the gate-off, sent until one lands:
+        `write_memory` does not raise when it loses a write, so it is
+        confirmed against `writes_lost_since`, and a ring with no deadline
+        loops its last lap until it lands. Then the channel is restarted at
+        the read head (`_restart_channel`), which raises on a dead link at
+        its first REU write. The writer then goes on at the audio's anchor,
+        with the outage left out of the lateness trend."""
+        self._drop_passed(gen)
+        if not self._gate_off_landed_once:
             landed = self._gate_off_landed(gen)
             if landed is None:
-                return
-            if landed:
-                if retrying:
-                    log.info("sampler: the link is back; channel gated off")
-                return
-            if not retrying:
-                retrying = True
-                log.warning(
-                    "sampler: the gate-off did not reach the machine; "
-                    "retrying until the link answers"
-                )
-            time.sleep(WRITER_BACKOFF_MAX_S)
+                return False
+            if not (self._running and gen == self._writer_gen):
+                return False
+            if not landed:
+                raise _WritesLost("the link lost the gate-off")
+            self._gate_off_landed_once = True
+            log.info("sampler: the gate-off landed; channel gated off")
+        if not self._restart_channel(gen, cause="the link answers again after the give-up"):
+            return False
+        with self._io_lock:
+            if not (self._running and gen == self._writer_gen):
+                return False
+            # An outage says nothing about the producer (_write_payload).
+            self._late_ref = None
+            self._burst_start = self._prev_start = None
+            self._last_try = self._last_late = None
+            self._late_from = None
+            self._last_write_head = None
+            self._gave_up_gen = None
+            self._failed = False
+        log.info("sampler: the channel is back; writing audio again")
+        return True
 
     def _gate_off_landed(self, gen: int) -> bool | None:
         """One gate-off, and whether the link vouches it arrived: nothing it
@@ -1171,13 +1341,69 @@ class UltimateAudioSampler:
         """One writer pass: restart a channel that ran into its deadline,
         else a ring pass (`_ring_step`) and then the deadline moved up behind
         what it wrote. Returns whether it wrote. Raises when the link lost a
-        write, like the ring writes themselves."""
-        deadline = self._deadline
-        if deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline:
+        write, like the ring writes themselves. The check runs again after
+        the ring pass, which can wait out a queue gather: a deadline held for
+        a loss raises at the refresh, and the back-off it bought on top of
+        that wait stopped the voice 40 ms before the next pass restarted it
+        (a stream 0.6 s ahead). It runs once more when the refresh raises,
+        since its flush can sit in a redial into the guard too, where
+        `_backoff_wait` no longer cuts the back-off short: raised, a 20 ms
+        back-off took most of the guard, and a stream 0.6 s ahead stopped."""
+        if self._deadline_reached():
             return self._restart_channel(gen)
+        # After the deadline check: the restart programs the volume too, and a
+        # restore lost ahead of it raised every pass, so the channel stayed
+        # stopped until the give-up.
+        if self._volume_owed:
+            try:
+                self._restore_owed_volume(gen)
+            except _WritesLost as e:
+                # Raised here, a restore whose flush ran into the guard bought
+                # a back-off `_backoff_wait` no longer cuts short, as the
+                # refresh below did.
+                if not self._deadline_reached():
+                    raise
+                return self._restart_after_loss(gen, e)
         wrote = self._ring_step(gen)
-        self._advance_deadline(gen)
-        return wrote
+        if not self._deadline_reached():
+            try:
+                self._advance_deadline(gen)
+            except _WritesLost as e:
+                if not self._deadline_reached():
+                    raise
+                return self._restart_after_loss(gen, e) or wrote
+            else:
+                return wrote
+        return self._restart_channel(gen) or wrote
+
+    def _restart_after_loss(self, gen: int, error: _WritesLost) -> bool:
+        """Restart a channel whose writer pass caught ``error`` with the read
+        head within the guard, logged for that loss and as a WARNING every
+        time: the restarts after the first log at DEBUG, and an audible jump
+        left nothing at the default level. Logged as the deadline's, a lost
+        volume restore read as ring writes that stopped landing."""
+        return self._restart_channel(gen, cause=_failure_text(error), warn=True)
+
+    def _restore_owed_volume(self, gen: int) -> None:
+        """Send the volume restore a resume lost (`_volume_owed`) again.
+        Raises when the link lost it, so the writer backs off and retries."""
+        with self._gate_lock:
+            if not (self._volume_owed and self._running and gen == self._writer_gen):
+                return
+            mark = self.api.write_loss_mark()
+            self._write_volume(self._volume)
+            if self.api.writes_lost_since(mark):
+                raise _WritesLost("the link lost the volume restore")
+            self._volume_owed = False
+        log.info("sampler: the volume restore landed")
+
+    def _deadline_reached(self) -> bool:
+        """Whether the read head is within the guard of the deadline, where
+        the channel is taken as stopped."""
+        deadline = self._deadline
+        return (
+            deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline
+        )
 
     def _ring_off(self, pos: int) -> int:
         """The ring offset that holds absolute byte position ``pos``."""
@@ -1210,48 +1436,79 @@ class UltimateAudioSampler:
 
     def _advance_deadline(self, gen: int) -> None:
         """Move the deadline up to what the ring holds, once the read head is
-        within `_deadline_refresh` of it. The ring writes since the last
-        confirmation (`_ring_mark`) are flushed and checked first: one lost
-        holds the deadline, which raises on every refresh until the channel
-        reaches it and the restart blanks the ring. Then the length write is
-        checked on its own, and a lost one raises and is sent again next pass:
-        a restart for it would skip a lead of audio that did land. Only this
-        thread's losses count (`writes_lost_since`; another thread's, counted
-        here, would add up to a give-up on a link that carries the ring). A
-        refresh that may have landed after the channel reached
-        the old deadline leaves the old one standing, so the next pass
-        restarts the channel: one that stopped silently would stay silent."""
+        within `_deadline_refresh` of it, with one flush per refresh. A
+        refresh is also due, with whatever step the ring allows or none, once
+        the read head is within `_deadline_confirm_by` of
+        `_deadline_confirmed` while the length write after it is unconfirmed.
+
+        That flush confirms everything this thread sent since the last
+        refresh (`_ring_mark`): the ring writes, and that refresh's length
+        write, which the DMA service ran first since it drains in order. A
+        loss there holds the deadline, set back to the last confirmed one
+        (`_deadline_confirmed`), where the voice stops if it was the length
+        write that was lost; it raises on every refresh until the channel
+        reaches it and the restart blanks the ring. So does a cut-over blank
+        flush() could not confirm (`_cut_over_lost`). So the deadline never
+        moves over ring audio that is not confirmed, and a lost length write
+        is found while the voice still plays toward the confirmed one, so the
+        restart comes before it stops. Flushing the length write on its own,
+        as well, cost a second round trip per refresh, about 20 a second for
+        a live stream near the watermark. A length write already counted lost when it is
+        sent raises and is sent again next pass. Only this thread's losses
+        count (`writes_lost_since`; another thread's, counted here, would add
+        up to a give-up on a link that carries the ring). A read head within
+        the guard of the old deadline once the flush or the length write
+        returns leaves the old one standing, and the next pass restarts the
+        channel: a voice that stopped there silently would stay silent."""
         old = self._deadline
         if old is None:
             return
         consumed = self._read_consumed_bytes()
         target = self._written
-        if old - consumed >= self._deadline_refresh or target - old < self._deadline_step:
-            return
+        confirmed = self._deadline_confirmed
+        confirm = (
+            confirmed is not None
+            and confirmed != old
+            and confirmed - consumed < self._deadline_confirm_by
+        )
+        if not confirm:
+            if old - consumed >= self._deadline_refresh:
+                return
+            urgent = old - consumed < self._deadline_urgent
+            if target - old < (self.bps if urgent else self._deadline_step):
+                return
         new = self._next_deadline(old, target, consumed)
-        if new is None:
+        if new is None and not confirm:
             return
         with self._gate_lock:
             if not (self._running and gen == self._writer_gen):
                 return
             mark = self._ring_mark
-            if mark is not None:
-                if not self.api.writes_lost_since(mark):
-                    self.api.flush()
-                if self.api.writes_lost_since(mark):
-                    # Held there, the deadline stops the voice ahead of the
-                    # lost span, and the restart that follows blanks the ring.
-                    raise ConnectionError("sampler: the link lost ring audio")
+            if (
+                mark is not None
+                and not self._cut_over_lost
+                and not self.api.writes_lost_since(mark)
+            ):
+                self.api.flush()
+            if self._cut_over_lost or (mark is not None and self.api.writes_lost_since(mark)):
+                # Held where the voice may stop, ahead of the lost span, and
+                # the restart that follows blanks the ring.
+                self._deadline = self._deadline_confirmed
+                raise _WritesLost("the link lost ring audio or a deadline write")
+            self._deadline_confirmed = old
+            if new is None or self._deadline_reached():
+                return
             mark = self.api.write_loss_mark()
             self._ring_mark = mark
             self._write_length(self._deadline_offset(new))
-            if not self.api.writes_lost_since(mark):
-                self.api.flush()
             if self.api.writes_lost_since(mark):
                 # Only the length write went out since the ring was confirmed.
                 self._ring_mark = self.api.write_loss_mark()
-                raise ConnectionError("sampler: the link lost a deadline write")
-            if self._read_consumed_bytes() + self._deadline_guard >= old:
+                raise _WritesLost("the link lost a deadline (length register) write")
+            # The send can sit in a redial: a write that landed after the voice
+            # reached the old deadline leaves it stopped there, and the next
+            # pass has to restart it.
+            if self._deadline_reached():
                 return
             self._deadline = new
 
@@ -1298,7 +1555,13 @@ class UltimateAudioSampler:
                 return False
         return True
 
-    def _restart_channel(self, gen: int) -> bool:
+    def _restart_channel(
+        self,
+        gen: int,
+        *,
+        cause: str = "the channel reached its deadline (ring writes stopped landing)",
+        warn: bool = False,
+    ) -> bool:
         """Gate a channel that reached its deadline on again, at the read
         head: the gate-on starts it from ring offset 0, so `_ring_phase`
         moves to the read head just before the gate-on and the ring holds nothing
@@ -1306,7 +1569,10 @@ class UltimateAudioSampler:
         gate-on and the deadline set at its end, as at the first gate-on;
         the writer's audio overwrites the blank, and what is late is
         dropped. Raises when the link lost any of it, so the writer backs
-        off and tries again.
+        off and tries again. A channel without a deadline (`_uses_deadline`)
+        is programmed to loop the whole ring again, as at its first gate-on.
+        ``cause`` opens the log line, a WARNING for the first restart or
+        with ``warn``, else DEBUG.
 
         The blank goes first: on a dead link `reu_write` raises at once,
         where a register write is lost quietly and its flush logs a warning,
@@ -1325,7 +1591,7 @@ class UltimateAudioSampler:
                     self.api,
                     self.channel,
                     reu_offset=self.ring_base,
-                    length=fresh,
+                    length=fresh if self._uses_deadline else self.ring_size,
                     rate=self._actual_rate,
                     bits=self.bits,
                     volume=0 if self._output_silenced else self._volume,
@@ -1344,19 +1610,33 @@ class UltimateAudioSampler:
                 # took in the register flush too, a redial after an outage
                 # among it, and the sound played that much behind the picture.
                 phase = self._read_consumed_bytes()
-                self._send_gate_on()
+                try:
+                    self._send_gate_on()
+                finally:
+                    # stop() cleared it after the generation check above, and
+                    # its gate-off may have gone out ahead of this gate-on,
+                    # which a flush that raises (a redial) has still sent.
+                    stopped = not self._running
+                    if stopped:
+                        gate_off(self.api, self.channel)
+                if stopped:
+                    return False
                 if self.api.writes_lost_since(mark):
-                    raise ConnectionError("sampler: the link lost the channel restart")
+                    raise _WritesLost("the link lost the channel restart")
                 self._ring_phase = phase
                 self._written = phase + fresh
-                self._deadline = phase + fresh
+                self._deadline = phase + fresh if self._uses_deadline else None
+                self._deadline_confirmed = self._deadline
                 self._ring_mark = mark
+                self._cut_over_lost = False
+                if not self._output_silenced:
+                    self._volume_owed = False
                 self._restarts += 1
                 restarts = self._restarts
         log.log(
-            logging.WARNING if restarts == 1 else logging.DEBUG,
-            "sampler: the channel reached its deadline (ring writes stopped landing); "
-            "restarted it at the read head%s",
+            logging.WARNING if warn or restarts == 1 else logging.DEBUG,
+            "sampler: %s; restarted the channel at the read head%s",
+            cause,
             "" if restarts == 1 else f" (restart {restarts})",
         )
         return True
@@ -1789,22 +2069,11 @@ class UltimateAudioSampler:
         A re-anchor whose write has not landed yet counts too: the writer
         retries at its anchor, so the sound will lag by it once the link is
         back, and left out, an audio-file scene's end read the clock as
-        caught up and cut the scene during the outage. Once the writer has
-        given up nothing more lands, and only what did counts
-        (`_failed_lag_bytes`). Read without _io_lock, which the writer holds
-        for a whole REU write."""
-        lag = self._reanchor_lag[0] - self._failed_lag_bytes()
-        return max(0, lag) / self.bps / self._actual_rate
-
-    def _failed_lag_bytes(self) -> int:
-        """The shift of a re-anchor that never landed because the writer gave
-        up on the link: nothing more lands, so the sound lags by none of it,
-        and both lag figures leave it out. 0 while the writer is still
-        retrying, or once the re-anchor landed."""
-        unlanded = self._unlanded_reanchor
-        if unlanded is None or not self._failed:
-            return 0
-        return unlanded[0]
+        caught up and cut the scene during the outage. That holds past the
+        give-up too: the writer keeps the anchor through it (`_drop_passed`)
+        and lands it once the link is back. Read without _io_lock, which the
+        writer holds for a whole REU write."""
+        return max(0, self._reanchor_lag[0]) / self.bps / self._actual_rate
 
     def reanchor_lag_seconds(self, position: float | None = None) -> float:
         """How far re-anchors have put the audio behind `position_seconds()`
@@ -1834,8 +2103,7 @@ class UltimateAudioSampler:
         lag still in flight is waited out (there is no I/O inside it) rather
         than read stale against a head past the writer's.
 
-        A re-anchor the writer gave up on comes off again (`_failed_lag_bytes`),
-        as in `content_lag_seconds`, which is this lag with every hold crossed.
+        `content_lag_seconds` is this lag with every hold crossed.
 
         0 on a stopped sampler, whose `position_seconds()` is 0: its lag was
         worked out at heads of a clock that has stopped, and taken at the
@@ -1844,6 +2112,9 @@ class UltimateAudioSampler:
             return 0.0
         if position is None:
             head = self._read_consumed_bytes()
+            # A stop() since the check above already read the head as 0.
+            if not self._running:
+                return 0.0
         else:
             head = int(position * self._actual_rate) * self.bps
         while True:
@@ -1855,20 +2126,7 @@ class UltimateAudioSampler:
             if self._lag_seq == seq:
                 break
         at = max(head, lag[2])
-        lag_bytes = self._lag_bytes(lag, at)
-        failed = self._failed_lag_bytes()
-        if failed:
-            # The given-up shift's own hold is part of what the head has not
-            # crossed, which _lag_bytes already left out: taking the whole
-            # shift off on top took it twice, and inside that hold read short
-            # of the lag that did land. Without the given-up re-anchors the
-            # lag is the content lag, less any of the landed holds' rest the
-            # head has not crossed, so it is the smaller of the two. Taken at
-            # the lag's own head like the rest of it: worked out after the
-            # step back below, an earlier position's heard sample fell behind
-            # the one heard at that head.
-            lag_bytes = min(lag_bytes, lag[0] - failed)
-        lag_bytes -= at - head
+        lag_bytes = self._lag_bytes(lag, at) - (at - head)
         return lag_bytes / self.bps / self._actual_rate
 
     def _end_lag_window(self) -> None:
@@ -1988,7 +2246,10 @@ class UltimateAudioSampler:
         stalled link) stays referenced, so the next arm()/start() refuses
         rather than run a second writer beside it, unless it had given up on
         the link (see `arm`). With `_running` cleared,
-        it writes nothing more once that write returns."""
+        it writes nothing more once that write returns. A restart such a
+        writer has in flight sees `_running` cleared after its gate-on and
+        gates the channel off again, so the stop holds whichever order the
+        two land in."""
         self._stopped = True
         self._running = False
         self._held = False
@@ -1996,6 +2257,9 @@ class UltimateAudioSampler:
             self._writer.stop()
             if not self._writer.is_running():
                 self._writer = None
+        # Not under _gate_lock: a given-up writer holds it across a gate-off
+        # that can sit in a dial for seconds, and teardown would wait it out.
+        # A restart in flight gates off again itself (_restart_channel).
         try:
             gate_off(self.api, self.channel)
         except Exception as e:  # best-effort; teardown must not raise
@@ -2026,7 +2290,7 @@ class UltimateAudioSampler:
             )
         if self._restarts > 1:
             log.warning(
-                "sampler: restarted the channel at its deadline %d times this session",
+                "sampler: restarted the channel %d times this session",
                 self._restarts,
             )
         if self._lead_min is not None:
