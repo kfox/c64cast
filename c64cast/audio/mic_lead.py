@@ -153,7 +153,7 @@ class TrimWrite(enum.Enum):
     """What became of one CIA #1 trim the governor sent."""
 
     DELIVERED = enum.auto()
-    # Sent, but the backend's delivery_epoch moved across it, so the link may
+    # Sent, but the backend's write_loss_mark moved across it, so the link may
     # have dropped it: the governor sends its next latch even when unchanged.
     UNCONFIRMED = enum.auto()
     # The pump it governs is disarmed; the governor writes nothing more.

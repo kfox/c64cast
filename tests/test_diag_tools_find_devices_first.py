@@ -156,6 +156,7 @@ class FindAudioBeforeBootTest(unittest.TestCase):
             "reu_audio_spectrum": ("--config", cfg),
             "sampler_av_align_calib": (),
             "sampler_clock_calib": (),
+            "sampler_outage_probe": (),
             "audio_fm_probe": (),
             "mahoney_dac_calib": (),
             "tr_nmi_rate_ceiling": (),

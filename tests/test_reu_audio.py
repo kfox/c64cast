@@ -2126,6 +2126,36 @@ class TrackedVideoPumpEntryMaskTest(unittest.TestCase):
         self.assertEqual([v for i, v in icr if i < entry][-1:], ["7F"])
         self.assertEqual([v for i, v in icr if i > entry][:1], ["81"])
 
+    def test_another_threads_loss_at_the_mask_flush_does_not_hold_back_the_entry(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        real_flush = fake.flush
+        foreign_losses = [0]
+
+        def lose_on_another_thread() -> None:
+            fake.delivery_epoch += 1
+
+        def flush(timeout=5.0):
+            after_mask = fake.ops[-1:] == [("write_memory", "DC0D", "7F")]
+            real_flush()
+            if after_mask:
+                foreign_losses[0] += 1
+                render = threading.Thread(target=lose_on_another_thread)
+                render.start()
+                render.join()
+
+        fake.flush = flush  # type: ignore[method-assign]
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.addCleanup(s.stop)
+        self.assertTrue(s._reu_pump_armed)
+        self.assertEqual(foreign_losses[0], 1)
+        entries = [
+            o
+            for o in fake.ops
+            if o[:2] == ("write_memory_file", "C100") and o[2] != REU_PUMP_HANDLER_STUB
+        ]
+        self.assertEqual(len(entries), 1)
+
 
 class GovernorChunkBoundTest(unittest.TestCase):
     def test_a_chunk_of_exactly_the_governor_maximum_is_accepted(self):

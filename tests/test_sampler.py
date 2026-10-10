@@ -148,6 +148,13 @@ class _FakeBackend:
         self.audible_writes = 0  # REU writes carrying anything but silence
         self.delivery_epoch = 0
 
+    def write_loss_mark(self) -> int:
+        # One writer thread: every loss counted is the caller's.
+        return self.delivery_epoch
+
+    def writes_lost_since(self, mark: int) -> bool:
+        return self.delivery_epoch != mark
+
     def reu_write(self, offset: int, data: bytes) -> None:
         self.reu_writes.append((offset, len(data)))
         self.reu_data.append((offset, bytes(data)))
@@ -755,8 +762,11 @@ class SamplerWriterFailureTest(unittest.TestCase):
             self.assertLogs("c64cast.audio.sampler", level="INFO") as logs,
         ):
             smp = self._started(api)
+            # start() gates the channel off before its gate-on, so look past it.
+            gate_on = max(i for i, (a, d) in enumerate(api.mem_writes) if a == "DF20" and d != "00")
             self.assertTrue(
-                self._wait(lambda: ("DF20", "00") in api.mem_writes), "the gate-off never landed"
+                self._wait(lambda: ("DF20", "00") in api.mem_writes[gate_on:]),
+                "the gate-off never landed",
             )
         self.assertEqual(api.lost, 0)
         self.assertTrue(smp._failed)

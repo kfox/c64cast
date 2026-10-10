@@ -1993,7 +1993,7 @@ class AudioStreamer:
         body running on unseeded trackers DMAs a chunk to whatever C64 address
         the dst tracker held before its wrap check runs — over the body itself,
         or upward from below the ring through zero page and the vectors. So
-        each stage is flushed and checked against ``delivery_epoch``, retried
+        each stage is flushed and checked against ``write_loss_mark()``, retried
         up to TRACKED_PUMP_INSTALL_TRIES times, and the next stage starts only
         once it held.
 
@@ -2044,10 +2044,10 @@ class AudioStreamer:
         when the mask did not confirm; without ``unmask`` the mask stays. Every call masks afresh: a retry follows
         an attempt whose unmask may have landed even though its entry did not."""
         if dispatcher_owns_irq:
-            epoch = self.api.delivery_epoch
+            mark = self.api.write_loss_mark()
             self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}")
             self.api.flush()
-            if self.api.delivery_epoch != epoch:
+            if self.api.writes_lost_since(mark):
                 return
             time.sleep(TRACKED_PUMP_ENTRY_DRAIN_S)
         self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", code)
@@ -2482,7 +2482,7 @@ class AudioStreamer:
 
     def _write_mic_pump_latch(self, token: int, latch: int) -> TrimWrite:
         """Write the governed pump's CIA #1 latch, flushed and checked against
-        ``delivery_epoch``, or refuse without writing once the pump armed
+        ``write_loss_mark()``, or refuse without writing once the pump armed
         under ``token`` has been disarmed (or rearmed for a later scene). A
         latch write takes effect at the next underflow and does not restart
         the count, so a trim lands between two pump ticks rather than inside
