@@ -156,24 +156,29 @@ class MhiresOverlayTest(unittest.TestCase):
         from c64cast.app import config as cfgmod
         from c64cast.app import scene_factory
 
-        toml = (
-            '[video]\nuse_reu_staged = "auto"\n'
-            '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\n'
-            'duration_s = 5\n[[scenes.overlays]]\ntype = "clock"\n'
-        )
-        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
-            f.write(toml)
-            path = f.name
-        try:
-            c = cfgmod.load(path)
-            scenes = scene_factory.scenes_from_config(
-                c, FakeAPI(), audio=None, source=None, reu_available=True
-            )
-        finally:
-            os.unlink(path)
-        mode = cast(MultiHiresDisplayMode, scenes[0].display_mode)
-        self.assertTrue(mode.use_reu_staged)
-        self.assertFalse(mode.double_buffer)
+        for display, mode_cls in (("mhires", MultiHiresDisplayMode), ("hires", HiresDisplayMode)):
+            with self.subTest(display=display):
+                toml = (
+                    '[video]\nuse_reu_staged = "auto"\n'
+                    '[[scenes]]\ntype = "generative"\nsource = "plasma"\n'
+                    f'display = "{display}"\n'
+                    'duration_s = 5\n[[scenes.overlays]]\ntype = "clock"\n'
+                )
+                with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+                    f.write(toml)
+                    path = f.name
+                try:
+                    c = cfgmod.load(path)
+                    scenes = scene_factory.scenes_from_config(
+                        c, FakeAPI(), audio=None, source=None, reu_available=True
+                    )
+                finally:
+                    os.unlink(path)
+                mode = scenes[0].display_mode
+                self.assertIsInstance(mode, mode_cls)
+                mode = cast(HiresDisplayMode | MultiHiresDisplayMode, mode)
+                self.assertTrue(mode.use_reu_staged)
+                self.assertFalse(mode.double_buffer)
 
     def test_config_threads_text_double_height(self):
         # The SceneCfg field reaches MultiHiresDisplayMode via _build_display_mode.

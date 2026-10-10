@@ -753,8 +753,9 @@ class DisplayWiringTest(unittest.TestCase):
             use_reu_staged=True, double_buffer=True, reu_available=True, force_host_dma=True
         )
         mode = scene_factory.build_wired_display_mode("mhires", wiring)
-        self.assertFalse(getattr(mode, "use_reu_staged", False))
-        self.assertFalse(getattr(mode, "double_buffer", False))
+        assert isinstance(mode, MultiHiresDisplayMode), mode
+        self.assertFalse(mode.use_reu_staged)
+        self.assertFalse(mode.double_buffer)
 
     def test_the_scene_type_drives_the_auto_dither_resolution(self):
         static = cast(
