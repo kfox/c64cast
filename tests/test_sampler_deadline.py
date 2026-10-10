@@ -331,15 +331,15 @@ class HealthyLinkTest(unittest.TestCase):
         smp, chan, _ = _run(ahead=0.02)
         self.assertEqual((smp._restarts, chan.hazards, chan.stale), (0, 0, 0))
 
-    def test_lost_length_writes_restart_rather_than_trust_the_ring(self):
-        # One in twenty register writes lost. A loss the writer is charged
-        # with may have taken its ring writes along, so the deadline holds
-        # and the channel restarts over a blanked ring: no stale audio, and
-        # playing at the end.
+    def test_lost_length_writes_are_retried(self):
+        # One in twenty register writes lost. The ring was confirmed before
+        # the length write went out, so only it is in doubt: it is sent again
+        # on the next pass, long before the read head gets near, and no
+        # restart skips a lead of audio that landed.
         rng = random.Random(645)
-        with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
+        with self.assertNoLogs("c64cast.audio.sampler", logging.WARNING):
             smp, chan, _ = _run(lose=lambda: rng.random() < 0.05)
-        self.assertGreater(smp._restarts, 0)
+        self.assertEqual(smp._restarts, 0)
         self.assertEqual((chan.state, chan.stale, chan.hazards), ("playing", 0, 0))
 
     def test_a_ring_write_lost_between_refreshes_is_not_played(self):
