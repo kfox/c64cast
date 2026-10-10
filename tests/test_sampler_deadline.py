@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import unittest
 from typing import Any, cast
 from unittest import mock
@@ -402,6 +403,49 @@ class OutageTest(unittest.TestCase):
             smp.start(prebuffer_timeout=0.0)
             self.assertEqual(chan.state, "playing")
             smp.stop()
+
+    def test_a_resume_during_a_restart_keeps_the_restored_volume(self):
+        # The restart programs the volume it read before its writes went out;
+        # a resume's restore landing in between was overwritten with the
+        # pause's 0, and nothing would restore it again.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        volume_reg = CTRL + s.REG_VOLUME
+        volumes: list[int] = []
+        resume: list[threading.Thread] = []
+        plain_regs, plain_mem = chan.write_regs, chan.write_memory
+
+        def write_regs(base_addr: str, *values: int) -> None:
+            if int(base_addr, 16) == volume_reg:
+                if smp._output_silenced and not resume:
+                    resume.append(threading.Thread(target=smp.flush))
+                    resume[0].start()
+                    resume[0].join(0.2)
+                volumes.append(values[0])
+            plain_regs(base_addr, *values)
+
+        def write_memory(address: str, data_hex: str) -> None:
+            if int(address, 16) == volume_reg:
+                volumes.append(int(data_hex, 16))
+            plain_mem(address, data_hex)
+
+        chan.write_regs = write_regs  # type: ignore[method-assign]
+        chan.write_memory = write_memory  # type: ignore[method-assign]
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            smp.flush(silence_output=True)
+            clock.now = 5.0
+            with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
+                self.assertTrue(smp._writer_step(smp._writer_gen))
+            resume[0].join(5.0)
+            self.assertFalse(resume[0].is_alive())
+        self.assertFalse(smp._output_silenced)
+        self.assertEqual(volumes[-1], s.SAMPLER_VOLUME_MAX)
 
 
 class NextDeadlineTest(unittest.TestCase):

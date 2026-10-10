@@ -1021,12 +1021,16 @@ class UltimateAudioSampler:
     def _cut_over(self, anchor: int, epoch: int, *, silence_output: bool) -> None:
         """flush() after its epoch bump: the volume write, then the ring
         rewrite, which releases audio of ``epoch`` to the writer."""
-        if silence_output:
-            self._write_volume(0)
-            self._output_silenced = True
-        elif self._output_silenced:
-            self._write_volume(self._volume)
-            self._output_silenced = False
+        # Under _gate_lock: a restart programs the volume it read from
+        # _output_silenced, and a restore landing between that read and its
+        # write was overwritten, leaving the channel muted after the resume.
+        with self._gate_lock:
+            if silence_output:
+                self._write_volume(0)
+                self._output_silenced = True
+            elif self._output_silenced:
+                self._write_volume(self._volume)
+                self._output_silenced = False
         # The queue is not drained: the writer and the prebuffer drop stale
         # tags, and a drain would also take post-splice audio pushed since the
         # bump above, losing the start of the seek target.
