@@ -44,12 +44,19 @@ class RefreshCostTest(unittest.TestCase):
 
 class _QuietlyLosingChannel(_Channel):
     """Drops the ``nth`` length write without a word, the way a write is lost
-    when its connection drops after the send: the next flush charges it."""
+    when its connection drops after the send: the next flush charges it.
+    That flush sits in the transport for ``stall`` seconds, a redial."""
 
-    def __init__(self, *a: Any, nth: int, **kw: Any) -> None:
+    def __init__(self, *a: Any, nth: int, stall: float = 0.0, **kw: Any) -> None:
         super().__init__(*a, **kw)
         self.nth = nth
+        self.stall = stall
         self.seen = 0
+
+    def flush(self) -> None:
+        if self.dropped:
+            self.clock.now += self.stall
+        super().flush()
 
     def write_regs(self, base_addr: str, *values: int) -> None:
         if int(base_addr, 16) == LENGTH:
@@ -61,7 +68,9 @@ class _QuietlyLosingChannel(_Channel):
         super().write_regs(base_addr, *values)
 
 
-def _looped_run(*, ahead_s: float, nth: int, seconds: float = 6.0) -> _QuietlyLosingChannel:
+def _looped_run(
+    *, ahead_s: float, nth: int, stall: float = 0.0, seconds: float = 6.0
+) -> _QuietlyLosingChannel:
     """The real writer loop on a clock its own sleeps and queue waits
     advance, a producer ``ahead_s`` ahead, and the ``nth`` length write lost
     after its send: `_run` steps the writer every 10 ms whatever it slept."""
@@ -75,7 +84,7 @@ def _looped_run(*, ahead_s: float, nth: int, seconds: float = 6.0) -> _QuietlyLo
         ref_clock_hz=s.SAMPLER_REF_CLOCK_DEFAULT,
     )
     chan = _QuietlyLosingChannel(
-        clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2, nth=nth
+        clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2, nth=nth, stall=stall
     )
     smp.api = cast(Any, chan)
     smp._q = cast(Any, _WaitingQueue(clock))
@@ -143,6 +152,18 @@ class DeferredConfirmationTest(unittest.TestCase):
                     self.assertGreaterEqual(chan.seen, nth)
                     self.assertIn("reached its deadline", "\n".join(logs.output))
                     self.assertIsNone(chan.finished_at)
+
+    def test_a_refresh_that_raises_inside_the_guard_restarts_at_once(self):
+        # The flush that finds the loss sits in a redial until the read head
+        # is inside the guard, where the back-off is no longer cut short: the
+        # 20 ms it slept before the restart stopped the voice.
+        for nth in (3, 9):
+            with self.subTest(nth=nth):
+                with self.assertLogs("c64cast.audio.sampler", logging.WARNING) as logs:
+                    chan = _looped_run(ahead_s=0.6, nth=nth, stall=0.085)
+                self.assertGreaterEqual(chan.seen, nth)
+                self.assertIn("reached its deadline", "\n".join(logs.output))
+                self.assertIsNone(chan.finished_at)
 
     def test_the_deadline_never_moves_past_unconfirmed_ring_audio(self):
         # A ring write charged lost at the refresh's flush holds the deadline

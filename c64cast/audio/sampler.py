@@ -1322,14 +1322,22 @@ class UltimateAudioSampler:
         the ring pass, which can wait out a queue gather: a deadline held for
         a loss raises at the refresh, and the back-off it bought on top of
         that wait stopped the voice 40 ms before the next pass restarted it
-        (a stream 0.6 s ahead)."""
+        (a stream 0.6 s ahead). It runs once more when the refresh raises,
+        since its flush can sit in a redial into the guard too, where
+        `_backoff_wait` no longer cuts the back-off short: raised, a 20 ms
+        back-off took most of the guard, and a stream 0.6 s ahead stopped."""
         if self._deadline_reached():
             return self._restart_channel(gen)
         wrote = self._ring_step(gen)
-        if self._deadline_reached():
-            return self._restart_channel(gen) or wrote
-        self._advance_deadline(gen)
-        return wrote
+        if not self._deadline_reached():
+            try:
+                self._advance_deadline(gen)
+            except _WritesLost:
+                if not self._deadline_reached():
+                    raise
+            else:
+                return wrote
+        return self._restart_channel(gen) or wrote
 
     def _deadline_reached(self) -> bool:
         """Whether the read head is within the guard of the deadline, where
@@ -1430,7 +1438,7 @@ class UltimateAudioSampler:
                 self._deadline = self._deadline_confirmed
                 raise _WritesLost("the link lost ring audio or a deadline write")
             self._deadline_confirmed = old
-            if new is None or self._read_consumed_bytes() + self._deadline_guard >= old:
+            if new is None or self._deadline_reached():
                 return
             mark = self.api.write_loss_mark()
             self._ring_mark = mark
@@ -1442,7 +1450,7 @@ class UltimateAudioSampler:
             # The send can sit in a redial: a write that landed after the voice
             # reached the old deadline leaves it stopped there, and the next
             # pass has to restart it.
-            if self._read_consumed_bytes() + self._deadline_guard >= old:
+            if self._deadline_reached():
                 return
             self._deadline = new
 
