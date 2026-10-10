@@ -369,6 +369,29 @@ def _table_of(applicable: tuple[str, dict[str, Any]] | None) -> bytes | None:
         return None
 
 
+def load_pair_record(path: Path) -> dict[str, Any] | None:
+    """The calibration file's two-SID ``pair`` record, or None when the file is
+    missing, malformed, of another schema, or holds no well-formed pair."""
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
+        return None
+    pair = raw.get("pair")
+    if not isinstance(pair, dict):
+        return None
+    for name in ("coarse_table", "fine_table"):
+        table = pair.get(name)
+        if not isinstance(table, list) or len(table) != 256:
+            return None
+        if not all(isinstance(v, int) and 0 <= v <= 0xFF for v in table):
+            return None
+    if not isinstance(pair.get("fine_base"), str):
+        return None
+    return pair
+
+
 def _note_one_sid_assumption(cfg: Config, be: C64Backend | None, entry_key: str) -> None:
     if (
         entry_key == "default"
@@ -413,6 +436,8 @@ class CalibrationDocument:
     entries: dict[str, CalibrationResult]  # "1" / "2" / "default" -> result
     device: dict[str, str]  # free-form provenance (REST info / transport endpoint)
     d400_socket: int | None = None
+    # A two-SID pair's record (dac_calibration._measure_pair), or None.
+    pair: dict[str, Any] | None = None
 
 
 def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
@@ -437,7 +462,10 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     anything — is written the same additive way. Every socket is measured at
     ``$D400`` (that is what isolation does), so the entry keys alone can't say
     which chip a machine reaches there normally; without it, a link that can't
-    query SID config has to guess (see :func:`_select_sid_entry`)."""
+    query SID config has to guess (see :func:`_select_sid_entry`).
+
+    ``pair`` — a two-SID pair's tables and the levels they were folded from —
+    is additive the same way, and :func:`load_pair_record` is its only reader."""
 
     def entry(r: CalibrationResult) -> dict[str, Any]:
         out: dict[str, Any] = {"detected": r.detected}
@@ -459,5 +487,7 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     }
     if doc.d400_socket is not None:
         record["d400_socket"] = doc.d400_socket
+    if doc.pair is not None:
+        record["pair"] = doc.pair
     atomic_write_text(path, json.dumps(record, indent=2) + "\n")
     return path

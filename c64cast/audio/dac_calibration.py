@@ -49,16 +49,18 @@ from c64cast.sid.asid_sidmap import (
 from c64cast.sid.emusid_mixer import CAT_EMUSID
 from c64cast.sid.sid_hw_config import (
     SidHwSession,
+    current_source_map,
     detect_socket_models,
     detect_sockets,
     restore_sid_config,
 )
 from c64cast.sid.sid_panning import CAT_MIXER
-from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
+from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY, volume_to_label
 
 from .audio_handlers import (
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
+    NMI_ROUTINE_ADDR,
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
 )
@@ -75,6 +77,15 @@ from .dac_capture_device import (
     capture_fault_message,
     find_capture_device,
     resolve_capture_format,
+)
+from .dac_pair import (
+    COARSE_TABLE_ADDR,
+    FINE_CODES,
+    FINE_GAIN_DB,
+    FINE_TABLE_ADDR,
+    IDENTITY_TABLE,
+    fold_pair_table,
+    pair_nmi_routine,
 )
 from .dac_slot_ring import (
     ANCHOR_CODE,
@@ -720,6 +731,157 @@ def _measure_each_socket(
     return entries
 
 
+# The fine-ladder ring: index 0 is the shared reference (both chips silent),
+# index 1 the coarse chip's anchor, and index 1 + v the fine chip alone at
+# volume v. Every fine code appears this many times per ring, so one ring
+# carries several readings of each and their median rejects a glitched slot.
+_FINE_RING_REPEATS = 7
+_FINE_RINGS = 3
+# A fine chip whose full volume reads below this fraction of the coarse span is
+# not reaching the output at all; above the upper bound it is not "fine".
+_FINE_SPAN_MIN = 0.002
+_FINE_SPAN_MAX = 0.5
+# The volume nibble scales one fixed DC, so its ladder must rise; a step back by
+# more than this fraction of its top is a measurement of something else.
+_FINE_MONOTONE_SLACK = 0.02
+
+
+def _fine_ring_tables() -> tuple[bytes, bytes]:
+    coarse = bytearray(256)
+    fine = bytearray(256)
+    coarse[1] = ANCHOR_CODE
+    for v in FINE_CODES[1:]:
+        fine[1 + v] = v
+    return bytes(coarse), bytes(fine)
+
+
+def _install_pair_routine(ctx: _RunContext, st: AudioStreamer, fine_base: int) -> None:
+    """Swap the one-chip NMI routine for the pair routine. The timer is
+    stopped first: a routine half overwritten while NMIs fire runs garbage."""
+    ctx.be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
+    ctx.be.write_memory_file(f"{COARSE_TABLE_ADDR:04X}", IDENTITY_TABLE)
+    ctx.be.write_memory_file(f"{FINE_TABLE_ADDR:04X}", bytes(256))
+    ctx.be.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", pair_nmi_routine(fine_base))
+    st.nmi.start(adaptive=False)
+
+
+def _pair_mixer(
+    be: C64Backend, fine_base: int, present: Collection[str]
+) -> tuple[str | None, str | None]:
+    """On a link with the SID config surface, find the sources answering
+    ``$D400`` and `fine_base`, and set the mixer to what playback will use:
+    the coarse source at unity, the fine one at :data:`FINE_GAIN_DB`, every
+    other SID source off. Returns ``(coarse, fine)``."""
+    sources = current_source_map(be)
+    coarse, fine = sources.get(SID.BASE), sources.get(fine_base)
+    if fine is None or fine == coarse:
+        raise MeasurementError(
+            f"[audio].dac_second_sid is ${fine_base:04X}, but no second SID answers "
+            "there: map a socket, an ARM2SID's right channel or an UltiSID core to "
+            "that address in the machine's SID settings, then calibrate again."
+        )
+    levels = {coarse: VOL_UNITY, fine: volume_to_label(FINE_GAIN_DB)}
+    for name, item in VOL_ITEM.items():
+        if item in present:
+            be.put_config_item(CAT_MIXER, item, levels.get(name, VOL_OFF))
+    return coarse, fine
+
+
+def _check_fine_levels(fine: np.ndarray, coarse_span: float) -> None:
+    """Refuse a fine ladder that cannot be the second chip's volume DAC."""
+    top = float(fine[-1])
+    if not _FINE_SPAN_MIN * coarse_span <= top <= _FINE_SPAN_MAX * coarse_span:
+        raise MeasurementError(
+            f"the second SID's full volume measured {top / coarse_span:.2%} of the "
+            "first SID's span; a fine chip has to sit between "
+            f"{_FINE_SPAN_MIN:.1%} and {_FINE_SPAN_MAX:.0%}. Check that it is "
+            "audible in the machine's mixer and that nothing else answers its address."
+        )
+    if np.any(np.diff(fine) < -_FINE_MONOTONE_SLACK * top):
+        raise MeasurementError(
+            "the second SID's volume ladder does not rise with the volume nibble "
+            f"({', '.join(f'{v:+.4f}' for v in fine)}), so what was measured is not "
+            "that chip's volume DAC."
+        )
+
+
+def _measure_fine_ladder(ctx: _RunContext) -> np.ndarray:
+    """The fine chip's :data:`FINE_CODES` levels, in units of the coarse
+    chip's anchor, from :data:`_FINE_RINGS` rings of rotated slot order."""
+    coarse_t, fine_t = _fine_ring_tables()
+    ctx.be.write_memory_file(f"{COARSE_TABLE_ADDR:04X}", coarse_t)
+    ctx.be.write_memory_file(f"{FINE_TABLE_ADDR:04X}", fine_t)
+    order = [1 + v for v in FINE_CODES[1:]] * _FINE_RING_REPEATS
+    readings: dict[int, list[float]] = {v: [] for v in FINE_CODES[1:]}
+    for n in range(_FINE_RINGS):
+        shift = n * len(order) // _FINE_RINGS
+        codes = order[shift:] + order[:shift]
+        got = _capture_ring(ctx, [1, *codes])
+        anchor = float(got.levels[0])
+        if not anchor:
+            raise MeasurementError("the first SID's anchor read zero in the fine-ladder ring")
+        for index, level in zip(codes, got.levels[1:], strict=True):
+            readings[index - 1].append(float(level) / anchor)
+        ctx.log_fn(
+            f"[calib]   second SID ring {n + 1}/{_FINE_RINGS}: "
+            f"pass spread {got.diagnostics['pass_spread_p95_frac'] * 100:.3f}%"
+        )
+    return np.array([0.0, *(float(np.median(readings[v])) for v in FINE_CODES[1:])])
+
+
+def _measure_pair(
+    ctx: _RunContext, st: AudioStreamer, fine_base: int, supports_sid_config: bool
+) -> dict[str, Any]:
+    """The two-SID pair: the coarse chip's ladder and the fine chip's volume
+    ladder, both through the pair routine and the mixer levels playback uses,
+    folded into the pair's two tables. Returns the file's ``pair`` record.
+
+    The coarse chip is measured again rather than reusing a socket entry: the
+    socket loop measured it isolated at ``$D400``, and the coarse chip of a
+    pair is whatever the machine's own routing puts there — an UltiSID core,
+    which no entry holds, included."""
+    coarse_src = fine_src = None
+    with SidHwSession(ctx.be) as session:
+        session.snapshot()
+        mixer_levels = _snapshot_mixer(ctx.be)
+        session.fold(mixer_levels)
+        if supports_sid_config:
+            coarse_src, fine_src = _pair_mixer(
+                ctx.be, fine_base, {item for _, item in mixer_levels}
+            )
+        ctx.log_fn(
+            f"[calib] measuring the SID pair: $D400 ({coarse_src or 'first SID'}) + "
+            f"${fine_base:04X} ({fine_src or 'second SID'}), second SID at "
+            f"{FINE_GAIN_DB} dB where the mixer allows…"
+        )
+        _install_pair_routine(ctx, st, fine_base)
+        st._enable_mahoney_env()
+        st._enable_mahoney_env(fine_base)
+        time.sleep(0.2)
+        sidtable, metrics, raw = _measure_one(ctx, "pair: first SID")
+        if sidtable is None:
+            raise MeasurementError(
+                "the first SID of the pair failed the volume-0 self-test, so no pair "
+                "table can be folded from it"
+            )
+        levels = np.array([v for _, v in sorted(raw)], dtype=np.float64)
+        levels /= levels[ANCHOR_CODE]
+        fine = _measure_fine_ladder(ctx)
+    _check_fine_levels(fine, float(levels.max() - levels.min()))
+    coarse_table, fine_table, pair_metrics = fold_pair_table(levels, fine)
+    return {
+        "fine_base": f"${fine_base:04X}",
+        "fine_gain_db": FINE_GAIN_DB if supports_sid_config else None,
+        "coarse_source": coarse_src,
+        "fine_source": fine_src,
+        "coarse_table": coarse_table,
+        "fine_table": fine_table,
+        "coarse_levels": [round(float(v), 8) for v in levels],
+        "fine_levels": [round(float(v), 8) for v in fine],
+        "metrics": {**pair_metrics, "coarse": metrics},
+    }
+
+
 def _silence_and_reset(be: C64Backend) -> None:
     """Best-effort teardown: stop the CIA #2 NMI source, silence the SID,
     reset — a failure here must not mask the measurement's own outcome.
@@ -739,7 +901,10 @@ def _silence_and_reset(be: C64Backend) -> None:
 
 
 def _report_run(
-    entries: dict[str, CalibrationResult], path: Path, log_fn: Callable[[str], None]
+    entries: dict[str, CalibrationResult],
+    path: Path,
+    log_fn: Callable[[str], None],
+    pair: dict[str, Any] | None = None,
 ) -> None:
     """The end-of-run summary: per-SID ladder quality, or why no table."""
     for name, r in entries.items():
@@ -754,6 +919,13 @@ def _report_run(
             f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
             f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
         )
+    if pair is not None:
+        m = pair["metrics"]
+        log_fn(
+            f"[calib] SID pair $D400 + {pair['fine_base']}: ~{m['ladder_bits']} ladder bits "
+            f"against {m['single_chip_ladder_bits']} for the first SID alone, worst gap "
+            f"{m['worst_gap_frac'] * 100:.2f}% of span"
+        )
     log_fn(f"[calib] wrote {path}")
 
 
@@ -766,6 +938,7 @@ def run_calibration(
     secs: float = 4.5,
     settle: float = 0.4,
     device: int | str | None = None,
+    second_sid: int | None = None,
     log_fn: Callable[[str], None] = print,
 ) -> CalibrationRun:
     """Measure the connected SID's (or SIDs', on a U64/U2+ with populated
@@ -786,6 +959,10 @@ def run_calibration(
 
     Either way, an ARMSID or ARM2SID is measured in :data:`CALIBRATION_MODEL`
     and put back into its own model when the run ends, including on a failure or Ctrl+C.
+
+    `second_sid`, the base of a two-SID pair's fine chip, adds a pair
+    measurement after the per-SID ones (:func:`_measure_pair`), saved as the
+    file's ``pair`` record.
 
     Raises :class:`CaptureUnavailableError` if capture can't be set up.
     """
@@ -819,13 +996,17 @@ def run_calibration(
             # change; this path measures at once, on a chip just reconfigured.
             st._enable_mahoney_env()
         # Last screen write of the run — strictly before the first capture.
-        _paint_status_line(be, _ESTIMATE_ROW, _estimate_text(max(1, len(sockets)), secs, settle))
+        n_sids = max(1, len(sockets)) + (second_sid is not None)
+        _paint_status_line(be, _ESTIMATE_ROW, _estimate_text(n_sids, secs, settle))
 
         if sockets:
             entries = _measure_each_socket(ctx, st, sockets)
         else:
             sidtable, metrics, raw = _measure_one(ctx, "SID")
             entries = {"default": CalibrationResult(sidtable, metrics, d400_chip, raw)}
+        pair = (
+            None if second_sid is None else _measure_pair(ctx, st, second_sid, supports_sid_config)
+        )
     finally:
         try:
             _silence_and_reset(be)
@@ -834,7 +1015,9 @@ def run_calibration(
 
     path = save_calibration(
         cfg,
-        CalibrationDocument(key=key, entries=entries, device=device_info, d400_socket=normal_d400),
+        CalibrationDocument(
+            key=key, entries=entries, device=device_info, d400_socket=normal_d400, pair=pair
+        ),
     )
-    _report_run(entries, path, log_fn)
+    _report_run(entries, path, log_fn, pair)
     return CalibrationRun(key=key, path=path, entries=entries)

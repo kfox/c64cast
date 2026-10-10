@@ -118,6 +118,13 @@ from .audio_servo import (
     stall_reanchor,
 )
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
+from .dac_pair import (
+    COARSE_TABLE_ADDR,
+    FINE_TABLE_ADDR,
+    IDENTITY_TABLE,
+    DacPair,
+    pair_nmi_routine,
+)
 from .dsp import INPUT_CEILING, AudioDSP, DSPParams
 from .mic_lead import (
     MicLeadServo,
@@ -286,6 +293,7 @@ class AudioStreamer:
         digi_boost: bool = False,
         dac_curve: str = "linear",
         dac_table: bytes | None = None,
+        dac_pair: DacPair | None = None,
         sid_filter_cutoff: int = 0,
         use_reu_pump: bool = False,
         reu_pump_governor: bool = True,
@@ -318,7 +326,13 @@ class AudioStreamer:
         # _upload_nmi_and_buffers installs and is mutually exclusive with
         # digi_boost. A caller may pass dac_table already resolved (per-system
         # calibration, or cli's "auto"/"calibrated"), leaving dac_curve a label.
-        table = dac_table if dac_table is not None else resolve_dac_curve(dac_curve)
+        # A pair plays every ring byte as an index into its own two tables
+        # (dac_pair.py), so the encoder's curve is the identity.
+        self._dac_pair = dac_pair
+        if dac_pair is not None:
+            table: bytes | None = IDENTITY_TABLE
+        else:
+            table = dac_table if dac_table is not None else resolve_dac_curve(dac_curve)
         if table is not None and digi_boost:
             # Config validation should have caught this. The curve wins:
             # digi_boost's DC bias would corrupt the Mahoney levels.
@@ -534,7 +548,12 @@ class AudioStreamer:
         return self._dac_curve
 
     def _upload_nmi_and_buffers(self) -> None:
-        self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", NMI_ROUTINE)
+        pair = self._dac_pair
+        routine = NMI_ROUTINE if pair is None else pair_nmi_routine(pair.fine_base)
+        self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", routine)
+        if pair is not None:
+            self.api.write_memory_file(f"{COARSE_TABLE_ADDR:04X}", pair.coarse_table)
+            self.api.write_memory_file(f"{FINE_TABLE_ADDR:04X}", pair.fine_table)
         self.api.write_memory_file(
             f"{RING_BUFFER_ADDR:04X}", bytes([self._neutral_byte] * RING_BUFFER_SIZE)
         )
@@ -547,10 +566,12 @@ class AudioStreamer:
         )
         if self._dac_curve is not None:
             self._enable_mahoney_env()
+            if pair is not None:
+                self._enable_mahoney_env(pair.fine_base)
         elif self.digi_boost:
             self._enable_digi_boost()
 
-    def _enable_mahoney_env(self) -> None:
+    def _enable_mahoney_env(self, base: int = SID.BASE) -> None:
         """Install the Mahoney 8-bit ``$D418`` DAC environment (white paper
         §XIV): park all 3 SID voices as steady DC sources (pulse + TEST + GATE,
         ADSR sustained) with voices 1+2 routed through the analog filter.
@@ -561,21 +582,28 @@ class AudioStreamer:
         re-route it additively/subtractively) — ~6-7 effective bits vs the 16
         the volume nibble gives alone. Written ONCE; the per-sample NMI handler
         is unchanged. Mutually exclusive with digi-boost. See dac_curves.py.
+
+        ``base`` is the chip's: a two-SID pair parks its fine chip too.
         """
+        offset = base - SID.BASE
         for v in range(SID.N_VOICES):
-            base = SID.voice_base(v)
+            voice = SID.voice_base(v) + offset
             # AD (attack=0, decay=15) + adjacent SR (sustain=15, release=15).
-            self.api.write_regs(f"{base + SID.OFF_AD:04X}", SID_MAHONEY_AD, SID_MAHONEY_SR)
-            self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_MAHONEY_CONTROL:02X}")
+            self.api.write_regs(f"{voice + SID.OFF_AD:04X}", SID_MAHONEY_AD, SID_MAHONEY_SR)
+            self.api.write_memory(f"{voice + SID.OFF_CONTROL:04X}", f"{SID_MAHONEY_CONTROL:02X}")
         # Filter cutoff maxed ($D415/$D416 adjacent) then route voices 1+2
         # through the filter with resonance 0 ($D417).
-        self.api.write_regs(f"{SID.FC_LO:04X}", 0xFF, 0xFF)
-        self.api.write_memory(f"{SID.RES_FILT:04X}", f"{SID_MAHONEY_RES_FILT:02X}")
-        log.info("audio: Mahoney 8-bit $D418 env engaged (dac_curve=%s)", self.dac_curve_name)
+        self.api.write_regs(f"{SID.FC_LO + offset:04X}", 0xFF, 0xFF)
+        self.api.write_memory(f"{SID.RES_FILT + offset:04X}", f"{SID_MAHONEY_RES_FILT:02X}")
+        log.info(
+            "audio: Mahoney 8-bit $D418 env engaged at $%04X (dac_curve=%s)",
+            base,
+            self.dac_curve_name,
+        )
 
-    def _release_sid_voice_gate(self, voice: int) -> None:
-        base = SID.voice_base(voice)
-        self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_GATE_OFF:02X}")
+    def _release_sid_voice_gate(self, voice: int, base: int = SID.BASE) -> None:
+        addr = SID.voice_base(voice) + base - SID.BASE
+        self.api.write_memory(f"{addr + SID.OFF_CONTROL:04X}", f"{SID_GATE_OFF:02X}")
 
     def _release_sid_gates(self) -> None:
         """Release the gate on all 3 voices, undoing whichever DAC bias set it.
@@ -3530,6 +3558,22 @@ class AudioStreamer:
         ]
         if self.digi_boost or self._dac_curve is not None:
             steps.append(("DAC bias release", self._release_sid_gates))
+        pair = self._dac_pair
+        if pair is not None:
+            fine = pair.fine_base
+            steps.append(
+                (
+                    "second SID volume mute",
+                    lambda: self.api.write_memory(f"{fine + 0x18:04X}", "00"),
+                )
+            )
+            steps.extend(
+                (
+                    f"second SID voice {v} gate release",
+                    functools.partial(self._release_sid_voice_gate, v, fine),
+                )
+                for v in range(SID.N_VOICES)
+            )
         return steps
 
     def _close_mic_stream(self) -> None:
