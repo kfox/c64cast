@@ -437,9 +437,33 @@ class OutageTest(unittest.TestCase):
             smp._written = old + smp._lead_target
             clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
             flushes, length_writes = chan.flushes, chan.length_writes
-            with self.assertRaises(ConnectionError):
+            with self.assertRaisesRegex(s._WritesLost, "lost ring audio"):
                 smp._advance_deadline(smp._writer_gen)
             self.assertEqual((chan.flushes, chan.length_writes), (flushes, length_writes))
+            self.assertEqual(smp._deadline, old)
+            smp.stop()
+
+    def test_a_lost_length_write_raises_naming_it(self):
+        # The ring was confirmed; only the length write is lost, and the
+        # raise names it rather than the ring.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._ring_mark = chan.write_loss_mark()
+            smp._written = old + smp._lead_target
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            chan.lose = lambda: True
+            with self.assertRaisesRegex(s._WritesLost, "length register"):
+                smp._advance_deadline(smp._writer_gen)
+            chan.lose = None
             self.assertEqual(smp._deadline, old)
             smp.stop()
 
@@ -648,7 +672,7 @@ class ForeignLossTest(unittest.TestCase):
         with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
             smp, chan = self._finished(clock)
             chan.lose = lambda: True
-            with self.assertRaises(ConnectionError):
+            with self.assertRaisesRegex(s._WritesLost, "lost the channel restart"):
                 smp._writer_step(smp._writer_gen)
             chan.lose = None
             self.assertEqual((smp._restarts, chan.state), (0, "finished"))
