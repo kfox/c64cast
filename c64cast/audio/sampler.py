@@ -594,6 +594,10 @@ class UltimateAudioSampler:
         self._cut_epoch = 0
         self._io_lock = threading.Lock()
         self._output_silenced = False
+        # A resume's volume restore the link lost, owed until the writer's
+        # retry (`_restore_owed_volume`) or a restart lands it. Retried on the
+        # playlist thread, a dead link held the resume for a dial per try.
+        self._volume_owed = False
         # Bumped by every start(). A writer carries the generation it was
         # started with and stops writing once that is no longer current, so one
         # still waiting on the queue when stop() and the next start() land
@@ -752,6 +756,7 @@ class UltimateAudioSampler:
             self._ring_mark = None
             self._cut_over_lost = False
         self._output_silenced = False
+        self._volume_owed = False
         self._restarts = 0
         self._underrun_pads = 0
         self._late_bytes = 0
@@ -1092,9 +1097,17 @@ class UltimateAudioSampler:
             if silence_output:
                 self._write_volume(0)
                 self._output_silenced = True
+                self._volume_owed = False
             elif self._output_silenced:
+                mark = self.api.write_loss_mark()
                 self._write_volume(self._volume)
                 self._output_silenced = False
+                if self.api.writes_lost_since(mark):
+                    # Taken as restored all the same: nothing else sends the
+                    # volume again, so the channel stayed muted for the rest
+                    # of the scene.
+                    self._volume_owed = True
+                    log.warning("sampler: the link lost the volume restore; retrying")
         # The queue is not drained: the writer and the prebuffer drop stale
         # tags, and a drain would also take post-splice audio pushed since the
         # bump above, losing the start of the seek target.
@@ -1326,6 +1339,8 @@ class UltimateAudioSampler:
         since its flush can sit in a redial into the guard too, where
         `_backoff_wait` no longer cuts the back-off short: raised, a 20 ms
         back-off took most of the guard, and a stream 0.6 s ahead stopped."""
+        if self._volume_owed:
+            self._restore_owed_volume(gen)
         if self._deadline_reached():
             return self._restart_channel(gen)
         wrote = self._ring_step(gen)
@@ -1338,6 +1353,19 @@ class UltimateAudioSampler:
             else:
                 return wrote
         return self._restart_channel(gen) or wrote
+
+    def _restore_owed_volume(self, gen: int) -> None:
+        """Send the volume restore a resume lost (`_volume_owed`) again.
+        Raises when the link lost it, so the writer backs off and retries."""
+        with self._gate_lock:
+            if not (self._volume_owed and self._running and gen == self._writer_gen):
+                return
+            mark = self.api.write_loss_mark()
+            self._write_volume(self._volume)
+            if self.api.writes_lost_since(mark):
+                raise _WritesLost("the link lost the volume restore")
+            self._volume_owed = False
+        log.info("sampler: the volume restore landed")
 
     def _deadline_reached(self) -> bool:
         """Whether the read head is within the guard of the deadline, where
@@ -1569,6 +1597,8 @@ class UltimateAudioSampler:
                 self._deadline_confirmed = self._deadline
                 self._ring_mark = mark
                 self._cut_over_lost = False
+                if not self._output_silenced:
+                    self._volume_owed = False
                 self._restarts += 1
                 restarts = self._restarts
         log.log(

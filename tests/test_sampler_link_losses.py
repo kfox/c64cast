@@ -11,6 +11,7 @@ import unittest
 from typing import Any, cast
 from unittest import mock
 
+from _fakes import quiet_logging
 from test_sampler_deadline import RING_BASE, _Channel, _Clock, _Queue, _Writer
 
 from c64cast.audio import sampler as s
@@ -283,6 +284,86 @@ class CutOverBlankTest(unittest.TestCase):
             before = chan.flushes
             smp.flush()
         self.assertEqual(chan.flushes, before)
+
+
+class _VolumeChannel(_Channel):
+    """`_Channel` that keeps the channel volume register."""
+
+    volume: int | None = None
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        if int(address, 16) == s.channel_base(0) + s.REG_VOLUME:
+            self.advance()
+            if not self._lost():
+                self.volume = int(data_hex, 16)
+            return
+        super().write_memory(address, data_hex)
+
+
+class VolumeRestoreTest(unittest.TestCase):
+    def _resumed(self, *, lose_restore: bool) -> tuple[s.UltimateAudioSampler, _VolumeChannel]:
+        """A sampler paused (volume 0) and resumed, the resume's restore lost
+        when ``lose_restore``."""
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _VolumeChannel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        smp._q = cast(Any, _Queue())
+
+        def quiet_stop() -> None:
+            # The writer step pads the empty ring; the report is asserted by
+            # test_sampler's test_stop_reports_underruns_once.
+            with quiet_logging():
+                smp.stop()
+
+        self.addCleanup(quiet_stop)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp.start(prebuffer_timeout=0.0)
+            smp.flush(silence_output=True)
+            self.assertEqual(chan.volume, 0)
+            if lose_restore:
+                lost = iter([True])
+                chan.lose = lambda: next(lost, False)
+                with self.assertLogs("c64cast.audio.sampler", logging.WARNING) as logs:
+                    smp.flush()
+                self.assertIn("lost the volume restore", logs.output[0])
+            else:
+                smp.flush()
+        return smp, chan
+
+    def test_a_lost_restore_is_sent_again_by_the_writer(self):
+        # Taken as restored, a restore the link lost left the channel muted
+        # for the rest of the scene: nothing sent the volume again.
+        smp, chan = self._resumed(lose_restore=True)
+        self.assertEqual(chan.volume, 0)
+        with mock.patch.object(s, "time", _Clock()), self.assertLogs("c64cast.audio.sampler"):
+            smp._writer_step(smp._writer_gen)
+        self.assertEqual(chan.volume, smp._volume)
+        self.assertFalse(smp._volume_owed)
+
+    def test_a_landed_restore_owes_nothing(self):
+        smp, chan = self._resumed(lose_restore=False)
+        self.assertEqual(chan.volume, smp._volume)
+        self.assertFalse(smp._volume_owed)
+
+    def test_a_pause_before_the_retry_keeps_the_channel_muted(self):
+        smp, chan = self._resumed(lose_restore=True)
+        with mock.patch.object(s, "time", _Clock()):
+            smp.flush(silence_output=True)
+            smp._writer_step(smp._writer_gen)
+        self.assertEqual(chan.volume, 0)
+
+    def test_a_restore_lost_again_raises_and_stays_owed(self):
+        smp, chan = self._resumed(lose_restore=True)
+        chan.lose = lambda: True
+        with (
+            mock.patch.object(s, "time", _Clock()),
+            self.assertRaisesRegex(ConnectionError, "volume restore"),
+        ):
+            smp._writer_step(smp._writer_gen)
+        self.assertTrue(smp._volume_owed)
 
 
 if __name__ == "__main__":
