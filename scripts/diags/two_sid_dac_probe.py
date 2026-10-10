@@ -30,8 +30,8 @@ fine chip's, both off one read pointer.
 
 ``--pair arm2sid`` uses an ARM2SID's two channels (left at ``$D400`` through
 ``Vol Socket 1``, right at ``$D420`` through ``Vol Socket 2``); ``--pair
-ultisid`` uses the two UltiSID cores. ``--replay DIR`` re-runs the analysis on
-a saved ``results.json``. This makes sound on the real C64, and silences,
+ultisid`` uses the two UltiSID cores. ``--replay DIR`` recomputes each candidate
+table's dense bits from a saved ``results.json``. This makes sound on the real C64, and silences,
 restores and resets the machine on the way out.
 """
 
@@ -64,7 +64,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, SID, nmi_latch_for_rate
+from c64cast.hw.c64 import CIA2, SID, cpu_clock, nmi_latch_for_rate
 from c64cast.sid import armsid
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
@@ -79,14 +79,14 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID_SPLIT,
 )
 from c64cast.sid.sid_hw_config import restore_sid_config, snapshot_sid_config
-from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
+from c64cast.sid.sid_panning import CAT_MIXER
+from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY, volume_to_label
 
 OUT = Path(__file__).resolve().parent / "out" / "two_sid"
 RING_B_ADDR = 0x6000
 FINE_BASE = 0xD420
 TONE_CYCLES = 128
 TONE_HZ = dsr.NMI_RATE * TONE_CYCLES / RING_BUFFER_SIZE
-CAT_MIXER = "Audio Mixer"
 
 _RA_LO, _RA_HI = NMI_ROUTINE_ADDR + 5, NMI_ROUTINE_ADDR + 6
 _RB_LO, _RB_HI = NMI_ROUTINE_ADDR + 11, NMI_ROUTINE_ADDR + 12
@@ -121,25 +121,9 @@ TWO_RING_NMI = bytes(
 assert TWO_RING_NMI[0x2F] == 0x68 and len(TWO_RING_NMI) == 0x31
 
 
-def mahoney_env(be, base: int) -> None:
-    from c64cast.audio.audio_handlers import (
-        SID_MAHONEY_AD,
-        SID_MAHONEY_CONTROL,
-        SID_MAHONEY_RES_FILT,
-        SID_MAHONEY_SR,
-    )
-
-    for v in range(3):
-        vb = base + v * 7
-        be.write_regs(f"{vb + SID.OFF_AD:04X}", SID_MAHONEY_AD, SID_MAHONEY_SR)
-        be.write_memory(f"{vb + SID.OFF_CONTROL:04X}", f"{SID_MAHONEY_CONTROL:02X}")
-    be.write_regs(f"{base + 0x15:04X}", 0xFF, 0xFF)
-    be.write_memory(f"{base + 0x17:04X}", f"{SID_MAHONEY_RES_FILT:02X}")
-
-
-def isolate_pair(be, pair: str) -> tuple[str, str]:
+def isolate_pair(be, pair: str) -> str:
     """Route the coarse chip to $D400 and the fine chip to $D420, alone.
-    Returns the mixer items of (coarse, fine)."""
+    Returns the fine chip's mixer item."""
     be.put_config_item(CAT_ADDRESSING, ITEM_AUTO_MIRROR, "Disabled")
     if pair == "arm2sid":
         be.put_config_item(CAT_SOCKETS, ITEM_SOCKET1_EN, "Enabled")
@@ -160,11 +144,7 @@ def isolate_pair(be, pair: str) -> tuple[str, str]:
     for name, item in VOL_ITEM.items():
         if name in ("socket1", "socket2", "ultisid1", "ultisid2"):
             be.put_config_item(CAT_MIXER, item, VOL_UNITY if name in (coarse, fine) else VOL_OFF)
-    return VOL_ITEM[coarse], VOL_ITEM[fine]
-
-
-def db_label(db: int) -> str:
-    return VOL_UNITY if db == 0 else f"{db:+d} dB" if db > 0 else f"{db} dB"
+    return VOL_ITEM[fine]
 
 
 class Rig:
@@ -357,6 +337,7 @@ def sweep(args) -> None:
         st._upload_nmi_and_buffers()
         saved = snapshot_sid_config(be)
         saved.update(dc._snapshot_mixer(be))
+        saved.update(dc._raise_master(be))
         isolate_pair(be, args.pair)
         st._enable_digi_boost()
         be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", tone)
@@ -398,19 +379,20 @@ def sweep(args) -> None:
                 th = threading.Thread(target=load, daemon=True) if args.dma_load else None
                 if th:
                     th.start()
-                rec = sd.rec(
-                    int(args.secs * dsr.CAP_SR),
-                    samplerate=dsr.CAP_SR,
-                    channels=2,
-                    device=dev,
-                    dtype="float32",
-                )
-                sd.wait()
-                stop.set()
-                if th:
-                    th.join()
-                nominal = 1022727 if args.system == "NTSC" else 985248
-                actual = nominal / (latch + 1)
+                try:
+                    rec = sd.rec(
+                        int(args.secs * dsr.CAP_SR),
+                        samplerate=dsr.CAP_SR,
+                        channels=2,
+                        device=dev,
+                        dtype="float32",
+                    )
+                    sd.wait()
+                finally:
+                    stop.set()
+                    if th:
+                        th.join()
+                actual = cpu_clock(args.system) / (latch + 1)
                 expect = actual * SWEEP_CYCLES / RING_BUFFER_SIZE
                 mono = rec.mean(axis=1).astype(np.float64)
                 pitch = measured_pitch(mono, dsr.CAP_SR, expect * 0.5, expect * 1.2)
@@ -423,6 +405,7 @@ def sweep(args) -> None:
     finally:
         try:
             be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
+            silence_fine(be)
             if saved:
                 restore_sid_config(be, saved)
             be.silence_sid()
@@ -431,6 +414,15 @@ def sweep(args) -> None:
         except Exception as e:  # noqa: BLE001 — best-effort cleanup
             print(f"[hw] cleanup warning: {e}")
         be.close()
+
+
+def silence_fine(be) -> None:
+    """Mute the fine chip while it is still mapped at FINE_BASE:
+    ``silence_sid`` reaches $D400 only."""
+    be.write_memory(f"{_FINE_D418:04X}", "00")
+    for v in range(SID.N_VOICES):
+        control = SID.voice_base(v) + FINE_BASE - SID.BASE + SID.OFF_CONTROL
+        be.write_memory(f"{control:04X}", "00")
 
 
 def arm_nmi(be, latch: int) -> None:
@@ -447,7 +439,7 @@ def run(args) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     results: dict = {"pair": args.pair, "gains": {}}
     saved: dict = {}
-    models_back: dict[int, str | None] = {}
+    models_back: dict[int, str] = {}
     rng = np.random.default_rng(590)
     try:
         be.reset()
@@ -478,21 +470,20 @@ def run(args) -> dict:
 
         saved = snapshot_sid_config(be)
         saved.update(dc._snapshot_mixer(be))
-        mixer_now = be.get_config_category(CAT_MIXER)
-        if "Vol Master" in mixer_now:
-            saved[(CAT_MIXER, "Vol Master")] = mixer_now["Vol Master"]
-            be.put_config_item(CAT_MIXER, "Vol Master", VOL_UNITY)
-        coarse_item, fine_item = isolate_pair(be, args.pair)
+        saved.update(dc._raise_master(be))
+        fine_item = isolate_pair(be, args.pair)
         for base in (0xD400, FINE_BASE):
             rep = armsid.probe(be, base)
-            if args.armsid_model and rep is not None and rep.model != args.armsid_model:
+            if args.armsid_model and rep is not None and rep.model is None:
+                print(f"[hw] ${base:04X}: model unknown, not switching what cannot be restored")
+            elif args.armsid_model and rep is not None and rep.model != args.armsid_model:
                 models_back[base] = rep.model
                 armsid.write_model(be, base, args.armsid_model)
                 rep = armsid.probe(be, base)
             print(f"[hw] ${base:04X}: {rep}")
             results.setdefault("chips", {})[f"{base:04X}"] = str(rep)
-        mahoney_env(be, 0xD400)
-        mahoney_env(be, FINE_BASE)
+        st._enable_mahoney_env()
+        st._enable_mahoney_env(FINE_BASE)
         time.sleep(0.3)
         rig = Rig(be, dev, out, args.secs, args.settle)
 
@@ -503,7 +494,7 @@ def run(args) -> dict:
         results["la"], results["lb"] = la.tolist(), lb.tolist()
 
         for g in args.gains:
-            be.put_config_item(CAT_MIXER, fine_item, db_label(g))
+            be.put_config_item(CAT_MIXER, fine_item, volume_to_label(g))
             time.sleep(0.3)
             print(f"\n== fine chip at {g} dB ==")
             r, meas, pred, add_err = ratio_ring(rig, rng, la, lb)
@@ -542,7 +533,7 @@ def run(args) -> dict:
 
         be.put_config_item(CAT_MIXER, fine_item, VOL_UNITY)
         print("\n== ladder A again (stability) ==")
-        la2 = measure_ladder(rig, "A", 1)
+        la2 = measure_ladder(rig, "A", args.rounds)
         span = float(la.max() - la.min())
         results["la_repeat"] = la2.tolist()
         results["stability"] = {
@@ -551,13 +542,12 @@ def run(args) -> dict:
             "max_frac": float(np.max(np.abs(la - la2)) / span),
         }
         print(f"  stability: {results['stability']}")
-        _ = coarse_item
     finally:
         try:
             be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
+            silence_fine(be)
             for base, model in models_back.items():
-                if model:
-                    armsid.write_model(be, base, model)
+                armsid.write_model(be, base, model)
             if saved:
                 restore_sid_config(be, saved)
             be.silence_sid()
@@ -565,8 +555,8 @@ def run(args) -> dict:
             print("\n[hw] SID config + mixer restored, machine silenced + reset.")
         except Exception as e:  # noqa: BLE001 — best-effort cleanup
             print(f"[hw] cleanup warning: {e}")
-        be.close()
         (out / "results.json").write_text(json.dumps(results, indent=1))
+        be.close()
     return results
 
 
@@ -594,6 +584,11 @@ def main() -> int:
     d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     args = ap.parse_args()
     args.gains = [int(g) for g in args.gains.split(",")]
+    try:
+        for g in args.gains:
+            volume_to_label(g)
+    except ValueError as e:
+        ap.error(f"--gains: {e}")
     args.rates = [int(r) for r in args.rates.split(",")]
     if args.replay:
         res = json.loads((args.replay / "results.json").read_text())
