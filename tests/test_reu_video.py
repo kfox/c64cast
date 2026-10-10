@@ -1086,15 +1086,38 @@ class BankSwapIrqTeardownGuardTest(unittest.TestCase):
 
         fake.write_memory = logged_write_memory  # type: ignore[method-assign]
         fake.write_regs = logged_write_regs  # type: ignore[method-assign]
-        with mock.patch.object(
-            modes_irq.time, "sleep", side_effect=lambda s: order.append(f"sleep {s}")
-        ):
+        with mock.patch.object(modes_irq, "time") as clock:
+            clock.sleep.side_effect = lambda s: order.append(f"sleep {s}")
             uninstall_bank_swap_irq(cast(Ultimate64API, fake))
         drain = order.index(f"sleep {modes_irq._REU_SLOT_MAX_IN_USE_S}")
         self.assertLess(order.index("D01A"), drain, "sources masked before the wait")
         self.assertLess(order.index(self._CIA1_ICR), drain, "sources masked before the wait")
         self.assertLess(drain, order.index(f"{VECTORS.IRQ:04X}"), "vector held until drained")
         self.assertLess(drain, order.index(f"{CIA2.PORT_A:04X}"), "bank held until drained")
+
+    def _teardown_sleeps(self, mode) -> list[float]:
+        fake = FakeAPI()
+        api = cast(Ultimate64API, fake)
+        mode.setup(api)
+        with mock.patch.object(modes_irq, "time") as clock:
+            mode.teardown(api)
+        return [call.args[0] for call in clock.sleep.call_args_list]
+
+    def test_a_reu_staged_mode_drains_its_dispatcher(self):
+        for mode in (
+            HiresDisplayMode(use_reu_staged=True),
+            MultiHiresDisplayMode(use_reu_staged=True),
+        ):
+            with self.subTest(mode=type(mode).__name__):
+                self.assertEqual(self._teardown_sleeps(mode), [modes_irq._REU_SLOT_MAX_IN_USE_S])
+
+    def test_a_host_dma_page_flip_does_not_wait_for_a_copy(self):
+        for mode in (
+            HiresDisplayMode(double_buffer=True),
+            MultiHiresDisplayMode(double_buffer=True),
+        ):
+            with self.subTest(mode=type(mode).__name__):
+                self.assertEqual(self._teardown_sleeps(mode), [])
 
 
 class ReuMHiresPushTest(unittest.TestCase):

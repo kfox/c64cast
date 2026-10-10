@@ -827,18 +827,23 @@ def install_bank_swap_irq(
     api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
 
 
-def uninstall_bank_swap_irq(api: C64Backend) -> None:
+def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> None:
     """Tear down the bank-swap raster IRQ. Mirror of install_bank_swap_irq
     in reverse, plus restore $DD00 = bank 0 so the next scene's setup
     sees the kernal-default VIC bank.
 
-    Six steps, each with its own guard: under one `try` the first link hiccup
-    skipped the five behind it, leaving $0314/$0315 vectored at RAM the next
+    `drain_reu_copy` waits out a REU dispatcher's in-flight copy between the
+    masks and the vector restore. A caller whose installed handler is the
+    host-DMA or flicker swap, which copies nothing, passes False and skips
+    the wait.
+
+    Each step has its own guard: under one `try` the first link hiccup
+    skipped every step behind it, leaving $0314/$0315 vectored at RAM the next
     scene is free to overwrite, $DD00 on a non-default VIC bank, and CIA #1
     Timer A masked — which stops the kernal keyboard scan, and with it the
     C= / CTRL / SHIFT poller, for the rest of the session.
 
-    Five of the six are independent promises. The CIA #1 unmask is not: it
+    Every step but one is an independent promise. The CIA #1 unmask is not: it
     re-arms the jiffy IRQ only once `$0314` is back at the kernal, which is
     why it reads `vector_restored` rather than firing unconditionally. See
     the comment on `unmask_cia1`."""
@@ -867,6 +872,10 @@ def uninstall_bank_swap_irq(api: C64Backend) -> None:
             return
         api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
 
+    def drain_dispatcher() -> None:
+        if drain_reu_copy:
+            time.sleep(_REU_SLOT_MAX_IN_USE_S)
+
     steps: tuple[tuple[str, Callable[[], object]], ...] = (
         # Mask CIA #1 + disable VIC IRQ first, so no source can fire into the
         # about-to-be-unhooked handler.
@@ -879,7 +888,7 @@ def uninstall_bank_swap_irq(api: C64Backend) -> None:
         # writing the hidden bank after the masks land. Waiting it out is
         # cheaper than a handshake, which would need a REST read of the C64 on
         # every scene change.
-        ("drain dispatcher", lambda: time.sleep(_REU_SLOT_MAX_IN_USE_S)),
+        ("drain dispatcher", drain_dispatcher),
         # Restore $0314/$0315 → kernal $EA31.
         ("kernal IRQ vector", restore_kernal_vector),
         # Ack any pending raster IRQ flag so the next $D019 read is clean.

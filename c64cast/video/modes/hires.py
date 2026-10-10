@@ -310,7 +310,7 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def teardown(self, api):
         if self.use_reu_staged or self.double_buffer or self._blend_table is not None:
-            uninstall_bank_swap_irq(api)
+            uninstall_bank_swap_irq(api, drain_reu_copy=self.use_reu_staged)
             if self._blend_table is not None:
                 # uninstall restores $DD00 but not $D018, which the flicker
                 # handler may have left on the $0C00 page — a char scene would
