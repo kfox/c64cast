@@ -35,6 +35,8 @@ from c64cast.sid.asid_sidmap import (
     ITEM_SOCKET2_TYPE,
 )
 
+from .dac_pair import FINE_CODES, parse_second_sid
+
 if TYPE_CHECKING:
     from c64cast.app.config import Config
     from c64cast.hw.backend import C64Backend
@@ -381,13 +383,20 @@ def load_pair_record(path: Path) -> dict[str, Any] | None:
     pair = raw.get("pair")
     if not isinstance(pair, dict):
         return None
-    for name in ("coarse_table", "fine_table"):
+    # What DacPair accepts, so a record read here never fails to build one.
+    for name, codes in (("coarse_table", range(256)), ("fine_table", FINE_CODES)):
         table = pair.get(name)
         if not isinstance(table, list) or len(table) != 256:
             return None
-        if not all(isinstance(v, int) and 0 <= v <= 0xFF for v in table):
+        if not all(type(v) is int and v in codes for v in table):
             return None
-    if not isinstance(pair.get("fine_base"), str):
+    fine_base = pair.get("fine_base")
+    if not isinstance(fine_base, str):
+        return None
+    try:
+        if parse_second_sid(fine_base) is None:
+            return None
+    except ValueError:
         return None
     return pair
 

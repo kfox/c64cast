@@ -118,6 +118,15 @@ class CheckFineLevelsTest(unittest.TestCase):
         with self.assertRaises(dsr.MeasurementError):
             dc._check_fine_levels(fine, 1.0)
 
+    def test_accepts_a_fine_chip_of_the_opposite_polarity(self):
+        dc._check_fine_levels(np.arange(16) * -0.004, 1.0)
+
+    def test_refuses_an_inverted_ladder_that_turns_back(self):
+        fine = np.arange(16) * -0.004
+        fine[8] = 0.0
+        with self.assertRaises(dsr.MeasurementError):
+            dc._check_fine_levels(fine, 1.0)
+
 
 class PairMixerTest(unittest.TestCase):
     def test_coarse_at_unity_fine_at_the_pair_level_the_rest_off(self):
@@ -134,6 +143,16 @@ class PairMixerTest(unittest.TestCase):
         api = _u64()
         with self.assertRaisesRegex(dsr.MeasurementError, r"\$D500"):
             dc._pair_mixer(cast(Any, api), 0xD500, set(api.config_store[CAT_MIXER]))
+
+    def test_refuses_when_nothing_answers_d400(self):
+        api = _u64()
+        api.config_store[CAT_ADDRESSING].update(
+            {"SID Socket 1 Address": "$D440", "UltiSID 1 Address": "$D460"}
+        )
+        before = dict(api.config_store[CAT_MIXER])
+        with self.assertRaisesRegex(dsr.MeasurementError, r"\$D400"):
+            dc._pair_mixer(cast(Any, api), FINE, set(before))
+        self.assertEqual(api.config_store[CAT_MIXER], before, "nothing muted")
 
 
 class MeasurePairTest(unittest.TestCase):
@@ -184,6 +203,13 @@ class MeasurePairTest(unittest.TestCase):
         self.assertIsNone(record["fine_gain_db"])
         self.assertEqual(api.config_puts, [])
 
+    def test_an_unreadable_mixer_records_no_pair_level(self):
+        api = _u64()
+        del api.config_store[CAT_MIXER]
+        record = self._run(api)
+        self.assertEqual(record["fine_source"], "socket2")
+        self.assertIsNone(record["fine_gain_db"])
+
     def test_a_first_sid_that_fails_its_self_test_folds_no_pair(self):
         api = _u64()
         with (
@@ -195,10 +221,17 @@ class MeasurePairTest(unittest.TestCase):
 
 
 class RunCalibrationPairTest(unittest.TestCase):
-    def _run(self, second_sid: int | None) -> tuple[MagicMock, MagicMock]:
+    def _run(
+        self,
+        second_sid: int | None,
+        pair: MagicMock | None = None,
+        save: MagicMock | None = None,
+    ) -> tuple[MagicMock, MagicMock]:
         api = FakeAPI()
-        save = MagicMock(return_value=Path("cal.json"))
-        pair = MagicMock(return_value={"fine_base": "$D420"})
+        if save is None:
+            save = MagicMock(return_value=Path("cal.json"))
+        if pair is None:
+            pair = MagicMock(return_value={"fine_base": "$D420"})
         with (
             patch.object(dc, "_require_sounddevice"),
             patch.object(dc, "_bring_up_dac_env"),
@@ -225,6 +258,17 @@ class RunCalibrationPairTest(unittest.TestCase):
         save, pair = self._run(None)
         pair.assert_not_called()
         self.assertIsNone(save.call_args.args[1].pair)
+
+    def test_a_failed_pair_still_saves_the_per_sid_entries(self):
+        error = dsr.MeasurementError("no second SID answers there")
+        failing = MagicMock(side_effect=error)
+        save = MagicMock(return_value=Path("cal.json"))
+        with self.assertRaises(dsr.MeasurementError) as cm:
+            self._run(FINE, failing, save)
+        self.assertIs(cm.exception, error)
+        doc = save.call_args.args[1]
+        self.assertIsNone(doc.pair)
+        self.assertIn("default", doc.entries)
 
 
 class PairRecordStoreTest(unittest.TestCase):
@@ -259,6 +303,10 @@ class PairRecordStoreTest(unittest.TestCase):
             {"fine_base": "$D420", "coarse_table": [1] * 255, "fine_table": [2] * 256},
             {"fine_base": "$D420", "coarse_table": [256] * 256, "fine_table": [2] * 256},
             {"coarse_table": [1] * 256, "fine_table": [2] * 256},
+            {"fine_base": "$D420", "coarse_table": [1] * 256, "fine_table": [16] * 256},
+            {"fine_base": "$D420", "coarse_table": [True] * 256, "fine_table": [2] * 256},
+            {"fine_base": "$D400", "coarse_table": [1] * 256, "fine_table": [2] * 256},
+            {"fine_base": "off", "coarse_table": [1] * 256, "fine_table": [2] * 256},
         ):
             with self.subTest(bad=list(bad)):
                 self.assertIsNone(dcs.load_pair_record(self._save(bad)))

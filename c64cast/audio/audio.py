@@ -3564,7 +3564,7 @@ class AudioStreamer:
             steps.append(
                 (
                     "second SID volume mute",
-                    lambda: self.api.write_memory(f"{fine + 0x18:04X}", "00"),
+                    lambda: self.api.write_memory(f"{fine + SID.MODE_VOL - SID.BASE:04X}", "00"),
                 )
             )
             steps.extend(

@@ -780,6 +780,14 @@ def _pair_mixer(
             "there: map a socket, an ARM2SID's right channel or an UltiSID core to "
             "that address in the machine's SID settings, then calibrate again."
         )
+    if coarse is None:
+        # Every source but the fine one is about to go to OFF, which would
+        # mute whatever does answer $D400 and measure the noise floor.
+        raise MeasurementError(
+            "no SID source in the machine's SID settings answers $D400, so the "
+            "first SID of the pair cannot be kept audible in the mixer: map a "
+            "socket or an UltiSID core to $D400, then calibrate again."
+        )
     levels = {coarse: VOL_UNITY, fine: volume_to_label(FINE_GAIN_DB)}
     for name, item in VOL_ITEM.items():
         if item in present:
@@ -788,18 +796,23 @@ def _pair_mixer(
 
 
 def _check_fine_levels(fine: np.ndarray, coarse_span: float) -> None:
-    """Refuse a fine ladder that cannot be the second chip's volume DAC."""
+    """Refuse a fine ladder that cannot be the second chip's volume DAC.
+
+    The ladder is in units of the coarse chip's anchor, so a fine chip whose
+    output sits in the opposite polarity reads as a falling one; the fold sums
+    signed levels and plays it as well, so only its magnitude is judged."""
     top = float(fine[-1])
-    if not _FINE_SPAN_MIN * coarse_span <= top <= _FINE_SPAN_MAX * coarse_span:
+    mag = abs(top)
+    if not _FINE_SPAN_MIN * coarse_span <= mag <= _FINE_SPAN_MAX * coarse_span:
         raise MeasurementError(
-            f"the second SID's full volume measured {top / coarse_span:.2%} of the "
+            f"the second SID's full volume measured {mag / coarse_span:.2%} of the "
             "first SID's span; a fine chip has to sit between "
             f"{_FINE_SPAN_MIN:.1%} and {_FINE_SPAN_MAX:.0%}. Check that it is "
             "audible in the machine's mixer and that nothing else answers its address."
         )
-    if np.any(np.diff(fine) < -_FINE_MONOTONE_SLACK * top):
+    if np.any(np.diff(fine) * np.sign(top) < -_FINE_MONOTONE_SLACK * mag):
         raise MeasurementError(
-            "the second SID's volume ladder does not rise with the volume nibble "
+            "the second SID's volume ladder does not grow with the volume nibble "
             f"({', '.join(f'{v:+.4f}' for v in fine)}), so what was measured is not "
             "that chip's volume DAC."
         )
@@ -845,10 +858,9 @@ def _measure_pair(
         session.snapshot()
         mixer_levels = _snapshot_mixer(ctx.be)
         session.fold(mixer_levels)
+        present = {item for _, item in mixer_levels}
         if supports_sid_config:
-            coarse_src, fine_src = _pair_mixer(
-                ctx.be, fine_base, {item for _, item in mixer_levels}
-            )
+            coarse_src, fine_src = _pair_mixer(ctx.be, fine_base, present)
         ctx.log_fn(
             f"[calib] measuring the SID pair: $D400 ({coarse_src or 'first SID'}) + "
             f"${fine_base:04X} ({fine_src or 'second SID'}), second SID at "
@@ -865,13 +877,19 @@ def _measure_pair(
                 "table can be folded from it"
             )
         levels = np.array([v for _, v in sorted(raw)], dtype=np.float64)
+        if not levels[ANCHOR_CODE]:
+            raise MeasurementError("the first SID's anchor read zero in the pair measurement")
         levels /= levels[ANCHOR_CODE]
         fine = _measure_fine_ladder(ctx)
     _check_fine_levels(fine, float(levels.max() - levels.min()))
     coarse_table, fine_table, pair_metrics = fold_pair_table(levels, fine)
     return {
         "fine_base": f"${fine_base:04X}",
-        "fine_gain_db": FINE_GAIN_DB if supports_sid_config else None,
+        # Only what the mixer was actually set to: an unreadable mixer, or one
+        # without the fine source's item, measured the pair at its own levels.
+        "fine_gain_db": (
+            FINE_GAIN_DB if fine_src is not None and VOL_ITEM.get(fine_src) in present else None
+        ),
         "coarse_source": coarse_src,
         "fine_source": fine_src,
         "coarse_table": coarse_table,
@@ -962,7 +980,8 @@ def run_calibration(
 
     `second_sid`, the base of a two-SID pair's fine chip, adds a pair
     measurement after the per-SID ones (:func:`_measure_pair`), saved as the
-    file's ``pair`` record.
+    file's ``pair`` record. A pair measurement that fails raises its
+    :class:`MeasurementError` only after the per-SID entries are saved.
 
     Raises :class:`CaptureUnavailableError` if capture can't be set up.
     """
@@ -976,6 +995,7 @@ def run_calibration(
     # Filled as each ARMSID is switched, so a failure or Ctrl+C at any later
     # point still puts back every model switched so far.
     model_restore: dict[tuple[str, str], str] = {}
+    pair_error: MeasurementError | None = None
     try:
         master_restore = _raise_master(be)
         st = _bring_up_dac_env(be, cfg, log_fn)
@@ -1004,9 +1024,15 @@ def run_calibration(
         else:
             sidtable, metrics, raw = _measure_one(ctx, "SID")
             entries = {"default": CalibrationResult(sidtable, metrics, d400_chip, raw)}
-        pair = (
-            None if second_sid is None else _measure_pair(ctx, st, second_sid, supports_sid_config)
-        )
+        pair = None
+        if second_sid is not None:
+            # The per-SID entries above are minutes of measurement and stand on
+            # their own: a pair that cannot be measured is saved without, then
+            # reported.
+            try:
+                pair = _measure_pair(ctx, st, second_sid, supports_sid_config)
+            except MeasurementError as e:
+                pair_error = e
     finally:
         try:
             _silence_and_reset(be)
@@ -1020,4 +1046,6 @@ def run_calibration(
         ),
     )
     _report_run(entries, path, log_fn, pair)
+    if pair_error is not None:
+        raise pair_error
     return CalibrationRun(key=key, path=path, entries=entries)
