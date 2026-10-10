@@ -31,6 +31,7 @@ from c64cast.hw.c64 import (
     CIA2,
     KERNAL,
     NMI_SAFE_MIN_PERIOD_CYCLES,
+    RASTER_COMMIT_LAST_SAFE_LINE,
     REU,
     SCREEN,
     VECTORS,
@@ -1637,7 +1638,9 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
         # [251, 255] and [0, 45] (mhires: 40), and the lines the 8-bit $D012
         # aliases there.
         for name, handler, mhires, _ in self.CASES[:2]:
-            last = modes_irq.MHIRES_COMMIT_LAST_SAFE_LINE if mhires else 45
+            last = (
+                modes_irq.MHIRES_COMMIT_LAST_SAFE_LINE if mhires else RASTER_COMMIT_LAST_SAFE_LINE
+            )
             for line in (251, 255, 0, last):
                 with self.subTest(mode=name, line=line):
                     m = self.Machine(self, handler, mhires=mhires)

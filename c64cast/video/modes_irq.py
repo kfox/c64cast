@@ -433,7 +433,9 @@ def _bank_swap_dispatcher(
     """
     assert tracker_len <= MHIRES_FRAME_TRACKER_LEN
     gate_limit = _RASTER_GATE_BIAS + last_line + 1
-    assert gate_limit <= _RASTER_GATE_LIMIT, "a commit window cannot reach past the first badline"
+    assert gate_limit <= _RASTER_GATE_LIMIT, (
+        "a commit window cannot reach past RASTER_COMMIT_LAST_SAFE_LINE"
+    )
     ready = FRAME_TRACKER_ADDR + ready_off
     nonraster = AUDIO_HANDLER_INSTALL_ADDR if pump else KERNAL.IRQ_HANDLER
     bg0 = f"LDA ${_SNAPSHOT + bg0_off:04X}\n STA $D021" if bg0_off is not None else ""

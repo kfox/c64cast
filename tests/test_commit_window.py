@@ -26,6 +26,7 @@ from c64cast.hw.c64 import (
     D018_HIRES_PAGE_B,
     KERNAL,
     NMI_SAFE_MIN_PERIOD_CYCLES,
+    RASTER_COMMIT_LAST_SAFE_LINE,
     RASTER_VBLANK_LINE,
     REU,
     SCREEN,
@@ -268,7 +269,7 @@ class CommitBudgetTest(unittest.TestCase):
             MHIRES_BANK_SWAP_IRQ_HANDLER, prime=partial(prime_reu, mhires=True), line=0
         )
         own = next(t for n, t in events if n == "chunk")
-        self.assertLess(latest_safe_read_line(worst_case_cycles(own)), 45)
+        self.assertLess(latest_safe_read_line(worst_case_cycles(own)), RASTER_COMMIT_LAST_SAFE_LINE)
 
 
 if __name__ == "__main__":
