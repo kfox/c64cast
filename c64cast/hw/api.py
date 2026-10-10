@@ -47,6 +47,7 @@ from .backend import (
     EMUSID_MIXER_CATEGORY,
     SID_CONFIG_CATEGORIES,
     SYSTEM_MODE_CATEGORY,
+    ULTIMATE_64_HALT_CYCLES_PER_BYTE,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
     BackendSetupError,
@@ -2109,9 +2110,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 supports_system_mode=has_system_mode,
                 supports_video_stream=has_system_mode,
             )
-        if not has_system_mode and self.profile.halt_cycles_per_byte:
-            # The halt figure is the Ultimate 64's; nobody has measured the II+.
-            self.profile = replace(self.profile, halt_cycles_per_byte=0.0)
+        halt = ULTIMATE_64_HALT_CYCLES_PER_BYTE if has_system_mode else 0.0
+        if halt != self.profile.halt_cycles_per_byte:
+            self.profile = replace(self.profile, halt_cycles_per_byte=halt)
 
         missing = [c for c in SID_CONFIG_CATEGORIES if c not in categories]
         if not missing or not self.profile.supports_sid_config:

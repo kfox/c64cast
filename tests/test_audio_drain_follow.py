@@ -36,12 +36,17 @@ from c64cast.audio.audio_source import (
     DrainFollower,
 )
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.backend import SYSTEM_MODE_CATEGORY, ULTIMATE_PROFILE
+from c64cast.hw.backend import (
+    SYSTEM_MODE_CATEGORY,
+    ULTIMATE_64_HALT_CYCLES_PER_BYTE,
+    ULTIMATE_PROFILE,
+)
 from c64cast.hw.c64 import CLOCK_NTSC
 from c64cast.video.video import ensure_pyav
 
 STEP_S = 0.1
-# The Ultimate 64's halt, NTSC.
+# An Ultimate 64 as refine_capabilities leaves it, and its halt, NTSC.
+U64_PROFILE = replace(ULTIMATE_PROFILE, halt_cycles_per_byte=ULTIMATE_64_HALT_CYCLES_PER_BYTE)
 HALT_S_PER_BYTE = 1.27 / CLOCK_NTSC
 # The byte rate a generative halo scene writes in mcm, and the drain it
 # predicts there: 1 - 48 KiB/s x 1.27 cycles/B / 1.0227 MHz.
@@ -211,8 +216,9 @@ class DrainPredictionTest(unittest.TestCase):
 
 
 class UltimateHaltFigureTest(unittest.TestCase):
-    """The Ultimate 64's figure stays; the II+ (no System Mode category) has
-    none measured, so it predicts nothing."""
+    """Only a device read as an Ultimate 64 gets its halt figure. The II+ (no
+    System Mode category) has none measured, and an unprobed or unreadable
+    device predicts nothing rather than borrow it."""
 
     def setUp(self) -> None:
         patcher = mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
@@ -230,13 +236,20 @@ class UltimateHaltFigureTest(unittest.TestCase):
         with self.assertLogs("c64cast.hw.api", "DEBUG"):
             self.api.refine_capabilities()
 
-    def test_an_ultimate_64_keeps_its_halt_figure(self):
-        self.assertEqual(ULTIMATE_PROFILE.halt_cycles_per_byte, 1.27)
+    def test_an_ultimate_64_gets_its_halt_figure(self):
         self._refine([SYSTEM_MODE_CATEGORY, "C64 and Cartridge Settings"])
         self.assertEqual(self.api.profile.halt_cycles_per_byte, 1.27)
 
     def test_an_ultimate_ii_plus_has_none(self):
+        self.api.profile = U64_PROFILE
         self._refine(["Audio Output Settings", "C64 and Cartridge Settings"])
+        self.assertEqual(self.api.profile.halt_cycles_per_byte, 0.0)
+
+    def test_an_unprobed_or_unreadable_device_has_none(self):
+        self.assertEqual(self.api.profile.halt_cycles_per_byte, 0.0)
+        self.get.return_value.json.side_effect = ValueError("not json")
+        with self.assertLogs("c64cast.hw.api", "DEBUG"):
+            self.api.refine_capabilities()
         self.assertEqual(self.api.profile.halt_cycles_per_byte, 0.0)
 
 
@@ -280,7 +293,7 @@ class _LinkApi:
     64 profile."""
 
     delivery_epoch = 0
-    profile = ULTIMATE_PROFILE
+    profile = U64_PROFILE
 
     def __init__(self, written: Callable[[], int]) -> None:
         self._written = written
@@ -379,13 +392,21 @@ class AudioFileSourceDrainTest(unittest.TestCase):
         start = self.now[0]
         # A link writing what halts the CPU for 10 % of its cycles.
         rate = 0.1 / HALT_S_PER_BYTE
-        sink.api = _LinkApi(lambda: int((self.now[0] - start) * rate))  # type: ignore[attr-defined]
+        reads: list[float] = []
+
+        def written() -> int:
+            reads.append(self.now[0] - start)
+            return int((self.now[0] - start) * rate)
+
+        sink.api = _LinkApi(written)  # type: ignore[attr-defined]
         src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
         wall = self._play(src, sink)
         self.assertIn("predict the DAC drains at 0.900", self.logs[0])
         # Only the first span plays slow, not the warm-up and a window.
         self.assertLess(wall, self.SECONDS + DRAIN_PREDICT_SPAN_S * (1 / 0.9 - 1) + 0.2)
         self.assertTrue(src._drain_measured)
+        # The link's counters are read only until the prediction.
+        self.assertLess(max(reads), DRAIN_PREDICT_SPAN_S * (1 / 0.9) + 0.2)
 
         follower = src._new_drain_follower()
         assert follower is not None
@@ -396,7 +417,7 @@ class AudioFileSourceDrainTest(unittest.TestCase):
         sink.api = _LinkApi(lambda: 1000)  # type: ignore[attr-defined]
         src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
         self.assertAlmostEqual(src._halted_s() or 0.0, 1000 * 1.27 / CLOCK_NTSC)
-        sink.api.profile = replace(ULTIMATE_PROFILE, halt_cycles_per_byte=0.0)  # type: ignore[attr-defined]
+        sink.api.profile = replace(U64_PROFILE, halt_cycles_per_byte=0.0)  # type: ignore[attr-defined]
         self.assertIsNone(src._halted_s())
         follower = src._new_drain_follower()
         assert follower is not None

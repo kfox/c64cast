@@ -120,6 +120,12 @@ class DrainFollower:
         # (wall, halted) the prediction's span starts at.
         self._predict_from: tuple[float, float] | None = None
 
+    @property
+    def predicting(self) -> bool:
+        """Whether a prediction is still to come, so `observe` wants
+        ``halted_s``."""
+        return not self._predicted
+
     def observe(
         self, now: float, clock_s: float, trust: object, halted_s: float | None = None
     ) -> float | None:
@@ -779,8 +785,9 @@ class AudioFileSource:
             getattr(api, "delivery_epoch", 0),
         )
         before = follower.scale
+        halted = self._halted_s() if follower.predicting else None
         retuned = follower.observe(
-            time.monotonic(), self._audio.position_seconds() or 0.0, trust, self._halted_s()
+            time.monotonic(), self._audio.position_seconds() or 0.0, trust, halted
         )
         if retuned is not None and not follower.measured:
             log.info(

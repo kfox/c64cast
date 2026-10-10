@@ -264,10 +264,16 @@ ULTIMATE_PROFILE = HardwareProfile(
     write_cost_floor_s=5.222e-3,
     write_cost_intercept_s=1.328e-3,
     write_cost_per_byte_s=1.8454e-6,
-    # Measured on an Ultimate 64 (2026-08-05, see audio.md). The Ultimate II+
-    # is unmeasured; refine_capabilities zeroes it there.
-    halt_cycles_per_byte=1.270,
+    # Not optimistic like supports_sid_config: refine_capabilities grants
+    # ULTIMATE_64_HALT_CYCLES_PER_BYTE only on a device it reads as an
+    # Ultimate 64. An unmeasured II+ given that figure on an unprobed run
+    # would start its tracks at a drain nobody measured.
+    halt_cycles_per_byte=0.0,
 )
+
+# Measured on an Ultimate 64 with scripts/diags/halt_shape_probe.py
+# (2026-08-05, see audio.md).
+ULTIMATE_64_HALT_CYCLES_PER_BYTE = 1.270
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
 # is declared True at the protocol level here; TeensyROMBackend.__init__ probes
