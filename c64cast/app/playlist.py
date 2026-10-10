@@ -911,6 +911,8 @@ class Playlist:
             # the mark is taken, too, and drained by a round trip, so a write
             # the restore loses is not charged to the setup.
             if self.restart_watch.restarted_before_setup():
+                # The restart put $0314 and CIA #1 back, as after `after_restart`.
+                self._irq_release_owed = False
                 self._put_machine_back(
                     "the machine restarted before %r set up; putting its state back first",
                     scene.name,
@@ -1061,6 +1063,7 @@ class Playlist:
         self.ensemble_coord.release_scene(scene)
         if self._restore_after_teardown:
             self._restore_after_teardown = False
+            self._irq_release_owed = False
             self._restore_machine()
 
     def _maybe_heartbeat(self, now: float) -> None:

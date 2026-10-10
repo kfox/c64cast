@@ -874,6 +874,26 @@ class PlaylistTest(unittest.TestCase):
         self.assertIn(("0314", (0x31, 0xEA)), seen_at_setup[1])
         self.assertEqual(seen_at_setup[1][-1], ("DC0D", "81"))
 
+    def test_a_setup_after_a_restart_sends_no_release(self):
+        # The restart already put $0314 and CIA #1 back.
+        for found in ("as the scene ended", "before the setup"):
+            with self.subTest(found=found):
+                scenes = [FakeScene("A")]
+                api = FakeApi()
+                pl = Playlist(scenes, api, target_fps=200.0, heartbeat_interval=0.0)
+                pl.current = scenes[0]
+                scenes[0].is_done = True
+                if found == "as the scene ended":
+                    pl._restore_after_teardown = True
+                    pl._advance_single_scene()
+                else:
+                    restarts = iter([True])
+                    pl.restart_watch.restarted_before_setup = lambda r=restarts: next(r, False)
+                    with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+                        pl._advance_single_scene()
+                self.assertEqual(scenes[0].setup_count, 1)
+                self.assertEqual(api.writes, [])
+
     def test_request_jump_interstitial_transition_uses_the_card(self):
         scenes = [
             FakeScene("A", frames_until_done=10_000_000),
