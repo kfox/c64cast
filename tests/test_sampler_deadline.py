@@ -617,14 +617,16 @@ class OutageTest(unittest.TestCase):
         with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
             smp._q = cast(Any, _Queue())
             smp.start(prebuffer_timeout=0.0)
+            anchors: list[float] = []
             with smp._gate_lock:
-                splice = threading.Thread(target=smp.flush)
+                splice = threading.Thread(target=lambda: anchors.append(smp.flush()))
                 splice.start()
                 splice.join(1.0)
                 blocked = splice.is_alive()
             splice.join(5.0)
             smp.stop()
         self.assertFalse(blocked)
+        self.assertEqual(len(anchors), 1)
 
     def test_a_restart_over_a_slow_link_leaves_the_channel_behind_the_read_head(self):
         # The restart's flush takes 0.3 s to return. A channel running ahead
