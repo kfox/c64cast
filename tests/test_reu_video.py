@@ -1117,7 +1117,8 @@ class BankSwapIrqTeardownGuardTest(unittest.TestCase):
             HiresDisplayMode(flicker_tolerance="clean"),
             MultiHiresDisplayMode(flicker_tolerance="clean"),
         ):
-            with self.subTest(mode=type(mode).__name__):
+            # flicker_tolerance="visible" warns at setup; test_flicker_blend asserts it.
+            with self.subTest(mode=type(mode).__name__), quiet_logging():
                 self.assertEqual(self._teardown_sleeps(mode), [])
 
 
