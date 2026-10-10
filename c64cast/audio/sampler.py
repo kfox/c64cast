@@ -1207,6 +1207,9 @@ class UltimateAudioSampler:
             _failure_text(error),
         )
         landed = self._gate_off_landed(gen)
+        # The gate-off can sit in the transport past stop() and arm().
+        if not (self._running and gen == self._writer_gen):
+            return
         self._gate_off_landed_once = bool(landed)
         if landed is False:
             log.warning(
@@ -1264,6 +1267,8 @@ class UltimateAudioSampler:
         if not self._gate_off_landed_once:
             landed = self._gate_off_landed(gen)
             if landed is None:
+                return False
+            if not (self._running and gen == self._writer_gen):
                 return False
             if not landed:
                 raise _WritesLost("the link lost the gate-off")
