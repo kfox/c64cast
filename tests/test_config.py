@@ -430,7 +430,7 @@ class DoubleBufferTest(unittest.TestCase):
 
     def test_auto_off_on_reu_backend_and_when_staged(self):
         r = scene_factory.resolve_double_buffer
-        # U64 (has REU), overlay-free bitmap: auto leaves it off — the REU path
+        # U64 (has REU), bitmap: auto leaves it off — the REU path
         # is the better tear-free option there.
         self.assertFalse(r("auto", "mhires", use_reu_staged=False, backend_supports_reu=True))
         # Mutually exclusive with REU staging (both flip $DD00).
