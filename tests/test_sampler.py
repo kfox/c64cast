@@ -651,6 +651,9 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
             survivor._join_timeout = 0.05
             smp.stop()
             self.assertTrue(survivor.is_running(), "the survivor did not outlive the join")
+            # The stops below, and the cleanup's, join with a real bound: at
+            # 50 ms a slow worker left the writer running into later tests.
+            survivor._join_timeout = 5.0
             smp.arm()  # refused before: the lap played silent
             starter = threading.Thread(target=smp.start, kwargs={"prebuffer_timeout": 0.01})
             starter.start()
