@@ -573,12 +573,13 @@ class OutageTest(unittest.TestCase):
         volume_reg = CTRL + s.REG_VOLUME
         volumes: list[int] = []
         resume: list[threading.Thread] = []
+        anchors: list[float] = []
         plain_regs, plain_mem = chan.write_regs, chan.write_memory
 
         def write_regs(base_addr: str, *values: int) -> None:
             if int(base_addr, 16) == volume_reg:
                 if smp._output_silenced and not resume:
-                    resume.append(threading.Thread(target=smp.flush))
+                    resume.append(threading.Thread(target=lambda: anchors.append(smp.flush())))
                     resume[0].start()
                     resume[0].join(0.2)
                 volumes.append(values[0])
@@ -601,6 +602,7 @@ class OutageTest(unittest.TestCase):
                 self.assertTrue(smp._writer_step(smp._writer_gen))
             resume[0].join(5.0)
             self.assertFalse(resume[0].is_alive())
+        self.assertEqual(len(anchors), 1)
         self.assertFalse(smp._output_silenced)
         self.assertEqual(volumes[-1], s.SAMPLER_VOLUME_MAX)
 
