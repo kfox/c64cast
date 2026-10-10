@@ -614,7 +614,7 @@ class UltimateAudioSampler:
         # The writer thread's `write_loss_mark` as of the last deadline write
         # that landed: a refresh confirmed against its own write alone moved
         # the deadline over ring audio lost since, and the last lap played
-        # there. None until the writer's first refresh takes it.
+        # there. None until the writer's first pass takes it (`_writer_step`).
         self._ring_mark: int | None = None
 
         self._underrun_pads = 0
@@ -1216,8 +1216,9 @@ class UltimateAudioSampler:
         so a ring write lost since holds the deadline too; only this thread's
         losses count (another
         thread's, counted here, would add up to a give-up on a link that
-        carries the ring): a lost refresh raises, and the writer backs off and
-        tries again. A refresh that may have landed after the channel reached
+        carries the ring): a loss raises, and so does every refresh after it,
+        until the channel reaches the deadline it held and the restart takes
+        a new mark. A refresh that may have landed after the channel reached
         the old deadline leaves the old one standing, so the next pass
         restarts the channel: one that stopped silently would stay silent."""
         old = self._deadline
@@ -1246,7 +1247,7 @@ class UltimateAudioSampler:
             if self._read_consumed_bytes() + self._deadline_guard >= old:
                 return
             self._deadline = new
-            self._ring_mark = self.api.write_loss_mark()
+            self._ring_mark = mark
 
     def _next_deadline(self, old: int, target: int, consumed: int) -> int | None:
         """The furthest deadline in ``(old, target]`` whose write is safe, or
@@ -1343,7 +1344,7 @@ class UltimateAudioSampler:
                 self._ring_phase = phase
                 self._written = phase + fresh
                 self._deadline = phase + fresh
-                self._ring_mark = self.api.write_loss_mark()
+                self._ring_mark = mark
                 self._restarts += 1
                 restarts = self._restarts
         log.log(
