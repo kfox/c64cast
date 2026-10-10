@@ -1361,28 +1361,28 @@ class UltimateAudioSampler:
                 # Raised here, a restore whose flush ran into the guard bought
                 # a back-off `_backoff_wait` no longer cuts short, as the
                 # refresh below did.
-                if not self._lost_into_guard(e):
+                if not self._deadline_reached():
                     raise
-                return self._restart_channel(gen)
+                return self._restart_after_loss(gen, e)
         wrote = self._ring_step(gen)
         if not self._deadline_reached():
             try:
                 self._advance_deadline(gen)
             except _WritesLost as e:
-                if not self._lost_into_guard(e):
+                if not self._deadline_reached():
                     raise
+                return self._restart_after_loss(gen, e) or wrote
             else:
                 return wrote
         return self._restart_channel(gen) or wrote
 
-    def _lost_into_guard(self, error: _WritesLost) -> bool:
-        """Whether a loss a writer pass caught came with the read head within
-        the guard, where the pass restarts the channel rather than raising;
-        logged here when it did."""
-        if not self._deadline_reached():
-            return False
-        log.warning("sampler: %s; restarting the channel", _failure_text(error))
-        return True
+    def _restart_after_loss(self, gen: int, error: _WritesLost) -> bool:
+        """Restart a channel whose writer pass caught ``error`` with the read
+        head within the guard, logged for that loss and as a WARNING every
+        time: the restarts after the first log at DEBUG, and an audible jump
+        left nothing at the default level. Logged as the deadline's, a lost
+        volume restore read as ring writes that stopped landing."""
+        return self._restart_channel(gen, cause=_failure_text(error), warn=True)
 
     def _restore_owed_volume(self, gen: int) -> None:
         """Send the volume restore a resume lost (`_volume_owed`) again.
@@ -1560,6 +1560,7 @@ class UltimateAudioSampler:
         gen: int,
         *,
         cause: str = "the channel reached its deadline (ring writes stopped landing)",
+        warn: bool = False,
     ) -> bool:
         """Gate a channel that reached its deadline on again, at the read
         head: the gate-on starts it from ring offset 0, so `_ring_phase`
@@ -1570,7 +1571,8 @@ class UltimateAudioSampler:
         dropped. Raises when the link lost any of it, so the writer backs
         off and tries again. A channel without a deadline (`_uses_deadline`)
         is programmed to loop the whole ring again, as at its first gate-on.
-        ``cause`` opens the log line.
+        ``cause`` opens the log line, a WARNING for the first restart or
+        with ``warn``, else DEBUG.
 
         The blank goes first: on a dead link `reu_write` raises at once,
         where a register write is lost quietly and its flush logs a warning,
@@ -1632,7 +1634,7 @@ class UltimateAudioSampler:
                 self._restarts += 1
                 restarts = self._restarts
         log.log(
-            logging.WARNING if restarts == 1 else logging.DEBUG,
+            logging.WARNING if warn or restarts == 1 else logging.DEBUG,
             "sampler: %s; restarted the channel at the read head%s",
             cause,
             "" if restarts == 1 else f" (restart {restarts})",

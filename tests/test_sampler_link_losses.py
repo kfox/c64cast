@@ -426,12 +426,16 @@ class VolumeRestoreTest(unittest.TestCase):
             plain_write(address, data_hex)
 
         chan.write_memory = slow_write  # type: ignore[method-assign]
+        # Not the session's first restart, which would warn on that count alone.
+        smp._restarts = 1
         with (
             mock.patch.object(s, "time", chan.clock),
-            self.assertLogs("c64cast.audio.sampler") as logs,
+            self.assertLogs("c64cast.audio.sampler", logging.WARNING) as logs,
         ):
             self.assertTrue(smp._writer_step(smp._writer_gen))
-        self.assertIn("volume restore; restarting the channel", "\n".join(logs.output))
+        output = "\n".join(logs.output)
+        self.assertIn("volume restore; restarted the channel", output)
+        self.assertNotIn("ring writes stopped landing", output)
         self.assertEqual(chan.volume, smp._volume)
         self.assertFalse(smp._volume_owed)
 
