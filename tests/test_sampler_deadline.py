@@ -477,6 +477,41 @@ class OutageTest(unittest.TestCase):
             self.assertEqual(smp._deadline, old)
             smp.stop()
 
+    def test_a_lost_length_write_is_found_with_nothing_more_to_step_to(self):
+        # The ring holds nothing past the unconfirmed deadline, so the refresh
+        # due near the confirmed one only flushes; it still finds the loss
+        # and holds the deadline where the voice stops.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._ring_mark = chan.write_loss_mark()
+            smp._written = old + smp._lead_target
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            sent = chan.write_regs
+
+            def quietly_lost(base_addr: str, *values: int) -> None:
+                chan.dropped = True  # charged at the next flush
+
+            chan.write_regs = quietly_lost  # type: ignore[method-assign]
+            smp._advance_deadline(smp._writer_gen)
+            chan.write_regs = sent  # type: ignore[method-assign]
+            new = smp._deadline
+            assert new is not None and new > old
+            smp._written = new
+            clock.now = (old - smp._deadline_confirm_by) / 2 / smp._actual_rate + 0.01
+            with self.assertRaisesRegex(s._WritesLost, "deadline write"):
+                smp._advance_deadline(smp._writer_gen)
+            self.assertEqual(smp._deadline, old)
+            smp.stop()
+
     def test_a_lost_length_write_raises_naming_it(self):
         # The ring was confirmed; only the length write is lost, and the
         # raise names it rather than the ring.
