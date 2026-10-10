@@ -350,18 +350,22 @@ class BigTextOverlay(Overlay):
                 self._orchestrator.begin(scene_cfg)
 
     def teardown(self, api, scene):
-        if self._raster_hooked:
-            self._raster_hooked = False
-            self._uninstall_raster_irq(api)
-            # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
-            # coalesced write, so the next scene never sees a half restore.
-            api.write_regs("d016", DEFAULT_D016, 0x00, DEFAULT_D018)
-        # Releases the followers when the conductor's scene tears down mid
-        # broadcast (a CTRL skip, a stop_event). end() is idempotent.
-        if self._orchestrator is not None and self._is_conductor and self._orchestrator.is_active():
-            self._orchestrator.end()
-        self._orchestrator = None
-        self._api = None
+        try:
+            if self._raster_hooked:
+                self._raster_hooked = False
+                self._uninstall_raster_irq(api)
+                # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
+                # coalesced write, so the next scene never sees a half restore.
+                api.write_regs("d016", DEFAULT_D016, 0x00, DEFAULT_D018)
+        finally:
+            # Releases the followers when the conductor's scene tears down mid
+            # broadcast (a CTRL skip, a stop_event), even when the link failed
+            # the restore above. end() is idempotent.
+            orchestrator = self._orchestrator
+            self._orchestrator = None
+            self._api = None
+            if orchestrator is not None and self._is_conductor and orchestrator.is_active():
+                orchestrator.end()
 
     def _install_raster_irq(self, api):
         """Bring up the shadow-register raster IRQ.

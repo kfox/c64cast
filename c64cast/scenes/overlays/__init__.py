@@ -92,8 +92,8 @@ class Overlay:
     # is what keeps scene + overlays one composed frame, uploaded once.
     PAINTS_INTO_BUFFERS = False
     # Flipped by the scene's render loop when compose() raises; the Playlist
-    # then skips the overlay for the rest of the scene rather than logging
-    # every frame.
+    # then skips the overlay's per-frame work for the rest of the scene rather
+    # than logging every frame, and still runs its teardown.
     disabled: bool = False
 
     def setup(self, api: C64Backend, scene: Scene) -> None:

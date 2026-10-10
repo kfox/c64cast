@@ -997,9 +997,10 @@ class Playlist:
             self.ensemble_coord.release_audio_claim(announced)
 
     def safe_teardown(self, scene: Scene) -> None:
+        # A disabled overlay is torn down too: disabling stops its per-frame
+        # work, but what its setup hooked or started (a raster IRQ, a poll
+        # thread) is still live until its teardown undoes it.
         for ov in getattr(scene, "overlays", ()):
-            if getattr(ov, "disabled", False):
-                continue
             try:
                 ov.teardown(self.api, scene)
             except Exception:
