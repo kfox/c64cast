@@ -249,6 +249,8 @@ class SmoothScrollTest(unittest.TestCase):
         # teardown() must restore the kernal IRQ vector ($EA31) so the
         # next scene doesn't run with our handler still hooked.
         api = MagicMock()
+        # Teardown confirms each write, and a MagicMock's answer is truthy.
+        api.writes_lost_since.return_value = False
         ov = _make_overlay()
         scene = self._scene(BlankDisplayMode())
         ov.setup(api=api, scene=scene)
