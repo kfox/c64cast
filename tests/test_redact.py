@@ -46,11 +46,23 @@ def _hidden_value_ladder(levels: int, filler: int) -> str:
 
 
 #: How many times longer the long input of a linear-time check is than its
-#: short one.
-_SCALE = 4
+#: short one. At 4, a linear pass on a loaded runner and a quadratic one
+#: whose quadratic part was the linear part's size read the same ratio (9.1x
+#: and 9.5x), so no limit told them apart.
+_SCALE = 8
 
-#: Measurements a linear-time check takes of each input.
+#: Measurements a linear-time check takes of each input before judging.
 _TRIES = 3
+
+#: Further measurements of each input a linear-time check takes, one round
+#: at a time, before it fails a ratio over the limit.
+_RETRIES = 4
+
+#: How many times the length ratio the time ratio may reach. A linear pass
+#: reads about 1x and a quadratic one about `_SCALE`x; at 2x a loaded
+#: Windows runner failed a linear pass, whose long input read 2.3x slow in
+#: every one of its measurements.
+_ALLOWED_OVER_LINEAR = 3
 
 
 #: CPU seconds a measurement runs `work` for before dividing by the runs. A
@@ -84,22 +96,27 @@ def _assert_linear_time(
 
     Compares `make(1)` against `make(_SCALE)`, each `_SCALE` times longer.
     A linear pass spends about `_SCALE` times as long on the long input and a
-    quadratic one about `_SCALE` squared, so the check allows twice the length
-    ratio. A wall-clock limit on one input fails whenever the machine is
-    loaded; a ratio between two inputs measured on the same machine does not.
-    The clock is this thread's CPU time, which stops while the scheduler runs
-    something else. Each input keeps its fastest of `_TRIES` measurements, all
-    taken before the ratio is judged: deciding after each try would let one
-    inflated measurement of the short input pass a quadratic regression.
+    quadratic one about `_SCALE` squared, so the check allows
+    `_ALLOWED_OVER_LINEAR` times the length ratio. A wall-clock limit on one
+    input fails whenever the machine is loaded; a ratio between two inputs
+    measured on the same machine does not. The clock is this thread's CPU
+    time, which stops while the scheduler runs something else, but not while
+    a busy core runs it slower. Each input keeps its fastest measurement.
+    The first `_TRIES` are all taken before the ratio is judged: deciding
+    after each try would let one inflated measurement of the short input pass
+    a quadratic regression. A ratio over the limit is re-measured up to
+    `_RETRIES` more rounds before it fails, since a fastest time only moves
+    toward the true cost: a slow spell on the long input passes, and a
+    quadratic pass stays over the limit however often it is measured.
     """
     short, long = make(1), make(_SCALE)
-    allowed = 2 * len(long) / len(short)
+    allowed = _ALLOWED_OVER_LINEAR * len(long) / len(short)
     fastest_short = fastest_long = float("inf")
-    for _ in range(_TRIES):
+    for tried in range(_TRIES + _RETRIES):
         fastest_short = min(fastest_short, _cpu_seconds(work, short))
         fastest_long = min(fastest_long, _cpu_seconds(work, long))
-    if fastest_long <= allowed * fastest_short:
-        return
+        if tried + 1 >= _TRIES and fastest_long <= allowed * fastest_short:
+            return
     test.fail(
         f"{len(long) / len(short):.1f}x the input took "
         f"{fastest_long / fastest_short:.1f}x the time "
