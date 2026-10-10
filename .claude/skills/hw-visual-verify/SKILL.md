@@ -31,7 +31,11 @@ Run every command that touches the machine or the capture device under
 [scripts/diags/hw_lock.py](../../../scripts/diags/hw_lock.py)
 (`python3 scripts/diags/hw_lock.py uv run scripts/diags/hdmi_capture.py …`): another
 session may be driving the same rig, and the DMA service and the capture device
-each take one user at a time. Keep each locked command short.
+each take one user at a time. Keep each locked command short. Every call shares
+one lock for the rig whatever its `--device` says — the U64, the capture device
+and the audio input are one rig — so there is no reason to pass `--device` on a
+one-rig machine; a machine with several rigs splits them only through
+`C64_DIAG_RIGS` (see the tool's docstring).
 
 **Ask the user before assuming a capture is available** — they vary by machine. If
 one is present, use it for verification of any visual change (overlays, display
