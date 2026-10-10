@@ -851,10 +851,10 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
     mask never confirmed: see the comments on `drain_unmasked_dispatcher` and
     `mask_again`.
 
-    The two masks and the vector restore are confirmed delivered, with
-    retries. A backend write reports a lost write by moving
-    `delivery_epoch` rather than by raising, so an unconfirmed mask would
-    otherwise pass as landed."""
+    The two masks, the vector restore, the bank 0 write and the CIA #1 unmask
+    are confirmed delivered, with retries. A backend write reports a lost
+    write by moving `delivery_epoch` rather than by raising, so an
+    unconfirmed one would otherwise pass as landed and be logged by nothing."""
     vector_restored = False
     unconfirmed_masks: list[str] = []
 
@@ -908,7 +908,10 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
                 "the in-RAM handler, so re-arming the jiffy IRQ would vector through it"
             )
             return
-        api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
+        confirm(
+            "CIA1 unmask",
+            lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}"),
+        )
 
     def drain_dispatcher() -> None:
         if drain_reu_copy:
@@ -953,7 +956,10 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
         # addresses it expects.
         (
             "VIC bank 0",
-            lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}"),
+            lambda: confirm(
+                "VIC bank 0",
+                lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}"),
+            ),
         ),
         # Keyboard scan must keep running for the C= / CTRL / SHIFT poller.
         ("CIA1 unmask", unmask_cia1),
