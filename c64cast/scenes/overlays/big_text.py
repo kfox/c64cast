@@ -369,15 +369,26 @@ class BigTextOverlay(Overlay):
                 # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
                 # coalesced write, so the next scene never sees a half restore.
                 api.write_regs("d016", DEFAULT_D016, 0x00, DEFAULT_D018)
-        finally:
-            # Releases the followers when the conductor's scene tears down mid
-            # broadcast (a CTRL skip, a stop_event), even when the link failed
-            # the restore above. end() is idempotent.
-            orchestrator = self._orchestrator
-            self._orchestrator = None
-            self._api = None
-            if orchestrator is not None and self._is_conductor and orchestrator.is_active():
-                orchestrator.end()
+        except BaseException:
+            # The restore's error stays the one that propagates: a failing end()
+            # raised from a `finally` would replace it, leaving it only as
+            # __context__ to a caller that tells a dead link by its type.
+            try:
+                self._release_orchestrator()
+            except Exception:
+                log.exception("big_text: ending the broadcast failed during a failed teardown")
+            raise
+        self._release_orchestrator()
+
+    def _release_orchestrator(self) -> None:
+        """Release the followers when the conductor's scene tears down mid
+        broadcast (a CTRL skip, a stop_event), even when the link failed the
+        restore. end() is idempotent."""
+        orchestrator = self._orchestrator
+        self._orchestrator = None
+        self._api = None
+        if orchestrator is not None and self._is_conductor and orchestrator.is_active():
+            orchestrator.end()
 
     def _install_raster_irq(self, api):
         """Bring up the shadow-register raster IRQ.
