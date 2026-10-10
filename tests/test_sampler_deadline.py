@@ -418,6 +418,31 @@ class OutageTest(unittest.TestCase):
                 self.assertTrue(smp._writer_step(smp._writer_gen))
         self.assertEqual((smp._restarts, chan.gates, chan.state), (1, 2, "playing"))
 
+    def test_a_refresh_after_a_counted_ring_loss_sends_nothing(self):
+        # Nothing is left to confirm, and on a dead link the flush logs a
+        # warning for every refresh until the restart.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp._q = cast(Any, _Queue())
+            smp.start(prebuffer_timeout=0.0)
+            old = smp._deadline
+            assert old is not None
+            smp._ring_mark = chan.write_loss_mark()
+            chan.delivery_epoch += 1
+            smp._written = old + smp._lead_target
+            clock.now = (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            flushes, length_writes = chan.flushes, chan.length_writes
+            with self.assertRaises(ConnectionError):
+                smp._advance_deadline(smp._writer_gen)
+            self.assertEqual((chan.flushes, chan.length_writes), (flushes, length_writes))
+            self.assertEqual(smp._deadline, old)
+            smp.stop()
+
     def test_the_next_activation_plays_after_a_stop_lost_to_the_outage(self):
         # The channel stops at its deadline during the outage, and the scene's
         # stop() sends its gate-off over the same dead link. The voice is left

@@ -1236,7 +1236,8 @@ class UltimateAudioSampler:
                 return
             mark = self._ring_mark
             if mark is not None:
-                self.api.flush()
+                if not self.api.writes_lost_since(mark):
+                    self.api.flush()
                 if self.api.writes_lost_since(mark):
                     # Held there, the deadline stops the voice ahead of the
                     # lost span, and the restart that follows blanks the ring.
