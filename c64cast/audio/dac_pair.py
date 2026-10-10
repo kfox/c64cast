@@ -23,6 +23,7 @@ See docs/architecture/audio.md#dac_pairpy--two-sid-d418-dac.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -56,6 +57,13 @@ IDENTITY_TABLE: Final = bytes(range(256))
 # cartridge-port page; $DF00+ is the REU and the sampler.
 _FINE_BASES: Final = frozenset([*range(0xD420, 0xD800, 0x20), *range(0xDE00, 0xDF00, 0x20)])
 
+_BASE_SPELLING: Final = re.compile(r"(?:\$|0x)?([0-9a-f]{4})")
+
+
+def _check_fine_base(fine_base: int) -> None:
+    if fine_base not in _FINE_BASES:
+        raise ValueError(f"no second SID can sit at ${fine_base:04X}")
+
 
 def pair_nmi_routine(fine_base: int) -> bytes:
     """:data:`NMI_ROUTINE` with its ``STA $D418`` replaced by the two lookups.
@@ -74,9 +82,9 @@ def pair_nmi_routine(fine_base: int) -> bytes:
         $C039: ...          NMI_ROUTINE's INC / wrap tail, unchanged
 
     Self-modifying operands rather than ``TAX`` + indexed loads, so X and Y
-    stay untouched like the one-chip routine's, at two cycles' cost."""
-    if fine_base not in _FINE_BASES:
-        raise ValueError(f"no second SID can sit at ${fine_base:04X}")
+    stay untouched like the one-chip routine's, at six cycles over a ``TAX``
+    that clobbers X."""
+    _check_fine_base(fine_base)
     head, tail = NMI_ROUTINE[:7], NMI_ROUTINE[10:]
     coarse_op = NMI_ROUTINE_ADDR + len(head) + 6 + 1
     fine_op = coarse_op + 6
@@ -103,10 +111,8 @@ def parse_second_sid(value: str) -> int | None:
     text = value.strip().lower()
     if text == "off":
         return None
-    try:
-        base = int(text.removeprefix("$").removeprefix("0x"), 16)
-    except ValueError:
-        base = -1
+    spelled = _BASE_SPELLING.fullmatch(text)
+    base = int(spelled.group(1), 16) if spelled else -1
     if base not in _FINE_BASES:
         raise ValueError(
             f'[audio].dac_second_sid = {value!r}: expected "off" or a SID base '
@@ -124,8 +130,7 @@ class DacPair:
     fine_table: bytes
 
     def __post_init__(self) -> None:
-        if self.fine_base not in _FINE_BASES:
-            raise ValueError(f"no second SID can sit at ${self.fine_base:04X}")
+        _check_fine_base(self.fine_base)
         if len(self.coarse_table) != 256 or len(self.fine_table) != 256:
             raise ValueError("a DAC pair needs two 256-entry tables")
         if any(b not in FINE_CODES for b in self.fine_table):
@@ -158,7 +163,7 @@ def fold_pair_table(
     pick = np.argmin(np.abs(sums[None, :] - targets[:, None]), axis=1)
     coarse_table = [int(p // fine.size) for p in pick]
     fine_table = [int(FINE_CODES[p % fine.size]) for p in pick]
-    single = np.array([coarse[np.argmin(np.abs(coarse - t))] for t in targets])
+    single = coarse[np.argmin(np.abs(coarse[None, :] - targets[:, None]), axis=1)]
     metrics = {
         **_ladder_metrics(sums[pick], targets, span),
         "single_chip_ladder_bits": _ladder_metrics(single, targets, span)["ladder_bits"],

@@ -490,7 +490,7 @@ It is there because a finished table is otherwise undiagnosable, and the failure
 
 #### Quality metrics
 
-`_ladder_metrics` reports `ladder_bits` (ENOB-style: the RMS distance between each of the 256 requested target levels and the level actually achieved, expressed as the equivalent uniform quantizer), `ladder_rms_err_frac`/`ladder_max_err_frac`, and three gap figures: `worst_gap_frac`, `worst_gap_from_zero_frac`, and `crossover_gap_frac`.
+`_ladder_metrics` reports `ladder_bits` (ENOB-style: the RMS distance between each of the 256 requested target levels and the level actually achieved, expressed as the equivalent uniform quantizer, capped at the index's 8 bits), `ladder_rms_err_frac`/`ladder_max_err_frac`, and three gap figures: `worst_gap_frac`, `worst_gap_from_zero_frac`, and `crossover_gap_frac`.
 
 Gap *position* is the point of that last pair. The same hole is crossover distortion at the zero crossing and nearly inaudible out at full scale — on the two measured sockets the worst gaps are almost the same size (4.4% vs 4.9% of span) but sit at −0.06 and +0.98 from silence respectively, which is the whole difference.
 
@@ -570,7 +570,7 @@ A second SID at a lower mixer level fills in between the first chip's steps, and
 
 The obvious player — a second ring for the fine chip, one more `LDA`/`STA` per sample — doubles the ring traffic, needs a second read pointer, and leaves every REU pump variant, which fills only the one ring, behind. So each ring byte stays one 8-bit amplitude index, and the pair routine looks it up in two 256-byte tables on the C64 (`COARSE_TABLE_ADDR` `$CE00`, `FINE_TABLE_ADDR` `$CF00`) and writes both chips. Every producer and every reader of the ring — host DMA, the REU pumps, the offline pre-encode, the servos and governors reading `R` at `$C025`/`$C026` — is the one-chip path's, and the encoder plays the pair through the identity curve.
 
-`pair_nmi_routine(fine_base)` is `NMI_ROUTINE` with its `STA $D418` replaced: the index is stored into the low operand bytes of the two table loads, which then feed `STA $D418` and `STA fine_base+$18`. Self-modifying operands rather than `TAX` and indexed loads, so X and Y stay untouched as in the one-chip routine, at two cycles' cost; the fast path is 61 cycles against 41. The tables are page-aligned, so the loads never pay a page-cross cycle, and they sit in a second range the SID-player relocator keeps clear (`api._AUDIO_KEEP_CLEAR`), checked by `tests/test_c64_ram_map.py`.
+`pair_nmi_routine(fine_base)` is `NMI_ROUTINE` with its `STA $D418` replaced: the index is stored into the low operand bytes of the two table loads, which then feed `STA $D418` and `STA fine_base+$18`. Self-modifying operands rather than `TAX` and indexed loads, so X and Y stay untouched as in the one-chip routine, at six cycles over a `TAX` that clobbers X; the fast path is 61 cycles against 41. The tables are page-aligned, so the loads never pay a page-cross cycle, and they sit in a second range the SID-player relocator keeps clear (`api._AUDIO_KEEP_CLEAR`), checked by `tests/test_c64_ram_map.py`.
 
 The 8-bit index is a ceiling the two-ring player would not have: a ladder of 256 uniform targets cannot exceed 8 bits, where the measurements above used 1024. It is the cheaper ceiling — every pipeline stays as it is — and at 0 and −12 dBFS the measured pair sits below it anyway.
 

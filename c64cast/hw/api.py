@@ -389,7 +389,7 @@ REINIT_STUB_TEMPLATE = bytes(
 
 # Audio handler region — audio.AudioStreamer installs the NMI DAC at $C020 and
 # REU pump handlers at $C100-$C2FF (handler bytes in audio_handlers.py). Player
-# layouts overlapping it are refused.
+# layouts overlapping it, or the two-SID tables' range below, are refused.
 _AUDIO_REGION_LO = 0xC000
 _AUDIO_REGION_HI = 0xC300  # exclusive
 # The two-SID DAC's lookup tables (audio/dac_pair.py) sit above the player's
@@ -471,8 +471,8 @@ def _layout_fits(
     layout: _PlayerLayout, parsed: ParsedPsid, avoid: bytes | bytearray | None = None
 ) -> bool:
     """True when the layout's player + stub blocks both land in legal
-    free RAM (above $0820, below $D000), don't overlap audio_handlers.py's
-    $C000-$C2FF region, don't overlap the SID payload, don't overlap
+    free RAM (above $0820, below $D000), don't overlap the
+    _AUDIO_KEEP_CLEAR ranges ($C000-$C2FF and $CE00-$CFFF), don't overlap the SID payload, don't overlap
     each other, and (when `avoid` is given) don't overlap any RAM byte the
     tune writes / the caller reserved.
 
@@ -507,7 +507,7 @@ def _find_free_layout(parsed: ParsedPsid, avoid: bytes | bytearray) -> _PlayerLa
 
     `avoid` is the union of the tune's observed write footprint and the
     scene-reserved regions. We scan $0820-$D000 for runs of bytes that are
-    free of `avoid`, the SID payload, and the $C000-$C2FF big_text/audio region,
+    free of `avoid`, the SID payload, and the _AUDIO_KEEP_CLEAR ranges,
     and pick the largest such run that can hold the 115-byte bundle (player
     MC 73 + re-INIT stub at player_base+80). Largest-first (tie-break
     lowest address) puts the player deep in genuinely-unused RAM, which

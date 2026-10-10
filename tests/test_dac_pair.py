@@ -103,7 +103,7 @@ class ParseSecondSidTest(unittest.TestCase):
                 self.assertEqual(dp.parse_second_sid(text), 0xD420)
 
     def test_refuses_what_is_not_a_second_sid_base(self):
-        for text in ("$D400", "$D430", "$DF20", "on", "", "$E000"):
+        for text in ("$D400", "$D430", "$DF20", "on", "", "$E000", "d_420", "+d420", "$0xd420"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 dp.parse_second_sid(text)
 
@@ -136,6 +136,14 @@ class FoldPairTableTest(unittest.TestCase):
         _, ft, metrics = dp.fold_pair_table(coarse, np.zeros(16))
         self.assertEqual(metrics["ladder_bits"], metrics["single_chip_ladder_bits"])
         self.assertEqual(set(ft), {0})
+
+    def test_a_pair_reports_no_more_than_the_index_s_eight_bits(self):
+        # A uniform coarse ladder plus a fine chip that splits each step hits
+        # every target almost exactly; the 8-bit index is still the ceiling.
+        coarse = np.linspace(-1.0, 1.0, 256)
+        fine = np.arange(16) * (2 / 255 / 16) + 1e-9
+        _, _, metrics = dp.fold_pair_table(coarse, fine)
+        self.assertEqual(metrics["ladder_bits"], 8.0)
 
     def test_refuses_the_wrong_shapes(self):
         with self.assertRaises(ValueError):

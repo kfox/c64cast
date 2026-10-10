@@ -713,7 +713,8 @@ def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> d
 
     * ``ladder_bits`` — ENOB-style: the RMS distance between each of the 256
       requested target levels and the level actually achieved, expressed as the
-      uniform quantizer that would have the same RMS error.
+      uniform quantizer that would have the same RMS error, capped at the 8
+      bits of the index that selects a target.
     * ``worst_gap_frac`` / ``worst_gap_from_zero_frac`` — the largest hole in
       the ladder, and where it sits. Position is what makes a gap benign or
       not: ~0 means it straddles silence (crossover distortion), ±0.5 means it
@@ -740,7 +741,9 @@ def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> d
     above = float(srt[srt >= 0].min()) if np.any(srt >= 0) else 0.0
     return {
         # A perfect 256-step ladder is 8 bits; rms == 0 only on synthetic input.
-        "ladder_bits": round(float(np.log2(span / (rms * np.sqrt(12)))), 2) if rms else 8.0,
+        "ladder_bits": min(8.0, round(float(np.log2(span / (rms * np.sqrt(12)))), 2))
+        if rms
+        else 8.0,
         "ladder_rms_err_frac": round(rms / span, 5),
         "ladder_max_err_frac": round(float(np.max(np.abs(resid))) / span, 5),
         "worst_gap_frac": round(float(gaps[wi]) / span, 4) if gaps.size else 0.0,
