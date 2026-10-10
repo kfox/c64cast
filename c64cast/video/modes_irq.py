@@ -264,8 +264,9 @@ PUMP_BODY_STUB = bytes([0x60])  # RTS
 # flag), so it simply commits on a later field. A deferred
 # frame holds the previous one a field longer; it never shows two at once.
 #
-# Committing is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
-# i.e. $D012 in [251, 255] u [0, 43]. Adding 5 rotates that split range into a
+# A flip is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
+# i.e. $D012 in [251, 255] u [0, 43]; a commit that writes after its flip ends
+# earlier (HIRES_COMMIT_LAST_SAFE_LINE, MHIRES_COMMIT_LAST_SAFE_LINE). Adding 5 rotates that split range into a
 # contiguous 0..48, which is why the check costs one compare and one branch
 # instead of two of each.
 _RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $05
@@ -400,7 +401,7 @@ def _bank_swap_dispatcher(
     border_off: int | None = None,
     ready_off: int,
     pump: bool,
-    last_line: int = RASTER_COMMIT_LAST_SAFE_LINE,
+    last_line: int,
 ) -> bytes:
     """Assemble a REU bank-swap dispatcher for $C500.
 
