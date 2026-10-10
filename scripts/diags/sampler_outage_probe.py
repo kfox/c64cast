@@ -44,12 +44,16 @@ from pathlib import Path
 import _diaglib as d
 
 SILENT_DB = -60.0  # AC level below which a window counts as silent
+END_MARGIN_S = 5.0  # the outage ends at least this long before the clip does
 
 
 def make_clip(seconds: float) -> Path:
-    out = d.out_dir() / f"outage_tone_{int(seconds)}s.mp4"
+    out = d.out_dir() / f"outage_tone_{seconds:g}s.mp4"
     if out.exists():
         return out
+    # Written aside and renamed: a run cut short must not leave a partial
+    # clip under the name the next run reuses.
+    part = out.with_name(f"{out.stem}.part{out.suffix}")
     subprocess.run(
         [
             "ffmpeg",
@@ -74,11 +78,13 @@ def make_clip(seconds: float) -> Path:
             "-c:a",
             "aac",
             "-shortest",
-            str(out),
+            str(part),
         ],
         check=True,
         timeout=120,
+        stdin=subprocess.DEVNULL,
     )
+    part.replace(out)
     return out
 
 
@@ -88,6 +94,7 @@ class Outage:
     def __init__(self) -> None:
         self.on = False
         self.marks: list[tuple[str, float]] = []
+        self._restore: list[tuple[object, str, object]] = []
 
     def install(self) -> None:
         from c64cast.hw import socket_dma
@@ -95,6 +102,11 @@ class Outage:
         client = socket_dma.SocketDMAClient
         send, identify = client._send_cmd_locked, client._identify_roundtrip_locked
         dial = socket_dma.socket.create_connection
+        self._restore = [
+            (client, "_send_cmd_locked", send),
+            (client, "_identify_roundtrip_locked", identify),
+            (socket_dma.socket, "create_connection", dial),
+        ]
         outage = self
 
         def failing(real):
@@ -109,13 +121,20 @@ class Outage:
         client._identify_roundtrip_locked = failing(identify)  # type: ignore[method-assign]
         socket_dma.socket.create_connection = failing(dial)
 
-    def run(self, start: threading.Event, at: float, length: float, t0: float) -> None:
-        if not start.wait(timeout=120):
+    def uninstall(self) -> None:
+        self.on = False
+        for owner, name, real in self._restore:
+            setattr(owner, name, real)
+        self._restore = []
+
+    def run(
+        self, start: threading.Event, done: threading.Event, at: float, length: float, t0: float
+    ) -> None:
+        if not start.wait(timeout=120) or done.wait(timeout=at):
             return
-        time.sleep(at)
         self.on = True
         self.marks.append(("outage start", time.monotonic() - t0))
-        time.sleep(length)
+        done.wait(timeout=length)
         self.on = False
         self.marks.append(("outage end", time.monotonic() - t0))
 
@@ -138,8 +157,11 @@ def analyze(path: str, window: float = 0.25) -> None:
     import numpy as np
 
     with wave.open(path) as w:
-        rate = w.getframerate()
+        if w.getsampwidth() != 2:
+            raise SystemExit(f"{path}: {8 * w.getsampwidth()}-bit samples; this reads 16-bit PCM")
+        rate, channels = w.getframerate(), w.getnchannels()
         x = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float64) / 32768
+    x = x[: len(x) // channels * channels].reshape(-1, channels).mean(axis=1)
     n = int(rate * window)
     levels = []
     for i in range(0, len(x) - n + 1, n):
@@ -176,11 +198,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--url", default="u64://192.168.2.64", help="connection URI")
+    ap.add_argument("--url", default=d.U64_URL, help="connection URI (default: %(default)s)")
     d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="avf")
     ap.add_argument("--at", type=float, default=15.0, help="outage start, s after the gate-on")
     ap.add_argument("--for", dest="length", type=float, default=8.0, help="outage length (s)")
-    ap.add_argument("--seconds", type=float, default=40.0, help="test clip length (s)")
+    ap.add_argument(
+        "--seconds",
+        type=float,
+        default=40.0,
+        help="test clip length (s); with --clip, that clip's length, which sizes the recording",
+    )
     ap.add_argument("--clip", default=None, help="play this instead of the built-in tone clip")
     ap.add_argument("--analyze", metavar="WAV", default=None, help="only analyze this capture")
     ap.add_argument(
@@ -192,16 +219,22 @@ def main() -> int:
     if args.analyze:
         analyze(args.analyze)
         return 0
+    if args.at < 0 or args.length <= 0 or args.at + args.length + END_MARGIN_S > args.seconds:
+        # An outage still on when the clip ends cuts c64cast's own teardown,
+        # so the sampler's gate-off never lands and the ring plays on.
+        ap.error(
+            f"--at {args.at:g} + --for {args.length:g} must end at least {END_MARGIN_S:g} s "
+            f"before the clip does (--seconds {args.seconds:g})"
+        )
 
     device = str(d.resolve_audio_input("avf", args.device).device)
     clip = Path(args.clip) if args.clip else make_clip(args.seconds)
     wav = str(d.stamped("sampler_outage", "wav"))
     from c64cast.app.cli import main as c64cast_main
+    from c64cast.audio import sampler
 
+    init = sampler.UltimateAudioSampler.__init__
     if args.no_deadline:
-        from c64cast.audio import sampler
-
-        init = sampler.UltimateAudioSampler.__init__
 
         def without_deadline(self, *a, **kw):
             init(self, *a, **kw)
@@ -210,7 +243,7 @@ def main() -> int:
         sampler.UltimateAudioSampler.__init__ = without_deadline  # type: ignore[method-assign]
     outage = Outage()
     outage.install()
-    gated = threading.Event()
+    gated, done = threading.Event(), threading.Event()
     record_s = args.seconds + 20.0
     rec = subprocess.Popen(
         [
@@ -230,24 +263,48 @@ def main() -> int:
             "-ar",
             "48000",
             wav,
-        ]
+        ],
+        stdin=subprocess.DEVNULL,
     )
     t0 = time.monotonic()
-    logging.getLogger("c64cast.audio.sampler").addHandler(_RingUp(gated, outage.marks, t0))
-    timer = threading.Thread(target=outage.run, args=(gated, args.at, args.length, t0), daemon=True)
+    sampler_log = logging.getLogger("c64cast.audio.sampler")
+    # DEBUG: a restart after the first logs at debug, and the root handlers
+    # keep their own level, so the terminal is unchanged.
+    sampler_log.setLevel(logging.DEBUG)
+    ring_up = _RingUp(gated, outage.marks, t0)
+    sampler_log.addHandler(ring_up)
+    timer = threading.Thread(
+        target=outage.run, args=(gated, done, args.at, args.length, t0), daemon=True
+    )
     timer.start()
     try:
         rc = c64cast_main(["-u", args.url, str(clip)])
     finally:
-        outage.on = False
+        done.set()
+        outage.uninstall()
+        sampler.UltimateAudioSampler.__init__ = init  # type: ignore[method-assign]
+        sampler_log.removeHandler(ring_up)
         try:
             rec.wait(timeout=record_s + 30)
         except subprocess.TimeoutExpired:
             rec.kill()
+            rec.wait(timeout=5)
+        timer.join(timeout=1)
     print(f"c64cast exited {rc}")
     for name, at in outage.marks:
         print(f"{name:18s} {at:7.2f} s after the capture started")
+    if not Path(wav).exists():
+        print(f"the recording failed (ffmpeg exited {rec.returncode}); nothing to analyze")
+        return 1
+    if rec.returncode != 0:
+        print(f"ffmpeg exited {rec.returncode}: the capture may be cut short")
     analyze(wav)
+    if not any(name == "outage start" for name, _ in outage.marks):
+        print(
+            "no outage was simulated: the sampler never logged its ring up, so this "
+            "capture says nothing about an outage"
+        )
+        return 1
     return 0
 
 
