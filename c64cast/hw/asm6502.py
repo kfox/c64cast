@@ -169,10 +169,11 @@ def _check_branch_reach(line: _Line, stmt: str, pc: int) -> None:
     """Refuse a branch whose target is out of its signed 8-bit reach. py65
     encodes one without complaint, keeping the low byte of the displacement,
     so the branch lands somewhere else in the payload."""
-    mnemonic, _, operand = stmt.partition(" ")
+    mnemonic, operand = (stmt.split(None, 1) + [""])[:2]
     if mnemonic.upper() not in _BRANCHES:
         return
-    displacement = int(operand.strip().lstrip("$"), 16) - (pc + 2)
+    # The 6502's pc wraps at 64K, so a branch near $FFFF reaches past $0000.
+    displacement = ((int(operand.strip().lstrip("$"), 16) - (pc + 2) + 0x8000) & 0xFFFF) - 0x8000
     if not -0x80 <= displacement <= 0x7F:
         raise AsmError(
             f"line {line.lineno}: {line.stmt!r} is {displacement} bytes from its target, "

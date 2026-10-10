@@ -116,6 +116,11 @@ class ErrorTest(unittest.TestCase):
             asm6502.assemble("BEQ far\n.res 200\nfar: RTS\n", 0x2000)
         with self.assertRaisesRegex(asm6502.AsmError, "reach"):
             asm6502.assemble("back: .res 127\nBNE back\n", 0x2000)
+        with self.assertRaisesRegex(asm6502.AsmError, "reach"):
+            asm6502.assemble("BEQ\tfar\n.res 200\nfar: RTS\n", 0x2000)
+
+    def test_a_branch_across_the_top_of_memory_assembles(self):
+        self.assertEqual(asm6502.assemble("BNE $0010\n", 0xFFF0), bytes([0xD0, 0x1E]))
 
     def test_a_branch_at_the_edge_of_its_reach_assembles(self):
         forward = asm6502.assemble("BEQ far\n.res 127\nfar: RTS\n", 0x2000)
