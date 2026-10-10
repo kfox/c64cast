@@ -100,6 +100,50 @@ def _finished(clock: _Clock) -> tuple[s.UltimateAudioSampler, _Channel]:
 
 
 class StopDuringRestartTest(unittest.TestCase):
+    def _stop_mid_restart(
+        self, smp: s.UltimateAudioSampler, chan: _Channel, *, after_stop: Any = None
+    ) -> BaseException | None:
+        """Run a restart that a slow blank holds until a stop() has run
+        whole beside it, then ``after_stop``, then let it go on. Returns
+        what the restart raised."""
+        in_blank, release = threading.Event(), threading.Event()
+        plain_reu = chan.reu_write
+        raised: list[BaseException] = []
+
+        def slow_reu(offset: int, data: bytes) -> None:
+            in_blank.set()
+            release.wait(5.0)
+            plain_reu(offset, data)
+
+        def restart_channel() -> None:
+            try:
+                smp._restart_channel(smp._writer_gen)
+            except BaseException as e:
+                raised.append(e)
+
+        chan.reu_write = slow_reu  # type: ignore[method-assign]
+        restart = threading.Thread(target=restart_channel)
+        stop = threading.Thread(target=smp.stop)
+        restart.start()
+        try:
+            self.assertTrue(in_blank.wait(5.0))
+            stop.start()
+            stop.join(5.0)
+            # stop() does not wait for the restart: a given-up writer's
+            # gate-off can hold the same lock across a whole dial.
+            self.assertFalse(stop.is_alive())
+            if after_stop is not None:
+                after_stop()
+            release.set()
+            restart.join(5.0)
+        finally:
+            release.set()
+            restart.join(5.0)
+            if stop.ident is not None:
+                stop.join(5.0)
+        self.assertFalse(restart.is_alive() or stop.is_alive())
+        return raised[0] if raised else None
+
     def test_the_gate_off_lands_after_a_restart_in_flight(self):
         # The writer outlived stop()'s join inside a restart, its blank held
         # up on a slow link. A gate-off sent meanwhile was overtaken by the
@@ -108,34 +152,29 @@ class StopDuringRestartTest(unittest.TestCase):
         with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
             smp, chan = _finished(clock)
             self.assertEqual(chan.state, "finished")
-            in_blank, release = threading.Event(), threading.Event()
-            plain_reu = chan.reu_write
+            self.assertIsNone(self._stop_mid_restart(smp, chan))
+        self.assertEqual(chan.state, "idle")
+        self.assertFalse(chan.ctrl & s.CTRL_GATE)
 
-            def slow_reu(offset: int, data: bytes) -> None:
-                in_blank.set()
-                release.wait(5.0)
-                plain_reu(offset, data)
+    def test_a_gate_on_whose_flush_raises_is_gated_off_too(self):
+        # The gate-on went out and its flush then raised (a redial since the
+        # last flush): the restart left through the raise, past its check of
+        # _running, and the channel played on after the stop.
+        clock = _Clock()
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp, chan = _finished(clock)
+            plain_flush = chan.flush
 
-            chan.reu_write = slow_reu  # type: ignore[method-assign]
-            gen = smp._writer_gen
-            restart = threading.Thread(target=smp._restart_channel, args=(gen,))
-            stop = threading.Thread(target=smp.stop)
-            restart.start()
-            try:
-                self.assertTrue(in_blank.wait(5.0))
-                stop.start()
-                stop.join(5.0)
-                # stop() does not wait for the restart: a given-up writer's
-                # gate-off can hold the same lock across a whole dial.
-                self.assertFalse(stop.is_alive())
-                release.set()
-                restart.join(5.0)
-            finally:
-                release.set()
-                restart.join(5.0)
-                if stop.ident is not None:
-                    stop.join(5.0)
-        self.assertFalse(restart.is_alive() or stop.is_alive())
+            def flush_raising_after_gate_on() -> None:
+                plain_flush()
+                if chan.ctrl & s.CTRL_GATE:
+                    raise ConnectionError("commands sent before the reconnect may be lost")
+
+            def after_stop() -> None:
+                chan.flush = flush_raising_after_gate_on  # type: ignore[method-assign]
+
+            raised = self._stop_mid_restart(smp, chan, after_stop=after_stop)
+        self.assertIsInstance(raised, ConnectionError)
         self.assertEqual(chan.state, "idle")
         self.assertFalse(chan.ctrl & s.CTRL_GATE)
 

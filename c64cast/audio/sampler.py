@@ -1378,11 +1378,16 @@ class UltimateAudioSampler:
                 # took in the register flush too, a redial after an outage
                 # among it, and the sound played that much behind the picture.
                 phase = self._read_consumed_bytes()
-                self._send_gate_on()
-                if not self._running:
+                try:
+                    self._send_gate_on()
+                finally:
                     # stop() cleared it after the generation check above, and
-                    # its gate-off may have gone out ahead of this gate-on.
-                    gate_off(self.api, self.channel)
+                    # its gate-off may have gone out ahead of this gate-on,
+                    # which a flush that raises (a redial) has still sent.
+                    stopped = not self._running
+                    if stopped:
+                        gate_off(self.api, self.channel)
+                if stopped:
                     return False
                 if self.api.writes_lost_since(mark):
                     raise _WritesLost("the link lost the channel restart")
