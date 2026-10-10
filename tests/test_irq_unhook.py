@@ -91,6 +91,16 @@ class RestoreReadbackTest(unittest.TestCase):
                     self.assertFalse(_unhook(api))
                 self.assertEqual(api.memories["DC0D"], _MASKED)
 
+    def test_a_defect_in_the_read_is_logged_as_the_step_failing(self):
+        def read() -> Any:
+            raise TypeError("a broken backend")
+
+        api = _RedialDuringRestoreAPI(read)
+        with self.assertLogs(_LOG, level="ERROR") as logs:
+            self.assertFalse(_unhook(api))
+        self.assertEqual(api.memories["DC0D"], _MASKED)
+        self.assertTrue(any("a broken backend" in m for m in logs.output))
+
     def test_a_confirmed_restore_reads_nothing(self):
         api = _RedialDuringRestoreAPI(_KERNAL)
         api.write_regs = FakeAPI.write_regs.__get__(api)  # type: ignore[method-assign]

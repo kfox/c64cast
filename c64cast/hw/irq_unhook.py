@@ -44,7 +44,7 @@ import logging
 from collections.abc import Callable, Sequence
 
 from c64cast._teardown import run_teardown_steps
-from c64cast.hw.backend import C64Backend
+from c64cast.hw.backend import BackendCapabilityError, C64Backend
 from c64cast.hw.c64 import CIA1, CIA2, KERNAL, VECTORS
 from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
@@ -72,16 +72,20 @@ def _vector_reads_back_kernal(api: C64Backend, log: logging.Logger, who: str) ->
     An unconfirmed restore is not always a lost one: a redial during it moves
     the loss mark although the write may have landed, and counting it as lost
     leaves CIA #1 masked, and the keyboard dead, with the vector already on the
-    kernal. `link_answers` comes first, so the read runs only over a link that
-    carries it and behind every write sent before it. A read that cannot be
-    made, or fails, answers False: the restore stays unconfirmed and CIA #1
-    masked."""
+    kernal. The read must land behind every write sent before it: on the
+    Ultimate `link_answers` gives that, an IDENTIFY round trip draining the DMA
+    socket ahead of the REST read, and on the TeensyROM every write is acked
+    and the read takes the same stream. A read that cannot be made, or fails,
+    answers False: the restore stays unconfirmed and CIA #1 masked. Anything
+    else raised propagates, so the step logs it as a failure rather than a
+    quiet debug line."""
     try:
         if not api.link_answers():
             return False
         got = api.read_memory(VECTORS.IRQ, 2)
-    except Exception as e:
-        # BackendCapabilityError on a backend with no reads, or the transport's own.
+    except (BackendCapabilityError, OSError) as e:
+        # Caught broadly, a defect in either call would hide at debug level and
+        # bring the dead keyboard back with no visible error.
         log.debug("%s: reading back $0314 failed: %s", who, e)
         return False
     if got != _KERNAL_VECTOR_BYTES:
@@ -134,9 +138,7 @@ def unhook_raster_irq(
         nonlocal vector_restored
         landed = write_confirmed(
             api,
-            lambda: api.write_regs(
-                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
-            ),
+            lambda: api.write_regs(f"{VECTORS.IRQ:04X}", *_KERNAL_VECTOR_BYTES),
         )
         if not landed and _vector_reads_back_kernal(api, log, who):
             landed = True
