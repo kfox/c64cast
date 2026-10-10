@@ -35,6 +35,7 @@ from c64cast.video.modes_irq import (
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
     install_bank_swap_irq,
+    mask_irq_sources,
     uninstall_bank_swap_irq,
 )
 from c64cast.video.palette import build_fade_lut
@@ -273,6 +274,8 @@ class BitmapDisplayMode(DisplayMode):
         """Zero both banks' bitmap + both screen pages, pin bank 0, and install
         the flicker swap IRQ with its page pair pre-seeded (see
         install_bank_swap_irq's tracker_init)."""
+        # Before the clears and the bank pin: a leaked handler could undo both.
+        mask_irq_sources(api, drain_reu_copy=True)
         zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
         zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
         for addr in (
@@ -372,6 +375,8 @@ class BitmapDisplayMode(DisplayMode):
         the caller has already set $D011/$D018/$D016 and the initial bg0/border.
         audio_pump_active is always False: NMI audio is on the $FFFA vector,
         independent of this $0314 raster IRQ."""
+        # Before the clears and the bank pin: a leaked handler could undo both.
+        mask_irq_sources(api, drain_reu_copy=True)
         zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
         zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
         api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)

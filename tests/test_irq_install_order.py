@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import unittest
 from typing import Any, cast
+from unittest import mock
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, quiet_logging
 
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import CIA1, VECTORS
+from c64cast.hw.c64 import CIA1, CIA2, VECTORS, VIC_BANK_2
 from c64cast.scenes.overlays.big_text import BigTextOverlay
 from c64cast.video import modes_irq
+from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode
 
 _CIA1_ICR = f"{CIA1.ICR:04X}"
 _VECTOR = f"{VECTORS.IRQ:04X}"
@@ -29,13 +31,19 @@ def _first(ops: list[tuple[Any, ...]], name: str, address: str, value: Any = Non
 
 
 class InstallOrderTest(unittest.TestCase):
-    def _assert_masked_before_uploads(self, ops: list[tuple[Any, ...]], mask_value: str) -> None:
+    def _assert_masked_before_uploads(
+        self, ops: list[tuple[Any, ...]], mask_value: str, *, unmasks: bool
+    ) -> None:
         mask = _first(ops, "write_memory", _CIA1_ICR, mask_value)
         disable = _first(ops, "write_memory", "D01A", "00")
         uploads = [i for i, op in enumerate(ops) if op[0] in ("write_memory_file", "write_regs")]
         self.assertTrue(uploads)
         self.assertLess(max(mask, disable), min(uploads), "every upload follows both masks")
-        self.assertLess(max(uploads[:-1]), _first(ops, "write_regs", _VECTOR), "hooked last")
+        hook = _first(ops, "write_regs", _VECTOR)
+        self.assertLess(max(uploads[:-1]), hook, "hooked last")
+        self.assertLess(hook, _first(ops, "write_memory", "D01A", "01"), "armed after the hook")
+        if unmasks:
+            self.assertLess(hook, _first(ops, "write_memory", _CIA1_ICR, "81"), "re-armed last")
 
     def test_bank_swap_install_masks_before_it_uploads(self):
         for pump in (False, True):
@@ -49,14 +57,44 @@ class InstallOrderTest(unittest.TestCase):
                     audio_pump_active=pump,
                 )
                 self._assert_masked_before_uploads(
-                    api.ops, f"{modes_irq._CIA1_ICR_DISABLE_TIMER_A:02X}"
+                    api.ops, f"{modes_irq._CIA1_ICR_DISABLE_TIMER_A:02X}", unmasks=True
                 )
+
+    def test_a_bad_tracker_init_raises_before_any_write(self):
+        api = FakeAPI()
+        with self.assertRaises(ValueError):
+            modes_irq.install_bank_swap_irq(cast(Ultimate64API, api), tracker_init=b"\x00")
+        self.assertEqual(api.ops, [])
+
+    def test_double_buffer_setups_mask_and_drain_before_they_clear_or_pin(self):
+        for mode in (
+            HiresDisplayMode(use_reu_staged=True),
+            HiresDisplayMode(double_buffer=True),
+            HiresDisplayMode(flicker_tolerance="clean"),
+            MultiHiresDisplayMode(use_reu_staged=True),
+            MultiHiresDisplayMode(double_buffer=True),
+        ):
+            with self.subTest(mode=type(mode).__name__, reu=mode.use_reu_staged):
+                api = FakeAPI()
+                with mock.patch.object(modes_irq, "time") as clock:
+                    clock.sleep.side_effect = lambda s, ops=api.ops: ops.append(("sleep", s))
+                    with quiet_logging():
+                        mode.setup(cast(Ultimate64API, api))
+                ops = api.ops
+                drain = ops.index(("sleep", modes_irq._REU_SLOT_MAX_IN_USE_S))
+                mask = _first(ops, "write_memory", _CIA1_ICR, "7F")
+                disable = _first(ops, "write_memory", "D01A", "00")
+                pin = _first(ops, "write_memory", f"{CIA2.PORT_A:04X}")
+                clear = _first(ops, "write_memory_file", f"{VIC_BANK_2.BITMAP:04X}")
+                self.assertLess(max(mask, disable), drain)
+                self.assertLess(drain, min(pin, clear))
 
     def test_big_text_install_masks_before_it_uploads(self):
         api = FakeAPI()
         overlay: Any = BigTextOverlay(messages=[{"text": "HI"}], charset_path="")
         overlay._install_raster_irq(api)
-        self._assert_masked_before_uploads(api.ops, "7F")
+        # big_text keeps CIA #1 masked while hooked; its handler chains to $EA31.
+        self._assert_masked_before_uploads(api.ops, "7F", unmasks=False)
 
 
 if __name__ == "__main__":

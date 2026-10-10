@@ -31,6 +31,7 @@ from c64cast.video.modes_irq import (
     FRAME_TRACKER_ADDR,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
+    mask_irq_sources,
     push_bitmap_via_reu,
 )
 from c64cast.video.palette import (
@@ -283,6 +284,8 @@ class HiresDisplayMode(BitmapDisplayMode):
             )
         if self.use_reu_staged:
             # So the off-screen bank shows no garbage on the first swap.
+            # Before the clears and the bank pin: a leaked handler could undo both.
+            mask_irq_sources(api, drain_reu_copy=True)
             zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
             zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
             api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)

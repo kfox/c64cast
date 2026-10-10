@@ -803,6 +803,28 @@ _CIA1_ICR_DISABLE_TIMER_A = CIA1.ICR_DISABLE_ALL
 _CIA1_ICR_ENABLE_TIMER_A = CIA1.ICR_ENABLE_TIMER_A
 
 
+def wait_out_reu_copy() -> None:
+    """Wait as long as a REU dispatcher's copy can run from $C500 once both IRQ
+    sources are masked. Waiting is cheaper than a handshake, which would need a
+    REST read of the C64 on every scene change."""
+    time.sleep(_REU_SLOT_MAX_IN_USE_S)
+
+
+def mask_irq_sources(api: C64Backend, *, drain_reu_copy: bool = False) -> None:
+    """Mask CIA #1 and the VIC IRQ sources (raster + sprite collisions +
+    light pen), so no IRQ enters whatever $0314 names while it is overwritten.
+
+    `drain_reu_copy` then waits out a copy a leaked REU dispatcher may have in
+    flight: the masks keep new IRQs out of $C500, but one already inside a copy
+    keeps writing a VIC bank for fields at a time. The double-buffer setups
+    pass it before they clear both banks and pin bank 0, so neither the clear
+    nor the pin is undone behind them."""
+    api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
+    api.write_memory("D01A", "00")
+    if drain_reu_copy:
+        wait_out_reu_copy()
+
+
 def install_bank_swap_irq(
     api: C64Backend,
     handler_bytes: bytes = BANK_SWAP_IRQ_HANDLER,
@@ -834,15 +856,16 @@ def install_bank_swap_irq(
     keeps them, and its CIA #1 ticks reach the kernal and pump nothing.
 
     Order matters: mask both raster and CIA #1 sources before anything is
-    uploaded, then hook $0314, program the raster compare line, ack any
-    pending raster IRQ, and enable raster + re-enable CIA #1. A teardown
-    whose $0314 restore never landed leaves the vector on $C500, so an IRQ
-    taken while the upload below is half done would run a half-written
-    handler. Same sequence as [overlays/big_text.py:_install_raster_irq]."""
-    # Mask CIA #1 first: a jiffy IRQ would vector through $0314 mid-install.
-    api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
-    # Disable VIC IRQ sources (raster + sprite collisions + light pen).
-    api.write_memory("D01A", "00")
+    uploaded (`mask_irq_sources`), then hook $0314, program the raster
+    compare line, ack any pending raster IRQ, and enable raster + re-enable
+    CIA #1. A teardown whose $0314 restore never landed leaves the vector on
+    $C500, so an IRQ taken while the upload below is half done would run a
+    half-written handler. Same sequence as
+    [overlays/big_text.py:_install_raster_irq]."""
+    tracker = bytes(tracker_len) if tracker_init is None else tracker_init
+    if len(tracker) != tracker_len:
+        raise ValueError(f"tracker_init must be {tracker_len} bytes, got {len(tracker)}")
+    mask_irq_sources(api)
     if audio_pump_active:
         # The stubs must be in place before CIA #1 is re-enabled at the end of
         # this function, and before $0314 names the merged dispatcher, whose
@@ -859,9 +882,6 @@ def install_bank_swap_irq(
     # $0000 matrix offset for the field or two before the first frame stages,
     # so the seed has to be in place before the $D01A write below arms the
     # raster source.
-    tracker = bytes(tracker_len) if tracker_init is None else tracker_init
-    if len(tracker) != tracker_len:
-        raise ValueError(f"tracker_init must be {tracker_len} bytes, got {len(tracker)}")
     api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
     # The REU dispatchers flip from this byte, and setup has pinned $DD00 to
     # bank 0, so it has to say bank 0 before the first commit. The host-DMA
@@ -883,13 +903,6 @@ def install_bank_swap_irq(
     api.write_memory("D01A", "01")
     # Re-enable the CIA #1 jiffy IRQ — kernal keyboard scan etc.
     api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
-
-
-def wait_out_reu_copy() -> None:
-    """Wait as long as a REU dispatcher's copy can run from $C500 once both IRQ
-    sources are masked. Waiting is cheaper than a handshake, which would need a
-    REST read of the C64 on every scene change."""
-    time.sleep(_REU_SLOT_MAX_IN_USE_S)
 
 
 def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> None:
