@@ -17,6 +17,7 @@ from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, VIC, RegionID
 from c64cast.hw.irq_unhook import unhook_raster_irq
+from c64cast.video.modes_irq import wait_out_reu_copy
 from c64cast.video.palette import C64_COLORS, resolve_color
 
 from .backgrounds import build as build_background
@@ -100,7 +101,10 @@ class InterstitialScene(Scene):
         # A mode switch, so the dirty cache would otherwise suppress a needed
         # frame-0 write that happens to match the last scene.
         self.api.invalidate_cache()
-        # Defeat a leaked bitmap-scene raster IRQ: mask both sources, restore
+        # Defeat a leaked bitmap-scene raster IRQ: mask both sources, wait out a
+        # REU copy the leaked handler may have in flight (it writes bank 0's
+        # $0400 and, on mhires, $D800 — the card's own screen and colors, which
+        # the dirty cache would then never repaint), restore
         # $0314 → $EA31 (out of reach of any IRQ), ack the latched flag, and only
         # then pin the bank — a pin any earlier leaves a window in which $DD00
         # can be re-flipped to bank 2 after it. CIA #1 is re-armed last, once the
@@ -112,6 +116,7 @@ class InterstitialScene(Scene):
             self.api,
             log,
             "interstitial",
+            drain=wait_out_reu_copy,
             before_unmask=(
                 (
                     "VIC bank 0",

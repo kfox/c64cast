@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import unittest
 from typing import cast
+from unittest import mock
 
 import numpy as np
 from _fakes import FakeAPI, lose_writes_to
@@ -30,6 +31,7 @@ from c64cast.scenes.interstitial import (
     default_factory,
 )
 from c64cast.scenes.overlays import ascii_to_screen
+from c64cast.video import modes_irq
 from c64cast.video.palette import C64_COLORS
 
 
@@ -159,6 +161,27 @@ class InterstitialCia1RearmTest(unittest.TestCase):
                 ("DC0D", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"),
             ],
         )
+
+    def test_a_leaked_copy_is_waited_out_before_the_card_writes(self):
+        # A leaked REU dispatcher mid-copy writes bank 0's screen and color RAM,
+        # which the dirty cache would never repaint over.
+        scene, fake = self._scene()
+        with mock.patch.object(modes_irq, "time") as clock:
+            clock.sleep.side_effect = lambda s: fake.ops.append(("sleep", s))
+            scene.setup()
+            scene.process_frame(scene.start_time)
+        ops = fake.ops
+        drain = ops.index(("sleep", modes_irq._REU_SLOT_MAX_IN_USE_S))
+        masks = [i for i, op in enumerate(ops) if op[1:3] in (("DC0D", "7F"), ("D01A", "00"))]
+        restore = next(i for i, op in enumerate(ops) if op[:2] == ("write_regs", "0314"))
+        first_card_write = next(
+            i
+            for i, op in enumerate(ops)
+            if op[:2] in (("write_memory", "D018"),) or op[0] == "write_region"
+        )
+        self.assertLess(max(masks), drain)
+        self.assertLess(drain, restore)
+        self.assertLess(drain, first_card_write)
 
     def test_unconfirmed_restore_leaves_cia1_masked(self):
         scene, fake = self._scene(VECTORS.IRQ)
