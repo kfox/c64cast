@@ -887,6 +887,8 @@ class SamplerWriterFailureTest(unittest.TestCase):
         t.start()
         self.assertTrue(parked.wait(2.0), "the producer never reached the full queue")
         smp._failed = True
+        smp._running = True  # no writer: _drop_passed is driven by hand
+        self.addCleanup(setattr, smp, "_running", False)
         # The write floor is the queued chunk's end, so the tone stays queued.
         floor_at = 64 - smp._flush_margin
         smp._read_consumed_bytes = lambda: floor_at  # type: ignore[method-assign]
@@ -895,6 +897,16 @@ class SamplerWriterFailureTest(unittest.TestCase):
         self.assertFalse(t.is_alive(), "the producer stays parked on a sampler that gave up")
         self.assertEqual((smp._content_pos, smp._late_bytes), (64, 64))
         self.assertEqual(api.reu_writes, [])
+
+    def test_a_stopped_writer_takes_nothing_from_the_next_activation(self):
+        # A stopped writer's read head is 0, and past arm() the queue holds
+        # the next activation's first audio: taken as late, its prebuffer
+        # lost the start of the scene.
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._failed = True
+        smp._q.put((smp._flush_epoch, b"\x01" * 64))
+        smp._drop_passed(smp._writer_gen)
+        self.assertEqual((smp._content_pos, smp._late_bytes, smp._q.qsize()), (0, 0, 1))
 
     def test_a_write_head_the_reader_passed_skips_ahead_of_it(self):
         api = _FakeBackend()

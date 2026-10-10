@@ -1207,7 +1207,9 @@ class UltimateAudioSampler:
         anchor, in step with the picture. Dropped on arrival instead, an
         audio-file producer ran to the end of its track during the outage."""
         with self._io_lock:
-            if gen != self._writer_gen or self._cut_epoch != self._flush_epoch:
+            # A stopped writer's read head is 0, so past arm() it would take
+            # the next activation's first audio from the queue as late.
+            if not self._running or gen != self._writer_gen or self._cut_epoch != self._flush_epoch:
                 return
             floor = self._read_consumed_bytes() + self._flush_margin
             while self._content_pos < floor:
@@ -1252,7 +1254,7 @@ class UltimateAudioSampler:
         if not self._restart_channel(gen, cause="the link answers again after the give-up"):
             return False
         with self._io_lock:
-            if gen != self._writer_gen:
+            if not (self._running and gen == self._writer_gen):
                 return False
             # An outage says nothing about the producer (_write_payload).
             self._late_ref = None
