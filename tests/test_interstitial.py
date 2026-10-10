@@ -181,6 +181,21 @@ class InterstitialCia1RearmTest(unittest.TestCase):
             scene.setup()
         self.assertIn("unmask was not confirmed", cm.output[0])
 
+    def test_unconfirmed_raster_disable_is_logged(self):
+        scene, fake = self._scene()
+        write_memory = fake.write_memory
+
+        def lossy_write_memory(addr: str, data_hex: str) -> None:
+            write_memory(addr, data_hex)
+            if str(addr).upper() == "D01A":
+                fake.delivery_epoch += 1
+
+        fake.write_memory = lossy_write_memory  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
+            scene.setup()
+        self.assertIn("raster IRQ disable was not confirmed", cm.output[0])
+        self.assertEqual(fake.memories["DC0D"], "81")
+
 
 class DefaultFactoryTest(unittest.TestCase):
     def test_factory_mints_named_scenes(self):

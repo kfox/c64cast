@@ -107,7 +107,11 @@ class InterstitialScene(Scene):
         # be re-flipped to bank 2 after the pin. See
         # docs/architecture/scenes.md#interstitialpy--backgroundspy.
         vector_restored = write_confirmed(self.api, self.api.restore_kernal_irq_vector)
-        self.api.write_memory("d01a", "00")
+        # Confirmed because the kernal handler at $EA31 never acks $D019: a
+        # raster source left enabled behind the restore re-enters the IRQ on
+        # every RTI.
+        if not write_confirmed(self.api, lambda: self.api.write_memory("d01a", "00")):
+            log.error("interstitial: the VIC raster IRQ disable was not confirmed delivered")
         self.api.write_memory("d019", "01")
         self._rearm_cia1(vector_restored)
         self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
