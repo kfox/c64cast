@@ -20,10 +20,12 @@ See docs/architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reacti
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
@@ -59,6 +61,154 @@ def heard_seconds(audio: AudioStreamer | UltimateAudioSampler) -> float:
         # reads, and inside a re-anchor's hold that stepped the sample back.
         played -= cast("UltimateAudioSampler", audio).reanchor_lag_seconds(played)
     return played
+
+
+# Following the DAC's drain (DrainFollower). The window is read from
+# DRAIN_FOLLOW_WARMUP_S after the clock starts, while the servo still settles
+# the ring lead; a window restarts, warming up again, at an underrun, at a lost write, and across
+# a span of DRAIN_FOLLOW_STALL_S or more over which the clock ran at under half
+# the slowest drain followed (a stalled link, a pause), since none is the
+# drain. The span is measured from an anchor rather than between neighboring
+# readings: a push into a stalled sink returns after QUEUE_PUT_TIMEOUT_S
+# (0.2 s), so readings across a stall come closer together than the span.
+# The drain is measured, not converged on, so the deadband only keeps
+# estimator noise from rebuilding the resampler: at 0.005 a steady 0.94 drain
+# on hardware read 0.935..0.945 window to window and rebuilt it every few
+# seconds. DRAIN_FOLLOW_RETUNE_S spaces the rebuilds.
+DRAIN_FOLLOW_WARMUP_S = 3.0
+DRAIN_FOLLOW_WINDOW_S = 4.0
+DRAIN_FOLLOW_DEADBAND = 0.01
+DRAIN_FOLLOW_STALL_S = 0.25
+DRAIN_FOLLOW_RETUNE_S = 2.0
+DRAIN_FOLLOW_MIN = 0.80
+# The first scale is predicted from the link's byte rate over this long after
+# the clock starts, rather than waited out over the warm-up and a window.
+DRAIN_PREDICT_SPAN_S = 1.0
+
+
+class DrainFollower:
+    """The fraction of real time a DAC sink's clock advances at, measured
+    from (wall, clock) readings, as the scale a file is resampled by.
+
+    The `$D418` DAC plays one sample per NMI the 6510 services, and the
+    scene's host writes on the shared bus cost it NMIs, so the sink drains
+    below its armed rate. Resampled to ``effective_rate × drain``, a second
+    of the track is the samples the NMI plays in a second, so it plays at
+    its own speed and pitch. Not by raising the NMI rate: that moves in
+    latch steps (≈1.2 % at 12 kHz), and on a bitmap mode the drain does not
+    rise with it. See
+    docs/architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source.
+
+    With ``predict``, the first scale comes sooner: ``DRAIN_PREDICT_SPAN_S``
+    after the clock starts, the CPU time the writes halted over that span
+    predicts the drain as the fraction of the span the CPU was left. The
+    measured window then trims it as before.
+
+    Pure: the caller supplies the time, the clock, the trust stamp and the
+    CPU time halted."""
+
+    def __init__(self, scale: float = 1.0, predict: bool = False) -> None:
+        self.scale = scale
+        self.measured = False  # a window has read the drain
+        self._marks: deque[tuple[float, float]] = deque()
+        self._started_at: float | None = None
+        self._trust: object = None
+        # (wall, clock) the stall check measures its span from.
+        self._stall_anchor: tuple[float, float] | None = None
+        self._last_retune = -math.inf
+        self._predicted = not predict
+        # (wall, halted) the prediction's span starts at.
+        self._predict_from: tuple[float, float] | None = None
+
+    @property
+    def predicting(self) -> bool:
+        """Whether a prediction is still to come, so `observe` wants
+        ``halted_s``."""
+        return not self._predicted
+
+    def observe(
+        self, now: float, clock_s: float, trust: object, halted_s: float | None = None
+    ) -> float | None:
+        """Take one reading; returns the new scale when it moved by the
+        deadband or more, else None. ``trust`` is anything that changes at
+        an underrun (a window across one is not the drain); ``halted_s`` is
+        the running total of CPU seconds the link's writes halted, None
+        where nothing counts it."""
+        marks = self._marks
+        if clock_s <= 0.0:
+            # The consumer has not started: nothing drains yet.
+            self._started_at = None
+            self._stall_anchor = None
+            self._predict_from = None
+            marks.clear()
+            return None
+        if self._started_at is None:
+            self._started_at = now
+        if not self._predicted and halted_s is not None:
+            predicted = self._predict(now, halted_s)
+            if predicted is not None:
+                return predicted
+        if now - self._started_at < DRAIN_FOLLOW_WARMUP_S:
+            marks.clear()
+            self._trust = trust
+            self._stall_anchor = (now, clock_s)
+            return None
+        if self._stalled(now, clock_s) or trust != self._trust:
+            # The worker drips its backlog in after the stall or underrun and
+            # the servo re-settles the ring lead, so the clock runs fast for
+            # a while: warm up again, as at the start.
+            self._started_at = now
+            self._trust = trust
+            marks.clear()
+            return None
+        self._trust = trust
+        marks.append((now, clock_s))
+        while len(marks) > 2 and marks[1][0] <= now - DRAIN_FOLLOW_WINDOW_S:
+            marks.popleft()
+        (w0, c0), (w1, c1) = marks[0], marks[-1]
+        if (
+            w1 - w0 < 0.75 * DRAIN_FOLLOW_WINDOW_S
+            or now - self._last_retune < DRAIN_FOLLOW_RETUNE_S
+        ):
+            return None
+        self.measured = True
+        return self._retune(now, (c1 - c0) / (w1 - w0))
+
+    def _predict(self, now: float, halted_s: float) -> float | None:
+        """The drain the CPU time halted since the clock started predicts,
+        once it spans ``DRAIN_PREDICT_SPAN_S``, as `_retune` takes it; once."""
+        start = self._predict_from
+        if start is None:
+            self._predict_from = (now, halted_s)
+            return None
+        w0, h0 = start
+        if now - w0 < DRAIN_PREDICT_SPAN_S:
+            return None
+        self._predicted = True
+        return self._retune(now, 1.0 - max(0.0, halted_s - h0) / (now - w0))
+
+    def _retune(self, now: float, drain: float) -> float | None:
+        drain = min(1.0, max(DRAIN_FOLLOW_MIN, drain))
+        if abs(drain - self.scale) < DRAIN_FOLLOW_DEADBAND:
+            return None
+        self.scale = drain
+        self._last_retune = now
+        return drain
+
+    def _stalled(self, now: float, clock_s: float) -> bool:
+        """Whether the clock ran at under half the slowest drain followed over
+        the span since the anchor, once that span reaches DRAIN_FOLLOW_STALL_S;
+        the anchor then moves to this reading."""
+        anchor = self._stall_anchor
+        if anchor is None:
+            self._stall_anchor = (now, clock_s)
+            return False
+        w_a, c_a = anchor
+        span = now - w_a
+        if span < DRAIN_FOLLOW_STALL_S:
+            return False
+        self._stall_anchor = (now, clock_s)
+        return clock_s - c_a < 0.5 * DRAIN_FOLLOW_MIN * span
 
 
 @runtime_checkable
@@ -338,6 +488,11 @@ class AudioFileSource:
         # Set once `finished` has logged that the lag cap ended the scene, so
         # the playlist's polling logs it once per decode.
         self._lag_cap_logged = False
+        # The DAC drain the last activation followed: the next starts from it
+        # rather than playing its first window slow, and predicts none once
+        # one was measured. Decode thread only.
+        self._drain_scale = 1.0
+        self._drain_measured = False
         # At build time, so a misconfigured single scene raises there
         # (parity with SidFileAudioSource.__init__).
         self._pick_and_probe()
@@ -484,7 +639,7 @@ class AudioFileSource:
             tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096, history + cfg.fft_size))
             stream = AudioFeatureStream(
                 tap,
-                self._audio.sample_rate,
+                rate,
                 n_bands=cfg.bands,
                 fft_size=cfg.fft_size,
                 poll_hz=cfg.poll_hz,
@@ -530,6 +685,7 @@ class AudioFileSource:
         # effective_rate, not sample_rate: the rate the sink really
         # consumes at, so the servo starts from zero standing error.
         rate = int(round(self._audio.effective_rate)) or self._audio.sample_rate
+        follower = self._new_drain_follower()
         pushed = 0
         try:
             container = av_open(self._path)
@@ -540,12 +696,26 @@ class AudioFileSource:
         try:
             import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
 
-            resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
+            scale = follower.scale if follower is not None else 1.0
+            drained = self._drained_rate(rate, scale)
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=drained)
+            self._note_content_rate(drained, rate)
             a_stream = container.streams.audio[0]
             for packet in container.demux(a_stream):
                 if self._stop.is_set():
                     return
                 for frame in packet.decode():
+                    retuned = self._observe_drain(follower, rate)
+                    if retuned is not None:
+                        # The old filter's tail first, or its last few
+                        # milliseconds are lost at every retune.
+                        for resampled in resampler.resample(None):
+                            if self._stop.is_set():
+                                return
+                            pushed += self._push_frame(resampled)
+                        drained = self._drained_rate(rate, retuned)
+                        resampler = av.AudioResampler(format="s16", layout="mono", rate=drained)
+                        self._note_content_rate(drained, rate)
                     for resampled in resampler.resample(frame):
                         if self._stop.is_set():
                             return
@@ -562,8 +732,102 @@ class AudioFileSource:
                 log.exception("audio file: decode of %s failed", os.path.basename(self._path))
         finally:
             container.close()
+            if follower is not None:
+                self._drain_scale = follower.scale
+                self._drain_measured = self._drain_measured or follower.measured
         if not self._stop.is_set():
             self._mark_decode_done(pushed)
+
+    def _new_drain_follower(self) -> DrainFollower | None:
+        """A follower for the DAC sink's drain, or None where there is none
+        to follow: the sampler plays off the bus, at its own clock, and a sink
+        without underrun telemetry offers no window to trust."""
+        if self._is_sampler or not callable(getattr(self._audio, "stats", None)):
+            return None
+        predict = not self._drain_measured and self._halted_s() is not None
+        return DrainFollower(self._drain_scale, predict=predict)
+
+    def _halted_s(self) -> float | None:
+        """CPU seconds the link's writes have halted the 6510 for so far: the
+        bytes written at the profile's `halt_cycles_per_byte`, over the CPU
+        clock. None where the link counts no bytes or the figure is unmeasured.
+
+        A REU-staged bitmap's REC copies are not counted, so on a bitmap
+        mode this predicts a drain nearer 1.0 than it is and the window
+        finishes the job. Counted at the REC's cycle per byte staged, they
+        predicted 0.80 on hardware where mhires drained at 0.95, so far from
+        every staged byte is copied."""
+        from c64cast.hw.c64 import cpu_clock
+
+        api = getattr(self._audio, "api", None)
+        profile = getattr(api, "profile", None)
+        link_stats = getattr(api, "stats", None)
+        cycles_per_byte = float(getattr(profile, "halt_cycles_per_byte", 0.0) or 0.0)
+        if not isinstance(link_stats, dict) or cycles_per_byte <= 0.0:
+            return None
+        try:
+            clock = cpu_clock(str(getattr(profile, "system", "NTSC")))
+        except ValueError:
+            return None
+        return cycles_per_byte * link_stats.get("bytes", 0) / clock
+
+    def _observe_drain(self, follower: DrainFollower | None, rate: int) -> float | None:
+        """Feed ``follower`` one reading of the sink's clock; returns the scale
+        to resample at from here when it moved."""
+        if follower is None:
+            return None
+        stats = cast("AudioStreamer", self._audio).stats()
+        api = getattr(self._audio, "api", None)
+        trust = (
+            int(stats["full_underruns"]) + int(stats["partial_underruns"]),
+            getattr(api, "delivery_epoch", 0),
+        )
+        before = follower.scale
+        halted = self._halted_s() if follower.predicting else None
+        retuned = follower.observe(
+            time.monotonic(), self._audio.position_seconds() or 0.0, trust, halted
+        )
+        if retuned is not None and not follower.measured:
+            log.info(
+                "audio file: the link's writes predict the DAC drains at %.3f of real "
+                "time — resampling %s to %d Hz until a window measures it",
+                retuned,
+                os.path.basename(self._path),
+                self._drained_rate(rate, retuned),
+            )
+        elif retuned is not None:
+            log.info(
+                "audio file: the DAC drains at %.3f of real time (was following %.3f) — "
+                "resampling %s to %d Hz so it plays at its own speed and pitch",
+                retuned,
+                before,
+                os.path.basename(self._path),
+                self._drained_rate(rate, retuned),
+            )
+        return retuned
+
+    def _note_content_rate(self, rate: int, base: int) -> None:
+        """Tell the analyzer, and the DAC streamer's overlay tap, the rate of
+        the samples pushed from here on (``base`` unfollowed). A followed
+        track reaches both resampled below the sink's rate, and read at the
+        sink's rate, a tone could land a band above its own."""
+        features = self._features
+        if features is not None:
+            features.set_content_rate(rate)
+        # A decode thread that outlived teardown's join would otherwise leave
+        # its scale on the shared streamer for the next scene's overlay.
+        if not self._stop.is_set():
+            self._set_streamer_scale(rate / base)
+
+    def _set_streamer_scale(self, scale: float) -> None:
+        if not self._is_sampler:
+            cast("AudioStreamer", self._audio).content_scale = scale
+
+    @staticmethod
+    def _drained_rate(rate: int, scale: float) -> int:
+        """The rate to resample a track to so a sink draining at ``scale`` of
+        ``rate`` plays it in real time."""
+        return max(1, int(round(rate * scale)))
 
     def _push_frame(self, resampled: Any) -> int:
         """Push one resampled frame to the sink; returns the samples it
@@ -666,6 +930,7 @@ class AudioFileSource:
         steps.append(("audio stop", self._audio.stop))
         if thread is not None:
             steps.append(("decode thread join", partial(self._join_decode_thread, thread)))
+        steps.append(("content scale reset", partial(self._set_streamer_scale, 1.0)))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _join_decode_thread(self, thread: threading.Thread) -> None:

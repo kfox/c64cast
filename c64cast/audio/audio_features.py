@@ -14,6 +14,7 @@ import logging
 import math
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 
 import numpy as np
@@ -76,6 +77,26 @@ def band_edges(n_bands: int, fft_size: int) -> np.ndarray:
         edges[i] = max(edges[i], edges[i - 1] + 1)
     edges[n_bands] = n_bins
     return edges.astype(np.int32)
+
+
+def rescaled_band_edges(n_bands: int, fft_size: int, ratio: float) -> np.ndarray:
+    """`band_edges` for a window sampled at ``1 / ratio`` of the rate the
+    bands were laid out for, so each band still covers the same frequencies.
+
+    A bin of that window is ``1 / ratio`` as wide in Hz, so an edge at bin
+    ``e`` moves to ``e * ratio``. Edges past Nyquist sit on it, and every
+    band keeps at least one bin, from both ends."""
+    if ratio == 1.0:
+        return band_edges(n_bands, fft_size)
+    edges = band_edges(n_bands, fft_size).astype(np.float64)
+    n_bins = fft_size // 2
+    out = np.clip(np.rint(edges * ratio).astype(np.int64), 1, n_bins)
+    for i in range(1, n_bands + 1):
+        out[i] = max(out[i], out[i - 1] + 1)
+    out[n_bands] = n_bins
+    for i in range(n_bands - 1, -1, -1):
+        out[i] = min(out[i], out[i + 1] - 1)
+    return out.astype(np.int32)
 
 
 def check_layout(n_bands: int, fft_size: int) -> None:
@@ -222,6 +243,20 @@ class AudioFeatureAnalyzer:
         self._last_now: float | None = None
         self._tempo.reset()
 
+    def set_content_rate(self, rate: float) -> None:
+        """Lay the bands out for windows sampled at ``rate`` rather than
+        `sample_rate`, so a tone reads in the band it does at `sample_rate`.
+        A file the DAC source resamples to follow a slow drain is the caller."""
+        edges = rescaled_band_edges(self.n_bands, self.fft_size, self.sample_rate / float(rate))
+        if np.array_equal(edges, self._edges):
+            return
+        self._edges = edges
+        # The last window's magnitudes are per band of the old layout;
+        # differenced against the new one they read as a transient. Dropped
+        # only when the layout moves: a dropped baseline skips the next
+        # window's onset, which may be a real one.
+        self._prev_log_mags = None
+
     def update(self, window: np.ndarray, now: float) -> None:
         """Fold one analysis window (mono float, `fft_size` samples) into the
         feature accumulators. `now` is a monotonic timestamp in seconds; the
@@ -328,6 +363,10 @@ class AudioFeatureStream:
     its samples are pushed as they are heard. A decoded file must set it,
     because its producer runs a full sink queue and ring ahead of playback,
     and the newest window is audio that has not been heard yet.
+
+    `set_content_rate` tells it the rate of the samples pushed from now on.
+    It takes effect when the analyzed window reaches the first of them, not
+    when it is called: a file's producer is that far ahead of what is heard.
     """
 
     def __init__(
@@ -362,6 +401,9 @@ class AudioFeatureStream:
         self._analyze_lock = threading.Lock()
         self._snapshot: MusicModulation | None = None
         self._poll: PollThread | None = None
+        # (first tap index, rate) changes not reached yet. Appended by the
+        # producer, popped only by the tick; deque's ends are thread-safe.
+        self._rate_changes: deque[tuple[int, float]] = deque()
 
     def start(self) -> None:
         """Start the poll thread. A second call while running is a no-op."""
@@ -382,6 +424,10 @@ class AudioFeatureStream:
             self._poll.stop()
             self._poll = None
 
+    def set_content_rate(self, rate: float) -> None:
+        """The samples pushed to the tap from here on are at ``rate``."""
+        self._rate_changes.append((self._tap.pushed, float(rate)))
+
     def _process_tick(self) -> None:
         """Analyze the most recent window. The FFT runs outside the lock; only
         the snapshot swap takes it, so `features()` on the render thread never
@@ -392,19 +438,24 @@ class AudioFeatureStream:
         overlapping ticks publish out of order; and the window and timestamp
         are taken under it, so a tick that waited on it analyzes the present."""
         with self._analyze_lock:
-            window = self._window()
+            window, end = self._window()
+            changes = self._rate_changes
+            # Once the window holds more samples at the new rate than the old.
+            while changes and changes[0][0] < end - self._fft_size // 2:
+                self._analyzer.set_content_rate(changes.popleft()[1])
             now = time.monotonic()
             self._analyzer.update(window, now)
             snapshot = self._analyzer.snapshot()
             with self._lock:
                 self._snapshot = snapshot
 
-    def _window(self) -> np.ndarray:
-        """The window to analyze: the newest one, or the one the listener is
-        hearing when `play_position` is set."""
+    def _window(self) -> tuple[np.ndarray, int]:
+        """The window to analyze, and the tap index it ends at: the newest
+        one, or the one the listener is hearing when `play_position` is set."""
         if self._play_position is None:
-            return self._tap.recent(self._fft_size)
-        end = int(self._play_position())
+            end = self._tap.pushed
+            return self._tap.window_ending_at(end, self._fft_size), end
+        end = min(int(self._play_position()), self._tap.pushed)
         if end < self._tap.pushed - self._tap.size and not self._warned_behind:
             self._warned_behind = True
             log.warning(
@@ -413,7 +464,7 @@ class AudioFeatureStream:
                 "silence until it catches up",
                 self._tap.size,
             )
-        return self._tap.window_ending_at(end, self._fft_size)
+        return self._tap.window_ending_at(end, self._fft_size), end
 
     def features(self) -> MusicModulation | None:
         """Return the current snapshot, or None before the first tick."""

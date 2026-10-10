@@ -513,6 +513,10 @@ class AudioStreamer:
         self._tap_buf = np.zeros(SAMPLE_TAP_SIZE, dtype=np.float32)
         self._tap_write = 0
         self._tap_lock = threading.Lock()
+        # The rate of the samples pushed, as a fraction of effective_rate: an
+        # audio file following the drain resamples below it, and an overlay
+        # FFTing the tap reads its bins at this rate.
+        self.content_scale = 1.0
 
         # PRE-DSP analysis sink (audio_features.AnalysisTap.push), set by a
         # reactive source at setup() and cleared at teardown(). Distinct from

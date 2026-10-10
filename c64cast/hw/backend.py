@@ -152,6 +152,11 @@ class HardwareProfile:
     write_cost_floor_s: float = 5.2e-3  # per-write overhead payload can't touch
     write_cost_intercept_s: float = 1.3e-3
     write_cost_per_byte_s: float = 1.85e-6
+    # 6510 cycles a host write halts the CPU for, per byte written, measured
+    # with scripts/diags/halt_shape_probe.py. What the DAC loses of its NMIs
+    # under a scene's writes, so an audio file can start at the drain they
+    # predict. 0 = unmeasured: no prediction.
+    halt_cycles_per_byte: float = 0.0
 
     def write_cost_s(self, nbytes: int) -> float:
         """Wall-clock seconds one write of ``nbytes`` costs the frame budget.
@@ -259,7 +264,16 @@ ULTIMATE_PROFILE = HardwareProfile(
     write_cost_floor_s=5.222e-3,
     write_cost_intercept_s=1.328e-3,
     write_cost_per_byte_s=1.8454e-6,
+    # Not optimistic like supports_sid_config: refine_capabilities grants
+    # ULTIMATE_64_HALT_CYCLES_PER_BYTE only on a device it reads as an
+    # Ultimate 64. An unmeasured II+ given that figure on an unprobed run
+    # would start its tracks at a drain nobody measured.
+    halt_cycles_per_byte=0.0,
 )
+
+# Measured on an Ultimate 64 with scripts/diags/halt_shape_probe.py
+# (2026-08-05, see audio.md).
+ULTIMATE_64_HALT_CYCLES_PER_BYTE = 1.270
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
 # is declared True at the protocol level here; TeensyROMBackend.__init__ probes
@@ -294,6 +308,7 @@ TEENSYROM_PROFILE = HardwareProfile(
     write_cost_floor_s=0.287e-3,
     write_cost_intercept_s=0.210e-3,
     write_cost_per_byte_s=1.4429e-6,
+    halt_cycles_per_byte=1.055,  # HW-measured 2026-08-05, see audio.md
 )
 
 # The `[hardware].backend` tokens the CLI/config layer offers (`--describe`,
