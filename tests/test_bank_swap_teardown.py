@@ -283,6 +283,11 @@ class CancelledArmTest(unittest.TestCase):
             session.service(pl)
             time.sleep(0.005)
         self.assertEqual(len(pl.built), count)
+        # The factory returns before the build thread sets `built`, and a
+        # cancel that lands in between skipped the teardown even before the fix.
+        armed = session._armed
+        assert armed is not None
+        self.assertTrue(armed.built.wait(5))
 
     def test_a_superseded_arm_is_dropped_without_a_teardown(self):
         pl: Any = _Playlist()

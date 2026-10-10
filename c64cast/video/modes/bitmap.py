@@ -29,6 +29,7 @@ from c64cast.video.modes_irq import (
     FLICKER_SWAP_IRQ_HANDLER,
     FLICKER_TRACKER_LEN,
     FRAME_TRACKER_ADDR,
+    FRAME_TRACKER_LEN,
     HOSTDMA_SWAP_IRQ_HANDLER,
     HOSTDMA_TRACKER_LEN,
     REU_VIDEO_BITMAP_LEN,
@@ -157,11 +158,25 @@ class BitmapDisplayMode(DisplayMode):
     use_reu_staged: bool
     _blend_table: BlendTable | None
 
-    def _install_bank_swap_irq(self, api: C64Backend, *args, **kwargs) -> None:
+    def _install_bank_swap_irq(
+        self,
+        api: C64Backend,
+        handler_bytes: bytes,
+        tracker_len: int = FRAME_TRACKER_LEN,
+        *,
+        audio_pump_active: bool,
+        tracker_init: bytes | None = None,
+    ) -> None:
         """install_bank_swap_irq, recorded for teardown(). Recorded first, so
         an install the link cuts short is still unhooked."""
         self._bank_swap_hooked = True
-        install_bank_swap_irq(api, *args, **kwargs)
+        install_bank_swap_irq(
+            api,
+            handler_bytes,
+            tracker_len,
+            audio_pump_active=audio_pump_active,
+            tracker_init=tracker_init,
+        )
 
     def teardown(self, api: C64Backend) -> None:
         if not self._bank_swap_hooked:

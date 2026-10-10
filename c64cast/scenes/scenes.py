@@ -510,8 +510,8 @@ class Scene:
 
     def teardown(self) -> None:
         # First, so a subclass's audio.stop() latency does not land on top of a
-        # raster IRQ the mode still has hooked at $0314 (HiresDisplayMode with
-        # use_reu_staged; a no-op for every other mode).
+        # raster IRQ the mode still has hooked at $0314 (a hires or mhires mode
+        # whose setup hooked the bank-swap IRQ; a no-op for every other mode).
         if self.display_mode is not None:
             try:
                 self.display_mode.teardown(self.api)
