@@ -12,12 +12,12 @@ import logging
 import unittest
 from typing import Any, cast
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, lose_writes_to
 
 from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import BackendCapabilityError, C64Backend
 from c64cast.hw.c64 import CIA1, KERNAL, VECTORS
-from c64cast.hw.irq_unhook import unhook_raster_irq
+from c64cast.hw.irq_unhook import release_leaked_raster_irq, unhook_raster_irq
 from c64cast.scenes.interstitial import InterstitialScene
 
 _LOG = logging.getLogger("c64cast.test_irq_unhook")
@@ -112,6 +112,22 @@ class RestoreReadbackTest(unittest.TestCase):
         scene = InterstitialScene(cast(C64Backend, api), "Next", InterstitialCfg(background="none"))
         with self.assertLogs("c64cast.scenes.interstitial", level="WARNING"):
             scene.setup()
+        self.assertEqual(api.memories["DC0D"], _UNMASKED)
+
+
+class ReleaseUnmaskTest(unittest.TestCase):
+    def test_a_release_whose_unmask_is_lost_does_not_count_as_landed(self):
+        # The playlist keeps the release owed on False; a True here would leave
+        # the keyboard dead for the scene with the vector already restored.
+        api = FakeAPI()
+        lose_writes_to(api, CIA1.ICR)
+        with self.assertLogs(_LOG, level="ERROR"):
+            self.assertFalse(release_leaked_raster_irq(cast(C64Backend, api), _LOG, "test"))
+        self.assertEqual(api.regs[f"{VECTORS.IRQ:04X}"], tuple(_KERNAL))
+
+    def test_a_release_that_lands_its_unmask_counts_as_landed(self):
+        api = FakeAPI()
+        self.assertTrue(release_leaked_raster_irq(cast(C64Backend, api), _LOG, "test"))
         self.assertEqual(api.memories["DC0D"], _UNMASKED)
 
 

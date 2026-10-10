@@ -115,7 +115,29 @@ def unhook_raster_irq(
     left on `$0314` harmless.
 
     Returns whether the restore landed."""
+    return _unhook(
+        api,
+        log,
+        who,
+        drain=drain,
+        before_unmask=before_unmask,
+        if_still_hooked=if_still_hooked,
+    )[0]
+
+
+def _unhook(
+    api: C64Backend,
+    log: logging.Logger,
+    who: str,
+    *,
+    drain: Callable[[], None] | None,
+    before_unmask: Sequence[tuple[str, Callable[[], object]]],
+    if_still_hooked: Callable[[], None] | None,
+) -> tuple[bool, bool]:
+    """`unhook_raster_irq`, answering whether the restore landed and whether
+    the CIA #1 unmask did."""
     vector_restored = False
+    cia1_unmasked = False
     unconfirmed_masks: list[str] = []
     late_mask_landed = False
 
@@ -174,6 +196,7 @@ def unhook_raster_irq(
         drain()
 
     def unmask_cia1() -> None:
+        nonlocal cia1_unmasked
         if not vector_restored:
             log.error(
                 "%s: leaving CIA #1 Timer A masked — $0314 still points at the in-RAM "
@@ -186,6 +209,7 @@ def unhook_raster_irq(
             "CIA1 unmask",
             lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_ENABLE_TIMER_A:02X}"),
         )
+        cia1_unmasked = True
 
     def still_hooked() -> None:
         if vector_restored or if_still_hooked is None:
@@ -207,7 +231,7 @@ def unhook_raster_irq(
         ("still hooked", still_hooked),
     ]
     run_teardown_steps(log, who, steps)
-    return vector_restored
+    return vector_restored, cia1_unmasked
 
 
 def release_leaked_raster_irq(
@@ -228,12 +252,15 @@ def release_leaked_raster_irq(
     and so does every playlist path that sets the next scene up straight
     after a teardown, with no card between them. Pinned after the restore and
     the ack, because a pin any earlier leaves a window in which a leaked
-    handler re-flips `$DD00` to bank 2. Returns whether the restore landed."""
-    return unhook_raster_irq(
+    handler re-flips `$DD00` to bank 2. Returns whether both the restore and
+    the CIA #1 unmask landed: a restore that landed under a lost unmask still
+    leaves the keyboard dead."""
+    restored, unmasked = _unhook(
         api,
         log,
         who,
         drain=drain,
+        if_still_hooked=None,
         before_unmask=(
             (
                 "VIC bank 0",
@@ -245,3 +272,4 @@ def release_leaked_raster_irq(
             ),
         ),
     )
+    return restored and unmasked

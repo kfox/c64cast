@@ -710,8 +710,9 @@ class Playlist:
         self.transitioning = True
 
     def _release_leaked_irq_if_owed(self) -> None:
-        # Still owed when the restore did not land: a teardown leaks a handler
-        # by losing writes, and the link that lost them can lose these too.
+        # Still owed when the restore or the unmask did not land: a teardown
+        # leaks a handler by losing writes, and the link that lost them can
+        # lose these too.
         if self._irq_release_owed:
             self._irq_release_owed = not self._release_leaked_irq()
 
@@ -727,7 +728,7 @@ class Playlist:
         No drain, because a clip launch is quantized to the beat: a
         double-buffer setup drains before it clears its banks, but a leaked
         copy still in flight can land on a static scene that follows.
-        Returns whether the `$0314` restore landed."""
+        Returns whether the `$0314` restore and the CIA #1 unmask landed."""
         try:
             return release_leaked_raster_irq(self.api, self.log, "scene change")
         except Exception:
@@ -885,8 +886,9 @@ class Playlist:
         A setup lost a write when it raised a `LinkError`, when by the end
         of a `flush()` after it the backend's `write_loss_mark()` for this
         thread had moved, or when the leaked-IRQ release run ahead of it
-        did not land its `$0314` restore. Only this thread's writes count: another thread's
-        failed write (the audio worker's, a poll thread's) is that thread's
+        did not land its `$0314` restore and CIA #1 unmask. Only this
+        thread's writes count: another thread's failed write (the audio
+        worker's, a poll thread's) is that thread's
         to repeat, and must not make a setup that landed run again. Most
         setup steps swallow a dead link rather than raise it (`_emit`,
         `write_confirmed`, a scene that ends itself when its SID player
