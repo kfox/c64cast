@@ -422,20 +422,24 @@ class Probe:
         return False
 
     def read_stable(self, addr: int, n: int) -> tuple[bytes | None, bool]:
-        """Read VRAM until two passes agree.
+        return read_stable(self.port, addr, n)
 
-        A single porthole read burst comes back with a corrupted byte about one
-        pass in twenty, so a lone readback cannot tell a VRAM error from a read
-        error — and this whole tool is a hunt for VRAM errors."""
-        seen: list[bytes] = []
-        for _ in range(4):
-            got = self.port.read_ram(addr, n)
-            if got is None:
-                return None, False
-            if got in seen:
-                return got, True
-            seen.append(got)
-        return seen[-1], False
+
+def read_stable(port: vdc.VdcPorthole, addr: int, n: int) -> tuple[bytes | None, bool]:
+    """Read VRAM until two passes agree.
+
+    A single porthole read burst comes back with a corrupted byte about one
+    pass in twenty, so a lone readback cannot tell a VRAM error from a read
+    error — and this whole tool is a hunt for VRAM errors."""
+    seen: list[bytes] = []
+    for _ in range(4):
+        got = port.read_ram(addr, n)
+        if got is None:
+            return None, False
+        if got in seen:
+            return got, True
+        seen.append(got)
+    return seen[-1], False
 
 
 # ---------------------------------------------------------------------------
@@ -465,21 +469,38 @@ def describe(payload: bytes, got: bytes, sentinel: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def vram_is_16k(p: Probe) -> bool:
-    """Is this a 16 KiB VDC? The C128 Editor ROM's own test.
+def vram_is_16k(port: vdc.VdcPorthole) -> bool | None:
+    """Is this a 16 KiB VDC? The C128 Editor ROM's own test; None when R28 or
+    $0000 cannot be read back, or $0000 never reads the same twice.
 
     Force 64 KiB addressing, clear $0000, write $FF at $8000, read $0000 back.
     R28 bit 4 cannot answer this by itself: it configures the addressing rather
     than reporting the chips, so the test has to assume 64 KiB and see whether
-    the far write aliases home. Any nonzero byte counts, because a 4416 machine
-    is four bits wide and need not alias the whole byte."""
-    r28 = p.port.read_reg(vdc.R.CHARSET_ADDR)
-    if r28 is not None:
-        p.port.write_reg(vdc.R.CHARSET_ADDR, (r28 | VRAM_TYPE_BIT) & ~REG_READ_ONES[28])
-    p.port.write_ram(0x0000, b"\x00")
-    p.port.write_ram(0x8000, b"\xff")
-    got = p.port.read_ram(0x0000, 1)
-    return bool(got and got[0])
+    the far write aliases home. Any changed bit counts, because a 4416 machine
+    is four bits wide and need not alias the whole byte. The far write is judged
+    against what the cleared $0000 actually read back rather than against $00:
+    a bit that will not clear would otherwise pass for an alias, or, refused
+    outright, leave the size unreadable on the very machine a bit soak hunts."""
+    r28 = port.read_reg(vdc.R.CHARSET_ADDR)
+    if r28 is None:
+        return None
+    port.write_reg(vdc.R.CHARSET_ADDR, (r28 | VRAM_TYPE_BIT) & ~REG_READ_ONES[28])
+    port.write_ram(0x0000, b"\x00")
+    before, stable = read_stable(port, 0x0000, 1)
+    if not before or not stable:
+        return None
+    port.write_ram(0x8000, b"\xff")
+    got, stable = read_stable(port, 0x0000, 1)
+    return None if not got or not stable else got != before
+
+
+def select_16k_addressing(port: vdc.VdcPorthole) -> bool:
+    """Clear R28 bit 4; False when R28 cannot be read to preserve its other bits."""
+    r28 = port.read_reg(vdc.R.CHARSET_ADDR)
+    if r28 is None:
+        return False
+    port.write_reg(vdc.R.CHARSET_ADDR, r28 & ~VRAM_TYPE_BIT & ~REG_READ_ONES[28])
+    return True
 
 
 def _hexb(v: int | None) -> str:
@@ -532,13 +553,14 @@ def stage_identity(p: Probe) -> bool:
         print(f"    R{reg:<2d} = ${got:02X} ({got:3d})           {mark}")
     if writes_land(p):
         boot = "unread" if p.vram_64k is None else "64 KiB" if p.vram_64k else "16 KiB"
-        aliases = vram_is_16k(p)
+        aliases = vram_is_16k(p.port)
         print(f"    VRAM as KERNAL set R28    {boot}  (configured, not measured)")
-        print(f"    VRAM by aliasing at $8000 {'16 KiB' if aliases else '64 KiB'}")
+        measured = "unread" if aliases is None else "16 KiB" if aliases else "64 KiB"
+        print(f"    VRAM by aliasing at $8000 {measured}")
         if aliases or p.vram_64k is False:
-            r28 = p.port.read_reg(vdc.R.CHARSET_ADDR)
-            if r28 is not None:
-                p.port.write_reg(vdc.R.CHARSET_ADDR, r28 & ~VRAM_TYPE_BIT & ~REG_READ_ONES[28])
+            if not select_16k_addressing(p.port):
+                print("    -> R28 unreadable; 16 KiB addressing NOT selected")
+                return True
             print("    -> cleared R28 bit 4. The cartridge is frozen and programs")
             print("       64 KiB addressing on every machine, which decodes wrong")
             print("       here. Timing registers are untouched, so stage 3 and the")
