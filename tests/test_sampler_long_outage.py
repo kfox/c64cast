@@ -1,5 +1,5 @@
 """A link outage longer than the sampler writer's give-up
-(c64cast/audio/sampler.py, WRITER_GIVE_UP_S): the writer stops taking audio
+(c64cast/audio/sampler.py, WRITER_GIVE_UP_S): the writer stops writing audio
 but not running, and brings the channel back once the link answers.
 
 The real writer loop runs on a fake clock that its own sleeps and queue

@@ -126,7 +126,7 @@ FLUSH_GUARD_S = 0.15
 # timeouts) the writer also gates it off and stops writing audio, so the
 # producer is not parked on a queue nothing drains, and goes on trying to
 # restart the channel at the back-off's ceiling. The first restart that lands
-# takes audio again, anchored at the read head, for the rest of the scene.
+# writes audio again, anchored at the read head, for the rest of the scene.
 WRITER_BACKOFF_MIN_S = 0.02
 WRITER_BACKOFF_MAX_S = 0.5
 WRITER_GIVE_UP_S = 10.0
@@ -1145,7 +1145,7 @@ class UltimateAudioSampler:
         retried after a doubling back-off rather than ending the thread: a
         dead writer leaves the channel gated (looping the ring's stale audio
         when it has no deadline) while the producer parks on a queue nothing
-        drains. Past WRITER_GIVE_UP_S of unbroken failure it stops taking
+        drains. Past WRITER_GIVE_UP_S of unbroken failure it stops writing
         audio (`_give_up`), and each pass after that tries to bring the
         channel back instead (`_recover`), until one lands."""
         failing_since: float | None = None
