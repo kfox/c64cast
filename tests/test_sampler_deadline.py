@@ -571,6 +571,37 @@ class ForeignLossTest(unittest.TestCase):
         self.assertEqual(chan.state, "finished")
         return smp, chan
 
+    def test_the_last_activations_writer_losses_are_not_the_next_ones(self):
+        # Each activation's writer is a new thread, whose loss count starts
+        # again from zero: a mark kept from the last writer's thread reads as
+        # a loss to the next one, and held its first refresh into a restart.
+        clock = _Clock()
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        smp._q = cast(Any, _Queue())
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            chan.delivery_epoch = 3
+            smp.start(prebuffer_timeout=0.0)
+            smp.end_input()
+            smp._writer_step(smp._writer_gen)
+            smp.stop()
+            chan.delivery_epoch = 0
+            clock.now = 10.0
+            smp.start(prebuffer_timeout=0.0)
+            smp.end_input()
+            smp._writer_step(smp._writer_gen)
+            old = smp._deadline
+            assert old is not None
+            smp._written = old + smp._lead_target
+            clock.now += (old - smp._deadline_refresh) / 2 / smp._actual_rate + 0.01
+            smp._advance_deadline(smp._writer_gen)
+            self.assertGreater(smp._deadline or 0, old)
+            smp.stop()
+        self.assertEqual(smp._restarts, 0)
+
     def test_a_restart_counts_only_the_writers_losses(self):
         clock = _Clock()
         with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
