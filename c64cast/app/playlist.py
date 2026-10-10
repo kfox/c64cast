@@ -710,11 +710,15 @@ class Playlist:
         self.transitioning = True
 
     def _release_leaked_irq_if_owed(self) -> None:
-        # Still owed when the restore or the unmask did not land: a teardown
-        # leaks a handler by losing writes, and the link that lost them can
-        # lose these too.
+        # Still owed when the release lost any write: a teardown leaks a
+        # handler by losing writes, and the link that lost them can lose these
+        # too. With the restore landed, a lost bank 0 pin still leaves a static
+        # scene reading its matrix from bank 2. The card's release runs inside
+        # its setup's loss mark and is held to the same rule.
         if self._irq_release_owed:
-            self._irq_release_owed = not self._release_leaked_irq()
+            mark = self.api.write_loss_mark()
+            landed = self._release_leaked_irq()
+            self._irq_release_owed = not landed or self.api.writes_lost_since(mark)
 
     def _release_leaked_irq(self) -> bool:
         """What the "UP NEXT" card's setup does for a handler the last
@@ -886,10 +890,10 @@ class Playlist:
         A setup lost a write when it raised a `LinkError`, when by the end
         of a `flush()` after it the backend's `write_loss_mark()` for this
         thread had moved, or when the leaked-IRQ release run ahead of it
-        did not land its `$0314` restore and CIA #1 unmask. Only this
-        thread's writes count: another thread's failed write (the audio
-        worker's, a poll thread's) is that thread's
-        to repeat, and must not make a setup that landed run again. Most
+        lost a write or did not land its `$0314` restore and CIA #1 unmask.
+        Only this thread's writes count: another thread's failed write (the
+        audio worker's, a poll thread's) is that thread's to repeat, and
+        must not make a setup that landed run again. Most
         setup steps swallow a dead link rather than raise it (`_emit`,
         `write_confirmed`, a scene that ends itself when its SID player
         cannot start), so a raise alone would let a setup that never
@@ -934,8 +938,9 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
-            # A release still owed lost its restore ahead of the mark, and keeping
-            # this setup would leave the leaked handler hooked through the scene.
+            # A release still owed lost a write ahead of the mark, and keeping
+            # this setup could leave the leaked handler hooked, the bank on 2 or
+            # the keyboard dead through the scene.
             if (
                 error is None
                 and not self.api.writes_lost_since(mark)
@@ -957,6 +962,10 @@ class Playlist:
                         where,
                         lossy_tries,
                     )
+                    # The card's own release may be among the lost writes, and
+                    # its teardown marks nothing owed for the scene behind it.
+                    if scene is self._card:
+                        self._irq_release_owed = True
                     return True
                 if self.stop_event.wait(SETUP_RETRY_S):
                     return False
