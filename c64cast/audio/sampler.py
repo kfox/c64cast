@@ -1225,7 +1225,11 @@ class UltimateAudioSampler:
             # the next activation's first audio from the queue as late.
             if not self._running or gen != self._writer_gen or self._cut_epoch != self._flush_epoch:
                 return
-            floor = self._read_consumed_bytes() + self._flush_margin
+            consumed = self._read_consumed_bytes()
+            # A stop() since the check above already read the head as 0.
+            if not self._running:
+                return
+            floor = consumed + self._flush_margin
             while self._content_pos < floor:
                 item: tuple[int, bytes | memoryview]
                 if self._carry is not None:

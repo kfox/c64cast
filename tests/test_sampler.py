@@ -913,6 +913,41 @@ class SamplerWriterFailureTest(unittest.TestCase):
         smp._drop_passed(smp._writer_gen)
         self.assertEqual((smp._content_pos, smp._late_bytes, smp._q.qsize()), (0, 0, 1))
 
+    def test_a_stop_during_the_read_head_read_takes_nothing(self):
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        smp._failed = True
+        smp._running = True
+        self.addCleanup(setattr, smp, "_running", False)
+        smp._q.put((smp._flush_epoch, b"\x01" * 64))
+
+        def stopped_mid_read() -> int:
+            smp._running = False
+            return 0
+
+        smp._read_consumed_bytes = stopped_mid_read  # type: ignore[method-assign]
+        smp._drop_passed(smp._writer_gen)
+        self.assertEqual((smp._content_pos, smp._late_bytes, smp._q.qsize()), (0, 0, 1))
+
+    def test_a_stop_just_after_the_restart_leaves_the_give_up_standing(self):
+        # Cleared, arm() would refuse the lingering writer as a live one, and
+        # the log would say the channel is back on a stopped sampler.
+        smp = _make(_FakeBackend(), sample_rate=8000, bits=8)
+        gen = smp._writer_gen
+        smp._failed = True
+        smp._gave_up_gen = gen
+        smp._gate_off_landed_once = True
+        smp._running = True
+        self.addCleanup(setattr, smp, "_running", False)
+
+        def restart_then_stopped(_gen: int, *, cause: str) -> bool:
+            smp._running = False
+            return True
+
+        smp._restart_channel = restart_then_stopped  # type: ignore[method-assign,assignment]
+        with self.assertNoLogs("c64cast.audio.sampler"):
+            self.assertFalse(smp._recover(gen))
+        self.assertEqual((smp._failed, smp._gave_up_gen), (True, gen))
+
     def test_a_write_head_the_reader_passed_skips_ahead_of_it(self):
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, ring_base=0x200000, ring_size=4096)
