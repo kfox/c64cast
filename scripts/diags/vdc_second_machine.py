@@ -422,20 +422,24 @@ class Probe:
         return False
 
     def read_stable(self, addr: int, n: int) -> tuple[bytes | None, bool]:
-        """Read VRAM until two passes agree.
+        return read_stable(self.port, addr, n)
 
-        A single porthole read burst comes back with a corrupted byte about one
-        pass in twenty, so a lone readback cannot tell a VRAM error from a read
-        error — and this whole tool is a hunt for VRAM errors."""
-        seen: list[bytes] = []
-        for _ in range(4):
-            got = self.port.read_ram(addr, n)
-            if got is None:
-                return None, False
-            if got in seen:
-                return got, True
-            seen.append(got)
-        return seen[-1], False
+
+def read_stable(port: vdc.VdcPorthole, addr: int, n: int) -> tuple[bytes | None, bool]:
+    """Read VRAM until two passes agree.
+
+    A single porthole read burst comes back with a corrupted byte about one
+    pass in twenty, so a lone readback cannot tell a VRAM error from a read
+    error — and this whole tool is a hunt for VRAM errors."""
+    seen: list[bytes] = []
+    for _ in range(4):
+        got = port.read_ram(addr, n)
+        if got is None:
+            return None, False
+        if got in seen:
+            return got, True
+        seen.append(got)
+    return seen[-1], False
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +471,7 @@ def describe(payload: bytes, got: bytes, sentinel: int) -> str:
 
 def vram_is_16k(port: vdc.VdcPorthole) -> bool | None:
     """Is this a 16 KiB VDC? The C128 Editor ROM's own test; None when R28 or
-    $0000 cannot be read back.
+    $0000 cannot be read back, or $0000 never reads the same twice.
 
     Force 64 KiB addressing, clear $0000, write $FF at $8000, read $0000 back.
     R28 bit 4 cannot answer this by itself: it configures the addressing rather
@@ -482,12 +486,12 @@ def vram_is_16k(port: vdc.VdcPorthole) -> bool | None:
         return None
     port.write_reg(vdc.R.CHARSET_ADDR, (r28 | VRAM_TYPE_BIT) & ~REG_READ_ONES[28])
     port.write_ram(0x0000, b"\x00")
-    before = port.read_ram(0x0000, 1)
-    if not before:
+    before, stable = read_stable(port, 0x0000, 1)
+    if not before or not stable:
         return None
     port.write_ram(0x8000, b"\xff")
-    got = port.read_ram(0x0000, 1)
-    return None if not got else got != before
+    got, stable = read_stable(port, 0x0000, 1)
+    return None if not got or not stable else got != before
 
 
 def select_16k_addressing(port: vdc.VdcPorthole) -> bool:
