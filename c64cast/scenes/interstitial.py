@@ -147,8 +147,8 @@ class InterstitialScene(Scene):
         scene's setup writes over, so a masked keyboard is the cheaper loss."""
         if not vector_restored:
             # Masked rather than left as found: a bank-swap teardown that lost its
-            # own mask leaves Timer A live, and the next bitmap scene uploads its
-            # handler over $C500 before it masks CIA #1.
+            # own mask leaves Timer A live, and every jiffy IRQ would then run the
+            # leaked handler while the next scene's setup writes over it.
             log.error(
                 "interstitial: masking CIA #1 Timer A — the $0314 restore was not "
                 "confirmed, so the jiffy IRQ could vector through a leaked handler"

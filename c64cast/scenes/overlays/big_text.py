@@ -374,14 +374,15 @@ class BigTextOverlay(Overlay):
         with $0314/$0315 half-updated and an IRQ source live, or the next
         IRQ will JMP through a torn vector and crash.
         """
-        api.write_memory_file(f"{IRQ_HANDLER_ADDR:04X}", RASTER_IRQ_HANDLER)
-        api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018)
         # Mask every CIA #1 IRQ source so the kernal jiffy IRQ cannot fire while
-        # $0314 changes. Timer A keeps running — only the interrupt line is
-        # blocked — and the raster handler chains to $EA31 below.
+        # the handler is uploaded or $0314 changes: a teardown whose restore
+        # never landed leaves $0314 on $C000. Timer A keeps running — only the
+        # interrupt line is blocked — and the raster handler chains to $EA31.
         api.write_memory("DC0D", "7F")
         # VIC IRQ sources off too: nothing can fire until the enable below.
         api.write_memory("D01A", "00")
+        api.write_memory_file(f"{IRQ_HANDLER_ADDR:04X}", RASTER_IRQ_HANDLER)
+        api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018)
         # One coalesced PUT, so the two-byte vector lands as a single DMA
         # transaction with no torn-vector window.
         api.write_regs(

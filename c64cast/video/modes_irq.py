@@ -835,17 +835,20 @@ def install_bank_swap_irq(
     Nothing else replaces those stubs: a scene whose audio never starts
     keeps them, and its CIA #1 ticks reach the kernal and pump nothing.
 
-    Order matters: with both raster and CIA #1 sources masked, hook $0314,
-    program the raster compare line, ack any pending raster IRQ, then
-    enable raster + re-enable CIA #1. If we left CIA #1 enabled while
-    swinging $0314, a stray jiffy IRQ could vector through our
-    half-installed handler. Same sequence as
-    [overlays/big_text.py:_install_raster_irq]."""
+    Order matters: mask both raster and CIA #1 sources before anything is
+    uploaded, then hook $0314, program the raster compare line, ack any
+    pending raster IRQ, and enable raster + re-enable CIA #1. A teardown
+    whose $0314 restore never landed leaves the vector on $C500, so an IRQ
+    taken while the upload below is half done would run a half-written
+    handler. Same sequence as [overlays/big_text.py:_install_raster_irq]."""
+    # Mask CIA #1 first: a jiffy IRQ would vector through $0314 mid-install.
+    api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
+    # Disable VIC IRQ sources (raster + sprite collisions + light pen).
+    api.write_memory("D01A", "00")
     if audio_pump_active:
         # The stubs must be in place before CIA #1 is re-enabled at the end of
-        # this function. Uploading them before any other write means any IRQ
-        # source firing during the install sees a safe $C100 and $C180, even if
-        # a future edit reorders the writes below.
+        # this function, and before $0314 names the merged dispatcher, whose
+        # non-raster branch jumps to $C100.
         api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", PUMP_BODY_STUB)
         api.write_memory_file(f"{AUDIO_HANDLER_INSTALL_ADDR:04X}", AUDIO_HANDLER_STUB)
     api.write_memory_file(f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}", handler_bytes)
@@ -866,10 +869,6 @@ def install_bank_swap_irq(
     # bank 0, so it has to say bank 0 before the first commit. The host-DMA
     # handlers flip from their tracker and never read it.
     api.write_memory_file(f"{BANK_SWAP_STATE_ADDR:04X}", BANK_SWAP_STATE_INIT)
-    # Mask CIA #1 first: a jiffy IRQ would vector through $0314 mid-install.
-    api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
-    # Disable VIC IRQ sources (raster + sprite collisions + light pen).
-    api.write_memory("D01A", "00")
     # write_regs packs both vector bytes into one DMA, so $0314/$0315 is never
     # half-updated on the wire.
     api.write_regs(
