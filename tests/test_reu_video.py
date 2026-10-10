@@ -1635,7 +1635,7 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 self.assertIn(("dd00", CIA2.PORT_A_BANK_2, 0), log)
 
     def test_every_line_of_the_window_commits(self):
-        # [251, 255] and [0, 45] (mhires: 40), and the lines the 8-bit $D012
+        # [251, 255] and [0, 43] (mhires: 38), and the lines the 8-bit $D012
         # aliases there.
         for name, handler, mhires, _ in self.CASES[:2]:
             last = (

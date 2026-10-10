@@ -11,6 +11,7 @@ import unittest
 from functools import partial
 
 from c64cast.audio.audio_handlers import (
+    CHUNK_SIZE,
     NMI_ROUTINE,
     NMI_ROUTINE_ADDR,
     READ_PTR_HI_ADDR,
@@ -25,12 +26,13 @@ from c64cast.hw.c64 import (
     D018_HIRES_PAGE_A,
     D018_HIRES_PAGE_B,
     KERNAL,
+    NMI_CEILING_LATCH,
     NMI_SAFE_MIN_PERIOD_CYCLES,
     RASTER_COMMIT_LAST_SAFE_LINE,
     RASTER_VBLANK_LINE,
     REU,
     SCREEN,
-    halt_quantum_bytes,
+    cpu_clock,
 )
 from c64cast.video import modes_irq
 from c64cast.video.modes_irq import (
@@ -178,21 +180,49 @@ def nmi_cycles(read_ptr: int) -> int:
     raise AssertionError("NMI routine never returned")
 
 
+def largest_ring_write() -> int:
+    """The longest audio-ring write the DAC streamer sends, in bytes, at the
+    fastest rate it arms, on either backend and either system.
+
+    The streamer cuts its writes to fit an NMI period, then raises them to
+    what the link's write rate can carry, which at that rate is the larger
+    figure. Its own sizing code is run here on a stand-in for the streamer."""
+    from types import SimpleNamespace
+
+    from c64cast.audio.audio import AudioStreamer
+    from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
+
+    sizes = []
+    for profile in (ULTIMATE_PROFILE, TEENSYROM_PROFILE):
+        for system in ("PAL", "NTSC"):
+            streamer = SimpleNamespace(
+                nmi=SimpleNamespace(latch=NMI_CEILING_LATCH),
+                api=SimpleNamespace(profile=profile),
+                chunk_size=CHUNK_SIZE,
+                effective_rate=cpu_clock(system) / (NMI_CEILING_LATCH + 1),
+            )
+            sizes.append(AudioStreamer._halt_quantum(streamer))  # type: ignore[arg-type]
+    return max(sizes)
+
+
 def worst_case_cycles(own: int) -> int:
     """`own` cycles of handler work and REU halt, stretched by everything that
     can take the bus while it runs.
 
     Audio NMIs at the fastest rate the streamer arms, each on the routine's
     short path but one on its longest (the ring wrap, once per 8 KB), and one
-    host DMA halt as long as any the host sends while the streamer runs (its
-    ring writes are cut to fit an NMI period; the frame tracker is shorter).
-    Host writes are milliseconds apart on either link, far longer than this
-    window, so one is all that can land in it. Sprites are left out: no
+    host DMA halt as long as the longest the host sends while a REU-staged
+    scene plays: an audio-ring write, since frames go to the REU without a
+    halt and the frame tracker is shorter. Host writes are milliseconds apart
+    on either link, far longer than this window, so one is all that can land
+    in it. The host-DMA page flips' own frame writes are left out: they are
+    up to 8000 bytes, and one that starts between the gate and the flip is
+    the residual that only REU staging removes. Sprites are left out too: no
     bitmap scene enables them."""
     period = NMI_SAFE_MIN_PERIOD_CYCLES
     fast = nmi_cycles(RING_BUFFER_ADDR + 0x10)
     slow = max(nmi_cycles(RING_BUFFER_ADDR + 0xFF), nmi_cycles(RING_BUFFER_END - 1))
-    halt = max(halt_quantum_bytes(period), MHIRES_FRAME_TRACKER_LEN)
+    halt = max(largest_ring_write(), MHIRES_FRAME_TRACKER_LEN)
     total = own + halt
     while True:
         nmis = total // period + 1
@@ -263,8 +293,9 @@ class CommitBudgetTest(unittest.TestCase):
                 )
 
     def test_the_full_window_was_too_long_for_mhires(self):
-        """Pins the measurement behind MHIRES_COMMIT_LAST_SAFE_LINE: line 45,
-        which the other handlers keep, cannot carry the color copy."""
+        """Pins the measurement behind MHIRES_COMMIT_LAST_SAFE_LINE: the
+        shared window's end, which the flip-only handlers keep, cannot carry
+        the color copy."""
         events = run_commit(
             MHIRES_BANK_SWAP_IRQ_HANDLER, prime=partial(prime_reu, mhires=True), line=0
         )

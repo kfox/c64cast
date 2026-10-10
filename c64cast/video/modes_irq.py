@@ -256,18 +256,18 @@ PUMP_BODY_STUB = bytes([0x60])  # RTS
 # frame holds the previous one a field longer; it never shows two at once.
 #
 # Committing is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
-# i.e. $D012 in [251, 255] u [0, 45]. Adding 5 rotates that split range into a
-# contiguous 0..50, which is why the check costs one compare and one branch
+# i.e. $D012 in [251, 255] u [0, 43]. Adding 5 rotates that split range into a
+# contiguous 0..48, which is why the check costs one compare and one branch
 # instead of two of each.
 _RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $05
-_RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $33
+_RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $31
 assert _RASTER_GATE_LIMIT <= 0xFF
 
 # $D012 is 8 bits and cannot tell line n from line n+256, but every line that
-# aliases lands in the safe set on both systems: NTSC 256-261 and PAL 256-301
-# read back as 0-45, and all of them really are in vblank. PAL 302-311 alias
-# onto 46-55 and are conservatively rejected, which only forgoes a commit
-# opportunity. No genuinely unsafe line (46-250) can alias into the window,
+# aliases into the window is below the picture on both systems: NTSC 256-262
+# and PAL 256-299 read back as 0-43. PAL 300-311 alias onto 44-55 and are
+# conservatively rejected, which only forgoes a commit opportunity. No
+# genuinely unsafe line (44-250) can alias into the window,
 # since none of them exceed 255. One formulation is correct for PAL and NTSC.
 
 
@@ -528,10 +528,10 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
 # the previous frame's colors in the top row. From the raster read to the end
 # of that chunk the handler spends about 165 cycles of its own; audio NMIs at
 # the fastest rate the streamer arms take over half the CPU on top of that,
-# and one host DMA halt can land in it. That comes to about 9 PAL lines, so
-# the full window's line 45 finished the chunk around line 54. The worst case
-# is computed from these bytes in tests/test_commit_window.py.
-MHIRES_COMMIT_LAST_SAFE_LINE = 40
+# and one audio-ring write's DMA halt can land in it. That comes to about 12
+# PAL lines, so a commit read on line 45 finished the chunk around line 57. The
+# worst case is computed from these bytes in tests/test_commit_window.py.
+MHIRES_COMMIT_LAST_SAFE_LINE = 38
 
 
 def _mhires_dispatcher(*, pump: bool) -> bytes:
@@ -610,9 +610,9 @@ HOSTDMA_SWAP_IRQ_HANDLER = bytes(
         0xD0,  # 15 LDA $D012         ; where is the raster NOW?
         0x18,  # 18 CLC
         0x69,
-        _RASTER_GATE_BIAS,  # 19 ADC #$05         ; 251..255 → 0..4, 0..45 → 5..50
+        _RASTER_GATE_BIAS,  # 19 ADC #$05         ; 251..255 → 0..4, 0..43 → 5..48
         0xC9,
-        _RASTER_GATE_LIMIT,  # 21 CMP #$33
+        _RASTER_GATE_LIMIT,  # 21 CMP #$31
         0xB0,
         0x11,  # 23 BCS +17 → 42      ; past the window → leave staged, chain
         0xAD,
@@ -724,9 +724,9 @@ FLICKER_SWAP_IRQ_HANDLER = bytes(
         0xD0,  # 33 LDA $D012         ; where is the raster NOW?
         0x18,  # 36 CLC
         0x69,
-        _RASTER_GATE_BIAS,  # 37 ADC #$05         ; 251..255 → 0..4, 0..45 → 5..50
+        _RASTER_GATE_BIAS,  # 37 ADC #$05         ; 251..255 → 0..4, 0..43 → 5..48
         0xC9,
-        _RASTER_GATE_LIMIT,  # 39 CMP #$33
+        _RASTER_GATE_LIMIT,  # 39 CMP #$31
         0xB0,
         0x11,  # 41 BCS +17 → 60      ; past the window → leave staged, chain
         0xAD,
