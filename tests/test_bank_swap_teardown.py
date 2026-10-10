@@ -204,7 +204,34 @@ class MaskRetryBehindTheRestoreTest(unittest.TestCase):
             _teardown(api)
         self.assertEqual(api.order.count(_CIA1_ICR), modes_irq.CONFIRM_TRIES + 2, "never unmasked")
         self.assertEqual(api.memories[_CIA1_ICR], f"{modes_irq._CIA1_ICR_DISABLE_TIMER_A:02X}")
+
+    def test_a_hooked_handler_masked_on_retry_drains_before_the_bank_is_released(self):
+        # The handler could start a copy until the retry landed, and with
+        # every source masked after it nothing reaches $C500 again.
+        for address in (_CIA1_ICR, "D01A"):
+            with self.subTest(address=address):
+                api = _LossyAPI(
+                    {address: modes_irq.CONFIRM_TRIES + 1, _VECTOR: modes_irq.CONFIRM_TRIES}
+                )
+                with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
+                    _teardown(api)
+                drains = [i for i, op in enumerate(api.order) if op == _DRAIN]
+                self.assertEqual(len(drains), 2)
+                last_mask = max(i for i, op in enumerate(api.order) if op == address)
+                self.assertLess(last_mask, drains[1], "drained behind the retry")
+                self.assertLess(drains[1], api.order.index(_DD00), "bank held until drained")
+
+    def test_a_hooked_handler_still_reachable_gets_no_second_drain(self):
+        api = _LossyAPI({_CIA1_ICR: 2 * modes_irq.CONFIRM_TRIES, _VECTOR: modes_irq.CONFIRM_TRIES})
+        with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
+            _teardown(api)
         self.assertEqual(api.order.count(_DRAIN), 1, "no wait helps a handler left reachable")
+
+    def test_a_page_flip_masked_on_retry_does_not_drain_again(self):
+        api = _LossyAPI({"D01A": modes_irq.CONFIRM_TRIES + 1, _VECTOR: modes_irq.CONFIRM_TRIES})
+        with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
+            _teardown(api, drain_reu_copy=False)
+        self.assertNotIn(_DRAIN, api.order)
 
 
 def _hooking_modes() -> list[HiresDisplayMode | MultiHiresDisplayMode]:
