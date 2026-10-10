@@ -536,6 +536,57 @@ class ForeignLossTest(unittest.TestCase):
         self.assertGreater(chan.foreign_losses, 20)
         self.assertEqual((smp._restarts, chan.gates, chan.state, chan.stale), (0, 1, "playing", 0))
 
+    def _finished(self, clock: _Clock) -> tuple[s.UltimateAudioSampler, _Channel]:
+        """A started sampler whose channel ran into its first deadline, on
+        ``clock`` (the one patched in as the sampler's ``time``)."""
+        smp = s.UltimateAudioSampler(
+            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
+        )
+        chan = _Channel(clock, ring=smp.ring_size, byte_rate=smp._actual_rate * 2, bps=2)
+        smp.api = cast(Any, chan)
+        smp._q = cast(Any, _Queue())
+        smp.start(prebuffer_timeout=0.0)
+        clock.now = 5.0
+        chan.advance()
+        self.assertEqual(chan.state, "finished")
+        return smp, chan
+
+    def test_a_restart_counts_only_the_writers_losses(self):
+        clock = _Clock()
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp, chan = self._finished(clock)
+            chan.foreign = lambda: True
+            with self.assertLogs("c64cast.audio.sampler", logging.WARNING):
+                self.assertTrue(smp._writer_step(smp._writer_gen))
+            chan.foreign = None
+            self.assertGreater(chan.foreign_losses, 0)
+            self.assertEqual((smp._restarts, chan.state), (1, "playing"))
+            smp.stop()
+
+    def test_a_restart_the_link_lost_raises(self):
+        clock = _Clock()
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp, chan = self._finished(clock)
+            chan.lose = lambda: True
+            with self.assertRaises(ConnectionError):
+                smp._writer_step(smp._writer_gen)
+            chan.lose = None
+            self.assertEqual((smp._restarts, chan.state), (0, "finished"))
+            smp.stop()
+
+    def test_a_gate_off_counts_only_the_writers_losses(self):
+        clock = _Clock()
+        with mock.patch.object(s, "time", clock), mock.patch.object(s, "PollThread", _Writer):
+            smp, chan = self._finished(clock)
+            chan.foreign = lambda: True
+            self.assertTrue(smp._gate_off_landed(smp._writer_gen))
+            chan.foreign = None
+            self.assertEqual(chan.state, "idle")
+            chan.lose = lambda: True
+            self.assertFalse(smp._gate_off_landed(smp._writer_gen))
+            chan.lose = None
+            smp.stop()
+
 
 class NextDeadlineTest(unittest.TestCase):
     def _sampler(self, rate: int) -> s.UltimateAudioSampler:
