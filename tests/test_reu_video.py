@@ -208,7 +208,7 @@ class ReuPumpSkipsIrqHookTest(unittest.TestCase):
         )
 
     def test_unstaged_bitmap_mode_with_pump_keeps_the_hook(self):
-        # No merged dispatcher without REU staging (an overlay under "auto",
+        # No merged dispatcher without REU staging (no REU confirmed under "auto",
         # --skip-probe, or an explicit false), so the pump must hook $0314.
         for mode in (
             HiresDisplayMode(audio_reu_pump_active=True),

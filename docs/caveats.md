@@ -77,7 +77,7 @@ clock that the shipping firmware actually runs at ≈6.16 MHz, which is that
 setting's default. The rate lands a constant <0.5 % from the nominal request
 (inaudible, and drift-free as long as `sampler_clock_hz` matches the real
 clock, because A/V both ride it). The ring lives in REU SDRAM, so a sampler run also
-provisions the REU (16 MB) — which makes overlay-free bitmap video resolve to
+provisions the REU (16 MB) — which makes bitmap video resolve to
 the tear-free REU bank-swap path; the sampler installs no `$0314` IRQ, so the
 two coexist with no contention.
 

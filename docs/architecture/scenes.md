@@ -365,8 +365,6 @@ The bitmap-native sibling of `spectrum_petscii`, whitelisted to `mhires` via `CO
 
 **The sub-cell top is the one compromise.** c3 is per-*cell*, so the single 4×8 cell at a bar's tip hands its whole c3 slot to the bar even though the bar only covers part of it: any frame pixel in the exposed part of that one cell that was using c3 is recolored to the band color. Frame pixels on the other three slots are unaffected, as is every cell the bar doesn't reach. Snapping tops to the 8px boundary would remove even that artifact and simultaneously throw away the vertical resolution the overlay exists for, so it isn't the default. On hardware (plasma under bars, 4× zoom on the tips) the edges read as clean flat lines — the artifact is not visible in practice.
 
-Because the overlay is `PAINTS_INTO_BUFFERS`, `config`'s `use_reu_staged = "auto"` already steers an mhires scene carrying it onto the host-DMA delta path rather than the REU bank-swap (see `overlays.paints_into_buffers`) — the same treatment folded text gets, confirmed on hardware (`mhires: host-DMA double-buffer armed`).
-
 ### The shared spectrum band source (`overlays/_spectrum.py`)
 
 Both spectrum overlays ask the same question every frame — *how much energy is in each of N log-spaced bands right now?* — and differ only in how they draw the answer. `_SpectrumBands.bands_now(scene)` answers it once, for both.

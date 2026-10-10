@@ -2,17 +2,15 @@
 """A/B the host-DMA double-buffer against single-buffer for scene-cut tearing
 on a REU backend (U64) with a bitmap + text-overlay scene.
 
-The tweak under test: resolve_double_buffer's "auto" now enables the host-DMA
-page-flip for a bitmap scene WITH a text overlay even on a REU backend (where
-resolve_use_reu_staged turns the REU bank-swap off to dodge the swap shimmer,
-otherwise leaving single-buffer host-DMA that tears on cuts). This harness
-demonstrates the difference visually + quantitatively.
+Both phases pin `use_reu_staged = false`, because `"auto"` would put a bitmap
+scene on the REU bank-swap on this backend. This harness demonstrates the
+difference visually + quantitatively.
 
 Method: build an abrupt-cut test video (two full-screen images, swapped colors
 top/bottom, alternating every few frames so a partial single-buffer update is a
 detectable raster split). Play it as an mhires `video` scene + a marquee overlay
 on the U64, once with double_buffer=false (single-buffer) and once with
-double_buffer="auto" (→ on, because the marquee is a buffer overlay). Burst-grab
+double_buffer=true. Burst-grab
 consecutive Cam Link frames through each run, then:
 
   * classify each frame's top-third and bottom-third against the clean A/B
@@ -76,14 +74,15 @@ def build_test_video(path: Path, *, fps: int = 30, seconds: int = 12, hold: int 
     vw.release()
 
 
-def write_config(cfg_path: Path, video_path: Path, double_buffer: bool | str) -> None:
-    db = "true" if double_buffer is True else ("false" if double_buffer is False else '"auto"')
+def write_config(cfg_path: Path, video_path: Path, double_buffer: bool) -> None:
+    db = "true" if double_buffer else "false"
     cfg_path.write_text(
         f"""
 [audio]
 enabled = false
 
 [video]
+use_reu_staged = false
 double_buffer = {db}
 
 [playlist]
@@ -273,7 +272,7 @@ def main() -> int:
     cfg_single = out / "single.toml"
     cfg_double = out / "double.toml"
     write_config(cfg_single, video, double_buffer=False)
-    write_config(cfg_double, video, double_buffer="auto")
+    write_config(cfg_double, video, double_buffer=True)
 
     try:
         single = run_phase(

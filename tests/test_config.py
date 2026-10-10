@@ -430,46 +430,11 @@ class DoubleBufferTest(unittest.TestCase):
 
     def test_auto_off_on_reu_backend_and_when_staged(self):
         r = scene_factory.resolve_double_buffer
-        # U64 (has REU), overlay-free bitmap: auto leaves it off — the REU path
+        # U64 (has REU), bitmap: auto leaves it off — the REU path
         # is the better tear-free option there.
         self.assertFalse(r("auto", "mhires", use_reu_staged=False, backend_supports_reu=True))
         # Mutually exclusive with REU staging (both flip $DD00).
         self.assertFalse(r("auto", "mhires", use_reu_staged=True, backend_supports_reu=False))
-
-    def test_auto_enables_for_text_overlay_on_reu_backend(self):
-        r = scene_factory.resolve_double_buffer
-        # U64 + a buffer-painting text overlay: resolve_use_reu_staged turns the REU
-        # path off (shimmer), leaving single-buffer host-DMA that tears on cuts, so
-        # auto picks the host-DMA double-buffer.
-        self.assertTrue(
-            r(
-                "auto",
-                "mhires",
-                use_reu_staged=False,
-                backend_supports_reu=True,
-                has_buffer_overlays=True,
-            )
-        )
-        self.assertTrue(
-            r(
-                "auto",
-                "hires",
-                use_reu_staged=False,
-                backend_supports_reu=True,
-                has_buffer_overlays=True,
-            )
-        )
-        # Still scoped to bitmap modes — a text overlay on a char mode is the
-        # single-buffer-cheap path, no second bank to flip.
-        self.assertFalse(
-            r(
-                "auto",
-                "petscii",
-                use_reu_staged=False,
-                backend_supports_reu=True,
-                has_buffer_overlays=True,
-            )
-        )
 
     def test_reu_mic_pump_gates_double_buffer_off(self):
         r = scene_factory.resolve_double_buffer
@@ -480,8 +445,7 @@ class DoubleBufferTest(unittest.TestCase):
                 "auto",
                 "mhires",
                 use_reu_staged=False,
-                backend_supports_reu=True,
-                has_buffer_overlays=True,
+                backend_supports_reu=False,
                 audio_reu_pump_active=True,
             )
         )

@@ -172,23 +172,18 @@ def resolve_use_reu_staged(
     display: str,
     *,
     reu_available: bool,
-    has_buffer_overlays: bool = False,
     audio_reu_pump_active: bool = False,
 ) -> bool:
     """Resolve the [video].use_reu_staged tri-state to a concrete bool for one
     scene's display mode.
 
     "auto" → True only for a bitmap display mode (see _REU_BITMAP_MODES) AND
-    only when the hardware probe confirmed the REU is usable (reu_available) AND
-    the scene has no buffer-painting (text) overlay. Such overlays fold fine
-    high-contrast glyphs into the bitmap, which the host-DMA page flip is
-    hardware-verified to render crisply; the REU dispatcher once flipped past
-    vblank and made them shimmer, and moving them back is #666. So a bitmap
-    scene WITH text overlays resolves to host-DMA under auto — overlay-free
-    bitmap video still gets the tear-free REU pipeline.
+    only when the hardware probe confirmed the REU is usable (reu_available).
+    A buffer-painting (text) overlay does not change the answer: the REU
+    dispatchers flip $DD00 inside the same raster window as the host-DMA swap,
+    and fine glyphs in the bottom rows render crisply on both.
 
-    Explicit true/false pass straight through (true forces REU even with text
-    overlays). The
+    Explicit true/false pass straight through. The
     loader guarantees the only legal string is "auto"; any other string is
     treated as auto (False here) rather than silently truthy-True.
 
@@ -202,8 +197,6 @@ def resolve_use_reu_staged(
             _warn_host_rec_staging_dropped(display)
         return False
     if isinstance(setting, str):
-        if has_buffer_overlays:
-            return False
         return reu_available and display in _REU_BITMAP_MODES
     return bool(setting)
 
@@ -214,7 +207,6 @@ def resolve_double_buffer(
     *,
     use_reu_staged: bool,
     backend_supports_reu: bool = False,
-    has_buffer_overlays: bool = False,
     audio_reu_pump_active: bool = False,
 ) -> bool:
     """Resolve the [video].double_buffer tri-state to a concrete bool for one
@@ -226,15 +218,9 @@ def resolve_double_buffer(
     wins.
 
     "auto" enables it where REU offers no tear-free alternative for the scene:
-      * a backend with NO REU at all (the TeensyROM) — single-buffered host-DMA
-        visibly tears there; or
-      * a bitmap scene with a buffer-painting text overlay (has_buffer_overlays)
-        on a REU backend — resolve_use_reu_staged turns the REU path OFF for
-        these (#666), which otherwise leaves them on single-buffer host-DMA
-        that tears on scene cuts. The host-DMA double-buffer gives them
-        tear-free frames AND crisp text (its swap IRQ does no in-IRQ DMA).
-    Overlay-free bitmap video on a REU backend stays untouched (the REU path is
-    the better tear-free option there). Explicit true/false pass through (still
+    a backend with NO REU at all (the TeensyROM), where single-buffered
+    host-DMA visibly tears. Bitmap video on a REU backend stays untouched (the
+    REU path is the better tear-free option there). Explicit true/false pass through (still
     scoped to bitmap modes — true on a char mode is a no-op).
 
     Gated off when the scene runs the REU mic pump (audio_reu_pump_active): the
@@ -249,7 +235,7 @@ def resolve_double_buffer(
     if audio_reu_pump_active:
         return False
     if isinstance(setting, str):  # "auto"
-        return (not backend_supports_reu) or has_buffer_overlays
+        return not backend_supports_reu
     return bool(setting)
 
 
@@ -746,7 +732,6 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
             wiring.use_reu_staged,
             display,
             reu_available=wiring.reu_available,
-            has_buffer_overlays=wiring.has_buffer_overlays,
             audio_reu_pump_active=wiring.audio_reu_pump_active,
         )
     )
@@ -760,7 +745,6 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
             display,
             use_reu_staged=use_reu_staged,
             backend_supports_reu=wiring.backend_supports_reu,
-            has_buffer_overlays=wiring.has_buffer_overlays,
             audio_reu_pump_active=wiring.audio_reu_pump_active,
         )
     )

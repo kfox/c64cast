@@ -176,10 +176,9 @@ def overlay_types() -> dict[str, type[Overlay]]:
 
 def paints_into_buffers(type_name: str) -> bool:
     """Whether the registered overlay folds into the scene's compose buffers
-    (the text overlays: clock/marquee/logo/…). Used by config to steer the
-    use_reu_staged "auto" default away from the REU bank-swap on bitmap scenes
-    that carry such overlays, onto the host-DMA path that is verified to render
-    fine high-contrast glyphs crisply (see #666).
+    (the text overlays: clock/marquee/logo/…). Used by config to keep
+    [color].flicker_tolerance off on scenes that carry such overlays (see
+    scene_factory.resolve_flicker_tolerance).
     Unknown types → False."""
     _load_all()
     cls = _REGISTRY.get(type_name)
