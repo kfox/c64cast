@@ -5,19 +5,26 @@ copy, then restores `$0314`. A backend reports a lost write by moving
 `delivery_epoch` rather than by raising, so an unchecked mask that never landed
 passes as landed, and an IRQ can then enter the `$C500` dispatcher after the
 drain and start a copy that the bank flip and the next scene's setup run under.
+
+A bitmap mode's teardown unhooks only a handler its own setup hooked, so
+tearing down a scene that was built but never set up (a cancelled performance
+arm) leaves the scene on screen alone.
 """
 
 from __future__ import annotations
 
+import time
 import unittest
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 from _fakes import FakeAPI
 
+from c64cast.control.performance import ClipEvent, PerformanceSession
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import CIA1, CIA2, KERNAL, VECTORS
 from c64cast.video import modes_irq
+from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode
 from c64cast.video.modes_irq import uninstall_bank_swap_irq
 
 _CIA1_ICR = f"{CIA1.ICR:04X}"
@@ -198,6 +205,107 @@ class MaskRetryBehindTheRestoreTest(unittest.TestCase):
         self.assertEqual(api.order.count(_CIA1_ICR), modes_irq.CONFIRM_TRIES + 2, "never unmasked")
         self.assertEqual(api.memories[_CIA1_ICR], f"{modes_irq._CIA1_ICR_DISABLE_TIMER_A:02X}")
         self.assertEqual(api.order.count(_DRAIN), 1, "no wait helps a handler left reachable")
+
+
+def _hooking_modes() -> list[HiresDisplayMode | MultiHiresDisplayMode]:
+    return [
+        mode
+        for cls in (HiresDisplayMode, MultiHiresDisplayMode)
+        for mode in (
+            cls(use_reu_staged=True),
+            cls(double_buffer=True),
+            cls(flicker_tolerance="clean"),
+        )
+    ]
+
+
+def _writes(api: FakeAPI) -> tuple[Any, ...]:
+    return (dict(api.regs), dict(api.memories), dict(api.mem_files), api.cache_invalidations)
+
+
+class NeverSetUpModeTest(unittest.TestCase):
+    def test_teardown_without_setup_leaves_the_machine_alone(self):
+        for mode in _hooking_modes():
+            with self.subTest(mode=type(mode).__name__, reu=mode.use_reu_staged):
+                api = FakeAPI()
+                mode.teardown(cast(Ultimate64API, api))
+                self.assertEqual(_writes(api), _writes(FakeAPI()))
+
+    def test_teardown_after_setup_unhooks_once(self):
+        kernal = (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        for mode in _hooking_modes():
+            with self.subTest(mode=type(mode).__name__, reu=mode.use_reu_staged):
+                api = FakeAPI()
+                with mock.patch.object(modes_irq, "time"), self.assertNoLogs(level="WARNING"):
+                    mode.setup(cast(Ultimate64API, api))
+                    mode.teardown(cast(Ultimate64API, api))
+                self.assertEqual(api.regs[_VECTOR], kernal)
+                before = _writes(api)
+                mode.teardown(cast(Ultimate64API, api))
+                self.assertEqual(_writes(api), before, "a second teardown unhooks nothing")
+
+
+class _Scene:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.is_done = False
+        self.effects: list[Any] = []
+        self.teardowns = 0
+
+    def teardown(self) -> None:
+        self.teardowns += 1
+
+
+class _Playlist:
+    """The surface PerformanceSession touches, with a beat grid that never
+    reaches the arm's bar boundary."""
+
+    def __init__(self) -> None:
+        self.tempo = mock.Mock(beat_phase=0.0, bar_phase=0.0, running=True)
+        self.current = _Scene("on screen")
+        self.scenes = [self.current]
+        self.built: list[_Scene] = []
+        self.build_performance_scene = self._build
+
+    def _build(self, clip: dict[str, Any]) -> _Scene:
+        scene = _Scene(f"clip{clip['slot']}")
+        self.built.append(scene)
+        return scene
+
+    def perf_swap_scene(self, new_scene: _Scene) -> bool:
+        raise AssertionError("the bar boundary never arrives")
+
+
+class CancelledArmTest(unittest.TestCase):
+    def _wait_built(self, session: PerformanceSession, pl: Any, count: int) -> None:
+        deadline = time.monotonic() + 5
+        while len(pl.built) < count and time.monotonic() < deadline:
+            session.service(pl)
+            time.sleep(0.005)
+        self.assertEqual(len(pl.built), count)
+
+    def test_a_superseded_arm_is_dropped_without_a_teardown(self):
+        pl: Any = _Playlist()
+        session = PerformanceSession(
+            [{"slot": 1, "type": "generative"}, {"slot": 2, "type": "generative"}]
+        )
+        session.enqueue(ClipEvent(slot=1, pressed=True))
+        self._wait_built(session, pl, 1)
+        session.enqueue(ClipEvent(slot=2, pressed=True))
+        self._wait_built(session, pl, 2)
+        self.assertEqual(session.armed_slot, 2)
+        self.assertEqual(pl.built[0].teardowns, 0)
+        self.assertEqual(pl.current.teardowns, 0)
+
+    def test_a_released_gate_arm_is_dropped_without_a_teardown(self):
+        pl: Any = _Playlist()
+        session = PerformanceSession([{"slot": 1, "type": "generative", "launch": "gate"}])
+        session.enqueue(ClipEvent(slot=1, pressed=True))
+        self._wait_built(session, pl, 1)
+        session.enqueue(ClipEvent(slot=1, pressed=False))
+        session.service(pl)
+        self.assertIsNone(session.armed_slot)
+        self.assertEqual(pl.built[0].teardowns, 0)
 
 
 if __name__ == "__main__":
