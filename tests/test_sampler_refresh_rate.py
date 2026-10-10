@@ -162,7 +162,9 @@ class DeferredConfirmationTest(unittest.TestCase):
                 with self.assertLogs("c64cast.audio.sampler", logging.WARNING) as logs:
                     chan = _looped_run(ahead_s=0.6, nth=nth, stall=0.085)
                 self.assertGreaterEqual(chan.seen, nth)
-                self.assertIn("reached its deadline", "\n".join(logs.output))
+                output = "\n".join(logs.output)
+                self.assertIn("reached its deadline", output)
+                self.assertIn("deadline write; restarting the channel", output)
                 self.assertIsNone(chan.finished_at)
 
     def test_the_deadline_never_moves_past_unconfirmed_ring_audio(self):

@@ -1347,9 +1347,10 @@ class UltimateAudioSampler:
         if not self._deadline_reached():
             try:
                 self._advance_deadline(gen)
-            except _WritesLost:
+            except _WritesLost as e:
                 if not self._deadline_reached():
                     raise
+                log.warning("sampler: %s; restarting the channel", _failure_text(e))
             else:
                 return wrote
         return self._restart_channel(gen) or wrote
