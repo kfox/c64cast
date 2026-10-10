@@ -1108,7 +1108,7 @@ class UltimateAudioSampler:
 
         The gate-off goes over the link that just failed, and `write_memory`
         does not raise when a write is lost, so it is confirmed against
-        `delivery_epoch` and sent again every WRITER_BACKOFF_MAX_S until it
+        `writes_lost_since` and sent again every WRITER_BACKOFF_MAX_S until it
         lands or the writer is stopped or superseded. Sent once, it was lost
         to the outage it answered, and the ring went on looping stale audio
         after the link came back, under a scene that survives the outage."""
@@ -1138,49 +1138,38 @@ class UltimateAudioSampler:
 
     def _gate_off_landed(self, gen: int) -> bool | None:
         """One gate-off, and whether the link vouches it arrived: nothing it
-        carried was counted lost (``delivery_epoch`` unmoved). A loss of some
-        other thread's write in the same window reads as this one's, which
-        costs a repeat of an idempotent write. None, with nothing sent, once
-        the writer is stopped or superseded.
+        carried was counted lost (`writes_lost_since`, this thread's writes
+        only). None, with nothing sent, once the writer is stopped or
+        superseded.
 
-        The write is not flushed once ``delivery_epoch`` has moved: nothing
+        The write is not flushed once a loss is counted: nothing
         is left to confirm, and `flush` logs a warning per failure, which at
         one retry every WRITER_BACKOFF_MAX_S floods the log for as long as
         the outage lasts."""
         with self._gate_lock:
             if not (self._running and gen == self._writer_gen):
                 return None
-            epoch = self.api.delivery_epoch
+            mark = self.api.write_loss_mark()
             try:
                 self.api.write_memory(f"{channel_base(self.channel):04X}", "00")
-                if self.api.delivery_epoch != epoch:
+                if self.api.writes_lost_since(mark):
                     return False
                 self.api.flush()
             except Exception as e:  # the link is what failed
                 log.debug("sampler: gate-off raised: %s", e)
                 return False
-            return self.api.delivery_epoch == epoch
+            return not self.api.writes_lost_since(mark)
 
     def _writer_step(self, gen: int) -> bool:
         """One writer pass: restart a channel that ran into its deadline,
         else a ring pass (`_ring_step`) and then the deadline moved up behind
         what it wrote. Returns whether it wrote. Raises when the link lost a
-        write, like the ring writes themselves, except a refresh lost in a
-        pass whose ring write went out: that one is retried on the next pass."""
+        write, like the ring writes themselves."""
         deadline = self._deadline
         if deadline is not None and self._read_consumed_bytes() + self._deadline_guard >= deadline:
             return self._restart_channel(gen)
         wrote = self._ring_step(gen)
-        try:
-            self._advance_deadline(gen)
-        except ConnectionError as e:
-            if not wrote:
-                raise
-            # The ring write landed, and a lost write on another thread reads
-            # as this refresh's loss, so failing the pass would count toward a
-            # give-up on a link that carries the ring. The old deadline stands:
-            # the next pass retries, and reaching it restarts the channel.
-            log.debug("sampler: %s; retrying next pass", e)
+        self._advance_deadline(gen)
         return wrote
 
     def _ring_off(self, pos: int) -> int:
@@ -1215,7 +1204,9 @@ class UltimateAudioSampler:
     def _advance_deadline(self, gen: int) -> None:
         """Move the deadline up to what the ring holds, once the read head is
         within `_deadline_refresh` of it. Confirmed against
-        `delivery_epoch`: a lost refresh raises, and the writer backs off and
+        `writes_lost_since`, so only this thread's losses count (another
+        thread's, counted here, would add up to a give-up on a link that
+        carries the ring): a lost refresh raises, and the writer backs off and
         tries again. A refresh that may have landed after the channel reached
         the old deadline leaves the old one standing, so the next pass
         restarts the channel: one that stopped silently would stay silent."""
@@ -1232,11 +1223,11 @@ class UltimateAudioSampler:
         with self._gate_lock:
             if not (self._running and gen == self._writer_gen):
                 return
-            epoch = self.api.delivery_epoch
+            mark = self.api.write_loss_mark()
             self._write_length(self._deadline_offset(new))
-            if self.api.delivery_epoch == epoch:
+            if not self.api.writes_lost_since(mark):
                 self.api.flush()
-            if self.api.delivery_epoch != epoch:
+            if self.api.writes_lost_since(mark):
                 raise ConnectionError("sampler: the link lost a deadline write")
             if self._read_consumed_bytes() + self._deadline_guard >= old:
                 return
@@ -1302,7 +1293,7 @@ class UltimateAudioSampler:
             if not (self._running and gen == self._writer_gen):
                 return False
             with self._io_lock:
-                epoch = self.api.delivery_epoch
+                mark = self.api.write_loss_mark()
                 fresh = self._lead_target
                 self._write_wrapped(0, self._neutral_unit * (fresh // self.bps))
                 # `finished` is left only through a gate-off; the next gate-on
@@ -1332,7 +1323,7 @@ class UltimateAudioSampler:
                 # among it, and the sound played that much behind the picture.
                 phase = self._read_consumed_bytes()
                 self._send_gate_on()
-                if self.api.delivery_epoch != epoch:
+                if self.api.writes_lost_since(mark):
                     raise ConnectionError("sampler: the link lost the channel restart")
                 self._ring_phase = phase
                 self._written = phase + fresh

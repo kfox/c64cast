@@ -148,6 +148,13 @@ class _FakeBackend:
         self.audible_writes = 0  # REU writes carrying anything but silence
         self.delivery_epoch = 0
 
+    def write_loss_mark(self) -> int:
+        # One writer thread: every loss counted is the caller's.
+        return self.delivery_epoch
+
+    def writes_lost_since(self, mark: int) -> bool:
+        return self.delivery_epoch != mark
+
     def reu_write(self, offset: int, data: bytes) -> None:
         self.reu_writes.append((offset, len(data)))
         self.reu_data.append((offset, bytes(data)))

@@ -81,7 +81,9 @@ class _Channel:
 
     ``down`` fails every write: a REU write raises, and a register write or a
     flush is lost and moves ``delivery_epoch``, as the Ultimate's backend
-    does. ``lose`` loses one register write when it returns True. ``ahead``
+    does. ``lose`` loses one register write when it returns True; ``foreign``
+    counts a loss on some other thread at a register write that lands, moving
+    ``delivery_epoch`` but not this thread's loss mark. ``ahead``
     is how far (s) the FPGA runs ahead of the moment its gate-on lands."""
 
     def __init__(
@@ -95,6 +97,8 @@ class _Channel:
         self.delivery_epoch = 0
         self.down = False
         self.lose: Any = None
+        self.foreign: Any = None
+        self.foreign_losses = 0
         self.ctrl = 0
         self.length = [0, 0, 0]
         self.state = "idle"
@@ -133,10 +137,19 @@ class _Channel:
         self.played = p1
 
     def _lost(self) -> bool:
+        if self.foreign is not None and self.foreign():
+            self.delivery_epoch += 1
+            self.foreign_losses += 1
         if self.down or (self.lose is not None and self.lose()):
             self.delivery_epoch += 1
             return True
         return False
+
+    def write_loss_mark(self) -> int:
+        return self.delivery_epoch - self.foreign_losses
+
+    def writes_lost_since(self, mark: int) -> bool:
+        return self.write_loss_mark() != mark
 
     def reu_write(self, offset: int, data: bytes) -> None:
         self.advance()
@@ -200,6 +213,7 @@ def _run(
     outage: tuple[float, float] | None = None,
     ahead: float = 0.0,
     lose: Any = None,
+    foreign: Any = None,
     frame_s: float = 0.01,
     ahead_s: float | None = None,
 ) -> tuple[s.UltimateAudioSampler, _Channel, dict[str, Any]]:
@@ -222,6 +236,7 @@ def _run(
         clock, ring=smp.ring_size, byte_rate=smp._actual_rate * bps, bps=bps, ahead=ahead
     )
     chan.lose = lose
+    chan.foreign = foreign
     smp.api = cast(Any, chan)
     q = _Queue()
     smp._q = cast(Any, q)
@@ -510,32 +525,16 @@ class OutageTest(unittest.TestCase):
             smp.stop()
 
 
-class WriterStepTest(unittest.TestCase):
-    def _sampler(self) -> s.UltimateAudioSampler:
-        smp = s.UltimateAudioSampler(
-            cast(Any, None), sample_rate=8000, bits=16, ring_base=RING_BASE, ring_size=0x30000
-        )
-        smp._deadline = None
-        return smp
-
-    def test_a_lost_refresh_after_a_landed_ring_write_is_not_a_failure(self):
-        # The ring carried its write; counting the pass as failed would give
-        # the channel up on a link that works.
-        smp = self._sampler()
-        with (
-            mock.patch.object(smp, "_ring_step", return_value=True),
-            mock.patch.object(smp, "_advance_deadline", side_effect=ConnectionError("lost")),
-        ):
-            self.assertTrue(smp._writer_step(smp._writer_gen))
-
-    def test_a_lost_refresh_with_no_ring_write_still_raises(self):
-        smp = self._sampler()
-        with (
-            mock.patch.object(smp, "_ring_step", return_value=False),
-            mock.patch.object(smp, "_advance_deadline", side_effect=ConnectionError("lost")),
-            self.assertRaises(ConnectionError),
-        ):
-            smp._writer_step(smp._writer_gen)
+class ForeignLossTest(unittest.TestCase):
+    def test_another_threads_losses_are_not_the_writers(self):
+        # Every register write sees a loss on some other thread (the render
+        # path's), which moves delivery_epoch. Taken as the refresh's own, it
+        # held the deadline back until the channel was restarted, over and
+        # over, on a link that carried every write the sampler sent.
+        with self.assertNoLogs("c64cast.audio.sampler", logging.WARNING):
+            smp, chan, _ = _run(foreign=lambda: True)
+        self.assertGreater(chan.foreign_losses, 20)
+        self.assertEqual((smp._restarts, chan.gates, chan.state, chan.stale), (0, 1, "playing", 0))
 
 
 class NextDeadlineTest(unittest.TestCase):
