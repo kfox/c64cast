@@ -83,6 +83,21 @@ class DrainFollowerTest(unittest.TestCase):
         self.assertEqual(retunes, [])
         self.assertEqual(f.scale, 1.0)
 
+    def test_a_stall_read_at_the_put_timeout_restarts_the_window(self):
+        # A push into a stalled sink returns after QUEUE_PUT_TIMEOUT_S, so the
+        # readings across a stall come closer together than DRAIN_FOLLOW_STALL_S.
+        from c64cast.audio.audio_handlers import QUEUE_PUT_TIMEOUT_S
+
+        self.assertLess(QUEUE_PUT_TIMEOUT_S, DRAIN_FOLLOW_STALL_S)
+        f = DrainFollower()
+        _, (now, clock) = _feed(f, 1.0, DRAIN_FOLLOW_WARMUP_S + 0.5 * DRAIN_FOLLOW_WINDOW_S)
+        for _ in range(5):
+            now += QUEUE_PUT_TIMEOUT_S
+            self.assertIsNone(f.observe(now, clock, 0))
+        retunes, _ = _feed(f, 1.0, 0.7 * DRAIN_FOLLOW_WINDOW_S, start=(now, clock))
+        self.assertEqual(retunes, [])
+        self.assertEqual(f.scale, 1.0)
+
     def test_an_underrun_restarts_the_window(self):
         f = DrainFollower()
         _, last = _feed(f, 0.9, DRAIN_FOLLOW_WARMUP_S + 0.5 * DRAIN_FOLLOW_WINDOW_S)
@@ -134,6 +149,10 @@ class _DrainingSink:
 
     def stats(self) -> dict[str, int | float]:
         return {"full_underruns": 0, "partial_underruns": 0}
+
+
+class _Api:
+    delivery_epoch = 0
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
@@ -190,6 +209,20 @@ class AudioFileSourceDrainTest(unittest.TestCase):
         wall = self._play(src, sink)
         self.assertEqual(src._drain_scale, 1.0)
         self.assertAlmostEqual(wall, self.SECONDS, delta=0.1)
+
+    def test_a_lost_write_restarts_the_window(self):
+        sink = _DrainingSink(self.now, 0.9)
+        api = _Api()
+        sink.api = api  # type: ignore[attr-defined]
+        src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
+        follower = src._new_drain_follower()
+        assert follower is not None
+        for _ in range(int((DRAIN_FOLLOW_WARMUP_S + DRAIN_FOLLOW_WINDOW_S) / STEP_S)):
+            self.now[0] += STEP_S
+            sink.pushed += int(0.9 * STEP_S * sink.effective_rate)
+            api.delivery_epoch += 1
+            self.assertIsNone(src._observe_drain(follower, 8000))
+        self.assertEqual(follower.scale, 1.0)
 
     def test_the_sampler_is_not_followed(self):
         sink = _DrainingSink(self.now, 0.9)

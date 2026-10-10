@@ -65,10 +65,12 @@ def heard_seconds(audio: AudioStreamer | UltimateAudioSampler) -> float:
 
 # Following the DAC's drain (DrainFollower). The window is read from
 # DRAIN_FOLLOW_WARMUP_S after the clock starts, while the servo still settles
-# the ring lead; a window restarts at an underrun and across a pair of readings
-# DRAIN_FOLLOW_STALL_S or more apart over which the clock ran at under half
-# the slowest drain followed (a stalled link, a pause), since neither is the
-# drain. The drain is measured, not converged on, so the deadband only keeps
+# the ring lead; a window restarts at an underrun, at a lost write, and across
+# a span of DRAIN_FOLLOW_STALL_S or more over which the clock ran at under half
+# the slowest drain followed (a stalled link, a pause), since none is the
+# drain. The span is measured from an anchor rather than between neighboring
+# readings: a push into a stalled sink returns after QUEUE_PUT_TIMEOUT_S
+# (0.2 s), so readings across a stall come closer together than the span. The drain is measured, not converged on, so the deadband only keeps
 # estimator noise from rebuilding the resampler, and DRAIN_FOLLOW_RETUNE_S
 # spaces the rebuilds.
 DRAIN_FOLLOW_WARMUP_S = 3.0
@@ -99,6 +101,8 @@ class DrainFollower:
         self._marks: deque[tuple[float, float]] = deque()
         self._started_at: float | None = None
         self._trust: object = None
+        # (wall, clock) the stall check measures its span from.
+        self._stall_anchor: tuple[float, float] | None = None
         self._last_retune = -math.inf
 
     def observe(self, now: float, clock_s: float, trust: object) -> float | None:
@@ -109,6 +113,7 @@ class DrainFollower:
         if clock_s <= 0.0:
             # The consumer has not started: nothing drains yet.
             self._started_at = None
+            self._stall_anchor = None
             marks.clear()
             return None
         if self._started_at is None:
@@ -116,15 +121,10 @@ class DrainFollower:
         if now - self._started_at < DRAIN_FOLLOW_WARMUP_S:
             marks.clear()
             self._trust = trust
+            self._stall_anchor = (now, clock_s)
             return None
-        if marks:
-            w_prev, c_prev = marks[-1]
-            gap = now - w_prev
-            stalled = (
-                gap >= DRAIN_FOLLOW_STALL_S and clock_s - c_prev < 0.5 * DRAIN_FOLLOW_MIN * gap
-            )
-            if stalled or trust != self._trust:
-                marks.clear()
+        if self._stalled(now, clock_s) or trust != self._trust:
+            marks.clear()
         self._trust = trust
         marks.append((now, clock_s))
         while len(marks) > 2 and marks[1][0] <= now - DRAIN_FOLLOW_WINDOW_S:
@@ -141,6 +141,21 @@ class DrainFollower:
         self.scale = drain
         self._last_retune = now
         return drain
+
+    def _stalled(self, now: float, clock_s: float) -> bool:
+        """Whether the clock ran at under half the slowest drain followed over
+        the span since the anchor, once that span reaches DRAIN_FOLLOW_STALL_S;
+        the anchor then moves to this reading."""
+        anchor = self._stall_anchor
+        if anchor is None:
+            self._stall_anchor = (now, clock_s)
+            return False
+        w_a, c_a = anchor
+        span = now - w_a
+        if span < DRAIN_FOLLOW_STALL_S:
+            return False
+        self._stall_anchor = (now, clock_s)
+        return clock_s - c_a < 0.5 * DRAIN_FOLLOW_MIN * span
 
 
 @runtime_checkable
@@ -681,7 +696,11 @@ class AudioFileSource:
         if follower is None:
             return None
         stats = cast("AudioStreamer", self._audio).stats()
-        trust = int(stats["full_underruns"]) + int(stats["partial_underruns"])
+        api = getattr(self._audio, "api", None)
+        trust = (
+            int(stats["full_underruns"]) + int(stats["partial_underruns"]),
+            getattr(api, "delivery_epoch", 0),
+        )
         before = follower.scale
         retuned = follower.observe(time.monotonic(), self._audio.position_seconds() or 0.0, trust)
         if retuned is not None:
