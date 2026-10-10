@@ -266,9 +266,9 @@ PUMP_BODY_STUB = bytes([0x60])  # RTS
 #
 # A flip is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
 # i.e. $D012 in [251, 255] u [0, 43]; a commit that writes after its flip ends
-# earlier (HIRES_COMMIT_LAST_SAFE_LINE, MHIRES_COMMIT_LAST_SAFE_LINE). Adding 5 rotates that split range into a
-# contiguous 0..48, which is why the check costs one compare and one branch
-# instead of two of each.
+# earlier (HIRES_COMMIT_LAST_SAFE_LINE, MHIRES_COMMIT_LAST_SAFE_LINE). Adding 5
+# rotates that split range into a contiguous 0..48, which is why the check
+# costs one compare and one branch instead of two of each.
 _RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $05
 _RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $31
 assert _RASTER_GATE_LIMIT <= 0xFF
@@ -398,7 +398,7 @@ def _bank_swap_dispatcher(
     hidden: tuple[tuple[int, int], ...],
     after_flip: tuple[tuple[int, int], ...],
     bg0_off: int | None,
-    border_off: int | None = None,
+    border_off: int | None,
     ready_off: int,
     pump: bool,
     last_line: int,
@@ -579,6 +579,7 @@ def _mhires_dispatcher(*, pump: bool) -> bytes:
         ),
         after_flip=((MHIRES_TRACKER_OFF_COLOR_REGS, REU_VIDEO_BITMAP_COLOR_LEN),),
         bg0_off=MHIRES_TRACKER_OFF_BG0,
+        border_off=None,
         ready_off=MHIRES_TRACKER_OFF_READY_FLAG,
         pump=pump,
         last_line=MHIRES_COMMIT_LAST_SAFE_LINE,

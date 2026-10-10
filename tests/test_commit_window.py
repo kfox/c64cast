@@ -1,8 +1,9 @@
 """Where the REU bank-swap dispatchers commit a copied frame.
 
-The commit is a $DD00 flip, plus bg0 and color RAM on mhires. It has to land
-after the last bitmap line of one field and before the first badline of the
-next, and it runs under py65 here so the window's edges are the real bytes'.
+The commit is a $DD00 flip, plus the border after it on hires and bg0 and
+color RAM on mhires. It has to land after the last bitmap line of one field
+and before the first badline of the next, and it runs under py65 here so the
+window's edges are the real bytes'.
 """
 
 from __future__ import annotations
