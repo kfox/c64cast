@@ -46,6 +46,10 @@ SCREEN_PAGE_ADDRS = (0x0400, 0x0C00)
 # D018 hi-nibble = screen address / $400; low nibble (bits 1-3 = 010) =
 # charset at $1000 (standard ROM). $14 → screen=$0400, $34 → screen=$0C00.
 D018_PAGE_VALUES = (0x14, 0x34)
+# What teardown leaves in $D016/$D018: 40 columns, no X-scroll, page 0. The
+# shadow reset writes the same pair, so a handler left hooked commits them.
+DEFAULT_D016 = 0x08
+DEFAULT_D018 = D018_PAGE_VALUES[0]
 
 # $C000-$C01F is big_text's: the raster handler from the bottom, its two shadow
 # bytes at the top. The audio NMI routine starts at $C020 and the REU pump at
@@ -346,7 +350,7 @@ class BigTextOverlay(Overlay):
             self._uninstall_raster_irq(api)
             # Standard screen at $0400, 40-column mode, X-scroll = 0 — one
             # coalesced write, so the next scene never sees a half restore.
-            api.write_regs("d016", 0x08, 0x00, 0x14)
+            api.write_regs("d016", DEFAULT_D016, 0x00, DEFAULT_D018)
         # Releases the followers when the conductor's scene tears down mid
         # broadcast (a CTRL skip, a stop_event). end() is idempotent.
         if self._orchestrator is not None and self._is_conductor and self._orchestrator.is_active():
@@ -362,7 +366,7 @@ class BigTextOverlay(Overlay):
         IRQ will JMP through a torn vector and crash.
         """
         api.write_memory_file(f"{IRQ_HANDLER_ADDR:04X}", RASTER_IRQ_HANDLER)
-        api.write_regs(f"{SHADOW_D016_ADDR:04X}", 0x08, D018_PAGE_VALUES[0])
+        api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018)
         # Mask every CIA #1 IRQ source so the kernal jiffy IRQ cannot fire while
         # $0314 changes. Timer A keeps running — only the interrupt line is
         # blocked — and the raster handler chains to $EA31 below.
@@ -371,7 +375,9 @@ class BigTextOverlay(Overlay):
         api.write_memory("D01A", "00")
         # One coalesced PUT, so the two-byte vector lands as a single DMA
         # transaction with no torn-vector window.
-        api.write_regs("0314", IRQ_HANDLER_ADDR & 0xFF, (IRQ_HANDLER_ADDR >> 8) & 0xFF)
+        api.write_regs(
+            f"{VECTORS.IRQ:04X}", IRQ_HANDLER_ADDR & 0xFF, (IRQ_HANDLER_ADDR >> 8) & 0xFF
+        )
         # Raster compare at VBLANK. $D011 = $1B is the kernal default, whose
         # bit 7 = 0 keeps the compare line below 256.
         api.write_memory("D012", f"{RASTER_IRQ_LINE:02X}")
@@ -420,7 +426,7 @@ class BigTextOverlay(Overlay):
             )
             confirmed(
                 "shadow reset",
-                lambda: api.write_regs(f"{SHADOW_D016_ADDR:04X}", 0x08, D018_PAGE_VALUES[0]),
+                lambda: api.write_regs(f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018),
             )
 
         # Raster IRQ off first, so it cannot fire after the vector is restored.

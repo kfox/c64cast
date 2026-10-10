@@ -16,7 +16,8 @@ from _fakes import FakeAPI, lose_writes_to
 from c64cast.hw.c64 import KERNAL
 from c64cast.hw.delivery import CONFIRM_TRIES
 from c64cast.scenes.overlays.big_text import (
-    D018_PAGE_VALUES,
+    DEFAULT_D016,
+    DEFAULT_D018,
     SHADOW_D016_ADDR,
     BigTextOverlay,
 )
@@ -64,9 +65,10 @@ class BigTextIrqTeardownTest(unittest.TestCase):
 
     def test_a_hooked_handler_commits_the_default_registers(self):
         api = _lossy(0xD01A, CONFIRM_TRIES)
-        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR"):
+        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
             _uninstall(api)
-        self.assertEqual(api.regs[_SHADOWS], (0x08, D018_PAGE_VALUES[0]))
+        self.assertEqual(api.regs[_SHADOWS], (DEFAULT_D016, DEFAULT_D018))
+        self.assertTrue(any("stays hooked" in m for m in logs.output))
 
     def test_a_restore_that_never_lands_leaves_cia1_masked(self):
         api = _lossy(0x0314, CONFIRM_TRIES)
