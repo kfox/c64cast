@@ -1175,7 +1175,15 @@ class UltimateAudioSampler:
         """Stop writing audio after WRITER_GIVE_UP_S of failing writes, until
         `_recover` brings the channel back. The deadline has already stopped
         the voice; the gate-off sent here, and by `_recover` until one lands,
-        covers a channel without one."""
+        covers a channel without one.
+
+        Nothing for a writer stopped or superseded: one that outlived stop()
+        inside `_recover`'s gate-off reaches here once arm() has cleared
+        `_failed`, and would put the next activation's writer into
+        `_recover`. `_running` is read first: release_hold() bumps the
+        generation before it sets it."""
+        if not (self._running and gen == self._writer_gen):
+            return
         self._failed = True
         self._gave_up_gen = gen
         log.error(

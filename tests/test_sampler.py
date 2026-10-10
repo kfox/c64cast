@@ -691,6 +691,59 @@ class SamplerGaveUpSurvivorTest(unittest.TestCase):
                 smp.stop()
         self.assertEqual(after, [], "a retired writer gated the new activation off")
 
+    def test_a_retired_writer_does_not_give_up_on_the_next_activation(self):
+        # The survivor's gate-off comes back lost after arm() cleared
+        # _failed. Its give-up then set _failed on the next activation, whose
+        # writer dropped its audio and restarted the live channel.
+        api = _StallingUnconfirmedGateOffBackend()
+        self.addCleanup(api.release.set)
+        smp = _make(api, sample_rate=8000, bits=8, lead_seconds=0.2, prebuffer_seconds=0.01)
+        with (
+            mock.patch.object(s, "WRITER_GIVE_UP_S", 0.1),
+            mock.patch.object(s, "WRITER_BACKOFF_MAX_S", 0.01),
+            quiet_logging(),
+        ):
+            smp.start(prebuffer_timeout=0.01)
+            deadline = time.monotonic() + 3.0
+            while not smp._failed and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(smp._failed, "the writer never gave up")
+            api.stall.set()
+            self.assertTrue(api.stalled.wait(3.0), "the writer never sent its gate-off")
+            survivor = smp._writer
+            assert survivor is not None
+            self.addCleanup(survivor.stop)
+            survivor._join_timeout = 0.05
+            smp.stop()
+            self.assertTrue(survivor.is_running(), "the survivor did not outlive the join")
+            smp.arm()
+            api.release.set()
+            survivor._join_timeout = 2.0
+            survivor.stop()
+            self.assertFalse(survivor.is_running())
+        self.assertFalse(smp._failed, "a retired writer gave up on the next activation")
+
+
+class _StallingUnconfirmedGateOffBackend(_FailingBackend):
+    """A link that stays down for REU writes, and on which every writer-thread
+    register write is counted lost; once ``stall`` is set, the next one sits
+    in the transport until ``release`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__(failures=-1)
+        self.stall = threading.Event()
+        self.stalled = threading.Event()
+        self.release = threading.Event()
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        writer = threading.current_thread().name == "uaudio-writer"
+        if writer and self.stall.is_set() and not self.release.is_set():
+            self.stalled.set()
+            self.release.wait(5.0)
+        super().write_memory(address, data_hex)
+        if writer:
+            self.delivery_epoch += 1
+
 
 class _UnconfirmedGateOffBackend(_FailingBackend):
     """A link that stays down for REU writes, and on which every writer-thread

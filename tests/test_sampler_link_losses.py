@@ -75,6 +75,7 @@ class FailureMessageTest(unittest.TestCase):
 
     def test_the_give_up_names_the_last_failure(self):
         smp = s.UltimateAudioSampler(cast(Any, None), sample_rate=8000, bits=16)
+        smp._running = True  # a current writer's give-up; no thread runs
         with (
             mock.patch.object(smp, "_gate_off_landed", return_value=None),
             self.assertLogs("c64cast.audio.sampler", logging.ERROR) as logs,
