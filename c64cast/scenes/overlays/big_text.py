@@ -13,7 +13,9 @@ from typing import Any
 
 import numpy as np
 
+from c64cast._teardown import run_teardown_steps
 from c64cast.hw.c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN
+from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 from c64cast.video.palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
 
 from . import (
@@ -381,16 +383,60 @@ class BigTextOverlay(Overlay):
     def _uninstall_raster_irq(self, api):
         """Tear down in the reverse order of install. Each step keeps the
         IRQ environment self-consistent so any IRQ that fires mid-teardown
-        lands somewhere sane."""
+        lands somewhere sane.
+
+        The raster disable, the vector restore and the CIA #1 unmask are
+        confirmed delivered, since a lost write moves `delivery_epoch` without
+        raising. The kernal handler at $EA31 never acks $D019, so a raster
+        source left live behind the restore re-enters the IRQ on every RTI; and
+        unmasking CIA #1 with $0314 still on the raster handler keeps vectoring
+        the jiffy IRQ into RAM the next scene may overwrite. So the restore
+        waits for the disable, and the unmask for the restore, each logging
+        what it left undone."""
+        done: set[str] = set()
+
+        def confirmed(what: str, write) -> None:
+            if not write_confirmed(api, write):
+                raise RuntimeError(
+                    f"the {what} write was not confirmed after {CONFIRM_TRIES} tries"
+                )
+            done.add(what)
+
+        def after(needed: str, what: str, write) -> None:
+            if needed not in done:
+                log.error("big_text: skipping the %s — the %s did not land", what, needed)
+                return
+            confirmed(what, write)
+
         # Raster IRQ off first, so it cannot fire after the vector is restored.
-        api.write_memory("D01A", "00")
-        # Back to the kernal default ($EA31); with the raster and CIA #1 IRQs
-        # both masked, no source is live.
-        api.write_regs("0314", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
-        # Ack any pending raster IRQ before re-enabling CIA #1.
-        api.write_memory("D019", "01")
-        # Kernal jiffy / keyboard scan resumes via the restored $0314.
-        api.write_memory("DC0D", "81")
+        steps = [
+            (
+                "raster disable",
+                lambda: confirmed("raster disable", lambda: api.write_memory("D01A", "00")),
+            ),
+            # Back to the kernal default ($EA31); with the raster and CIA #1
+            # IRQs both masked, no source is live.
+            (
+                "vector restore",
+                lambda: after(
+                    "raster disable",
+                    "vector restore",
+                    lambda: api.write_regs(
+                        "0314", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+                    ),
+                ),
+            ),
+            # Ack any pending raster IRQ before re-enabling CIA #1.
+            ("raster flag ack", lambda: api.write_memory("D019", "01")),
+            # Kernal jiffy / keyboard scan resumes via the restored $0314.
+            (
+                "CIA1 unmask",
+                lambda: after(
+                    "vector restore", "CIA1 unmask", lambda: api.write_memory("DC0D", "81")
+                ),
+            ),
+        ]
+        run_teardown_steps(log, "big_text raster IRQ", steps)
 
     def is_busy(self) -> bool:
         # A conductor keeps the scene running until the message has scrolled off
