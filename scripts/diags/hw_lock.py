@@ -18,9 +18,11 @@ still has that descriptor open has exited; a child started with its descriptors
 closed (Python's ``subprocess`` default) does not hold it. The kernel drops the
 lock when the holder dies, so a killed run leaves no stale lock behind.
 
-A command run under the lock may itself call this tool, with any ``--device``:
-the lock is already its own, so that inner call runs its command without
-waiting and takes nothing more. A nested call therefore cannot deadlock.
+A command run under the lock may itself call this tool: when the enclosing call
+already holds the rig lock the inner ``--device`` needs, the inner call runs its
+command without waiting and takes nothing more, so it cannot deadlock. An inner
+call that needs a rig lock the enclosing call does not hold (another rig's, under
+``$C64_DIAG_RIGS``) is an error rather than a run beside that rig's holder.
 
 ``--device`` names what the command touches — a URL (keyed on its host, so
 ``u64://HOST`` and ``http://HOST`` are one device), a capture device's name, or
@@ -32,7 +34,8 @@ which names each rig and the devices on it::
 
     C64_DIAG_RIGS="u64=u64://HOST1,CAPTURE-NAME-1;u2p=http://HOST2,CAPTURE-NAME-2"
 
-A ``--device`` listed under a rig takes only that rig's lock. Anything else —
+A ``--device`` listed under a rig takes only that rig's lock, plus any lock file
+already present under one of that rig's device keys. Anything else —
 no ``--device``, or one the map does not list — takes every lock in the
 directory, so a partial map makes the unlisted devices wait on every rig
 rather than run beside one. A malformed map is an error, not a fallback.
@@ -102,25 +105,36 @@ def parse_rigs(spec: str) -> dict[str, str]:
     return rigs
 
 
-def lock_paths(device: str | None) -> list[Path]:
-    """Every lock file ``device`` must hold, in the order they are taken."""
-    rigs = parse_rigs(os.environ.get(RIGS_ENV, ""))
+def rig_locks(device: str | None, rigs: dict[str, str]) -> set[Path]:
+    """The rig lock files ``device`` needs: its rig's, or every rig's when unmapped."""
     rig = rigs.get(lock_key(device)) if device else None
-    if rig is not None:
-        return [lock_dir() / f"{rig}.lock"]
-    names = {DEFAULT_DEVICE, *rigs.values()}
-    names.update(p.stem for p in lock_dir().glob("*.lock"))
-    return sorted(lock_dir() / f"{name}.lock" for name in names)
+    names = {rig} if rig is not None else {DEFAULT_DEVICE, *rigs.values()}
+    return {lock_dir() / f"{name}.lock" for name in names}
+
+
+def lock_paths(device: str | None, rigs: dict[str, str] | None = None) -> list[Path]:
+    """Every lock file ``device`` must hold, in the order they are taken."""
+    if rigs is None:
+        rigs = parse_rigs(os.environ.get(RIGS_ENV, ""))
+    paths = rig_locks(device, rigs)
+    rig = rigs.get(lock_key(device)) if device else None
+    if rig is None:
+        paths.update(lock_dir().glob("*.lock"))
+    else:
+        own = (lock_dir() / f"{key}.lock" for key, owner in rigs.items() if owner == rig)
+        paths.update(path for path in own if path.exists())
+    return sorted(paths)
 
 
 def _holder(fd: int) -> str:
     return os.pread(fd, 4096, 0).decode("utf-8", "replace").strip() or "unknown"
 
 
-def _an_ancestor_holds_a_lock() -> bool:
-    """True when a process that exported ``$C64_DIAG_LOCK_HELD`` still holds that lock."""
+def _held_by_ancestors() -> set[Path]:
+    """The exported ``$C64_DIAG_LOCK_HELD`` locks whose exporting process still holds them."""
     import fcntl
 
+    held: set[Path] = set()
     for entry in os.environ.get(HELD_ENV, "").splitlines():
         pid, sep, path = entry.partition("@")
         if not sep:
@@ -133,10 +147,10 @@ def _an_ancestor_holds_a_lock() -> bool:
             fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
             if _holder(fd).split(":", 1)[0] == pid:
-                return True
+                held.add(Path(path))
         finally:
             os.close(fd)
-    return False
+    return held
 
 
 def _acquire(path: Path) -> int | None:
@@ -162,6 +176,11 @@ def _acquire(path: Path) -> int | None:
         flush=True,
     )
     return fd
+
+
+def _close_all(held: list[tuple[int, Path]]) -> None:
+    for fd, _ in held:
+        os.close(fd)
 
 
 def _exec(command: list[str]) -> int:
@@ -193,18 +212,34 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    if _an_ancestor_holds_a_lock():
-        return _exec(command)
     try:
-        paths = lock_paths(args.device)
+        rigs = parse_rigs(os.environ.get(RIGS_ENV, ""))
+        paths = lock_paths(args.device, rigs)
     except RigMapError as exc:
         print(f"hw_lock: {exc}", file=sys.stderr)
+        return 2
+    ancestors = _held_by_ancestors()
+    if ancestors:
+        missing = sorted(rig_locks(args.device, rigs) - ancestors)
+        if not missing:
+            return _exec(command)
+        print(
+            f"hw_lock: nested call needs {', '.join(map(str, missing))}, which the enclosing"
+            " call does not hold; command not run",
+            file=sys.stderr,
+        )
         return 2
     lock_dir().mkdir(parents=True, exist_ok=True)
     held: list[tuple[int, Path]] = []
     for path in paths:
-        fd = _acquire(path)
+        try:
+            fd = _acquire(path)
+        except OSError as exc:
+            _close_all(held)
+            print(f"hw_lock: cannot open {path}: {exc}; command not run", file=sys.stderr)
+            return 2
         if fd is None:
+            _close_all(held)
             print("hw_lock: interrupted while waiting; command not run", file=sys.stderr)
             return 130
         held.append((fd, path))

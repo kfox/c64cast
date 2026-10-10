@@ -62,6 +62,7 @@ class LockPathsTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop(hw_lock.RIGS_ENV, None)
+        os.environ.pop(hw_lock.HELD_ENV, None)
 
     def test_every_spelling_takes_the_one_rig_lock_without_a_map(self) -> None:
         for device in (None, "u64://192.168.2.64", "http://192.168.2.64", "Cam Link", "tr://"):
@@ -80,6 +81,25 @@ class LockPathsTest(unittest.TestCase):
             self.assertEqual(hw_lock.lock_paths("http://192.168.2.64:80"), [self.dir / "a.lock"])
             self.assertEqual(hw_lock.lock_paths("cam link"), [self.dir / "a.lock"])
             self.assertEqual(hw_lock.lock_paths("u64://192.168.2.65"), [self.dir / "b.lock"])
+
+    def test_a_mapped_device_takes_its_rigs_legacy_files_too(self) -> None:
+        for name in ("192.168.2.64", "cam_link", "192.168.2.65", "default"):
+            (self.dir / f"{name}.lock").touch()
+        rigs = "a=u64://192.168.2.64,Cam Link;b=u64://192.168.2.65"
+        expected = [self.dir / f"{n}.lock" for n in ("192.168.2.64", "a", "cam_link")]
+        with patch.dict(os.environ, {hw_lock.RIGS_ENV: rigs}):
+            self.assertEqual(hw_lock.lock_paths("Cam Link"), expected)
+
+    def test_an_unopenable_lock_file_refuses_to_run(self) -> None:
+        (self.dir / "stray.lock").mkdir()
+        err = io.StringIO()
+        with (
+            patch.object(hw_lock.os, "execvp", side_effect=AssertionError("ran anyway")),
+            patch.object(sys, "platform", "linux"),
+            redirect_stderr(err),
+        ):
+            self.assertEqual(hw_lock.main(["true"]), 2)
+        self.assertIn("stray.lock", err.getvalue())
 
     def test_an_unmapped_device_takes_every_rigs_lock(self) -> None:
         with patch.dict(os.environ, {hw_lock.RIGS_ENV: "b=u64://h2;a=u64://h1"}):
@@ -151,6 +171,13 @@ class RunUnderLockTest(unittest.TestCase):
         result = self._run("--device", "u64://rig", *inner)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("waiting", result.stderr)
+
+    def test_a_nested_call_for_another_rig_refuses_to_run(self) -> None:
+        self.env[hw_lock.RIGS_ENV] = "a=u64://rig;b=u64://other-rig"
+        inner = [sys.executable, str(_SCRIPT), "--device", "u64://other-rig", "true"]
+        result = self._run("--device", "u64://rig", *inner)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("nested call needs", result.stderr)
 
     def _assert_waits(self, hold: Callable[[], Any], *waiter_argv: str) -> None:
         """While ``hold`` holds a lock, a call for ``waiter_argv`` waits, then runs."""
