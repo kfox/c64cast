@@ -67,6 +67,12 @@ class FailureMessageTest(unittest.TestCase):
         warning = next(m for m in logs if m.startswith("WARNING"))
         self.assertIn("ring write failed (link down)", warning)
 
+    def test_a_defect_is_not_called_a_ring_write(self):
+        logs = self._loop_once(ValueError("no deadline can sit at ring offset 0"))
+        warning = next(m for m in logs if m.startswith("WARNING"))
+        self.assertIn("writer step raised ValueError (no deadline", warning)
+        self.assertNotIn("ring write failed", warning)
+
     def test_the_give_up_names_the_last_failure(self):
         smp = s.UltimateAudioSampler(cast(Any, None), sample_rate=8000, bits=16)
         with (

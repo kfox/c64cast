@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from c64cast._pollthread import PollThread
-from c64cast.hw.backend import ULTIMATE_PROFILE, HardwareProfile
+from c64cast.hw.backend import ULTIMATE_PROFILE, HardwareProfile, LinkError
 from c64cast.hw.c64 import ULTIMATE_AUDIO
 from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 
@@ -191,10 +191,13 @@ class _WritesLost(ConnectionError):
 
 def _failure_text(error: Exception) -> str:
     """What the writer's log lines say failed: a transport error raised out
-    of a REU write is the ring's, a `_WritesLost` names its own write."""
+    of a REU write is the ring's, a `_WritesLost` names its own write, and
+    anything else is named by its type rather than blamed on the link."""
     if isinstance(error, _WritesLost):
         return str(error)
-    return f"ring write failed ({error})"
+    if isinstance(error, (OSError, LinkError)):
+        return f"ring write failed ({error})"
+    return f"writer step raised {type(error).__name__} ({error})"
 
 
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
