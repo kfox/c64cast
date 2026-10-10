@@ -83,12 +83,12 @@ def rescaled_band_edges(n_bands: int, fft_size: int, ratio: float) -> np.ndarray
     """`band_edges` for a window sampled at ``1 / ratio`` of the rate the
     bands were laid out for, so each band still covers the same frequencies.
 
-    A bin of that window is ``ratio`` times as wide in Hz, so an edge at bin
+    A bin of that window is ``1 / ratio`` as wide in Hz, so an edge at bin
     ``e`` moves to ``e * ratio``. Edges past Nyquist sit on it, and every
     band keeps at least one bin, from both ends."""
-    edges = band_edges(n_bands, fft_size).astype(np.float64)
     if ratio == 1.0:
-        return edges.astype(np.int32)
+        return band_edges(n_bands, fft_size)
+    edges = band_edges(n_bands, fft_size).astype(np.float64)
     n_bins = fft_size // 2
     out = np.clip(np.rint(edges * ratio).astype(np.int64), 1, n_bins)
     for i in range(1, n_bands + 1):
@@ -250,6 +250,9 @@ class AudioFeatureAnalyzer:
         self._edges = rescaled_band_edges(
             self.n_bands, self.fft_size, self.sample_rate / float(rate)
         )
+        # The last window's magnitudes are per band of the old layout;
+        # differenced against the new one they read as a transient.
+        self._prev_log_mags = None
 
     def update(self, window: np.ndarray, now: float) -> None:
         """Fold one analysis window (mono float, `fft_size` samples) into the
@@ -434,7 +437,8 @@ class AudioFeatureStream:
         with self._analyze_lock:
             window, end = self._window()
             changes = self._rate_changes
-            while changes and changes[0][0] < end:
+            # Once the window holds more samples at the new rate than the old.
+            while changes and changes[0][0] < end - self._fft_size // 2:
                 self._analyzer.set_content_rate(changes.popleft()[1])
             now = time.monotonic()
             self._analyzer.update(window, now)
@@ -448,7 +452,7 @@ class AudioFeatureStream:
         if self._play_position is None:
             end = self._tap.pushed
             return self._tap.window_ending_at(end, self._fft_size), end
-        end = int(self._play_position())
+        end = min(int(self._play_position()), self._tap.pushed)
         if end < self._tap.pushed - self._tap.size and not self._warned_behind:
             self._warned_behind = True
             log.warning(

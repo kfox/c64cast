@@ -19,6 +19,7 @@ import numpy as np
 
 from c64cast.audio import audio_source
 from c64cast.audio.audio_features import (
+    FFT_SIZE,
     AnalysisTap,
     AudioFeatureAnalyzer,
     AudioFeatureStream,
@@ -42,6 +43,7 @@ from c64cast.hw.backend import (
     ULTIMATE_PROFILE,
 )
 from c64cast.hw.c64 import CLOCK_NTSC
+from c64cast.scenes.overlays._spectrum import _SpectrumBands
 from c64cast.video.video import ensure_pyav
 
 STEP_S = 0.1
@@ -263,6 +265,7 @@ class _DrainingSink:
     effective_rate = 8000.0
     analysis_sink = None
     content_lag_seconds = 0.0
+    content_scale = 1.0
 
     def __init__(self, now: list[float], drain: float) -> None:
         self._now = now
@@ -381,6 +384,10 @@ class AudioFileSourceDrainTest(unittest.TestCase):
         self.assertEqual(
             features.set_content_rate.call_args_list, [mock.call(8000), mock.call(7200)]
         )
+        # And the streamer, for an overlay FFTing its tap, until teardown.
+        self.assertAlmostEqual(sink.content_scale, 0.9)
+        src._reset_content_scale()
+        self.assertEqual(sink.content_scale, 1.0)
 
         features.reset_mock()
         sink.pushed = 0
@@ -480,15 +487,65 @@ class AnalyzerContentRateTest(unittest.TestCase):
         tap.push(np.zeros(2 * FFT, dtype=np.float32))
         analyzer = stream._analyzer
 
-        played[0] = 4 * FFT
+        # The window ends half of it past the first sample at the new rate.
+        played[0] = 4 * FFT + FFT // 2
         stream._process_tick()
         np.testing.assert_array_equal(analyzer._edges, band_edges(BANDS, FFT))
 
-        played[0] = 4 * FFT + 1
+        played[0] = 4 * FFT + FFT // 2 + 1
         stream._process_tick()
         np.testing.assert_array_equal(
             analyzer._edges, rescaled_band_edges(BANDS, FFT, 1 / self.SCALE)
         )
+
+    def test_a_play_position_past_the_tap_cannot_reach_a_change_not_yet_pushed(self):
+        tap = AnalysisTap(size=8 * FFT)
+        stream = AudioFeatureStream(
+            tap, REF_RATE, n_bands=BANDS, fft_size=FFT, play_position=lambda: 10 * FFT
+        )
+        tap.push(np.zeros(4 * FFT, dtype=np.float32))
+        stream.set_content_rate(REF_RATE * self.SCALE)
+        stream._process_tick()
+        np.testing.assert_array_equal(stream._analyzer._edges, band_edges(BANDS, FFT))
+
+    def test_a_relayout_is_no_onset(self):
+        analyzer = AudioFeatureAnalyzer(REF_RATE, n_bands=BANDS, fft_size=FFT)
+        followed = REF_RATE * self.SCALE
+        t = np.arange(FFT) / followed
+        window = (0.5 * np.sin(2 * np.pi * self.tone_hz * t)).astype(np.float32)
+        now = 0.0
+        for _ in range(60):
+            now += 1 / 60
+            analyzer.update(window, now)
+        self.assertLess(analyzer._onset, 0.01)
+        analyzer.set_content_rate(followed)
+        analyzer.update(window, now + 1 / 60)
+        self.assertLess(analyzer._onset, 0.01)
+
+
+class _Overlay(_SpectrumBands):
+    n_bands = BANDS
+    gain = 1.0
+
+    def __init__(self, audio: object) -> None:
+        self.audio = audio
+        self._init_bands()
+
+
+class OverlayContentScaleTest(unittest.TestCase):
+    """The overlay FFTs the streamer's tap, which holds a followed track
+    resampled to the streamer's `content_scale` of its rate."""
+
+    def test_a_tone_reads_in_its_own_band_at_the_streamer_s_content_scale(self):
+        edges = band_edges(BANDS, FFT_SIZE)
+        band = BANDS - 2
+        tone_hz = (edges[band + 1] - 2) * REF_RATE / FFT_SIZE
+        audio = SimpleNamespace(content_scale=0.94)
+        t = np.arange(FFT_SIZE) / (REF_RATE * 0.94)
+        tone = (0.05 * np.sin(2 * np.pi * tone_hz * t)).astype(np.float32)
+        audio.get_recent_samples = lambda n: tone
+        overlay = _Overlay(audio)
+        self.assertEqual(int(np.argmax(overlay._fft_bands())), band)
 
 
 if __name__ == "__main__":

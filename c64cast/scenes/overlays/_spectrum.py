@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from c64cast.audio.audio_features import FFT_SIZE, WINDOW, band_edges
+from c64cast.audio.audio_features import FFT_SIZE, WINDOW, band_edges, rescaled_band_edges
 from c64cast.video.palette import C64_COLORS
 
 if TYPE_CHECKING:
@@ -118,11 +118,23 @@ class _SpectrumBands:
     audio: Any
 
     _edges: np.ndarray
+    _edges_scale: float
     _warned_no_source: bool
 
     def _init_bands(self) -> None:
         self._edges = band_edges(self.n_bands, FFT_SIZE)
+        self._edges_scale = 1.0
         self._warned_no_source = False
+
+    def _tap_edges(self) -> np.ndarray:
+        """The band edges for the tap's samples at the streamer's
+        `content_scale` of its rate: a followed audio file is resampled
+        below it, and read at the full rate its tones sat a band high."""
+        scale = float(getattr(self.audio, "content_scale", 1.0) or 1.0)
+        if scale != self._edges_scale:
+            self._edges = rescaled_band_edges(self.n_bands, FFT_SIZE, 1.0 / scale)
+            self._edges_scale = scale
+        return self._edges
 
     def bands_now(self, scene: Scene | None) -> np.ndarray:
         """Band magnitudes for this frame, nominally in [0, 1], `gain` applied.
@@ -149,8 +161,9 @@ class _SpectrumBands:
             return np.zeros(self.n_bands, dtype=np.float32)
         spec = np.abs(np.fft.rfft(samples * WINDOW))
         mags = np.zeros(self.n_bands, dtype=np.float32)
+        edges = self._tap_edges()
         for i in range(self.n_bands):
-            lo, hi = int(self._edges[i]), int(self._edges[i + 1])
+            lo, hi = int(edges[i]), int(edges[i + 1])
             if hi <= lo:
                 continue
             mags[i] = spec[lo:hi].mean()

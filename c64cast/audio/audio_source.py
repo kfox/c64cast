@@ -697,10 +697,9 @@ class AudioFileSource:
             import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
 
             scale = follower.scale if follower is not None else 1.0
-            resampler = av.AudioResampler(
-                format="s16", layout="mono", rate=self._drained_rate(rate, scale)
-            )
-            self._note_content_rate(self._drained_rate(rate, scale))
+            drained = self._drained_rate(rate, scale)
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=drained)
+            self._note_content_rate(drained, rate)
             a_stream = container.streams.audio[0]
             for packet in container.demux(a_stream):
                 if self._stop.is_set():
@@ -714,10 +713,9 @@ class AudioFileSource:
                             if self._stop.is_set():
                                 return
                             pushed += self._push_frame(resampled)
-                        resampler = av.AudioResampler(
-                            format="s16", layout="mono", rate=self._drained_rate(rate, retuned)
-                        )
-                        self._note_content_rate(self._drained_rate(rate, retuned))
+                        drained = self._drained_rate(rate, retuned)
+                        resampler = av.AudioResampler(format="s16", layout="mono", rate=drained)
+                        self._note_content_rate(drained, rate)
                     for resampled in resampler.resample(frame):
                         if self._stop.is_set():
                             return
@@ -808,13 +806,20 @@ class AudioFileSource:
             )
         return retuned
 
-    def _note_content_rate(self, rate: int) -> None:
-        """Tell the analyzer the rate of the samples pushed from here on. A
-        followed track reaches the tap resampled below the sink's rate, and
-        read at the sink's rate, a tone could land a band above its own."""
+    def _note_content_rate(self, rate: int, base: int) -> None:
+        """Tell the analyzer, and the DAC streamer's overlay tap, the rate of
+        the samples pushed from here on (``base`` unfollowed). A followed
+        track reaches both resampled below the sink's rate, and read at the
+        sink's rate, a tone could land a band above its own."""
         features = self._features
         if features is not None:
             features.set_content_rate(rate)
+        if not self._is_sampler:
+            cast("AudioStreamer", self._audio).content_scale = rate / base
+
+    def _reset_content_scale(self) -> None:
+        if not self._is_sampler:
+            cast("AudioStreamer", self._audio).content_scale = 1.0
 
     @staticmethod
     def _drained_rate(rate: int, scale: float) -> int:
@@ -923,6 +928,7 @@ class AudioFileSource:
         steps.append(("audio stop", self._audio.stop))
         if thread is not None:
             steps.append(("decode thread join", partial(self._join_decode_thread, thread)))
+        steps.append(("content scale reset", self._reset_content_scale))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _join_decode_thread(self, thread: threading.Thread) -> None:
