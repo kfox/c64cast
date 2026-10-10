@@ -1351,21 +1351,28 @@ class UltimateAudioSampler:
                 # Raised here, a restore whose flush ran into the guard bought
                 # a back-off `_backoff_wait` no longer cuts short, as the
                 # refresh below did.
-                if not self._deadline_reached():
+                if not self._lost_into_guard(e):
                     raise
-                log.warning("sampler: %s; restarting the channel", _failure_text(e))
                 return self._restart_channel(gen)
         wrote = self._ring_step(gen)
         if not self._deadline_reached():
             try:
                 self._advance_deadline(gen)
             except _WritesLost as e:
-                if not self._deadline_reached():
+                if not self._lost_into_guard(e):
                     raise
-                log.warning("sampler: %s; restarting the channel", _failure_text(e))
             else:
                 return wrote
         return self._restart_channel(gen) or wrote
+
+    def _lost_into_guard(self, error: _WritesLost) -> bool:
+        """Whether a loss a writer pass caught came with the read head within
+        the guard, where the pass restarts the channel rather than raising;
+        logged here when it did."""
+        if not self._deadline_reached():
+            return False
+        log.warning("sampler: %s; restarting the channel", _failure_text(error))
+        return True
 
     def _restore_owed_volume(self, gen: int) -> None:
         """Send the volume restore a resume lost (`_volume_owed`) again.
