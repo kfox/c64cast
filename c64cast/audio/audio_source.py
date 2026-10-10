@@ -592,7 +592,7 @@ class AudioFileSource:
             tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096, history + cfg.fft_size))
             stream = AudioFeatureStream(
                 tap,
-                self._audio.sample_rate,
+                rate,
                 n_bands=cfg.bands,
                 fft_size=cfg.fft_size,
                 poll_hz=cfg.poll_hz,
@@ -653,6 +653,7 @@ class AudioFileSource:
             resampler = av.AudioResampler(
                 format="s16", layout="mono", rate=self._drained_rate(rate, scale)
             )
+            self._note_content_rate(self._drained_rate(rate, scale))
             a_stream = container.streams.audio[0]
             for packet in container.demux(a_stream):
                 if self._stop.is_set():
@@ -669,6 +670,7 @@ class AudioFileSource:
                         resampler = av.AudioResampler(
                             format="s16", layout="mono", rate=self._drained_rate(rate, retuned)
                         )
+                        self._note_content_rate(self._drained_rate(rate, retuned))
                     for resampled in resampler.resample(frame):
                         if self._stop.is_set():
                             return
@@ -721,6 +723,14 @@ class AudioFileSource:
                 self._drained_rate(rate, retuned),
             )
         return retuned
+
+    def _note_content_rate(self, rate: int) -> None:
+        """Tell the analyzer the rate of the samples pushed from here on. A
+        followed track reaches the tap resampled below the sink's rate, and
+        read at the sink's rate, a tone could land a band above its own."""
+        features = self._features
+        if features is not None:
+            features.set_content_rate(rate)
 
     @staticmethod
     def _drained_rate(rate: int, scale: float) -> int:

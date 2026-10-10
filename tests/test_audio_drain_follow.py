@@ -1,6 +1,8 @@
 """An audio file on the `$D418` DAC plays at its own speed and pitch however
 far below its armed rate the sink drains (#675): `DrainFollower` measures the
-drain off the sink's clock, and `AudioFileSource` resamples the track by it."""
+drain off the sink's clock, and `AudioFileSource` resamples the track by it.
+The analyzer is told the resampled rate, so its bands still read the track's
+own frequencies."""
 
 from __future__ import annotations
 
@@ -14,6 +16,13 @@ from unittest import mock
 import numpy as np
 
 from c64cast.audio import audio_source
+from c64cast.audio.audio_features import (
+    AnalysisTap,
+    AudioFeatureAnalyzer,
+    AudioFeatureStream,
+    band_edges,
+    rescaled_band_edges,
+)
 from c64cast.audio.audio_source import (
     DRAIN_FOLLOW_MIN,
     DRAIN_FOLLOW_RETUNE_S,
@@ -239,11 +248,87 @@ class AudioFileSourceDrainTest(unittest.TestCase):
             self.assertIsNone(src._observe_drain(follower, 8000))
         self.assertEqual(follower.scale, 1.0)
 
+    def test_the_analyzer_is_told_each_rate_the_track_is_resampled_to(self):
+        sink = _DrainingSink(self.now, 0.9)
+        src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
+        features = mock.Mock()
+        src._features = features
+        self._play(src, sink)
+        self.assertEqual(
+            features.set_content_rate.call_args_list, [mock.call(8000), mock.call(7200)]
+        )
+
+        features.reset_mock()
+        sink.pushed = 0
+        self._play(src, sink)
+        self.assertEqual(features.set_content_rate.call_args_list, [mock.call(7200)])
+
     def test_the_sampler_is_not_followed(self):
         sink = _DrainingSink(self.now, 0.9)
         sink.is_sampler = True
         src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
         self.assertIsNone(src._new_drain_follower())
+
+
+REF_RATE = 12000.0
+FFT = 1024
+BANDS = 8
+
+
+def _loudest_band(analyzer: AudioFeatureAnalyzer, tone_hz: float, sampled_at: float) -> int:
+    t = np.arange(FFT) / sampled_at
+    window = (0.05 * np.sin(2 * np.pi * tone_hz * t)).astype(np.float32)
+    return int(np.argmax(analyzer._update_bands(window)))
+
+
+class AnalyzerContentRateTest(unittest.TestCase):
+    """A track followed at 0.94 reaches the tap at 0.94 of the sink's rate.
+    A tone two bins under a band's top edge at the sink's rate sits 6 % higher
+    in the resampled window's bins, past that edge."""
+
+    SCALE = 0.94
+
+    def setUp(self) -> None:
+        edges = band_edges(BANDS, FFT)
+        self.band = BANDS - 2
+        self.tone_hz = (edges[self.band + 1] - 2) * REF_RATE / FFT
+
+    def test_a_tone_reads_in_its_own_band_at_the_rate_it_was_resampled_to(self):
+        analyzer = AudioFeatureAnalyzer(REF_RATE, n_bands=BANDS, fft_size=FFT)
+        self.assertEqual(_loudest_band(analyzer, self.tone_hz, REF_RATE), self.band)
+        followed = REF_RATE * self.SCALE
+        self.assertEqual(_loudest_band(analyzer, self.tone_hz, followed), self.band + 1)
+        analyzer.set_content_rate(followed)
+        self.assertEqual(_loudest_band(analyzer, self.tone_hz, followed), self.band)
+
+    def test_rescaled_bands_still_tile_dc_to_nyquist(self):
+        for bands, ratio in ((BANDS, 1 / 0.8), (BANDS, 0.8), (FFT // 2 - 1, 1.25)):
+            edges = rescaled_band_edges(bands, FFT, ratio)
+            self.assertEqual(len(edges), bands + 1)
+            self.assertGreaterEqual(edges[0], 1)
+            self.assertEqual(edges[-1], FFT // 2)
+            self.assertTrue(np.all(np.diff(edges) >= 1), (bands, ratio))
+
+    def test_a_rate_change_waits_for_the_heard_window_to_reach_it(self):
+        tap = AnalysisTap(size=8 * FFT)
+        played = [0.0]
+        stream = AudioFeatureStream(
+            tap, REF_RATE, n_bands=BANDS, fft_size=FFT, play_position=lambda: played[0]
+        )
+        tap.push(np.zeros(4 * FFT, dtype=np.float32))
+        stream.set_content_rate(REF_RATE * self.SCALE)
+        tap.push(np.zeros(2 * FFT, dtype=np.float32))
+        analyzer = stream._analyzer
+
+        played[0] = 4 * FFT
+        stream._process_tick()
+        np.testing.assert_array_equal(analyzer._edges, band_edges(BANDS, FFT))
+
+        played[0] = 4 * FFT + 1
+        stream._process_tick()
+        np.testing.assert_array_equal(
+            analyzer._edges, rescaled_band_edges(BANDS, FFT, 1 / self.SCALE)
+        )
 
 
 if __name__ == "__main__":
