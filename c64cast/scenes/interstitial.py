@@ -16,7 +16,7 @@ import numpy as np
 from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, CIA2, VIC, RegionID
-from c64cast.hw.delivery import write_confirmed
+from c64cast.hw.delivery import CONFIRM_TRIES, write_confirmed
 from c64cast.video.palette import C64_COLORS, resolve_color
 
 from .backgrounds import build as build_background
@@ -104,16 +104,16 @@ class InterstitialScene(Scene):
         # raster source, unhook the handler (restoring $0314 → $EA31 puts it out
         # of reach of any IRQ), ack the latched flag, and only then pin the
         # bank — a pin any earlier leaves a window in which $DD00 can be
-        # re-flipped to bank 2 after it. The disable goes first, and is written
-        # again behind the restore when it did not confirm, because the kernal
-        # handler at $EA31 never acks $D019: a raster source left enabled behind
-        # the restore re-enters the IRQ on every RTI. See
+        # re-flipped to bank 2 after it. The disable goes first, with its retries
+        # all ahead of the restore, because the kernal handler at $EA31 never
+        # acks $D019: a raster source left enabled behind the restore re-enters
+        # the IRQ on every RTI. See
         # docs/architecture/scenes.md#interstitialpy--backgroundspy.
-        raster_disabled = write_confirmed(self.api, lambda: self.api.write_memory("d01a", "00"))
+        raster_disabled = write_confirmed(
+            self.api, lambda: self.api.write_memory("d01a", "00"), tries=2 * CONFIRM_TRIES
+        )
         vector_restored = write_confirmed(self.api, self.api.restore_kernal_irq_vector)
-        if not raster_disabled and not write_confirmed(
-            self.api, lambda: self.api.write_memory("d01a", "00")
-        ):
+        if not raster_disabled:
             log.error("interstitial: the VIC raster IRQ disable was not confirmed delivered")
         self.api.write_memory("d019", "01")
         self._rearm_cia1(vector_restored)
@@ -141,11 +141,18 @@ class InterstitialScene(Scene):
         vector still on a leaked handler, every jiffy IRQ runs RAM the next
         scene's setup writes over, so a masked keyboard is the cheaper loss."""
         if not vector_restored:
+            # Masked rather than left as found: a bank-swap teardown that lost its
+            # own mask leaves Timer A live, and the next bitmap scene uploads its
+            # handler over $C500 before it masks CIA #1.
             log.error(
-                "interstitial: leaving CIA #1 Timer A as found — the $0314 restore "
-                "was not confirmed, so re-arming the jiffy IRQ could vector through "
-                "a leaked handler"
+                "interstitial: masking CIA #1 Timer A — the $0314 restore was not "
+                "confirmed, so the jiffy IRQ could vector through a leaked handler"
             )
+            if not write_confirmed(
+                self.api,
+                lambda: self.api.write_memory(f"{CIA1.ICR:04X}", f"{CIA1.ICR_DISABLE_ALL:02X}"),
+            ):
+                log.error("interstitial: the CIA #1 mask was not confirmed delivered")
             return
         if not write_confirmed(
             self.api,

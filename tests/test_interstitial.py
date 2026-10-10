@@ -19,6 +19,7 @@ from _fakes import FakeAPI
 
 from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import CIA1
 from c64cast.hw.delivery import CONFIRM_TRIES
 from c64cast.scenes.interstitial import (
     LABEL,
@@ -157,15 +158,16 @@ class InterstitialCia1RearmTest(unittest.TestCase):
         unmask = ops.index(("write_memory", "DC0D", "81"))
         pin = ops.index(("write_memory", "DD00", "97"))
         self.assertLess(disable, restore, "a raster source live behind $EA31 never acks")
+        self.assertEqual([op for op in ops if op[:2] == ("write_memory", "D01A")], [ops[disable]])
         self.assertLess(restore, unmask)
         self.assertLess(unmask, pin)
 
-    def test_unconfirmed_restore_leaves_cia1_masked(self):
+    def test_unconfirmed_restore_masks_cia1(self):
         scene, fake = self._scene()
         self._record_restore(fake, lost=True)
         with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
             scene.setup()
-        self.assertNotIn("DC0D", fake.memories)
+        self.assertEqual(fake.memories["DC0D"], f"{CIA1.ICR_DISABLE_ALL:02X}")
         self.assertIn("$0314 restore", cm.output[0])
         # The rest of the card's setup still runs.
         self.assertEqual(fake.memories["DD00"], "97")
@@ -194,13 +196,15 @@ class InterstitialCia1RearmTest(unittest.TestCase):
                 fake.delivery_epoch += 1
 
         fake.write_memory = lossy_write_memory  # type: ignore[method-assign]
+        self._record_restore(fake, lost=False)
         with self.assertLogs("c64cast.scenes.interstitial", level="ERROR") as cm:
             scene.setup()
         self.assertIn("raster IRQ disable was not confirmed", cm.output[0])
-        disables = [op for op in fake.ops if op[:2] == ("write_memory", "D01A")]
-        self.assertEqual(
-            len(disables), 2 * CONFIRM_TRIES, "confirmed, then again behind the restore"
-        )
+        restore = [op[:1] for op in fake.ops].index(("restore_kernal_irq_vector",))
+        disables = [op for op in fake.ops[:restore] if op[:2] == ("write_memory", "D01A")]
+        self.assertEqual(len(disables), 2 * CONFIRM_TRIES, "every retry ahead of the restore")
+        after = [op for op in fake.ops[restore:] if op[:2] == ("write_memory", "D01A")]
+        self.assertEqual(after, [])
         self.assertEqual(fake.memories["DC0D"], "81")
 
 
