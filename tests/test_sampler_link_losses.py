@@ -412,8 +412,12 @@ class VolumeRestoreTest(unittest.TestCase):
             plain_write(address, data_hex)
 
         chan.write_memory = slow_write  # type: ignore[method-assign]
-        with mock.patch.object(s, "time", chan.clock), self.assertLogs("c64cast.audio.sampler"):
+        with (
+            mock.patch.object(s, "time", chan.clock),
+            self.assertLogs("c64cast.audio.sampler") as logs,
+        ):
             self.assertTrue(smp._writer_step(smp._writer_gen))
+        self.assertIn("volume restore; restarting the channel", "\n".join(logs.output))
         self.assertEqual(chan.volume, smp._volume)
         self.assertFalse(smp._volume_owed)
 
