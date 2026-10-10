@@ -862,6 +862,9 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
         if not write_confirmed(api, write):
             raise RuntimeError(f"the {what} write was not confirmed after {CONFIRM_TRIES} tries")
 
+    def confirm_memory(what: str, address: str, value: str) -> None:
+        confirm(what, lambda: api.write_memory(address, value))
+
     masks = {
         "CIA1 mask": (f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}"),
         "VIC IRQ disable": ("D01A", "00"),
@@ -871,7 +874,7 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
         address, value = masks[what]
         # Listed first, so a write that raises past `confirm` counts as unconfirmed.
         unconfirmed_masks.append(what)
-        confirm(what, lambda: api.write_memory(address, value))
+        confirm_memory(what, address, value)
         unconfirmed_masks.remove(what)
 
     def mask_again(what: str) -> None:
@@ -908,10 +911,7 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
                 "the in-RAM handler, so re-arming the jiffy IRQ would vector through it"
             )
             return
-        confirm(
-            "CIA1 unmask",
-            lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}"),
-        )
+        confirm_memory("CIA1 unmask", f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
 
     def drain_dispatcher() -> None:
         if drain_reu_copy:
@@ -956,10 +956,7 @@ def uninstall_bank_swap_irq(api: C64Backend, *, drain_reu_copy: bool = True) -> 
         # addresses it expects.
         (
             "VIC bank 0",
-            lambda: confirm(
-                "VIC bank 0",
-                lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}"),
-            ),
+            lambda: confirm_memory("VIC bank 0", f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}"),
         ),
         # Keyboard scan must keep running for the C= / CTRL / SHIFT poller.
         ("CIA1 unmask", unmask_cia1),
