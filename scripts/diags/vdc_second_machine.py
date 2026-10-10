@@ -466,18 +466,23 @@ def describe(payload: bytes, got: bytes, sentinel: int) -> str:
 
 
 def vram_is_16k(port: vdc.VdcPorthole) -> bool | None:
-    """Is this a 16 KiB VDC? The C128 Editor ROM's own test; None when $0000
-    cannot be read back.
+    """Is this a 16 KiB VDC? The C128 Editor ROM's own test; None when R28 or
+    $0000 cannot be read back, or $0000 will not read back clear.
 
     Force 64 KiB addressing, clear $0000, write $FF at $8000, read $0000 back.
     R28 bit 4 cannot answer this by itself: it configures the addressing rather
     than reporting the chips, so the test has to assume 64 KiB and see whether
     the far write aliases home. Any nonzero byte counts, because a 4416 machine
-    is four bits wide and need not alias the whole byte."""
+    is four bits wide and need not alias the whole byte. The clear is read back
+    before the far write: a $00 that fails to land over a stale set bit would
+    otherwise pass for an alias and call a 64 KiB machine 16 KiB."""
     r28 = port.read_reg(vdc.R.CHARSET_ADDR)
-    if r28 is not None:
-        port.write_reg(vdc.R.CHARSET_ADDR, (r28 | VRAM_TYPE_BIT) & ~REG_READ_ONES[28])
+    if r28 is None:
+        return None
+    port.write_reg(vdc.R.CHARSET_ADDR, (r28 | VRAM_TYPE_BIT) & ~REG_READ_ONES[28])
     port.write_ram(0x0000, b"\x00")
+    if port.read_ram(0x0000, 1) != b"\x00":
+        return None
     port.write_ram(0x8000, b"\xff")
     got = port.read_ram(0x0000, 1)
     return None if not got else bool(got[0])
@@ -544,9 +549,12 @@ def stage_identity(p: Probe) -> bool:
         boot = "unread" if p.vram_64k is None else "64 KiB" if p.vram_64k else "16 KiB"
         aliases = vram_is_16k(p.port)
         print(f"    VRAM as KERNAL set R28    {boot}  (configured, not measured)")
-        print(f"    VRAM by aliasing at $8000 {'16 KiB' if aliases else '64 KiB'}")
+        measured = "unread" if aliases is None else "16 KiB" if aliases else "64 KiB"
+        print(f"    VRAM by aliasing at $8000 {measured}")
         if aliases or p.vram_64k is False:
-            select_16k_addressing(p.port)
+            if not select_16k_addressing(p.port):
+                print("    -> R28 unreadable; 16 KiB addressing NOT selected")
+                return True
             print("    -> cleared R28 bit 4. The cartridge is frozen and programs")
             print("       64 KiB addressing on every machine, which decodes wrong")
             print("       here. Timing registers are untouched, so stage 3 and the")
