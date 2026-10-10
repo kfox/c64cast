@@ -70,12 +70,14 @@ def heard_seconds(audio: AudioStreamer | UltimateAudioSampler) -> float:
 # the slowest drain followed (a stalled link, a pause), since none is the
 # drain. The span is measured from an anchor rather than between neighboring
 # readings: a push into a stalled sink returns after QUEUE_PUT_TIMEOUT_S
-# (0.2 s), so readings across a stall come closer together than the span. The drain is measured, not converged on, so the deadband only keeps
-# estimator noise from rebuilding the resampler, and DRAIN_FOLLOW_RETUNE_S
-# spaces the rebuilds.
+# (0.2 s), so readings across a stall come closer together than the span.
+# The drain is measured, not converged on, so the deadband only keeps
+# estimator noise from rebuilding the resampler: at 0.005 a steady 0.94 drain
+# on hardware read 0.935..0.945 window to window and rebuilt it every few
+# seconds. DRAIN_FOLLOW_RETUNE_S spaces the rebuilds.
 DRAIN_FOLLOW_WARMUP_S = 3.0
 DRAIN_FOLLOW_WINDOW_S = 4.0
-DRAIN_FOLLOW_DEADBAND = 0.005
+DRAIN_FOLLOW_DEADBAND = 0.01
 DRAIN_FOLLOW_STALL_S = 0.25
 DRAIN_FOLLOW_RETUNE_S = 2.0
 DRAIN_FOLLOW_MIN = 0.80

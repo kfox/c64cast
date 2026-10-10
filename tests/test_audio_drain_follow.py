@@ -61,7 +61,7 @@ class DrainFollowerTest(unittest.TestCase):
 
     def test_a_drain_inside_the_deadband_is_left_alone(self):
         f = DrainFollower(0.94)
-        retunes, _ = _feed(f, 0.943, 20.0)
+        retunes, _ = _feed(f, 0.948, 20.0)
         self.assertEqual(retunes, [])
 
     def test_no_reading_before_the_consumer_starts_counts(self):
