@@ -9,5 +9,7 @@
   mhires teardown: CIA #1 and the raster source are masked first, `$0314` is
   restored whether or not those landed, a mask that was lost is written again
   behind the restore, and CIA #1 is re-armed only once the restore is
-  confirmed, staying masked otherwise. The card now also re-arms CIA #1 after
+  confirmed, staying masked otherwise. When the big-text overlay's restore
+  never lands, its handler is made to stop writing the scroll and screen
+  registers, so a multicolor scene after it keeps its own. The card now also re-arms CIA #1 after
   unhooking a leaked handler, so pause and skip keep working.

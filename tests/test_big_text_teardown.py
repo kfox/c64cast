@@ -15,6 +15,8 @@ from _fakes import FakeAPI, lose_writes_to
 from c64cast.hw.c64 import KERNAL
 from c64cast.hw.delivery import CONFIRM_TRIES
 from c64cast.scenes.overlays.big_text import (
+    DEFAULT_D016,
+    DEFAULT_D018,
     DISARMED_RASTER_IRQ_HANDLER,
     IRQ_HANDLER_ADDR,
     RASTER_IRQ_HANDLER,
@@ -25,6 +27,7 @@ from c64cast.scenes.overlays.big_text import (
 
 _KERNAL_VECTOR = (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
 _HANDLER = f"{IRQ_HANDLER_ADDR:04X}"
+_SHADOWS = f"{SHADOW_D016_ADDR:04X}"
 _WRITES = ("write_memory", "write_regs", "lost")
 
 
@@ -73,7 +76,27 @@ class BigTextIrqTeardownTest(unittest.TestCase):
         self.assertEqual(api.memories["DC0D"], "7F")
         self.assertTrue(any("leaving CIA #1 Timer A masked" in m for m in logs.output))
         self.assertEqual(api.mem_files[_HANDLER], DISARMED_RASTER_IRQ_HANDLER, "still hooked")
+        self.assertEqual(api.regs[_SHADOWS], (DEFAULT_D016, DEFAULT_D018))
         self.assertTrue(any("stays hooked" in m for m in logs.output))
+
+    def test_a_lost_disarm_still_leaves_the_handler_committing_the_defaults(self):
+        # The strip's last page and X-scroll would otherwise go on overriding
+        # the teardown's $D016/$D018 restore at every vblank.
+        api = _lossy(0x0314, CONFIRM_TRIES)
+        lose_writes_to(api, IRQ_HANDLER_ADDR, CONFIRM_TRIES)
+        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
+            _uninstall(api)
+        self.assertNotIn(_HANDLER, api.mem_files)
+        self.assertEqual(api.regs[_SHADOWS], (DEFAULT_D016, DEFAULT_D018))
+        self.assertTrue(any("'handler disarm' failed" in m for m in logs.output))
+
+    def test_a_lost_shadow_reset_still_disarms_the_handler(self):
+        api = _lossy(0x0314, CONFIRM_TRIES)
+        lose_writes_to(api, SHADOW_D016_ADDR, CONFIRM_TRIES)
+        with self.assertLogs("c64cast.scenes.overlays.big_text", level="ERROR") as logs:
+            _uninstall(api)
+        self.assertEqual(api.mem_files[_HANDLER], DISARMED_RASTER_IRQ_HANDLER)
+        self.assertTrue(any("'shadow reset' failed" in m for m in logs.output))
 
     def test_a_clean_teardown_runs_the_shared_unhook(self):
         api = FakeAPI()

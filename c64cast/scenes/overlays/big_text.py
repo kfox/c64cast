@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from c64cast._teardown import run_teardown_steps
 from c64cast.hw.c64 import RASTER_VBLANK_LINE, SCREEN, VECTORS
 from c64cast.hw.irq_unhook import confirm, unhook_raster_irq
 from c64cast.video.palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
@@ -45,7 +46,7 @@ SCREEN_PAGE_ADDRS = (0x0400, 0x0C00)
 # charset at $1000 (standard ROM). $14 → screen=$0400, $34 → screen=$0C00.
 D018_PAGE_VALUES = (0x14, 0x34)
 # What teardown leaves in $D016/$D018: 40 columns, no X-scroll, page 0; and what
-# install seeds the shadows with.
+# install seeds the shadows with and a teardown that cannot unhook resets them to.
 DEFAULT_D016 = 0x08
 DEFAULT_D018 = D018_PAGE_VALUES[0]
 
@@ -426,16 +427,38 @@ class BigTextOverlay(Overlay):
         the retry rules. A handler that stays hooked would keep committing its
         shadows every frame, over whatever the next scene writes to
         $D016/$D018 (an MCM scene's multicolor bit and charset among them), so
-        it is disarmed in place instead."""
+        it is disarmed in place instead. Its shadows are reset to the defaults
+        first: should the disarm be lost too, an armed handler then commits
+        the pair `teardown` writes rather than the strip's last page and
+        X-scroll."""
 
         def disarm() -> None:
             log.error("big_text: the raster handler stays hooked; disarming its $D016/$D018 commit")
-            confirm(
-                api,
-                "handler disarm",
-                lambda: api.write_memory_file(
-                    f"{IRQ_HANDLER_ADDR:04X}", DISARMED_RASTER_IRQ_HANDLER
-                ),
+            run_teardown_steps(
+                log,
+                "big_text raster IRQ",
+                [
+                    (
+                        "shadow reset",
+                        lambda: confirm(
+                            api,
+                            "shadow reset",
+                            lambda: api.write_regs(
+                                f"{SHADOW_D016_ADDR:04X}", DEFAULT_D016, DEFAULT_D018
+                            ),
+                        ),
+                    ),
+                    (
+                        "handler disarm",
+                        lambda: confirm(
+                            api,
+                            "handler disarm",
+                            lambda: api.write_memory_file(
+                                f"{IRQ_HANDLER_ADDR:04X}", DISARMED_RASTER_IRQ_HANDLER
+                            ),
+                        ),
+                    ),
+                ],
             )
 
         unhook_raster_irq(api, log, "big_text raster IRQ", if_still_hooked=disarm)
