@@ -19,92 +19,15 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-import time
 import unittest
-from collections.abc import Callable
 
 from _fakes import RestoresLogging
+from _redact_linear_time import _hidden_value_ladder
 
 from c64cast._redact import _NOT_A_PASSWORD_REACH, redact_secrets, redact_source_line
 from c64cast.app import cli_commands
 
 LOGIN_LINE = "web console: open http://127.0.0.1:8123/api/login?token=s3cr3t&next=/"
-
-
-def _hidden_value_ladder(levels: int, filler: int) -> str:
-    """`levels` hidden values, each one separator level shallower than the
-    last, then `filler` characters, then the encoded `&`s that end them
-    deepest first, so each value runs on past the one before it."""
-    return (
-        "".join(
-            f"token%{'25' * (levels + 1)}3Dpassword%{'25' * e}3Dx%{'25' * (levels + 1)}26"
-            for e in range(levels - 1, -1, -1)
-        )
-        + "y" * filler
-        + "".join(f"%{'25' * d}26" for d in range(levels, -1, -1))
-    )
-
-
-#: How many times longer the long input of a linear-time check is than its
-#: short one.
-_SCALE = 4
-
-#: Measurements a linear-time check takes of each input.
-_TRIES = 3
-
-
-#: CPU seconds a measurement runs `work` for before dividing by the runs. A
-#: single call is not timed alone: Windows advances a thread's CPU clock once
-#: per 15.6 ms tick, so a call of a few milliseconds reads as zero there.
-_MEASURE_S = 0.1
-
-
-def _cpu_seconds(work: Callable[[str], object], line: str) -> float:
-    runs = 0
-    started = time.thread_time()
-    while True:
-        work(line)
-        runs += 1
-        spent = time.thread_time() - started
-        if spent >= _MEASURE_S:
-            return spent / runs
-
-
-def _redacts_both_ways(line: str) -> None:
-    redact_secrets(line)
-    redact_source_line([line], 1)
-
-
-def _assert_linear_time(
-    test: unittest.TestCase,
-    make: Callable[[int], str],
-    work: Callable[[str], object] = _redacts_both_ways,
-) -> None:
-    """Fail unless `work` takes time linear in the length of `make(scale)`.
-
-    Compares `make(1)` against `make(_SCALE)`, each `_SCALE` times longer.
-    A linear pass spends about `_SCALE` times as long on the long input and a
-    quadratic one about `_SCALE` squared, so the check allows twice the length
-    ratio. A wall-clock limit on one input fails whenever the machine is
-    loaded; a ratio between two inputs measured on the same machine does not.
-    The clock is this thread's CPU time, which stops while the scheduler runs
-    something else. Each input keeps its fastest of `_TRIES` measurements, all
-    taken before the ratio is judged: deciding after each try would let one
-    inflated measurement of the short input pass a quadratic regression.
-    """
-    short, long = make(1), make(_SCALE)
-    allowed = 2 * len(long) / len(short)
-    fastest_short = fastest_long = float("inf")
-    for _ in range(_TRIES):
-        fastest_short = min(fastest_short, _cpu_seconds(work, short))
-        fastest_long = min(fastest_long, _cpu_seconds(work, long))
-    if fastest_long <= allowed * fastest_short:
-        return
-    test.fail(
-        f"{len(long) / len(short):.1f}x the input took "
-        f"{fastest_long / fastest_short:.1f}x the time "
-        f"({fastest_short * 1000:.1f} ms, then {fastest_long * 1000:.1f} ms)"
-    )
 
 
 def _record(message: str) -> logging.LogRecord:
@@ -531,13 +454,6 @@ class RedactSecretsTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
-    def test_a_long_run_of_encoded_bearers_is_redacted_in_linear_time(self):
-        """Every other `Bearer` in the run starts a match, and the one between
-        is its value (the `%20` a match consumes leaves that one no escape to
-        follow). A value that ran past an encoded space read the rest of the run
-        once per match, which is quadratic: 144 KB of `Bearer%20` took 3.6 s."""
-        _assert_linear_time(self, lambda s: "Bearer%20" * 4_000 * s, redact_secrets)
-
     def test_a_bare_key_or_sig_parameter_is_covered(self):
         """The spellings a signed media or feed URL uses. `-vv` releases the
         urllib3 loggers, whose per-request record carries the query string, so a
@@ -806,136 +722,6 @@ class RedactSecretsTest(unittest.TestCase):
                 self.assertNotIn("zzz", safe)
                 self.assertFalse(verbatim)
 
-    def test_a_long_dash_joined_run_is_redacted_in_linear_time(self):
-        """A `-` puts a word boundary at every letter of `a-a-a-…`. A prefixed
-        name tried from each of them scanned the rest of the run every time,
-        which is quadratic: 10 KB of one took 1.5 s on a log line, and 100 KB
-        took 139 s."""
-        for make in (
-            lambda s: "a-" * 8_000 * s,
-            lambda s: "key-" * 4_000 * s,
-            lambda s: "pass-" * 4_000 * s,
-            lambda s: "pwd-" * 4_000 * s,
-            lambda s: "x-" * 8_000 * s + "=1",
-        ):
-            with self.subTest(line=make(1)[:16]):
-                _assert_linear_time(self, make)
-
-    def test_a_long_run_of_encoded_percent_signs_is_redacted_in_linear_time(self):
-        """An escape is read as `%`, any run of `25`, then its digits. Given
-        back a pair at a time, that run rescans the name characters after it
-        once per pair, which is quadratic: 32 KB of `%2525…` took 16 s."""
-        for make in (
-            lambda s: "%" + "25" * 2_000 * s + "a" * 4_000 * s,
-            lambda s: "%" + "25" * 8_000 * s + "token",
-            lambda s: "%" + "25" * 8_000 * s + "pwd",
-            lambda s: "%" + "25" * 8_000 * s + "pass",
-        ):
-            with self.subTest(line=make(1)[:16]):
-                _assert_linear_time(self, make)
-
-
-def _nested_escape(scale: int) -> str:
-    """`%253` repeated in front of `%34`: each decoding assembles the next escape."""
-    line = "%34"
-    while len(line) < 32_000 * scale:
-        line = "%253" + line
-    return line
-
-
-def _linear_time_tests(
-    shapes: dict[str, Callable[[int], str]],
-    work: Callable[[str], object] = _redacts_both_ways,
-) -> Callable[[type[unittest.TestCase]], type[unittest.TestCase]]:
-    """Add a `test_<name>` to the decorated class for each of `shapes`.
-
-    One test per shape rather than one test looping over them: each
-    `_assert_linear_time` takes about a second of CPU, and the per-test cap
-    applies to wall time, which a loaded machine stretches. Thirty shapes in
-    one test took over eight seconds on an idle machine.
-    """
-
-    def add(cls: type[unittest.TestCase]) -> type[unittest.TestCase]:
-        for name, make in shapes.items():
-
-            def test(self: unittest.TestCase, make: Callable[[int], str] = make) -> None:
-                _assert_linear_time(self, make, work)
-
-            test.__name__ = f"test_{name}"
-            test.__qualname__ = f"{cls.__qualname__}.{test.__name__}"
-            if hasattr(cls, test.__name__):
-                raise TypeError(f"{cls.__qualname__} already has {test.__name__}")
-            setattr(cls, test.__name__, test)
-        return cls
-
-    return add
-
-
-@_linear_time_tests(
-    {
-        "encoded_name_over_names_and_filler": lambda s: (
-            "token%3A" + "token=" * 4_000 * s + "%26" + "a" * 24_000 * s + " "
-        ),
-        "repeated_encoded_names": lambda s: "token%3A" * 4_000 * s + "%26",
-        "double_encoded_pairs": lambda s: "token%253Apassword=x%2526" * 1_500 * s + " ",
-        "encoded_name_password_pairs": lambda s: "token%3Apassword " * 2_000 * s,
-        "pwd_pass_pairs": lambda s: "pwd%3Apass " * 2_000 * s,
-        "quoted_sig_over_token_quotes": lambda s: 'sig="' + "token:'" * 2_000 * s + '"',
-        "alternating_quoted_sigs": lambda s: ('sig="x token:\'"' + "sig='y token:\"'") * 1_000 * s,
-        "hidden_value_ladder": lambda s: _hidden_value_ladder(50 * s, 100_000 * s),
-    },
-    redact_secrets,
-)
-class HiddenNamesLinearTimeTest(unittest.TestCase):
-    """Each value a hidden name could outlast is looked for only next to
-    the end it outlasts, and a value an earlier one already reaches past
-    is not read again."""
-
-
-@_linear_time_tests(
-    {
-        "token_equals": lambda s: "token=" * 8_000 * s,
-        "token_equals_quote": lambda s: "token='" * 8_000 * s,
-        "token_equals_escaped_quote": lambda s: "token=\\'" * 8_000 * s,
-        "token_equals_bytes_quote": lambda s: "token=b'" * 8_000 * s,
-        "token_quoted_apostrophe": lambda s: "token='it's " * 4_000 * s,
-        "bearer": lambda s: "Bearer " * 8_000 * s,
-        "glued_bearer_plus": lambda s: "x_Bearer+" * 6_000 * s,
-        "authorization_basic": lambda s: "Authorization: Basic " * 3_000 * s,
-        "authorization_encoded_quoted_basic": lambda s: "Authorization: %22Basic%22 " * 3_000 * s,
-        "authorization_bytes_encoded_basic": lambda s: "Authorization: b%22Basic%22 " * 3_000 * s,
-        "bearer_double_encoded_space": lambda s: "Bearer%2520" * 5_000 * s,
-        "userinfo_urls": lambda s: "a://a@" * 8_000 * s,
-        "encoded_scheme_separator": lambda s: "x%3A%2F%2F" * 5_000 * s,
-        "encoded_at_signs_in_netloc": lambda s: "a://" + "%40x" * 16_000 * s,
-        "quotes": lambda s: "'" * 48_000 * s,
-        "backslashes_then_quote": lambda s: "\\" * 48_000 * s + "'",
-        "nested_escapes": _nested_escape,
-        "broken_escapes": lambda s: "%2%34" * 10_000 * s,
-        "percent_signs": lambda s: "%" * 48_000 * s,
-        "encoded_values_with_deep_ampersands": lambda s: ("token%3Dx" + "%252526") * 3_000 * s,
-        "encoded_values_then_ampersands": lambda s: (
-            "token%3Dx" * 4_000 * s + "%2526" * 16_000 * s + "%26"
-        ),
-        "deep_name_then_values": lambda s: "token%25253D" + "x%2526" * 8_000 * s,
-        "bypass_equals": lambda s: "bypass=" * 8_000 * s,
-        "json_escaped_sig": lambda s: "\\u0026sig=" * 5_000 * s,
-        "password_flags": lambda s: "--password " * 5_000 * s,
-        "token_then_backslashes": lambda s: "token" + "\\" * 48_000 * s,
-        "token_then_spaces": lambda s: "token" + " " * 48_000 * s,
-        "authorization_then_punctuation": lambda s: "Authorization: " + "!" * 48_000 * s,
-        "authorization_value_then_punctuation": lambda s: "Authorization: x" + "!" * 48_000 * s,
-        "dashes_then_token": lambda s: "-" * 25_000 * s + "token x",
-    }
-)
-class TokenizerShapesLinearTimeTest(unittest.TestCase):
-    """Every value, credential and netloc is read from where it starts,
-    including inside another one, so each ends at a stop looked up rather
-    than scanned for: a scan from each start reads the same stretch once
-    per value that starts in it. The escapes a first decoding assembles
-    (`%253%34` is `%34` is `4`) are decoded in one pass however deep they
-    nest, where a pass per level is quadratic in the nesting."""
-
 
 class RedactUrlUserinfoTest(unittest.TestCase):
     """A private media file is reached as `https://user:token@host/...`, and
@@ -1009,21 +795,6 @@ class RedactUrlUserinfoTest(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
-
-    def test_a_long_run_of_scheme_characters_is_redacted_in_linear_time(self):
-        """Every line `--log-file` and the console's log tail receive goes
-        through here. A scheme pattern retried from every offset of a run of
-        scheme characters is quadratic in the run: 64 KB of hex took 11 s, and
-        the same run on a config line the parser refused took 17 s to quote."""
-        for make in (
-            lambda s: "a" * 16_000 * s,
-            lambda s: "deadbeef0123" * 1_250 * s,
-            lambda s: "x://" + "a" * 16_000 * s,
-        ):
-            with self.subTest(line=make(1)[:16]):
-                line = make(_SCALE)
-                self.assertEqual(redact_secrets(line), line)
-                _assert_linear_time(self, make)
 
 
 class RedactSourceLineTest(unittest.TestCase):
@@ -1293,10 +1064,6 @@ class NumberedNameTest(unittest.TestCase):
         )
         self.assertEqual(redact_secrets(line), line)
 
-    def test_a_long_run_of_digits_is_redacted_in_linear_time(self):
-        _assert_linear_time(self, lambda s: "token" + "1" * 20_000 * s + "=x")
-        _assert_linear_time(self, lambda s: "token1" * 8_000 * s)
-
 
 class AuthorizationFlagTest(unittest.TestCase):
     def test_an_authorization_flag_keeps_its_scheme_and_masks_the_credential(self):
@@ -1326,10 +1093,6 @@ class AuthorizationFlagTest(unittest.TestCase):
 
     def test_another_flag_still_takes_one_word(self):
         self.assertEqual(redact_secrets("x --password Basic abc"), "x --password REDACTED abc")
-
-    def test_a_long_run_of_authorization_flags_is_redacted_in_linear_time(self):
-        _assert_linear_time(self, lambda s: "--authorization Basic a " * 4_000 * s)
-        _assert_linear_time(self, lambda s: "--authorization " * 8_000 * s)
 
 
 class QuotedFlagTest(unittest.TestCase):
@@ -1483,15 +1246,6 @@ class QuotedFlagTest(unittest.TestCase):
         self.assertEqual(redact_secrets("x --password b-x y"), "x --password REDACTED y")
         self.assertEqual(redact_secrets("x --password '-abc' y"), "x --password 'REDACTED' y")
 
-    def test_a_long_run_of_quoted_flags_is_redacted_in_linear_time(self):
-        _assert_linear_time(self, lambda s: "['--password', " * 6_000 * s)
-        _assert_linear_time(self, lambda s: "'--password' " * 8_000 * s)
-        _assert_linear_time(self, lambda s: "\\" * 20_000 * s + "--password' 'x")
-        _assert_linear_time(self, lambda s: "('password', " * 6_000 * s)
-        _assert_linear_time(self, lambda s: "('password', 'a'" * 4_000 * s)
-        _assert_linear_time(self, lambda s: "('Set-Cookie', '" * 4_000 * s)
-        _assert_linear_time(self, lambda s: "(\\'" * 20_000 * s + "password\\', \\'x")
-
 
 class DigestParametersTest(unittest.TestCase):
     def test_every_digest_parameter_is_masked(self):
@@ -1566,16 +1320,6 @@ class DigestParametersTest(unittest.TestCase):
             redact_secrets("Authorization: Basic abc, d=e"), "Authorization: Basic REDACTED, d=e"
         )
 
-    def test_a_long_run_of_digest_headers_is_redacted_in_linear_time(self):
-        for make in (
-            lambda s: "Authorization: Digest a=b " * 4_000 * s,
-            lambda s: 'Authorization: Digest a="' * 4_000 * s,
-            lambda s: "Authorization: Digest " + 'a="b" ' * 8_000 * s + "'",
-            lambda s: 'Authorization: Digest \\\\"' * 4_000 * s,
-        ):
-            with self.subTest(line=make(1)[:30]):
-                _assert_linear_time(self, make)
-
 
 class PunctuatedSchemeTest(unittest.TestCase):
     def test_a_first_word_with_punctuation_inside_goes_with_the_next_word(self):
@@ -1605,16 +1349,6 @@ class PunctuatedSchemeTest(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
-
-    def test_a_long_run_of_punctuated_words_is_redacted_in_linear_time(self):
-        for make in (
-            lambda s: "Authorization:" * 8_000 * s + "x" + " " * 20_000 * s + "y z",
-            lambda s: "Authorization: s3!x " * 4_000 * s,
-            lambda s: "Authorization: " + "s3!x" * 20_000 * s + " a",
-            lambda s: "Authorization:s3!x" * 8_000 * s + " " * 20_000 * s + "a",
-        ):
-            with self.subTest(line=make(1)[:30]):
-                _assert_linear_time(self, make)
 
 
 class QuotedSchemeTest(unittest.TestCase):
@@ -1659,15 +1393,6 @@ class QuotedSchemeTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
 
-    def test_a_long_run_of_quoted_schemes_is_redacted_in_linear_time(self):
-        for make in (
-            lambda s: 'Authorization: "Basic" ' * 4_000 * s,
-            lambda s: 'Authorization:"' * 8_000 * s + 'Basic"' + " " * 20_000 * s + "a",
-            lambda s: 'Authorization: "Digest" ' * 4_000 * s,
-        ):
-            with self.subTest(line=make(1)[:30]):
-                _assert_linear_time(self, make)
-
 
 class WordBeforeQuoteTest(unittest.TestCase):
     def test_any_word_before_a_quote_that_closes_around_whitespace_opens_a_value(self):
@@ -1700,16 +1425,6 @@ class WordBeforeQuoteTest(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), want)
-
-    def test_a_long_run_of_words_before_quotes_is_redacted_in_linear_time(self):
-        for make in (
-            lambda s: "token=Qz'" * 8_000 * s,
-            lambda s: "token=Qz'a " * 4_000 * s,
-            lambda s: "token=" + "a" * 20_000 * s + "'",
-            lambda s: "Bearer " + "Qz'a b' " * 4_000 * s,
-        ):
-            with self.subTest(line=make(1)[:30]):
-                _assert_linear_time(self, make)
 
 
 class EscapeBeforeNameTest(unittest.TestCase):
@@ -1790,17 +1505,6 @@ class EscapeBeforeNameTest(unittest.TestCase):
         for line in ("x" + e + "u0061key=1", "x" + e + "x41key=1", "x" + e + "tPWD=/home/k"):
             with self.subTest(line=line):
                 self.assertEqual(redact_secrets(line), line)
-
-    def test_a_long_run_of_escapes_is_redacted_in_linear_time(self):
-        e = "\\"
-        for make in (
-            lambda s: (e + "nsig=a ") * 4_000 * s,
-            lambda s: (e + "u0026") * 8_000 * s + "--password a",
-            lambda s: "x" + (e + "n") * 8_000 * s + "Cookie: a=b",
-            lambda s: (e + "n--password a ") * 4_000 * s,
-        ):
-            with self.subTest(line=make(1)[:30]):
-                _assert_linear_time(self, make)
 
 
 class CookieTest(unittest.TestCase):
@@ -2104,35 +1808,6 @@ class CookieTest(unittest.TestCase):
         safe, verbatim = redact_source_line(['cookie == "a=b"'], 1)
         self.assertNotIn("a=b", safe)
         self.assertFalse(verbatim)
-
-    def test_a_long_run_of_cookie_headers_is_redacted_in_linear_time(self):
-        for make in (
-            lambda s: "cookie=" * 8_000 * s,
-            lambda s: "Cookie: " * 8_000 * s,
-            lambda s: "Cookie:" + "a=b;" * 8_000 * s,
-            lambda s: "Set-Cookie: a=b;" * 4_000 * s,
-            lambda s: "cookie='" * 8_000 * s,
-            lambda s: "cookie=%22" * 4_000 * s,
-            lambda s: 'cookie: "a="' * 4_000 * s,
-            lambda s: "x cookie=a;cookie='b;" * 4_000 * s,
-            lambda s: "'--cookie', 'a=b'," * 4_000 * s,
-            lambda s: 'cookie: "a"; ' * 4_000 * s,
-            lambda s: "'Cookie: a=b' " * 4_000 * s,
-            lambda s: "'Cookie: '" + " " * 40_000 * s + "x",
-            lambda s: "cookie=" + "a b=" * 8_000 * s,
-            lambda s: "cookie: '' " * 4_000 * s,
-            lambda s: "cookie=%22%22 " * 4_000 * s,
-            lambda s: "Cookie: ''" + " " * 40_000 * s + "x",
-            lambda s: "Set-Cookie: " + ",a=" * 8_000 * s,
-            lambda s: "Set-Cookie: " + ",    " * 8_000 * s,
-            lambda s: "Set-Cookie: a=1" + "; Path=/" * 8_000 * s,
-            lambda s: "Cookie%3A%20" + "a%3Dx%26" * 4_000 * s,
-            lambda s: "Set-Cookie: %27&" * 500 * s,
-            lambda s: "=['--cookie', %27" * 500 * s,
-            lambda s: "://Set-Cookie: \\\\%2527  " * 400 * s,
-        ):
-            with self.subTest(line=make(1)[:30]):
-                _assert_linear_time(self, make)
 
 
 class ConfigureLoggingWiringTest(RestoresLogging):
