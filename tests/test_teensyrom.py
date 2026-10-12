@@ -31,6 +31,7 @@ from c64cast.hw.teensyrom_dma import (
     TOK_FW_FULL,
     TOK_READ_C64_MEM,
     SerialTransport,
+    SpansProbe,
     TcpTransport,
     TRBusyError,
     TRClient,
@@ -319,22 +320,28 @@ class SpansFramingTest(unittest.TestCase):
 
     def test_probe_always_closes_with_a_zero_header(self):
         self.t.queue_token(TOK_ACK)
-        self.assertTrue(self.c.probe_spans())
+        self.assertIs(self.c.probe_spans(), SpansProbe.READY)
         self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
 
-    def test_probe_counts_a_held_bus_as_support(self):
+    def test_probe_reports_a_held_bus(self):
         self.t.queue_token(TOK_FAIL)
-        self.assertTrue(self.c.probe_spans())
+        self.assertIs(self.c.probe_spans(), SpansProbe.HELD)
 
     def test_probe_reads_support_from_the_refusal_when_chatter_hid_the_reply(self):
         t = _SpansLoopback(on_header=b"Want 1 to 64 spans")
         t.queue_raw(b"TR")  # boot chatter where the reply token should be
-        self.assertTrue(TRClient(t).probe_spans())
+        self.assertIs(TRClient(t).probe_spans(), SpansProbe.READY)
+
+    def test_probe_reads_a_held_bus_from_its_text_when_chatter_hid_the_reply(self):
+        for reason in (b"C64 is paused", b"REU emulation is running"):
+            t = _SpansLoopback(on_header=b"\x7f\x9b" + reason)
+            t.queue_raw(b"TR")
+            self.assertIs(TRClient(t).probe_spans(), SpansProbe.HELD, reason)
 
     def test_probe_on_firmware_without_the_command(self):
         t = _SpansLoopback(on_header=b"Unk cmd: 0000")
         t.queue_raw(b"Un")  # the text answer, read as a token
-        self.assertFalse(TRClient(t).probe_spans())
+        self.assertIs(TRClient(t).probe_spans(), SpansProbe.ABSENT)
 
     def test_cart_io_overlap_bounds(self):
         self.assertFalse(span_touches_cart_io(0xDD00, 0x100))
@@ -344,14 +351,22 @@ class SpansFramingTest(unittest.TestCase):
 
 
 class SlicingBackendTest(unittest.TestCase):
-    def _backend(self, mode: str = "auto", *, supported: bool = True, slice_bytes: int = 32):
+    def _backend(
+        self,
+        mode: str = "auto",
+        *,
+        supported: bool = True,
+        held: bool = False,
+        slice_bytes: int = 32,
+        gap_us: int = 40,
+    ):
         t = _SpansLoopback(on_header=b"" if supported else b"Unk cmd: 0000")
         t.queue_token(TOK_FW_FULL)
         t.queue_token(TOK_ACK)
         t.queue_raw(b"\xe2\xfc")
         if mode != "off":
             if supported:
-                t.queue_token(TOK_ACK)
+                t.queue_token(TOK_FAIL if held else TOK_ACK)
             else:
                 t.queue_raw(b"Un")
         b = TeensyROMBackend(
@@ -360,7 +375,7 @@ class SlicingBackendTest(unittest.TestCase):
             storage="sd",
             dma_slicing=mode,
             dma_slice_bytes=slice_bytes,
-            dma_slice_gap_us=40,
+            dma_slice_gap_us=gap_us,
         )
         self.connect_sent = bytes(t.sent)
         t.sent.clear()
@@ -456,6 +471,133 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertEqual(sent.count(_MEM_TOK + bytes([0x44, 0x00])), 1)
         self.assertEqual(t.quiet_waits.count(0.15), 1)
         self.assertEqual(b.stats["errors"], 0)
+
+    def _refuse_then_carry(self, b, t, addr: str = "4000") -> None:
+        """One write whose WriteC64Spans is refused at its token and carried
+        by WriteC64Mem."""
+        t.queue_token(TOK_FAIL)
+        t.queue_token(TOK_ACK)
+        b.write_memory_file(addr, bytes(64))
+
+    def test_a_refusal_is_remembered_across_writes(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        clock = [100.0]
+        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
+            self._refuse_then_carry(b, t)
+            t.sent.clear()
+            t.quiet_waits.clear()
+            clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MIN_S / 2
+            sent = self._write(b, t, "4000", 256, 1)
+        self.assertNotIn(_SPANS_TOK, sent)
+        self.assertNotIn(0.15, t.quiet_waits)
+        self.assertEqual(b.stats["errors"], 0)
+
+    def test_the_back_off_asks_again_and_doubles_while_the_bus_stays_held(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        clock = [100.0]
+        low = tr_api.SPANS_REFUSED_BACKOFF_MIN_S
+        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
+            self._refuse_then_carry(b, t)
+            clock[0] += low
+            t.sent.clear()
+            self._refuse_then_carry(b, t)
+            self.assertTrue(bytes(t.sent).startswith(_SPANS_TOK), "asked again after the back-off")
+            clock[0] += 2 * low - 0.01
+            t.sent.clear()
+            self.assertNotIn(_SPANS_TOK, self._write(b, t, "4000", 256, 1))
+            clock[0] += 0.01
+            t.sent.clear()
+            self._refuse_then_carry(b, t)
+            self.assertTrue(bytes(t.sent).startswith(_SPANS_TOK), "asked again after twice it")
+
+    def test_the_back_off_is_capped(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        clock = [100.0]
+        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
+            for _ in range(8):
+                self._refuse_then_carry(b, t)
+                clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MAX_S
+            t.sent.clear()
+            self._refuse_then_carry(b, t)
+        self.assertTrue(bytes(t.sent).startswith(_SPANS_TOK))
+
+    def test_an_accepted_ask_resumes_slicing_and_resets_the_back_off(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        clock = [100.0]
+        low = tr_api.SPANS_REFUSED_BACKOFF_MIN_S
+        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
+            self._refuse_then_carry(b, t)
+            clock[0] += low
+            self._refuse_then_carry(b, t)
+            clock[0] += 2 * low
+            t.sent.clear()
+            with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+                sent = self._write(b, t, "4000", 64, 3)
+            self.assertTrue(sent.startswith(_SPANS_TOK + bytes([0, 32, 40, 1])))
+            self.assertTrue(any("slicing resumed" in m for m in cm.output))
+            t.sent.clear()
+            self.assertTrue(self._write(b, t, "4000", 64, 3).startswith(_SPANS_TOK))
+            self._refuse_then_carry(b, t)
+            clock[0] += low
+            t.sent.clear()
+            self._refuse_then_carry(b, t)
+        self.assertTrue(bytes(t.sent).startswith(_SPANS_TOK), "back-off restarted from its floor")
+
+    def test_only_one_write_asks_when_the_back_off_runs_out(self):
+        # The render and audio threads both write; past the back-off one of
+        # them asks and the other stays on WriteC64Mem.
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        clock = [100.0]
+        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
+            self._refuse_then_carry(b, t)
+            clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MIN_S
+            self.assertTrue(b._spans_allowed())
+            self.assertFalse(b._spans_allowed())
+
+    def test_the_first_refusal_is_logged_once(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        clock = [100.0]
+        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
+            with self.assertLogs("c64cast.hw.teensyrom_api", level="DEBUG") as cm:
+                self._refuse_then_carry(b, t)
+                clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MIN_S
+                self._refuse_then_carry(b, t)
+        refusals = [r for r in cm.records if "asking again in" in r.getMessage()]
+        self.assertEqual([r.levelname for r in refusals], ["INFO", "DEBUG"])
+
+    def test_a_bus_held_at_connect_starts_on_writec64mem(self):
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            b, t = self._backend(held=True)
+        self.assertTrue(any("bus held" in m for m in cm.output))
+        b.note_nmi_consumer(True)
+        self.assertNotIn(_SPANS_TOK, self._write(b, t, "4000", 256, 1))
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+
+    def test_bitmap_tempo_follows_a_refusal_and_its_end(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        clock = [100.0]
+        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
+            self._refuse_then_carry(b, t)
+            self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+            self.assertEqual(b.dac_bitmap_tempo(False), 0.89)
+            clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MIN_S
+            self._write(b, t, "4000", 64, 3)
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+
+    def test_bitmap_tempo_at_an_unmeasured_slice_shape_is_the_unsliced_figure(self):
+        for slice_bytes, gap_us in ((64, 40), (32, 20), (255, 0)):
+            with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+                b, _ = self._backend(slice_bytes=slice_bytes, gap_us=gap_us)
+            self.assertTrue(any("was not measured" in m for m in cm.output))
+            self.assertEqual(b.dac_bitmap_tempo(True), 0.88, (slice_bytes, gap_us))
+            self.assertEqual(b.dac_bitmap_tempo(False), 0.89, (slice_bytes, gap_us))
 
     def test_off_never_probes(self):
         b, t = self._backend("off")

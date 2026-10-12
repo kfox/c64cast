@@ -251,8 +251,11 @@ stretch nets back to real time. `[audio].dac_bitmap_tempo_mhires` and
 `dac_bitmap_tempo_hires` hold the observed speed fractions. Left unset, they
 start from the values measured for the connected hardware: 0.88 and 0.89 on an
 NTSC Ultimate 64-II and on a TeensyROM writing unsliced (the default), 0.97 on a
-TeensyROM+ whose `[teensyrom].dma_slicing` is turned on and whose firmware
-slices its DMA writes. A few seconds in, the scene measures how fast its audio
+TeensyROM+ whose `[teensyrom].dma_slicing` is turned on, whose firmware
+slices its DMA writes, and whose slice shape is the default 32 bytes with a
+40 µs gap. Any other shape starts from the unsliced values, and so does a
+TeensyROM+ whose firmware is refusing sliced writes because the C64 is paused
+or REU emulation is running. A few seconds in, the scene measures how fast its audio
 is actually playing and follows that, because the slowdown also depends on how
 many frames a second the scene sends. It follows no further than 0.15 below
 the starting value, and while the link stalls or the video's audio arrives too

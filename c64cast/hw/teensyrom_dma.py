@@ -43,6 +43,7 @@ See docs/architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the
 from __future__ import annotations
 
 import contextlib
+import enum
 import logging
 import socket
 import threading
@@ -107,6 +108,18 @@ _SPANS_RECOVER_QUIET_S = 1.6
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
+# Its refusals at the token, when another DMA user holds the bus.
+_SPANS_BUS_HELD = ("REU emulation is running", "C64 is paused")
+
+
+class SpansProbe(enum.Enum):
+    """What `TRClient.probe_spans` learned about WriteC64Spans."""
+
+    ABSENT = "absent"
+    READY = "ready"
+    # The command exists, but REU emulation or a pause holds the bus, so it is
+    # refused at its token until that ends.
+    HELD = "held"
 
 
 def span_touches_cart_io(addr: int, length: int) -> bool:
@@ -697,8 +710,9 @@ class TRClient:
         with contextlib.suppress(OSError, TRError):
             self._drain_stale(_SPANS_RECOVER_QUIET_S)
 
-    def probe_spans(self) -> bool:
-        """Does the connected firmware carry WriteC64Spans? Sends the token,
+    def probe_spans(self) -> SpansProbe:
+        """Does the connected firmware carry WriteC64Spans, and is the bus free
+        for it? Sends the token,
         then a header announcing zero spans, which the firmware refuses before
         anything is owed — so the probe writes no C64 memory and leaves no
         discard window behind.
@@ -710,9 +724,10 @@ class TRClient:
         bytes are safe on every firmware: refused as a header, and read by
         firmware without the command as two unknown 0x0000 tokens.
 
-        Support is an ack to the token, a FailToken to it (the command exists
-        but REU emulation or a pause holds the bus), or — when chatter hid the
-        reply — the refusal's own text."""
+        An ack to the token, or the zero-span refusal's text when chatter hid
+        the reply, is READY. A FailToken, or the bus-held refusal's text, is
+        HELD: the command exists but REU emulation or a pause holds the bus.
+        Anything else is ABSENT, which keeps every write on WriteC64Mem."""
         with self._command():
             self._drain_stale()
             self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
@@ -722,9 +737,11 @@ class TRClient:
                 tok = None
             self.transport.send_all(bytes(4))
             text = self.transport.drain_text(0.3)
-            if tok in (TOK_ACK, TOK_FAIL):
-                return True
-            return _SPANS_COUNT_REFUSAL in text
+            if tok == TOK_ACK or _SPANS_COUNT_REFUSAL in text:
+                return SpansProbe.READY
+            if tok == TOK_FAIL or any(reason in text for reason in _SPANS_BUS_HELD):
+                return SpansProbe.HELD
+            return SpansProbe.ABSENT
 
     def read_segment(self, addr: int, length: int) -> bytes:
         """One ReadC64Mem command: token + addr(BE) + len(BE), verify the ack,
