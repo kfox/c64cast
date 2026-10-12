@@ -629,6 +629,11 @@ class SlicingBackendTest(unittest.TestCase):
             self._write(b, t, "4000", 64, 3)
         self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
 
+    def test_the_measured_slice_shape_is_the_config_default(self):
+        # The config help and the books promise 0.97 at the default shape.
+        tr = cfgmod.TeensyromCfg()
+        self.assertEqual((tr.dma_slice_bytes, tr.dma_slice_gap_us), tr_api._SLICED_TEMPO_SHAPE)
+
     def test_bitmap_tempo_at_an_unmeasured_slice_shape_is_the_unsliced_figure(self):
         for slice_bytes, gap_us in ((64, 40), (32, 20), (255, 0)):
             with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
