@@ -1002,6 +1002,10 @@ class _FakeSerial:
         self._delay_s = delay_s
         self._sleep = time.sleep if clock is None else clock.sleep
 
+    @property
+    def in_waiting(self) -> int:
+        return len(self._chunks[0]) if self._chunks else 0
+
     def read(self, n: int) -> bytes:
         self.timeouts_seen.append(self.timeout)
         if self._delay_s:
@@ -1013,6 +1017,20 @@ class _FakeSerial:
     def flush(self) -> None: ...
 
     def close(self) -> None: ...
+
+
+class _BlockingFakeSerial(_FakeSerial):
+    """Reads the way pyserial does: read(n) returns at once when n bytes are
+    waiting, and otherwise waits out the whole timeout first."""
+
+    def __init__(self, chunks: list[bytes], clock: SleepDrivenClock):
+        super().__init__(chunks, clock=clock)
+
+    def read(self, n: int) -> bytes:
+        self.timeouts_seen.append(self.timeout)
+        if self.in_waiting < n:
+            self._sleep(self.timeout)
+        return self._chunks.pop(0) if self._chunks else b""
 
 
 class SerialTransportDeadlineTest(unittest.TestCase):
@@ -1031,6 +1049,15 @@ class SerialTransportDeadlineTest(unittest.TestCase):
         self.assertTrue(fake.timeouts_seen)
         self.assertTrue(all(t == 0.05 for t in fake.timeouts_seen))
         self.assertEqual(fake.timeout, 2.0)  # restored afterward
+
+    def test_drain_text_stops_one_quiet_window_after_the_last_byte(self):
+        clock = SleepDrivenClock()
+        transport = SerialTransport("COM_FAKE")
+        transport._ser = _BlockingFakeSerial([b"Timeout!\n"], clock)
+        start = clock.monotonic()
+        with mock.patch.object(tr_dma, "time", clock):
+            self.assertEqual(transport.drain_text(quiet_s=1.0), "Timeout!")
+        self.assertAlmostEqual(clock.monotonic() - start, 1.0)
 
     def test_drain_text_strips_control_characters(self):
         transport = SerialTransport("COM_FAKE")

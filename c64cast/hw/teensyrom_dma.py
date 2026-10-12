@@ -347,7 +347,7 @@ class SerialTransport(TRTransport):
         buf = bytearray()
         hard_deadline = time.monotonic() + _DRAIN_MAX_S
         quiet_deadline = time.monotonic() + quiet_s
-        # read(64) blocks up to self._ser.timeout — io_timeout (2s) from
+        # read() blocks up to self._ser.timeout — io_timeout (2s) from
         # __init__ — so without this override the common "nothing to drain"
         # case stalls a full io_timeout on every command instead of quiet_s.
         prev_timeout = self._ser.timeout  # type: ignore[attr-defined]
@@ -362,7 +362,10 @@ class SerialTransport(TRTransport):
                         _DRAIN_MAX_BYTES,
                     )
                     break
-                chunk = self._ser.read(64)  # type: ignore[attr-defined]
+                # read(64) would wait out the whole quiet_s for 64 bytes when
+                # fewer arrive, so every burst would double the silence waited.
+                waiting = self._ser.in_waiting  # type: ignore[attr-defined]
+                chunk = self._ser.read(max(1, min(64, waiting)))  # type: ignore[attr-defined]
                 if chunk:
                     buf.extend(chunk)
                     quiet_deadline = time.monotonic() + quiet_s
