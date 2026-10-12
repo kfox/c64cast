@@ -181,12 +181,12 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._spans_held = False
         self._spans_retry_at = 0.0
         self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
-        # Refusals recorded so far. An ask notes it before it goes out, so its
-        # outcome cannot overwrite a refusal another thread's ask recorded
-        # meanwhile: an acceptance read off the link earlier would clear a
-        # hold that is still on, and a second refusal of the same hold would
-        # double the back-off twice.
-        self._spans_refusals = 0
+        # Moves at each refusal recorded and at a reset. An ask notes it before
+        # it goes out, so its outcome cannot overwrite what another thread's
+        # ask recorded meanwhile: an acceptance read off the link earlier
+        # would clear a hold that is still on, and a second refusal of the
+        # same hold would double the back-off twice.
+        self._spans_epoch = 0
         if dma_slicing != "off":
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
             if self._spans is not None:
@@ -216,7 +216,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             with contextlib.suppress(OSError, TRError):
                 self.tr._drain_stale(0.2)
             probe = SpansProbe.ABSENT
-        if probe is SpansProbe.HELD:
+        # At slice 0 no WriteC64Spans is ever sent, so there is no ask to put off.
+        if probe is SpansProbe.HELD and slice_bytes != 0:
             self._note_spans_refused("WriteC64Spans probe: bus held")
         if probe is not SpansProbe.ABSENT:
             if slice_bytes != 0 and (slice_bytes, gap_us) != _SLICED_TEMPO_SHAPE:
@@ -278,9 +279,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
 
     def _note_spans_refused(self, detail: object, seen: int | None = None) -> None:
         with self._spans_lock:
-            if seen is not None and seen != self._spans_refusals:
+            if seen is not None and seen != self._spans_epoch:
                 return
-            self._spans_refusals += 1
+            self._spans_epoch += 1
             first = not self._spans_held
             wait = self._spans_backoff_s
             self._spans_held = True
@@ -297,7 +298,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         if not self._spans_held:
             return
         with self._spans_lock:
-            if seen != self._spans_refusals:
+            if seen != self._spans_epoch:
                 return
             was_held = self._spans_held
             self._spans_held = False
@@ -340,7 +341,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 if spans is None or len(chunk) <= one_halt:
                     self.tr.write_segment(addr + off, chunk)
                 else:
-                    seen = self._spans_refusals
+                    seen = self._spans_epoch
                     try:
                         self.tr.write_spans([(addr + off, chunk)], *spans)
                     except TRSpansRefused as e:
@@ -424,6 +425,13 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             self.tr.reset()
         except (OSError, TRError) as e:
             log.warning("TR reset failed: %s", e)
+            return
+        # A reset ends both holds the firmware refuses WriteC64Spans for (REU
+        # emulation and a pause).
+        with self._spans_lock:
+            self._spans_held = False
+            self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
+            self._spans_epoch += 1
 
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Bring the C64 to a clean, streamable idle state.

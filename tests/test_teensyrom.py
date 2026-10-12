@@ -563,9 +563,9 @@ class SlicingBackendTest(unittest.TestCase):
         # One thread's ask is accepted, another's is refused after it on the
         # link, and the first thread records its acceptance last.
         b, _ = self._backend()
-        accepted_ask = b._spans_refusals
+        accepted_ask = b._spans_epoch
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
-            b._note_spans_refused("refused", b._spans_refusals)
+            b._note_spans_refused("refused", b._spans_epoch)
             b._note_spans_accepted(accepted_ask)
         self.assertFalse(any("slicing resumed" in m for m in cm.output))
         self.assertTrue(b._spans_held)
@@ -574,7 +574,7 @@ class SlicingBackendTest(unittest.TestCase):
     def test_two_refusals_of_one_hold_double_the_back_off_once(self):
         # Both threads asked while the bus was free and both were refused.
         b, _ = self._backend()
-        before = b._spans_refusals
+        before = b._spans_epoch
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b._note_spans_refused("render", before)
             b._note_spans_refused("audio", before)
@@ -599,6 +599,23 @@ class SlicingBackendTest(unittest.TestCase):
         b.note_nmi_consumer(True)
         self.assertNotIn(_SPANS_TOK, self._write(b, t, "4000", 256, 1))
         self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+
+    def test_a_reset_ends_a_remembered_refusal(self):
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b, t = self._backend(held=True)
+        t.queue_stale(b"Reset cmd received\n")
+        b.reset()
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+        b.note_nmi_consumer(True)
+        t.sent.clear()
+        self.assertTrue(self._write(b, t, "4000", 64, 3).startswith(_SPANS_TOK))
+
+    def test_a_bus_held_at_connect_at_slice_0_puts_off_no_ask(self):
+        # At slice 0 no WriteC64Spans is sent, so there is nothing to ask again.
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            b, _ = self._backend(held=True, slice_bytes=0)
+        self.assertFalse(any("asking again" in m for m in cm.output))
+        self.assertFalse(b._spans_held)
 
     def test_bitmap_tempo_follows_a_refusal_and_its_end(self):
         b, t = self._backend()
