@@ -32,7 +32,6 @@ See docs/architecture/hardware-io.md#teensyrom_apipy--the-teensyrom-backend.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import time
@@ -166,16 +165,14 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         """Confirm the connected firmware answers ReadC64Mem. Reads 2 bytes of
         KERNAL ROM ($FFFC reset vector — always mapped, value-stable) and only
         checks the round-trip succeeds; older builds NAK/timeout the unknown
-        token. Best-effort: any failure -> no read support, drained to resync."""
+        token. Best-effort: any failure -> no read support. The trailing bytes
+        an unknown token can leave on old firmware are the client's resync to
+        discard, before the next command."""
         try:
             data = self.tr.read_segment(0xFFFC, 2)
             return len(data) == 2
         except (OSError, TRError) as e:
             log.debug("TR read-capability probe failed (%s); assuming no read", e)
-            # An unknown token on old firmware can leave trailing bytes that
-            # would desync the next command.
-            with contextlib.suppress(OSError, TRError):
-                self.tr._drain_stale(0.2)
             return False
 
     def _resolve_spans(self, mode: str, slice_bytes: int, gap_us: int) -> tuple[int, int] | None:
@@ -183,8 +180,6 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             supported = self.tr.probe_spans()
         except (OSError, TRError) as e:
             log.debug("TR WriteC64Spans probe failed (%s); assuming absent", e)
-            with contextlib.suppress(OSError, TRError):
-                self.tr._drain_stale(0.2)
             supported = False
         if supported:
             return slice_bytes, gap_us

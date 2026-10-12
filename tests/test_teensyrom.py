@@ -75,6 +75,8 @@ class LoopbackTransport(TRTransport):
 
     def recv_exact(self, n: int) -> bytes:
         if len(self._inbox) < n:
+            # A real read that times out has consumed what did arrive.
+            self._inbox.clear()
             raise TRError("loopback underflow")
         out = bytes(self._inbox[:n])
         del self._inbox[:n]
@@ -213,26 +215,56 @@ _MEM_TOK = bytes([0x64, 0xFB])
 
 class _SpansLoopback(LoopbackTransport):
     """A loopback that can answer the four-byte span header with text, the way
-    firmware does when it refuses a zero-span header, and records every quiet
-    window drain_text was asked to wait out."""
+    firmware does when it refuses a zero-span header, and records each send
+    and each quiet window drain_text was asked to wait out, in order."""
 
     def __init__(self, on_header: bytes = b""):
         super().__init__()
         self.on_header = on_header
+        self.events: list[tuple[str, object]] = []
         self.quiet_waits: list[float] = []
 
     def send_all(self, data: bytes) -> None:
+        self.events.append(("send", bytes(data)))
         super().send_all(data)
         if data == bytes(4):
             self.queue_stale(self.on_header)
 
     def drain_text(self, quiet_s: float = 0.2) -> str:
+        self.events.append(("quiet", quiet_s))
         self.quiet_waits.append(quiet_s)
         return super().drain_text(quiet_s)
 
 
+_NEXT_FRAME = TRClient._u16(0x64FB) + bytes([0xD0, 0x20, 0x00, 0x01, 0x0E])
+
+
+def _frozen_clock(test: unittest.TestCase) -> SleepDrivenClock:
+    """Bind a clock only sleeps advance over the module's `time`, so a resync's
+    wait is exactly what the elapsed time since the last send leaves of it."""
+    clock = SleepDrivenClock()
+    patcher = mock.patch.object(tr_dma, "time", clock)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    return clock
+
+
+def _next_write_events(t: _SpansLoopback, c: TRClient) -> list[tuple[str, object]]:
+    """What the next WriteC64Mem puts on the link: a resync's quiet window, if
+    one runs, has to come before its frame."""
+    t.events.clear()
+    t.queue_token(TOK_ACK)
+    c.write_segment(0xD020, b"\x0e")
+    return list(t.events)
+
+
+_RESYNCED = [("quiet", tr_dma._RESYNC_QUIET_S), ("send", _NEXT_FRAME)]
+_IN_STEP = [("send", _NEXT_FRAME)]
+
+
 class SpansFramingTest(unittest.TestCase):
     def setUp(self):
+        _frozen_clock(self)
         self.t = _SpansLoopback()
         self.c = TRClient(self.t)
 
@@ -254,6 +286,8 @@ class SpansFramingTest(unittest.TestCase):
         with self.assertRaisesRegex(TRSpansRefused, "REU in use"):
             self.c.write_spans([(0x4000, b"\x01")], 32, 40)
         self.assertEqual(bytes(self.t.sent), _SPANS_TOK)
+        # Nothing is owed, so the write that carries it instead goes at once.
+        self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
 
     def test_an_unexpected_token_reply_closes_the_command_with_a_zero_header(self):
         self.t.queue_token(0x1234)
@@ -261,13 +295,13 @@ class SpansFramingTest(unittest.TestCase):
             self.c.write_spans([(0x4000, b"\x01")], 32, 40)
         self.assertNotIsInstance(cm.exception, TRSpansRefused)
         self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
-        self.assertEqual(self.t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_a_lost_token_reply_closes_the_command_with_a_zero_header(self):
         with self.assertRaises(TRError):
             self.c.write_spans([(0x4000, b"\x01")], 32, 40)
         self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
-        self.assertEqual(self.t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_a_failed_landing_waits_out_the_discard_without_sending_more(self):
         self.t.queue_token(TOK_ACK)
@@ -277,7 +311,15 @@ class SpansFramingTest(unittest.TestCase):
             self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
         self.assertNotIsInstance(cm.exception, TRSpansRefused)
         self.assertTrue(bytes(self.t.sent).endswith(b"\x01\x02"))
-        self.assertEqual(self.t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_refused_span_list_waits_out_the_discard(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_token(TOK_FAIL)
+        with self.assertRaises(TRError):
+            self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
+        self.assertFalse(bytes(self.t.sent).endswith(b"\x01\x02"))
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_a_send_the_transport_could_not_finish_still_recovers(self):
         class _Fails(_SpansLoopback):
@@ -289,9 +331,10 @@ class SpansFramingTest(unittest.TestCase):
         t = _Fails()
         t.queue_token(TOK_ACK)
         t.queue_token(TOK_ACK)
+        c = TRClient(t)
         with self.assertRaises(OSError):
-            TRClient(t).write_spans([(0x4000, b"\x01\x02")], 32, 40)
-        self.assertEqual(t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+            c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
+        self.assertEqual(_next_write_events(t, c), _RESYNCED)
 
     def test_a_token_the_transport_could_not_send_closes_the_command(self):
         class _Fails(_SpansLoopback):
@@ -301,10 +344,11 @@ class SpansFramingTest(unittest.TestCase):
                 super().send_all(data)
 
         t = _Fails()
+        c = TRClient(t)
         with self.assertRaises(OSError):
-            TRClient(t).write_spans([(0x4000, b"\x01")], 32, 40)
+            c.write_spans([(0x4000, b"\x01")], 32, 40)
         self.assertEqual(bytes(t.sent), bytes(4))
-        self.assertEqual(t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+        self.assertEqual(_next_write_events(t, c), _RESYNCED)
 
     def test_span_count_and_header_fields_are_bounded_before_the_wire(self):
         for spans, slice_bytes, gap in (
@@ -1351,22 +1395,20 @@ class MakeBackendTest(unittest.TestCase):
 
 
 class _CutLoopback(_SpansLoopback):
-    """A loopback whose next send or read can be cut part way by an interrupt,
-    the way the signal handler raises out of a blocked write or read. `events`
-    records each send and each quiet wait, in order."""
+    """A loopback whose next send can be cut part way, by an interrupt (the
+    signal handler raising out of a blocked write) or by a transport error,
+    and whose next read can be cut by an interrupt."""
 
     def __init__(self):
         super().__init__()
-        self.cut_next_send = False
+        self.cut_next_send: type[BaseException] | None = None
         self.cut_next_recv = False
-        self.events: list[tuple[str, object]] = []
 
     def send_all(self, data: bytes) -> None:
-        if self.cut_next_send:
-            self.cut_next_send = False
+        if self.cut_next_send is not None:
+            exc, self.cut_next_send = self.cut_next_send, None
             super().send_all(data[:3])
-            raise KeyboardInterrupt
-        self.events.append(("send", bytes(data)))
+            raise exc
         super().send_all(data)
 
     def recv_exact(self, n: int) -> bytes:
@@ -1375,71 +1417,141 @@ class _CutLoopback(_SpansLoopback):
             raise KeyboardInterrupt
         return super().recv_exact(n)
 
-    def drain_text(self, quiet_s: float = 0.2) -> str:
-        self.events.append(("quiet", quiet_s))
-        return super().drain_text(quiet_s)
-
 
 class CutCommandTest(unittest.TestCase):
-    """A command cut part way (an interrupt raised out of the transport) leaves
-    the firmware owed bytes or a reply unread, so the next command waits out
-    the firmware's discard before it sends anything."""
-
-    _FRAME = TRClient._u16(0x64FB) + bytes([0xD0, 0x20, 0x00, 0x01, 0x0E])
+    """A command that fails part way can leave the firmware owed bytes, or a
+    reply on its way, so the next command waits out the firmware's timeout
+    and discard before it sends anything."""
 
     def setUp(self):
+        self.clock = _frozen_clock(self)
         self.t = _CutLoopback()
         self.c = TRClient(self.t)
 
-    def _next_write_resyncs_first(self) -> None:
-        self.t.events.clear()
-        self.t.queue_token(TOK_ACK)
-        self.c.write_segment(0xD020, b"\x0e")
-        self.assertEqual(
-            self.t.events,
-            [("quiet", tr_dma._SPANS_RECOVER_QUIET_S), ("send", self._FRAME)],
-        )
+    def _cut_write(self, exc: type[BaseException] = KeyboardInterrupt) -> None:
+        self.t.cut_next_send = exc
+        with self.assertRaises(exc):
+            self.c.write_segment(0xD020, b"\x0e")
 
     def test_a_write_cut_mid_send_resyncs_before_the_next_command(self):
-        self.t.cut_next_send = True
-        with self.assertRaises(KeyboardInterrupt):
-            self.c.write_segment(0xD020, b"\x0e")
-        self._next_write_resyncs_first()
+        self._cut_write()
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_write_a_transport_error_cut_mid_send_resyncs_before_the_next_command(self):
+        self._cut_write(OSError)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_a_read_cut_before_its_reply_resyncs_before_the_next_command(self):
         self.t.queue_token(TOK_ACK)
         self.t.cut_next_recv = True
         with self.assertRaises(KeyboardInterrupt):
             self.c.read_segment(0x0400, 4)
-        self._next_write_resyncs_first()
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_reply_that_timed_out_resyncs_before_the_next_command(self):
+        # The reply may still arrive, and the next command would read it.
+        with self.assertRaises(TRError):
+            self.c.write_segment(0xD020, b"\x0e")  # no ack queued: underflow
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_read_data_that_timed_out_resyncs_before_the_next_command(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_raw(b"\x01")  # one of the four data bytes
+        with self.assertRaises(TRError):
+            self.c.read_segment(0x0400, 4)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_malformed_reply_resyncs_before_the_next_command(self):
+        self.t.queue_token(0x1234)
+        with self.assertRaisesRegex(TRError, "unexpected reply"):
+            self.c.write_segment(0xD020, b"\x0e")
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_refusal_does_not_add_a_resync(self):
+        # The firmware sends FailToken once it is done with the command.
+        self.t.queue_token(TOK_FAIL)
+        with self.assertRaises(TRError):
+            self.c.delete_file("x.prg")
+        self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
+
+    def test_every_command_resyncs_after_a_send_cut_short(self):
+        commands = {
+            "write_segment": lambda: self.c.write_segment(0x4000, b"\x01\x02\x03\x04"),
+            "write_spans": lambda: self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40),
+            "read_segment": lambda: self.c.read_segment(0x4000, 4),
+            "reset": self.c.reset,
+            "ping": self.c.ping,
+            "delete_file": lambda: self.c.delete_file("c64cast/x.prg"),
+            "post_file": lambda: self.c.post_file(b"ABCD", "c64cast/x.prg"),
+            "launch_file": lambda: self.c.launch_file("c64cast/x.prg"),
+            "probe_spans": self.c.probe_spans,
+        }
+        for name, command in commands.items():
+            with self.subTest(command=name):
+                self.t.cut_next_send = OSError
+                with self.assertRaises(OSError):
+                    command()
+                self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_firmware_check_that_timed_out_resyncs_before_the_next_command(self):
+        self.c.connect()  # no FWCheck reply queued: underflow
+        self.assertEqual(self.c.firmware, "unknown")
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_the_wait_runs_from_the_last_byte_sent(self):
+        class _SlowReply(_CutLoopback):
+            def __init__(self, clock: SleepDrivenClock, delay_s: float):
+                super().__init__()
+                self.clock, self.delay_s = clock, delay_s
+
+            def recv_exact(self, n: int) -> bytes:
+                self.clock.sleep(self.delay_s)
+                return super().recv_exact(n)
+
+        for delay_s, quiet_s in ((1.0, tr_dma._RESYNC_QUIET_S - 1.0), (5.0, 0.2)):
+            with self.subTest(delay_s=delay_s):
+                t = _SlowReply(self.clock, delay_s)
+                c = TRClient(t)
+                with self.assertRaises(TRError):
+                    c.write_segment(0xD020, b"\x0e")
+                t.delay_s = 0.0
+                events = _next_write_events(t, c)
+                self.assertEqual(events[1:], _IN_STEP)
+                self.assertAlmostEqual(events[0][1], quiet_s)  # type: ignore[arg-type]
+
+    def test_a_link_that_stays_silent_is_judged_dead_until_it_answers(self):
+        for _ in range(2):  # the first resync hears nothing, then fails again
+            self._cut_write(OSError)
+        # Judged dead: the next resync waits only the short quiet.
+        self._cut_write(OSError)
+        self.assertEqual(self.t.quiet_waits, [tr_dma._RESYNC_QUIET_S, tr_dma._RESYNC_MIN_QUIET_S])
+        # The device answering a resync ends it.
+        self.t.queue_stale(b"Timeout!")
+        self._cut_write(OSError)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_completed_command_ends_the_dead_judgment(self):
+        for _ in range(2):
+            self._cut_write(OSError)
+        # This resync waits the short quiet, and its command then completes.
+        self.assertEqual(
+            _next_write_events(self.t, self.c),
+            [("quiet", tr_dma._RESYNC_MIN_QUIET_S), ("send", _NEXT_FRAME)],
+        )
+        self._cut_write(OSError)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_a_cut_resync_is_retried_when_it_is_cut_too(self):
-        self.t.cut_next_send = True
-        with self.assertRaises(KeyboardInterrupt):
-            self.c.write_segment(0xD020, b"\x0e")
+        self._cut_write()
         with mock.patch.object(self.t, "drain_text", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.c.write_segment(0xD020, b"\x0e")
-        self._next_write_resyncs_first()
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_the_resync_runs_once(self):
-        self.t.cut_next_send = True
-        with self.assertRaises(KeyboardInterrupt):
-            self.c.write_segment(0xD020, b"\x0e")
-        self._next_write_resyncs_first()
-        self.t.events.clear()
-        self.t.queue_token(TOK_ACK)
-        self.c.write_segment(0xD020, b"\x0e")
-        self.assertEqual(self.t.events, [("send", self._FRAME)])
-
-    def test_a_link_error_does_not_add_a_resync(self):
-        # A TRError leaves recovery to the command that raised it, as before.
-        with self.assertRaises(TRError):
-            self.c.write_segment(0xD020, b"\x0e")  # no ack queued: underflow
-        self.t.events.clear()
-        self.t.queue_token(TOK_ACK)
-        self.c.write_segment(0xD020, b"\x0e")
-        self.assertEqual(self.t.events, [("send", self._FRAME)])
+        self._cut_write()
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+        self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
 
     def test_both_transports_resync_after_a_cut_write(self):
         class _CutSerial(_FakeSerial):
@@ -1467,7 +1579,7 @@ class CutCommandTest(unittest.TestCase):
                     ),
                 ):
                     client.write_segment(0xD020, b"\x0e")
-                drain.assert_called_once_with(tr_dma._SPANS_RECOVER_QUIET_S)
+                drain.assert_called_once_with(tr_dma._RESYNC_QUIET_S)
 
 
 if __name__ == "__main__":
