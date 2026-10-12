@@ -55,7 +55,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--url", default="tr://")
     ap.add_argument(
-        "--free-s", type=float, default=2.0, help="seconds before the pause and after it"
+        "--free-s",
+        type=float,
+        default=2.0,
+        help="seconds before the pause, and after the first ask once it is lifted",
     )
     ap.add_argument("--held-s", type=float, default=10.0, help="seconds paused")
     ap.add_argument("--period", type=float, default=0.1, help="seconds between writes")
@@ -113,7 +116,9 @@ def main() -> int:
         _send_pause(be, _PAUSE_ON)
         burst("held", args.held_s)
         _send_pause(be, _PAUSE_OFF)
-        burst("freed", args.free_s)
+        # The first ask after the unpause waits out the back-off then in force,
+        # up to SPANS_REFUSED_BACKOFF_MAX_S, which can outlast --free-s.
+        burst("freed", max(0.0, be._spans_retry_at - time.monotonic()) + args.free_s)
         print(f"[stats] {be.stats}")
     finally:
         try:
