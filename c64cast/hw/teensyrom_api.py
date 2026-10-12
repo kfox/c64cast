@@ -181,6 +181,12 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._spans_held = False
         self._spans_retry_at = 0.0
         self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
+        # Refusals recorded so far. An ask notes it before it goes out, so its
+        # outcome cannot overwrite a refusal another thread's ask recorded
+        # meanwhile: an acceptance read off the link earlier would clear a
+        # hold that is still on, and a second refusal of the same hold would
+        # double the back-off twice.
+        self._spans_refusals = 0
         if dma_slicing != "off":
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
             if self._spans is not None:
@@ -270,8 +276,11 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             self._spans_retry_at = now + self._spans_backoff_s
             return True
 
-    def _note_spans_refused(self, detail: object) -> None:
+    def _note_spans_refused(self, detail: object, seen: int | None = None) -> None:
         with self._spans_lock:
+            if seen is not None and seen != self._spans_refusals:
+                return
+            self._spans_refusals += 1
             first = not self._spans_held
             wait = self._spans_backoff_s
             self._spans_held = True
@@ -284,8 +293,12 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             wait,
         )
 
-    def _note_spans_accepted(self) -> None:
+    def _note_spans_accepted(self, seen: int) -> None:
+        if not self._spans_held:
+            return
         with self._spans_lock:
+            if seen != self._spans_refusals:
+                return
             was_held = self._spans_held
             self._spans_held = False
             self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
@@ -327,16 +340,17 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 if spans is None or len(chunk) <= one_halt:
                     self.tr.write_segment(addr + off, chunk)
                 else:
+                    seen = self._spans_refusals
                     try:
                         self.tr.write_spans([(addr + off, chunk)], *spans)
                     except TRSpansRefused as e:
                         # Re-asking per segment, or per write, would pay the
                         # refusal's text drain each time the bus is still held.
-                        self._note_spans_refused(e)
+                        self._note_spans_refused(e, seen)
                         spans = None
                         self.tr.write_segment(addr + off, chunk)
                     else:
-                        self._note_spans_accepted()
+                        self._note_spans_accepted(seen)
                 self._stats["writes"] += 1
                 off += len(chunk)
             self._note_emit_success()

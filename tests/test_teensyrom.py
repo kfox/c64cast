@@ -559,6 +559,27 @@ class SlicingBackendTest(unittest.TestCase):
             self.assertTrue(b._spans_allowed())
             self.assertFalse(b._spans_allowed())
 
+    def test_an_acceptance_asked_before_a_refusal_does_not_clear_it(self):
+        # One thread's ask is accepted, another's is refused after it on the
+        # link, and the first thread records its acceptance last.
+        b, _ = self._backend()
+        accepted_ask = b._spans_refusals
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            b._note_spans_refused("refused", b._spans_refusals)
+            b._note_spans_accepted(accepted_ask)
+        self.assertFalse(any("slicing resumed" in m for m in cm.output))
+        self.assertTrue(b._spans_held)
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+
+    def test_two_refusals_of_one_hold_double_the_back_off_once(self):
+        # Both threads asked while the bus was free and both were refused.
+        b, _ = self._backend()
+        before = b._spans_refusals
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b._note_spans_refused("render", before)
+            b._note_spans_refused("audio", before)
+        self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
+
     def test_the_first_refusal_is_logged_once(self):
         b, t = self._backend()
         b.note_nmi_consumer(True)
