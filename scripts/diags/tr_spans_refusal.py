@@ -47,7 +47,10 @@ def _send_pause(be: TeensyROMBackend, token: int) -> None:
     with tr._command():
         tr.transport.send_all(tr._u16(token))
         tok = tr._read_token()
-    state = "ack" if tok == TOK_ACK else f"unexpected 0x{tok:04X}"
+        # A refused token is followed by its text, which the next write would
+        # read as its ack.
+        detail = "" if tok == TOK_ACK else tr.transport.drain_text(0.3).strip()
+    state = "ack" if tok == TOK_ACK else f"unexpected 0x{tok:04X} {detail!r}"
     print(f"[pause] token 0x{token:04X}: {state}")
 
 
