@@ -705,6 +705,14 @@ class SlicingBackendTest(unittest.TestCase):
         t.sent.clear()
         self.assertTrue(self._write(b, t, "4000", 64, 3).startswith(_SPANS_TOK))
 
+    def test_a_refusal_of_an_ask_claimed_before_a_reset_is_dropped(self):
+        b, t = self._backend()
+        seen = b._claim_spans_ask()
+        t.queue_stale(b"Reset cmd received\n")
+        b.reset()
+        b._note_spans_refused("refused before the reset", seen)
+        self.assertFalse(b._spans_held)
+
     def test_a_bus_held_at_connect_at_slice_0_puts_off_no_ask(self):
         # At slice 0 no WriteC64Spans is sent, so there is nothing to ask again.
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
