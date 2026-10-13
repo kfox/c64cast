@@ -833,7 +833,11 @@ class TRClient:
         Support is an ack to the token, a FailToken to it (the command exists
         but REU emulation or a pause holds the bus), or — when chatter hid the
         reply — the refusal's own text. A firmware ``Timeout!`` on the token
-        raises TRError instead, since it answers nothing about support."""
+        raises TRError instead, since it answers nothing about support.
+
+        An ack, or a token reply that never came, owes the zero header's
+        refusal; when it is not in the drain it may still be on its way, and
+        the link is left out of step for the next command's resync."""
         with self._command():
             self._drain_stale()
             self._send(self._u16(TOK_WRITE_C64_SPANS))
@@ -845,6 +849,8 @@ class TRClient:
             text = self.transport.drain_text(0.3)
             if _FIRMWARE_TIMEOUT_TEXT in text:
                 raise TRError("WriteC64Spans probe: TR timed out on the token")
+            if tok in (None, TOK_ACK) and _SPANS_COUNT_REFUSAL not in text:
+                self._out_of_step = True
             if tok in (TOK_ACK, TOK_FAIL):
                 return True
             return _SPANS_COUNT_REFUSAL in text
@@ -865,11 +871,13 @@ class TRClient:
     def reset(self) -> None:
         """Reset the C64 (boots to the TR menu). The firmware answers with a
         text line ("Reset cmd received"), NOT a binary ack — drain it so it
-        doesn't pollute the next command's reply."""
+        doesn't pollute the next command's reply. A line that did not come in
+        the drain may still be on its way, so the link is left out of step."""
         with self._command():
             self._send(self._u16(TOK_RESET_C64))
             line = self.transport.drain_text()
             if "Reset" not in line:
+                self._out_of_step = True
                 log.debug("teensyrom reset: unexpected response %r", line)
 
     def drain_after_command(self, quiet_s: float = 0.2) -> str:
@@ -938,10 +946,15 @@ class TRClient:
             self._expect_ack(f"LaunchFile {path!r}")
 
     def ping(self) -> str:
-        """Liveness check. The firmware answers with a text status line."""
+        """Liveness check. The firmware answers with a text status line; when
+        none came in the drain it may still be on its way, so the link is left
+        out of step."""
         with self._command():
             self._send(self._u16(TOK_PING))
-            return self.transport.drain_text().strip()
+            line = self.transport.drain_text().strip()
+            if not line:
+                self._out_of_step = True
+            return line
 
     def flush(self) -> None:
         """No-op: every write is acked, so by the time write_segment returns

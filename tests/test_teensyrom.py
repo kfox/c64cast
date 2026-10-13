@@ -1656,6 +1656,46 @@ class CutCommandTest(unittest.TestCase):
         self.assertEqual(self.c.firmware, "unknown")
         self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
+    def test_a_spans_probe_whose_replies_went_unheard_resyncs(self):
+        # The refusal the zero header owes may still be on its way.
+        for name, token in (("token reply timed out", None), ("ack, no refusal", TOK_ACK)):
+            with self.subTest(name):
+                if token is not None:
+                    self.t.queue_token(token)
+                self.c.probe_spans()
+                self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_spans_probe_that_heard_the_refusal_stays_in_step(self):
+        self.t.on_header = tr_dma._SPANS_COUNT_REFUSAL.encode()
+        for name, token in (("token reply timed out", None), ("ack", TOK_ACK)):
+            with self.subTest(name):
+                if token is not None:
+                    self.t.queue_token(token)
+                self.assertTrue(self.c.probe_spans())
+                self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
+
+    def test_a_spans_probe_answered_by_a_held_bus_stays_in_step(self):
+        self.t.queue_token(TOK_FAIL)
+        self.assertTrue(self.c.probe_spans())
+        self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
+
+    def test_a_text_reply_that_went_unheard_resyncs(self):
+        commands = {"ping": self.c.ping, "reset": self.c.reset}
+        for name, command in commands.items():
+            with self.subTest(command=name):
+                command()  # nothing queued: the drain heard no reply
+                self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_text_reply_that_came_stays_in_step(self):
+        for name, command, text in (
+            ("ping", self.c.ping, b"TeensyROM is ready"),
+            ("reset", self.c.reset, b"Reset cmd received"),
+        ):
+            with self.subTest(command=name):
+                self.t.queue_stale(text)
+                command()
+                self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
+
     def test_an_interrupt_awaiting_the_spans_token_reply_closes_the_command(self):
         # The firmware's wait for a header outlasts the resync, so the zero
         # header has to go out on every exit.
