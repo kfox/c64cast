@@ -606,6 +606,7 @@ class ErrorSurfacingTest(unittest.TestCase):
             ("post_file", lambda: self.client.post_file(b"AB", "x.prg")),
             ("delete_file", lambda: self.client.delete_file("x.prg")),
         ):
+            self.setUp()  # one subtest's failure must not leave the next out of step
             with self.subTest(name), self._refuse_open(TOK_FAIL, "Busy!"):
                 with self.assertRaises(TRBusyError) as cm:
                     call()
