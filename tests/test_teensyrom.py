@@ -1524,7 +1524,7 @@ class CutCommandTest(unittest.TestCase):
             self._cut_write(OSError)
         # Judged dead: the next resync waits only the short quiet.
         self._cut_write(OSError)
-        self.assertEqual(self.t.quiet_waits, [tr_dma._RESYNC_QUIET_S, tr_dma._RESYNC_MIN_QUIET_S])
+        self.assertEqual(self.t.quiet_waits, [tr_dma._RESYNC_QUIET_S, tr_dma._RESYNC_DEAD_QUIET_S])
         # The device answering a resync ends it.
         self.t.queue_stale(b"Timeout!")
         self._cut_write(OSError)
@@ -1536,7 +1536,7 @@ class CutCommandTest(unittest.TestCase):
         # This resync waits the short quiet, and its command then completes.
         self.assertEqual(
             _next_write_events(self.t, self.c),
-            [("quiet", tr_dma._RESYNC_MIN_QUIET_S), ("send", _NEXT_FRAME)],
+            [("quiet", tr_dma._RESYNC_DEAD_QUIET_S), ("send", _NEXT_FRAME)],
         )
         self._cut_write(OSError)
         self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
@@ -1552,6 +1552,82 @@ class CutCommandTest(unittest.TestCase):
         self._cut_write()
         self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
         self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
+
+    def test_a_dead_link_still_waits_out_the_firmware_byte_timeout_from_the_last_send(self):
+        for _ in range(2):
+            self._cut_write(OSError)
+        # Judged dead; the wait still runs from the last byte sent, so a
+        # command right after the cut waits out the firmware's 500 ms per byte.
+        self.clock.sleep(0.3)
+        events = _next_write_events(self.t, self.c)
+        self.assertEqual(events[1:], _IN_STEP)
+        self.assertAlmostEqual(events[0][1], tr_dma._RESYNC_DEAD_QUIET_S - 0.3)  # type: ignore[arg-type]
+        self.assertGreater(tr_dma._RESYNC_DEAD_QUIET_S, 0.5)
+
+    def test_an_interrupt_after_a_silent_resync_does_not_judge_the_link_dead(self):
+        with self.assertRaises(TRError):
+            self.c.write_segment(0xD020, b"\x0e")  # no reply: out of step
+        self._cut_write(KeyboardInterrupt)  # its resync hears nothing
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_only_the_failing_commands_own_send_counts_toward_a_dead_judgment(self):
+        self._cut_write(OSError)  # a send failed, but its resync was not silent yet
+        with self.assertRaises(TRError):
+            self.c.write_segment(0xD020, b"\x0e")  # silent resync, then no reply
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_reply_that_timed_out_after_a_silent_resync_does_not_judge_the_link_dead(self):
+        for _ in range(2):
+            with self.assertRaises(TRError):
+                self.c.write_segment(0xD020, b"\x0e")  # no reply
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_firmware_timeout_refusal_resyncs_before_the_next_command(self):
+        # The firmware gave up on bytes the host sent, which may still arrive.
+        fail = bytes([TOK_FAIL & 0xFF, TOK_FAIL >> 8])
+        commands = {
+            "write_segment": lambda: self.c.write_segment(0x4000, b"\x01\x02"),
+            "read_segment": lambda: self.c.read_segment(0x4000, 4),
+        }
+        for name, command in commands.items():
+            with self.subTest(command=name):
+                self.t.queue_token(TOK_FAIL)
+                self.t.queue_stale(b"Timeout!\n" + fail + b"Error receiving data!")
+                with self.assertRaisesRegex(TRError, "timed out receiving") as cm:
+                    command()
+                self.assertNotIsInstance(cm.exception, tr_dma.TRNak)
+                self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_spans_token_the_firmware_timed_out_on_resyncs(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.queue_stale(b"Timeout!\n")
+        with self.assertRaisesRegex(TRError, "timed out on the token") as cm:
+            self.c.write_spans([(0x4000, b"\x01")], 32, 40)
+        self.assertNotIsInstance(cm.exception, tr_dma.TRNak)
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_spans_probe_the_firmware_timed_out_on_resyncs(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.on_header = b"Timeout!\n"  # read after the probe's zero header
+        with self.assertRaisesRegex(TRError, "timed out on the token"):
+            self.c.probe_spans()
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_a_firmware_check_answered_with_anything_else_resyncs(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.queue_stale(b"Timeout!\n")
+        self.c.connect()
+        self.assertEqual(self.c.firmware, "unknown")
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
+    def test_an_interrupt_awaiting_the_spans_token_reply_closes_the_command(self):
+        # The firmware's wait for a header outlasts the resync, so the zero
+        # header has to go out on every exit.
+        self.t.cut_next_recv = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.c.write_spans([(0x4000, b"\x01")], 32, 40)
+        self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_both_transports_resync_after_a_cut_write(self):
         class _CutSerial(_FakeSerial):

@@ -5,4 +5,4 @@
   on it was read by the next command, leaving every later read a reply behind.
   The command after any such failure now waits for the firmware to give up and
   finish replying first: about 2 s when it follows the failure at once, and
-  0.2 s on a link that has stopped answering.
+  well under a second on a link that has stopped answering.

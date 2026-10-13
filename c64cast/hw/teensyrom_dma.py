@@ -108,6 +108,14 @@ _RESYNC_QUIET_S = 1.6
 # The silence a resync still waits for when the sender's last byte is long past,
 # so a reply already on its way is read here rather than by the next command.
 _RESYNC_MIN_QUIET_S = 0.2
+# What a resync waits from the sender's last byte on a link judged dead: the
+# firmware's 500 ms wait for an owed byte, and a margin, so the next command is
+# not taken as the rest of a frame the dead link delivered in part.
+_RESYNC_DEAD_QUIET_S = 0.6
+# What the firmware prints with the FailToken it sends when an owed byte did not
+# arrive in time (SerialAvailabeTimeout). The rest of what the host sent may
+# still be on its way, and reaches the dispatcher as commands.
+_FIRMWARE_TIMEOUT_TEXT = "Timeout!"
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
@@ -153,7 +161,9 @@ class TRError(Exception):
 class TRNak(TRError):
     """The firmware refused a command with FailToken or RetryToken. It sends
     that refusal once it has finished with the command, so the link is still
-    in step: the next command needs no resync."""
+    in step: the next command needs no resync. A FailToken that comes with the
+    firmware's ``Timeout!`` is not one: it gave up on bytes the host sent, and
+    those are raised as a plain ``TRError``."""
 
 
 class TRBusyError(TRNak):
@@ -519,6 +529,8 @@ class TRClient:
         self._out_of_step = False
         # Set while the link looks dead; see _resync.
         self._judged_dead = False
+        # Set when this command's send raised an OSError; see _command.
+        self._send_failed = False
         # When the last byte went to the transport (time.monotonic()).
         self._last_send = float("-inf")
 
@@ -563,6 +575,7 @@ class TRClient:
         (``scripts/diags/tr_link_resync_probe.py``)."""
         with self._lock:
             heard = True
+            self._send_failed = False
             try:
                 if self._out_of_step:
                     heard = self._resync()
@@ -572,7 +585,7 @@ class TRClient:
                 raise
             except BaseException:
                 self._out_of_step = True
-                if not heard:
+                if not heard and self._send_failed:
                     self._judged_dead = True
                 raise
             self._judged_dead = False
@@ -586,14 +599,14 @@ class TRClient:
         so a command that already timed out waiting on its reply has spent
         most of it, and then at least ``_RESYNC_MIN_QUIET_S`` of silence. Once
         a resync has heard nothing and the command after it failed as well,
-        the link is judged dead and a resync waits only that minimum, until
-        the device next answers or a command completes: a link that has
-        stopped accepting sends times each one out just after its last bytes
-        went, and would otherwise add the whole wait to every failed
-        command."""
-        wait = 0.0
-        if not self._judged_dead:
-            wait = _RESYNC_QUIET_S - (time.monotonic() - self._last_send)
+        on a send the transport could not finish, the link is judged dead and
+        the wait from the last byte sent shrinks to ``_RESYNC_DEAD_QUIET_S``,
+        the firmware's wait for an owed byte, until the device next answers or
+        a command completes: a link that has stopped accepting sends times
+        each one out just after its last bytes went, and would otherwise add
+        the whole wait to every failed command."""
+        quiet = _RESYNC_DEAD_QUIET_S if self._judged_dead else _RESYNC_QUIET_S
+        wait = quiet - (time.monotonic() - self._last_send)
         stale = self.transport.drain_text(max(wait, _RESYNC_MIN_QUIET_S))
         self._out_of_step = False
         if stale:
@@ -604,6 +617,9 @@ class TRClient:
     def _send(self, data: bytes) -> None:
         try:
             self.transport.send_all(data)
+        except OSError:
+            self._send_failed = True
+            raise
         finally:
             self._last_send = time.monotonic()
 
@@ -655,6 +671,8 @@ class TRClient:
         # "Busy!" text line, often alongside a Fail/Retry token.
         if "busy" in detail.lower():
             raise TRBusyError(f"{what}: TR busy{suffix}")
+        if _FIRMWARE_TIMEOUT_TEXT in detail:
+            raise TRError(f"{what}: TR timed out receiving the command{suffix}")
         if tok == TOK_FAIL:
             raise TRNak(f"{what}: TR returned FailToken (0x9B7F){suffix}")
         if tok == TOK_RETRY:
@@ -669,7 +687,10 @@ class TRClient:
             return "full"
         if tok == TOK_FW_MINIMAL:
             return "minimal"
-        return "unknown"
+        # A FailToken here is the firmware timing out on the token's second
+        # byte, and anything else is not a reply to it: either way what follows
+        # is the resync's to discard.
+        raise TRError(f"FWCheck: unexpected reply 0x{tok:04X}")
 
     def write_segment(self, addr: int, data: bytes) -> None:
         """One WriteC64Mem command: token + addr(BE) + len(BE) + data, then
@@ -712,11 +733,13 @@ class TRClient:
             try:
                 self._send(self._u16(TOK_WRITE_C64_SPANS))
                 tok = self._read_token()
-            except (OSError, TRError):
+            except BaseException:
                 self._close_spans_token()
                 raise
             if tok == TOK_FAIL:
                 detail = self.transport.drain_text(0.15).strip()
+                if _FIRMWARE_TIMEOUT_TEXT in detail:
+                    raise TRError(f"WriteC64Spans ${first:04X}: TR timed out on the token")
                 raise TRSpansRefused(f"WriteC64Spans ${first:04X}: bus held — {detail}")
             if tok != TOK_ACK:
                 self._close_spans_token()
@@ -760,7 +783,8 @@ class TRClient:
 
         Support is an ack to the token, a FailToken to it (the command exists
         but REU emulation or a pause holds the bus), or — when chatter hid the
-        reply — the refusal's own text."""
+        reply — the refusal's own text. A firmware ``Timeout!`` on the token
+        raises TRError instead, since it answers nothing about support."""
         with self._command():
             self._drain_stale()
             self._send(self._u16(TOK_WRITE_C64_SPANS))
@@ -770,6 +794,8 @@ class TRClient:
                 tok = None
             self._send(bytes(4))
             text = self.transport.drain_text(0.3)
+            if _FIRMWARE_TIMEOUT_TEXT in text:
+                raise TRError("WriteC64Spans probe: TR timed out on the token")
             if tok in (TOK_ACK, TOK_FAIL):
                 return True
             return _SPANS_COUNT_REFUSAL in text
