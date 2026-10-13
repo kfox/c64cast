@@ -264,18 +264,19 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             return _SLICED_TEMPO
         return super().dac_bitmap_tempo(multicolor)
 
-    def _spans_allowed(self) -> bool:
-        """False while a refusal's back-off runs: the write goes on
-        WriteC64Mem without asking. Past it, one sliced write asks again; the
-        claim pushes the retry out so a second thread does not ask beside it."""
+    def _claim_spans_ask(self) -> int | None:
+        """The epoch a sliced write asks under, read with the claim so a
+        refusal recorded after it is seen before the next ask. None while a
+        refusal's back-off runs: the write goes on WriteC64Mem without asking.
+        Past it, one sliced write asks again; the claim pushes the retry out
+        so a second thread does not ask beside it."""
         with self._spans_lock:
-            if not self._spans_held:
-                return True
-            now = time.monotonic()
-            if now < self._spans_retry_at:
-                return False
-            self._spans_retry_at = now + self._spans_backoff_s
-            return True
+            if self._spans_held:
+                now = time.monotonic()
+                if now < self._spans_retry_at:
+                    return None
+                self._spans_retry_at = now + self._spans_backoff_s
+            return self._spans_epoch
 
     def _note_spans_refused(self, detail: object, seen: int | None = None) -> None:
         with self._spans_lock:
@@ -326,29 +327,35 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         # A write no longer than one halt (one slice, or one command at slice
         # 0) halts as long on WriteC64Mem, which spares two round trips.
         one_halt = (spans[0] or SPANS_SEGMENT_BYTES) if spans is not None else 0
-        if spans is not None and (
-            not self._nmi_consumer
-            or span_touches_cart_io(addr, len(payload))
-            or len(payload) <= one_halt
-            or not self._spans_allowed()
+        # The epoch this write's asks go out under; None keeps it on WriteC64Mem.
+        seen: int | None = None
+        if (
+            spans is not None
+            and self._nmi_consumer
+            and not span_touches_cart_io(addr, len(payload))
+            and len(payload) > one_halt
         ):
-            spans = None
+            seen = self._claim_spans_ask()
         try:
             off, n = 0, len(payload)
             while off < n:
-                step = self.tr.MAX_SEGMENT_BYTES if spans is None else SPANS_SEGMENT_BYTES
+                if seen is not None and seen != self._spans_epoch:
+                    # Another thread's refusal (or a reset) since this write's
+                    # claim: asking anyway would pay a refusal already on record
+                    # and double the back-off a second time for one hold.
+                    seen = None
+                step = self.tr.MAX_SEGMENT_BYTES if seen is None else SPANS_SEGMENT_BYTES
                 chunk = payload[off : off + step]
-                if spans is None or len(chunk) <= one_halt:
+                if spans is None or seen is None or len(chunk) <= one_halt:
                     self.tr.write_segment(addr + off, chunk)
                 else:
-                    seen = self._spans_epoch
                     try:
                         self.tr.write_spans([(addr + off, chunk)], *spans)
                     except TRSpansRefused as e:
                         # Re-asking per segment, or per write, would pay the
                         # refusal's text drain each time the bus is still held.
                         self._note_spans_refused(e, seen)
-                        spans = None
+                        seen = None
                         self.tr.write_segment(addr + off, chunk)
                     else:
                         self._note_spans_accepted(seen)

@@ -556,8 +556,8 @@ class SlicingBackendTest(unittest.TestCase):
         with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
             self._refuse_then_carry(b, t)
             clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MIN_S
-            self.assertTrue(b._spans_allowed())
-            self.assertFalse(b._spans_allowed())
+            self.assertIsNotNone(b._claim_spans_ask())
+            self.assertIsNone(b._claim_spans_ask())
 
     def test_an_acceptance_asked_before_a_refusal_does_not_clear_it(self):
         # One thread's ask is accepted, another's is refused after it on the
@@ -579,6 +579,44 @@ class SlicingBackendTest(unittest.TestCase):
             b._note_spans_refused("render", before)
             b._note_spans_refused("audio", before)
         self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
+
+    def test_a_write_already_under_way_stops_asking_once_another_thread_is_refused(self):
+        # The render thread's two-segment write passed the gate before the
+        # audio thread's ask was refused between its segments.
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        write_spans = b.tr.write_spans
+
+        def then_audio_is_refused(*a, **kw):
+            write_spans(*a, **kw)
+            b._note_spans_refused("audio", b._spans_epoch)
+
+        b.tr.write_spans = then_audio_is_refused
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            sent = self._write(b, t, "4000", tr_dma.SPANS_SEGMENT_BYTES * 2, 4)
+        self.assertEqual(sent.count(_SPANS_TOK), 1)
+        self.assertIn(_MEM_TOK + bytes([0x44, 0x00, 0x04, 0x00]), sent)
+        self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
+        self.assertEqual(b.stats["errors"], 0)
+
+    def test_a_write_that_passed_the_gate_before_a_refusal_does_not_ask(self):
+        # The gate let the audio thread's write through while the bus was
+        # free; the render thread's refusal was recorded before it asked.
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        claim_spans_ask = b._claim_spans_ask
+
+        def then_render_is_refused():
+            seen = claim_spans_ask()
+            b._note_spans_refused("render", b._spans_epoch)
+            return seen
+
+        b._claim_spans_ask = then_render_is_refused
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            sent = self._write(b, t, "4000", 64, 1)
+        self.assertNotIn(_SPANS_TOK, sent)
+        self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
+        self.assertEqual(b.stats["errors"], 0)
 
     def test_the_first_refusal_is_logged_once(self):
         b, t = self._backend()
