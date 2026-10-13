@@ -190,6 +190,11 @@ class TRTransport(ABC):
     until exactly n bytes arrive or the io timeout elapses (the ack handshake
     depends on it)."""
 
+    # True when the last drain_text stopped at its hard cap (_DRAIN_MAX_S or
+    # _DRAIN_MAX_BYTES) rather than on its quiet window. The text it returns
+    # cannot say so: a flood of control bytes sanitizes to an empty string.
+    drain_capped: bool = False
+
     @abstractmethod
     def connect(self) -> None: ...
 
@@ -212,6 +217,15 @@ class TRTransport(ABC):
 
     @abstractmethod
     def close(self) -> None: ...
+
+    def _hit_drain_cap(self) -> None:
+        self.drain_capped = True
+        log.warning(
+            "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
+            "a misbehaving device may be flooding the link",
+            _DRAIN_MAX_S,
+            _DRAIN_MAX_BYTES,
+        )
 
     @property
     @abstractmethod
@@ -377,15 +391,11 @@ class SerialTransport(TRTransport):
         # case stalls a full io_timeout on every command instead of quiet_s.
         prev_timeout = self._ser.timeout  # type: ignore[attr-defined]
         self._ser.timeout = quiet_s  # type: ignore[attr-defined]
+        self.drain_capped = False
         try:
             while time.monotonic() < quiet_deadline:
                 if time.monotonic() > hard_deadline or len(buf) >= _DRAIN_MAX_BYTES:
-                    log.warning(
-                        "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
-                        "a misbehaving device may be flooding the link",
-                        _DRAIN_MAX_S,
-                        _DRAIN_MAX_BYTES,
-                    )
+                    self._hit_drain_cap()
                     break
                 # read(64) would wait out the whole quiet_s for 64 bytes when
                 # fewer arrive, so every burst would double the silence waited.
@@ -471,15 +481,11 @@ class TcpTransport(TRTransport):
         hard_deadline = time.monotonic() + _DRAIN_MAX_S
         prev = self._sock.gettimeout()
         self._sock.settimeout(quiet_s)
+        self.drain_capped = False
         try:
             while True:
                 if time.monotonic() > hard_deadline or len(buf) >= _DRAIN_MAX_BYTES:
-                    log.warning(
-                        "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
-                        "a misbehaving device may be flooding the link",
-                        _DRAIN_MAX_S,
-                        _DRAIN_MAX_BYTES,
-                    )
+                    self._hit_drain_cap()
                     break
                 try:
                     chunk = self._sock.recv(64)
@@ -616,9 +622,15 @@ class TRClient:
         each one out just after its last bytes went, and would otherwise add
         the whole wait to every failed command. A command whose reply the
         firmware may send later than that sets ``_reply_due``, and the wait
-        runs until then instead."""
+        runs until then instead.
+
+        Raises TRError, leaving the link out of step, when a drain begun once
+        that wait was over still ends at drain_text's hard cap: the device is
+        still sending, so the caller's command would be read as part of
+        whatever it is in the middle of."""
         quiet = _RESYNC_DEAD_QUIET_S if self._judged_dead else _RESYNC_QUIET_S
         stale = ""
+        capped = False
 
         def left() -> float:
             now = time.monotonic()
@@ -626,18 +638,28 @@ class TRClient:
 
         # drain_text stops at its own hard cap while bytes keep coming, which
         # can be before a late reply is due, so a drain that got bytes is
-        # followed by another until then. One that got none heard its silence.
+        # followed by another until then. One that got none and was not capped
+        # heard its silence; a capped one may have got only control bytes.
         while True:
+            past_due = left() <= 0
             chunk = self.transport.drain_text(max(left(), _RESYNC_MIN_QUIET_S))
             stale += chunk
+            if self.transport.drain_capped:
+                capped = True
+                if past_due:
+                    raise TRError(
+                        "TR link never went quiet: the device is still sending, "
+                        "so the command was not sent"
+                    )
+                continue
             if not chunk or left() <= 0:
                 break
         self._reply_due = float("-inf")
         self._out_of_step = False
-        if stale:
+        if stale or capped:
             self._judged_dead = False
             log.debug("teensyrom: resync discarded %d bytes: %r", len(stale), stale[:32])
-        return bool(stale)
+        return bool(stale) or capped
 
     def _send(self, data: bytes) -> None:
         try:

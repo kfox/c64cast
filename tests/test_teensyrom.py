@@ -1122,6 +1122,24 @@ class SerialTransportDeadlineTest(unittest.TestCase):
         # The cap is a handful of reads on the fake's clock; uncapped, the
         # drain reads all 10,000 chunks.
         self.assertLess(len(fake.timeouts_seen), 10)
+        self.assertTrue(transport.drain_capped)
+
+    def test_drain_text_byte_cap_is_reported_even_when_the_text_sanitizes_away(self):
+        transport = SerialTransport("COM_FAKE")
+        transport._ser = _FakeSerial([b"\x00" * 64] * 100)
+        with (
+            mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_BYTES", 128),
+            self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"),
+        ):
+            self.assertEqual(transport.drain_text(quiet_s=10.0), "")
+        self.assertTrue(transport.drain_capped)
+
+    def test_a_drain_that_goes_quiet_is_not_reported_as_capped(self):
+        transport = SerialTransport("COM_FAKE")
+        transport._ser = _FakeSerial([b"ok"])
+        transport.drain_capped = True  # left over from an earlier drain
+        self.assertEqual(transport.drain_text(quiet_s=0.05), "ok")
+        self.assertFalse(transport.drain_capped)
 
     def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
         # Checking the deadline only when read() returns nothing means a link that
@@ -1193,6 +1211,24 @@ class TcpTransportDeadlineTest(unittest.TestCase):
         ):
             transport.drain_text(quiet_s=10.0)  # would never go quiet on its own
         self.assertLess(sock.recvs, 10)
+        self.assertTrue(transport.drain_capped)
+
+    def test_drain_text_byte_cap_is_reported_even_when_the_text_sanitizes_away(self):
+        transport = TcpTransport("host")
+        transport._sock = _FakeSocket([b"\x00" * 64] * 100)  # type: ignore[assignment]
+        with (
+            mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_BYTES", 128),
+            self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"),
+        ):
+            self.assertEqual(transport.drain_text(quiet_s=10.0), "")
+        self.assertTrue(transport.drain_capped)
+
+    def test_a_drain_that_goes_quiet_is_not_reported_as_capped(self):
+        transport = TcpTransport("host")
+        transport._sock = _FakeSocket([b"ok"])  # type: ignore[assignment]
+        transport.drain_capped = True  # left over from an earlier drain
+        self.assertEqual(transport.drain_text(quiet_s=0.05), "ok")
+        self.assertFalse(transport.drain_capped)
 
     def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
         # Without a tracked deadline, every recv() gets a fresh per-call timeout
@@ -1758,6 +1794,68 @@ class LateSpansReplyTest(unittest.TestCase):
         self.assertEqual(len(drains), 2)
         self.assertAlmostEqual(drains[0], tr_dma._SPANS_JOB_CEILING_S - t.io_timeout)
         self.assertAlmostEqual(drains[1], drains[0] - cap_cut)
+
+
+class _FloodingLoopback(_SpansLoopback):
+    """A loopback whose next `floods` drains run to drain_text's hard cap, the
+    way a device that never goes quiet makes them, and return nothing a
+    sanitized drain would keep."""
+
+    def __init__(self, clock: SleepDrivenClock):
+        super().__init__()
+        self.clock = clock
+        self.floods = 0
+
+    def drain_text(self, quiet_s: float = 0.2) -> str:
+        text = super().drain_text(quiet_s)
+        self.drain_capped = self.floods > 0
+        if self.drain_capped:
+            self.floods -= 1
+            self.clock.sleep(tr_dma._DRAIN_MAX_S)
+        else:
+            self.clock.sleep(quiet_s)
+        return text
+
+
+class ResyncCapTest(unittest.TestCase):
+    """A resync drain that its hard cap ended is not silence: past the wait,
+    the device is still sending, and nothing may go out."""
+
+    def setUp(self):
+        self.clock = _frozen_clock(self)
+        self.t = _FloodingLoopback(self.clock)
+        self.c = TRClient(self.t)
+        with self.assertRaises(TRError):
+            self.c.write_segment(0xD020, b"\x0e")  # no reply: out of step
+
+    def test_a_device_still_sending_past_the_wait_fails_the_command_unsent(self):
+        self.t.floods = 10
+        self.t.events.clear()
+        self.t.queue_token(TOK_ACK)
+        with self.assertRaisesRegex(TRError, "never went quiet"):
+            self.c.write_segment(0xD020, b"\x0e")
+        self.assertEqual(
+            self.t.events,
+            [("quiet", tr_dma._RESYNC_QUIET_S), ("quiet", tr_dma._RESYNC_MIN_QUIET_S)],
+        )
+        # Still out of step: once the device goes quiet, the next command
+        # resyncs before it sends.
+        self.t.floods = 0
+        self.assertEqual(
+            _next_write_events(self.t, self.c),
+            [("quiet", tr_dma._RESYNC_MIN_QUIET_S), ("send", _NEXT_FRAME)],
+        )
+
+    def test_a_drain_capped_inside_the_wait_is_followed_by_one_that_hears_quiet(self):
+        self.t.floods = 1
+        self.assertEqual(
+            _next_write_events(self.t, self.c),
+            [
+                ("quiet", tr_dma._RESYNC_QUIET_S),
+                ("quiet", tr_dma._RESYNC_MIN_QUIET_S),
+                ("send", _NEXT_FRAME),
+            ],
+        )
 
 
 if __name__ == "__main__":
