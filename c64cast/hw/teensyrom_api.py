@@ -313,6 +313,11 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         thread can ask. True when it landed; False when the bus is held and
         nothing was written."""
         with self._spans_ask_lock:
+            if seen != self._spans_epoch:
+                # Another thread's refusal (or a reset) was recorded while this
+                # one waited on the lock; asking would pay that refusal's drain
+                # again.
+                return False
             try:
                 self.tr.write_spans([(addr, chunk)], *spans)
             except TRSpansRefused as e:
