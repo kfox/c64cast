@@ -547,6 +547,9 @@ class TRClient:
         # When a reply the firmware may still send is due by, if later than
         # the resync's wait from the last send (time.monotonic()).
         self._reply_due = float("-inf")
+        # Set once a WriteC64Spans has sent past its token, whose failure the
+        # firmware follows with its one-second discard; see _resync.
+        self._discard_owed = False
 
     def connect(self) -> None:
         """Open the transport and best-effort probe the firmware type.
@@ -605,6 +608,7 @@ class TRClient:
                 raise
             self._judged_dead = False
             self._reply_due = float("-inf")
+            self._discard_owed = False
 
     def _resync(self) -> bool:
         """Under the caller's lock, wait until the firmware has given up on
@@ -622,13 +626,16 @@ class TRClient:
         each one out just after its last bytes went, and would otherwise add
         the whole wait to every failed command. A command whose reply the
         firmware may send later than that sets ``_reply_due``, and the wait
-        runs until then instead.
+        runs until then instead. A WriteC64Spans that failed past its token
+        is followed by the firmware's discard, which the short wait does not
+        cover, so after one the wait is the whole ``_RESYNC_QUIET_S``.
 
         Raises TRError, leaving the link out of step, when a drain begun once
         that wait was over still ends at drain_text's hard cap: the device is
         still sending, so the caller's command would be read as part of
         whatever it is in the middle of."""
-        quiet = _RESYNC_DEAD_QUIET_S if self._judged_dead else _RESYNC_QUIET_S
+        dead = self._judged_dead and not self._discard_owed
+        quiet = _RESYNC_DEAD_QUIET_S if dead else _RESYNC_QUIET_S
         stale = ""
         capped = False
 
@@ -655,6 +662,7 @@ class TRClient:
             if not chunk or left() <= 0:
                 break
         self._reply_due = float("-inf")
+        self._discard_owed = False
         self._out_of_step = False
         if stale or capped:
             self._judged_dead = False
@@ -791,6 +799,7 @@ class TRClient:
             if tok != TOK_ACK:
                 self._close_spans_token()
                 raise TRError(f"WriteC64Spans ${first:04X}: unexpected reply 0x{tok:04X}")
+            self._discard_owed = True
             try:
                 self._send(header + span_list)
                 self._expect_ack(f"WriteC64Spans ${first:04X} (spans)")

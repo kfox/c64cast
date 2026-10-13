@@ -1600,6 +1600,26 @@ class CutCommandTest(unittest.TestCase):
         self.assertAlmostEqual(events[0][1], tr_dma._RESYNC_DEAD_QUIET_S - 0.3)  # type: ignore[arg-type]
         self.assertGreater(tr_dma._RESYNC_DEAD_QUIET_S, 0.5)
 
+    def test_a_dead_link_waits_out_the_discard_after_a_spans_cut_past_its_token(self):
+        for _ in range(2):
+            self._cut_write(OSError)  # judged dead
+        real_recv = self.t.recv_exact
+
+        def ack_then_cut_the_header(n: int) -> bytes:
+            self.t.cut_next_send = OSError
+            return real_recv(n)
+
+        self.t.queue_token(TOK_ACK)
+        with mock.patch.object(self.t, "recv_exact", side_effect=ack_then_cut_the_header):
+            with self.assertRaises(OSError):
+                self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
+        # The firmware's discard after the cut outlasts the dead link's short wait.
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+        # Once waited out, a dead judgment is back to the short wait.
+        for _ in range(3):
+            self._cut_write(OSError)
+        self.assertEqual(self.t.quiet_waits[-1], tr_dma._RESYNC_DEAD_QUIET_S)
+
     def test_an_interrupt_after_a_silent_resync_does_not_judge_the_link_dead(self):
         with self.assertRaises(TRError):
             self.c.write_segment(0xD020, b"\x0e")  # no reply: out of step
