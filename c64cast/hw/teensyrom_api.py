@@ -181,12 +181,15 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._spans_held = False
         self._spans_retry_at = 0.0
         self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
-        # Moves at each refusal recorded and at a reset. An ask notes it before
-        # it goes out, so its outcome cannot overwrite what another thread's
-        # ask recorded meanwhile: an acceptance read off the link earlier
-        # would clear a hold that is still on, and a second refusal of the
-        # same hold would double the back-off twice.
+        # Moves at each refusal recorded and at a reset. A write notes it at its
+        # claim, so a refusal of a hold already on record, or ended by a reset,
+        # is dropped rather than doubling the back-off a second time.
         self._spans_epoch = 0
+        # Held from an ask until its outcome is recorded. TRClient's lock orders
+        # the asks on the link but is released before the outcome is noted, so
+        # without this a refusal read off the link before another thread's
+        # acceptance could be recorded after it and hold off a bus that is free.
+        self._spans_ask_lock = threading.Lock()
         if dma_slicing != "off":
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
             if self._spans is not None:
@@ -295,17 +298,28 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             wait,
         )
 
-    def _note_spans_accepted(self, seen: int) -> None:
+    def _note_spans_accepted(self) -> None:
         if not self._spans_held:
             return
         with self._spans_lock:
-            if seen != self._spans_epoch:
-                return
             was_held = self._spans_held
             self._spans_held = False
             self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
         if was_held:
             log.info("TR WriteC64Spans accepted again; slicing resumed")
+
+    def _ask_spans(self, addr: int, chunk: bytes, spans: tuple[int, int], seen: int) -> bool:
+        """One WriteC64Spans of `chunk`, its outcome recorded before another
+        thread can ask. True when it landed; False when the bus is held and
+        nothing was written."""
+        with self._spans_ask_lock:
+            try:
+                self.tr.write_spans([(addr, chunk)], *spans)
+            except TRSpansRefused as e:
+                self._note_spans_refused(e, seen)
+                return False
+            self._note_spans_accepted()
+            return True
 
     def note_nmi_consumer(self, active: bool) -> None:
         # Slicing spares only an NMI consumer and costs ~2.4x in bulk
@@ -346,19 +360,15 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                     seen = None
                 step = self.tr.MAX_SEGMENT_BYTES if seen is None else SPANS_SEGMENT_BYTES
                 chunk = payload[off : off + step]
-                if spans is None or seen is None or len(chunk) <= one_halt:
-                    self.tr.write_segment(addr + off, chunk)
-                else:
-                    try:
-                        self.tr.write_spans([(addr + off, chunk)], *spans)
-                    except TRSpansRefused as e:
+                sliced = False
+                if spans is not None and seen is not None and len(chunk) > one_halt:
+                    sliced = self._ask_spans(addr + off, chunk, spans, seen)
+                    if not sliced:
                         # Re-asking per segment, or per write, would pay the
                         # refusal's text drain each time the bus is still held.
-                        self._note_spans_refused(e, seen)
                         seen = None
-                        self.tr.write_segment(addr + off, chunk)
-                    else:
-                        self._note_spans_accepted(seen)
+                if not sliced:
+                    self.tr.write_segment(addr + off, chunk)
                 self._stats["writes"] += 1
                 off += len(chunk)
             self._note_emit_success()

@@ -10,6 +10,7 @@ against the firmware protocol.
 from __future__ import annotations
 
 import struct
+import threading
 import time
 import unittest
 from dataclasses import replace
@@ -559,17 +560,44 @@ class SlicingBackendTest(unittest.TestCase):
             self.assertIsNotNone(b._claim_spans_ask())
             self.assertIsNone(b._claim_spans_ask())
 
-    def test_an_acceptance_asked_before_a_refusal_does_not_clear_it(self):
-        # One thread's ask is accepted, another's is refused after it on the
-        # link, and the first thread records its acceptance last.
-        b, _ = self._backend()
-        accepted_ask = b._spans_epoch
-        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
-            b._note_spans_refused("refused", b._spans_epoch)
-            b._note_spans_accepted(accepted_ask)
-        self.assertFalse(any("slicing resumed" in m for m in cm.output))
-        self.assertTrue(b._spans_held)
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+    def test_an_outcome_is_recorded_before_another_thread_asks(self):
+        # The audio thread's ask is refused; the hold then ends and the render
+        # thread's ask is accepted. Render must not record first, or audio's
+        # refusal, recorded last, holds off a bus that is free.
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        write_spans = b.tr.write_spans
+        note_spans_refused = b._note_spans_refused
+        render_done = threading.Event()
+
+        def render_write():
+            b.write_memory_file("6000", bytes(64))
+            render_done.set()
+
+        render = threading.Thread(target=render_write)
+
+        def audio_refused(*a, **kw):
+            b.tr.write_spans = write_spans
+            # Audio's refusal, then its WriteC64Mem and render's three replies.
+            t.queue_token(TOK_FAIL)
+            for _ in range(4):
+                t.queue_token(TOK_ACK)
+            try:
+                write_spans(*a, **kw)
+            finally:
+                render.start()
+
+        def audio_records_late(*a, **kw):
+            render_done.wait(0.3)
+            note_spans_refused(*a, **kw)
+
+        b.tr.write_spans = audio_refused
+        b._note_spans_refused = audio_records_late
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b.write_memory_file("4000", bytes(64))
+            render.join(5)
+        self.assertFalse(b._spans_held)
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
 
     def test_two_refusals_of_one_hold_double_the_back_off_once(self):
         # Both threads asked while the bus was free and both were refused.
@@ -585,13 +613,13 @@ class SlicingBackendTest(unittest.TestCase):
         # audio thread's ask was refused between its segments.
         b, t = self._backend()
         b.note_nmi_consumer(True)
-        write_spans = b.tr.write_spans
+        note_spans_accepted = b._note_spans_accepted
 
-        def then_audio_is_refused(*a, **kw):
-            write_spans(*a, **kw)
+        def then_audio_is_refused():
+            note_spans_accepted()
             b._note_spans_refused("audio", b._spans_epoch)
 
-        b.tr.write_spans = then_audio_is_refused
+        b._note_spans_accepted = then_audio_is_refused
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             sent = self._write(b, t, "4000", tr_dma.SPANS_SEGMENT_BYTES * 2, 4)
         self.assertEqual(sent.count(_SPANS_TOK), 1)
