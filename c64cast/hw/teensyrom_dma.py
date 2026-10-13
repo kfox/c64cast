@@ -116,6 +116,11 @@ _RESYNC_DEAD_QUIET_S = 0.6
 # arrive in time (SerialAvailabeTimeout). The rest of what the host sent may
 # still be on its way, and reaches the dispatcher as commands.
 _FIRMWARE_TIMEOUT_TEXT = "Timeout!"
+# How long a WriteC64Spans job may run once its payload has arrived:
+# DMA_SPANS_CEILING_mS (DMAControl.c), C64SlicesMax * 5 + 1000 ms, plus a margin
+# for the payload's delivery and the firmware's millis() under-counting a long
+# job. Its reply can come this long after the client's io_timeout gave up on it.
+_SPANS_JOB_CEILING_S = (SPANS_MAX_SLICES * 5 + 1000) / 1000 + 0.5
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
@@ -533,6 +538,9 @@ class TRClient:
         self._send_failed = False
         # When the last byte went to the transport (time.monotonic()).
         self._last_send = float("-inf")
+        # When a reply the firmware may still send is due by, if later than
+        # the resync's wait from the last send (time.monotonic()).
+        self._reply_due = float("-inf")
 
     def connect(self) -> None:
         """Open the transport and best-effort probe the firmware type.
@@ -582,6 +590,7 @@ class TRClient:
                 yield
             except TRNak:
                 self._judged_dead = False
+                self._reply_due = float("-inf")
                 raise
             except BaseException:
                 self._out_of_step = True
@@ -589,6 +598,7 @@ class TRClient:
                     self._judged_dead = True
                 raise
             self._judged_dead = False
+            self._reply_due = float("-inf")
 
     def _resync(self) -> bool:
         """Under the caller's lock, wait until the firmware has given up on
@@ -604,10 +614,25 @@ class TRClient:
         the firmware's wait for an owed byte, until the device next answers or
         a command completes: a link that has stopped accepting sends times
         each one out just after its last bytes went, and would otherwise add
-        the whole wait to every failed command."""
+        the whole wait to every failed command. A command whose reply the
+        firmware may send later than that sets ``_reply_due``, and the wait
+        runs until then instead."""
         quiet = _RESYNC_DEAD_QUIET_S if self._judged_dead else _RESYNC_QUIET_S
-        wait = quiet - (time.monotonic() - self._last_send)
-        stale = self.transport.drain_text(max(wait, _RESYNC_MIN_QUIET_S))
+        stale = ""
+
+        def left() -> float:
+            now = time.monotonic()
+            return max(quiet - (now - self._last_send), self._reply_due - now)
+
+        # drain_text stops at its own hard cap while bytes keep coming, which
+        # can be before a late reply is due, so a drain that got bytes is
+        # followed by another until then. One that got none heard its silence.
+        while True:
+            chunk = self.transport.drain_text(max(left(), _RESYNC_MIN_QUIET_S))
+            stale += chunk
+            if not chunk or left() <= 0:
+                break
+        self._reply_due = float("-inf")
         self._out_of_step = False
         if stale:
             self._judged_dead = False
@@ -748,6 +773,8 @@ class TRClient:
                 self._send(header + span_list)
                 self._expect_ack(f"WriteC64Spans ${first:04X} (spans)")
                 self._send(payload)
+                # Set once the whole payload is out: a cut one starts no job.
+                self._reply_due = time.monotonic() + _SPANS_JOB_CEILING_S
                 self._expect_ack(f"WriteC64Spans ${first:04X}")
             except TRNak:
                 # A span list or payload the firmware refused part way is

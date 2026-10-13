@@ -1658,5 +1658,107 @@ class CutCommandTest(unittest.TestCase):
                 drain.assert_called_once_with(tr_dma._RESYNC_QUIET_S)
 
 
+class _LateReplyLink(TRTransport):
+    """A link on a clock only sleeps advance. Each send queues its reply at a
+    virtual arrival time, recv_exact waits up to io_timeout for the next one,
+    and drain_text returns once quiet_s passes with nothing arriving."""
+
+    io_timeout = 2.0
+
+    def __init__(self, clock: SleepDrivenClock):
+        self.clock = clock
+        self.replies: list[tuple[float, bytes]] = []
+        self.answers: list[tuple[float, int]] = []  # (delay, token) per send
+
+    def connect(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    @property
+    def description(self) -> str:
+        return "late-reply"
+
+    def send_all(self, data: bytes) -> None:
+        delay, tok = self.answers.pop(0)
+        self.replies.append((self.clock.monotonic() + delay, bytes([tok & 0xFF, tok >> 8])))
+        self.replies.sort()
+
+    def _arrived(self) -> bytes:
+        now = self.clock.monotonic()
+        out = b"".join(b for at, b in self.replies if at <= now)
+        self.replies = [(at, b) for at, b in self.replies if at > now]
+        return out
+
+    def recv_exact(self, n: int) -> bytes:
+        if self.replies and self.replies[0][0] - self.clock.monotonic() <= self.io_timeout:
+            self.clock.sleep(max(0.0, self.replies[0][0] - self.clock.monotonic()))
+            now = self.clock.monotonic()
+            got = b"".join(b for at, b in self.replies if at <= now)[:n]
+            if len(got) == n:
+                self.replies.pop(0)
+                return got
+        self.clock.sleep(self.io_timeout)
+        raise TRError("read timed out")
+
+    def drain_text(self, quiet_s: float = 0.2) -> str:
+        got = self._arrived()
+        while self.replies and self.replies[0][0] - self.clock.monotonic() <= quiet_s:
+            self.clock.sleep(max(0.0, self.replies[0][0] - self.clock.monotonic()))
+            got += self._arrived()
+        self.clock.sleep(quiet_s)
+        return got.decode("ascii", errors="replace")
+
+
+class LateSpansReplyTest(unittest.TestCase):
+    """A WriteC64Spans job may run past io_timeout on a bus that stalls its
+    slices, so its reply can come after the client gave up; no later command
+    may read it as its own."""
+
+    def test_a_spans_reply_later_than_io_timeout_is_not_read_by_a_later_command(self):
+        clock = _frozen_clock(self)
+        t = _LateReplyLink(clock)
+        c = TRClient(t)
+        late_s = tr_dma._SPANS_JOB_CEILING_S - 0.5  # inside the firmware's bound
+        t.answers = [(0.0, TOK_ACK), (0.0, TOK_ACK), (late_s, TOK_ACK)]
+        with self.assertRaises(TRError):
+            c.write_spans([(0x4000, b"\x01" * 1024)], 32, 40)
+        t.answers = [(0.0, TOK_ACK)]
+        c.write_segment(0xD020, b"\x0e")
+        clock.sleep(late_s)  # idle long enough for the late reply to have come
+        t.answers = [(0.0, TOK_FAIL)]
+        # This command's own reply is a refusal; read as the late ack, it
+        # would report a write that never landed as done.
+        with self.assertRaises(tr_dma.TRNak):
+            c.write_segment(0xD020, b"\x0e")
+
+    def test_a_drain_cut_by_its_cap_is_followed_by_another_until_the_reply_is_due(self):
+        clock = _frozen_clock(self)
+        t = _LateReplyLink(clock)
+        c = TRClient(t)
+        t.answers = [(0.0, TOK_ACK), (0.0, TOK_ACK), (60.0, TOK_ACK)]
+        with self.assertRaises(TRError):
+            c.write_spans([(0x4000, b"\x01" * 1024)], 32, 40)
+        drains: list[float] = []
+
+        def chatter_until_the_cap(quiet_s: float = 0.2) -> str:
+            # Bytes keep coming, so drain_text returns at its hard cap.
+            drains.append(quiet_s)
+            clock.sleep(min(quiet_s, tr_dma._DRAIN_MAX_S - 1.0))
+            return "chatter" if len(drains) == 1 else ""
+
+        t.replies.clear()
+        t.answers = [(0.0, TOK_ACK)]
+        with mock.patch.object(t, "drain_text", side_effect=chatter_until_the_cap):
+            c.write_segment(0xD020, b"\x0e")
+        # The first drain is asked for what the job's ceiling leaves after the
+        # timed-out read, and the second for what the capped first one left.
+        cap_cut = tr_dma._DRAIN_MAX_S - 1.0
+        self.assertEqual(len(drains), 2)
+        self.assertAlmostEqual(drains[0], tr_dma._SPANS_JOB_CEILING_S - t.io_timeout)
+        self.assertAlmostEqual(drains[1], drains[0] - cap_cut)
+
+
 if __name__ == "__main__":
     unittest.main()
