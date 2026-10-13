@@ -608,7 +608,6 @@ class TRClient:
                 raise
             self._judged_dead = False
             self._reply_due = float("-inf")
-            self._discard_owed = False
 
     def _resync(self) -> bool:
         """Under the caller's lock, wait until the firmware has given up on

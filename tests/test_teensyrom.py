@@ -1620,6 +1620,25 @@ class CutCommandTest(unittest.TestCase):
             self._cut_write(OSError)
         self.assertEqual(self.t.quiet_waits[-1], tr_dma._RESYNC_DEAD_QUIET_S)
 
+    def test_a_waited_out_spans_discard_is_not_waited_again(self):
+        for _ in range(2):
+            self._cut_write(OSError)  # judged dead
+        real_recv = self.t.recv_exact
+
+        def ack_then_cut_the_header(n: int) -> bytes:
+            self.t.cut_next_send = OSError
+            return real_recv(n)
+
+        self.t.queue_token(TOK_ACK)
+        with mock.patch.object(self.t, "recv_exact", side_effect=ack_then_cut_the_header):
+            with self.assertRaises(OSError):
+                self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
+        self._cut_write(OSError)  # its resync waits out the discard, then fails too
+        self._cut_write(OSError)
+        self.assertEqual(
+            self.t.quiet_waits[-2:], [tr_dma._RESYNC_QUIET_S, tr_dma._RESYNC_DEAD_QUIET_S]
+        )
+
     def test_an_interrupt_after_a_silent_resync_does_not_judge_the_link_dead(self):
         with self.assertRaises(TRError):
             self.c.write_segment(0xD020, b"\x0e")  # no reply: out of step
