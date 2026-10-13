@@ -30,11 +30,13 @@ from c64cast.hw.teensyrom_dma import (
     TOK_FAIL,
     TOK_FW_FULL,
     TOK_READ_C64_MEM,
+    TOK_RETRY,
     SerialTransport,
     TcpTransport,
     TRBusyError,
     TRClient,
     TRError,
+    TRNak,
     TRSpansRefused,
     TRTransport,
     span_touches_cart_io,
@@ -593,12 +595,64 @@ class ErrorSurfacingTest(unittest.TestCase):
         self.t = LoopbackTransport()
         self.client = TRClient(self.t)
 
+    def _refuse_open(self, tok: int, text: str):
+        """Answer a file command's token with `tok` and `text`, after the
+        command's own pre-drain has found nothing."""
+        self.t.queue_token(tok)
+        return mock.patch.object(self.t, "drain_text", side_effect=["", text])
+
     def test_busy_text_raises_trbusyerror(self):
+        for name, call in (
+            ("post_file", lambda: self.client.post_file(b"AB", "x.prg")),
+            ("delete_file", lambda: self.client.delete_file("x.prg")),
+        ):
+            with self.subTest(name), self._refuse_open(TOK_FAIL, "Busy!"):
+                with self.assertRaises(TRBusyError) as cm:
+                    call()
+                self.assertIn("busy", str(cm.exception).lower())
+                self.assertFalse(self.client._out_of_step)
+
+    def test_busy_on_a_command_served_while_busy_is_out_of_step(self):
+        # WriteC64Mem is served while a program runs, so a Busy! there is a
+        # stray command's reply and the write's own ack is still to come.
         self.t.queue_token(TOK_FAIL)
         self.t.queue_stale(b"Busy!\r\n")
-        with self.assertRaises(TRBusyError) as cm:
+        with self.assertRaises(TRError) as cm:
             self.client.write_segment(0xD020, b"\x01")
-        self.assertIn("busy", str(cm.exception).lower())
+        self.assertNotIsInstance(cm.exception, TRNak)
+        self.assertTrue(self.client._out_of_step)
+
+    def test_busy_after_a_file_command_opened_is_out_of_step(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_token(TOK_FAIL)
+        with mock.patch.object(self.t, "drain_text", side_effect=["", "Busy!"]):
+            with self.assertRaises(TRError) as cm:
+                self.client.post_file(b"AB", "x.prg")
+        self.assertNotIsInstance(cm.exception, TRNak)
+        self.assertTrue(self.client._out_of_step)
+
+    def test_timeout_outranks_busy(self):
+        with self._refuse_open(TOK_FAIL, "Timeout!Error receiving data!Busy!"):
+            with self.assertRaises(TRError) as cm:
+                self.client.post_file(b"AB", "x.prg")
+        self.assertNotIsInstance(cm.exception, TRNak)
+        self.assertIn("timed out", str(cm.exception))
+        self.assertTrue(self.client._out_of_step)
+
+    def test_busy_with_a_token_that_is_no_refusal_is_out_of_step(self):
+        with self._refuse_open(0x3412, "Busy!"):
+            with self.assertRaises(TRError) as cm:
+                self.client.post_file(b"AB", "x.prg")
+        self.assertNotIsInstance(cm.exception, TRNak)
+        self.assertIn("unexpected reply 0x3412", str(cm.exception))
+        self.assertTrue(self.client._out_of_step)
+
+    def test_retry_token_is_a_nak(self):
+        self.t.queue_token(TOK_RETRY)
+        with self.assertRaises(TRNak) as cm:
+            self.client.write_segment(0xD020, b"\x01")
+        self.assertIn("RetryToken (0x9B7E)", str(cm.exception))
+        self.assertFalse(self.client._out_of_step)
 
     def test_fail_text_is_surfaced_in_message(self):
         self.t.queue_token(TOK_FAIL)

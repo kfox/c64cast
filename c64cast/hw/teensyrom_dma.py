@@ -712,7 +712,15 @@ class TRClient:
                 "teensyrom: drained %d stale bytes before command: %r", len(stale), stale[:32]
             )
 
-    def _expect_ack(self, what: str) -> None:
+    def _expect_ack(self, what: str, *, busy_possible: bool = False) -> None:
+        """Read a command's ack, or raise the refusal it got instead.
+
+        Only a FailToken or RetryToken without the firmware's ``Timeout!`` is
+        a ``TRNak``. ``busy_possible`` is for the reply to a token the
+        firmware's dispatcher refuses with ``Busy!`` while a program runs
+        (PostFile, DeleteFile); every other command is served while
+        busy, so a ``Busy!`` where its reply should be answered a stray
+        command and is raised as a plain ``TRError``."""
         tok = self._read_token()
         if tok == TOK_ACK:
             return
@@ -721,17 +729,16 @@ class TRClient:
         # the stream and surfaces the reason.
         detail = self.transport.drain_text(0.15).strip()
         suffix = f" — {detail}" if detail else ""
-        # The firmware signals "program running / menu not active" with a
-        # "Busy!" text line, often alongside a Fail/Retry token.
-        if "busy" in detail.lower():
-            raise TRBusyError(f"{what}: TR busy{suffix}")
         if _FIRMWARE_TIMEOUT_TEXT in detail:
             raise TRError(f"{what}: TR timed out receiving the command{suffix}")
-        if tok == TOK_FAIL:
-            raise TRNak(f"{what}: TR returned FailToken (0x9B7F){suffix}")
-        if tok == TOK_RETRY:
-            raise TRNak(f"{what}: TR returned RetryToken (0x9B7E){suffix}")
-        raise TRError(f"{what}: unexpected reply 0x{tok:04X} (expected ack){suffix}")
+        if tok not in (TOK_FAIL, TOK_RETRY):
+            raise TRError(f"{what}: unexpected reply 0x{tok:04X} (expected ack){suffix}")
+        if "busy" in detail.lower():
+            if busy_possible:
+                raise TRBusyError(f"{what}: TR busy{suffix}")
+            raise TRError(f"{what}: a Busy! this command never gets, from a stray one{suffix}")
+        name = "FailToken" if tok == TOK_FAIL else "RetryToken"
+        raise TRNak(f"{what}: TR returned {name} (0x{tok:04X}){suffix}")
 
     def _fw_check_unlocked(self) -> str:
         # Caller (connect) is single-threaded at this point.
@@ -907,7 +914,7 @@ class TRClient:
         with self._command():
             self._drain_stale()
             self._send(self._u16(TOK_DELETE_FILE))
-            self._expect_ack("DeleteFile (open)")
+            self._expect_ack("DeleteFile (open)", busy_possible=True)
             self._send(payload)
             self._expect_ack(f"DeleteFile {path!r}")
 
@@ -935,7 +942,7 @@ class TRClient:
         with self._command():
             self._drain_stale()  # clear post-reset/menu boot chatter
             self._send(self._u16(TOK_POST_FILE))
-            self._expect_ack("PostFile (open)")
+            self._expect_ack("PostFile (open)", busy_possible=True)
             self._send(header)
             self._expect_ack(f"PostFile header {dest_path!r}")
             self._send(data)

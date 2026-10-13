@@ -163,7 +163,7 @@ Sliced commands carry at most `SPANS_SEGMENT_BYTES` (1 KiB). A 4 KiB sliced comm
 
 `_expect_ack` captures the trailing text the TR emits after a NAK and puts it in the raised error, instead of surfacing a bare `FailToken (0x9B7F)`:
 
-* A `"Busy!"` reply — program running, or menu handler inactive — raises `TRBusyError`, a subclass of `TRError`, so callers can distinguish it.
+* A `"Busy!"` reply — program running, or menu handler inactive — raises `TRBusyError`, a subclass of `TRError`, so callers can distinguish it. Only PostFile's and DeleteFile's tokens can get one: the firmware's dispatcher serves WriteC64Mem, WriteC64Spans, ReadC64Mem, Reset, LaunchFile and FWCheck while busy, so a `"Busy!"` where one of their replies, or a later stage's, should be answered a stray command, and is a plain `TRError` that leaves the link out of step. `Timeout!` is checked first, and a reply token that is neither FailToken nor RetryToken is a plain `TRError` whatever text follows it.
 * Any other reply has its literal text appended (`"Not enough room"`, `"File already exists."`, …).
 
 That reply text — plus the `Ping`/`Reset` status lines — is device-supplied free text with no framing of its own, so both transports' `drain_text` filter it to printable characters (`_sanitize_device_text`) before it can reach a log record or an exception message. `delete_file`/`post_file`/`launch_file` frame their path argument through `_encode_path`, which raises `TRError` (not a bare `UnicodeEncodeError`) for a non-ASCII path and rejects an embedded NUL outright — an unrejected NUL would truncate the device's own path parse early and leave the rest of the encoded path as extra bytes desyncing whatever command follows.
