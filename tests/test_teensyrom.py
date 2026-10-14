@@ -1759,6 +1759,13 @@ class CutCommandTest(unittest.TestCase):
                 self.c.probe_spans()
                 self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
+    def test_a_spans_probe_answered_by_chatter_without_the_refusal_resyncs(self):
+        # The firmware may act on the token after its chatter, and its ack and
+        # the zero header's refusal may still be on their way.
+        self.t.queue_raw(b"TR")
+        self.assertFalse(self.c.probe_spans())
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
     def test_a_spans_probe_that_heard_the_refusal_stays_in_step(self):
         self.t.on_header = tr_dma._SPANS_COUNT_REFUSAL.encode()
         for name, token in (("token reply timed out", None), ("ack", TOK_ACK)):

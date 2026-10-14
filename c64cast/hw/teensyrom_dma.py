@@ -850,9 +850,11 @@ class TRClient:
         reply — the refusal's own text. A firmware ``Timeout!`` on the token
         raises TRError instead, since it answers nothing about support.
 
-        An ack, or a token reply that never came, owes the zero header's
-        refusal; when it is not in the drain it may still be on its way, and
-        the link is left out of step for the next command's resync."""
+        Anything but a FailToken in the token reply's place owes the zero
+        header's refusal, chatter included, since the firmware may act on the
+        token after it; when the refusal is not in the drain it may still be
+        on its way, and the link is left out of step for the next command's
+        resync."""
         with self._command():
             self._drain_stale()
             self._send(self._u16(TOK_WRITE_C64_SPANS))
@@ -864,7 +866,7 @@ class TRClient:
             text = self.transport.drain_text(0.3)
             if _FIRMWARE_TIMEOUT_TEXT in text:
                 raise TRError("WriteC64Spans probe: TR timed out on the token")
-            if tok in (None, TOK_ACK) and _SPANS_COUNT_REFUSAL not in text:
+            if tok != TOK_FAIL and _SPANS_COUNT_REFUSAL not in text:
                 self._out_of_step = True
             if tok in (TOK_ACK, TOK_FAIL):
                 return True
