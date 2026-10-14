@@ -31,7 +31,7 @@ keywords = [
     "wled",
 ]
 # Keep the OS and Python classifiers in sync with ci.yml's `test`
-# matrix (ubuntu × macos × windows, py3.12-3.14).
+# matrix (ubuntu × macos × windows, py3.12-3.15).
 #
 # No "License :: OSI Approved :: MIT License" classifier: PEP 639 license
 # expressions supersede license classifiers, and setuptools hard-errors if both
@@ -50,6 +50,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Artistic Software",
     "Topic :: Multimedia :: Sound/Audio",
     "Topic :: Multimedia :: Video :: Display",
