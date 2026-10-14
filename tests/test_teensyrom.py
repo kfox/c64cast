@@ -548,18 +548,6 @@ class SlicingBackendTest(unittest.TestCase):
             self._refuse_then_carry(b, t)
         self.assertTrue(bytes(t.sent).startswith(_SPANS_TOK), "back-off restarted from its floor")
 
-    def test_only_one_write_asks_when_the_back_off_runs_out(self):
-        # The render and audio threads both write; past the back-off one of
-        # them asks and the other stays on WriteC64Mem.
-        b, t = self._backend()
-        b.note_nmi_consumer(True)
-        clock = [100.0]
-        with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
-            self._refuse_then_carry(b, t)
-            clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MIN_S
-            self.assertIsNotNone(b._claim_spans_ask())
-            self.assertIsNone(b._claim_spans_ask())
-
     def test_an_outcome_is_recorded_before_another_thread_asks(self):
         # The audio thread's ask is refused, and the render thread's write,
         # claimed while the bus was free, comes up behind it. Render must not
@@ -601,29 +589,22 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertEqual(bytes(t.sent).count(_SPANS_TOK), 1)
         self.assertIn(_MEM_TOK + bytes([0x60, 0x00, 0x00, 0x40]), bytes(t.sent))
         self.assertTrue(b._spans_held)
+        self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
         self.assertEqual(b.stats["errors"], 0)
 
-    def test_two_refusals_of_one_hold_double_the_back_off_once(self):
-        # Both threads asked while the bus was free and both were refused.
-        b, _ = self._backend()
-        before = b._spans_epoch
-        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
-            b._note_spans_refused("render", before)
-            b._note_spans_refused("audio", before)
-        self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
-
     def test_a_write_already_under_way_stops_asking_once_another_thread_is_refused(self):
-        # The render thread's two-segment write passed the gate before the
-        # audio thread's ask was refused between its segments.
+        # The render thread's two-segment write was accepted for its first
+        # segment; the audio thread's ask was refused before its second.
         b, t = self._backend()
         b.note_nmi_consumer(True)
-        note_spans_accepted = b._note_spans_accepted
+        clear_spans_refusal = b._clear_spans_refusal
 
         def then_audio_is_refused():
-            note_spans_accepted()
-            b._note_spans_refused("audio", b._spans_epoch)
+            was_held = clear_spans_refusal()
+            b._note_spans_refused("audio")
+            return was_held
 
-        b._note_spans_accepted = then_audio_is_refused
+        b._clear_spans_refusal = then_audio_is_refused
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             sent = self._write(b, t, "4000", tr_dma.SPANS_SEGMENT_BYTES * 2, 4)
         self.assertEqual(sent.count(_SPANS_TOK), 1)
@@ -631,42 +612,47 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
         self.assertEqual(b.stats["errors"], 0)
 
-    def test_a_write_that_passed_the_gate_before_a_refusal_does_not_ask(self):
-        # The gate let the audio thread's write through while the bus was
-        # free; the render thread's refusal was recorded before it asked.
+    def test_a_write_that_passed_the_first_look_before_a_refusal_does_not_ask(self):
+        # _emit's unlocked first look let the audio thread's write through
+        # while the bus was free; the render thread's refusal was recorded
+        # before it took the lock to ask.
         b, t = self._backend()
         b.note_nmi_consumer(True)
-        claim_spans_ask = b._claim_spans_ask
+        backing_off = b._spans_backing_off
+        looks = []
 
         def then_render_is_refused():
-            seen = claim_spans_ask()
-            b._note_spans_refused("render", b._spans_epoch)
-            return seen
+            looks.append(backing_off())
+            if len(looks) == 1:
+                with b._spans_lock:
+                    b._note_spans_refused("render")
+            return looks[-1]
 
-        b._claim_spans_ask = then_render_is_refused
+        b._spans_backing_off = then_render_is_refused
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             sent = self._write(b, t, "4000", 64, 1)
+        self.assertEqual(looks, [False, True])
         self.assertNotIn(_SPANS_TOK, sent)
         self.assertEqual(b._spans_backoff_s, 2 * tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
         self.assertEqual(b.stats["errors"], 0)
 
     def test_a_write_waiting_on_another_threads_ask_does_not_ask_after_its_refusal(self):
-        # The audio thread's ask held the ask lock while the render thread's
+        # The audio thread's ask held the lock while the render thread's
         # write waited on it, and was refused.
         b, t = self._backend()
         b.note_nmi_consumer(True)
-        ask_lock = b._spans_ask_lock
+        lock = b._spans_lock
 
         class RefusedWhileWaiting:
             def __enter__(self):
-                ask_lock.acquire()
-                b._note_spans_refused("audio", b._spans_epoch)
+                lock.acquire()
+                b._note_spans_refused("audio")
 
             def __exit__(self, *exc):
-                ask_lock.release()
+                lock.release()
 
         with (
-            mock.patch.object(b, "_spans_ask_lock", RefusedWhileWaiting()),
+            mock.patch.object(b, "_spans_lock", RefusedWhileWaiting()),
             self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"),
         ):
             sent = self._write(b, t, "4000", 64, 1)
@@ -705,13 +691,25 @@ class SlicingBackendTest(unittest.TestCase):
         t.sent.clear()
         self.assertTrue(self._write(b, t, "4000", 64, 3).startswith(_SPANS_TOK))
 
-    def test_a_refusal_of_an_ask_claimed_before_a_reset_is_dropped(self):
+    def test_a_reset_during_a_refused_ask_ends_the_refusal(self):
+        # The render thread's ask was refused on the link before the reset,
+        # and the reset finished while the refusal waited to be recorded.
         b, t = self._backend()
-        seen = b._claim_spans_ask()
-        t.queue_stale(b"Reset cmd received\n")
-        b.reset()
-        b._note_spans_refused("refused before the reset", seen)
+        b.note_nmi_consumer(True)
+        b.tr.reset = lambda: None
+        resetter = threading.Thread(target=b.reset)
+
+        def refused_across_a_reset(*a, **kw):
+            resetter.start()
+            resetter.join(0.3)
+            raise tr_dma.TRSpansRefused("TR WriteC64Spans refused: C64 is paused")
+
+        b.tr.write_spans = refused_across_a_reset
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            self._write(b, t, "4000", 64, 1)
+            resetter.join(5)
         self.assertFalse(b._spans_held)
+        self.assertEqual(b._spans_backoff_s, tr_api.SPANS_REFUSED_BACKOFF_MIN_S)
 
     def test_a_bus_held_at_connect_at_slice_0_puts_off_no_ask(self):
         # At slice 0 no WriteC64Spans is sent, so there is nothing to ask again.
