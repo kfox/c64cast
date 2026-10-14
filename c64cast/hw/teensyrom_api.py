@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import replace
 
@@ -50,6 +51,7 @@ from .teensyrom_dma import (
     DRIVE_SD,
     DRIVE_USB,
     SPANS_SEGMENT_BYTES,
+    SpansProbe,
     TRClient,
     TRError,
     TRSpansRefused,
@@ -58,6 +60,21 @@ from .teensyrom_dma import (
 )
 
 log = logging.getLogger(__name__)
+
+# After WriteC64Spans is refused at its token (the bus is held: REU emulation
+# running, or the C64 paused), sliced writes are not asked for again until the
+# back-off has passed; each refusal costs ~0.3 s of reading the firmware's
+# refusal text over USB serial, with the link held. The back-off doubles per
+# refusal in a row and an accepted command clears it, so a held bus costs one
+# refusal per 16 s at the cap, and a bus that comes free is sliced again
+# within one back-off.
+SPANS_REFUSED_BACKOFF_MIN_S = 1.0
+SPANS_REFUSED_BACKOFF_MAX_S = 16.0
+
+# The only slice shape the sliced tempo was measured at (the config default),
+# and what it measured; see dac_bitmap_tempo.
+_SLICED_TEMPO_SHAPE = (32, 40)
+_SLICED_TEMPO = 0.97
 
 # Where uploaded helper PRGs live on the TR's storage. PostFile auto-creates
 # the directory; a dedicated folder keeps our files out of the user's roots.
@@ -156,6 +173,18 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         # firmware has.
         self._spans: tuple[int, int] | None = None
         self._nmi_consumer = False
+        # Whether the last WriteC64Spans asked for was refused because the bus
+        # is held, and when to ask again. Written only under _spans_lock, which
+        # is held from the back-off check through the ask to its recorded
+        # outcome, so every ask sees what the one before it learned. TRClient's
+        # own lock orders the asks on the link but is released before the
+        # outcome is noted, which let two threads ask for one hold and record
+        # outcomes in the opposite order to the link. Reads outside it (the
+        # tempo, _emit's first look) are only hints.
+        self._spans_lock = threading.Lock()
+        self._spans_held = False
+        self._spans_retry_at = 0.0
+        self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
         if dma_slicing != "off":
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
             if self._spans is not None:
@@ -165,23 +194,37 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         """Confirm the connected firmware answers ReadC64Mem. Reads 2 bytes of
         KERNAL ROM ($FFFC reset vector — always mapped, value-stable) and only
         checks the round-trip succeeds; older builds NAK/timeout the unknown
-        token. Best-effort: any failure -> no read support. The trailing bytes
-        an unknown token can leave on old firmware are the client's resync to
-        discard, before the next command."""
+        token. Best-effort: any failure -> no read support. A refusal does not
+        put the client's link out of step, but old firmware reads the four
+        argument bytes after an unknown token as commands of its own, so the
+        next command resyncs to discard their replies."""
         try:
             data = self.tr.read_segment(0xFFFC, 2)
             return len(data) == 2
         except (OSError, TRError) as e:
             log.debug("TR read-capability probe failed (%s); assuming no read", e)
+            self.tr.leave_out_of_step()
             return False
 
     def _resolve_spans(self, mode: str, slice_bytes: int, gap_us: int) -> tuple[int, int] | None:
         try:
-            supported = self.tr.probe_spans()
+            probe = self.tr.probe_spans()
         except (OSError, TRError) as e:
             log.debug("TR WriteC64Spans probe failed (%s); assuming absent", e)
-            supported = False
-        if supported:
+            probe = SpansProbe.ABSENT
+        # At slice 0 no WriteC64Spans is ever sent, so there is no ask to put off.
+        if probe is SpansProbe.HELD and slice_bytes != 0:
+            with self._spans_lock:
+                self._note_spans_refused("WriteC64Spans probe: bus held")
+        if probe is not SpansProbe.ABSENT:
+            if slice_bytes != 0 and (slice_bytes, gap_us) != _SLICED_TEMPO_SHAPE:
+                log.info(
+                    "TR slice shape %d bytes / %d us was not measured for bitmap + DAC "
+                    "tempo; an unset [audio].dac_bitmap_tempo_* starts from the "
+                    "unsliced figure and follows the drain",
+                    slice_bytes,
+                    gap_us,
+                )
             return slice_bytes, gap_us
         if mode == "on":
             log.warning(
@@ -208,12 +251,54 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
 
     def dac_bitmap_tempo(self, multicolor: bool) -> float:
         # Sliced writes lose ~3.5x fewer NMI ticks, so the ring drains nearer
-        # real time (measured NTSC: 0.972 MultiHires, 0.974 Hires).
-        # At slice 0 each command is one 1 KiB halt, which costs the NMI player
-        # ticks like WriteC64Mem's halts do.
-        if self._spans is not None and self._spans[0] != 0:
-            return 0.97
+        # real time (measured NTSC at 32 B / 40 us: 0.972 MultiHires, 0.974
+        # Hires). Any other shape, slice 0 (one 1 KiB halt per command) and a
+        # held bus (writes go on WriteC64Mem) get the measured unsliced figure
+        # rather than a guess between the two.
+        if self._spans == _SLICED_TEMPO_SHAPE and not self._spans_held:
+            return _SLICED_TEMPO
         return super().dac_bitmap_tempo(multicolor)
+
+    def _spans_backing_off(self) -> bool:
+        return self._spans_held and time.monotonic() < self._spans_retry_at
+
+    def _note_spans_refused(self, detail: object) -> None:
+        """Remember a refusal and double the back-off. Caller holds _spans_lock."""
+        first = not self._spans_held
+        wait = self._spans_backoff_s
+        self._spans_held = True
+        self._spans_retry_at = time.monotonic() + wait
+        self._spans_backoff_s = min(SPANS_REFUSED_BACKOFF_MAX_S, wait * 2)
+        log.log(
+            logging.INFO if first else logging.DEBUG,
+            "%s; writing with WriteC64Mem, asking again in %.0f s",
+            detail,
+            wait,
+        )
+
+    def _clear_spans_refusal(self) -> bool:
+        """Forget a remembered refusal; True when there was one. Caller holds
+        _spans_lock."""
+        was_held = self._spans_held
+        self._spans_held = False
+        self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
+        return was_held
+
+    def _ask_spans(self, addr: int, chunk: bytes, spans: tuple[int, int]) -> bool:
+        """One WriteC64Spans of `chunk`, unless a refusal's back-off is still
+        running. True when it landed; False when it was not asked for, or was
+        refused, and nothing was written."""
+        with self._spans_lock:
+            if self._spans_backing_off():
+                return False
+            try:
+                self.tr.write_spans([(addr, chunk)], *spans)
+            except TRSpansRefused as e:
+                self._note_spans_refused(e)
+                return False
+            if self._clear_spans_refusal():
+                log.info("TR WriteC64Spans accepted again; slicing resumed")
+            return True
 
     def note_nmi_consumer(self, active: bool) -> None:
         # Slicing spares only an NMI consumer and costs ~2.4x in bulk
@@ -236,7 +321,10 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         # 0) halts as long on WriteC64Mem, which spares two round trips.
         one_halt = (spans[0] or SPANS_SEGMENT_BYTES) if spans is not None else 0
         if spans is not None and (
-            not self._nmi_consumer or span_touches_cart_io(addr, len(payload))
+            not self._nmi_consumer
+            or span_touches_cart_io(addr, len(payload))
+            or len(payload) <= one_halt
+            or self._spans_backing_off()
         ):
             spans = None
         try:
@@ -244,17 +332,15 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             while off < n:
                 step = self.tr.MAX_SEGMENT_BYTES if spans is None else SPANS_SEGMENT_BYTES
                 chunk = payload[off : off + step]
-                if spans is None or len(chunk) <= one_halt:
-                    self.tr.write_segment(addr + off, chunk)
-                else:
-                    try:
-                        self.tr.write_spans([(addr + off, chunk)], *spans)
-                    except TRSpansRefused as e:
-                        # Re-asking per segment would pay the refusal's drain
-                        # each time the bus is still held.
-                        log.debug("%s; carrying the rest with WriteC64Mem", e)
+                sliced = False
+                if spans is not None and len(chunk) > one_halt:
+                    sliced = self._ask_spans(addr + off, chunk, spans)
+                    if not sliced:
+                        # Re-asking per segment, or per write, would pay the
+                        # refusal's text drain each time the bus is still held.
                         spans = None
-                        self.tr.write_segment(addr + off, chunk)
+                if not sliced:
+                    self.tr.write_segment(addr + off, chunk)
                 self._stats["writes"] += 1
                 off += len(chunk)
             self._note_emit_success()
@@ -328,6 +414,12 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             self.tr.reset()
         except (OSError, TRError) as e:
             log.warning("TR reset failed: %s", e)
+            return
+        # A reset ends both holds the firmware refuses WriteC64Spans for (REU
+        # emulation and a pause). Under _spans_lock, so an ask the link carried
+        # before the reset records its refusal first rather than after.
+        with self._spans_lock:
+            self._clear_spans_refusal()
 
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Bring the C64 to a clean, streamable idle state.

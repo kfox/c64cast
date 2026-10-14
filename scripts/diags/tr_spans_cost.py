@@ -39,7 +39,13 @@ from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.hw.backend import make_backend
 from c64cast.hw.teensyrom_api import TeensyROMBackend
-from c64cast.hw.teensyrom_dma import SPANS_FIELD_MAX, SPANS_MAX, SPANS_MAX_SLICES, TRClient
+from c64cast.hw.teensyrom_dma import (
+    SPANS_FIELD_MAX,
+    SPANS_MAX,
+    SPANS_MAX_SLICES,
+    SpansProbe,
+    TRClient,
+)
 
 SCRATCH = 0x6000
 BATCH_SPAN_BYTES = 64
@@ -98,7 +104,8 @@ def main() -> int:
     tr = be.tr
     rows: list[dict] = []
     try:
-        if not tr.probe_spans():
+        # A held bus (REU emulation, a pause) is cleared by the reset below.
+        if tr.probe_spans() is SpansProbe.ABSENT:
             print("[abort] firmware lacks WriteC64Spans")
             return 1
         be.reset()

@@ -43,6 +43,7 @@ See docs/architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the
 from __future__ import annotations
 
 import contextlib
+import enum
 import logging
 import socket
 import threading
@@ -130,6 +131,18 @@ _SPANS_HEADER_WAIT_S = (500 * 10 + SPANS_MAX * 4 // 2 + 1000) / 1000 + 0.3
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
+# Its refusals at the token, when another DMA user holds the bus.
+_SPANS_BUS_HELD = ("REU emulation is running", "C64 is paused")
+
+
+class SpansProbe(enum.Enum):
+    """What `TRClient.probe_spans` learned about WriteC64Spans."""
+
+    ABSENT = "absent"
+    READY = "ready"
+    # The command exists, but REU emulation or a pause holds the bus, so it is
+    # refused at its token until that ends.
+    HELD = "held"
 
 
 def span_touches_cart_io(addr: int, length: int) -> bool:
@@ -676,6 +689,12 @@ class TRClient:
             log.debug("teensyrom: resync discarded %d bytes: %r", len(stale), stale[:32])
         return bool(stale) or capped
 
+    def leave_out_of_step(self) -> None:
+        """Make the next command resync before it sends, for a caller that
+        knows the firmware may still send replies this client has no read for."""
+        with self._lock:
+            self._out_of_step = True
+
     def _send(self, data: bytes) -> None:
         try:
             self.transport.send_all(data)
@@ -850,9 +869,9 @@ class TRClient:
         self._send(data)
         self._reply_due = float("-inf")
 
-    def probe_spans(self) -> bool:
-        """Does the connected firmware carry WriteC64Spans? Sends the token,
-        then a header announcing zero spans, which the firmware refuses before
+    def probe_spans(self) -> SpansProbe:
+        """Does the connected firmware carry WriteC64Spans, and is the bus free
+        for it? Sends the token, then a header announcing zero spans, which the firmware refuses before
         anything is owed — so the probe writes no C64 memory and leaves no
         discard window behind.
 
@@ -863,12 +882,14 @@ class TRClient:
         bytes are safe on every firmware: refused as a header, and read by
         firmware without the command as two unknown 0x0000 tokens.
 
-        Support is an ack to the token, a FailToken to it (the command exists
-        but REU emulation or a pause holds the bus), or — when chatter hid the
-        reply — the refusal's own text. A firmware ``Timeout!`` raises TRError
-        instead, since it answers nothing about support, unless the token was
-        acked: only firmware carrying the command acks it, so that probe
-        returns True and leaves the link out of step.
+        An ack to the token, or the zero-span refusal's text when chatter hid
+        the reply, is READY. A FailToken, or the bus-held refusal's text, is
+        HELD: the command exists but REU emulation or a pause holds the bus.
+        Anything else is ABSENT, which keeps every write on WriteC64Mem. A
+        firmware ``Timeout!`` raises TRError instead, since it answers nothing
+        about support, unless the token was acked: only firmware carrying the
+        command acks it, so that probe is READY and leaves the link out of
+        step.
 
         Anything but a FailToken in the token reply's place owes the zero
         header's refusal, chatter included, since the firmware may act on the
@@ -893,9 +914,11 @@ class TRClient:
                 raise TRError("WriteC64Spans probe: TR timed out on the token")
             if timed_out or (tok != TOK_FAIL and _SPANS_COUNT_REFUSAL not in text):
                 self._out_of_step = True
-            if tok in (TOK_ACK, TOK_FAIL):
-                return True
-            return _SPANS_COUNT_REFUSAL in text
+            if tok == TOK_ACK or _SPANS_COUNT_REFUSAL in text:
+                return SpansProbe.READY
+            if tok == TOK_FAIL or any(reason in text for reason in _SPANS_BUS_HELD):
+                return SpansProbe.HELD
+            return SpansProbe.ABSENT
 
     def read_segment(self, addr: int, length: int) -> bytes:
         """One ReadC64Mem command: token + addr(BE) + len(BE), verify the ack,
