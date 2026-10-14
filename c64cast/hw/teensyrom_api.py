@@ -419,7 +419,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             log.warning("TR reset failed: %s", e)
             return
         # A reset ends both holds the firmware refuses WriteC64Spans for (REU
-        # emulation and a pause). Under the ask lock, so an ask the link carried
+        # emulation and a pause). Under _spans_lock, so an ask the link carried
         # before the reset records its refusal first rather than after.
         with self._spans_lock:
             self._clear_spans_refusal()

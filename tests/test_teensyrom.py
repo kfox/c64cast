@@ -696,11 +696,16 @@ class SlicingBackendTest(unittest.TestCase):
         # and the reset finished while the refusal waited to be recorded.
         b, t = self._backend()
         b.note_nmi_consumer(True)
-        b.tr.reset = lambda: None
+        reset_sent = threading.Event()
+        b.tr.reset = reset_sent.set
         resetter = threading.Thread(target=b.reset)
 
         def refused_across_a_reset(*a, **kw):
             resetter.start()
+            # Timed from the reset reaching the link, not from start(): a
+            # resetter slow to start would clear after this refusal even with
+            # no lock in reset(), and the test would pass.
+            reset_sent.wait(5)
             resetter.join(0.3)
             raise tr_dma.TRSpansRefused("TR WriteC64Spans refused: C64 is paused")
 
