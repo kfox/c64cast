@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 import cv2
 import numpy as np
@@ -33,8 +33,6 @@ from c64cast._pollthread import PollThread
 from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator, FrameSampler
-
-_T = TypeVar("_T")
 
 # Audio is fed toward the sink on the picture's timeline: a packet that starts
 # later than the audio fed so far is preceded by silence, and one that starts
@@ -1291,14 +1289,14 @@ class AVFileSource:
         )
         self._demux_poll.start()
 
-    def request_seek(
+    def request_seek[T](
         self,
         target_s: float,
         *,
         unmute: bool = False,
-        on_request: Callable[[], _T] | None = None,
+        on_request: Callable[[], T] | None = None,
         exact: bool = True,
-    ) -> _T | None:
+    ) -> T | None:
         """Ask the demux thread to seek to `target_s` (absolute seconds from
         file start) at its next opportunity. Coalescing is natural: rapid
         repeated calls (RW/FF ticking, jog) just overwrite the single pending
