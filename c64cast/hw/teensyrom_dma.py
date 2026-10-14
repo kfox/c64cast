@@ -633,7 +633,9 @@ class TRClient:
         firmware may send later than that sets ``_reply_due``, and the wait
         runs until then instead. A WriteC64Spans that failed past its token
         is followed by the firmware's discard, which the short wait does not
-        cover, so after one the wait is the whole ``_RESYNC_QUIET_S``.
+        cover, so after one the wait is the whole ``_RESYNC_QUIET_S``, or
+        until ``_SPANS_HEADER_WAIT_S`` after the token when its header did not
+        all go out.
 
         Raises TRError, leaving the link out of step, when a drain begun once
         that wait was over still ends at drain_text's hard cap: the device is
@@ -873,11 +875,15 @@ class TRClient:
         resync."""
         with self._command():
             self._drain_stale()
-            self._send(self._u16(TOK_WRITE_C64_SPANS))
             try:
-                tok: int | None = self._read_token()
-            except TRError:
-                tok = None
+                self._send(self._u16(TOK_WRITE_C64_SPANS))
+                try:
+                    tok: int | None = self._read_token()
+                except TRError:
+                    tok = None
+            except BaseException:
+                self._close_spans_token()
+                raise
             self._send_spans_header(bytes(4))
             text = self.transport.drain_text(0.3)
             if _FIRMWARE_TIMEOUT_TEXT in text:

@@ -1836,6 +1836,17 @@ class CutCommandTest(unittest.TestCase):
         self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
         self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
+    def test_a_spans_probe_whose_token_reply_read_failed_still_sends_the_zero_header(self):
+        for name, exc in (("interrupt", KeyboardInterrupt), ("transport error", OSError)):
+            with self.subTest(name):
+                t = _CutLoopback()
+                c = TRClient(t)
+                with mock.patch.object(t, "recv_exact", side_effect=exc):
+                    with self.assertRaises(exc):
+                        c.probe_spans()
+                self.assertEqual(bytes(t.sent), _SPANS_TOK + bytes(4))
+                self.assertEqual(_next_write_events(t, c), _RESYNCED)
+
     def test_both_transports_resync_after_a_cut_write(self):
         class _CutSerial(_FakeSerial):
             def write(self, data: bytes) -> None:
