@@ -835,10 +835,10 @@ class FormatTomlErrorTest(unittest.TestCase):
         # quoted "line" became a fragment of the passphrase — no key name on it
         # for the redaction rules to find, so it went out verbatim with a caret.
         #
-        # Written to a real file rather than passed a bare name: 3.14 carries
-        # the document on the exception as `.doc` and 3.12-3.13 do not, so a
-        # path that does not exist leaves the older versions with nothing to
-        # quote and exercises the rule only on the newest one.
+        # Written to a real file rather than passed a bare name: 3.14 and later
+        # carry the document on the exception as `.doc` and 3.12-3.13 do not, so
+        # a path that does not exist leaves the older versions with nothing to
+        # quote and exercises the rule only on 3.14 and later.
         for sep in ("\u0085", "\u2028", "\u2029"):
             with self.subTest(sep=f"U+{ord(sep):04X}"):
                 doc = f'[ultimate64]\ndma_password = "a{sep}hunter2"\nx = ?\n'
