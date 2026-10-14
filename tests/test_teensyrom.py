@@ -1773,6 +1773,13 @@ class CutCommandTest(unittest.TestCase):
             self.c.probe_spans()
         self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
+    def test_an_acked_spans_probe_with_a_firmware_timeout_still_finds_support(self):
+        # Only firmware carrying WriteC64Spans acks its token.
+        self.t.queue_token(TOK_ACK)
+        self.t.on_header = b"Timeout!\n" + tr_dma._SPANS_COUNT_REFUSAL.encode()
+        self.assertTrue(self.c.probe_spans())
+        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+
     def test_a_firmware_check_answered_with_anything_else_resyncs(self):
         self.t.queue_token(TOK_FAIL)
         self.t.queue_stale(b"Timeout!\n")

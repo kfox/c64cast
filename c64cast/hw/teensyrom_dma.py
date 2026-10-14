@@ -865,8 +865,10 @@ class TRClient:
 
         Support is an ack to the token, a FailToken to it (the command exists
         but REU emulation or a pause holds the bus), or — when chatter hid the
-        reply — the refusal's own text. A firmware ``Timeout!`` on the token
-        raises TRError instead, since it answers nothing about support.
+        reply — the refusal's own text. A firmware ``Timeout!`` raises TRError
+        instead, since it answers nothing about support, unless the token was
+        acked: only firmware carrying the command acks it, so that probe
+        returns True and leaves the link out of step.
 
         Anything but a FailToken in the token reply's place owes the zero
         header's refusal, chatter included, since the firmware may act on the
@@ -886,9 +888,10 @@ class TRClient:
                 raise
             self._send_spans_header(bytes(4))
             text = self.transport.drain_text(0.3)
-            if _FIRMWARE_TIMEOUT_TEXT in text:
+            timed_out = _FIRMWARE_TIMEOUT_TEXT in text
+            if timed_out and tok != TOK_ACK:
                 raise TRError("WriteC64Spans probe: TR timed out on the token")
-            if tok != TOK_FAIL and _SPANS_COUNT_REFUSAL not in text:
+            if timed_out or (tok != TOK_FAIL and _SPANS_COUNT_REFUSAL not in text):
                 self._out_of_step = True
             if tok in (TOK_ACK, TOK_FAIL):
                 return True
