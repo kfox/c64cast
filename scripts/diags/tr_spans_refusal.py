@@ -126,7 +126,10 @@ def main() -> int:
             print("[abort] the firmware did not ack the pause")
             return 1
         burst("held", args.held_s)
-        _send_pause(be, _PAUSE_OFF)
+        if not _send_pause(be, _PAUSE_OFF):
+            # The bus may still be held, so a "freed" phase would time held writes.
+            print("[abort] the firmware did not ack the unpause")
+            return 1
         # The first ask after the unpause waits out the back-off then in force,
         # up to SPANS_REFUSED_BACKOFF_MAX_S, which can outlast --free-s.
         burst("freed", max(0.0, be._spans_retry_at - time.monotonic()) + args.free_s)
