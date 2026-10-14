@@ -1,0 +1,1 @@
+- **c64cast runs on Python 3.15.** It is tested on 3.15 alongside 3.12–3.14.

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple, Protocol, TypeVar
+from typing import NamedTuple, Protocol
 
 from .dac_slot_ring import CAP_SR
 
@@ -72,10 +72,7 @@ class _HostApiListing(Protocol):
     def hostapi(self) -> int: ...
 
 
-_ListingT = TypeVar("_ListingT", bound=_HostApiListing)
-
-
-def one_device(found: Sequence[_ListingT]) -> _ListingT | None:
+def one_device[ListingT: _HostApiListing](found: Sequence[ListingT]) -> ListingT | None:
     """The single device ``found`` holds, or ``None`` when it holds none or
     several. Windows lists each input once per host API (MME, DirectSound,
     WASAPI, WDM-KS), so matches that each sit in a different host API are one

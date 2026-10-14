@@ -34,7 +34,7 @@ import math
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from c64cast.control.transport import atomic_write_text
 
@@ -42,7 +42,6 @@ from . import paths, upgrade
 
 log = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
 
 SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -150,7 +149,7 @@ def _flag(value: Any) -> bool:
     return value
 
 
-def _optional(value: Any, parse: Callable[[Any], _T]) -> _T | None:
+def _optional[T](value: Any, parse: Callable[[Any], T]) -> T | None:
     """`parse(value)`, with JSON's null passed straight through. Absent and
     null are the same "no value" here — a file written before
     `unanswered_since` existed says nothing about it either way."""

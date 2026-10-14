@@ -329,7 +329,7 @@ _NAMES_LOGGER = re.compile(r"\bLogger\b")
 
 # This package's own logger names, which is how much of the process-wide logger
 # registry counts as its import scope. See [NoProcessWideThrottleTest].
-# `annotationlib` is 3.14 and this project supports 3.11 (`requires-python`).
+# `annotationlib` is 3.14 and this project supports 3.12 (`requires-python`).
 # Below 3.14 annotations are evaluated at definition time, so a module holding an
 # unquoted `if TYPE_CHECKING` name would raise on *import* — none this walk can
 # reach carries one, and reading `__annotations__` directly is safe there.
