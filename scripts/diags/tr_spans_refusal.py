@@ -42,9 +42,13 @@ _PAUSE_OFF = 0x6430
 _TARGET = 0x4000
 
 
-def _send_pause(be: TeensyROMBackend, token: int) -> None:
+def _send_pause(be: TeensyROMBackend, token: int) -> bool:
+    """Send a pause token; True when the firmware acked it."""
     tr = be.tr
     with tr._command():
+        # Stale chatter read as this ack would leave the real ack for the next
+        # write to read as its own, and every write after it one reply behind.
+        tr._drain_stale()
         tr.transport.send_all(tr._u16(token))
         tok = tr._read_token()
         # A refused token is followed by its text, which the next write would
@@ -52,6 +56,7 @@ def _send_pause(be: TeensyROMBackend, token: int) -> None:
         detail = "" if tok == TOK_ACK else tr.transport.drain_text(0.3).strip()
     state = "ack" if tok == TOK_ACK else f"unexpected 0x{tok:04X} {detail!r}"
     print(f"[pause] token 0x{token:04X}: {state}")
+    return tok == TOK_ACK
 
 
 def main() -> int:
@@ -116,7 +121,10 @@ def main() -> int:
     try:
         be.note_nmi_consumer(True)
         burst("free", args.free_s)
-        _send_pause(be, _PAUSE_ON)
+        if not _send_pause(be, _PAUSE_ON):
+            # The bus was never held, so a "held" phase would time free writes.
+            print("[abort] the firmware did not ack the pause")
+            return 1
         burst("held", args.held_s)
         _send_pause(be, _PAUSE_OFF)
         # The first ask after the unpause waits out the back-off then in force,
