@@ -1589,6 +1589,35 @@ class CutCommandTest(unittest.TestCase):
         self.assertEqual(self.c.firmware, "unknown")
         self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
+    def test_a_spans_header_that_did_not_go_out_is_waited_out_from_the_token(self):
+        # The firmware waits out a stalled header for 5.1 s after the token,
+        # so a command sent 1.6 s after it would be read as that header.
+        class _HeaderCut(_CutLoopback):
+            def send_all(self, data: bytes) -> None:
+                super().send_all(data)
+                if data == TRClient._u16(tr_dma.TOK_WRITE_C64_SPANS):
+                    self.cut_next_send = OSError
+
+        cases = {
+            "write_spans": (TOK_ACK, OSError, lambda c: c.write_spans([(0x4000, b"\x01")], 32, 40)),
+            "_close_spans_token": (
+                0x1234,
+                TRError,
+                lambda c: c.write_spans([(0x4000, b"\x01")], 32, 40),
+            ),
+            "probe_spans": (TOK_ACK, OSError, lambda c: c.probe_spans()),
+        }
+        for name, (reply, exc, command) in cases.items():
+            with self.subTest(site=name):
+                t = _HeaderCut()
+                c = TRClient(t)
+                t.queue_token(reply)
+                with self.assertRaises(exc):
+                    command(c)
+                events = _next_write_events(t, c)
+                self.assertEqual(events[1:], _IN_STEP)
+                self.assertAlmostEqual(events[0][1], tr_dma._SPANS_HEADER_WAIT_S)  # type: ignore[arg-type]
+
     def test_the_wait_runs_from_the_last_byte_sent(self):
         class _SlowReply(_CutLoopback):
             def __init__(self, clock: SleepDrivenClock, delay_s: float):
@@ -1668,8 +1697,10 @@ class CutCommandTest(unittest.TestCase):
         with mock.patch.object(self.t, "recv_exact", side_effect=ack_then_cut_the_header):
             with self.assertRaises(OSError):
                 self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
-        # The firmware's discard after the cut outlasts the dead link's short wait.
-        self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
+        # The firmware's wait for the header outlasts the dead link's short wait.
+        events = _next_write_events(self.t, self.c)
+        self.assertEqual(events[1:], _IN_STEP)
+        self.assertAlmostEqual(events[0][1], tr_dma._SPANS_HEADER_WAIT_S)  # type: ignore[arg-type]
         # Once waited out, a dead judgment is back to the short wait.
         for _ in range(3):
             self._cut_write(OSError)
@@ -1690,9 +1721,8 @@ class CutCommandTest(unittest.TestCase):
                 self.c.write_spans([(0x4000, b"\x01\x02")], 32, 40)
         self._cut_write(OSError)  # its resync waits out the discard, then fails too
         self._cut_write(OSError)
-        self.assertEqual(
-            self.t.quiet_waits[-2:], [tr_dma._RESYNC_QUIET_S, tr_dma._RESYNC_DEAD_QUIET_S]
-        )
+        self.assertAlmostEqual(self.t.quiet_waits[-2], tr_dma._SPANS_HEADER_WAIT_S)
+        self.assertEqual(self.t.quiet_waits[-1], tr_dma._RESYNC_DEAD_QUIET_S)
 
     def test_an_interrupt_after_a_silent_resync_does_not_judge_the_link_dead(self):
         with self.assertRaises(TRError):

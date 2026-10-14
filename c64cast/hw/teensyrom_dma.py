@@ -121,6 +121,12 @@ _FIRMWARE_TIMEOUT_TEXT = "Timeout!"
 # for the payload's delivery and the firmware's millis() under-counting a long
 # job. Its reply can come this long after the client's io_timeout gave up on it.
 _SPANS_JOB_CEILING_S = (SPANS_MAX_SLICES * 5 + 1000) / 1000 + 0.5
+# How long after WriteC64Spans' token the firmware may still take the next
+# bytes as its header: it waits out a stalled header until SpansCeilingmS(sizeof
+# List) (SerUSBIO.ino), 500 * 10 + 256 / 2 ms, then discards until a second
+# passes with nothing arriving; plus a margin. The resync's wait from the last
+# byte sent is far shorter, so a header that did not go out sets this instead.
+_SPANS_HEADER_WAIT_S = (500 * 10 + SPANS_MAX * 4 // 2 + 1000) / 1000 + 0.3
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
@@ -807,7 +813,7 @@ class TRClient:
                 raise TRError(f"WriteC64Spans ${first:04X}: unexpected reply 0x{tok:04X}")
             self._discard_owed = True
             try:
-                self._send(header + span_list)
+                self._send_spans_header(header + span_list)
                 self._expect_ack(f"WriteC64Spans ${first:04X} (spans)")
                 self._send(payload)
                 # Set once the whole payload is out: a cut one starts no job.
@@ -830,7 +836,17 @@ class TRClient:
         already dropped the command reads them as two unknown 0x0000 tokens.
         The resync before the next command covers the rest."""
         with contextlib.suppress(OSError):
-            self._send(bytes(4))
+            self._send_spans_header(bytes(4))
+
+    def _send_spans_header(self, data: bytes) -> None:
+        """Send what follows WriteC64Spans' token, its header first, under the
+        caller's lock, right after the token went out. Until it has all gone,
+        the firmware may take the next command's bytes as that header, for
+        ``_SPANS_HEADER_WAIT_S`` after the token, so that is when the reply is
+        due until the send completes."""
+        self._reply_due = self._last_send + _SPANS_HEADER_WAIT_S
+        self._send(data)
+        self._reply_due = float("-inf")
 
     def probe_spans(self) -> bool:
         """Does the connected firmware carry WriteC64Spans? Sends the token,
@@ -862,7 +878,7 @@ class TRClient:
                 tok: int | None = self._read_token()
             except TRError:
                 tok = None
-            self._send(bytes(4))
+            self._send_spans_header(bytes(4))
             text = self.transport.drain_text(0.3)
             if _FIRMWARE_TIMEOUT_TEXT in text:
                 raise TRError("WriteC64Spans probe: TR timed out on the token")
