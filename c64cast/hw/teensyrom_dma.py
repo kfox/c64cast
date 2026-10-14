@@ -914,11 +914,13 @@ class TRClient:
         """Reset the C64 (boots to the TR menu). The firmware answers with a
         text line ("Reset cmd received"), NOT a binary ack — drain it so it
         doesn't pollute the next command's reply. A line that did not come in
-        the drain may still be on its way, so the link is left out of step."""
+        the drain may still be on its way, and a drain its hard cap ended
+        stopped while the device was still sending, so either leaves the link
+        out of step."""
         with self._command():
             self._send(self._u16(TOK_RESET_C64))
             line = self.transport.drain_text()
-            if "Reset" not in line:
+            if "Reset" not in line or self.transport.drain_capped:
                 self._out_of_step = True
                 log.debug("teensyrom reset: unexpected response %r", line)
 
@@ -989,12 +991,13 @@ class TRClient:
 
     def ping(self) -> str:
         """Liveness check. The firmware answers with a text status line; when
-        none came in the drain it may still be on its way, so the link is left
-        out of step."""
+        none came in the drain it may still be on its way, and a drain its hard
+        cap ended stopped while the device was still sending, so either leaves
+        the link out of step."""
         with self._command():
             self._send(self._u16(TOK_PING))
             line = self.transport.drain_text().strip()
-            if not line:
+            if not line or self.transport.drain_capped:
                 self._out_of_step = True
             return line
 

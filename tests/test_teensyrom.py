@@ -2047,5 +2047,31 @@ class ResyncCapTest(unittest.TestCase):
         )
 
 
+class CappedReplyDrainTest(unittest.TestCase):
+    """A reply drain that its hard cap ended got its line while the device was
+    still sending, so the next command resyncs before it sends."""
+
+    def setUp(self):
+        self.t = _FloodingLoopback(_frozen_clock(self))
+        self.c = TRClient(self.t)
+        self.t.floods = 1
+
+    def test_reset(self):
+        self.t.queue_stale(b"Reset cmd received\n")
+        self.c.reset()
+        self.assertEqual(
+            _next_write_events(self.t, self.c),
+            [("quiet", tr_dma._RESYNC_MIN_QUIET_S), ("send", _NEXT_FRAME)],
+        )
+
+    def test_ping(self):
+        self.t.queue_stale(b"TeensyROM ready\n")
+        self.assertEqual(self.c.ping(), "TeensyROM ready")
+        self.assertEqual(
+            _next_write_events(self.t, self.c),
+            [("quiet", tr_dma._RESYNC_MIN_QUIET_S), ("send", _NEXT_FRAME)],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
