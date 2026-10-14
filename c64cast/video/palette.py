@@ -768,7 +768,8 @@ class ColorFitAccumulator:
             small = cv2.resize(img_bgr, (_AUTO_FIT_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA)
         else:
             small = img_bgr
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        # cv2's stubs type the result as int-or-float, which bincount's refuse.
+        gray = np.asarray(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
         self._hist += np.bincount(gray.ravel(), minlength=256)
         s = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)[:, :, 1]
         self._sat_sum += float(s.sum())
