@@ -646,8 +646,8 @@ pitch_mult_blank = 1.0       # Blank (no video input).
 #
 # Unset (the default) = start from the fraction measured for the connected
 # hardware (clock/wall, NTSC): 0.89 hires / 0.88 mhires on the U64-II and on a
-# TeensyROM writing unsliced; 0.97 on a TeensyROM+ with sliced DMA writes
-# ([teensyrom].dma_slicing). The scene then follows the speed it measures while
+# TeensyROM writing unsliced; 0.97 on a TeensyROM+ writing sliced at the default
+# slice shape ([teensyrom].dma_slicing). The scene then follows the speed it measures while
 # it plays, which also moves with how many frames a second it commits. A value
 # set here stays fixed: measure with scripts/diags/mhires_tempo_clock_ab.py.
 # 1.0 = compensation off.

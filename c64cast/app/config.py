@@ -980,8 +980,9 @@ class AudioCfg:
             "plays at real time. 1.0 = off. Host-DMA DAC path only — no effect "
             "on the Ultimate Audio sampler or the REU pump. Unset = start from "
             "the figure for the connected hardware, 0.89 (Ultimate 64-II NTSC, "
-            "and a TeensyROM writing unsliced) or 0.97 (TeensyROM+ with sliced "
-            "DMA writes), and follow the speed measured while the scene plays; "
+            "and a TeensyROM writing unsliced) or 0.97 (TeensyROM+ writing sliced "
+            "at the default slice shape), and follow the speed measured while the "
+            "scene plays; "
             "a set value stays fixed."
         },
     )
@@ -994,7 +995,8 @@ class AudioCfg:
             "1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio "
             "sampler or the REU pump. Unset = start from the figure for the "
             "connected hardware, 0.88 (Ultimate 64-II NTSC, and a TeensyROM "
-            "writing unsliced) or 0.97 (TeensyROM+ with sliced DMA writes), "
+            "writing unsliced) or 0.97 (TeensyROM+ writing sliced at the default "
+            "slice shape), "
             "and follow the speed measured while the scene plays; a set value "
             "stays fixed."
         },
