@@ -317,7 +317,7 @@ Watch the checks and fix what breaks:
 gh pr checks --watch
 ```
 
-CI runs the tests across Python 3.11–3.14 and three operating systems,
+CI runs the tests across Python 3.12–3.14 and three operating systems,
 `.pre-commit-config.yaml`'s hooks in the `pre-commit` job — bar `pyright`,
 `unittest` and `commit-message-shape`, which other gates own — the type checks
 once per target platform in the `types` job, the book and site renders and the

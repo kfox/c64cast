@@ -3015,7 +3015,7 @@ _TOML_POS_RE = re.compile(r"^(?P<msg>.*) \(at line (?P<line>\d+), column (?P<col
 def _format_toml_error(path: str, err: tomllib.TOMLDecodeError) -> str:
     """Build a friendly multi-line error showing the offending line and a
     caret under the column. Python 3.14+ exposes .lineno/.colno/.msg/.doc
-    on TOMLDecodeError; on 3.11-3.13 we parse them out of str(err) and
+    on TOMLDecodeError; on 3.12-3.13 we parse them out of str(err) and
     re-read the file for the source line."""
     lineno = getattr(err, "lineno", None)
     colno = getattr(err, "colno", None)

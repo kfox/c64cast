@@ -23,7 +23,7 @@ patterns that keep the suite hardware-free. For runtime behavior see
   warning when it falls back to the default, and is the one shared resolver
   every color knob uses. Use `palette.C64_COLOR_NAMES[i]` for a Title-Case
   display name.
-* Type-annotate (Python 3.11+, `from __future__ import annotations`).
+* Type-annotate (Python 3.12+, `from __future__ import annotations`).
   The codebase is gradually-typed; new code should keep up.
 * No emojis, no comments that just restate the code. Keep doc comments
   to the *why*.

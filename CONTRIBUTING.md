@@ -131,7 +131,7 @@ whether or not the current shell has `.venv` activated:
 
 CI runs on every pull request and on pushes to `main`
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): the same tests across
-Python 3.11–3.14 and three operating systems, the same type checks once per
+Python 3.12–3.14 and three operating systems, the same type checks once per
 target platform on Python 3.14 in the `types` job, the same book and site
 renders and search test in `docs`, the same bundle rebuild in `web`, and the
 whole of [`.pre-commit-config.yaml`](.pre-commit-config.yaml) in the

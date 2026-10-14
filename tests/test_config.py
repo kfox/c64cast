@@ -836,7 +836,7 @@ class FormatTomlErrorTest(unittest.TestCase):
         # for the redaction rules to find, so it went out verbatim with a caret.
         #
         # Written to a real file rather than passed a bare name: 3.14 carries
-        # the document on the exception as `.doc` and 3.11-3.13 do not, so a
+        # the document on the exception as `.doc` and 3.12-3.13 do not, so a
         # path that does not exist leaves the older versions with nothing to
         # quote and exercises the rule only on the newest one.
         for sep in ("\u0085", "\u2028", "\u2029"):
@@ -865,7 +865,7 @@ class FormatTomlErrorTest(unittest.TestCase):
         self.assertNotIn("^", out)
         # The position is asserted only where tomllib supplies one. This is the
         # one error whose text carries no `(at line N, column M)` — it reads
-        # `(at end of document)` — so on 3.11-3.13, where `.lineno` does not
+        # `(at end of document)` — so on 3.12-3.13, where `.lineno` does not
         # exist and `_TOML_POS_RE` is the only source, there is no line number
         # to report and no line is quoted at all. The two assertions above are
         # the ones that must hold on every version.

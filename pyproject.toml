@@ -9,7 +9,7 @@ version = "0.4.0"
 # truth: reword there and here in the same commit.
 description = "Turn a real Commodore 64 into a programmable display + audio device via Ultimate 64 or TeensyROM+ — video, SID-music scopes, webcam, MIDI/ASID synth, WLED, generative visuals, overlays, playlists."
 readme = "README.md"
-requires-python = ">=3.11"   # tomllib is stdlib
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -31,7 +31,7 @@ keywords = [
     "wled",
 ]
 # Keep the OS and Python classifiers in sync with ci.yml's `test`
-# matrix (ubuntu × macos × windows, py3.11-3.14).
+# matrix (ubuntu × macos × windows, py3.12-3.14).
 #
 # No "License :: OSI Approved :: MIT License" classifier: PEP 639 license
 # expressions supersede license classifiers, and setuptools hard-errors if both
@@ -47,7 +47,6 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -193,7 +192,7 @@ c64cast = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 # Format-only, unlike `extend-exclude`: ruff reflows fenced Python inside
 # Markdown, and the books' samples are hand-wrapped for narrower PDF columns.
@@ -219,7 +218,7 @@ ignore = [
 ]
 
 # `annotationlib` is stdlib as of 3.14, but ruff classifies imports by
-# `target-version` — py311 here — and would file it as third-party.
+# `target-version` — py312 here — and would file it as third-party.
 [tool.ruff.lint.isort]
 extra-standard-library = ["annotationlib"]
 
@@ -233,7 +232,7 @@ extra-standard-library = ["annotationlib"]
 default-groups = ["dev"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 files = [
     "c64cast/hw/api.py",
     "c64cast/hw/backend.py",
@@ -276,7 +275,7 @@ include = ["c64cast", "tests"]
 # does — by name, off the hooks directory. Without this the import is
 # unresolved and every call through it goes unchecked.
 extraPaths = [".claude/hooks"]
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"
 reportMissingTypeStubs = "none"
