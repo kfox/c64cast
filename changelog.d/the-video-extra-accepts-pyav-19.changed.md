@@ -1,1 +1,1 @@
-- **The `video` extra accepts PyAV 19.**
+- **The `video` extra accepts PyAV 19.** A video file whose time base PyAV 19 reports as unset is treated as having no timestamps, as under PyAV 18, instead of every picture and audio packet being read as time zero.
