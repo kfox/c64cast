@@ -2927,10 +2927,8 @@ class ExactSeekTest(unittest.TestCase):
         def picture(at: float) -> Any:
             return SimpleNamespace(pts=int(at * 10))
 
-        with (
-            mock.patch.object(src, "_enqueue_decoded", side_effect=enqueue),
-            mock.patch.object(src, "_frame_pts_s", side_effect=lambda f: f.pts / 10),
-        ):
+        src.video_time_base = 0.1
+        with mock.patch.object(src, "_enqueue_decoded", side_effect=enqueue):
             src._admit_frame(picture(8.0))
             src._release_held_picture(SimpleNamespace(pts=110, time_base=0.1))
             for at in (7.0, 9.0, 8.5, 10.0):
