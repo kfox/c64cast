@@ -3233,13 +3233,28 @@ class ScanVideoSamplesTest(unittest.TestCase):
 
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")
 class UnsetTimeBaseTest(unittest.TestCase):
-    """PyAV 19 reports an unset time base as a falsy zero rational rather
-    than None; `Fraction(0)` stands in for it."""
+    def setUp(self):
+        from av.rational import AVRational
+
+        self.unset = AVRational(0, 1)
+
+    def test_timestamp_needs_both_halves(self):
+        self.assertEqual(video_mod.timestamp_s(90, Fraction(1, 30)), 3.0)
+        self.assertIsNone(video_mod.timestamp_s(90, self.unset))
+        self.assertIsNone(video_mod.timestamp_s(90, None))
+        self.assertIsNone(video_mod.timestamp_s(None, Fraction(1, 30)))
 
     def test_source_duration_falls_back_to_the_container(self):
-        v_stream = SimpleNamespace(duration=900, time_base=Fraction(0, 1))
+        v_stream = SimpleNamespace(duration=900, time_base=self.unset)
         container = SimpleNamespace(duration=2_000_000)
         self.assertEqual(video_mod._source_duration_s(container, v_stream), 2.0)
+
+    def test_seek_sampling_declines_without_dividing(self):
+        v_stream = SimpleNamespace(time_base=self.unset, start_time=0)
+        container = mock.Mock()
+        taken = video_mod._seek_sample_frames(container, "x.mp4", v_stream, [], 4, 2.0, None)
+        self.assertEqual(taken, 0)
+        container.seek.assert_not_called()
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")

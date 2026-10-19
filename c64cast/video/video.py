@@ -125,6 +125,14 @@ def audio_frame_duration_s(frame: Any, fallback_rate: int) -> float:
     return frame.samples / rate if rate else 0.0
 
 
+def timestamp_s(ts: int | None, time_base: Any) -> float | None:
+    """``ts`` in seconds, or None when either half is unset. PyAV 18 reports
+    an unset time base as None and PyAV 19 as a falsy ``AVRational(0, 1)``."""
+    if ts is None or not time_base:
+        return None
+    return float(ts * time_base)
+
+
 def is_audio_discontinuity(
     start_s: float, fed_s: float, horizon_s: float | None, floor_s: float | None = None
 ) -> bool:
@@ -624,8 +632,7 @@ def decode_audio_full(
             for packet in container.demux(*(s for s in (a_stream, v_stream) if s is not None)):
                 if packet.stream is a_stream:
                     yield from packet.decode()
-                elif packet.pts is not None and packet.time_base:
-                    stamp = float(packet.pts * packet.time_base)
+                elif (stamp := timestamp_s(packet.pts, packet.time_base)) is not None:
                     picture_s = stamp if picture_s is None else max(picture_s, stamp)
 
         frames = decoded()
@@ -636,8 +643,8 @@ def decode_audio_full(
             if frame is not None:
                 duration = audio_frame_duration_s(frame, target_sample_rate)
                 start = fed
-                if frame.pts is not None and frame.time_base:
-                    pts_s = float(frame.pts * frame.time_base)
+                pts_s = timestamp_s(frame.pts, frame.time_base)
+                if pts_s is not None:
                     if origin_s is None:
                         origin_s = pts_s
                     start = pts_s - origin_s - shift
@@ -702,8 +709,9 @@ def _source_duration_s(container: Any, v_stream: Any) -> float | None:
     Prefers the stream's own duration (stream time_base units); falls back to
     the container duration (AV_TIME_BASE microseconds). None on a live/unbounded
     stream where neither is set — the caller then decodes sequentially."""
-    if v_stream.duration is not None and v_stream.time_base:
-        return float(v_stream.duration * v_stream.time_base)
+    stream_s = timestamp_s(v_stream.duration, v_stream.time_base)
+    if stream_s is not None:
+        return stream_s
     if container.duration is not None:
         return float(container.duration) / float(av.time_base)
     return None
@@ -729,6 +737,8 @@ def _seek_sample_frames(
     roughly constant-time regardless of file length or codec (a full-decode
     scan of a long/4K source is decode-bound and scales with the whole file)."""
     time_base = v_stream.time_base
+    if not time_base:
+        return 0
     start_time = v_stream.start_time or 0
     decode_size: tuple[int, int] | None = None
     planned = False
@@ -1531,14 +1541,12 @@ class AVFileSource:
         """Queue the held picture once a packet of any stream has been read
         `PRE_TARGET_RELEASE_S` past the target. Returns False only when the
         source closed mid-wait (stop demuxing)."""
-        if (
-            self._pre_target is None
-            or self._pts_offset is None
-            or packet.pts is None
-            or not packet.time_base
-        ):
+        if self._pre_target is None or self._pts_offset is None:
             return True
-        read_s = float(packet.pts * packet.time_base) - self._pts_offset
+        stamp = timestamp_s(packet.pts, packet.time_base)
+        if stamp is None:
+            return True
+        read_s = stamp - self._pts_offset
         if read_s < self._pts_anchor_target + PRE_TARGET_RELEASE_S:
             return True
         held, self._pre_target = self._pre_target, None
@@ -1629,9 +1637,9 @@ class AVFileSource:
         """The earliest start either stream reports, in stream seconds: file
         position 0. None when neither reports one."""
         starts = [
-            float(s.start_time * s.time_base)
+            start
             for s in (self.v_stream, self.a_stream)
-            if s is not None and s.start_time is not None and s.time_base
+            if s is not None and (start := timestamp_s(s.start_time, s.time_base)) is not None
         ]
         return min(starts) if starts else None
 
@@ -1884,10 +1892,11 @@ class AVFileSource:
         self._dry_stall_level, self._dry_window = 0, None
         duration = audio_frame_duration_s(frame, self.target_sr)
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
-        if frame.pts is None or not frame.time_base:
+        pts_s = timestamp_s(frame.pts, frame.time_base)
+        if pts_s is None:
             start = fed
         else:
-            start = self._audio_frame_start(float(frame.pts * frame.time_base), fed)
+            start = self._audio_frame_start(pts_s, fed)
             if self._video_read_s is not None and start >= self._pts_anchor_target:
                 self._audio_lag_s = max(self._audio_lag_s, self._video_read_s - start)
         silence, trim, self._audio_fed_s = place_audio_frame(start, duration, fed, self.target_sr)
