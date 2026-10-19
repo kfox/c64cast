@@ -3256,6 +3256,15 @@ class UnsetTimeBaseTest(unittest.TestCase):
         self.assertEqual(taken, 0)
         container.seek.assert_not_called()
 
+    def test_a_picture_without_a_time_base_is_not_held_for_the_target(self):
+        src = _make_demux_source_stub([], anchor=5.0)
+        src.video_time_base = float(self.unset or 0)
+        src._enqueue_decoded = mock.Mock(return_value=True)
+        self.assertTrue(src._admit_frame(_FakeFrame(90)))
+        src._enqueue_decoded.assert_called_once()
+        self.assertIsNone(src._pre_target)
+        self.assertIsNone(src._pts_offset)
+
 
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")
 class DurationSTest(unittest.TestCase):

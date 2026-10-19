@@ -1514,7 +1514,7 @@ class AVFileSource:
         return self._tempo_offset + self._content_time(self._frame_pts_s(frame)) * self._tempo_scale
 
     def _frame_pts_s(self, frame: Any) -> float:
-        return float(frame.pts * self.video_time_base) if frame.pts is not None else 0.0
+        return timestamp_s(frame.pts, self.video_time_base) or 0.0
 
     def _admit_frame(self, frame: Any) -> bool:
         """Queue a decoded picture, or hold it back while the pass has not
@@ -1523,7 +1523,8 @@ class AVFileSource:
         after it arrives (or `_release_held_picture` queues it), and none of
         the pictures it replaces is converted. Returns False only when the
         source closed mid-wait (stop demuxing)."""
-        content = None if frame.pts is None else self._content_time(self._frame_pts_s(frame))
+        pts_s = timestamp_s(frame.pts, self.video_time_base)
+        content = None if pts_s is None else self._content_time(pts_s)
         if content is not None and content < self._pts_anchor_target - 1e-6:
             if self._released_s is None:
                 self._pre_target = frame
