@@ -1,0 +1,1 @@
+- **The `video` extra accepts PyAV 19.** A stream or frame whose time base PyAV 19 reports as unset is treated as having no timestamp, as it was under PyAV 18, instead of being read as time zero.

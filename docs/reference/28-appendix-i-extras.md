@@ -21,7 +21,7 @@ Extras do not accumulate. Installing `c64cast[midi]` over `c64cast[video]` leave
 | **`midi`**<br>`mido` | midi scenes; [midi_control] live control. `mido>=1.3.3,<2`, `python-rtmidi>=1.5.8,<2`. |
 | **`obs`**<br>`obsws_python` | obs_status overlay. `obsws-python>=1.8.0,<2`. |
 | **`tr`**<br>`serial` | TeensyROM serial backend. `pyserial>=3.5,<4`. |
-| **`video`**<br>`av` | video scenes, video interleaving. `av>=18.0.0,<19`. |
+| **`video`**<br>`av` | video scenes, video interleaving. `av>=18.0.0,<20`. |
 | **`vision`**<br>`mediapipe` | [vision] enabled gesture control. `mediapipe>=0.10.35,<1.2`. |
 | **`web`**<br>`websockets` | `--serve` web console host. `fastapi>=0.140.0,<1`, `uvicorn>=0.51.0,<1`, `websockets>=16.1.1,<18`, `zeroconf>=0.150.0,<1`. |
 | **`wizard`**<br>`questionary` | `--init` config wizard. `questionary>=2.1.1,<3`. |

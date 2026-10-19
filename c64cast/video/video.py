@@ -624,7 +624,7 @@ def decode_audio_full(
             for packet in container.demux(*(s for s in (a_stream, v_stream) if s is not None)):
                 if packet.stream is a_stream:
                     yield from packet.decode()
-                elif packet.pts is not None and packet.time_base is not None:
+                elif packet.pts is not None and packet.time_base:
                     stamp = float(packet.pts * packet.time_base)
                     picture_s = stamp if picture_s is None else max(picture_s, stamp)
 
@@ -636,7 +636,7 @@ def decode_audio_full(
             if frame is not None:
                 duration = audio_frame_duration_s(frame, target_sample_rate)
                 start = fed
-                if frame.pts is not None and frame.time_base is not None:
+                if frame.pts is not None and frame.time_base:
                     pts_s = float(frame.pts * frame.time_base)
                     if origin_s is None:
                         origin_s = pts_s
@@ -702,7 +702,7 @@ def _source_duration_s(container: Any, v_stream: Any) -> float | None:
     Prefers the stream's own duration (stream time_base units); falls back to
     the container duration (AV_TIME_BASE microseconds). None on a live/unbounded
     stream where neither is set — the caller then decodes sequentially."""
-    if v_stream.duration is not None and v_stream.time_base is not None:
+    if v_stream.duration is not None and v_stream.time_base:
         return float(v_stream.duration * v_stream.time_base)
     if container.duration is not None:
         return float(container.duration) / float(av.time_base)
@@ -1535,7 +1535,7 @@ class AVFileSource:
             self._pre_target is None
             or self._pts_offset is None
             or packet.pts is None
-            or packet.time_base is None
+            or not packet.time_base
         ):
             return True
         read_s = float(packet.pts * packet.time_base) - self._pts_offset
@@ -1631,7 +1631,7 @@ class AVFileSource:
         starts = [
             float(s.start_time * s.time_base)
             for s in (self.v_stream, self.a_stream)
-            if s is not None and s.start_time is not None and s.time_base is not None
+            if s is not None and s.start_time is not None and s.time_base
         ]
         return min(starts) if starts else None
 
@@ -1884,7 +1884,7 @@ class AVFileSource:
         self._dry_stall_level, self._dry_window = 0, None
         duration = audio_frame_duration_s(frame, self.target_sr)
         fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
-        if frame.pts is None or frame.time_base is None:
+        if frame.pts is None or not frame.time_base:
             start = fed
         else:
             start = self._audio_frame_start(float(frame.pts * frame.time_base), fed)

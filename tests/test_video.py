@@ -3232,6 +3232,17 @@ class ScanVideoSamplesTest(unittest.TestCase):
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class UnsetTimeBaseTest(unittest.TestCase):
+    """PyAV 19 reports an unset time base as a falsy zero rational rather
+    than None; `Fraction(0)` stands in for it."""
+
+    def test_source_duration_falls_back_to_the_container(self):
+        v_stream = SimpleNamespace(duration=900, time_base=Fraction(0, 1))
+        container = SimpleNamespace(duration=2_000_000)
+        self.assertEqual(video_mod._source_duration_s(container, v_stream), 2.0)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
 class DurationSTest(unittest.TestCase):
     """`AVFileSource.duration_s` (MIDI live-tune Phase 2 — absolute-jog
     mapping and seek/loop clamping) reads the container's real duration at
