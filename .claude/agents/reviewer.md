@@ -86,10 +86,11 @@ on, goes back unfixed as **advisory**.
   - `make site-check` if `docs/` changed.
   - `make web` if `web/` changed. The built bundle is committed.
   - `make mutation-ready` before any mutation proof.
-- **No hardware.** The suite fakes every backend. Never run c64cast with `-u`,
-  or anything under `scripts/diags/`. Visual and audio verification is the
-  caller's job, done on the rig. A claim only hardware can settle goes in the
-  report as an open question.
+- **Hardware.** Prove a finding against the suite's fakes first. Use the rig
+  only when your prompt says hardware is authorized for this run, and then
+  follow "Hardware during a review or a ship run" in `CLAUDE.md`: take the lock,
+  mute, and leave the machine reset. Without that authorization, a claim only
+  hardware can settle goes in the report as an open question.
 - **Read before judging.** Read the module's section under
   `docs/architecture/`; `docs/architecture.md` routes every module to one. It
   records the constraints and dead ends the code does not show.

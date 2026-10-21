@@ -135,6 +135,11 @@ requires, and a proposed fix precise enough for you to apply later.
 If the change is sound in your lane, say so and say what you verified.
 ```
 
+When the user has authorized hardware for this work, add the same
+`Hardware: authorized; target <url>; capture: yes|no` line that the reviewer
+gets. The lanes share one rig through `scripts/diags/hw_lock.py`, so they take
+turns on it rather than collide.
+
 ## Phase 2 — merge the findings
 
 Before anyone writes, reconcile. Two lanes reporting the same thing in their own

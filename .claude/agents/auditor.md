@@ -179,10 +179,11 @@ The classes this codebase keeps producing, so look for them first:
   opcodes, operand order, branch offsets, and the per-call `$01` banking the
   SID player relies on (`docs/architecture/sid.md`).
 
-You cannot run real hardware. The suite fakes the backends, so prove a finding
-against the fakes, and never point anything at a machine (`-u`, or
-`scripts/diags/`). If a claim can only be settled on hardware, report it as an
-open question for the caller.
+Prove a finding against the suite's fakes first. When your prompt says hardware
+is authorized for this run, settle what the fakes cannot (a restore, a teardown,
+a timing claim) on the rig, under "Hardware during a review or a ship run" in
+`CLAUDE.md`. Without that authorization, report the claim as an open question
+for the caller.
 
 ## Report
 

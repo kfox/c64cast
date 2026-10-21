@@ -146,6 +146,12 @@ format, and it reads the gates and the pinned paths from CLAUDE.md. So its
 prompt needs only those three lines, plus any machine-local rule from
 `CLAUDE.local.md`. Add context only when the change needs it.
 
+When the user has authorized hardware for this work, add a fourth line, for
+example `Hardware: authorized; target <url>; capture: yes`. The reviewer then
+settles hardware claims itself, under CLAUDE.md's "Hardware during a review or
+a ship run", rather than handing them back. Pass the target in the prompt and
+never commit it.
+
 **A small branch gets one review.** When the whole branch is one change under
 about 300 changed code lines, review it once as `origin/main..HEAD` when it is
 done. That review is the final pass too, and step 4 is skipped.

@@ -181,9 +181,11 @@ can expose a web console. Its trust boundaries:
   - A write that leaves the machine wedged can need a power cycle to recover.
     Rate it as an outage, not a glitch.
 
-The pinned paths in `CLAUDE.md` overlap most of this list. Never run anything
-against real hardware or a live network service. Prove an exploit against the
-suite's fakes and the in-process app.
+The pinned paths in `CLAUDE.md` overlap most of this list. Prove an exploit
+against the suite's fakes and the in-process app. Never aim one at a service
+outside this machine. Use the rig only for an availability claim the fakes
+cannot settle, only when your prompt authorizes hardware for this run, and
+only under "Hardware during a review or a ship run" in `CLAUDE.md`.
 
 ## Report
 
