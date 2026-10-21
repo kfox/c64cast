@@ -103,6 +103,41 @@ UV_PROJECT_ENVIRONMENT=<worktree>/.venv`) while git needs it as a prefix
 trailing `VAR=value` as a pathspec. A write driven through Bash (`sed -i`, a
 redirection) reaches neither hook, so there it rests on this rule alone.
 
+**Reviews** run through the agents in [.claude/agents/](.claude/agents/):
+`reviewer` for every change, and the four lanes `/panel-review`
+([.claude/skills/panel-review/](.claude/skills/panel-review/SKILL.md)) launches
+when a panel is chosen instead. The `ship` skill's step 3 says which review a
+change gets. A reviewer runs `make check` with the worktree's override as above,
+and runs `make mutation-ready` before any mutation proof.
+
+**Pinned paths.** A change touching any of these is reviewed at `high`,
+whatever its size, because a one-line change there does the most damage. This
+list does not replace the security notes elsewhere in this file, which may name
+a site the list has not caught up to yet:
+
+- `c64cast/hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py`,
+  `hw/backend.py`: the DMA write path to the hardware, including the shared
+  `write_memory*`/`write_regs`/`write_region` implementation that every backend
+  sits on top of.
+- `tests/_fs_sandbox.py`: the suite's filesystem sandbox, which is never
+  widened to make a test pass.
+- `c64cast/app/connect.py`, `app/config_serialize.py`,
+  `app/recording_metadata.py`, `app/cli.py`:
+  - connection-target parsing;
+  - the rule that the DMA password never rides in a URL or CLI flag;
+  - the redaction list that `--save-settings` and the scene-log snapshot both
+    depend on;
+  - the env/config precedence that decides which value wins.
+- `c64cast/control/auth.py`, `control/web_api.py`, `app/serve.py`:
+  - the `[web]`/`[control]` token gate itself (`auth.py`: token comparison,
+    viewer/full-role checks);
+  - the routes that depend on it;
+  - where the token is minted and its precedence resolved (`serve.py`:
+    `resolve_tokens`, `_generated_token`, `build_daemon_app`).
+
+  This token is the same class of secret as the DMA password, and it gates the
+  same kind of remote control of the host.
+
 ## Spelling
 
 **Everything in this repository is written in American English — prose, code,

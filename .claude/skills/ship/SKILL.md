@@ -128,7 +128,7 @@ commits that only make sense together, reviewed as one `BASE..TIP` range.
 | Trivial: ≤10 changed code lines, mechanical (rename, typo, a line the user dictated, a dependency bump), no pinned path | none — the gate covers it, and the final pass sees it if one runs |
 | ≤50 changed code lines, a merge or conflict resolution, or a reviewer's fix commit | `low` |
 | Anything else | `medium` |
-| Touches a pinned path (step 4) | `high` |
+| Touches a pinned path ([CLAUDE.md](../../../CLAUDE.md) → Workflow) | `high` |
 | Eligible for a panel by the thresholds in `/panel-review`'s "When a panel is an option" (50+ changed code lines plus a trust boundary, contract, concurrency or pinned-path behavior change; or an unsplittable 400+) | optionally `/panel-review <sha>` *instead of* the reviewer at `high`, never in addition |
 
 Run it with the project's `reviewer` agent, which works directly in the
@@ -141,10 +141,10 @@ Do not wrap `/code-review` in a general-purpose agent: the wrapper repeats the
 setup and the gate, and costs most of what the review it runs does. The
 `/code-review` fork also resolves the session's primary checkout rather than
 your worktree, so from a worktree it can review a different branch and report
-it as yours. The `reviewer` agent's definition carries the gates, the temp-dir
-rule, the pinned paths, the scope rules and the report format, so its prompt
-needs only those three lines, plus any machine-local rule from
-`CLAUDE.local.md` — add context only when the change needs it.
+it as yours. The agent's definition carries the scope rules and the report
+format, and it reads the gates and the pinned paths from CLAUDE.md. So its
+prompt needs only those three lines, plus any machine-local rule from
+`CLAUDE.local.md`. Add context only when the change needs it.
 
 **A small branch gets one review.** When the whole branch is one change under
 about 300 changed code lines, review it once as `origin/main..HEAD` when it is
@@ -188,30 +188,6 @@ are its to make. Its fix commit gets one `low` review, by step 3's rule, and
 nothing after that. A defect still open when it is done is a stop, not a pass:
 report what remains and ask the user before opening a PR.
 
-**Pinned paths.** Diff size is a bad proxy for risk, so a change touching any of
-these is reviewed at `high` whatever its size. The `reviewer` agent's
-definition carries the same list; keep the two in step. It is not a substitute
-for CLAUDE.md's own security notes, which may name a site this list has not
-caught up to yet:
-
-- `hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py`, `hw/backend.py` —
-  the DMA write path to the hardware, including the shared `write_memory*`/
-  `write_regs`/`write_region` implementation every backend sits on top of.
-- `tests/_fs_sandbox.py` — the suite's filesystem sandbox, which is never
-  widened to make a test pass.
-- `app/connect.py`, `app/config_serialize.py`, `app/recording_metadata.py`,
-  `app/cli.py` — connection-target parsing, the rule that the DMA password
-  never rides in a URL or CLI flag, the redaction list `--save-settings`
-  and the scene-log snapshot both depend on, and the env/config precedence
-  that decides which value wins.
-- `control/auth.py`, `control/web_api.py`, `app/serve.py` — the
-  `[web]`/`[control]` token gate itself (`auth.py`: token comparison,
-  viewer/full-role checks), the routes that depend on it, and where the
-  token is actually minted and its precedence resolved (`serve.py`:
-  `resolve_tokens`, `_generated_token`, `build_daemon_app`). The same class
-  of secret as the DMA password, gating the same kind of remote control of
-  the host.
-
 ## 5. Open the PR
 
 Have the pre-PR gate green first. Step 3's `make check` is the per-commit one;
@@ -248,7 +224,7 @@ scanning runs too, and its findings are frequently regex-flavored false
 positives on this codebase — read each one before changing code to satisfy
 it, and say so if you think it is wrong rather than contorting the code
 around it. That leeway ends
-at the pinned paths from step 4: a GHAS finding on any of them, or on anything
+at the pinned paths listed in CLAUDE.md: a GHAS finding on any of them, or on anything
 touching `dma_password` or the `[web]`/`[control]` tokens, must be fixed or
 explicitly escalated to Kelly — never self-dismissed as a false positive.
 
