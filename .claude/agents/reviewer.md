@@ -76,6 +76,42 @@ that file you have not committed yet.
 A fix that needs a design decision, or would change behavior someone relies
 on, goes back unfixed as **advisory**.
 
+## c64cast specifics
+
+- **Gates.** Every `make` takes `UV_PROJECT_ENVIRONMENT=<worktree>/.venv` as an
+  argument. `git commit` takes it as a prefix, because git reads a trailing
+  `VAR=value` as a pathspec.
+  - `make check` always.
+  - `make schema` if config metadata changed. CI fails on a stale schema.
+  - `make site-check` if `docs/` changed.
+  - `make web` if `web/` changed. The built bundle is committed.
+  - `make mutation-ready` before any mutation proof.
+- **No hardware.** The suite fakes every backend. Never run c64cast with `-u`,
+  or anything under `scripts/diags/`. Visual and audio verification is the
+  caller's job, done on the rig. A claim only hardware can settle goes in the
+  report as an open question.
+- **Read before judging.** Read the module's section under
+  `docs/architecture/`; `docs/architecture.md` routes every module to one. It
+  records the constraints and dead ends the code does not show.
+- **Where real findings cluster here:**
+  - a fix that missed its sibling site, often the parallel U64 or TeensyROM
+    path;
+  - machine state that was written but never confirmed, or not restored on
+    teardown: vectors, IRQ hooks, `$01` banking, SID/VIC/REU registers;
+  - a teardown step whose failure skips the rest (`_teardown.py`);
+  - races between the render, DAC and sampler threads on the shared DMA link;
+  - a durable log line that bypasses `_redact.py`;
+  - a test that leaks output or races a real clock.
+- **Stated contracts** a behavior change has to carry in the same change:
+  - config metadata, then `make schema` and `c64cast/examples/c64cast.example.toml`;
+  - the architecture section;
+  - a `changelog.d/` fragment for anything a user would notice;
+  - the annotation on a changed 6502 byte array.
+
+  CLI flags, the config schema, `example:` names and the data dir layout are
+  the stable surface.
+- **American English** everywhere. `CLAUDE.md` lists the three exceptions.
+
 ## Report
 
 ```

@@ -178,15 +178,66 @@ Come back unfixed, as a report only:
 - **Which side is wrong, when that is genuinely open.** If the claim might be
   the specification and the code the regression, say so and stop. Rewriting the
   sentence that caught a bug is how the bug gets ratified.
-- **Commit-message rewrites.** Rewording a message changes the SHA and invalidates
-  every recorded review of that commit and of anything stacked on it. Say what the
-  message should say; let the caller decide.
 - **Anything editorial.** Whether to repair a sentence or delete its paragraph
   needs the whole-change view you do not have from one commit. Five weak claims
   across four commits is a fact about claim density, and no reviewer of one commit
   can see it.
 
 If the prompt that invoked you says report-only, leave the tree untouched.
+
+## c64cast specifics
+
+Commit messages are not reviewed in this repository. Read them for the author's
+rationale, but never report on them.
+
+The contracts this repository states, and what keeps each one honest:
+
+- **Config metadata is the single source of truth.** Every field in
+  `c64cast/app/config.py` carries `help`/`choices`/`applies_to`, and overlays
+  carry `HELP`/`PARAM_HELP`. That model drives `--describe`, `--list-*`,
+  `--compat`, the JSON schema, the serializer and the `--init` wizard. A new
+  knob is incomplete without:
+  - its metadata;
+  - its entry in `c64cast/examples/c64cast.example.toml`;
+  - a regenerated `c64cast/data/c64cast.schema.json` (`make schema`).
+
+  `tests/test_example_toml_drift.py` and `tests/test_introspect.py` catch part
+  of this. Check the rest yourself.
+- **Architecture notes.** A behavior change updates its section under
+  `docs/architecture/` in the same change. A new module must be routed in
+  `docs/architecture.md` (`tests/test_architecture_index.py` enforces that it
+  is routed, not that the note is right).
+- **The books.** `docs/guide/`, `docs/reference/` and `docs/card/` are the
+  published user surface (`make site-check`). `docs/architecture*` is not
+  published.
+- **Stable surface.** CLI flags, the config schema, `example:` names and the
+  data directory layout. Removing or renaming one without a deprecation warning
+  for a minor release is a breaking change (CONTRIBUTING.md).
+- **Changelog.** Anything a user would notice needs a fragment under
+  `changelog.d/`, which becomes the release notes verbatim. `CHANGELOG.md` is
+  never edited directly.
+- **Docs conventions.**
+  - Docs are written in the present tense.
+  - README links are absolute URLs, because the README is the PyPI
+    description.
+  - Hand-encoded 6502 byte arrays carry the assembly they encode. A byte that
+    changed with its annotation left behind is drift.
+- **American English** in prose, code and identifiers. The three deliberate
+  exceptions are listed in `CLAUDE.md`, and `grey`/`gray` and
+  `canceled`/`cancelled` are both fine.
+- **The test rules in `CLAUDE.md`** are contracts the suite enforces at runtime,
+  and a test that only passes by breaking one is a finding:
+  - a run prints only pass/fail/skip;
+  - `assertLogs` and `quiet_logging()` never nest;
+  - no `patch(...).start()` without a stop;
+  - the filesystem sandbox is never widened (`allow_outside_checkout` covers
+    only a test whose subject is a real path);
+  - no thread outlives its test;
+  - child processes go through `run_bounded`;
+  - no global RNG seeding;
+  - a time-dependent assertion uses an injected clock, not a real one (#415).
+- **Mutation proofs** need `make mutation-ready` first, or a same-second revert
+  runs stale bytecode.
 
 ## Report
 

@@ -135,10 +135,55 @@ not with another check at each layer it passes through. A `warning` hardening ga
 that is not exploitable today and every `info` finding come back as proposed
 follow-ups, unfixed.
 
-Come back unfixed, as a report only: commit-message rewrites (they change the
-SHA and invalidate every recorded review of that commit and of anything stacked
-on it) and anything editorial across the whole change. If the prompt that
-invoked you says report-only, leave the tree untouched.
+Come back unfixed, as a report only: anything editorial across the whole change.
+Commit messages are not reviewed in this repository, so do not report on them.
+If the prompt that invoked you says report-only, leave the tree untouched.
+
+## c64cast specifics
+
+c64cast is a host program that drives a real C64 over the LAN or USB, and it
+can expose a web console. Its trust boundaries:
+
+- **Network-facing control.**
+  - `--serve`, the web console and the HTTP control plane: `control/web_api.py`,
+    `control/control_plane.py` and `app/serve.py`. These sit behind the token
+    gate in `control/auth.py`, which has viewer and full roles.
+  - The first-run setup window: `control/setup_gate.py`, `control/setup_api.py`.
+  - The config browser's and media picker's root jails: `app/config_store.py`,
+    `app/media_store.py`. The attack class there is path traversal and symlink
+    escape.
+  - mDNS advertisement: `control/console_mdns.py`.
+  - Inbound WLED UDP and MIDI/ASID input.
+- **Secrets.**
+  - The DMA password lives only in `C64CAST_DMA_PASSWORD` or
+    `[ultimate64].dma_password`. Never in a URL, a CLI flag, or the file
+    `--save-settings` writes.
+  - The console token gets the same treatment.
+  - Durable logs pass through `_redact.py`, a tokenizer that replaced a regex
+    set. #623 and #664 closed the shapes that leaked, and #689 its quadratic
+    case. A new log line carrying a URL, a header or a config dump goes through
+    it, and the redactor has to stay linear-time.
+  - `SCENE_CONFIG_JSON` is written to be safe in a public video description, so
+    a new field in it is a disclosure question.
+- **Untrusted content.**
+  - Media URLs, which go to yt-dlp and PyAV.
+  - User TOML.
+  - SID files: header fields decide load addresses and relocation into C64
+    memory.
+  - Image and video files.
+  - Connection URLs, parsed in `app/connect.py`, which must reject a
+    `user:pass@` netloc.
+- **Availability.**
+  - The U64 DMA service accepts one connection at a time. Anything that opens a
+    second one stalls the first's peer.
+  - The link's budget is about 200 writes per second, shared by audio and
+    render.
+  - A write that leaves the machine wedged can need a power cycle to recover.
+    Rate it as an outage, not a glitch.
+
+The pinned paths in `CLAUDE.md` overlap most of this list. Never run anything
+against real hardware or a live network service. Prove an exploit against the
+suite's fakes and the in-process app.
 
 ## Report
 

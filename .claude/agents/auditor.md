@@ -129,10 +129,60 @@ class rather than the instance, and claim no verification you did not run. When 
 test goes red after your fix, read what it asserts before changing it — it may be
 asserting the bug.
 
-Come back unfixed, as a report only: commit-message rewrites (they change the SHA
-and invalidate every recorded review of that commit and of anything stacked on
-it) and anything editorial across the whole change. If the prompt that invoked
-you says report-only, leave the tree untouched.
+Come back unfixed, as a report only: anything editorial across the whole change.
+Commit messages are not reviewed in this repository, so do not report on them.
+If the prompt that invoked you says report-only, leave the tree untouched.
+
+## c64cast specifics
+
+Read the module's section in `docs/architecture/` (the index in
+`docs/architecture.md` routes every module) before judging it. It records the
+hardware constraints and the dead ends, and a "fix" that walks back into one of
+those dead ends is a defect.
+
+The classes this codebase keeps producing, so look for them first:
+
+- **Machine state that is changed and never confirmed or restored.** A write
+  that hooks a vector (`$0314`), an IRQ, a banking byte (`$01`), or a VIC, SID or
+  REU register has to be confirmed where the code relies on it. Teardown must
+  restore exactly what setup changed, and unhook only what this code hooked.
+  Each teardown step is its own guarded guarantee (`_teardown.py`): one failing
+  step must not skip the rest. #614, #677 and #685 were all this class.
+- **The fix covered the cited site and missed its sibling.** Grep for the
+  pattern across `hw/`, `audio/` and `scenes/`. The U64 and TeensyROM backends
+  often carry parallel code for the same operation.
+- **Encoding and ordering traps:**
+  - `C64_PALETTE_BGR` is OpenCV BGR, not RGB.
+  - `scenes/backgrounds.py` constants are screen codes, not PETSCII; the two
+    diverge above `0x40`.
+  - The dirty cache is keyed by `region_id`, so a mode switch that writes the
+    same address needs `api.invalidate_cache()`.
+- **Threads.**
+  - Playlists run on a worker thread.
+  - cv2 HighGUI may only run on the main thread; `PreviewWindow` is pumped from
+    there, not from a thread of its own.
+  - The render path and `AudioStreamer` share one `SocketDMAClient`. It
+    serializes each command and redials after the firmware's one-second idle
+    close.
+  - The U64 DMA service takes one connection at a time. A second socket
+    connects, but its IDENTIFY gets no reply.
+- **Bounds.** Every socket, serial or subprocess wait has a deadline. A
+  TeensyROM command cut part way through has to resync the next one
+  (`hw/teensyrom_dma.py`). Background loops use `_pollthread.py`, and a loop
+  that does not is a finding.
+- **Clocks and rates.**
+  - The U64 sampler's effective clock is 6,160,000 Hz, not the nominal 6.25 MHz.
+  - The DMA link tops out near 200 writes per second, shared by audio and
+    render.
+  - PAL and NTSC timings differ.
+- **Hand-encoded 6502 bytes.** Check the bytes against their annotated assembly:
+  opcodes, operand order, branch offsets, and the per-call `$01` banking the
+  SID player relies on (`docs/architecture/sid.md`).
+
+You cannot run real hardware. The suite fakes the backends, so prove a finding
+against the fakes, and never point anything at a machine (`-u`, or
+`scripts/diags/`). If a claim can only be settled on hardware, report it as an
+open question for the caller.
 
 ## Report
 

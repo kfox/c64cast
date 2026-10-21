@@ -46,6 +46,28 @@ Prefer the panel when two or more of the criteria above apply. Say which one
 you picked, and which threshold made the change eligible, in the report to the
 user.
 
+**In c64cast, the criteria name these places:**
+
+- **Trust boundary:**
+  - `control/auth.py`, `control/web_api.py`, `control/control_plane.py`,
+    `control/setup_gate.py`, `control/setup_api.py`, `app/serve.py`;
+  - the root jails in `app/config_store.py` and `app/media_store.py`;
+  - `_redact.py`;
+  - `app/connect.py`;
+  - any handling of the DMA password or the console token.
+- **Contract:**
+  - the stable surface: CLI flags, the config schema, `example:` names and the
+    data directory layout;
+  - the web console API;
+  - the ASID and WLED wire formats;
+  - the SID player PRG's memory layout.
+- **Concurrency:**
+  - the render, DAC and sampler threads sharing one `SocketDMAClient`;
+  - `_pollthread.py` loops;
+  - the session and playlist threads;
+  - the main-thread preview pump.
+- **Pinned path:** the list in `CLAUDE.md` under Workflow.
+
 **Never a panel:** a change below 50 changed code lines (the reviewer at `high`
 covers a risky small one), a prose-only or trivial change, a merge resolution,
 a reviewer's fix commit, or a lane's fix commit.
@@ -159,9 +181,8 @@ Findings merged across lanes, including yours: <merged list>
 Two classes never go to a lane, because a single-commit reviewer cannot see what
 they need:
 
-- **Commit-message rewrites.** They change the SHA and invalidate every recorded
-  review of that commit and of everything stacked on it. Report what the message
-  should have said; the decision is the author's.
+- **Commit messages.** They are not reviewed in this repository. Drop any lane
+  finding about one.
 - **Editorial judgment across the change.** Whether to repair a sentence or cut
   its paragraph needs the whole-branch view. Five weak claims across four
   commits is a fact about claim density, invisible from inside one commit.

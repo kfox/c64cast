@@ -111,6 +111,43 @@ Anything larger — a new seam, a moved responsibility, a narrowed public surfac
 is a proposal. If the prompt that invoked you says report-only, leave the tree
 untouched.
 
+## c64cast specifics
+
+The shapes this codebase has settled on. Code that duplicates one is the
+"same rule in two places" finding. Code that undoes a deliberate one is not an
+improvement:
+
+- **Per-link write costs belong to `HardwareProfile.write_cost_s`**, not to a
+  caller. On the U64, write *count* is the cost and payload under about 2 KB is
+  free. On the TeensyROM+, bytes are the cost. A caller that chunks, splits or
+  coalesces on its own assumptions duplicates that rule.
+- **One shared write path.** Every backend sits on
+  `write_memory*`/`write_regs`/`write_region` in `hw/backend.py`. New hardware
+  code goes through it.
+- **One home for each cross-cutting idiom:**
+  - `_pollthread.py` for background loops;
+  - `_teardown.py` for teardowns;
+  - `_redact.py` for durable logs;
+  - `_json.py` for decoding bodies;
+  - `_midi.py` for the guarded mido import;
+  - `app/scene_factory.py` for URL resolution, which quick playback shares.
+- **The config metadata model** drives four surfaces (`introspect.py`,
+  `schema.py`, `config_serialize.py`, `wizard.py`). A surface that hard-codes
+  what the metadata already says will drift.
+- **Layout.** Subpackages mirror the topic areas: `hw/`, `audio/`, `video/`,
+  `scenes/`, `sid/`, `control/`, `wled/`, `app/`. A new module lands in its
+  area. `docs/extending.md` names the extension points for a Scene, Overlay,
+  DisplayMode or Background.
+- **Deliberate shapes that look wrong:**
+  - `PreviewWindow` is `open()`/`pump()`/`close()` driven from the main thread,
+    because cv2's HighGUI requires it. Do not propose making it a thread.
+  - SID playback uses a C64-side player PRG rather than the firmware's sidplay
+    runner, which takes over HDMI.
+  - The cursor is held by a BASIC clear-and-loop program, not by poking `$CC`.
+- **Type checking.** `mypy --strict` covers the state-bearing modules, and
+  `pyright` covers the tree at basic. Widening an `Any` or a `# type: ignore`
+  into one of the strict modules is a shape cost.
+
 ## Report
 
 Write down what you looked at, what you found, and what you did about each
