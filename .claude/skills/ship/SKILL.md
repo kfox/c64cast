@@ -129,7 +129,7 @@ commits that only make sense together, reviewed as one `BASE..TIP` range.
 | ≤50 changed code lines, a merge or conflict resolution, or a reviewer's fix commit | `low` |
 | Anything else | `medium` |
 | Touches a pinned path (step 4) | `high` |
-| Meets CLAUDE.md's panel escalation list | `/panel-review <sha>` *instead of* the reviewer, never in addition |
+| Eligible for a panel by the thresholds in `/panel-review`'s "When a panel is an option" (50+ changed code lines plus a trust boundary, contract, concurrency or pinned-path behavior change; or an unsplittable 400+) | optionally `/panel-review <sha>` *instead of* the reviewer at `high`, never in addition |
 
 Run it with the project's `reviewer` agent, which works directly in the
 worktree you give it:
