@@ -154,7 +154,9 @@ device is attached. The rules:
   captures. Improve those tools rather than writing throwaway scripts.
 - **Keep the target out of the repo.** It comes from the prompt. Never write a
   host, IP address or device name into a committed file.
-- **Mute.** Keep audio off (`--no-audio`) unless the claim is about audio.
+- **Run the way users do.** Audio is on by default, and so is the rig run:
+  don't pass `--no-audio`. Several defects only appear when audio shares the
+  DMA link with render. Whoever is near the speakers mutes them at their end.
 - **Prefer a run that ends on its own** over a background run you have to stop.
   `run_and_capture.py` resets the machine on exit. Never kill a run mid-DMA:
   that can wedge the U64 until it is power-cycled. Stop a run in the same step
