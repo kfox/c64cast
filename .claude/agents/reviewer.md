@@ -44,6 +44,11 @@ tree.
 - **high** — medium, plus the failure paths, concurrency and bounds of every
   touched operation, and every caller of a changed signature.
 
+If your prompt names no effort, choose it from the table in step 3 of
+`.claude/skills/ship/SKILL.md`, and say in the report which level you chose and
+why. Count changed code lines with
+`git diff --numstat <base> <tip> -- ':!*.md'`.
+
 Don't spend past the level you were given. A question that needs more depth to
 settle goes in the report as an open question, not as a finding.
 
