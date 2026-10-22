@@ -50,6 +50,8 @@ import _diaglib as d
 import cv2
 import numpy as np
 
+from c64cast.app.connect import parse_connection_uri
+
 TONE_HZ = 440
 
 
@@ -290,7 +292,8 @@ def run_phase(
     text = log.read_text()
     armed = _logged(text, _ARMED)
     print(f"[{label}] host-DMA double-buffer armed in log: {armed}")
-    print(f"[{label}] TR writes: {_tr_writes(text) or 'WriteC64Mem (none logged)'}")
+    if parse_connection_uri(url).backend == "teensyrom":
+        print(f"[{label}] TR writes: {_tr_writes(text) or 'WriteC64Mem (none logged)'}")
     for line in text.splitlines():
         if "fps" in line.lower() and "scene" in line.lower():
             print(f"[{label}] log: {line.strip()[-160:]}")
