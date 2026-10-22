@@ -194,9 +194,13 @@ def arm(be, rate: int, system: str) -> None:
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+    # A TeensyROM backend slices only while a consumer is noted; without this,
+    # --tr-slicing is ignored.
+    be.note_nmi_consumer(True)
 
 
 def disarm(be) -> None:
+    be.note_nmi_consumer(False)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
 
 

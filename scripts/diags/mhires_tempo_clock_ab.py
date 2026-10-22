@@ -161,8 +161,7 @@ def main() -> int:
             time.sleep(1.0)
     finally:
         if not args.no_reset:
-            code = d.rest_reset(d.U64_URL)
-            print(f"\n[reset] {'HTTP ' + str(code) if code else 'FAILED'}")
+            print(f"\n[reset] {'ok' if d.machine_reset(args.url) else 'FAILED'}")
 
     print(f"\n{'=' * 66}\nSUMMARY  (clock/wall <1.0 = tempo stretch)\n{'=' * 66}")
     print(f"{'mode':<10} {'clock/wall(med)':<16} {'underruns':<14} {'servo gap(min..max)':<20}")
