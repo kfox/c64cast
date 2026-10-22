@@ -769,6 +769,21 @@ def apply_tr_slicing(cfg, args) -> None:
         tr.dma_slice_gap_us = args.slice_gap
 
 
+def tr_slicing_toml(
+    slicing: str | None, slice_bytes: int | None = None, slice_gap: int | None = None
+) -> str:
+    """The slicing knobs that were given, as a ``[teensyrom]`` table for a tool
+    that runs the app as a child on a generated config, where
+    ``apply_tr_slicing`` has no ``Config`` to write into."""
+    keys = {
+        "dma_slicing": None if slicing is None else f'"{slicing}"',
+        "dma_slice_bytes": slice_bytes,
+        "dma_slice_gap_us": slice_gap,
+    }
+    lines = [f"{k} = {v}" for k, v in keys.items() if v is not None]
+    return "\n[teensyrom]\n" + "\n".join(lines) + "\n" if lines else ""
+
+
 def describe_tr_writes(be) -> str:
     """How a TeensyROM backend is writing, for a tool's setup banner — the
     resolved mode, not the requested one, since 'auto' and 'on' both fall
