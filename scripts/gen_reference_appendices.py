@@ -439,7 +439,8 @@ def appendix_config() -> list[str]:
     out = front_matter(
         "A",
         "Configuration Sections",
-        f"Every section of a configuration file, in alphabetical order: {len(sections)} "
+        f"Every section of a configuration file, in alphabetical order, and the fields "
+        f"within each in alphabetical order too: {len(sections)} "
         f"sections and {total} fields, with the type each takes and the value it holds "
         "when you say nothing. A field a knob can move mid-show says so, and names the "
         "target Appendix F lists it under. Each section opens with a fragment showing "
@@ -455,7 +456,8 @@ def appendix_config() -> list[str]:
             sample_rows(section.fields),
             required=required_names(section.fields),
         )
-        rows = [[typed(fd), describe(section.name, fd)] for fd in section.fields]
+        by_name = sorted(section.fields, key=lambda fd: fd.name)
+        rows = [[typed(fd), describe(section.name, fd)] for fd in by_name]
         out += fields_table("Field", rows)
     return out
 
