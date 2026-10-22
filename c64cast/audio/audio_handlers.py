@@ -107,6 +107,16 @@ assert NMI_ROUTINE[4] == 0xAD and NMI_ROUTINE_ADDR + 5 == READ_PTR_LO_ADDR, (
     "READ_PTR_* must name the routine's LDA operand"
 )
 
+# When the routine's fast path stores its sample, counted from the underflow:
+# the 7-cycle NMI sequence, up to 6 more finishing the interrupted instruction,
+# then PHA, LDA, LDA and the STA's write cycle. INC, the taken BNE, PLA and RTI
+# run after it. A halt placed right after the store and ending within the rest
+# of the period delays neither this handler's return nor the next NMI.
+NMI_STORE_ADDR = 0xD418
+NMI_CYCLES_TO_STORE = 7 + 6 + 3 + 4 + 4 + 4
+NMI_CYCLES_AFTER_STORE = 6 + 3 + 4 + 6
+assert NMI_ROUTINE[7:10] == bytes([0x8D, NMI_STORE_ADDR & 0xFF, NMI_STORE_ADDR >> 8])
+
 # A transport pause NEUTRAL-fills the unplayed span [R + guard, W). The guard
 # leaves a stale tail un-stomped so the fill never races the NMI read head into
 # a byte it is about to consume: 128 B ≈ 11 ms at the default rate.

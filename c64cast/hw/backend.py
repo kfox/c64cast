@@ -52,6 +52,19 @@ WriteListener = Callable[[int, bytes], None]
 DELTA_CHUNK_BYTES = 256
 
 
+@dataclass(frozen=True)
+class NmiSampleStore:
+    """Where an NMI sample player stores each sample, and when: `free_cycles`
+    of every `period_cycles`-cycle NMI period (`period_s` seconds) are left
+    after the store once the handler has returned, counting the latest the
+    store can land after the timer underflows."""
+
+    addr: int
+    period_cycles: int
+    period_s: float
+    free_cycles: int
+
+
 class BackendCapabilityError(RuntimeError):
     """Raised when code invokes a backend method the active hardware doesn't
     support (e.g. ``read_memory`` on a write-only TeensyROM+ test build).
@@ -430,11 +443,13 @@ class C64Backend(ABC):
         1% of the same figures."""
         return 0.88 if multicolor else 0.89
 
-    def note_nmi_consumer(self, active: bool) -> None:
+    def note_nmi_consumer(self, active: bool, store: NmiSampleStore | None = None) -> None:
         """A sample player driven by the CIA2 NMI has started (or stopped)
         consuming on the C64. Every DMA halt longer than one NMI period costs
         it ticks, so a backend that can shape its writes to spare it does so
-        only while it runs; the rest ignore this."""
+        only while it runs; the rest ignore this. `store` says where and when
+        the player stores each sample, for a backend that can place its halts
+        right after it."""
         return None
 
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:

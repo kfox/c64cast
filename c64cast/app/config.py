@@ -100,7 +100,7 @@ _HOST_SID_ADDR_LO = 0xD000
 _HOST_SID_ADDR_HI = 0xDFF0
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
 _TR_STORAGE_CHOICES = ("sd", "usb")
-_TR_DMA_SLICING_CHOICES = ("auto", "on", "off")
+_TR_DMA_SLICING_CHOICES = ("auto", "locked", "on", "off")
 _DISPLAY_CHOICES = ("hires_edges", "hires", "petscii", "mcm", "mhires", "blank", "random")
 _PALETTE_MODE_CHOICES = ("percell", "cheap", "vivid", "grayscale")
 _STYLE_CHOICES = (
@@ -384,8 +384,12 @@ class TeensyromCfg:
             "throughput, so otherwise every write stays on WriteC64Mem. 'off' "
             "(the default) always uses the single-halt WriteC64Mem: on bitmap "
             "video the lower throughput drops short-lived frames. 'auto' uses "
-            "WriteC64Spans when the firmware has it (TR+ v0.9+); 'on' also warns "
-            "if it does not.",
+            "WriteC64Spans when the firmware has it (TR+ v0.9+), and starts each "
+            "slice right after the NMI player's sample store, sized to fit the "
+            "rest of its period, when the firmware can (dma_slice_bytes and "
+            "dma_slice_gap_us then apply only to writes the lock cannot take); "
+            "'on' slices without the lock and warns if the firmware lacks "
+            "WriteC64Spans; 'locked' is 'auto' that also warns if it lacks the lock.",
             "choices": _TR_DMA_SLICING_CHOICES,
         },
     )

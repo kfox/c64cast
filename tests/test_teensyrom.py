@@ -23,7 +23,12 @@ from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw import teensyrom_dma as tr_dma
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
-from c64cast.hw.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
+from c64cast.hw.backend import (
+    TEENSYROM_PROFILE,
+    BackendCapabilityError,
+    NmiSampleStore,
+    make_backend,
+)
 from c64cast.hw.teensyrom_api import TeensyROMBackend
 from c64cast.hw.teensyrom_dma import (
     DRIVE_SD,
@@ -217,14 +222,21 @@ _SPANS_TOK = bytes([0x64, 0xFC])
 _MEM_TOK = bytes([0x64, 0xFB])
 
 
+_LOCK_PROBE_HEADER = bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 0, 0, 0])
+_LOCK_KNOWN = b"Want 1 to 64 spans"
+_LOCK_UNKNOWN = b"Flags must be 0"
+
+
 class _SpansLoopback(LoopbackTransport):
     """A loopback that can answer the four-byte span header with text, the way
-    firmware does when it refuses a zero-span header, and records each send
-    and each quiet window drain_text was asked to wait out, in order."""
+    firmware does when it refuses a zero-span header (with or without the
+    lock flag), and records each send and each quiet window drain_text was
+    asked to wait out, in order."""
 
-    def __init__(self, on_header: bytes = b""):
+    def __init__(self, on_header: bytes = b"", on_lock_header: bytes = b""):
         super().__init__()
         self.on_header = on_header
+        self.on_lock_header = on_lock_header
         self.events: list[tuple[str, object]] = []
         self.quiet_waits: list[float] = []
 
@@ -233,6 +245,8 @@ class _SpansLoopback(LoopbackTransport):
         super().send_all(data)
         if data == bytes(4):
             self.queue_stale(self.on_header)
+        elif data == _LOCK_PROBE_HEADER:
+            self.queue_stale(self.on_lock_header)
 
     def drain_text(self, quiet_s: float = 0.2) -> str:
         self.events.append(("quiet", quiet_s))
@@ -390,6 +404,68 @@ class SpansFramingTest(unittest.TestCase):
         t.queue_raw(b"Un")  # the text answer, read as a token
         self.assertIs(TRClient(t).probe_spans(), SpansProbe.ABSENT)
 
+    def test_a_locked_write_flags_the_header_and_names_the_store_first(self):
+        for _ in range(3):
+            self.t.queue_token(TOK_ACK)
+        self.c.write_spans([(0x4000, b"\x01\x02")], 33, 170, lock_store=0xD418)
+        self.assertEqual(
+            bytes(self.t.sent),
+            _SPANS_TOK
+            + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 33, 170, 2])
+            + bytes([0xD4, 0x18, 0x00, 0x00, 0x40, 0x00, 0x00, 0x02])
+            + b"\x01\x02",
+        )
+
+    def test_the_store_entry_takes_one_of_the_span_list_places(self):
+        with self.assertRaises(ValueError):
+            self.c.write_spans([(0x4000, b"\x00")] * 64, 32, 40, lock_store=0xD418)
+        self.assertEqual(bytes(self.t.sent), b"")
+
+    def test_lock_probe_finds_the_flag_from_the_span_count_refusal(self):
+        t = _SpansLoopback(on_lock_header=_LOCK_KNOWN)
+        t.queue_token(TOK_ACK)
+        c = TRClient(t)
+        self.assertTrue(c.probe_spans_lock())
+        self.assertEqual(bytes(t.sent), _SPANS_TOK + _LOCK_PROBE_HEADER)
+        self.assertEqual(_next_write_events(t, c), _IN_STEP)
+
+    def test_lock_probe_on_firmware_that_refuses_the_flag_stays_in_step(self):
+        t = _SpansLoopback(on_lock_header=_LOCK_UNKNOWN)
+        t.queue_token(TOK_ACK)
+        c = TRClient(t)
+        self.assertFalse(c.probe_spans_lock())
+        self.assertEqual(_next_write_events(t, c), _IN_STEP)
+
+    def test_lock_probe_answered_by_neither_refusal_resyncs(self):
+        t = _SpansLoopback(on_lock_header=b"Timeout!")
+        t.queue_token(TOK_ACK)
+        c = TRClient(t)
+        self.assertFalse(c.probe_spans_lock())
+        self.assertEqual(_next_write_events(t, c), _RESYNCED)
+
+    def test_sample_watch_framing_and_counts(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_raw(struct.pack("<IQIIII", 12000, 600_000_000, 120_000, 50, 2, 600_000_000))
+        stats = self.c.sample_watch(0xD418)
+        self.assertEqual(bytes(self.t.sent), bytes([0x64, 0xF9, 1, 0xD4, 0x18]))
+        self.assertEqual(stats.intervals, 12000)
+        self.assertEqual(stats.interval_cycles, 600_000_000)
+        self.assertEqual(stats.longest_cycles, 120_000)
+        self.assertEqual((stats.locked_slices, stats.unlocked_slices), (50, 2))
+        self.assertAlmostEqual(stats.lost_ticks(1 / 12100), 100.0)
+
+    def test_sample_watch_stop_sends_mode_zero(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_raw(bytes(28))
+        self.c.sample_watch(None)
+        self.assertEqual(bytes(self.t.sent), bytes([0x64, 0xF9, 0, 0, 0]))
+
+    def test_sample_watch_refused_for_a_held_snoop_is_a_nak(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.queue_stale(b"Bus snoop in use")
+        with self.assertRaisesRegex(TRNak, "Bus snoop in use"):
+            self.c.sample_watch(0xD418)
+
     def test_cart_io_overlap_bounds(self):
         self.assertFalse(span_touches_cart_io(0xDD00, 0x100))
         self.assertTrue(span_touches_cart_io(0xDD00, 0x101))
@@ -406,14 +482,20 @@ class SlicingBackendTest(unittest.TestCase):
         held: bool = False,
         slice_bytes: int = 32,
         gap_us: int = 40,
+        lock: bool = False,
     ):
-        t = _SpansLoopback(on_header=b"" if supported else b"Unk cmd: 0000")
+        t = _SpansLoopback(
+            on_header=b"" if supported else b"Unk cmd: 0000",
+            on_lock_header=_LOCK_KNOWN if lock else _LOCK_UNKNOWN,
+        )
         t.queue_token(TOK_FW_FULL)
         t.queue_token(TOK_ACK)
         t.queue_raw(b"\xe2\xfc")
         if mode != "off":
             if supported:
                 t.queue_token(TOK_FAIL if held else TOK_ACK)
+                if mode in ("auto", "locked"):
+                    t.queue_token(TOK_ACK)
             else:
                 t.queue_raw(b"Un")
         b = TeensyROMBackend(
@@ -835,6 +917,134 @@ class SlicingBackendTest(unittest.TestCase):
         whole, _ = self._backend(slice_bytes=0)
         self.assertEqual(whole.dac_bitmap_tempo(True), 0.88)
         self.assertEqual(whole.dac_bitmap_tempo(False), 0.89)
+
+
+_STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=38)
+# 38 free cycles less the firmware's 5 per slice; two 83.1 us periods to wait.
+_LOCKED_HEADER = _SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 33, 167])
+_WATCH_TOK = bytes([0x64, 0xF9])
+
+
+class LockedSlicingBackendTest(unittest.TestCase):
+    connect_sent: bytes
+    _backend = SlicingBackendTest._backend
+    _write = SlicingBackendTest._write
+
+    def _locked(self, mode: str = "auto"):
+        b, t = self._backend(mode, lock=True)
+        t.queue_token(TOK_ACK)
+        t.queue_raw(bytes(28))
+        b.note_nmi_consumer(True, _STORE)
+        self.assertEqual(bytes(t.sent), _WATCH_TOK + bytes([1, 0xD4, 0x18]))
+        t.sent.clear()
+        return b, t
+
+    def test_bitmap_tempo_is_real_time_while_the_lock_holds(self):
+        b, _ = self._locked()
+        self.assertEqual(b.dac_bitmap_tempo(True), 1.0)
+        self.assertEqual(b.dac_bitmap_tempo(False), 1.0)
+
+    def test_bitmap_tempo_falls_back_when_the_snoop_is_held(self):
+        b, t = self._backend(lock=True)
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"Bus snoop in use")
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b.note_nmi_consumer(True, _STORE)
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+
+    def test_bitmap_tempo_falls_back_when_no_slice_fits_the_period(self):
+        b, _ = self._backend(lock=True)
+        b.note_nmi_consumer(True, replace(_STORE, free_cycles=12))
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+
+    def test_bitmap_tempo_falls_back_after_a_locked_write_is_refused(self):
+        b, t = self._locked()
+        t.queue_token(TOK_ACK)
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"Bus snoop in use")
+        t.queue_token(TOK_ACK)
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b.write_memory_file("4000", bytes(64))
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+
+    def test_auto_starts_the_watch_and_locks_writes_to_the_store(self):
+        b, t = self._locked()
+        sent = self._write(b, t, "4000", 256, 3)
+        self.assertTrue(sent.startswith(_LOCKED_HEADER + bytes([2, 0xD4, 0x18, 0, 0])))
+        self.assertEqual(b.stats["errors"], 0)
+
+    def test_locked_mode_locks_too(self):
+        b, t = self._locked("locked")
+        self.assertTrue(self._write(b, t, "4000", 256, 3).startswith(_LOCKED_HEADER))
+
+    def test_a_short_write_goes_locked_rather_than_on_writec64mem(self):
+        b, t = self._locked()
+        self.assertTrue(self._write(b, t, "4000", 2, 3).startswith(_LOCKED_HEADER))
+
+    def test_on_never_asks_for_the_lock(self):
+        b, t = self._backend("on", lock=True)
+        self.assertNotIn(_LOCK_PROBE_HEADER, self.connect_sent)
+        b.note_nmi_consumer(True, _STORE)
+        self.assertNotIn(_WATCH_TOK, bytes(t.sent))
+        sent = self._write(b, t, "4000", 33, 3)
+        self.assertTrue(sent.startswith(_SPANS_TOK + bytes([0, 32, 40, 1])))
+
+    def test_firmware_without_the_lock_slices_unlocked(self):
+        b, t = self._backend(lock=False)
+        b.note_nmi_consumer(True, _STORE)
+        self.assertNotIn(_WATCH_TOK, bytes(t.sent))
+        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
+
+    def test_locked_mode_on_firmware_without_the_lock_warns(self):
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
+            self._backend("locked", lock=False)
+        self.assertIn("cannot start a slice on a sample store", cm.output[0])
+
+    def test_a_consumer_with_no_store_slices_unlocked(self):
+        b, t = self._backend(lock=True)
+        b.note_nmi_consumer(True)
+        self.assertNotIn(_WATCH_TOK, bytes(t.sent))
+        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
+
+    def test_a_period_too_short_to_fit_a_slice_slices_unlocked(self):
+        b, t = self._backend(lock=True)
+        b.note_nmi_consumer(True, replace(_STORE, free_cycles=12))
+        self.assertNotIn(_WATCH_TOK, bytes(t.sent))
+
+    def test_a_held_bus_snoop_slices_unlocked(self):
+        b, t = self._backend(lock=True)
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"Bus snoop in use")
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            b.note_nmi_consumer(True, _STORE)
+        self.assertIn("Bus snoop in use", cm.output[0])
+        t.sent.clear()
+        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
+
+    def test_the_consumer_stopping_stops_the_watch(self):
+        b, t = self._locked()
+        t.queue_token(TOK_ACK)
+        t.queue_raw(bytes(28))
+        b.note_nmi_consumer(False)
+        self.assertEqual(bytes(t.sent), _WATCH_TOK + bytes([0, 0, 0]))
+        t.sent.clear()
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
+
+    def test_a_refused_locked_write_drops_the_lock_and_lands_unlocked(self):
+        b, t = self._locked()
+        t.queue_token(TOK_ACK)
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"Bus snoop in use")
+        t.queue_token(TOK_ACK)
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            b.write_memory_file("4000", bytes(64))
+        self.assertIn("refused a locked write", cm.output[0])
+        sent = bytes(t.sent)
+        self.assertEqual(sent.count(_LOCKED_HEADER), 1)
+        self.assertTrue(sent.endswith(_MEM_TOK + bytes([0x40, 0x00, 0x00, 0x40]) + bytes(64)))
+        self.assertEqual(b.stats["errors"], 0)
+        t.sent.clear()
+        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
 
 
 class SlicingConfigTest(unittest.TestCase):
