@@ -100,11 +100,34 @@ SPANS_SEGMENT_BYTES = 1024
 SPANS_IO_START = 0xDE00
 SPANS_IO_END = 0xE000
 
-# After a WriteC64Spans fails part way, the firmware waits up to 500 ms for each
-# byte it is still owed (SerialTimoutMillis), then discards input until a second
-# passes with nothing arriving; anything sent before both run out is thrown away
-# or misread. Quiet this long from the sender's last byte covers both.
-_SPANS_RECOVER_QUIET_S = 1.6
+# After a command fails part way, the firmware waits up to 500 ms for each byte
+# it is still owed (SerialTimoutMillis) before it answers FailToken, and after
+# WriteC64Spans it then discards input until a second passes with nothing
+# arriving; anything sent before both run out is thrown away or misread. Quiet
+# this long from the sender's last byte covers both.
+_RESYNC_QUIET_S = 1.6
+# The silence a resync still waits for when the sender's last byte is long past,
+# so a reply already on its way is read here rather than by the next command.
+_RESYNC_MIN_QUIET_S = 0.2
+# What a resync waits from the sender's last byte on a link judged dead: the
+# firmware's 500 ms wait for an owed byte, and a margin, so the next command is
+# not taken as the rest of a frame the dead link delivered in part.
+_RESYNC_DEAD_QUIET_S = 0.6
+# What the firmware prints with the FailToken it sends when an owed byte did not
+# arrive in time (SerialAvailabeTimeout). The rest of what the host sent may
+# still be on its way, and reaches the dispatcher as commands.
+_FIRMWARE_TIMEOUT_TEXT = "Timeout!"
+# How long a WriteC64Spans job may run once its payload has arrived:
+# DMA_SPANS_CEILING_mS (DMAControl.c), C64SlicesMax * 5 + 1000 ms, plus a margin
+# for the payload's delivery and the firmware's millis() under-counting a long
+# job. Its reply can come this long after the client's io_timeout gave up on it.
+_SPANS_JOB_CEILING_S = (SPANS_MAX_SLICES * 5 + 1000) / 1000 + 0.5
+# How long after WriteC64Spans' token the firmware may still take the next
+# bytes as its header: it waits out a stalled header until SpansCeilingmS(sizeof
+# List) (SerUSBIO.ino), 500 * 10 + 256 / 2 ms, then discards until a second
+# passes with nothing arriving; plus a margin. The resync's wait from the last
+# byte sent is far shorter, so a header that did not go out sets this instead.
+_SPANS_HEADER_WAIT_S = (500 * 10 + SPANS_MAX * 4 // 2 + 1000) / 1000 + 0.3
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
@@ -159,14 +182,22 @@ class TRError(Exception):
     message (parallel to socket_dma.SocketDMAError on the Ultimate side)."""
 
 
-class TRBusyError(TRError):
+class TRNak(TRError):
+    """The firmware refused a command with FailToken or RetryToken. It sends
+    that refusal once it has finished with the command, so the link is still
+    in step: the next command needs no resync. A FailToken that comes with the
+    firmware's ``Timeout!`` is not one: it gave up on bytes the host sent, and
+    those are raised as a plain ``TRError``."""
+
+
+class TRBusyError(TRNak):
     """Raised when the TR rejects a command because it's busy — a program is
     running, or the menu handler isn't active (the firmware replies "Busy!").
     A distinct subclass so callers can tell "try again from the menu / stop the
     running program" apart from a hard failure."""
 
 
-class TRSpansRefused(TRError):
+class TRSpansRefused(TRNak):
     """WriteC64Spans was refused before anything was sent beyond its token,
     because another DMA user holds the bus (REU emulation running, or the C64
     paused). Nothing was written and the firmware is ready for its next
@@ -177,6 +208,11 @@ class TRTransport(ABC):
     """Byte-level link to a TR. Implementations guarantee `recv_exact` blocks
     until exactly n bytes arrive or the io timeout elapses (the ack handshake
     depends on it)."""
+
+    # True when the last drain_text stopped at its hard cap (_DRAIN_MAX_S or
+    # _DRAIN_MAX_BYTES) rather than on its quiet window. The text it returns
+    # cannot say so: a flood of control bytes sanitizes to an empty string.
+    drain_capped: bool = False
 
     @abstractmethod
     def connect(self) -> None: ...
@@ -200,6 +236,15 @@ class TRTransport(ABC):
 
     @abstractmethod
     def close(self) -> None: ...
+
+    def _hit_drain_cap(self) -> None:
+        self.drain_capped = True
+        log.warning(
+            "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
+            "a misbehaving device may be flooding the link",
+            _DRAIN_MAX_S,
+            _DRAIN_MAX_BYTES,
+        )
 
     @property
     @abstractmethod
@@ -360,22 +405,21 @@ class SerialTransport(TRTransport):
         buf = bytearray()
         hard_deadline = time.monotonic() + _DRAIN_MAX_S
         quiet_deadline = time.monotonic() + quiet_s
-        # read(64) blocks up to self._ser.timeout — io_timeout (2s) from
+        # read() blocks up to self._ser.timeout — io_timeout (2s) from
         # __init__ — so without this override the common "nothing to drain"
         # case stalls a full io_timeout on every command instead of quiet_s.
         prev_timeout = self._ser.timeout  # type: ignore[attr-defined]
         self._ser.timeout = quiet_s  # type: ignore[attr-defined]
+        self.drain_capped = False
         try:
             while time.monotonic() < quiet_deadline:
                 if time.monotonic() > hard_deadline or len(buf) >= _DRAIN_MAX_BYTES:
-                    log.warning(
-                        "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
-                        "a misbehaving device may be flooding the link",
-                        _DRAIN_MAX_S,
-                        _DRAIN_MAX_BYTES,
-                    )
+                    self._hit_drain_cap()
                     break
-                chunk = self._ser.read(64)  # type: ignore[attr-defined]
+                # read(64) would wait out the whole quiet_s for 64 bytes when
+                # fewer arrive, so every burst would double the silence waited.
+                waiting = self._ser.in_waiting  # type: ignore[attr-defined]
+                chunk = self._ser.read(max(1, min(64, waiting)))  # type: ignore[attr-defined]
                 if chunk:
                     buf.extend(chunk)
                     quiet_deadline = time.monotonic() + quiet_s
@@ -456,15 +500,11 @@ class TcpTransport(TRTransport):
         hard_deadline = time.monotonic() + _DRAIN_MAX_S
         prev = self._sock.gettimeout()
         self._sock.settimeout(quiet_s)
+        self.drain_capped = False
         try:
             while True:
                 if time.monotonic() > hard_deadline or len(buf) >= _DRAIN_MAX_BYTES:
-                    log.warning(
-                        "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
-                        "a misbehaving device may be flooding the link",
-                        _DRAIN_MAX_S,
-                        _DRAIN_MAX_BYTES,
-                    )
+                    self._hit_drain_cap()
                     break
                 try:
                     chunk = self._sock.recv(64)
@@ -515,8 +555,20 @@ class TRClient:
         self._lock = threading.Lock()
         self._latencies: deque[float] = deque(maxlen=256)
         self.firmware = "unknown"  # "full" | "minimal" | "unknown"
-        # Set when a command was cut part way; see _command.
-        self._cut = False
+        # Set when a command left the link out of step; see _command.
+        self._out_of_step = False
+        # Set while the link looks dead; see _resync.
+        self._judged_dead = False
+        # Set when this command's send raised an OSError; see _command.
+        self._send_failed = False
+        # When the last byte went to the transport (time.monotonic()).
+        self._last_send = float("-inf")
+        # When a reply the firmware may still send is due by, if later than
+        # the resync's wait from the last send (time.monotonic()).
+        self._reply_due = float("-inf")
+        # Set once a WriteC64Spans has sent past its token, whose failure the
+        # firmware follows with its one-second discard; see _resync.
+        self._discard_owed = False
 
     def connect(self) -> None:
         """Open the transport and best-effort probe the firmware type.
@@ -528,7 +580,8 @@ class TRClient:
         # Clear any banner/boot chatter left in the buffer before probing.
         self._drain_stale()
         try:
-            self.firmware = self._fw_check_unlocked()
+            with self._command():
+                self.firmware = self._fw_check_unlocked()
         except TRError:
             self.firmware = "unknown"
         log.info(
@@ -541,31 +594,115 @@ class TRClient:
 
     @contextlib.contextmanager
     def _command(self) -> Iterator[None]:
-        """Hold the lock for one command, and resynchronize first when the
-        previous one was cut part way.
+        """Hold the lock for one command, and put the link back in step first
+        when an earlier command left it out of step.
 
-        Anything but an ``OSError`` or a ``TRError`` leaving a command — a
-        ``KeyboardInterrupt`` raised by the signal handler inside a blocked
-        write or read, typically — may leave the firmware owed bytes or a
-        reply unread, so the next command would be read as the rest of the
-        cut one, or would read its reply. The next command therefore waits
-        out ``_SPANS_RECOVER_QUIET_S`` first, the silence after which the
-        firmware has given up on a sender and finished discarding, draining
-        whatever arrives meanwhile. Closing and reopening the link was not
-        used instead: nothing shows the firmware's parser starts over when the
-        host drops a TCP connection or a USB serial port, while its own
-        timeout is what ``_recover_spans`` already relies on."""
+        A command that fails part way can leave the firmware owed the rest of
+        a frame, which it then fills from the next command's bytes and writes
+        to C64 memory, or leave a reply on its way that the next command would
+        read as its own and put every later command one reply behind: a send
+        an ``OSError`` or a ``KeyboardInterrupt`` cut short, or a reply that
+        timed out or came back malformed. So anything leaving a command marks
+        the link out of step except a ``TRNak``, which the firmware sends once
+        it is done with the command, and the next command calls ``_resync``
+        before it sends. Closing and reopening the link was not used instead:
+        nothing shows the firmware's parser starts over when the host drops a
+        TCP connection or a USB serial port, while its own timeout is measured
+        (``scripts/diags/tr_link_resync_probe.py``)."""
         with self._lock:
+            heard = True
+            self._send_failed = False
             try:
-                if self._cut:
-                    self._drain_stale(_SPANS_RECOVER_QUIET_S)
-                    self._cut = False
+                if self._out_of_step:
+                    heard = self._resync()
                 yield
-            except (OSError, TRError):
+            except TRNak:
+                self._judged_dead = False
+                self._reply_due = float("-inf")
                 raise
             except BaseException:
-                self._cut = True
+                self._out_of_step = True
+                if not heard and self._send_failed:
+                    self._judged_dead = True
                 raise
+            self._judged_dead = False
+            self._reply_due = float("-inf")
+
+    def _resync(self) -> bool:
+        """Under the caller's lock, wait until the firmware has given up on
+        anything it was still owed and has sent any reply it still had,
+        discarding what arrives. True when the device sent anything.
+
+        The wait is ``_RESYNC_QUIET_S`` from the last byte sent, not from now,
+        so a command that already timed out waiting on its reply has spent
+        most of it, and then at least ``_RESYNC_MIN_QUIET_S`` of silence. Once
+        a resync has heard nothing and the command after it failed as well,
+        on a send the transport could not finish, the link is judged dead and
+        the wait from the last byte sent shrinks to ``_RESYNC_DEAD_QUIET_S``,
+        the firmware's wait for an owed byte, until the device next answers or
+        a command completes: a link that has stopped accepting sends times
+        each one out just after its last bytes went, and would otherwise add
+        the whole wait to every failed command. A command whose reply the
+        firmware may send later than that sets ``_reply_due``, and the wait
+        runs until then instead. A WriteC64Spans that failed past its token
+        is followed by the firmware's discard, which the short wait does not
+        cover, so after one the wait is the whole ``_RESYNC_QUIET_S``, or
+        until ``_SPANS_HEADER_WAIT_S`` after the token when its header did not
+        all go out.
+
+        Raises TRError, leaving the link out of step, when a drain begun once
+        that wait was over still ends at drain_text's hard cap: the device is
+        still sending, so the caller's command would be read as part of
+        whatever it is in the middle of."""
+        dead = self._judged_dead and not self._discard_owed
+        quiet = _RESYNC_DEAD_QUIET_S if dead else _RESYNC_QUIET_S
+        stale = ""
+        capped = False
+
+        def left() -> float:
+            now = time.monotonic()
+            return max(quiet - (now - self._last_send), self._reply_due - now)
+
+        # drain_text stops at its own hard cap while bytes keep coming, which
+        # can be before a late reply is due, so a drain that got bytes is
+        # followed by another until then. One that got none and was not capped
+        # heard its silence; a capped one may have got only control bytes.
+        while True:
+            past_due = left() <= 0
+            chunk = self.transport.drain_text(max(left(), _RESYNC_MIN_QUIET_S))
+            stale += chunk
+            if self.transport.drain_capped:
+                capped = True
+                if past_due:
+                    raise TRError(
+                        "TR link never went quiet: the device is still sending, "
+                        "so the command was not sent"
+                    )
+                continue
+            if not chunk or left() <= 0:
+                break
+        self._reply_due = float("-inf")
+        self._discard_owed = False
+        self._out_of_step = False
+        if stale or capped:
+            self._judged_dead = False
+            log.debug("teensyrom: resync discarded %d bytes: %r", len(stale), stale[:32])
+        return bool(stale) or capped
+
+    def leave_out_of_step(self) -> None:
+        """Make the next command resync before it sends, for a caller that
+        knows the firmware may still send replies this client has no read for."""
+        with self._lock:
+            self._out_of_step = True
+
+    def _send(self, data: bytes) -> None:
+        try:
+            self.transport.send_all(data)
+        except OSError:
+            self._send_failed = True
+            raise
+        finally:
+            self._last_send = time.monotonic()
 
     # Wire byte order is asymmetric, confirmed on hardware (TeensyROM+
     # v0.7.2.4) and in the firmware source: the TR *reads* command tokens and
@@ -602,7 +739,15 @@ class TRClient:
                 "teensyrom: drained %d stale bytes before command: %r", len(stale), stale[:32]
             )
 
-    def _expect_ack(self, what: str) -> None:
+    def _expect_ack(self, what: str, *, busy_possible: bool = False) -> None:
+        """Read a command's ack, or raise the refusal it got instead.
+
+        Only a FailToken or RetryToken without the firmware's ``Timeout!`` is
+        a ``TRNak``. ``busy_possible`` is for the reply to a token the
+        firmware's dispatcher refuses with ``Busy!`` while a program runs
+        (PostFile, DeleteFile); every other command is served while
+        busy, so a ``Busy!`` where its reply should be answered a stray
+        command and is raised as a plain ``TRError``."""
         tok = self._read_token()
         if tok == TOK_ACK:
             return
@@ -611,25 +756,29 @@ class TRClient:
         # the stream and surfaces the reason.
         detail = self.transport.drain_text(0.15).strip()
         suffix = f" — {detail}" if detail else ""
-        # The firmware signals "program running / menu not active" with a
-        # "Busy!" text line, often alongside a Fail/Retry token.
+        if _FIRMWARE_TIMEOUT_TEXT in detail:
+            raise TRError(f"{what}: TR timed out receiving the command{suffix}")
+        if tok not in (TOK_FAIL, TOK_RETRY):
+            raise TRError(f"{what}: unexpected reply 0x{tok:04X} (expected ack){suffix}")
         if "busy" in detail.lower():
-            raise TRBusyError(f"{what}: TR busy{suffix}")
-        if tok == TOK_FAIL:
-            raise TRError(f"{what}: TR returned FailToken (0x9B7F){suffix}")
-        if tok == TOK_RETRY:
-            raise TRError(f"{what}: TR returned RetryToken (0x9B7E){suffix}")
-        raise TRError(f"{what}: unexpected reply 0x{tok:04X} (expected ack){suffix}")
+            if busy_possible:
+                raise TRBusyError(f"{what}: TR busy{suffix}")
+            raise TRError(f"{what}: a Busy! this command never gets, from a stray one{suffix}")
+        name = "FailToken" if tok == TOK_FAIL else "RetryToken"
+        raise TRNak(f"{what}: TR returned {name} (0x{tok:04X}){suffix}")
 
     def _fw_check_unlocked(self) -> str:
         # Caller (connect) is single-threaded at this point.
-        self.transport.send_all(self._u16(TOK_FW_CHECK))
+        self._send(self._u16(TOK_FW_CHECK))
         tok = self._read_token()
         if tok == TOK_FW_FULL:
             return "full"
         if tok == TOK_FW_MINIMAL:
             return "minimal"
-        return "unknown"
+        # A FailToken here is the firmware timing out on the token's second
+        # byte, and anything else is not a reply to it: either way what follows
+        # is the resync's to discard.
+        raise TRError(f"FWCheck: unexpected reply 0x{tok:04X}")
 
     def write_segment(self, addr: int, data: bytes) -> None:
         """One WriteC64Mem command: token + addr(BE) + len(BE) + data, then
@@ -639,7 +788,7 @@ class TRClient:
         )
         with self._command():
             t0 = time.perf_counter()
-            self.transport.send_all(frame)
+            self._send(frame)
             self._expect_ack(f"WriteC64Mem ${addr:04X}")
             self._latencies.append(time.perf_counter() - t0)
 
@@ -653,10 +802,10 @@ class TRClient:
 
         `slice_bytes` 0 DMAs each span whole. Raises TRError on a refusal, a
         failed slice, or a reply that never came, and OSError on a send or
-        read the transport could not finish; in every case the firmware
-        is back at its command dispatcher before this returns (see
-        `_recover_spans`), so the next command is not read as part of this
-        one."""
+        read the transport could not finish; in every case the firmware is
+        back at its command dispatcher before the next command goes out (see
+        `_close_spans_token` and `_resync`), so that command is not read as
+        part of this one."""
         if not 1 <= len(spans) <= SPANS_MAX:
             raise ValueError(f"WriteC64Spans takes 1-{SPANS_MAX} spans, got {len(spans)}")
         if not (0 <= slice_bytes <= SPANS_FIELD_MAX and 0 <= gap_us <= SPANS_FIELD_MAX):
@@ -670,52 +819,61 @@ class TRClient:
         with self._command():
             t0 = time.perf_counter()
             try:
-                self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
+                self._send(self._u16(TOK_WRITE_C64_SPANS))
                 tok = self._read_token()
-            except (OSError, TRError):
-                self._recover_spans(header_sent=False)
+            except BaseException:
+                self._close_spans_token()
                 raise
             if tok == TOK_FAIL:
                 detail = self.transport.drain_text(0.15).strip()
+                if _FIRMWARE_TIMEOUT_TEXT in detail:
+                    raise TRError(f"WriteC64Spans ${first:04X}: TR timed out on the token")
                 raise TRSpansRefused(f"WriteC64Spans ${first:04X}: bus held — {detail}")
             if tok != TOK_ACK:
-                self._recover_spans(header_sent=False)
+                self._close_spans_token()
                 raise TRError(f"WriteC64Spans ${first:04X}: unexpected reply 0x{tok:04X}")
+            self._discard_owed = True
             try:
-                self.transport.send_all(header + span_list)
+                self._send_spans_header(header + span_list)
                 self._expect_ack(f"WriteC64Spans ${first:04X} (spans)")
-                self.transport.send_all(payload)
+                self._send(payload)
+                # Set once the whole payload is out: a cut one starts no job.
+                self._reply_due = time.monotonic() + _SPANS_JOB_CEILING_S
                 self._expect_ack(f"WriteC64Spans ${first:04X}")
-            except (OSError, TRError):
-                self._recover_spans(header_sent=True)
+            except TRNak:
+                # A span list or payload the firmware refused part way is
+                # followed by its discard of whatever was still owed.
+                self._out_of_step = True
                 raise
             self._latencies.append(time.perf_counter() - t0)
 
-    def _recover_spans(self, *, header_sent: bool) -> None:
-        """Put the firmware back at its command dispatcher after a
-        WriteC64Spans that went wrong part way, under the caller's lock.
-
-        Unlike WriteC64Mem, whose frame goes out whole, this command is sent
-        in stages, and a stage whose reply did not come leaves the firmware
-        part way through it — it may yet act on the token (a reply lost to a
-        reset's reboot chatter, say) and take whatever is sent next as its
-        header. If the header has not gone out, four zero bytes follow: a
-        zero-span header is refused with nothing owed, and firmware that has
+    def _close_spans_token(self) -> None:
+        """End a WriteC64Spans whose token got no usable reply, under the
+        caller's lock. Unlike WriteC64Mem, whose frame goes out whole, this
+        command is sent in stages, and the firmware may yet act on the token
+        (a reply lost to a reset's reboot chatter, say) and wait on a header,
+        which would be the next command's bytes. Four zero bytes are a
+        zero-span header, refused with nothing owed, and firmware that has
         already dropped the command reads them as two unknown 0x0000 tokens.
-        Then this waits for quiet long enough to cover the firmware giving up
-        on a silent sender and its own discard after that."""
-        if not header_sent:
-            with contextlib.suppress(OSError, TRError):
-                self.transport.send_all(bytes(4))
-        with contextlib.suppress(OSError, TRError):
-            self._drain_stale(_SPANS_RECOVER_QUIET_S)
+        The resync before the next command covers the rest."""
+        with contextlib.suppress(OSError):
+            self._send_spans_header(bytes(4))
+
+    def _send_spans_header(self, data: bytes) -> None:
+        """Send what follows WriteC64Spans' token, its header first, under the
+        caller's lock, right after the token went out. Until it has all gone,
+        the firmware may take the next command's bytes as that header, for
+        ``_SPANS_HEADER_WAIT_S`` after the token, so that is when the reply is
+        due until the send completes."""
+        self._reply_due = self._last_send + _SPANS_HEADER_WAIT_S
+        self._send(data)
+        self._reply_due = float("-inf")
 
     def probe_spans(self) -> SpansProbe:
         """Does the connected firmware carry WriteC64Spans, and is the bus free
-        for it? Sends the token,
-        then a header announcing zero spans, which the firmware refuses before
-        anything is owed — so the probe writes no C64 memory and leaves no
-        discard window behind.
+        for it? Sends the token, then a header announcing zero spans, which the
+        firmware refuses before anything is owed — so the probe writes no C64
+        memory and leaves no discard window behind.
 
         The header goes out whatever the token's reply was. Boot chatter after
         a reset can arrive where the reply should be, and the firmware may
@@ -727,16 +885,35 @@ class TRClient:
         An ack to the token, or the zero-span refusal's text when chatter hid
         the reply, is READY. A FailToken, or the bus-held refusal's text, is
         HELD: the command exists but REU emulation or a pause holds the bus.
-        Anything else is ABSENT, which keeps every write on WriteC64Mem."""
+        Anything else is ABSENT, which keeps every write on WriteC64Mem. A
+        firmware ``Timeout!`` raises TRError instead, since it answers nothing
+        about support, unless the token was acked: only firmware carrying the
+        command acks it, so that probe is READY and leaves the link out of
+        step.
+
+        Anything but a FailToken in the token reply's place owes the zero
+        header's refusal, chatter included, since the firmware may act on the
+        token after it; when the refusal is not in the drain it may still be
+        on its way, and the link is left out of step for the next command's
+        resync."""
         with self._command():
             self._drain_stale()
-            self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
             try:
-                tok: int | None = self._read_token()
-            except TRError:
-                tok = None
-            self.transport.send_all(bytes(4))
+                self._send(self._u16(TOK_WRITE_C64_SPANS))
+                try:
+                    tok: int | None = self._read_token()
+                except TRError:
+                    tok = None
+            except BaseException:
+                self._close_spans_token()
+                raise
+            self._send_spans_header(bytes(4))
             text = self.transport.drain_text(0.3)
+            timed_out = _FIRMWARE_TIMEOUT_TEXT in text
+            if timed_out and tok != TOK_ACK:
+                raise TRError("WriteC64Spans probe: TR timed out on the token")
+            if timed_out or (tok != TOK_FAIL and _SPANS_COUNT_REFUSAL not in text):
+                self._out_of_step = True
             if tok == TOK_ACK or _SPANS_COUNT_REFUSAL in text:
                 return SpansProbe.READY
             if tok == TOK_FAIL or any(reason in text for reason in _SPANS_BUS_HELD):
@@ -752,18 +929,22 @@ class TRClient:
         this in the caller."""
         frame = self._u16(TOK_READ_C64_MEM) + self._u16(addr & 0xFFFF) + self._u16(length)
         with self._command():
-            self.transport.send_all(frame)
+            self._send(frame)
             self._expect_ack(f"ReadC64Mem ${addr:04X}")
             return self.transport.recv_exact(length)
 
     def reset(self) -> None:
         """Reset the C64 (boots to the TR menu). The firmware answers with a
         text line ("Reset cmd received"), NOT a binary ack — drain it so it
-        doesn't pollute the next command's reply."""
+        doesn't pollute the next command's reply. A line that did not come in
+        the drain may still be on its way, and a drain its hard cap ended
+        stopped while the device was still sending, so either leaves the link
+        out of step."""
         with self._command():
-            self.transport.send_all(self._u16(TOK_RESET_C64))
+            self._send(self._u16(TOK_RESET_C64))
             line = self.transport.drain_text()
-            if "Reset" not in line:
+            if "Reset" not in line or self.transport.drain_capped:
+                self._out_of_step = True
                 log.debug("teensyrom reset: unexpected response %r", line)
 
     def drain_after_command(self, quiet_s: float = 0.2) -> str:
@@ -784,9 +965,9 @@ class TRClient:
         payload = bytes([drive & 0xFF]) + _encode_path(path)
         with self._command():
             self._drain_stale()
-            self.transport.send_all(self._u16(TOK_DELETE_FILE))
-            self._expect_ack("DeleteFile (open)")
-            self.transport.send_all(payload)
+            self._send(self._u16(TOK_DELETE_FILE))
+            self._expect_ack("DeleteFile (open)", busy_possible=True)
+            self._send(payload)
             self._expect_ack(f"DeleteFile {path!r}")
 
     def post_file(self, data: bytes, dest_path: str, drive: int = DRIVE_SD) -> None:
@@ -812,11 +993,11 @@ class TRClient:
         header = self._u32(len(data)) + self._u16(checksum) + bytes([drive & 0xFF]) + path_bytes
         with self._command():
             self._drain_stale()  # clear post-reset/menu boot chatter
-            self.transport.send_all(self._u16(TOK_POST_FILE))
-            self._expect_ack("PostFile (open)")
-            self.transport.send_all(header)
+            self._send(self._u16(TOK_POST_FILE))
+            self._expect_ack("PostFile (open)", busy_possible=True)
+            self._send(header)
             self._expect_ack(f"PostFile header {dest_path!r}")
-            self.transport.send_all(data)
+            self._send(data)
             self._expect_ack(f"PostFile data {dest_path!r}")
 
     def launch_file(self, path: str, drive: int = DRIVE_SD) -> None:
@@ -826,16 +1007,22 @@ class TRClient:
         path_bytes = bytes([drive & 0xFF]) + _encode_path(path)
         with self._command():
             self._drain_stale()  # clear post-reset/menu boot chatter
-            self.transport.send_all(self._u16(TOK_LAUNCH_FILE))
+            self._send(self._u16(TOK_LAUNCH_FILE))
             self._expect_ack("LaunchFile (open)")
-            self.transport.send_all(path_bytes)
+            self._send(path_bytes)
             self._expect_ack(f"LaunchFile {path!r}")
 
     def ping(self) -> str:
-        """Liveness check. The firmware answers with a text status line."""
+        """Liveness check. The firmware answers with a text status line; when
+        none came in the drain it may still be on its way, and a drain its hard
+        cap ended stopped while the device was still sending, so either leaves
+        the link out of step."""
         with self._command():
-            self.transport.send_all(self._u16(TOK_PING))
-            return self.transport.drain_text().strip()
+            self._send(self._u16(TOK_PING))
+            line = self.transport.drain_text().strip()
+            if not line or self.transport.drain_capped:
+                self._out_of_step = True
+            return line
 
     def flush(self) -> None:
         """No-op: every write is acked, so by the time write_segment returns

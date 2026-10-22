@@ -1058,7 +1058,7 @@ active). Consequences worth knowing:
 * **TR launch/upload errors surface the firmware's reason.** When the TR NAKs a
   command, `teensyrom_dma._expect_ack` now captures the trailing text the
   firmware emits and puts it in the raised error — `TRBusyError` on a `"Busy!"`
-  reply (a program is running / the menu handler isn't active), and the literal
+  reply to PostFile or DeleteFile (a program is running / the menu handler isn't active), and the literal
   text (`"Not enough room"`, `"File already exists."`, …) appended otherwise —
   instead of a bare token code. This is what makes the failure below diagnosable.
 
