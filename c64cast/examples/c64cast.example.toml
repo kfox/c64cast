@@ -139,17 +139,15 @@ baud = 2000000                      # 2 Mbaud 8N1 (TR uses full USB bandwidth)
 host = "192.168.2.66"               # TR IP (required for tcp; via CCGMS "ATC")
 tcp_port = 2112                     # TR TCP listener port (firmware default)
 storage = "sd"                      # "sd" | "usb" — where helper PRGs upload to
-dma_slicing = "off"                 # "off" | "auto" | "locked" | "on" —
-                                    #   WriteC64Spans (TR+ fw v0.9+): DMA
-                                    #   large writes in slices so the DAC's
-                                    #   NMI sample player keeps its timing.
-                                    #   Sliced only while DAC audio plays;
-                                    #   "auto" uses it when the firmware has
-                                    #   it, starting each slice right after
-                                    #   the player's sample store when the
-                                    #   firmware can ("locked" warns if not;
-                                    #   "on" never locks). Off by default:
-                                    #   bitmap video drops short frames
+dma_slicing = "auto"                # "auto" | "locked" | "on" | "off" —
+                                    #   while DAC audio plays, DMA each write
+                                    #   in slices that start right after the
+                                    #   NMI player's sample store, so it never
+                                    #   misses a tick — when the firmware can;
+                                    #   else unsliced ("locked" warns then).
+                                    #   "on" slices without the lock at the
+                                    #   shape below (drops short bitmap
+                                    #   frames); "off" never slices
 dma_slice_bytes = 32                # largest single DMA halt (0-255; 0 = 1 KiB)
 dma_slice_gap_us = 40               # 6510 run time between slices (0-255 us)
 
@@ -650,8 +648,9 @@ pitch_mult_blank = 1.0       # Blank (no video input).
 #
 # Unset (the default) = start from the fraction measured for the connected
 # hardware (clock/wall, NTSC): 0.89 hires / 0.88 mhires on the U64-II and on a
-# TeensyROM writing unsliced; 0.97 on a TeensyROM+ writing sliced at the default
-# slice shape ([teensyrom].dma_slicing). The scene then follows the speed it measures while
+# TeensyROM writing unsliced; 1.0 on a TeensyROM+ whose slices are locked to the
+# sample store; 0.97 on one slicing unlocked ([teensyrom].dma_slicing = "on")
+# at the default slice shape. The scene then follows the speed it measures while
 # it plays, which also moves with how many frames a second it commits. A value
 # set here stays fixed: measure with scripts/diags/mhires_tempo_clock_ab.py.
 # 1.0 = compensation off.

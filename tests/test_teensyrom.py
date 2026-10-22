@@ -474,9 +474,11 @@ class SpansFramingTest(unittest.TestCase):
 
 
 class SlicingBackendTest(unittest.TestCase):
+    _MODE = "on"
+
     def _backend(
         self,
-        mode: str = "auto",
+        mode: str | None = None,
         *,
         supported: bool = True,
         held: bool = False,
@@ -484,6 +486,7 @@ class SlicingBackendTest(unittest.TestCase):
         gap_us: int = 40,
         lock: bool = False,
     ):
+        mode = mode or self._MODE
         t = _SpansLoopback(
             on_header=b"" if supported else b"Unk cmd: 0000",
             on_lock_header=_LOCK_KNOWN if lock else _LOCK_UNKNOWN,
@@ -927,6 +930,7 @@ _WATCH_TOK = bytes([0x64, 0xF9])
 
 class LockedSlicingBackendTest(unittest.TestCase):
     connect_sent: bytes
+    _MODE = "auto"
     _backend = SlicingBackendTest._backend
     _write = SlicingBackendTest._write
 
@@ -950,12 +954,12 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.queue_stale(b"Bus snoop in use")
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b.note_nmi_consumer(True, _STORE)
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
 
     def test_bitmap_tempo_falls_back_when_no_slice_fits_the_period(self):
         b, _ = self._backend(lock=True)
         b.note_nmi_consumer(True, replace(_STORE, free_cycles=12))
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
 
     def test_bitmap_tempo_falls_back_after_a_locked_write_is_refused(self):
         b, t = self._locked()
@@ -965,7 +969,7 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.queue_token(TOK_ACK)
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b.write_memory_file("4000", bytes(64))
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
 
     def test_auto_starts_the_watch_and_locks_writes_to_the_store(self):
         b, t = self._locked()
@@ -989,29 +993,30 @@ class LockedSlicingBackendTest(unittest.TestCase):
         sent = self._write(b, t, "4000", 33, 3)
         self.assertTrue(sent.startswith(_SPANS_TOK + bytes([0, 32, 40, 1])))
 
-    def test_firmware_without_the_lock_slices_unlocked(self):
+    def test_firmware_without_the_lock_writes_unsliced(self):
         b, t = self._backend(lock=False)
         b.note_nmi_consumer(True, _STORE)
         self.assertNotIn(_WATCH_TOK, bytes(t.sent))
-        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
+        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
 
     def test_locked_mode_on_firmware_without_the_lock_warns(self):
         with self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
             self._backend("locked", lock=False)
         self.assertIn("cannot start a slice on a sample store", cm.output[0])
 
-    def test_a_consumer_with_no_store_slices_unlocked(self):
+    def test_a_consumer_with_no_store_writes_unsliced(self):
         b, t = self._backend(lock=True)
         b.note_nmi_consumer(True)
         self.assertNotIn(_WATCH_TOK, bytes(t.sent))
-        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
     def test_a_period_too_short_to_fit_a_slice_slices_unlocked(self):
         b, t = self._backend(lock=True)
         b.note_nmi_consumer(True, replace(_STORE, free_cycles=12))
         self.assertNotIn(_WATCH_TOK, bytes(t.sent))
 
-    def test_a_held_bus_snoop_slices_unlocked(self):
+    def test_a_held_bus_snoop_writes_unsliced(self):
         b, t = self._backend(lock=True)
         t.queue_token(TOK_FAIL)
         t.queue_stale(b"Bus snoop in use")
@@ -1019,7 +1024,7 @@ class LockedSlicingBackendTest(unittest.TestCase):
             b.note_nmi_consumer(True, _STORE)
         self.assertIn("Bus snoop in use", cm.output[0])
         t.sent.clear()
-        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
     def test_the_consumer_stopping_stops_the_watch(self):
         b, t = self._locked()
@@ -1030,7 +1035,7 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.sent.clear()
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
-    def test_a_refused_locked_write_drops_the_lock_and_lands_unlocked(self):
+    def test_a_refused_locked_write_drops_the_lock_and_lands_unsliced(self):
         b, t = self._locked()
         t.queue_token(TOK_ACK)
         t.queue_token(TOK_FAIL)
@@ -1044,14 +1049,14 @@ class LockedSlicingBackendTest(unittest.TestCase):
         self.assertTrue(sent.endswith(_MEM_TOK + bytes([0x40, 0x00, 0x00, 0x40]) + bytes(64)))
         self.assertEqual(b.stats["errors"], 0)
         t.sent.clear()
-        self.assertTrue(self._write(b, t, "4000", 33, 3).startswith(_SPANS_TOK + bytes([0, 32])))
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
 
 class SlicingConfigTest(unittest.TestCase):
-    def test_slicing_is_off_by_default(self):
-        # Sliced bitmap video drops frames that are on screen only briefly,
-        # so a TR+ has to opt in.
-        self.assertEqual(cfgmod.Config().teensyrom.dma_slicing, "off")
+    def test_slicing_is_locked_or_off_by_default(self):
+        # Unlocked slices drop bitmap frames that are on screen only briefly,
+        # so only a slice locked to the sample store is on without asking.
+        self.assertEqual(cfgmod.Config().teensyrom.dma_slicing, "auto")
 
     def test_slice_fields_are_bounded_to_a_header_byte(self):
         for name in ("dma_slice_bytes", "dma_slice_gap_us"):

@@ -193,6 +193,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._lock_capable = False
         self._lock: tuple[int, int, int] | None = None
         self._lock_lost = False
+        # Only "on" slices without the lock: unlocked slices still lose ticks,
+        # and their lower throughput drops short-lived bitmap frames.
+        self._slice_unlocked = dma_slicing == "on"
         # Whether the last WriteC64Spans asked for was refused because the bus
         # is held, and when to ask again. Written only under _spans_lock, which
         # is held from the back-off check through the ask to its recorded
@@ -209,6 +212,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
             if self._spans is not None and dma_slicing in ("auto", "locked"):
                 self._lock_capable = self._probe_lock(dma_slicing)
+                if not self._lock_capable:
+                    self._spans = None
             if self._spans is not None:
                 log.info("TR writes: %s", self.describe_writes())
 
@@ -239,7 +244,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             with self._spans_lock:
                 self._note_spans_refused("WriteC64Spans probe: bus held")
         if probe is not SpansProbe.ABSENT:
-            if slice_bytes != 0 and (slice_bytes, gap_us) != _SLICED_TEMPO_SHAPE:
+            if mode == "on" and slice_bytes != 0 and (slice_bytes, gap_us) != _SLICED_TEMPO_SHAPE:
                 log.info(
                     "TR slice shape %d bytes / %d us was not measured for bitmap + DAC "
                     "tempo; an unset [audio].dac_bitmap_tempo_* starts from the "
@@ -265,7 +270,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         if not capable and mode == "locked":
             log.warning(
                 "[teensyrom].dma_slicing = 'locked' but this firmware cannot start a "
-                "slice on a sample store — slicing without the lock"
+                "slice on a sample store — writing with WriteC64Mem"
             )
         return capable
 
@@ -298,7 +303,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         # figure rather than a guess between the two.
         if self._lock_capable and not self._lock_lost and not self._spans_held:
             return _LOCKED_TEMPO
-        if self._spans == _SLICED_TEMPO_SHAPE and not self._spans_held:
+        if self._slice_unlocked and self._spans == _SLICED_TEMPO_SHAPE and not self._spans_held:
             return _SLICED_TEMPO
         return super().dac_bitmap_tempo(multicolor)
 
@@ -347,7 +352,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 # A cartridge handler took the bus snoop after the watch began.
                 self._lock = None
                 self._lock_lost = True
-                log.info("TR refused a locked write (%s); slicing without the lock", e)
+                log.info("TR refused a locked write (%s); writing with WriteC64Mem", e)
                 return False
             if self._clear_spans_refusal():
                 log.info("TR WriteC64Spans accepted again; slicing resumed")
@@ -367,10 +372,10 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         except TRNak as e:
             # The board's one bus snoop belongs to something else (a
             # cartridge handler), so no store can be seen.
-            log.info("TR cannot watch the sample store (%s); slicing without the lock", e)
+            log.info("TR cannot watch the sample store (%s); writing with WriteC64Mem", e)
             lock = None
         except (OSError, TRError) as e:
-            log.debug("TR SampleWatch failed (%s); slicing without the lock", e)
+            log.debug("TR SampleWatch failed (%s); writing with WriteC64Mem", e)
             lock = None
         if active:
             self._lock_lost = lock is None
@@ -407,6 +412,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             spans = slice_bytes, wait_us
             one_halt = 0
         else:
+            if not self._slice_unlocked:
+                spans = None
             # A write no longer than one halt (one slice, or one command at
             # slice 0) halts as long on WriteC64Mem, which spares two round trips.
             one_halt = (spans[0] or SPANS_SEGMENT_BYTES) if spans is not None else 0

@@ -101,7 +101,7 @@ After `PREBUFFER_CHUNKS * chunk_size` bytes of prebuffer it starts the CIA #2 ti
 
 #### The ring write is split and spread
 
-Step 3 is not one write. A host `DMAWRITE` halts the 6510 for the whole transfer, and CIA #2 is **edge-triggered** through the NMI line: when one halt spans two Timer A underflows the ICR latches once and the second sample is never fetched at all. So the payload size of a ring write is not a throughput question, it is how many NMIs that write destroys.
+Step 3 is not one write. A host `DMAWRITE` halts the 6510 for the whole transfer, and CIA #2 is **edge-triggered** through the NMI line: when one halt spans two Timer A underflows the ICR latches once and the second sample is never fetched at all. So the payload size of a ring write is not a throughput question, it is how many NMIs that write destroys. A TeensyROM+ whose firmware can lock its slices to the player's sample store loses none at any size ([sliced writes](hardware-io.md#teensyrom_apipy--the-teensyrom-backend)); everything below is about links that halt wherever the write lands.
 
 The halt costs **≈1 cycle per byte**. That is HW-measured, not modeled — `scripts/diags/audio_fm_probe.py` fills the ring with a tone that tiles it exactly, arms the NMI, and then issues background writes of a controlled size while capturing off HDMI, so nothing can underrun and contaminate the reading. It measured 1.02 µs/byte on the U64 and 0.97 on a TeensyROM+, holding within a few percent from 32 to 1024 bytes.
 
