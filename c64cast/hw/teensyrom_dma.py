@@ -871,9 +871,9 @@ class TRClient:
 
     def probe_spans(self) -> SpansProbe:
         """Does the connected firmware carry WriteC64Spans, and is the bus free
-        for it? Sends the token, then a header announcing zero spans, which the firmware refuses before
-        anything is owed — so the probe writes no C64 memory and leaves no
-        discard window behind.
+        for it? Sends the token, then a header announcing zero spans, which the
+        firmware refuses before anything is owed — so the probe writes no C64
+        memory and leaves no discard window behind.
 
         The header goes out whatever the token's reply was. Boot chatter after
         a reset can arrive where the reply should be, and the firmware may
