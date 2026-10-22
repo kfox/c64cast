@@ -749,13 +749,29 @@ def add_tr_slicing_args(ap) -> None:
             raise argparse.ArgumentTypeError(f"{value} is not 0-{SPANS_FIELD_MAX}")
         return value
 
-    ap.add_argument("--tr-slicing", choices=["auto", "on", "off"], default=None)
+    ap.add_argument("--tr-slicing", choices=["auto", "locked", "on", "off"], default=None)
     ap.add_argument(
         "--slice-bytes", type=header_byte, default=None, help="[teensyrom].dma_slice_bytes"
     )
     ap.add_argument(
         "--slice-gap", type=header_byte, default=None, help="[teensyrom].dma_slice_gap_us"
     )
+
+
+def tr_sample_watch(be, store_addr: int | None):
+    """The firmware's sample-store counters since the previous call, restarting
+    them on `store_addr` (None stops the watch); None on a backend or firmware
+    without SampleWatch."""
+    from c64cast.hw.teensyrom_dma import TRError
+
+    tr = getattr(be, "tr", None)
+    if tr is None or not hasattr(tr, "sample_watch"):
+        return None
+    try:
+        return tr.sample_watch(store_addr)
+    except (TRError, OSError) as e:
+        print(f"[sample-watch] unavailable: {type(e).__name__}: {e}")
+        return None
 
 
 def apply_tr_slicing(cfg, args) -> None:
