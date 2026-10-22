@@ -103,6 +103,76 @@ UV_PROJECT_ENVIRONMENT=<worktree>/.venv`) while git needs it as a prefix
 trailing `VAR=value` as a pathspec. A write driven through Bash (`sed -i`, a
 redirection) reaches neither hook, so there it rests on this rule alone.
 
+**Reviews** run through the agents in [.claude/agents/](.claude/agents/):
+`reviewer` for every change, and the four lanes `/panel-review`
+([.claude/skills/panel-review/](.claude/skills/panel-review/SKILL.md)) launches
+when a panel is chosen instead. The `ship` skill's step 3 says which review a
+change gets. A reviewer runs `make check` with the worktree's override as above,
+and runs `make mutation-ready` before any mutation proof.
+
+**Pinned paths.** A change touching any of these is reviewed at `high`,
+whatever its size, because a one-line change there does the most damage. This
+list does not replace the security notes elsewhere in this file, which may name
+a site the list has not caught up to yet:
+
+- `c64cast/hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py`,
+  `hw/backend.py`: the DMA write path to the hardware, including the shared
+  `write_memory*`/`write_regs`/`write_region` implementation that every backend
+  sits on top of.
+- `tests/_fs_sandbox.py`: the suite's filesystem sandbox, which is never
+  widened to make a test pass.
+- `c64cast/app/connect.py`, `app/config_serialize.py`,
+  `app/recording_metadata.py`, `app/cli.py`:
+  - connection-target parsing;
+  - the rule that the DMA password never rides in a URL or CLI flag;
+  - the redaction list that `--save-settings` and the scene-log snapshot both
+    depend on;
+  - the env/config precedence that decides which value wins.
+- `c64cast/control/auth.py`, `control/web_api.py`, `app/serve.py`:
+  - the `[web]`/`[control]` token gate itself (`auth.py`: token comparison,
+    viewer/full-role checks);
+  - the routes that depend on it;
+  - where the token is minted and its precedence resolved (`serve.py`:
+    `resolve_tokens`, `_generated_token`, `build_daemon_app`).
+
+  This token is the same class of secret as the DMA password, and it gates the
+  same kind of remote control of the host.
+
+**Hardware during a review or a ship run.** The suite fakes every backend, so
+prove a finding there first. When the caller's prompt says hardware use is
+authorized for this run, an agent can use the rig without asking again to
+settle what the fakes cannot: a register restore, a teardown, what the VIC
+draws, a timing claim. The prompt names the target and whether a capture
+device is attached. The rules:
+
+- **Take the lock.** Run every command that touches the machine, the capture
+  device or the audio input under `scripts/diags/hw_lock.py`, as the outermost
+  command. Keep each locked command short.
+- **Use the committed tools.** `scripts/diags/u64_probe.py`, `hdmi_capture.py`
+  and `run_and_capture.py` cover most needs, and the
+  [`hw-visual-verify`](.claude/skills/hw-visual-verify/SKILL.md) skill covers
+  captures. Improve those tools rather than writing throwaway scripts.
+- **Keep the target out of the repo.** It comes from the prompt. Never write a
+  host, IP address or device name into a committed file.
+- **Run the way users do.** Audio is on by default, and so is the rig run:
+  don't pass `--no-audio`. Several defects only appear when audio shares the
+  DMA link with render. Whoever is near the speakers mutes them at their end.
+- **Prefer a run that ends on its own** over a background run you have to stop.
+  `run_and_capture.py` resets the machine on exit. Never kill a run mid-DMA:
+  that can wedge the U64 until it is power-cycled. Stop a run in the same step
+  as the observation it was for.
+- **No REST polling during a stream.** Don't poll the U64's REST API in a loop
+  while c64cast is streaming to it.
+- **Leave the machine silent and reset.** A clean c64cast exit already resets
+  it. After anything else, run `scripts/diags/u64_probe.py --reset-only --url
+  http://HOST` and check that it printed an HTTP status, not `FAILED`.
+- **Hand back what needs a person.** A check that needs someone's own eyes or
+  ears, such as judging audio or a monitor with no capture, goes back to the
+  caller as an open question.
+
+Without that authorization, a claim only hardware can settle goes back to the
+caller as an open question.
+
 ## Spelling
 
 **Everything in this repository is written in American English — prose, code,

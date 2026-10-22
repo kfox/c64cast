@@ -3232,6 +3232,41 @@ class ScanVideoSamplesTest(unittest.TestCase):
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class UnsetTimeBaseTest(unittest.TestCase):
+    def setUp(self):
+        from av.rational import AVRational
+
+        self.unset = AVRational(0, 1)
+
+    def test_timestamp_needs_both_halves(self):
+        self.assertEqual(video_mod.timestamp_s(90, Fraction(1, 30)), 3.0)
+        self.assertIsNone(video_mod.timestamp_s(90, self.unset))
+        self.assertIsNone(video_mod.timestamp_s(90, None))
+        self.assertIsNone(video_mod.timestamp_s(None, Fraction(1, 30)))
+
+    def test_source_duration_falls_back_to_the_container(self):
+        v_stream = SimpleNamespace(duration=900, time_base=self.unset)
+        container = SimpleNamespace(duration=2_000_000)
+        self.assertEqual(video_mod._source_duration_s(container, v_stream), 2.0)
+
+    def test_seek_sampling_declines_without_dividing(self):
+        v_stream = SimpleNamespace(time_base=self.unset, start_time=0)
+        container = mock.Mock()
+        taken = video_mod._seek_sample_frames(container, "x.mp4", v_stream, [], 4, 2.0, None)
+        self.assertEqual(taken, 0)
+        container.seek.assert_not_called()
+
+    def test_a_picture_without_a_time_base_is_not_held_for_the_target(self):
+        src = _make_demux_source_stub([], anchor=5.0)
+        src.video_time_base = float(self.unset or 0)
+        src._enqueue_decoded = mock.Mock(return_value=True)
+        self.assertTrue(src._admit_frame(_FakeFrame(90)))
+        src._enqueue_decoded.assert_called_once()
+        self.assertIsNone(src._pre_target)
+        self.assertIsNone(src._pts_offset)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
 class DurationSTest(unittest.TestCase):
     """`AVFileSource.duration_s` (MIDI live-tune Phase 2 — absolute-jog
     mapping and seek/loop clamping) reads the container's real duration at

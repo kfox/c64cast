@@ -51,6 +51,7 @@ assets/*/*
 # `.claude/*`, not `.claude/`: a re-include cannot resurrect a file whose parent directory is excluded.
 .claude/*
 !.claude/skills/
+!.claude/agents/
 !.claude/settings.json
 !.claude/hooks/
 

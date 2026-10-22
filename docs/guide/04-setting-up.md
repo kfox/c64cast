@@ -214,7 +214,7 @@ uv tool install 'c64cast[video,midi,web]'
 > [!NOTE]
 > Everything in this guide is written for `uv`. If you would rather not install
 > it, [pipx](https://pipx.pypa.io/) is an equivalent fallback for anyone who
-> already has Python 3.11 or newer — `pipx install 'c64cast[all]'` to install
+> already has Python 3.12 or newer — `pipx install 'c64cast[all]'` to install
 > and `pipx upgrade c64cast` to update. Every other command in this guide is
 > the same either way, because both put the same `c64cast` on your `PATH`.
 

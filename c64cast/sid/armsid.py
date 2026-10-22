@@ -35,7 +35,7 @@ import time
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, TypeVar
+from typing import TYPE_CHECKING, Final
 
 from c64cast.hw.c64 import SID
 
@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
 
 # `SID Detected Socket N` values that name this chip family.
 DETECTED_TYPES: Final = frozenset({"ARMSID", "ARM2SID"})
@@ -270,7 +269,7 @@ def _right_channel_split(split: str | None) -> tuple[int, str]:
     return RIGHT_OFFSET, EXT_SPLIT_RIGHT
 
 
-def _with_split(api: C64Backend, current: str, wanted: str, action: Callable[[], _T]) -> _T:
+def _with_split[T](api: C64Backend, current: str, wanted: str, action: Callable[[], T]) -> T:
     """Run `action` with the Ext DualSID split at `wanted`, putting `current`
     back afterward when it differed. A caller that could not read the split
     has nothing to put back, so it does not come here."""

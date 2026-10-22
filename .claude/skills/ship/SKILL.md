@@ -2,11 +2,12 @@
 name: ship
 description: >
   Take a change in this repository all the way to a pull request that is ready
-  to merge: branch, implement, commit, review each changeset as it lands, run a
-  branch-wide review, open the PR as a draft, watch CI and GHAS
-  until green, then mark it ready for review. Stops before merging — the merge is always the user's. Use when asked
-  to implement a non-trivial change, or when asked to take a change through
-  the full branch-review-PR workflow ("ship", "land", "take this to a PR").
+  to merge: branch, implement, commit, review each change once at an effort set
+  by its size and risk, open the PR as a draft, watch CI and GHAS until green,
+  then mark it ready for review. Stops before merging — the merge is always the
+  user's. Use when asked to implement a non-trivial change, or when asked to
+  take a change through the full branch-review-PR workflow ("ship", "land",
+  "take this to a PR").
 ---
 
 # Ship a change
@@ -15,7 +16,7 @@ The standard workflow for non-trivial work in this repository. Every stage is
 mandatory unless the user says otherwise, and the last one is a hard stop.
 
 ```
-branch → (implement → commit → review that changeset)* → branch-wide review
+branch → (implement → commit → review that change)* → final pass (if needed)
        → draft PR → CI/GHAS green → ready for review → STOP
 ```
 
@@ -84,6 +85,14 @@ they are enforced by tests that fail late:
   deletes it, and a `uv sync` that moves the Python minor invalidates it.
   `make mutation-check` verifies the state — run it before believing a proof
   whose arming happened earlier in the session or in another directory.
+- **Grep for every other site before committing.** The finding reviews raise
+  most often is a fix that covered the cited site and missed its sibling. Search
+  for the pattern, predicate or idiom you changed, and fix the other sites in
+  the same commit.
+- **Check a claim before writing it.** A docstring, comment or doc sentence
+  that names code is checked against the code first. A sentence whose job is
+  reassurance or exhaustiveness ("no other caller", "the only site") is not
+  written at all unless a search you ran backs it.
 - **The suite cannot touch files outside the checkout**, and an audit hook
   enforces it. When a test trips the sandbox, point the code under test at a
   temp fixture — never widen the sandbox.
@@ -93,11 +102,12 @@ they are enforced by tests that fail late:
   `changelog.d/README.md`) for anything a user would notice. Never edit
   `CHANGELOG.md` for it.
 
-## 3. Commit
+## 3. Commit, then review the change
 
 Commit related changes together, with a message that explains *why*. Separate
-commits for separable concerns — a reviewer reading the branch should be able to
-follow the reasoning, not just the edits.
+commits for separable concerns. Write the message carefully once: it is not
+review surface, and it is not reworded after review unless it misstates what
+the code does — and never after the push.
 
 Run the gate before committing:
 
@@ -108,187 +118,81 @@ make schema       # only if you touched config metadata; CI fails on drift
 make site-check   # only if you touched docs/
 ```
 
-**Then review the commit you just made, scoped to that commit alone.** Spawn a
-subagent with the Agent tool and have it run:
+**Review each change once, at the effort its size and risk call for.** A
+*change* is one logical concern: usually one commit, sometimes a short run of
+commits that only make sense together, reviewed as one `BASE..TIP` range.
 
-    Skill(skill="code-review", args="medium <sha> --fix")
+| Change | Review |
+|---|---|
+| Prose-only: `git diff <base> <tip> -- ':!*.md'` is empty | none |
+| Trivial: ≤10 changed code lines, mechanical (rename, typo, a line the user dictated, a dependency bump), no pinned path | none — the gate covers it, and the final pass sees it if one runs |
+| ≤50 changed code lines, a merge or conflict resolution, or a reviewer's fix commit | `low` |
+| Anything else | `medium` |
+| Touches a pinned path ([CLAUDE.md](../../../CLAUDE.md) → Workflow) | `high` |
+| Eligible for a panel by the thresholds in `/panel-review`'s "When a panel is an option" (50+ changed code lines plus a trust boundary, contract, concurrency or pinned-path behavior change; or an unsplittable 400+) | optionally `/panel-review <sha>` *instead of* the reviewer at `high`, never in addition |
 
-`medium` is the default. Drop to `low` for a small, contained commit, and raise
-to `high` for a significant one — a large diff, or any diff touching a pinned
-path from step 4. The effort level goes **first** in `args`, or it is parsed as
-part of the target and the run silently reuses whatever level ran last. Tell it to review that
-commit's own diff, not `<sha>...HEAD` and not the branch. Set the Agent
-`description` to the short SHA alone (`a1b2c3d`) — the agent list truncates it.
+Run it with the project's `reviewer` agent, which works directly in the
+worktree you give it:
 
-**Confirm the review read your tree.** The fork can resolve its working
-directory against the session's primary checkout rather than yours, and a fork
-that does reviews a different branch and reports it as this one — the findings
-read as ordinary findings about real code. `git branch -a --contains <fix-sha>`
-is the check that settles it: a fix commit can only land in the tree the
-reviewer wrote to, so a branch other than yours means the pass did not happen
-and does not count. Paths in the report are not the check — a fork that read
-the right tree still renders the odd finding's path in primary-checkout form.
-A report with no findings leaves no fix commit to check, so confirm its stated
-file list against `git show --stat <sha>` instead.
+    Agent(subagent_type="reviewer", description="<short-sha>",
+          prompt="Worktree: <absolute worktree path>\nTarget: <sha or BASE..TIP>\nEffort: <level>")
 
-Its prompt owes the three payloads step 4 lists — the gate summary, where this
-repo states its rules, and the pinned paths — for the reason step 4 gives: it
-cannot check a claim it was never shown. This is the net that reaches a one-line
-change to a pinned path first, so it is the one that must not give it the cheap
-pass.
+Do not wrap `/code-review` in a general-purpose agent: the wrapper repeats the
+setup and the gate, and costs most of what the review it runs does. The
+`/code-review` fork also resolves the session's primary checkout rather than
+your worktree, so from a worktree it can review a different branch and report
+it as yours. The agent's definition carries the scope rules and the report
+format, and it reads the gates and the pinned paths from CLAUDE.md. So its
+prompt needs only those three lines, plus any machine-local rule from
+`CLAUDE.local.md`. Add context only when the change needs it.
 
-**The reviewer fixes what it finds and commits the fixes itself.** `--fix` is
-what reaches the tree — without it the run reports and leaves the tree
-untouched. Committing is not part of `--fix`, so the prompt still has to ask for
-that. A finding handed back as prose gets re-implemented from a description, and
-that re-implementation is new code, which earns its own review; the hand-back is
-the loop that spends an afternoon on a small change. Two classes stay with you:
-a defect in the commit message, because rewriting a message changes the SHA, and
-any editorial call about prose, which needs the whole-branch view a single-commit
-reviewer does not have.
+When the user has authorized hardware for this work, add a fourth line, for
+example `Hardware: authorized; target <url>; capture: yes`. The reviewer then
+settles hardware claims itself, under CLAUDE.md's "Hardware during a review or
+a ship run", rather than handing them back. Pass the target in the prompt and
+never commit it.
 
-**Do not open a round over a commit message.** Reword one before the push only
-when it misstates what the code does. A claim that is merely imprecise about
-something the change does not turn on is left alone, and after the push a
-message is history and is not reworded at all: the reword moves that SHA and
-every SHA stacked on it, and the round costs more than the sentence was worth.
+**A small branch gets one review.** When the whole branch is one change under
+about 300 changed code lines, review it once as `origin/main..HEAD` when it is
+done. That review is the final pass too, and step 4 is skipped.
 
-**The reviewer works in this checkout**, so do not commit or edit anything here
-while it runs — it verifies findings by mutating the tree and running the suite,
-and a concurrent commit fails its pre-commit hook on a mutation you never made.
-Give it `isolation: "worktree"` if you need to keep working; its prompt then
-also owes step 1's `uv sync` and the prefix/argument split, and must require
-the worktree's path and every fix commit's SHA in its report. Its fixes come
-back by cherry-pick, and a commit you cannot name is one you cannot pick.
+**The reviewer's fix commit gets one `low` review, and that ends the chain.**
+That second reviewer fixes what it finds, and its fixes are not reviewed again;
+anything that needs more depth goes to step 4 or to the user. Reviews deeper
+than two links in a chain found less than one finding per pass.
 
-**Prose is not review surface, and its prompt has to say so.** The commit
-message, the comments and the docstrings are not reviewed for style, precision
-or thinness, and a finding about one does not get reported. The exception is
-prose that **misstates what the code does**, because whoever edits that line
-acts on it. Every other finding names an actor, an action and a wrong result, or
-it is out of scope — "a reader could be misled" is not one of those. This is a
-scope rule, not a severity rule: a "low" prose finding still costs a full round
-to read, decide and write up, and the fix for one is more prose carrying fresh
-claims, so the loop has no fixed point. The `commit-message-shape` and
-`lint-comments` hooks from step 3's gate decide the mechanical part before the
-commit exists, which is the part worth deciding at all.
+**Do not commit or edit in the worktree while a reviewer runs**, and run one
+reviewer per worktree at a time. It verifies findings by mutating the tree and
+running the suite, so a concurrent commit fails its pre-commit hook on a
+mutation you never made.
 
-**Prove coverage by execution**, by step 2's mutation recipe: a coverage claim
-this commit makes is checked by naming a victim, not by reading the test. A
-bounds claim — "no other caller", "the only site" — is a search you ran and its
-result, or it is cut.
+When it reports, confirm its fix commit is on your branch
+(`git -C <worktree> branch --contains <fix-sha>`), run `make check`, and route
+what it handed back:
 
-**Write the review down, in the reviewer's report.** It says what it looked at,
-what it found, and what it did about each finding — fixed, declined with the
-reason, or deferred to a labeled GitHub issue. That report is what reaches the
-user in step 7, and a decline that was only said out loud is re-litigated by the
-next reader. A fix commit's message describes its fix, the way any commit message
-does; it is not a review log.
+- **Advisory** — fix it here as its own commit, reviewed by the table above, or
+  open a labeled GitHub issue when it is genuinely separate work.
+- **Outside this change** — collect these for the step 7 report. Do not open
+  issues for them; the user decides which are worth tracking.
+- **A commit-message finding** — the reviewer is told not to raise one; if one
+  arrives anyway, drop it.
 
-Run `make check` over the reviewer's fixes — a fix that breaks the suite is not
-a fix — and review each of those commits the way this step does.
+## 4. Final pass
 
-Do not batch this to the end. The whole point is that the reviewer sees one
-changeset instead of a branch: a wide scope spends its attention before it
-reaches the small commit, and reads back as a clean pass.
+Run it only when the branch had **two or more** reviewed changes. It looks for
+what a single-change review cannot see — how the changes interact, a guarantee
+one made and a later one dropped — not for a second reading of each diff.
 
-## 4. Branch-wide review
+    Agent(subagent_type="reviewer", description="<branch-slug> final",
+          prompt="Worktree: <absolute worktree path>\nTarget: origin/main..HEAD\nEffort: medium\nEvery change on this branch has had its own review. Look for interactions between them, not for defects inside one diff.")
 
-The per-changeset reviews in step 3 are the first net and the one that catches
-most defects. This is the **second** net: it sees what no single-commit review
-can — how the commits interact, a guarantee one commit made and a later one
-quietly dropped, a design the branch drifted into. Run it once, after every
-commit has had its own review, never instead of them.
+`medium` is the level. Raise it to `high` only when a pinned path changed after
+its own review, and say why.
 
-Spawn **one subagent** with the Agent tool and have it review the whole branch:
-
-    Skill(skill="code-review", args="medium origin/main...HEAD")
-
-Medium is the default, because every commit has already had its own review by
-now. Raise it for an exceptional branch, or lower it when the need is reduced,
-and say which level ran and why when it was not medium.
-
-The effort level goes **first** in `args`, or it is parsed as part of the target
-and the run silently reuses whatever level ran last. Its Agent `description` is
-the branch name, cut to what identifies it (`audio-redial`) — the PR does not
-exist yet, so there is no number to use.
-
-Step 3's tree check applies unchanged here — it is the same fork, so confirm
-the pass landed in your tree with `git branch -a --contains <fix-sha>` on its
-fix commits before counting it.
-
-**Its prompt has to tell it to fix what it finds** — that call is a report-only
-run, and nothing reaches the tree unless the subagent applies it. This is the
-reviewer with the whole-branch view, so the editorial calls step 3 sends back
-are its to make. Only a commit-message rewrite stays with you, because it
-changes that commit's SHA and every SHA after it. Route what it hands back once
-it has reported, below.
-
-Do not commit, or edit anything in this checkout, while it runs, for the reason
-step 3 gives; `isolation: "worktree"` is the same escape hatch here, on the same
-terms.
-
-A clean pass here does not mean the branch is clean — it means nothing survived
-*both* nets. Read a wide pass that finds nothing as weak evidence.
-
-Its prompt also has to carry these, because it cannot work them out for
-itself:
-
-- **That prose is not review surface**, in the words step 3 uses. The wide pass
-  is where prose findings are cheapest to produce and least worth having, and
-  this is the reviewer whose findings land with the PR already in sight.
-- **The gate summary** from step 3, so it doesn't spend findings on things
-  `ruff`, `mypy`, `pyright`, and the suite already prove.
-- **Where this repo states its rules**, so it can check code against claim:
-  `CLAUDE.md`, `CONTRIBUTING.md`, `docs/architecture/`,
-  `c64cast/data/c64cast.schema.json`, `changelog.d/README.md`, and
-  `c64cast/examples/c64cast.example.toml`. It cannot check a claim it was never
-  shown.
-- **The pinned paths.** Diff size is a bad proxy for risk: a one-line change to
-  a boundary is exactly the diff that must not get the cheap pass. Name these
-  explicitly and tell it that any diff touching one gets full attention
-  regardless of size. This list names credential-handling and hardware-write
-  sites specifically because they are where a one-line change does the most
-  damage; it is not a substitute for reading CLAUDE.md's own security notes,
-  which may grow a site this list has not caught up to yet:
-  - `hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py`, `hw/backend.py` —
-    the DMA write path to the hardware, including the shared `write_memory*`/
-    `write_regs`/`write_region` implementation every backend sits on top of.
-  - `tests/_fs_sandbox.py` — the suite's filesystem sandbox, which is never
-    widened to make a test pass.
-  - `app/connect.py`, `app/config_serialize.py`, `app/recording_metadata.py`,
-    `app/cli.py` — connection-target parsing, the rule that the DMA password
-    never rides in a URL or CLI flag, the redaction list `--save-settings`
-    and the scene-log snapshot both depend on, and the env/config precedence
-    that decides which value wins.
-  - `control/auth.py`, `control/web_api.py`, `app/serve.py` — the
-    `[web]`/`[control]` token gate itself (`auth.py`: token comparison,
-    viewer/full-role checks), the routes that depend on it, and where the
-    token is actually minted and its precedence resolved (`serve.py`:
-    `resolve_tokens`, `_generated_token`, `build_daemon_app`). The same class
-    of secret as the DMA password, gating the same kind of remote control of
-    the host.
-
-Then, once it has reported:
-
-- Run `make check` over the fixes. A fix that breaks the suite is not a fix.
-- Commit the fixes it left in this checkout, or cherry-pick the ones it
-  committed in a worktree of its own, and review each of those commits the way
-  step 3 does, as you make it. Batching them to the end is the batching step 3
-  forbids, done at the point where the branch is closest to shipping.
-- **Write down what was declined and why**, where step 3 puts it: the report to
-  the user. A declined finding with a reason is a legitimate outcome; one that
-  was only said out loud is re-litigated by the next reader. Not a commit
-  message and not the PR body, which are for the change and not for the history
-  of reviewing it.
-- **Route everything it handed back before step 5.** Fix it on this branch when
-  a commit here introduced it or the fix fits the spirit of the change, as its
-  own commit under the rule above; otherwise open a labeled GitHub issue. A
-  finding that is only mentioned is one nothing tracks, and one fixed after
-  step 6 costs another commit, review and push with the PR already green.
-
-A defect still open when the subagent is done is a stop, not a pass. Report what
-remains and ask the user how to proceed before opening a PR.
+This reviewer has the whole-branch view, so editorial calls across the branch
+are its to make. Its fix commit gets one `low` review, by step 3's rule, and
+nothing after that. A defect still open when it is done is a stop, not a pass:
+report what remains and ask the user before opening a PR.
 
 ## 5. Open the PR
 
@@ -306,7 +210,7 @@ make preflight UV_PROJECT_ENVIRONMENT=<worktree>/.venv \
 The body should say what the change does, why, and anything a reviewer should
 look at closely — and nothing else. Not the findings the review declined, not
 which review passes ran, not what this branch left for later: the declines
-went to the user in the review reports, and whatever was left for later is a
+go to the user in the step 7 report, and whatever was left for later is a
 labeled issue by now, which the body links rather than recounts.
 
 ## 6. Watch until green
@@ -317,7 +221,7 @@ Watch the checks and fix what breaks:
 gh pr checks --watch
 ```
 
-CI runs the tests across Python 3.11–3.14 and three operating systems,
+CI runs the tests across Python 3.12–3.15 and three operating systems,
 `.pre-commit-config.yaml`'s hooks in the `pre-commit` job — bar `pyright`,
 `unittest` and `commit-message-shape`, which other gates own — the type checks
 once per target platform in the `types` job, the book and site renders and the
@@ -326,12 +230,12 @@ scanning runs too, and its findings are frequently regex-flavored false
 positives on this codebase — read each one before changing code to satisfy
 it, and say so if you think it is wrong rather than contorting the code
 around it. That leeway ends
-at the pinned paths from step 4: a GHAS finding on any of them, or on anything
+at the pinned paths listed in CLAUDE.md: a GHAS finding on any of them, or on anything
 touching `dma_password` or the `[web]`/`[control]` tokens, must be fixed or
 explicitly escalated to Kelly — never self-dismissed as a false positive.
 
-A CI failure that is a real defect gets its fix reviewed the way step 3 does, at
-the effort its size warrants, rather than quietly patched.
+A CI failure that is a real defect gets its fix reviewed by step 3's table,
+rather than quietly patched.
 
 Once every check is green and nothing is left to commit — no unrouted finding,
 no verification still to run — mark the PR ready:
@@ -348,9 +252,11 @@ after that, `gh pr ready --undo` puts it back to a draft until it is done.
 Report to the user:
 
 - The PR URL, its check status, and that it is marked ready for review.
-- What the review found, fixed, and declined — with reasons for the declines.
-- Anything a review handed back rather than applied, and where it was routed —
-  the commit that fixed it here, or the issue it became.
+- Each review that ran: its target, its effort, and what it fixed and declined
+  — with reasons for the declines.
+- Advisory findings and where each was routed — the commit that fixed it here,
+  or the issue it became.
+- The "Outside this change" findings, as one list, for the user to decide on.
 - Anything still open, stated plainly.
 
 Then stop. The merge is the user's, and they squash-merge from the GitHub UI.
