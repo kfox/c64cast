@@ -151,7 +151,7 @@ dev = [
     # python-rtmidi has no wheels past cp312 and builds from a C++/meson sdist
     # needing the ALSA dev headers.
     "mido>=1.3.3,<2",
-    "pillow==12.3.0",
+    "pillow==13.0.0",
     # A unittest.TestRunner subclass, not a second test framework: CI runs the
     # suite through it for the JUnit XML Codecov Test Analytics ingests.
     "unittest-xml-reporting==4.0.0",
