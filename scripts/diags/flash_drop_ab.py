@@ -81,20 +81,24 @@ file = "{video_path}"
     )
 
 
-def flash_runs(frames: list[np.ndarray]) -> list[int]:
-    """The length, in captured frames, of each run of bright frames. A run cut
-    by the capture's start or end is dropped, since its length is unknown."""
+def flash_runs(frames: list[np.ndarray]) -> tuple[list[int], int]:
+    """The length, in captured frames, of each run of bright frames, and how
+    many flashes began in the capture. A run cut by the capture's start or end
+    has no length, but one cut by the end still began in it."""
     lit = [float(f[f.shape[0] // 4 : 3 * f.shape[0] // 4].mean()) > 128 for f in frames]
     runs: list[int] = []
+    onsets = 0
     start = None
     for i, on in enumerate(lit):
         if on and start is None:
             start = i
+            if i > 0:
+                onsets += 1
         elif not on and start is not None:
             if start > 0:
                 runs.append(i - start)
             start = None
-    return runs
+    return runs, onsets
 
 
 def main() -> int:
@@ -142,11 +146,13 @@ def main() -> int:
             print(f"{mode:>10}  no frames captured")
             continue
         frame_ms = args.seconds * 1000 / len(frames)
-        runs = flash_runs(frames)
-        played = round(args.seconds / period_s)
+        runs, seen = flash_runs(frames)
+        # Whether the window holds the lower or the upper count of onsets
+        # depends on its phase, so the lower one never reports a phantom miss.
+        played = int(args.seconds / period_s)
         ms = [r * frame_ms for r in runs]
         print(
-            f"{mode:>10} {played:>7} {len(runs):>5} {max(0, played - len(runs)):>7} "
+            f"{mode:>10} {played:>7} {seen:>5} {max(0, played - seen):>7} "
             f"{min(ms, default=0):>7.0f} {float(np.median(ms)) if ms else 0:>10.0f}"
         )
     return 0
