@@ -139,6 +139,9 @@ _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
 # without it refuses any flag before checking the span count.
 SPANS_FLAG_LOCK_TO_STORE = 0x01
 _SPANS_FLAGS_REFUSAL = "Flags must be 0"
+# Its refusal of a locked header, and SampleWatch's, while another user (a
+# cartridge's handler) holds the board's one bus snoop.
+SNOOP_IN_USE = "Bus snoop in use"
 # Its refusals at the token, when another DMA user holds the bus.
 _SPANS_BUS_HELD = ("REU emulation is running", "C64 is paused")
 

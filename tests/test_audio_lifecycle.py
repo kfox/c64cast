@@ -4595,6 +4595,21 @@ class LifecycleTest(unittest.TestCase):
         self.assertAlmostEqual(store.period_s, period / cpu_clock(s.system))
         self.assertEqual(store.free_cycles, period - 28 - 19)
 
+    def test_a_retune_tells_the_backend_of_a_shorter_period_before_arming_it(self):
+        s = _make()
+        api = cast(Any, s.api)
+        s._upload_nmi_and_buffers()
+        with mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0):
+            s.nmi.start(adaptive=False)
+        old = s.nmi.latch
+        for latch in (old - 10, old):
+            s.nmi.write_latch(latch)
+        (faster, armed_then), (slower, armed_after) = api.nmi_period_notes
+        self.assertEqual(faster.period_cycles, old - 9)
+        self.assertEqual(armed_then, (old & 0xFF, old >> 8))
+        self.assertEqual(slower.period_cycles, old + 1)
+        self.assertEqual(armed_after, (old & 0xFF, old >> 8))
+
     def test_a_consumer_that_never_started_is_not_noted(self):
         # R frozen through every retry means no NMI is consuming, so the link
         # has nothing to spare and must keep its full-speed writes.

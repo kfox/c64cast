@@ -452,6 +452,11 @@ class C64Backend(ABC):
         right after it."""
         return None
 
+    def note_nmi_period(self, store: NmiSampleStore) -> None:
+        """The noted NMI sample player's timer was retuned, so it now stores as
+        `store` says."""
+        return None
+
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise BackendCapabilityError("read_memory")
 

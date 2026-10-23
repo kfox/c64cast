@@ -226,6 +226,7 @@ class FakeAPI:
         self.cache_invalidations = 0
         self.nmi_consumer_notes: list[bool] = []
         self.nmi_consumer_stores: list[NmiSampleStore | None] = []
+        self.nmi_period_notes: list[tuple[NmiSampleStore, object]] = []
         self.region_invalidations: list[int] = []
         self.sid_played: tuple[bytes, int] | None = None
         self.cue_song_reinits: list[int] = []
@@ -331,6 +332,9 @@ class FakeAPI:
     def note_nmi_consumer(self, active, store=None):
         self.nmi_consumer_notes.append(active)
         self.nmi_consumer_stores.append(store)
+
+    def note_nmi_period(self, store):
+        self.nmi_period_notes.append((store, self.regs.get("DD04")))
 
     def invalidate_region(self, region_id):
         self.region_invalidations.append(region_id)

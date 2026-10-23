@@ -206,9 +206,18 @@ class NmiTimer:
     def write_latch(self, latch: int) -> None:
         """Record + write a new CIA #2 Timer A latch — the one live retune
         primitive both the adaptive loop and the static retune use."""
+        # A DMA halt sized for the slower of the two periods would outlast the
+        # faster one, so the backend hears of a shorter period before it is
+        # armed and of a longer one only after.
+        api = self._st.api
+        shorter = latch < self.latch
+        if shorter:
+            api.note_nmi_period(nmi_sample_store(latch, self._st.system))
         self.latch = latch
         self._note_armed(latch)
-        self._st.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+        api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+        if not shorter:
+            api.note_nmi_period(nmi_sample_store(latch, self._st.system))
 
     def _note_armed(self, latch: int) -> None:
         self.fastest_latch = latch if self.fastest_latch <= 0 else min(self.fastest_latch, latch)

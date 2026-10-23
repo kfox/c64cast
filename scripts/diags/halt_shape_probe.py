@@ -198,7 +198,7 @@ def measure(
     }
 
 
-def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) -> int:
+def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int, store) -> int:
     """Occupy the bus with paced writes and do nothing else.
 
     The load generator for the cross-link experiment: the *other* backend plays
@@ -213,7 +213,7 @@ def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) ->
     """
     # The consumer is the other link's, but it is real, and a TeensyROM backend
     # slices only while one is noted — without this, --tr-slicing is ignored.
-    be.note_nmi_consumer(True)
+    be.note_nmi_consumer(True, store)
     data = bytes([0x5A]) * payload
     tag = f"{addr:04X}"
     period = 1.0 / write_rate
@@ -241,6 +241,7 @@ def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) ->
         f"  {writes} writes in {el:.1f}s = {writes / el:.1f}/s, "
         f"{writes * payload / el / 1024:.1f} KiB/s, {failed} failed"
     )
+    be.note_nmi_consumer(False)
     be.close()
     return 0
 
@@ -310,6 +311,7 @@ def main() -> int:
             payload=args.hold_payload,
             write_rate=args.write_rate,
             addr=args.addr,
+            store=store,
         )
 
     result: dict = {

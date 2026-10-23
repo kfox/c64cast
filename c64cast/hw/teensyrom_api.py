@@ -51,6 +51,7 @@ from .c64 import SCREEN, VECTORS
 from .teensyrom_dma import (
     DRIVE_SD,
     DRIVE_USB,
+    SNOOP_IN_USE,
     SPANS_FIELD_MAX,
     SPANS_SEGMENT_BYTES,
     SpansProbe,
@@ -347,7 +348,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 self._note_spans_refused(e)
                 return False
             except TRNak as e:
-                if lock_store is None:
+                if lock_store is None or SNOOP_IN_USE not in str(e):
                     raise
                 # A cartridge handler took the bus snoop after the watch began.
                 self._lock = None
@@ -380,6 +381,11 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         if active:
             self._lock_lost = lock is None
         self._lock = lock
+
+    def note_nmi_period(self, store: NmiSampleStore) -> None:
+        if self._lock is not None:
+            self._lock = self._lock_for(store)
+            self._lock_lost = self._lock is None
 
     @staticmethod
     def _lock_for(store: NmiSampleStore | None) -> tuple[int, int, int] | None:

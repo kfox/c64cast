@@ -886,7 +886,7 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
     def test_auto_on_firmware_without_the_command_stays_unsliced(self):
-        b, t = self._backend(supported=False)
+        b, t = self._backend("auto", supported=False)
         b.note_nmi_consumer(True)
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
@@ -1011,10 +1011,11 @@ class LockedSlicingBackendTest(unittest.TestCase):
         self.assertNotIn(_WATCH_TOK, bytes(t.sent))
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
-    def test_a_period_too_short_to_fit_a_slice_slices_unlocked(self):
+    def test_a_period_too_short_to_fit_a_slice_writes_unsliced(self):
         b, t = self._backend(lock=True)
         b.note_nmi_consumer(True, replace(_STORE, free_cycles=12))
         self.assertNotIn(_WATCH_TOK, bytes(t.sent))
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
     def test_a_held_bus_snoop_writes_unsliced(self):
         b, t = self._backend(lock=True)
@@ -1049,6 +1050,32 @@ class LockedSlicingBackendTest(unittest.TestCase):
         self.assertTrue(sent.endswith(_MEM_TOK + bytes([0x40, 0x00, 0x00, 0x40]) + bytes(64)))
         self.assertEqual(b.stats["errors"], 0)
         t.sent.clear()
+        self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
+
+    def test_a_locked_write_failing_for_another_reason_keeps_the_lock(self):
+        b, t = self._locked()
+        t.queue_token(TOK_ACK)
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"No memory to stage the payload")
+        b.write_memory_file("4000", bytes(64))
+        self.assertEqual(b.stats["errors"], 1)
+        self.assertNotIn(_MEM_TOK, bytes(t.sent))
+        self.assertEqual(b.dac_bitmap_tempo(True), 1.0)
+        t.sent.clear()
+        self.assertTrue(self._write(b, t, "4000", 256, 3).startswith(_LOCKED_HEADER))
+
+    def test_a_retuned_period_resizes_the_locked_slices(self):
+        b, t = self._locked()
+        b.note_nmi_period(replace(_STORE, period_cycles=75, period_s=75 / 1022727, free_cycles=28))
+        sent = self._write(b, t, "4000", 256, 3)
+        self.assertTrue(
+            sent.startswith(_SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 23, 147]))
+        )
+
+    def test_a_retuned_period_with_no_lock_stays_unsliced(self):
+        b, t = self._backend(lock=True)
+        b.note_nmi_period(_STORE)
+        b.note_nmi_consumer(True)
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
 
