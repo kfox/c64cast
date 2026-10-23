@@ -446,9 +446,11 @@ def register_web_routes(
         stopped answering — a machine off the internet for a month is one
         the banner has something else to tell — and `stale_after_days` with
         it, so how long "a month" is stays one number here rather than one
-        here and another in the bundle."""
+        here and another in the bundle. `needs_python` is judged here, against
+        the interpreter this host runs, because the browser cannot know it."""
         from c64cast import __version__
         from c64cast.app.update_state import STALE_AFTER_DAYS, read_update_state, rechecked
+        from c64cast.app.upgrade import needs_python, running_python
 
         check = rechecked(read_update_state(path=paths.update_check_path()), __version__)
         if check is None:
@@ -464,6 +466,8 @@ def register_web_routes(
             "latest_version": check.latest_version,
             "newer": check.newer,
             "unanswered_since": check.unanswered_since,
+            "needs_python": needs_python(check.requires_python),
+            "running_python": running_python(),
             "stale_after_days": STALE_AFTER_DAYS,
         }
 

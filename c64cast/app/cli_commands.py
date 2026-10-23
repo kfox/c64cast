@@ -675,31 +675,35 @@ def run_check_for_updates(*, write_state: bool = False) -> int:
     install = upgrade.detect_install()
     print(f"c64cast {__version__} ({install.root})")
 
-    remote = upgrade.latest_release()
-    newer = upgrade.is_newer(remote, __version__) if remote is not None else None
+    release = upgrade.latest_release()
+    newer = upgrade.is_newer(release.version, __version__) if release is not None else None
 
     if write_state:
         record_check(
             UpdateCheck(
                 checked_at=time.time(),
                 running_version=__version__,
-                latest_version=remote,
+                latest_version=release.version if release is not None else None,
                 newer=newer,
+                requires_python=release.requires_python if release is not None else None,
             )
         )
 
-    if remote is None:
+    if release is None:
         print("Could not reach PyPI to check for updates.", file=sys.stderr)
         return 4
     if newer is None:
-        print(f"PyPI reports {remote}, but it could not be compared to {__version__}.")
+        print(f"PyPI reports {release.version}, but it could not be compared to {__version__}.")
         return 4
     if not newer:
         print("c64cast is up to date.")
         return 0
 
-    print(f"A newer version is available: {remote}")
-    if install.kind == "uvx":
+    print(f"A newer version is available: {release.version}")
+    needs = release.needs_python()
+    if needs is not None:
+        print(upgrade.needs_newer_python_text(release.version, needs, install.kind))
+    elif install.kind == "uvx":
         print("The next `uvx` invocation already fetches it.")
     else:
         print("Upgrade with: c64cast --upgrade")

@@ -20,6 +20,7 @@ import c64cast
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
 from c64cast.app import doctor, paths, scene_factory
+from c64cast.app.upgrade import Release
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import max_safe_sample_rate
@@ -1265,7 +1266,7 @@ class UpdateProbeTest(unittest.TestCase):
     def test_warns_with_an_upgrade_hint_when_a_newer_release_exists(self):
         with (
             mock.patch.object(doctor, "_running_from_checkout", return_value=False),
-            mock.patch("c64cast.app.upgrade.latest_release", return_value="99.0.0"),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value=Release("99.0.0")),
             mock.patch("c64cast.app.upgrade.is_newer", return_value=True),
         ):
             diags = doctor._probe_updates()
@@ -1273,10 +1274,28 @@ class UpdateProbeTest(unittest.TestCase):
         self.assertIn("99.0.0", diags[0].message)
         self.assertEqual(diags[0].hint, "c64cast --upgrade")
 
+    def test_a_release_this_python_cannot_install_hints_a_reinstall_not_an_upgrade(self):
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch(
+                "c64cast.app.upgrade.latest_release",
+                return_value=Release("99.0.0", ">=99.1"),
+            ),
+            mock.patch("c64cast.app.upgrade.is_newer", return_value=True),
+            mock.patch(
+                "c64cast.app.upgrade.detect_install",
+                return_value=mock.Mock(kind="pipx"),
+            ),
+        ):
+            diags = doctor._probe_updates()
+        self.assertEqual(diags[0].level, "warn")
+        self.assertIn("needs Python >=99.1", diags[0].message)
+        self.assertEqual(diags[0].hint, "pipx reinstall --python python99.1 c64cast")
+
     def test_ok_when_already_current(self):
         with (
             mock.patch.object(doctor, "_running_from_checkout", return_value=False),
-            mock.patch("c64cast.app.upgrade.latest_release", return_value="0.3.0"),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value=Release("0.3.0")),
             mock.patch("c64cast.app.upgrade.is_newer", return_value=False),
         ):
             diags = doctor._probe_updates()
@@ -1286,7 +1305,7 @@ class UpdateProbeTest(unittest.TestCase):
     def test_ok_when_versions_could_not_be_compared(self):
         with (
             mock.patch.object(doctor, "_running_from_checkout", return_value=False),
-            mock.patch("c64cast.app.upgrade.latest_release", return_value="bogus"),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value=Release("bogus")),
             mock.patch("c64cast.app.upgrade.is_newer", return_value=None),
         ):
             diags = doctor._probe_updates()

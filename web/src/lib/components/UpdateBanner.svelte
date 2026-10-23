@@ -10,6 +10,7 @@
     isPending,
     isStale,
     isStaleDismissed,
+    neededPython,
     readDismissed,
     STALE_DISMISSED_KEY,
     writeDismissed,
@@ -35,6 +36,7 @@
   const showUpgrade = $derived(
     isPending(updateState) && !isDismissed(updateState, dismissedVersion),
   );
+  const needsPython = $derived(neededPython(updateState));
   const showStale = $derived(
     !isPending(updateState) &&
       isStale(updateState, openedAt) &&
@@ -61,7 +63,19 @@
       ? 'border-c64-yellow/50 bg-c64-yellow/10'
       : 'border-[var(--edge)] bg-[var(--panel-alt)] text-[var(--ink-dim)]'}"
   >
-    {#if showUpgrade}
+    {#if showUpgrade && needsPython}
+      <p>
+        c64cast <span class="font-mono">{updateState?.latest_version}</span> needs Python
+        <span class="font-mono">{needsPython}</span>, and this install runs on Python
+        <span class="font-mono">{updateState?.running_python}</span>.
+        <a
+          class="underline"
+          href="https://kfox.github.io/c64cast/guide/04-setting-up.html#when-a-release-needs-a-newer-python"
+          target="_blank"
+          rel="noopener noreferrer">Reinstall it on a newer Python</a
+        >.
+      </p>
+    {:else if showUpgrade}
       <p>
         A newer c64cast release is available:
         <span class="font-mono">{updateState?.latest_version}</span>

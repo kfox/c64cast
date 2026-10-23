@@ -20,6 +20,12 @@ export function isPending(state: UpdateState | null): boolean {
   return state?.checked === true && state.newer === true && !!state.latest_version;
 }
 
+/** The Python the pending release in `state` needs, when this host cannot
+ *  install it on the interpreter it runs, else null. */
+export function neededPython(state: UpdateState | null): string | null {
+  return isPending(state) ? (state?.needs_python ?? null) : null;
+}
+
 /** When this host last *learned* anything from PyPI, in epoch ms — the
  *  moment its silence began if it is currently silent, else the last attempt,
  *  which answered. `checked_at` alone cannot say: an appliance offline for a

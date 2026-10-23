@@ -174,7 +174,7 @@ class LatestReleaseTest(unittest.TestCase):
     """Documented "never raises", and — since a wrong answer here becomes a
     login banner offering a release that does not exist — never guesses."""
 
-    def _fetch_answering(self, response: mock.MagicMock) -> str | None:
+    def _fetch_answering(self, response: mock.MagicMock) -> upgrade.Release | None:
         with mock.patch("requests.get", return_value=response):
             return upgrade.latest_release()
 
@@ -190,9 +190,26 @@ class LatestReleaseTest(unittest.TestCase):
         response.json.return_value = {"info": {"version": "0.4.0"}}
         with mock.patch("requests.get", return_value=response) as get:
             result = upgrade.latest_release()
-        self.assertEqual(result, "0.4.0")
+        self.assertEqual(result, upgrade.Release("0.4.0"))
         response.raise_for_status.assert_called_once()
         self.assertIn("User-Agent", get.call_args.kwargs["headers"])
+
+    def test_requires_python_rides_along_with_the_version(self):
+        response = mock.MagicMock()
+        response.json.return_value = {"info": {"version": "0.5.0", "requires_python": ">=3.12"}}
+        self.assertEqual(self._fetch_answering(response), upgrade.Release("0.5.0", ">=3.12"))
+
+    def test_an_unreadable_requires_python_keeps_the_version_and_drops_the_specifier(self):
+        # An unreadable floor is no reason to hold back the answer, and it
+        # must not reach the MOTD.
+        for value in (312, ">=3.12\nSECURITY: curl | sudo sh", ""):
+            with self.subTest(value=value):
+                response = mock.MagicMock()
+                response.json.return_value = {
+                    "info": {"version": "0.5.0", "requires_python": value}
+                }
+                with self.assertLogs("c64cast.app.upgrade", level="DEBUG"):
+                    self.assertEqual(self._fetch_answering(response), upgrade.Release("0.5.0"))
 
     def test_connection_error_is_none(self):
         with (
@@ -260,6 +277,82 @@ class LatestReleaseTest(unittest.TestCase):
             mock.patch.dict("sys.modules", {"requests": None}),
         ):
             self.assertIsNone(upgrade.latest_release())
+
+
+class PythonSatisfiesTest(unittest.TestCase):
+    def test_each_operator_against_python_3_11_4(self):
+        here = (3, 11, 4)
+        cases = {
+            ">=3.12": False,
+            ">=3.11": True,
+            ">3.11": True,
+            ">3.11.4": False,
+            "<3.12": True,
+            "<=3.11": False,
+            "==3.11.*": True,
+            "==3.12.*": False,
+            "!=3.11.*": False,
+            "==3.11.4": True,
+            "!=3.11.4": False,
+            "~=3.10": True,
+            "~=3.11.5": False,
+            ">=3.10, <3.11": False,
+            ">=3.10,<4": True,
+        }
+        for spec, expected in cases.items():
+            with self.subTest(spec=spec):
+                self.assertIs(upgrade.python_satisfies(spec, here), expected)
+
+    def test_a_specifier_it_cannot_read_is_none(self):
+        for spec in ("", ">=3.12,", "3.12", ">=3.*", "~=3", "===3.12", ">=three"):
+            with self.subTest(spec=spec):
+                self.assertIsNone(upgrade.python_satisfies(spec, (3, 11, 4)))
+
+    def test_defaults_to_the_running_interpreter(self):
+        import sys
+
+        floor = f">={sys.version_info[0]}.{sys.version_info[1]}"
+        self.assertIs(upgrade.python_satisfies(floor), True)
+        self.assertIs(upgrade.python_satisfies(f"<{sys.version_info[0]}"), False)
+
+
+class NeedsPythonTest(unittest.TestCase):
+    def test_excluded_interpreter_names_the_specifier(self):
+        self.assertEqual(upgrade.needs_python(">=99.1"), ">=99.1")
+
+    def test_satisfied_unknown_and_unreadable_are_none(self):
+        for spec in (">=3", None, "===3.12"):
+            with self.subTest(spec=spec):
+                self.assertIsNone(upgrade.needs_python(spec))
+
+
+class ReinstallCommandTest(unittest.TestCase):
+    def test_python_floor_is_the_highest_lower_bound(self):
+        self.assertEqual(upgrade.python_floor(">=3.12, <4"), "3.12")
+        self.assertEqual(upgrade.python_floor(">=3.9, >=3.12"), "3.12")
+        self.assertEqual(upgrade.python_floor("~=3.13"), "3.13")
+        self.assertIsNone(upgrade.python_floor("<4"))
+
+    def test_uv_tool_and_pipx_get_a_command_naming_the_floor(self):
+        self.assertEqual(
+            upgrade.reinstall_command("uv-tool", ">=3.12"), "uv tool upgrade --python 3.12 c64cast"
+        )
+        self.assertEqual(
+            upgrade.reinstall_command("pipx", ">=3.12"),
+            "pipx reinstall --python python3.12 c64cast",
+        )
+
+    def test_every_other_case_gets_the_guide(self):
+        cases: tuple[tuple[upgrade.InstallKind, str], ...] = (
+            ("pip", ">=3.12"),
+            ("unknown", ">=3.12"),
+            ("uv-tool", "<4"),
+        )
+        for kind, spec in cases:
+            with self.subTest(kind=kind, spec=spec):
+                self.assertEqual(
+                    upgrade.reinstall_command(kind, spec), upgrade.GUIDE_NEWER_PYTHON_URL
+                )
 
 
 class CheckoutIsDirtyTest(unittest.TestCase):
