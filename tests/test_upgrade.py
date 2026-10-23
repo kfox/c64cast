@@ -296,6 +296,7 @@ class PythonSatisfiesTest(unittest.TestCase):
             "!=3.11.4": False,
             "~=3.10": True,
             "~=3.11.5": False,
+            "~=3.10.0": False,
             ">=3.10, <3.11": False,
             ">=3.10,<4": True,
         }
