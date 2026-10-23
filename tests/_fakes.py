@@ -25,7 +25,7 @@ from unittest import mock
 
 from c64cast._wire_log import LogThrottle
 from c64cast.hw import vdc
-from c64cast.hw.backend import HardwareProfile
+from c64cast.hw.backend import HardwareProfile, NmiSampleStore
 from c64cast.hw.c64 import actual_rate_for_latch, kernal_cia1_latch
 
 
@@ -225,6 +225,8 @@ class FakeAPI:
         self.ops: list[tuple] = []
         self.cache_invalidations = 0
         self.nmi_consumer_notes: list[bool] = []
+        self.nmi_consumer_stores: list[NmiSampleStore | None] = []
+        self.nmi_period_notes: list[tuple[NmiSampleStore, object]] = []
         self.region_invalidations: list[int] = []
         self.sid_played: tuple[bytes, int] | None = None
         self.cue_song_reinits: list[int] = []
@@ -327,8 +329,12 @@ class FakeAPI:
     def dac_bitmap_tempo(self, multicolor):
         return 0.88 if multicolor else 0.89
 
-    def note_nmi_consumer(self, active):
+    def note_nmi_consumer(self, active, store=None):
         self.nmi_consumer_notes.append(active)
+        self.nmi_consumer_stores.append(store)
+
+    def note_nmi_period(self, store):
+        self.nmi_period_notes.append((store, self.regs.get("DD04")))
 
     def invalidate_region(self, region_id):
         self.region_invalidations.append(region_id)

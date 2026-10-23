@@ -46,11 +46,13 @@ import contextlib
 import enum
 import logging
 import socket
+import struct
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ DEFAULT_BAUD = 2_000_000  # 2 Mbaud 8N1, per the firmware author
 # Protocol tokens (Common_Defs.h).
 TOK_WRITE_C64_MEM = 0x64FB
 TOK_WRITE_C64_SPANS = 0x64FC
+TOK_SAMPLE_WATCH = 0x64F9
 TOK_READ_C64_MEM = 0x64FD
 TOK_RESET_C64 = 0x64EE
 TOK_LAUNCH_FILE = 0x6444
@@ -131,8 +134,41 @@ _SPANS_HEADER_WAIT_S = (500 * 10 + SPANS_MAX * 4 // 2 + 1000) / 1000 + 0.3
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
+# WriteC64Spans header flag (C64Spans.h): start each slice on the cycle after
+# the C64 writes the store address the first span-list entry names. Firmware
+# without it refuses any flag before checking the span count.
+SPANS_FLAG_LOCK_TO_STORE = 0x01
+_SPANS_FLAGS_REFUSAL = "Flags must be 0"
+# Its refusal of a locked header, and SampleWatch's, while another user (a
+# cartridge's handler) holds the board's one bus snoop.
+SNOOP_IN_USE = "Bus snoop in use"
 # Its refusals at the token, when another DMA user holds the bus.
 _SPANS_BUS_HELD = ("REU emulation is running", "C64 is paused")
+
+
+@dataclass(frozen=True)
+class SampleWatchStats:
+    """What `TRClient.sample_watch` counted since the call before it: the
+    intervals between consecutive watched stores and the ARM cycles they
+    spanned, the longest one, and the locked WriteC64Spans slices that did and
+    did not find a store to start on."""
+
+    intervals: int
+    interval_cycles: int
+    longest_cycles: int
+    locked_slices: int
+    unlocked_slices: int
+    cpu_hz: int
+
+    def lost_ticks(self, period_s: float) -> float:
+        """Stores that should have happened in the time counted and did not,
+        for a store every `period_s` seconds."""
+        if not self.cpu_hz:
+            return 0.0
+        return self.interval_cycles / self.cpu_hz / period_s - self.intervals
+
+
+_SAMPLE_WATCH_REPLY = struct.Struct("<IQIIII")
 
 
 class SpansProbe(enum.Enum):
@@ -793,25 +829,37 @@ class TRClient:
             self._latencies.append(time.perf_counter() - t0)
 
     def write_spans(
-        self, spans: Sequence[tuple[int, bytes]], slice_bytes: int, gap_us: int
+        self,
+        spans: Sequence[tuple[int, bytes]],
+        slice_bytes: int,
+        gap_us: int,
+        *,
+        lock_store: int | None = None,
     ) -> None:
         """One WriteC64Spans command. Three replies gate it, and each is
         awaited before anything more is sent: the token's (firmware without
         the command answers with text, never an ack, and would parse a header
         sent blind as commands of its own), the span list's, and the landing.
 
-        `slice_bytes` 0 DMAs each span whole. Raises TRError on a refusal, a
-        failed slice, or a reply that never came, and OSError on a send or
-        read the transport could not finish; in every case the firmware is
-        back at its command dispatcher before the next command goes out (see
-        `_close_spans_token` and `_resync`), so that command is not read as
-        part of this one."""
-        if not 1 <= len(spans) <= SPANS_MAX:
-            raise ValueError(f"WriteC64Spans takes 1-{SPANS_MAX} spans, got {len(spans)}")
+        `slice_bytes` 0 DMAs each span whole. With `lock_store`, each slice
+        starts on the cycle after the C64 writes that address, and `gap_us` is
+        how long to wait for that write before starting the slice anyway; the
+        store's entry takes one of the 64 places in the span list. Raises
+        TRError on a refusal, a failed slice, or a reply that never came, and
+        OSError on a send or read the transport could not finish; in every
+        case the firmware is back at its command dispatcher before the next
+        command goes out (see `_close_spans_token` and `_resync`), so that
+        command is not read as part of this one."""
+        room = SPANS_MAX if lock_store is None else SPANS_MAX - 1
+        if not 1 <= len(spans) <= room:
+            raise ValueError(f"WriteC64Spans takes 1-{room} spans, got {len(spans)}")
         if not (0 <= slice_bytes <= SPANS_FIELD_MAX and 0 <= gap_us <= SPANS_FIELD_MAX):
             raise ValueError(f"slice_bytes/gap_us must be 0-{SPANS_FIELD_MAX}")
-        header = bytes([0, slice_bytes, gap_us, len(spans)])
-        span_list = b"".join(
+        flags = 0 if lock_store is None else SPANS_FLAG_LOCK_TO_STORE
+        entries = len(spans) if lock_store is None else len(spans) + 1
+        header = bytes([flags, slice_bytes, gap_us, entries])
+        store_entry = b"" if lock_store is None else self._u16(lock_store & 0xFFFF) + self._u16(0)
+        span_list = store_entry + b"".join(
             self._u16(addr & 0xFFFF) + self._u16(len(data)) for addr, data in spans
         )
         payload = b"".join(data for _, data in spans)
@@ -919,6 +967,43 @@ class TRClient:
             if tok == TOK_FAIL or any(reason in text for reason in _SPANS_BUS_HELD):
                 return SpansProbe.HELD
             return SpansProbe.ABSENT
+
+    def probe_spans_lock(self) -> bool:
+        """Does WriteC64Spans carry the lock-to-store flag (and SampleWatch
+        with it)? For firmware `probe_spans` found READY: a zero-span header
+        with the flag set is refused for its span count by firmware that knows
+        the flag, and for the flag by firmware that does not, with nothing
+        owed either way. Any other answer leaves the link out of step and
+        counts as no."""
+        with self._command():
+            self._drain_stale()
+            try:
+                self._send(self._u16(TOK_WRITE_C64_SPANS))
+                tok = self._read_token()
+            except BaseException:
+                self._close_spans_token()
+                raise
+            self._send_spans_header(bytes([SPANS_FLAG_LOCK_TO_STORE, 0, 0, 0]))
+            text = self.transport.drain_text(0.3)
+            if tok != TOK_ACK or _SPANS_COUNT_REFUSAL not in text:
+                if _SPANS_FLAGS_REFUSAL not in text:
+                    self._out_of_step = True
+                return False
+            return True
+
+    def sample_watch(self, store: int | None) -> SampleWatchStats:
+        """One SampleWatch: watch the C64's writes to `store`, or stop
+        watching when None, and return what was counted since the previous
+        call. Only firmware `probe_spans_lock` answered yes for carries it.
+        Raises TRNak when the board's single bus snoop is held by something
+        else, such as a cartridge's handler."""
+        mode = 0 if store is None else 1
+        frame = self._u16(TOK_SAMPLE_WATCH) + bytes([mode]) + self._u16((store or 0) & 0xFFFF)
+        with self._command():
+            self._send(frame)
+            self._expect_ack("SampleWatch")
+            reply = self.transport.recv_exact(_SAMPLE_WATCH_REPLY.size)
+        return SampleWatchStats(*_SAMPLE_WATCH_REPLY.unpack(reply))
 
     def read_segment(self, addr: int, length: int) -> bytes:
         """One ReadC64Mem command: token + addr(BE) + len(BE), verify the ack,

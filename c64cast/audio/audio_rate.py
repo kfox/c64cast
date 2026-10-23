@@ -29,6 +29,7 @@ import time
 from typing import TYPE_CHECKING
 
 from c64cast._transport_log import quiet_transport
+from c64cast.hw.backend import NmiSampleStore
 from c64cast.hw.c64 import (
     CIA2,
     CIA_TIMER_LATCH_MAX,
@@ -46,8 +47,11 @@ from .audio_handlers import (
     CIA2_TIMER_A_CONTINUOUS,
     NMI_ARM_MAX_ATTEMPTS,
     NMI_ARM_VERIFY_DELAY_S,
+    NMI_CYCLES_AFTER_STORE,
+    NMI_CYCLES_TO_STORE,
     NMI_ROUTINE_ADDR,
     NMI_STALL_WARN_CHUNKS,
+    NMI_STORE_ADDR,
     RING_BUFFER_SIZE,
     RING_LEAD_EMA_ALPHA,
 )
@@ -71,6 +75,18 @@ if TYPE_CHECKING:
     from .audio import AudioStreamer
 
 log = logging.getLogger(__name__)
+
+
+def nmi_sample_store(latch: int, system: str) -> NmiSampleStore:
+    """Where and when the $D418 NMI routine stores each sample, armed at
+    `latch` on `system`."""
+    period = latch + 1
+    return NmiSampleStore(
+        addr=NMI_STORE_ADDR,
+        period_cycles=period,
+        period_s=period / cpu_clock(system),
+        free_cycles=period - NMI_CYCLES_TO_STORE - NMI_CYCLES_AFTER_STORE,
+    )
 
 
 class NmiTimer:
@@ -190,9 +206,18 @@ class NmiTimer:
     def write_latch(self, latch: int) -> None:
         """Record + write a new CIA #2 Timer A latch — the one live retune
         primitive both the adaptive loop and the static retune use."""
+        # A DMA halt sized for the slower of the two periods would outlast the
+        # faster one, so the backend hears of a shorter period before it is
+        # armed and of a longer one only after.
+        api = self._st.api
+        shorter = latch < self.latch
+        if shorter:
+            api.note_nmi_period(nmi_sample_store(latch, self._st.system))
         self.latch = latch
         self._note_armed(latch)
-        self._st.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+        api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+        if not shorter:
+            api.note_nmi_period(nmi_sample_store(latch, self._st.system))
 
     def _note_armed(self, latch: int) -> None:
         self.fastest_latch = latch if self.fastest_latch <= 0 else min(self.fastest_latch, latch)
@@ -272,7 +297,7 @@ class NmiTimer:
             # Unverifiable without R, so retrying would just arm N times blind.
             self.arm_attempts = 1
             self.arm_once(latch)
-            self._st.api.note_nmi_consumer(True)
+            self._st.api.note_nmi_consumer(True, nmi_sample_store(latch, self._st.system))
             return
         for attempt in range(1, NMI_ARM_MAX_ATTEMPTS + 1):
             self.arm_attempts = attempt
@@ -288,7 +313,7 @@ class NmiTimer:
                     )
                 else:
                     log.debug("audio: NMI arm verified first attempt (R was $%04X)", before)
-                self._st.api.note_nmi_consumer(True)
+                self._st.api.note_nmi_consumer(True, nmi_sample_store(latch, self._st.system))
                 return
         log.warning(
             "audio: NMI consumer never started after %d arm attempts — audio will be "

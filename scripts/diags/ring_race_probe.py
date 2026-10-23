@@ -77,6 +77,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_END,
     RING_BUFFER_SIZE,
 )
+from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.audio.audio_servo import (
     HOST_DMA_SERVO_TARGET_GAP,
     servo_period,
@@ -126,7 +127,7 @@ def arm(be, rate: int, system: str) -> None:
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
-    be.note_nmi_consumer(True)
+    be.note_nmi_consumer(True, nmi_sample_store(latch, system))
 
 
 def disarm(be) -> None:

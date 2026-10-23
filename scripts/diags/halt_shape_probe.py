@@ -67,6 +67,7 @@ from ring_race_probe import arm, disarm, effective_rate, read_r, setup
 from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.audio.audio_handlers import RING_BUFFER_SIZE
+from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import nmi_latch_for_rate
 
@@ -94,6 +95,17 @@ def _fit_line(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
     return a, b, r2
 
 
+def _fw_cells(m: dict) -> str:
+    if m["fw_lost_ticks"] is None:
+        return f"{'-':>9} {'-':>7} {'-':>8} {'-':>8}"
+    expected = m["fw_intervals"] + m["fw_lost_ticks"]
+    pct = m["fw_lost_ticks"] / expected * 100 if expected > 0 else 0.0
+    return (
+        f"{pct:8.2f}% {m['fw_locked_slices']:7d} {m['fw_unlocked_slices']:8d} "
+        f"{m['fw_longest_cycles']:8d}"
+    )
+
+
 def measure(
     be,
     secs: float,
@@ -103,6 +115,7 @@ def measure(
     payload: int,
     write_rate: float,
     addr: int,
+    store=None,
 ) -> dict:
     """Fit dR/dt while issuing ``write_rate`` background writes/sec of ``payload``
     bytes. ``write_rate = 0`` is the quiet-bus reference.
@@ -118,6 +131,8 @@ def measure(
     w_period = 1.0 / write_rate if write_rate > 0 else float("inf")
     r_period = 1.0 / r_rate
 
+    if store is not None:
+        d.tr_sample_watch(be, store.addr)
     t0 = time.monotonic()
     next_w = t0 + w_period
     next_r = t0
@@ -164,7 +179,13 @@ def measure(
 
     elapsed = time.monotonic() - t0
     fitted = good_bytes / good_secs if good_secs > 0 else 0.0
+    fw = d.tr_sample_watch(be, store.addr) if store is not None else None
     return {
+        "fw_lost_ticks": fw.lost_ticks(store.period_s) if fw else None,
+        "fw_intervals": fw.intervals if fw else None,
+        "fw_longest_cycles": fw.longest_cycles if fw else None,
+        "fw_locked_slices": fw.locked_slices if fw else None,
+        "fw_unlocked_slices": fw.unlocked_slices if fw else None,
         "payload": payload,
         "write_rate_req": write_rate,
         "write_rate_actual": writes / elapsed if elapsed > 0 else 0.0,
@@ -177,7 +198,7 @@ def measure(
     }
 
 
-def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) -> int:
+def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int, store) -> int:
     """Occupy the bus with paced writes and do nothing else.
 
     The load generator for the cross-link experiment: the *other* backend plays
@@ -192,7 +213,7 @@ def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) ->
     """
     # The consumer is the other link's, but it is real, and a TeensyROM backend
     # slices only while one is noted — without this, --tr-slicing is ignored.
-    be.note_nmi_consumer(True)
+    be.note_nmi_consumer(True, store)
     data = bytes([0x5A]) * payload
     tag = f"{addr:04X}"
     period = 1.0 / write_rate
@@ -220,6 +241,7 @@ def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) ->
         f"  {writes} writes in {el:.1f}s = {writes / el:.1f}/s, "
         f"{writes * payload / el / 1024:.1f} KiB/s, {failed} failed"
     )
+    be.note_nmi_consumer(False)
     be.close()
     return 0
 
@@ -268,6 +290,7 @@ def main() -> int:
 
     eff = effective_rate(args.nmi_rate, args.system)
     cycles_per_tick = nmi_latch_for_rate(args.nmi_rate, args.system) + 1
+    store = nmi_sample_store(cycles_per_tick - 1, args.system)
     payloads = [int(p) for p in args.payloads.split(",") if p.strip()]
 
     print(f"[setup] {args.url}  NMI {args.nmi_rate} -> effective {eff:.1f} Hz")
@@ -288,6 +311,7 @@ def main() -> int:
             payload=args.hold_payload,
             write_rate=args.write_rate,
             addr=args.addr,
+            store=store,
         )
 
     result: dict = {
@@ -307,7 +331,14 @@ def main() -> int:
 
         print(f"\n=== reference: bus quiet ({args.secs:g}s, R reads only) ===")
         ref = measure(
-            be, args.secs, r_rate=args.r_rate, eff=eff, payload=0, write_rate=0.0, addr=args.addr
+            be,
+            args.secs,
+            r_rate=args.r_rate,
+            eff=eff,
+            payload=0,
+            write_rate=0.0,
+            addr=args.addr,
+            store=store,
         )
         base = ref["fitted_rate_hz"]
         result["reference"] = ref
@@ -316,6 +347,8 @@ def main() -> int:
             f"({(base - eff) / eff * 100:+.2f}%)  backward {ref['backward_steps']}  "
             f"failed {ref['failed_reads']}"
         )
+        if ref["fw_lost_ticks"] is not None:
+            print(f"  firmware: {_fw_cells(ref)} (loss%, locked, unlocked, longest cycles)")
         if base <= 0:
             print("[abort] reference measured no R advance — consumer not running")
             return 1
@@ -338,6 +371,7 @@ def main() -> int:
                     payload=args.hold_payload,
                     write_rate=args.write_rate,
                     addr=args.addr,
+                    store=store,
                 )
                 el = time.monotonic() - t_start
                 lost = base - m["fitted_rate_hz"]
@@ -370,7 +404,8 @@ def main() -> int:
         print(f"\n=== sweep: payload vs lost ticks ({len(payloads)} conditions) ===")
         hdr = (
             f"{'payload':>8} {'wr/s':>7} {'KiB/s':>7} {'dR/dt':>9} "
-            f"{'loss%':>7} {'ticks/wr':>9} {'cycles/wr':>10}"
+            f"{'loss%':>7} {'ticks/wr':>9} {'cycles/wr':>10} {'fw loss%':>9} {'locked':>7} "
+            f"{'unlocked':>8} {'longest':>8}"
         )
         print(hdr)
         print("-" * len(hdr))
@@ -385,6 +420,7 @@ def main() -> int:
                 payload=p,
                 write_rate=rate,
                 addr=args.addr,
+                store=store,
             )
             lost = base - m["fitted_rate_hz"]
             per_w = lost / m["write_rate_actual"] if m["write_rate_actual"] > 0 else 0.0
@@ -395,7 +431,7 @@ def main() -> int:
             print(
                 f"{p:8d} {m['write_rate_actual']:7.1f} {m['byte_rate'] / 1024:7.1f} "
                 f"{m['fitted_rate_hz']:9.1f} {lost / base * 100:6.2f}% "
-                f"{per_w:9.3f} {per_w * cycles_per_tick:10.1f}"
+                f"{per_w:9.3f} {per_w * cycles_per_tick:10.1f} {_fw_cells(m)}"
             )
         result["sweep"] = rows
 
@@ -425,6 +461,7 @@ def main() -> int:
         print("\n[interrupted]")
     finally:
         disarm(be)
+        d.tr_sample_watch(be, None)
         be.silence_sid()
         be.reset()
         be.close()

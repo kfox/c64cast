@@ -749,13 +749,29 @@ def add_tr_slicing_args(ap) -> None:
             raise argparse.ArgumentTypeError(f"{value} is not 0-{SPANS_FIELD_MAX}")
         return value
 
-    ap.add_argument("--tr-slicing", choices=["auto", "on", "off"], default=None)
+    ap.add_argument("--tr-slicing", choices=["auto", "locked", "on", "off"], default=None)
     ap.add_argument(
         "--slice-bytes", type=header_byte, default=None, help="[teensyrom].dma_slice_bytes"
     )
     ap.add_argument(
         "--slice-gap", type=header_byte, default=None, help="[teensyrom].dma_slice_gap_us"
     )
+
+
+def tr_sample_watch(be, store_addr: int | None):
+    """The firmware's sample-store counters since the previous call, restarting
+    them on `store_addr` (None stops the watch); None on a backend or firmware
+    without SampleWatch."""
+    from c64cast.hw.teensyrom_dma import TRError
+
+    tr = getattr(be, "tr", None)
+    if tr is None or not hasattr(tr, "sample_watch"):
+        return None
+    try:
+        return tr.sample_watch(store_addr)
+    except (TRError, OSError) as e:
+        print(f"[sample-watch] unavailable: {type(e).__name__}: {e}")
+        return None
 
 
 def apply_tr_slicing(cfg, args) -> None:
@@ -767,6 +783,21 @@ def apply_tr_slicing(cfg, args) -> None:
         tr.dma_slice_bytes = args.slice_bytes
     if args.slice_gap is not None:
         tr.dma_slice_gap_us = args.slice_gap
+
+
+def tr_slicing_toml(
+    slicing: str | None, slice_bytes: int | None = None, slice_gap: int | None = None
+) -> str:
+    """The slicing knobs that were given, as a ``[teensyrom]`` table for a tool
+    that runs the app as a child on a generated config, where
+    ``apply_tr_slicing`` has no ``Config`` to write into."""
+    keys = {
+        "dma_slicing": None if slicing is None else f'"{slicing}"',
+        "dma_slice_bytes": slice_bytes,
+        "dma_slice_gap_us": slice_gap,
+    }
+    lines = [f"{k} = {v}" for k, v in keys.items() if v is not None]
+    return "\n[teensyrom]\n" + "\n".join(lines) + "\n" if lines else ""
 
 
 def describe_tr_writes(be) -> str:

@@ -111,7 +111,7 @@ time domain by the inverse factor** so it nets to real time. `[audio].
 dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` drive it. Unset (the
 default), each resolves to the speed fraction `s` measured for the connected
 hardware: **0.89 hires / 0.88 mhires** on a U64-II NTSC and on a TeensyROM
-writing unsliced, **0.97** on a TeensyROM+ writing sliced at the default slice shape, and from a few seconds in the scene follows the `s` it measures (clock/wall) unless the field is set: for the gated bitmap+DAC path,
+writing unsliced, **1.0** (no compensation) on a TeensyROM+ whose writes are locked to the sample store, **0.97** on one slicing without the lock at the default slice shape, and from a few seconds in the scene follows the `s` it measures (clock/wall) unless the field is set: for the gated bitmap+DAC path,
 `AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
 `atempo` filter graph and stamps each rebased video PTS `c` (seconds on the content timeline: the file position, less `start_s` for the initial pass) at `offset + c × s` (`offset` 0 until a retune). The existing
 drain-clock A/V sync (which reads ≈`s`) then lands both content streams at real
@@ -119,8 +119,8 @@ time, in sync, pitch intact. `clock/wall` telemetry still reads ≈`s` **by desi
 (it gauges the drain rate; the compensation makes *content* real-time, not the
 drain clock). Set the field to `1.0` to disable. Other platforms (U64+PAL, U2P,
 PAL generally) have different `s` — measure per platform with
-`scripts/diags/mhires_tempo_clock_ab.py` (with `--tr-slicing auto` to measure a
-TeensyROM+ writing sliced). This is orthogonal to the
+`scripts/diags/mhires_tempo_clock_ab.py` (with `--tr-slicing` to pick a
+TeensyROM+ write mode). This is orthogonal to the
 `[audio].pitch_mult_*` NMI-rate knobs (which correct *pitch*, not tempo). See the
 `video.py` tempo-compensation note in [architecture.md](architecture.md).
 

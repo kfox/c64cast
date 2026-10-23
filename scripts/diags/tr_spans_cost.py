@@ -22,6 +22,11 @@ The C64 runs the BASIC clear loop throughout, as it does under a show: the
 firmware starts a slice promptly only while the 6510 is writing memory, so a
 CPU parked in a read-only loop would measure its badline wait instead.
 
+With ``--nmi-rate`` the C64 runs the DAC player's timer NMI instead, and a
+``locked`` row joins each payload: one WriteC64Spans with every slice started
+on the player's sample store and sized as the backend sizes it, against the
+same NMI load as the rows beside it.
+
 Writes land at $6000 (plain RAM, clear of the audio ring and the NMI handler).
 Resets the machine on exit.
 """
@@ -34,10 +39,13 @@ import statistics
 import time
 
 import _diaglib as d
+from ring_race_probe import arm, disarm, setup
 
 from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
+from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.hw.backend import make_backend
+from c64cast.hw.c64 import nmi_latch_for_rate
 from c64cast.hw.teensyrom_api import TeensyROMBackend
 from c64cast.hw.teensyrom_dma import (
     SPANS_FIELD_MAX,
@@ -76,6 +84,13 @@ def main() -> int:
     ap.add_argument("--gaps", default="40")
     ap.add_argument("--batch", default="4,8,16", help="span counts for the batch rows")
     ap.add_argument("--reps", type=int, default=40)
+    ap.add_argument(
+        "--nmi-rate",
+        type=int,
+        default=0,
+        help="run the DAC player's NMI at this rate and add the locked rows",
+    )
+    ap.add_argument("--system", default="NTSC", choices=["NTSC", "PAL"])
     args = ap.parse_args()
 
     payloads = [int(x) for x in args.payloads.split(",")]
@@ -108,8 +123,22 @@ def main() -> int:
         if tr.probe_spans() is SpansProbe.ABSENT:
             print("[abort] firmware lacks WriteC64Spans")
             return 1
-        be.reset()
-        be.run_basic_clear_loop()
+        lock = None
+        if args.nmi_rate:
+            if not tr.probe_spans_lock():
+                print("[abort] firmware cannot lock slices to a sample store")
+                return 1
+            setup(be, args.system)
+            arm(be, args.nmi_rate, args.system)
+            latch = nmi_latch_for_rate(args.nmi_rate, args.system)
+            lock = be._lock_for(nmi_sample_store(latch, args.system))
+            if lock is None:
+                print(f"[abort] no slice fits a {latch + 1}-cycle period")
+                return 1
+            print(f"[setup] NMI at {args.nmi_rate} Hz; locked store/slice/wait = {lock}")
+        else:
+            be.reset()
+            be.run_basic_clear_loop()
         print(f"[setup] {args.url}  {args.reps} reps/condition, C64 in the BASIC clear loop")
         hdr = f"{'condition':>22} {'bytes':>6} {'median':>8} {'p95':>8} {'max':>8} {'KiB/s':>8}"
         print(hdr)
@@ -126,6 +155,15 @@ def main() -> int:
         for n in payloads:
             data = bytes([0x5A]) * n
             report("mem", n, _time(lambda data=data: tr.write_segment(SCRATCH, data), args.reps))
+            if lock is not None:
+                store, ls, lw = lock
+                m = _time(
+                    lambda data=data, ls=ls, lw=lw, store=store: tr.write_spans(
+                        [(SCRATCH, data)], ls, lw, lock_store=store
+                    ),
+                    args.reps,
+                )
+                report(f"locked {ls}", n, m)
             for g in gaps:
                 for s in slices:
                     if s and (n + s - 1) // s > SPANS_MAX_SLICES:
@@ -162,6 +200,8 @@ def main() -> int:
                 )
                 print(f"\nwrote {path}")
         finally:
+            if lock is not None:
+                disarm(be)
             be.silence_sid()
             be.reset()
             be.close()

@@ -77,7 +77,7 @@ def main() -> int:
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
-    cfg.teensyrom.dma_slicing = "auto"
+    cfg.teensyrom.dma_slicing = "on"
     d.apply_tr_slicing(cfg, args)
     be = make_backend(cfg)
     if not isinstance(be, TeensyROMBackend):

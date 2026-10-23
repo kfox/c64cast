@@ -100,7 +100,7 @@ _HOST_SID_ADDR_LO = 0xD000
 _HOST_SID_ADDR_HI = 0xDFF0
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
 _TR_STORAGE_CHOICES = ("sd", "usb")
-_TR_DMA_SLICING_CHOICES = ("auto", "on", "off")
+_TR_DMA_SLICING_CHOICES = ("auto", "locked", "on", "off")
 _DISPLAY_CHOICES = ("hires_edges", "hires", "petscii", "mcm", "mhires", "blank", "random")
 _PALETTE_MODE_CHOICES = ("percell", "cheap", "vivid", "grayscale")
 _STYLE_CHOICES = (
@@ -375,17 +375,21 @@ class TeensyromCfg:
         },
     )
     dma_slicing: str = field(
-        default="off",
+        default="auto",
         metadata={
-            "help": "Write C64 memory with WriteC64Spans, which DMAs in slices and "
-            "lets the 6510 run between them, so a large write no longer halts the "
-            "CPU across many NMI/IRQ periods. Only while $D418-DAC audio plays, "
-            "and only for writes longer than one slice: slicing costs bulk "
-            "throughput, so otherwise every write stays on WriteC64Mem. 'off' "
-            "(the default) always uses the single-halt WriteC64Mem: on bitmap "
-            "video the lower throughput drops short-lived frames. 'auto' uses "
-            "WriteC64Spans when the firmware has it (TR+ v0.9+); 'on' also warns "
-            "if it does not.",
+            "help": "While $D418-DAC audio plays, write C64 memory with "
+            "WriteC64Spans, which DMAs in slices and lets the 6510 run between "
+            "them, so a write no longer halts the CPU across the NMI sample "
+            "player's ticks. 'auto' (the default) starts each slice right after "
+            "the player's sample store, sized to end before its next tick, when "
+            "the firmware can, and otherwise writes with the single-halt "
+            "WriteC64Mem; 'locked' is 'auto' that warns when the firmware cannot. "
+            "'on' slices without the lock, at dma_slice_bytes with "
+            "dma_slice_gap_us between slices, and warns if the firmware lacks "
+            "WriteC64Spans: it loses fewer ticks than WriteC64Mem, but its lower "
+            "throughput drops short-lived bitmap video frames. 'off' always uses "
+            "WriteC64Mem. With no sample player running every write stays on "
+            "WriteC64Mem.",
             "choices": _TR_DMA_SLICING_CHOICES,
         },
     )

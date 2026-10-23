@@ -113,6 +113,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
 )
+from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import CIA2, actual_rate_for_latch, nmi_latch_for_rate
@@ -194,9 +195,13 @@ def arm(be, rate: int, system: str) -> None:
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+    # A TeensyROM backend slices only while a consumer is noted; without this,
+    # --tr-slicing is ignored.
+    be.note_nmi_consumer(True, nmi_sample_store(latch, system))
 
 
 def disarm(be) -> None:
+    be.note_nmi_consumer(False)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
 
 
@@ -458,6 +463,7 @@ def run_condition(
     device: int,
     expected: float,
     ring_tone: bytes | None = None,
+    store=None,
 ) -> tuple[Analysis, WriterStats]:
     """One capture: optionally start the background writer, record, analyze."""
     writer = None
@@ -470,10 +476,20 @@ def run_condition(
 
     # A ShadowCast exposes one input channel; the Cam Link two.
     channels = min(2, sd.query_devices(device)["max_input_channels"])
+    if store is not None:
+        d.tr_sample_watch(be, store.addr)
     rec = sd.rec(
         int(secs * CAP_SR), samplerate=CAP_SR, channels=channels, device=device, dtype="float32"
     )
     sd.wait()
+    fw = d.tr_sample_watch(be, store.addr) if store is not None else None
+    if fw is not None:
+        cpu_period = store.period_s * fw.cpu_hz
+        print(
+            f"    firmware: {fw.lost_ticks(store.period_s):.1f} lost ticks of {fw.intervals}, "
+            f"{fw.unlocked_slices} of {fw.locked_slices + fw.unlocked_slices} slices unlocked, "
+            f"longest interval {fw.longest_cycles / cpu_period:.2f} periods"
+        )
     stats = writer.stop() if writer else WriterStats()
 
     mono = rec.mean(axis=1).astype(np.float64)
@@ -543,6 +559,7 @@ def main() -> int:
         ring_tone = build_ring_tone(args.ring_cycles)
         setup(be, args.system, args.ring_cycles)
         arm(be, args.nmi_rate, args.system)
+        store = nmi_sample_store(nmi_latch_for_rate(args.nmi_rate, args.system), args.system)
         print("[cap] settling HDMI + re-initializing PortAudio…")
         time.sleep(3.0)
         sd._terminate()
@@ -551,7 +568,9 @@ def main() -> int:
         print(f"[cap] capturing from idx {device}: {sd.query_devices(device)['name']}")
 
         print("\n=== ref (no background writes) ===")
-        ref, _ = run_condition(be, "ref", None, 0, byte_rate, 1, args.secs, device, expected)
+        ref, _ = run_condition(
+            be, "ref", None, 0, byte_rate, 1, args.secs, device, expected, store=store
+        )
         rows.append({"cond": "ref", "target": "-", "bytes": 0, "analysis": ref, "stats": None})
         print(
             f"    carrier {ref.carrier:.2f} Hz  inst-freq std {ref.inst_freq_std:.1f} Hz"
@@ -574,6 +593,7 @@ def main() -> int:
                     device,
                     expected,
                     ring_tone,
+                    store,
                 )
                 rows.append(
                     {
@@ -595,6 +615,7 @@ def main() -> int:
                 time.sleep(0.3)
     finally:
         disarm(be)
+        d.tr_sample_watch(be, None)
         be.silence_sid()
         be.reset()
         be.close()

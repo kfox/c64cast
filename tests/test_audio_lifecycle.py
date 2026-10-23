@@ -4556,7 +4556,7 @@ class LifecycleTest(unittest.TestCase):
         s = _make()
         api = cast(Any, s.api)
         seen: list[tuple[bool, Any]] = []
-        api.note_nmi_consumer = lambda active: seen.append(
+        api.note_nmi_consumer = lambda active, store=None: seen.append(
             (active, api.regs.get(f"{CIA2.ICR:04X}"))
         )
         s._upload_nmi_and_buffers()
@@ -4579,6 +4579,36 @@ class LifecycleTest(unittest.TestCase):
                 at_upload, at_arm = self._notes_around_the_arm(readable)
                 self.assertEqual(at_upload, [])
                 self.assertEqual(at_arm, [(True, armed)])
+
+    def test_the_arm_tells_the_backend_where_and_when_the_sample_is_stored(self):
+        # A TR+ sizes each locked slice to what the period leaves after the
+        # handler's $D418 store, so the figures have to follow the armed latch.
+        s = _make()
+        api = cast(Any, s.api)
+        s._upload_nmi_and_buffers()
+        with mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0):
+            s.nmi.start(adaptive=False)
+        store = api.nmi_consumer_stores[-1]
+        period = s.nmi.latch + 1
+        self.assertEqual(store.addr, 0xD418)
+        self.assertEqual(store.period_cycles, period)
+        self.assertAlmostEqual(store.period_s, period / cpu_clock(s.system))
+        self.assertEqual(store.free_cycles, period - 28 - 19)
+
+    def test_a_retune_tells_the_backend_of_a_shorter_period_before_arming_it(self):
+        s = _make()
+        api = cast(Any, s.api)
+        s._upload_nmi_and_buffers()
+        with mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0):
+            s.nmi.start(adaptive=False)
+        old = s.nmi.latch
+        for latch in (old - 10, old):
+            s.nmi.write_latch(latch)
+        (faster, armed_then), (slower, armed_after) = api.nmi_period_notes
+        self.assertEqual(faster.period_cycles, old - 9)
+        self.assertEqual(armed_then, (old & 0xFF, old >> 8))
+        self.assertEqual(slower.period_cycles, old + 1)
+        self.assertEqual(armed_after, (old & 0xFF, old >> 8))
 
     def test_a_consumer_that_never_started_is_not_noted(self):
         # R frozen through every retry means no NMI is consuming, so the link
