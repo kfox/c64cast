@@ -203,102 +203,47 @@ quote as written.
 ## Tests
 
 Stdlib `unittest`, one module per subject under `tests/`, no hardware — run it
-with `make test` (never a raw runner; see ["Tests"](CONTRIBUTING.md#tests) for
-the full conventions).
+with `make test` (never a raw runner). The conventions, and the reasoning and
+blind spots behind each guard below, are in ["Tests"](CONTRIBUTING.md#tests).
 
 **A test run must print only pass/fail/skip indicators, and committing a test
-that leaks anything else is forbidden.** Expected output buries real failures,
-so every by-product gets wrapped where it fires:
+that leaks anything else is forbidden.** Check with `make test` and read the
+output: anything between the dots is a leak.
 
 - Raises → `assertRaises`. Logs → `self.assertLogs("c64cast.<module>", …)`.
-  Writes to stdout → `redirect_stdout` (plus an assertion on the buffer).
-- When a call both logs and raises, nest `assertLogs` *outside* `assertRaises`,
-  or the records go unverified.
-- Where the message is incidental — a warning from a subsystem the test only
-  had to set up — use `quiet_logging()` from [tests/_fakes.py](tests/_fakes.py)
-  instead, and make sure some *other* test asserts that message. It also
-  restores the root logger, which anything driving `cli.main()` needs.
-- `logging.disable` outranks `assertLogs`, so `quiet_logging()` and
-  `assertLogs` must never nest — put the asserting tests in their own class.
-- `patch.object(...).start()` with no matching `stop()` leaks past the test
-  into its whole worker process. Use a `with` block or `addCleanup`.
+  Writes to stdout → `redirect_stdout` plus an assertion on the buffer.
+- A call that both logs and raises nests `assertLogs` *outside* `assertRaises`.
+- An incidental message gets `quiet_logging()` from
+  [tests/_fakes.py](tests/_fakes.py), with some *other* test asserting it; it
+  also restores the root logger, which anything driving `cli.main()` needs.
+- `quiet_logging()` and `assertLogs` never nest — `logging.disable` outranks
+  `assertLogs` — so asserting tests go in their own class.
+- `patch.object(...).start()` needs a `stop()`: use `with` or `addCleanup`.
 
-Check with `make test` and read the output: anything between the dots is a leak.
+**The startup hook ([tests/sitecustomize.py](tests/sitecustomize.py), via
+`PYTHONPATH=tests`) arms guards that fail a test, naming it:**
 
-**The suite cannot touch files outside the checkout, and this is enforced, not
-asked for.** Every entry point sets `PYTHONPATH=tests` so
-[tests/sitecustomize.py](tests/sitecustomize.py) arms
-[tests/_fs_sandbox.py](tests/_fs_sandbox.py) at interpreter startup: the machine
-settings, the data dir and the temp dir are redirected to a throwaway directory
-removed when the run ends,
-`char_rom`'s cwd-relative ROM fallback is blanked, and an audit hook fails any
-test that reads or writes outside the checkout + temp dirs, reaches an
-`assets/` file git does not carry, touches `.git/`, or shells out to a `git`
-that `-C`s one repository while `GIT_DIR` points at another. When a test trips it, point the code under
-test at a `tempfile.mkdtemp()` fixture, or wrap the block in `tmp_cwd()` from
-[tests/_fakes.py](tests/_fakes.py) if what it resolves is a *relative* default
-(`assets/videos/`, `./c64cast.toml`). Never widen the sandbox to make a test
-pass — `allow_outside_checkout(path)` exempts that one path, for a test whose
-subject genuinely is a real path, and nothing else.
-
-**The suite cannot leave a thread running either**, and the same startup hook
-arms [tests/_thread_sandbox.py](tests/_thread_sandbox.py) to enforce it: a test
-that ends with a thread it started still alive fails, named. A thread outlives
-`quiet_logging()` and `assertLogs` alike — both are scoped to a block — so a
-poll thread still ticking logs into an unrelated test. Stop and join what the
-test started (the owning object's teardown, from `addCleanup`); a stray gets
-half a second to wind down before it counts.
-
-**A test that stops making progress is interrupted rather than left to run.**
-`unittest_parallel` has no timeout of its own and CI bounds only the whole job,
-so a hang would spend the job and name nothing — no dot, no test id, no
-stack. [tests/_timeout_sandbox.py](tests/_timeout_sandbox.py), armed from the
-same startup hook, gives every test 60 seconds: past that, every thread's stack
-goes to stderr under the test's name and `TestTimedOut` is raised where the
-test stood, so the run reports that one and carries on. Stepping through a test
-under a debugger wants `C64CAST_TEST_TIMEOUT_S=0`, which turns the watchdog off
-for that run.
-
-**A test module starts a child process only through `run_bounded`.** `subprocess.run`
-with no `timeout` waits forever, and on Windows it waits inside
-`Popen._communicate`'s `stdout_thread.join(None)`, where only the cap above
-catches it — as "no progress", naming the test but not the cause.
-`run_bounded()` in [tests/_child_process.py](tests/_child_process.py) is
-`subprocess.run` under a 20-second bound; a child that outlives it is killed
-and the test fails naming the command and whatever the child had written. The
-AST sweep in [tests/test_child_process.py](tests/test_child_process.py) fails
-any module under `tests/` that reaches `subprocess` without a `timeout` —
-`timeout=None` counts as none — so the bound cannot be omitted. `scripts/` is
-out of scope: the scripts that run under a gate already
-bound their own calls, and `scripts/diags/` drives real hardware from a
-terminal, where a child running for minutes is the measurement.
-
-**A child that the code *under test* starts is bounded too, by a different
-guard.** That sweep reads `tests/` only, so a timeout a module chose for a user
-at a terminal ends up governing the suite as well — and several of them are the
-per-test cap exactly, `doctor._probe_uv_lock`'s 60 seconds for `uv lock
---check` among them. A wedged command there would spend the whole cap and
-surface either as the cap's "no progress" or as the site's own swallowed
-answer, never as the command. [tests/_child_sandbox.py](tests/_child_sandbox.py), armed from
-the same startup hook, shortens any wait past the 20-second bound for the
-length of the test process and raises `ChildProcessHung` naming the command and
-what it had written. It derives from `BaseException` because every one of those
-sites catches the `TimeoutExpired` it replaces and carries on. The production
-numbers do not move, and a caller that asked for *no more than* the bound keeps
-its own `TimeoutExpired`; a wait that only reaps a child the caller already
-`kill()`ed is never cut below the module's reap allowance, so that caller's expiry
-survives a slow reap too. That module's docstring is where the capped sites are
-listed, with what each one does when its child's expiry is swallowed.
-
-**A test cannot leave the process-wide RNG seeded either.**
-[tests/_rng_sandbox.py](tests/_rng_sandbox.py) reseeds `random` and numpy's
-legacy global generator from the test's own id before every test, so a
-`random.seed()` one test leaves behind cannot decide what the next one — or the
-production code inside it — draws. A test that wants a particular sequence
-still calls `random.seed()` itself, inside the test or in `setUp`; a seed set
-in `setUpClass` or at module import is overwritten before the first test under
-it runs. A `random.Random()` instance or a `np.random.Generator` is not
-process-wide and is the shape to prefer.
+- **Filesystem** ([tests/_fs_sandbox.py](tests/_fs_sandbox.py)): no reads or
+  writes outside the checkout and temp dirs, no untracked `assets/` file, no
+  `.git/`, no `git -C` one repository while `GIT_DIR` names another. Fix the
+  test with a `tempfile.mkdtemp()` fixture, or `tmp_cwd()` for a *relative*
+  default. Never widen the sandbox; `allow_outside_checkout(path)` is only for a
+  test whose subject is a real path.
+- **Threads** ([tests/_thread_sandbox.py](tests/_thread_sandbox.py)): no thread
+  the test started may outlive it. Stop and join it from `addCleanup`.
+- **Hangs** ([tests/_timeout_sandbox.py](tests/_timeout_sandbox.py)): 60 s per
+  test, then every stack and `TestTimedOut`. `C64CAST_TEST_TIMEOUT_S=0` turns it
+  off under a debugger.
+- **Child processes:** a test module starts one only through `run_bounded()`
+  ([tests/_child_process.py](tests/_child_process.py), 20 s), and the AST sweep
+  in [tests/test_child_process.py](tests/test_child_process.py) fails any
+  unbounded `subprocess` use. A child the code under test starts is clamped to
+  the same bound by [tests/_child_sandbox.py](tests/_child_sandbox.py), whose
+  docstring lists the capped sites.
+- **RNG** ([tests/_rng_sandbox.py](tests/_rng_sandbox.py)): `random` and numpy's
+  global generator are reseeded per test, so seed inside the test or `setUp`,
+  never in `setUpClass` or at import — or prefer a `random.Random()` /
+  `np.random.Generator` instance.
 
 ## Quirks worth knowing
 
