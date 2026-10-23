@@ -52,6 +52,7 @@ from c64cast.app import config as cfgmod
 from c64cast.app import config_store, console_library, media_store, paths, serve, session
 from c64cast.app.serve import SessionState
 from c64cast.app.update_state import STALE_AFTER_DAYS, UpdateCheck, write_update_state
+from c64cast.app.upgrade import running_python
 from c64cast.control import screen as screen_mod
 from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
@@ -572,9 +573,25 @@ class UpdateRouteTest(WebApiTestCase):
                 "latest_version": "9999.0.0",
                 "newer": True,
                 "unanswered_since": None,
+                "needs_python": None,
+                "running_python": running_python(),
                 "stale_after_days": STALE_AFTER_DAYS,
             },
         )
+
+    def test_names_the_python_a_pending_release_needs_when_this_host_lacks_it(self):
+        from c64cast import __version__
+
+        body = self._get_update(
+            UpdateCheck(
+                checked_at=1700000000.0,
+                running_version=__version__,
+                latest_version="9999.0.0",
+                newer=True,
+                requires_python=">=99.1",
+            )
+        )
+        self.assertEqual(body["needs_python"], ">=99.1")
 
     def test_a_silent_host_reports_when_pypi_last_answered(self):
         # The console's staleness reminder is dated from this, not from

@@ -71,7 +71,18 @@ PYPI_URL = "https://pypi.org/pypi/c64cast/json"
 
 _GUIDE_UPGRADE_URL = "https://kfox.github.io/c64cast/guide/04-setting-up.html#upgrading"
 
+GUIDE_NEWER_PYTHON_URL = (
+    "https://kfox.github.io/c64cast/guide/04-setting-up.html#when-a-release-needs-a-newer-python"
+)
+
 _VERSION_TOKEN_RE = re.compile(r"[A-Za-z0-9._+!-]{1,64}")
+
+_SPECIFIER_TOKEN_RE = re.compile(r"[0-9.*,<>=!~ ]{1,64}")
+"""What a `requires_python` may be made of to be trusted: the same privilege
+crossing :func:`looks_like_version` guards (see `update_state._version`)
+carries this string into a root-rendered MOTD line."""
+
+_CLAUSE_RE = re.compile(r"(~=|==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)*)(\.\*)?")
 
 
 def install_root() -> Path:
@@ -120,6 +131,94 @@ def looks_like_version(value: object) -> TypeGuard[str]:
     `/etc/update-motd.d/` prints as root — a newline in one forges an extra
     MOTD line, and an ESC byte rewrites the banner around it."""
     return isinstance(value, str) and _VERSION_TOKEN_RE.fullmatch(value) is not None
+
+
+def looks_like_specifier(value: object) -> TypeGuard[str]:
+    """True for a string shaped like a `Requires-Python` specifier of plain
+    release numbers, such as `">=3.12"` or `">=3.12, <4"`."""
+    return isinstance(value, str) and _SPECIFIER_TOKEN_RE.fullmatch(value) is not None
+
+
+def _clause_holds(op: str, bound: tuple[int, ...], wildcard: bool, python: tuple[int, ...]) -> bool:
+    if wildcard:
+        prefix_match = python[: len(bound)] == bound
+        return prefix_match if op == "==" else not prefix_match
+    if op == "~=":
+        return _clause_holds(">=", bound, False, python) and python[: len(bound) - 1] == bound[:-1]
+    width = max(len(python), len(bound))
+    have = python + (0,) * (width - len(python))
+    want = bound + (0,) * (width - len(bound))
+    return {
+        "==": have == want,
+        "!=": have != want,
+        "<=": have <= want,
+        ">=": have >= want,
+        "<": have < want,
+        ">": have > want,
+    }[op]
+
+
+def python_satisfies(requires_python: str, python: tuple[int, ...] | None = None) -> bool | None:
+    """Whether `python` (default: the running interpreter's major.minor.micro)
+    meets `requires_python`, or None when the specifier is not one this can
+    read — `packaging` would read every PEP 440 form, but it is not a runtime
+    dependency, and Python floors are written as plain release numbers.
+
+    None leaves the caller where it was before `requires_python` was read at
+    all: offering the release."""
+    if python is None:
+        python = tuple(sys.version_info[:3])
+    verdict = True
+    for clause in requires_python.split(","):
+        match = _CLAUSE_RE.fullmatch(clause.strip())
+        if match is None:
+            return None
+        op, wildcard = match[1], bool(match[3])
+        bound = tuple(int(n) for n in match[2].split("."))
+        if (wildcard and op not in ("==", "!=")) or (op == "~=" and len(bound) < 2):
+            return None
+        verdict = verdict and _clause_holds(op, bound, wildcard, python)
+    return verdict
+
+
+def python_floor(requires_python: str) -> str | None:
+    """The lowest Python `requires_python` names as a `>=` or `~=` bound,
+    e.g. `">=3.12, <4"` -> `"3.12"`, or None when it names none."""
+    floors = [
+        m[2]
+        for m in (_CLAUSE_RE.fullmatch(c.strip()) for c in requires_python.split(","))
+        if m is not None and m[1] in (">=", "~=") and not m[3]
+    ]
+    return max(floors, key=lambda v: tuple(int(n) for n in v.split(".")), default=None)
+
+
+def running_python() -> str:
+    return ".".join(str(n) for n in sys.version_info[:3])
+
+
+def reinstall_command(kind: InstallKind, requires_python: str) -> str:
+    """How to move an install of `kind` onto a Python that meets
+    `requires_python`. Upgrading in place cannot do it: `uv tool upgrade` and
+    `pipx upgrade` keep the interpreter the tool was installed with, so on an
+    excluded Python they report nothing to do. Where there is no one command
+    (a pip venv has to be rebuilt, and no floor means no version to name), it
+    is the guide's section instead."""
+    floor = python_floor(requires_python)
+    if floor is not None and kind == "uv-tool":
+        return f"uv tool upgrade --python {floor} c64cast"
+    if floor is not None and kind == "pipx":
+        return f"pipx reinstall --python python{floor} c64cast"
+    return GUIDE_NEWER_PYTHON_URL
+
+
+def needs_newer_python_text(version: str, requires_python: str, kind: InstallKind) -> str:
+    """The one sentence every surface prints for a release this interpreter
+    cannot install, so the terminal, `--doctor` and the login MOTD agree."""
+    return (
+        f"c64cast {version} needs Python {requires_python}, and this install runs "
+        f"on Python {running_python()}. Reinstall it on a newer Python: "
+        f"{reinstall_command(kind, requires_python)}"
+    )
 
 
 def _has_adjacent(parts: tuple[str, ...], pair: tuple[str, str]) -> bool:
@@ -174,8 +273,31 @@ def detect_install(*, root: Path | None = None) -> Install:
     return Install("unknown", root, None)
 
 
-def latest_release(*, timeout: float = 5.0) -> str | None:
-    """The current version on PyPI, or None on any failure — network down, a
+@dataclass(frozen=True)
+class Release:
+    """What PyPI says the current release is, and which Pythons it installs
+    on. `requires_python` is None when PyPI names none or names one that
+    fails :func:`looks_like_specifier` — either way, nothing to hold the
+    release back with."""
+
+    version: str
+    requires_python: str | None = None
+
+    def needs_python(self) -> str | None:
+        """`requires_python` when it excludes the running interpreter, else None."""
+        return needs_python(self.requires_python)
+
+
+def needs_python(requires_python: str | None) -> str | None:
+    """`requires_python` when it excludes the running interpreter, else None
+    — including when it cannot be read (:func:`python_satisfies`)."""
+    if requires_python is None or python_satisfies(requires_python) is not False:
+        return None
+    return requires_python
+
+
+def latest_release(*, timeout: float = 5.0) -> Release | None:
+    """The current release on PyPI, or None on any failure — network down, a
     non-2xx response, a body that doesn't parse the way expected, or a
     `requests` too broken to import. Never raises: the caller always has a
     "couldn't check" fallback to print, and `doctor._probe_updates` is
@@ -197,6 +319,10 @@ def latest_release(*, timeout: float = 5.0) -> str | None:
     field type into a *fabricated* answer that nothing downstream could
     catch, `{"info": {"version": 5}}` reading as the release `"5"`.
 
+    `requires_python` is read from the same `info` object, because after a
+    Python floor raise the current release is one an install on the old
+    interpreter cannot take, and its installer says nothing about why.
+
     Mirrors the house idiom for a one-shot outbound fetch
     (`scenes/overlays/rss.py`'s `_fetch_once`): a `User-Agent` naming this
     package, an explicit timeout, `raise_for_status()`, and the failure
@@ -214,6 +340,7 @@ def latest_release(*, timeout: float = 5.0) -> str | None:
         body = r.json()
         info = body.get("info") if isinstance(body, dict) else None
         version = info.get("version") if isinstance(info, dict) else None
+        requires_python = info.get("requires_python") if isinstance(info, dict) else None
     except Exception as e:
         log.debug("PyPI update check failed: %s", e)
         return None
@@ -221,7 +348,10 @@ def latest_release(*, timeout: float = 5.0) -> str | None:
     if not looks_like_version(version):
         log.debug("PyPI answered with no usable version: %r", version)
         return None
-    return version
+    if requires_python is not None and not looks_like_specifier(requires_python):
+        log.debug("PyPI answered with an unreadable requires_python: %r", requires_python)
+        requires_python = None
+    return Release(version, requires_python)
 
 
 def _release_tuple(version: str) -> tuple[int, ...] | None:

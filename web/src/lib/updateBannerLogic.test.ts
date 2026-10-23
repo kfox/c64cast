@@ -9,6 +9,7 @@ import {
   isStale,
   isStaleDismissed,
   lastAnsweredAt,
+  neededPython,
   readDismissed,
   writeDismissed,
   type KeyValueStore,
@@ -65,6 +66,26 @@ describe("isPending", () => {
 
   it("is false for newer=true with no version named", () => {
     expect(isPending(state({ newer: true, latest_version: null }))).toBe(false);
+  });
+});
+
+describe("neededPython", () => {
+  it("names the Python a pending release needs when this host cannot take it", () => {
+    expect(
+      neededPython(state({ newer: true, latest_version: "0.6.0", needs_python: ">=3.13" })),
+    ).toBe(">=3.13");
+  });
+
+  it("is null when this host can take the pending release", () => {
+    expect(neededPython(state({ newer: true, latest_version: "0.6.0", needs_python: null }))).toBe(
+      null,
+    );
+  });
+
+  it("is null with nothing pending, whatever the host says it needs", () => {
+    expect(
+      neededPython(state({ newer: false, latest_version: "0.5.0", needs_python: ">=3.13" })),
+    ).toBe(null);
   });
 });
 

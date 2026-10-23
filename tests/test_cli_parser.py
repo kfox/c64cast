@@ -157,7 +157,7 @@ class ParserContractTest(unittest.TestCase):
     def test_check_for_updates_dispatches_before_config_load(self):
         # Mocked at the upgrade.py boundary (not requests/subprocess) so this stays
         # a dispatch-order test, not a re-test of the PyPI query, and never networks.
-        with mock.patch.object(upgrade, "latest_release", return_value="0.3.0"):
+        with mock.patch.object(upgrade, "latest_release", return_value=upgrade.Release("0.3.0")):
             rc, out = _run(["--check-for-updates"])
         self.assertEqual(rc, 0)
         self.assertIn("up to date", out)
@@ -168,7 +168,7 @@ class ParserContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             state_path = Path(d) / "update_check.json"
             with (
-                mock.patch.object(upgrade, "latest_release", return_value="9.9.9"),
+                mock.patch.object(upgrade, "latest_release", return_value=upgrade.Release("9.9.9")),
                 mock.patch.object(paths, "update_check_path", return_value=state_path),
             ):
                 rc, out = _run(["--check-for-updates", "--write-state"])
@@ -180,6 +180,27 @@ class ParserContractTest(unittest.TestCase):
         assert recorded is not None
         self.assertEqual(recorded.latest_version, "9.9.9")
         self.assertIs(recorded.newer, True)
+
+    def test_check_for_updates_names_the_python_a_release_needs_instead_of_upgrade(self):
+        # `--upgrade` on an excluded interpreter finds nothing to do, so
+        # pointing at it sent the user round a loop with no way out.
+        with tempfile.TemporaryDirectory() as d:
+            state_path = Path(d) / "update_check.json"
+            with (
+                mock.patch.object(
+                    upgrade, "latest_release", return_value=upgrade.Release("9.9.9", ">=99.1")
+                ),
+                mock.patch.object(paths, "update_check_path", return_value=state_path),
+            ):
+                rc, out = _run(["--check-for-updates", "--write-state"])
+            from c64cast.app.update_state import read_update_state
+
+            recorded = read_update_state(path=state_path)
+        self.assertEqual(rc, 0)
+        self.assertIn("needs Python >=99.1", out)
+        self.assertNotIn("c64cast --upgrade", out)
+        assert recorded is not None
+        self.assertEqual(recorded.requires_python, ">=99.1")
 
     def test_write_state_with_pypi_unreachable_keeps_the_last_answer(self):
         # A check that couldn't reach PyPI learned only when it ran. Recording its

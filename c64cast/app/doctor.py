@@ -312,25 +312,47 @@ def _probe_updates() -> list[Diagnostic]:
     command this Diagnostic's hint points at."""
     from c64cast import __version__
 
-    from .upgrade import is_newer, latest_release
+    from .upgrade import (
+        detect_install,
+        is_newer,
+        latest_release,
+        reinstall_command,
+        running_python,
+    )
 
     if _running_from_checkout():
         return [Diagnostic("ok", "environment", "update check", "skipped (source checkout)")]
 
-    remote = latest_release()
-    if remote is None:
+    release = latest_release()
+    if release is None:
         return [Diagnostic("ok", "environment", "update check", "skipped (could not reach PyPI)")]
 
-    newer = is_newer(remote, __version__)
+    newer = is_newer(release.version, __version__)
     if newer is None:
-        return [Diagnostic("ok", "environment", "update check", f"could not compare to {remote}")]
+        return [
+            Diagnostic(
+                "ok", "environment", "update check", f"could not compare to {release.version}"
+            )
+        ]
+    needs = release.needs_python()
+    if newer and needs is not None:
+        return [
+            Diagnostic(
+                "warn",
+                "environment",
+                "update check",
+                f"{release.version} is available but needs Python {needs} "
+                f"(running {__version__} on Python {running_python()})",
+                hint=reinstall_command(detect_install().kind, needs),
+            )
+        ]
     if newer:
         return [
             Diagnostic(
                 "warn",
                 "environment",
                 "update check",
-                f"{remote} is available (running {__version__})",
+                f"{release.version} is available (running {__version__})",
                 hint="c64cast --upgrade",
             )
         ]

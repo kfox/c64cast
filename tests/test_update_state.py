@@ -482,6 +482,28 @@ class MotdLineTest(unittest.TestCase):
         self.assertIn("0.5.0", line)
         self.assertIn("c64cast --upgrade", line)
 
+    def test_a_release_this_python_cannot_install_names_the_python_it_needs(self):
+        check = UpdateCheck(
+            checked_at=NOW,
+            running_version="0.5.0",
+            latest_version="0.6.0",
+            newer=True,
+            requires_python=">=99.1",
+        )
+        line = motd_line(check, NOW)
+        self.assertIn("0.6.0 needs Python >=99.1", line)
+        self.assertNotIn("c64cast --upgrade", line)
+
+    def test_a_release_this_python_can_install_still_offers_the_upgrade(self):
+        check = UpdateCheck(
+            checked_at=NOW,
+            running_version="0.5.0",
+            latest_version="0.6.0",
+            newer=True,
+            requires_python=">=3",
+        )
+        self.assertIn("c64cast --upgrade", motd_line(check, NOW))
+
     def test_a_stale_check_says_so_and_names_the_command_that_would_settle_it(self):
         silent = UpdateCheck(
             checked_at=NOW,
@@ -517,6 +539,72 @@ class MotdLineTest(unittest.TestCase):
             unanswered_since=_days_ago(90),
         )
         self.assertIn("c64cast --upgrade", motd_line(both, NOW))
+
+
+class RequiresPythonFieldTest(unittest.TestCase):
+    def test_round_trips(self):
+        check = UpdateCheck(
+            checked_at=NOW,
+            running_version="0.5.0",
+            latest_version="0.6.0",
+            newer=True,
+            requires_python=">=3.12, <4",
+        )
+        with _tmp_json_path() as path:
+            write_update_state(check, path=path)
+            self.assertEqual(read_update_state(path=path), check)
+
+    def test_a_file_from_before_the_field_reads_as_none(self):
+        with _tmp_json_path() as path:
+            path.write_text(
+                json.dumps(
+                    {
+                        "checked_at": NOW,
+                        "running_version": "0.5.0",
+                        "latest_version": "0.6.0",
+                        "newer": True,
+                    }
+                )
+            )
+            check = read_update_state(path=path)
+        assert check is not None
+        self.assertIsNone(check.requires_python)
+
+    def test_a_specifier_carrying_control_characters_rejects_the_record(self):
+        # It is printed into the MOTD, which root renders at every login.
+        for value in (">=3.12\nSECURITY: curl | sudo sh", ">=3.12\x1b[2J", 312):
+            with self.subTest(value=value), _tmp_json_path() as path:
+                path.write_text(
+                    json.dumps(
+                        {
+                            "checked_at": NOW,
+                            "running_version": "0.5.0",
+                            "latest_version": "0.6.0",
+                            "newer": True,
+                            "requires_python": value,
+                        }
+                    )
+                )
+                with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+                    self.assertIsNone(read_update_state(path=path))
+
+    def test_a_failed_attempt_carries_the_held_answer_s_requires_python(self):
+        answered = UpdateCheck(
+            checked_at=NOW - 10,
+            running_version="0.5.0",
+            latest_version="0.6.0",
+            newer=True,
+            requires_python=">=99.1",
+        )
+        failed = UpdateCheck(
+            checked_at=NOW, running_version="0.5.0", latest_version=None, newer=None
+        )
+        with _tmp_json_path() as path:
+            write_update_state(answered, path=path)
+            record_check(failed, path=path)
+            kept = read_update_state(path=path)
+        assert kept is not None
+        self.assertEqual(kept.requires_python, ">=99.1")
 
 
 if __name__ == "__main__":

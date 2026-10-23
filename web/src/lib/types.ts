@@ -548,6 +548,11 @@ export interface UpdateState {
   latest_version?: string | null;
   newer?: boolean | null;
   unanswered_since?: number | null;
+  /** The pending release's `requires_python` when this host's interpreter
+   *  falls outside it — judged on the host, which knows its own Python —
+   *  else null. `c64cast --upgrade` cannot install such a release. */
+  needs_python?: string | null;
+  running_python?: string;
   /** How long without an answer the host considers too long. Sent by the
    *  host rather than hard-coded here, so the console and `c64cast
    *  --motd-line` agree by construction; a response without it is simply

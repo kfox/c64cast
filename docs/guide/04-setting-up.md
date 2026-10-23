@@ -313,6 +313,32 @@ guide suggested — it stays behind, and your editor goes on checking the file
 against the release you first installed. `--doctor` reports that, and prints the
 line to replace it with.
 
+### When a Release Needs a Newer Python
+
+Now and then a release stops supporting the oldest Python it used to run on.
+An install still on that Python cannot take it: `uv tool upgrade` and
+`pipx upgrade` keep the interpreter the tool was installed with, so they
+report nothing to upgrade. `--check-for-updates`, Doctor, the web console's
+banner and `--motd-line` all notice this and name the Python the release
+needs instead of offering `--upgrade`.
+
+Reinstall on a newer Python instead. With uv, naming the version is enough,
+and uv fetches that Python if it is missing:
+
+```bash
+uv tool upgrade --python 3.12 c64cast
+```
+
+With pipx, the Python has to be installed already:
+
+```bash
+pipx reinstall --python python3.12 c64cast
+```
+
+A plain pip install lives in a virtual environment tied to one Python, so
+make a new environment with the newer Python and install c64cast into it.
+Use whatever version the message names in place of `3.12`.
+
 ## Choosing Your Connection Target
 
 One option tells c64cast both what kind of hardware you have and where to

@@ -77,13 +77,20 @@ class UpdateCheck:
     did answer. It is what tells a reader how old the held answer is, which
     `checked_at` cannot: an appliance offline for a year still bumps
     `checked_at` daily as its timer fails. Absent from files written before
-    the field existed, hence the default."""
+    the field existed, hence the default.
+
+    `requires_python` is the `latest_version` release's own, held so a reader
+    can tell a release this interpreter can take from one it cannot
+    (`upgrade.needs_python`). It travels with `latest_version` — a carried
+    answer carries both — and is absent from files written before it
+    existed."""
 
     checked_at: float
     running_version: str
     latest_version: str | None
     newer: bool | None
     unanswered_since: float | None = None
+    requires_python: str | None = None
 
 
 def write_update_state(check: UpdateCheck, *, path: Path | None = None) -> None:
@@ -138,6 +145,14 @@ def _version(value: Any) -> str:
     return value
 
 
+def _specifier(value: Any) -> str:
+    """A `requires_python` as read from JSON, raising when it isn't one —
+    gated by charset for the reason :func:`_version` is."""
+    if not upgrade.looks_like_specifier(value):
+        raise ValueError(f"not a Python specifier: {value!r}")
+    return value
+
+
 def _flag(value: Any) -> bool:
     """A boolean as read from JSON, raising when it isn't one. `bool()`
     accepted every non-null value and `bool("false")` is `True`, so a
@@ -173,6 +188,7 @@ def _read_slot(target: Path) -> UpdateCheck:
         latest_version=_optional(data["latest_version"], _version),
         newer=_optional(data["newer"], _flag),
         unanswered_since=_optional(data.get("unanswered_since"), _timestamp),
+        requires_python=_optional(data.get("requires_python"), _specifier),
     )
 
 
@@ -334,12 +350,20 @@ def motd_line(check: UpdateCheck | None, now: float) -> str:
     laptop whose owner simply hasn't asked in a while — so blaming PyPI
     there sent an admin hunting a network fault that does not exist.
 
-    Both versions in the line reach a terminal, which is the one sink that
-    acts on control characters; `read_update_state` is where they are gated
-    (:func:`_version`), so nothing shaped unlike a version can arrive
-    here."""
+    A pending release this interpreter cannot install names the Python it
+    needs instead of `--upgrade`, which would find nothing to do.
+
+    Both versions and the specifier in the line reach a terminal, which is
+    the one sink that acts on control characters; `read_update_state` is
+    where they are gated (:func:`_version`, :func:`_specifier`), so nothing
+    shaped unlike them can arrive here."""
     if check is None:
         return ""
+    needs = upgrade.needs_python(check.requires_python)
+    if check.newer and check.latest_version is not None and needs is not None:
+        return upgrade.needs_newer_python_text(
+            check.latest_version, needs, upgrade.detect_install().kind
+        )
     if check.newer and check.latest_version is not None:
         return (
             f"A newer c64cast release is available: {check.latest_version} "
