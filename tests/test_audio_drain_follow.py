@@ -39,6 +39,7 @@ from c64cast.audio.audio_source import (
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.backend import (
     SYSTEM_MODE_CATEGORY,
+    TEENSYROM_PROFILE,
     ULTIMATE_64_HALT_CYCLES_PER_BYTE,
     ULTIMATE_PROFILE,
 )
@@ -54,6 +55,12 @@ HALT_S_PER_BYTE = 1.27 / CLOCK_NTSC
 # predicts there: 1 - 48 KiB/s x 1.27 cycles/B / 1.0227 MHz.
 HALO_BPS = 48 * 1024
 HALO_DRAIN = 1.0 - HALO_BPS * HALT_S_PER_BYTE
+# What a hires or mhires scene writes over the link while the REU stages its
+# frames, and the drain that predicts.
+BITMAP_BPS = 12 * 1024
+BITMAP_DRAIN = 1.0 - BITMAP_BPS * HALT_S_PER_BYTE
+# The same machine as refine_capabilities and resolve_system leave it.
+U64_NTSC = replace(U64_PROFILE, supports_system_mode=True, system="NTSC")
 
 
 def _feed(
@@ -255,6 +262,23 @@ class UltimateHaltFigureTest(unittest.TestCase):
         self.assertEqual(self.api.profile.halt_cycles_per_byte, 0.0)
 
 
+class StagedBitmapDrainTest(unittest.TestCase):
+    """The measured drain a REU-staged bitmap starts an audio file from, by
+    machine and standard; an unmeasured pair has none."""
+
+    def test_an_ultimate_64_ntsc_has_its_measured_figure(self):
+        self.assertEqual(U64_NTSC.staged_bitmap_drain(), 0.952)
+
+    def test_unmeasured_machines_and_standards_have_none(self):
+        for profile in (
+            replace(U64_NTSC, system="PAL"),
+            replace(U64_NTSC, supports_system_mode=False),
+            TEENSYROM_PROFILE,
+            ULTIMATE_PROFILE,
+        ):
+            self.assertIsNone(profile.staged_bitmap_drain(), profile)
+
+
 class _DrainingSink:
     """A DAC sink that drains at ``drain`` of its effective rate: each push
     blocks for as long as the sink takes to play it, as a full queue does,
@@ -435,6 +459,34 @@ class AudioFileSourceDrainTest(unittest.TestCase):
         follower = src._new_drain_follower()
         assert follower is not None
         self.assertTrue(follower._predicted)
+
+    def test_a_measured_drain_plays_a_staged_bitmap_in_real_time_from_the_start(self):
+        # An Ultimate 64 NTSC over a REU-staged bitmap: the link carries only
+        # ~12 KiB/s, which predicts 0.985, while the DAC drains at ~0.95.
+        drain = U64_NTSC.staged_bitmap_drain()
+        assert drain is not None
+        sink = _DrainingSink(self.now, drain)
+        start = self.now[0]
+        sink.api = _LinkApi(lambda: int((self.now[0] - start) * BITMAP_BPS))  # type: ignore[attr-defined]
+        src = AudioFileSource(
+            cast("audio_source.AudioStreamer", sink),
+            self.wav,
+            reactive=False,
+            measured_drain=drain,
+        )
+        wall = self._play(src, sink)
+        self.assertAlmostEqual(wall, self.SECONDS, delta=0.1)
+        self.assertIn(f"at a DAC drain of {drain:.3f}", self.logs[0])
+        self.assertFalse(any("predict" in line for line in self.logs), self.logs)
+
+    def test_an_unmeasured_staged_bitmap_starts_from_the_prediction(self):
+        sink = _DrainingSink(self.now, 0.952)
+        start = self.now[0]
+        sink.api = _LinkApi(lambda: int((self.now[0] - start) * BITMAP_BPS))  # type: ignore[attr-defined]
+        src = AudioFileSource(cast("audio_source.AudioStreamer", sink), self.wav, reactive=False)
+        wall = self._play(src, sink)
+        self.assertIn(f"predict the DAC drains at {BITMAP_DRAIN:.3f}", self.logs[0])
+        self.assertGreater(wall, self.SECONDS + 0.1)
 
     def test_the_sampler_is_not_followed(self):
         sink = _DrainingSink(self.now, 0.9)

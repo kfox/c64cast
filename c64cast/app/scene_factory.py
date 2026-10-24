@@ -2293,6 +2293,14 @@ def _video_tempo_scale(
     return api.dac_bitmap_tempo(multicolor) if configured is None else configured
 
 
+def _file_drain_start(mode: DisplayMode, api: C64Backend) -> float | None:
+    """The measured drain an audio file on the ``$D418`` DAC starts from over
+    ``mode``, or None to leave the start to the drain follower's prediction."""
+    if not (isinstance(mode, BitmapDisplayMode) and mode.use_reu_staged):
+        return None
+    return api.profile.staged_bitmap_drain()
+
+
 def _video_tempo_configured(cfg: Config, mode: DisplayMode) -> float | None:
     """The ``[audio].dac_bitmap_tempo_*`` value set for ``mode``, or None when
     unset: then the scene starts from the backend's figure and follows the
@@ -2622,6 +2630,7 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
             s.file,
             reactive=s.reactive,
             features_cfg=cfg.audio_features,
+            measured_drain=_file_drain_start(mode, ctx.api),
         )
         audio_src = file_audio_src
     else:
