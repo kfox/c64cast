@@ -124,10 +124,11 @@ class NmiTimer:
         # 1 = clean, or an unverifiable backend.
         self.arm_attempts = 0
         # The current scene's display mode (cleared by reset_after_stop), and
-        # the per-mode converged latches the adaptive loop seeds from:
-        # in-session and per-process, NOT cleared by reset_after_stop.
+        # the converged latches the adaptive loop seeds from, keyed by mode and
+        # sample_rate: in-session and per-process, NOT cleared by
+        # reset_after_stop.
         self.mode: str | None = None
-        self.learned_latch: dict[str, int] = {}
+        self.learned_latch: dict[tuple[str, int], int] = {}
 
     def nominal_latch(self) -> int:
         """CIA #2 Timer A latch for the NMI DAC consumer at sample_rate.
@@ -182,14 +183,14 @@ class NmiTimer:
     def seed_latch_for_mode(self, mode: str | None) -> int:
         """Starting CIA #2 latch for the adaptive loop, chosen so playback begins
         near the converged rate (minimal start glide). Uses the in-session learned
-        value for `mode` if known; else a per-mode-class default — bitmap modes
-        (heavy bus-halt loss) seed at the ceiling, char/light/unknown modes at
-        nominal. Clamped to the safe [ceiling, nominal] range, which is never
+        value for `mode` at the current sample_rate if known; else a
+        per-mode-class default — bitmap modes (heavy bus-halt loss) seed at the
+        ceiling, char/light/unknown modes at nominal. Clamped to the safe [ceiling, nominal] range, which is never
         empty because nominal_latch is itself held at or above the ceiling."""
         nominal = self.nominal_latch()
         ceiling = self.ceiling_latch()
-        if mode is not None and mode in self.learned_latch:
-            seed = self.learned_latch[mode]
+        if mode is not None and (mode, self._st.sample_rate) in self.learned_latch:
+            seed = self.learned_latch[mode, self._st.sample_rate]
         elif mode in NMI_BITMAP_SEED_MODES:
             seed = ceiling
         else:
@@ -673,7 +674,7 @@ class RateServo:
             # Within deadband or clamped at the ceiling: converged.
             self.loop_acquiring = False
             if timer.mode is not None:
-                timer.learned_latch[timer.mode] = timer.latch
+                timer.learned_latch[timer.mode, st.sample_rate] = timer.latch
             return
         log.debug(
             "[audio] adaptive NMI rate%s: R≈%.0f / %d Hz target, latch %d → %d",

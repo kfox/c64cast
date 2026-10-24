@@ -2738,8 +2738,15 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
 
     def test_seed_prefers_learned_value(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s.nmi.learned_latch["mhires"] = 90
+        s.nmi.learned_latch["mhires", 10500] = 90
         self.assertEqual(s.nmi.seed_latch_for_mode("mhires"), 90)  # learned beats the class default
+
+    def test_seed_ignores_a_latch_learned_at_another_rate(self):
+        # A latch learned at 12 kHz arms ~13 kHz once the scene's rate drops to 10 kHz.
+        s = _make(sample_rate=12000, nmi_rate_adaptive=True)
+        s.nmi.learned_latch["petscii", 12000] = s.nmi.ceiling_latch() + 4
+        s.sample_rate = 10000
+        self.assertEqual(s.nmi.seed_latch_for_mode("petscii"), s.nmi.nominal_latch())
 
     def test_start_timer_arms_at_mode_seed(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
@@ -2756,7 +2763,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.last_r_addr = -1
         s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
         s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s.nmi.learned_latch["mhires"], 88)
+        self.assertEqual(s.nmi.learned_latch["mhires", 10500], 88)
 
     def _converge(self, s: AudioStreamer) -> None:
         """One adaptive decision with R at target, so the loop settles."""
@@ -2776,7 +2783,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.nmi.latch = s.nmi.nominal_latch()
         s.set_nmi_latch_for_mode("mhires")
         self._converge(s)
-        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
+        self.assertEqual(s.nmi.learned_latch, {("mhires", 10500): s.nmi.ceiling_latch()})
         s._worker_thread = None
         s.stop()
         # The next scene: no display_mode, adaptive start.
@@ -2784,7 +2791,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
         s.nmi.latch = 90  # wherever this scene's load settles
         self._converge(s)
-        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
+        self.assertEqual(s.nmi.learned_latch, {("mhires", 10500): s.nmi.ceiling_latch()})
 
     def test_loop_discards_torn_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
@@ -2923,7 +2930,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         # sample_rate and hold it there through the whole warm-up; the seed
         # keeps to the [ceiling, nominal] range the loop itself steps in.
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s.nmi.learned_latch["petscii"] = s.nmi.nominal_latch() + 20
+        s.nmi.learned_latch["petscii", 10500] = s.nmi.nominal_latch() + 20
         self.assertEqual(s.nmi.seed_latch_for_mode("petscii"), s.nmi.nominal_latch())
 
     def test_the_rate_reads_across_the_ring_end_as_a_forward_advance(self):
