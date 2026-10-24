@@ -214,7 +214,7 @@ The contracts this repository states, and what keeps each one honest:
   data directory layout. Removing or renaming one without a deprecation warning
   for a minor release is a breaking change (CONTRIBUTING.md).
 - **Changelog.** Anything a user would notice needs a fragment under
-  `changelog.d/`, which becomes the release notes verbatim. `CHANGELOG.md` is
+  `changelog.d/`, which becomes the changelog entries unchanged. `CHANGELOG.md` is
   never edited directly.
 - **Docs conventions.**
   - Docs are written in the present tense.

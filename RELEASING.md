@@ -14,7 +14,33 @@ A release is one tag push;
 | `c64cast-reference-guide-X.Y.Z.pdf` | the GitHub release |
 | `c64cast-performance-card-X.Y.Z.pdf` | the GitHub release |
 | The same three PDFs again, unversioned | the GitHub release |
-| Release notes | the GitHub release, from that version's `CHANGELOG.md` section, which the bump built from `changelog.d/` |
+| Release notes | the GitHub release: that version's Highlights and Upgrade notes, plus a link to its full `CHANGELOG.md` section |
+
+## The release body: a highlights block plus a link
+
+The GitHub release page is for a user deciding whether to upgrade and how. It
+answers two questions, quickly:
+
+1. **Why upgrade?** The **Highlights**: a handful (about 3–7) of the changes a
+   user would most notice — a new scene, a faster or fixed workflow, a new kind
+   of hardware supported — each written in the user's language, as what they
+   can now do or no longer have to put up with. An internal refactor, a test, a
+   CI or tooling change, or a fix to something nobody saw is never a highlight,
+   however much work it was.
+2. **What must I do?** The **Upgrade notes**, in full: every step this upgrade
+   asks of the user — reinstall for a new extra, re-measure a calibration,
+   rename a setting — and above all a step unique to this release. They stay
+   whole because an instruction behind a link is an instruction not followed.
+
+Everything else sits behind the link to the version's full `CHANGELOG.md`
+section, which stays unabridged. Developers and agents who want the detail
+read that, the PRs, or the code. Do not paste more of the changelog into the
+body, and do not promote ordinary entries to highlights to make it look
+fuller: a short page is the point.
+
+`bump_version.py --check` holds this to 1–7 highlights, and a version without
+any fails the check, the cut, and the release workflow. Nothing falls back to
+the full section.
 
 Each book ships twice because a version-stamped filename is what you want on
 disk and an unversioned one is what a link can point at:
@@ -50,10 +76,20 @@ if you want a required reviewer on the upload step.
 
 ## Cutting a release
 
-**1. Check the fragments.** Every file under `changelog.d/` (see its
-[README](changelog.d/README.md)) becomes a bullet in the release notes
-verbatim, so read them as the announcement they are about to be.
-`python scripts/bump_version.py --check <version>` refuses a malformed one.
+**1. Write the highlights, then check the fragments.** The release body is a
+highlights block plus a link (see [above](#the-release-body-a-highlights-block-plus-a-link)).
+Read the fragments under `changelog.d/` (see its
+[README](changelog.d/README.md)), pick the handful — about 3–7 — that a user
+would most want to hear about, and write each as its own
+`changelog.d/<slug>.highlights.md`: one bullet, in user language, no internal
+refactors. A highlight usually restates an `added`, `changed` or `fixed`
+entry for the reader in a hurry; that entry stays where it is. Check every
+`upgrade-notes` fragment too: those go into the body in full.
+
+Every fragment becomes a bullet in the full changelog section unchanged, so
+read the rest as the record they are about to be.
+`python scripts/bump_version.py --check <version>` refuses a malformed one,
+and the cut refuses a release with no highlights or more than seven.
 
 **2. Bump.**
 
@@ -62,7 +98,8 @@ python scripts/bump_version.py 0.2.0
 ```
 
 Moves `[project] version`, collects the fragments into a new dated changelog
-section (Upgrade notes first, then Added, Changed, Deprecated, Removed, Fixed, Security)
+section (Highlights, then Upgrade notes, then Added, Changed, Deprecated, Removed, Fixed,
+Security)
 and deletes them, fixes the link references, and re-runs `uv lock`.
 `## [Unreleased]` stays, pointing at `changelog.d/`.
 

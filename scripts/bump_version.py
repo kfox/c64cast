@@ -4,10 +4,12 @@
     python scripts/bump_version.py 0.2.0          # cut 0.2.0, dated today
     python scripts/bump_version.py 0.2.0 --date 2026-08-01
     python scripts/bump_version.py --check 0.2.0  # verify, change nothing
-    python scripts/bump_version.py --notes 0.2.0  # print that section's body
+    python scripts/bump_version.py --notes 0.2.0  # print the release body's notes
 
 Cutting collects every fragment under `changelog.d/` into the new version's
 section and deletes the files; `changelog.d/README.md` has the fragment format.
+The GitHub release body is a highlights block plus a link: `--notes` prints a
+version's Highlights and Upgrade notes and a link to its full section.
 `--check` and `--notes` write nothing. See RELEASING.md.
 """
 
@@ -42,8 +44,9 @@ UNRELEASED_POINTER = (
     "README.md has the format), and are collected here when the release is cut."
 )
 
-# Release-body order: Upgrade notes lead, the rest follow Keep a Changelog.
+# Release-body order: Highlights, then Upgrade notes, then Keep a Changelog.
 FRAGMENT_CATEGORIES = {
+    "highlights": "Highlights",
     "upgrade-notes": "Upgrade notes",
     "added": "Added",
     "changed": "Changed",
@@ -63,6 +66,11 @@ FRAGMENT_HEADING_RE = re.compile(r"^#{1,6}[ \t]")
 SECTION_RE = re.compile(r"^## \[([^\]]+)\](?:[ \t]+-[ \t]+(\d{4}-\d{2}-\d{2}))?[ \t]*$", re.M)
 
 LINK_REF_RE = re.compile(r"^\[([^\]]+)\]: (\S+)$", re.M)
+
+HIGHLIGHTS = FRAGMENT_CATEGORIES["highlights"]
+UPGRADE_NOTES = FRAGMENT_CATEGORIES["upgrade-notes"]
+RELEASE_BODY_SUBSECTIONS = (HIGHLIGHTS, UPGRADE_NOTES)
+MAX_HIGHLIGHTS = 7
 
 
 class BumpError(Exception):
@@ -112,6 +120,75 @@ def section_body(changelog: str, version: str) -> str:
         body = LINK_REF_RE.sub("", changelog[start:end])
         return body.strip() + "\n"
     raise BumpError(f"CHANGELOG.md has no '## [{version}]' section")
+
+
+def subsections(body: str) -> list[tuple[str, str]]:
+    """Every `### title` subsection of a section body, as (title, text), in order."""
+    found: list[tuple[str, list[str]]] = []
+    fenced = False
+    for line in body.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        if not fenced and line.startswith("### "):
+            found.append((line[len("### ") :].strip(), []))
+        elif found:
+            found[-1][1].append(line)
+    return [(title, "\n".join(lines).strip()) for title, lines in found]
+
+
+def entry_count(text: str) -> int:
+    """Top-level bullets in a subsection; continuation lines are indented."""
+    return len(re.findall(r"(?m)^- ", text))
+
+
+def highlights_problems(body: str, version: str) -> list[str]:
+    """Why `body`, a version's section, cannot become its release body."""
+    titles = [title for title, _ in subsections(body)]
+    if HIGHLIGHTS not in titles:
+        return [
+            f"[{version}] has no '### {HIGHLIGHTS}' -- the release body is a highlights "
+            f"block plus a link, so add 1-{MAX_HIGHLIGHTS} `<slug>.highlights.md` "
+            "fragments before the cut (see RELEASING.md)"
+        ]
+    problems = []
+    if titles[0] != HIGHLIGHTS:
+        problems.append(f"[{version}] opens with '### {titles[0]}', not '### {HIGHLIGHTS}'")
+    count = entry_count(dict(subsections(body))[HIGHLIGHTS])
+    if not 1 <= count <= MAX_HIGHLIGHTS:
+        problems.append(
+            f"[{version}] has {count} highlights; a release body holds 1-{MAX_HIGHLIGHTS}, "
+            "and every other entry is one click away in CHANGELOG.md"
+        )
+    return problems
+
+
+def github_anchor(heading: str) -> str:
+    """The fragment id github.com gives a Markdown heading's text."""
+    return re.sub(r"[^\w\- ]", "", heading.lower()).replace(" ", "-")
+
+
+def full_changelog_url(changelog: str, version: str) -> str:
+    """Where `version`'s whole section reads on GitHub, as of its tag."""
+    date = dict(sections(changelog)).get(version)
+    heading = f"[{version}] - {date}" if date else f"[{version}]"
+    return f"{REPO_URL}/blob/v{version}/CHANGELOG.md#{github_anchor(heading)}"
+
+
+def release_notes(changelog: str, version: str) -> str:
+    """The changelog's share of the GitHub release body: Highlights, Upgrade
+    notes, and a link to the full section."""
+    body = section_body(changelog, version)
+    problems = highlights_problems(body, version)
+    if problems:
+        raise BumpError("\n  ".join(problems))
+    blocks = [
+        f"### {title}\n\n{text}"
+        for title, text in subsections(body)
+        if title in RELEASE_BODY_SUBSECTIONS
+    ]
+    link = full_changelog_url(changelog, version)
+    blocks.append(f"**Every change in {version}** is listed in [the full changelog]({link}).")
+    return "\n\n".join(blocks) + "\n"
 
 
 class Fragment(NamedTuple):
@@ -289,6 +366,11 @@ def check(version: str) -> list[str]:
         problems.append(f"CHANGELOG.md's '## [{version}]' section is missing its date")
     if f"[{version}]: " not in changelog:
         problems.append(f"CHANGELOG.md has no '[{version}]:' link reference")
+    if version in dates:
+        problems.extend(
+            f"CHANGELOG.md: {problem}"
+            for problem in highlights_problems(section_body(changelog, version), version)
+        )
 
     problems.extend(fragment_problems())
     leftover = [path.name for path in fragment_paths()]
@@ -307,7 +389,11 @@ def bump(version: str, date: str, do_lock: bool) -> None:
 
     new_pyproject = apply_pyproject(pyproject, version)
     fragments = read_fragments()
-    new_changelog = apply_changelog(changelog, version, date, render_fragments(fragments))
+    body = render_fragments(fragments)
+    problems = highlights_problems(body, version)
+    if problems:
+        raise BumpError("\n  ".join(problems))
+    new_changelog = apply_changelog(changelog, version, date, body)
 
     PYPROJECT.write_text(new_pyproject, encoding="utf-8")
     CHANGELOG.write_text(new_changelog, encoding="utf-8")
@@ -335,7 +421,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--notes",
         action="store_true",
-        help="print this version's changelog section to stdout; write nothing",
+        help="print this version's release notes (Highlights, Upgrade notes, a link to "
+        "the full changelog section) to stdout; write nothing",
     )
     ap.add_argument(
         "--date",
@@ -360,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.notes:
-            print(section_body(CHANGELOG.read_text(encoding="utf-8"), version), end="")
+            print(release_notes(CHANGELOG.read_text(encoding="utf-8"), version), end="")
             return 0
         if args.check:
             problems = check(version)
