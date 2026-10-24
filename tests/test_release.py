@@ -307,6 +307,12 @@ class TestReleaseNotes(unittest.TestCase):
         problems = bv.highlights_problems(f"### Highlights\n\n{many}\n", "1.0.0")
         self.assertTrue(any(f"{bv.MAX_HIGHLIGHTS + 1} highlights" in p for p in problems), problems)
 
+    def test_a_heading_inside_a_code_fence_stays_in_its_entry(self) -> None:
+        note = "- **Rerun the setup.**\n\n```bash\n### not a heading\nc64cast --init\n```"
+        self.assertIsNone(bv._fragment_problem("setup.upgrade-notes.md", note + "\n"))
+        body = f"### Highlights\n\n- One.\n\n### Upgrade notes\n\n{note}\n"
+        self.assertIn(note, bv.release_notes(_cut(body), "1.0.0"))
+
     def test_continuation_lines_do_not_count_as_highlights(self) -> None:
         body = "### Highlights\n\n" + "\n\n".join(
             f"- **Highlight {n}.**\n  - not a highlight" for n in range(bv.MAX_HIGHLIGHTS)
