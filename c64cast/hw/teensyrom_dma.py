@@ -902,8 +902,9 @@ class TRClient:
         (a reply lost to a reset's reboot chatter, say) and wait on a header,
         which would be the next command's bytes. Four zero bytes are a
         zero-span header, refused with nothing owed, and firmware that has
-        already dropped the command reads them as two unknown 0x0000 tokens.
-        The resync before the next command covers the rest."""
+        already dropped the command reads them as one-byte commands it does
+        not have, and ignores them. The resync before the next command covers
+        the rest."""
         with contextlib.suppress(OSError):
             self._send_spans_header(bytes(4))
 
@@ -923,12 +924,13 @@ class TRClient:
         firmware refuses before anything is owed — so the probe writes no C64
         memory and leaves no discard window behind.
 
-        The header goes out whatever the token's reply was. Boot chatter after
-        a reset can arrive where the reply should be, and the firmware may
-        then act on the token *after* the probe has given up on it, waiting on
-        a header that would otherwise be the next command's bytes. Four zero
-        bytes are safe on every firmware: refused as a header, and read by
-        firmware without the command as two unknown 0x0000 tokens.
+        The header goes out whatever the token's reply was, unless it was a
+        FailToken (see `_finish_spans_probe`). Boot chatter after a reset can
+        arrive where the reply should be, and the firmware may then act on the
+        token *after* the probe has given up on it, waiting on a header that
+        would otherwise be the next command's bytes. Four zero bytes are safe
+        on every firmware: refused as a header, and ignored as one-byte
+        commands by firmware without the command.
 
         An ack to the token, or the zero-span refusal's text when chatter hid
         the reply, is READY. A FailToken, or the bus-held refusal's text, is
@@ -955,8 +957,7 @@ class TRClient:
             except BaseException:
                 self._close_spans_token()
                 raise
-            self._send_spans_header(bytes(4))
-            text = self.transport.drain_text(0.3)
+            text = self._finish_spans_probe(tok, bytes(4))
             timed_out = _FIRMWARE_TIMEOUT_TEXT in text
             if timed_out and tok != TOK_ACK:
                 raise TRError("WriteC64Spans probe: TR timed out on the token")
@@ -973,8 +974,9 @@ class TRClient:
         with it)? For firmware `probe_spans` found READY: a zero-span header
         with the flag set is refused for its span count by firmware that knows
         the flag, and for the flag by firmware that does not, with nothing
-        owed either way. Any other answer leaves the link out of step and
-        counts as no."""
+        owed either way. A FailToken (a held bus) counts as no, and one with
+        the firmware's ``Timeout!`` raises TRError, as `probe_spans` does; any
+        other answer leaves the link out of step and counts as no too."""
         with self._command():
             self._drain_stale()
             try:
@@ -983,13 +985,27 @@ class TRClient:
             except BaseException:
                 self._close_spans_token()
                 raise
-            self._send_spans_header(bytes([SPANS_FLAG_LOCK_TO_STORE, 0, 0, 0]))
-            text = self.transport.drain_text(0.3)
+            text = self._finish_spans_probe(tok, bytes([SPANS_FLAG_LOCK_TO_STORE, 0, 0, 0]))
+            if tok == TOK_FAIL:
+                if _FIRMWARE_TIMEOUT_TEXT in text:
+                    raise TRError("WriteC64Spans lock probe: TR timed out on the token")
+                return False
             if tok != TOK_ACK or _SPANS_COUNT_REFUSAL not in text:
                 if _SPANS_FLAGS_REFUSAL not in text:
                     self._out_of_step = True
                 return False
             return True
+
+    def _finish_spans_probe(self, tok: int | None, header: bytes) -> str:
+        """Send a probe's zero-span header unless the token was refused, under
+        the caller's lock, and return the text that answers the probe."""
+        # The firmware answers this token with FailToken only on its way back
+        # to the dispatcher (a held bus in WriteC64SpansCommand, or a timeout
+        # on the token's second byte), and ServiceSerial reads whatever comes
+        # next as one-byte commands of its own.
+        if tok != TOK_FAIL:
+            self._send_spans_header(header)
+        return self.transport.drain_text(0.3)
 
     def sample_watch(self, store: int | None) -> SampleWatchStats:
         """One SampleWatch: watch the C64's writes to `store`, or stop

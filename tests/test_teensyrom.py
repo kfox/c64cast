@@ -237,20 +237,24 @@ _LOCK_UNKNOWN = b"Flags must be 0"
 class _SpansLoopback(LoopbackTransport):
     """A loopback that can answer the four-byte span header with text, the way
     firmware does when it refuses a zero-span header (with or without the
-    lock flag), and records each send and each quiet window drain_text was
+    lock flag), and the token with text, the way it follows a FailToken with
+    its reason; it records each send and each quiet window drain_text was
     asked to wait out, in order."""
 
-    def __init__(self, on_header: bytes = b"", on_lock_header: bytes = b""):
+    def __init__(self, on_header: bytes = b"", on_lock_header: bytes = b"", on_token: bytes = b""):
         super().__init__()
         self.on_header = on_header
         self.on_lock_header = on_lock_header
+        self.on_token = on_token
         self.events: list[tuple[str, object]] = []
         self.quiet_waits: list[float] = []
 
     def send_all(self, data: bytes) -> None:
         self.events.append(("send", bytes(data)))
         super().send_all(data)
-        if data == bytes(4):
+        if data == _SPANS_TOK:
+            self.queue_stale(self.on_token)
+        elif data == bytes(4):
             self.queue_stale(self.on_header)
         elif data == _LOCK_PROBE_HEADER:
             self.queue_stale(self.on_lock_header)
@@ -386,14 +390,17 @@ class SpansFramingTest(unittest.TestCase):
                 self.c.write_spans(spans, slice_bytes, gap)
         self.assertEqual(bytes(self.t.sent), b"")
 
-    def test_probe_always_closes_with_a_zero_header(self):
+    def test_probe_closes_an_acked_token_with_a_zero_header(self):
         self.t.queue_token(TOK_ACK)
         self.assertIs(self.c.probe_spans(), SpansProbe.READY)
         self.assertEqual(bytes(self.t.sent), _SPANS_TOK + bytes(4))
 
-    def test_probe_reports_a_held_bus(self):
+    def test_probe_reports_a_held_bus_with_nothing_sent_after_the_token(self):
         self.t.queue_token(TOK_FAIL)
+        self.t.on_token = b"C64 is paused\r\n"
         self.assertIs(self.c.probe_spans(), SpansProbe.HELD)
+        self.assertEqual(bytes(self.t.sent), _SPANS_TOK)
+        self.assertEqual(_next_write_events(self.t, self.c), _IN_STEP)
 
     def test_probe_reads_support_from_the_refusal_when_chatter_hid_the_reply(self):
         t = _SpansLoopback(on_header=b"Want 1 to 64 spans")
@@ -442,6 +449,23 @@ class SpansFramingTest(unittest.TestCase):
         c = TRClient(t)
         self.assertFalse(c.probe_spans_lock())
         self.assertEqual(_next_write_events(t, c), _IN_STEP)
+
+    def test_lock_probe_refused_at_its_token_sends_nothing_after_it(self):
+        t = _SpansLoopback(on_lock_header=_LOCK_KNOWN, on_token=b"REU emulation is running\r\n")
+        t.queue_token(TOK_FAIL)
+        c = TRClient(t)
+        self.assertFalse(c.probe_spans_lock())
+        self.assertEqual(bytes(t.sent), _SPANS_TOK)
+        self.assertEqual(_next_write_events(t, c), _IN_STEP)
+
+    def test_lock_probe_the_firmware_timed_out_on_resyncs(self):
+        t = _SpansLoopback(on_token=b"Timeout!\n")
+        t.queue_token(TOK_FAIL)
+        c = TRClient(t)
+        with self.assertRaisesRegex(TRError, "timed out on the token"):
+            c.probe_spans_lock()
+        self.assertEqual(bytes(t.sent), _SPANS_TOK)
+        self.assertEqual(_next_write_events(t, c), _RESYNCED)
 
     def test_lock_probe_answered_by_neither_refusal_resyncs(self):
         t = _SpansLoopback(on_lock_header=b"Timeout!")
@@ -2375,9 +2399,10 @@ class CutCommandTest(unittest.TestCase):
 
     def test_a_spans_probe_the_firmware_timed_out_on_resyncs(self):
         self.t.queue_token(TOK_FAIL)
-        self.t.on_header = b"Timeout!\n"  # read after the probe's zero header
+        self.t.on_token = b"Timeout!\n"
         with self.assertRaisesRegex(TRError, "timed out on the token"):
             self.c.probe_spans()
+        self.assertEqual(bytes(self.t.sent), _SPANS_TOK)
         self.assertEqual(_next_write_events(self.t, self.c), _RESYNCED)
 
     def test_an_acked_spans_probe_with_a_firmware_timeout_still_finds_support(self):
