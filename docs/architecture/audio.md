@@ -28,7 +28,7 @@ An NMI-driven 4-bit SID DAC, writing the `$D418` volume nibble. This is the only
 
 ### Sample rate and the overrun ceiling
 
-The default is **12 kHz**, set by the 2026-07-02 hardware sweeps below. That puts Nyquist at ≈6.0 kHz, so fricatives and sibilants survive and speech is clear.
+The default is **12 kHz**, set by the 2026-07-02 hardware sweeps below (10 kHz for a bitmap scene on a TeensyROM+ that locks its slices; see below). That puts Nyquist at ≈6.0 kHz, so fricatives and sibilants survive and speech is clear.
 
 `c64.nmi_rate_safety` is the single source of truth for the safe ceiling. `scene_factory.validate_nmi_sample_rate` rejects overrunning rates at load, and `--doctor` reports them.
 
@@ -45,6 +45,8 @@ There are **two different ceilings**, and the shipped default respects the lower
 | 15000 | −1.1 % (positive control) |
 
 The onset was **identical in char (petscii) and bitmap (mhires) modes**, which identifies the cause: the host-DMA audio-ring writes themselves halt the 6510 and steal handler cycles. It is not video bus load. So the default stays below ≈12.5 kHz even though the isolated handler could go higher.
+
+**An unset `[audio].sample_rate` is chosen per scene.** `Scene.setup` calls `AudioStreamer.set_rate_for_mode` with the scene's display mode before any audio starts, and the streamer takes `C64Backend.dac_sample_rate(bitmap)`, bitmap meaning a mode in `NMI_BITMAP_SEED_MODES`. Every backend answers `DEFAULT_DAC_SAMPLE_RATE` (12000), except a TeensyROM+ that can lock its DMA slices, which answers 10000 for a bitmap scene, for the throughput reason in [hardware-io.md](hardware-io.md#teensyrom_apipy--the-teensyrom-backend). This costs no extra glitch: every audio-bearing scene already stops the streamer at teardown (NMI off, KERNAL vector back, SID muted) and the next scene's `start_*` re-uploads the handler, refills the ring and re-arms Timer A from `nominal_latch`, so the new rate only changes the latch that re-arm writes. Everything that converts samples to time (the video resampler's `target_sample_rate`, producer pacing, `position_seconds`) reads `effective_rate` at that scene's setup or start, after the switch. The line DSP chain is rebuilt at the new rate. A set rate, from the file or `-r`, is never replaced, even when it equals the default. With `nmi_rate_adaptive` on, a mode's `learned_latch` was learned at that mode's rate unless the lock was lost in between, and the seed is clamped to `[ceiling, nominal]` of the current rate either way.
 
 Char and light scenes hold cleanly near the ceiling — petscii video plus host-DMA DAC verified clean with no underruns at both 11.6 and 13.5 kHz on a TeensyROM+. Bitmap+digi is the heaviest case (≈10 KB/frame re-upload), but the bitmap+digi fps cap and the REU-staged double-buffer hold its bus-halt loss near zero (see host-DMA pitch compensation below).
 

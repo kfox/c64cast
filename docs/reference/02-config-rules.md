@@ -364,7 +364,7 @@ this ladder.
 **Command-line flags** are this run. Every overridable flag defaults to `None`
 internally, so "you passed the default" and "you passed nothing" stay distinct
 — `--sample-rate 12000` overrides a file that says 8000, even though 12000 is
-also the built-in default.
+also the rate most scenes play at when the key is unset.
 
 Two environment variables sit near this layer without being part of it.
 `$C64CAST_URL` is a *fallback* for `-u`, consulted only when no `-u` was

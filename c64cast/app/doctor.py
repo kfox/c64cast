@@ -31,6 +31,7 @@ from typing import IO, Any, Literal
 from c64cast.hw import hw_provision
 from c64cast.hw.c64 import (
     CIA_TIMER_LATCH_MAX,
+    DEFAULT_DAC_SAMPLE_RATE,
     max_safe_sample_rate,
     min_sample_rate,
     nearest_latch,
@@ -39,7 +40,6 @@ from c64cast.hw.c64 import (
 from c64cast.sid import emusid_mixer
 
 from .config import (
-    AudioCfg,
     ColorCfg,
     Config,
     ConfigError,
@@ -795,9 +795,11 @@ def _sample_rate_hint(system: str, rate: int) -> str:
     A rate refused for being too slow for the 16-bit timer (or not positive)
     gets told to go up, not down.
     """
-    default_rate = AudioCfg().sample_rate
+    default_rate = DEFAULT_DAC_SAMPLE_RATE
     clears_both = all(nmi_rate_safety(std, default_rate)[0] == "ok" for std in ("NTSC", "PAL"))
-    default_note = f" The shipped default of {default_rate} Hz clears both." if clears_both else ""
+    default_note = (
+        f" Unset, it plays at {default_rate} Hz or lower, which clears both." if clears_both else ""
+    )
     if rate <= 0 or nearest_latch(rate, system) > CIA_TIMER_LATCH_MAX:
         floor = min_sample_rate(system)
         return f"Raise [audio].sample_rate — min is ~{floor} Hz on {system}.{default_note}"
@@ -822,7 +824,7 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
         if not cfg.audio.enabled:
             continue
         system = "NTSC" if cfg.ultimate64.system.upper() == "AUTO" else cfg.ultimate64.system
-        rate = cfg.audio.sample_rate
+        rate = DEFAULT_DAC_SAMPLE_RATE if cfg.audio.sample_rate is None else cfg.audio.sample_rate
         level, message = nmi_rate_safety(system, rate)
         if level != "ok":
             out.append(

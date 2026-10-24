@@ -19,6 +19,7 @@ from unittest import mock
 from _fakes import FakeTime, SleepDrivenClock, make_psid
 
 from c64cast.app import config as cfgmod
+from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr_api
@@ -30,7 +31,11 @@ from c64cast.hw.backend import (
     NmiSampleStore,
     make_backend,
 )
-from c64cast.hw.c64 import nmi_latch_for_rate
+from c64cast.hw.c64 import (
+    DEFAULT_DAC_SAMPLE_RATE,
+    LOCKED_BITMAP_DAC_SAMPLE_RATE,
+    nmi_latch_for_rate,
+)
 from c64cast.hw.teensyrom_api import TeensyROMBackend
 from c64cast.hw.teensyrom_dma import (
     DRIVE_SD,
@@ -972,6 +977,32 @@ class LockedSlicingBackendTest(unittest.TestCase):
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b.write_memory_file("4000", bytes(64))
         self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+
+    def test_bitmap_scenes_default_to_the_locked_rate_before_any_consumer(self):
+        b, _ = self._backend(lock=True)
+        self.assertEqual(b.dac_sample_rate(True), LOCKED_BITMAP_DAC_SAMPLE_RATE)
+        self.assertEqual(b.dac_sample_rate(False), DEFAULT_DAC_SAMPLE_RATE)
+
+    def test_an_unset_rate_arms_the_locked_bitmap_latch_only_for_bitmap_scenes(self):
+        b, _ = self._backend(lock=True)
+        st = AudioStreamer(b, None, "NTSC")
+        st.set_rate_for_mode("mhires")
+        self.assertEqual(st.nmi.nominal_latch(), nmi_latch_for_rate(10000, "NTSC"))
+        st.set_rate_for_mode("petscii")
+        self.assertEqual(st.nmi.nominal_latch(), nmi_latch_for_rate(12000, "NTSC"))
+
+    def test_bitmap_rate_is_the_default_without_the_lock(self):
+        for mode, lock in (("auto", False), ("on", True)):
+            b, _ = self._backend(mode, lock=lock)
+            self.assertEqual(b.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE, mode)
+
+    def test_bitmap_rate_falls_back_when_the_snoop_is_held(self):
+        b, t = self._backend(lock=True)
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"Bus snoop in use")
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b.note_nmi_consumer(True, _STORE)
+        self.assertEqual(b.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE)
 
     def test_auto_starts_the_watch_and_locks_writes_to_the_store(self):
         b, t = self._locked()

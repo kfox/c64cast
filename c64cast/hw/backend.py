@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .c64 import KERNAL, SCREEN, SID, VECTORS, VIC
+from .c64 import DEFAULT_DAC_SAMPLE_RATE, KERNAL, SCREEN, SID, VECTORS, VIC
 
 if TYPE_CHECKING:
     from c64cast.app.config import Config
@@ -442,6 +442,11 @@ class C64Backend(ABC):
         Ultimate 64-II NTSC; a TeensyROM writing with WriteC64Mem lands within
         1% of the same figures."""
         return 0.88 if multicolor else 0.89
+
+    def dac_sample_rate(self, bitmap: bool) -> int:
+        """The $D418 DAC rate for a scene, bitmap or not, on this link, for an
+        unset [audio].sample_rate."""
+        return DEFAULT_DAC_SAMPLE_RATE
 
     def note_nmi_consumer(self, active: bool, store: NmiSampleStore | None = None) -> None:
         """A sample player driven by the CIA2 NMI has started (or stopped)

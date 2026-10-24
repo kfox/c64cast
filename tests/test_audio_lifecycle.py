@@ -2455,6 +2455,55 @@ class StallResyncTest(unittest.TestCase):
         self.assertTrue(any("Re-anchored" in line for line in cm.output))
 
 
+class _BitmapRateAPI(FakeAPI):
+    def dac_sample_rate(self, bitmap):
+        return 10000 if bitmap else 12000
+
+
+class SceneDacRateTest(unittest.TestCase):
+    """An unset [audio].sample_rate takes the backend's rate per scene; a set
+    one holds for every scene."""
+
+    def _streamer(self, rate: int | None) -> AudioStreamer:
+        return AudioStreamer(cast(Ultimate64API, _BitmapRateAPI()), rate, "NTSC")
+
+    def test_an_unset_rate_follows_each_scenes_display_mode(self):
+        st = self._streamer(None)
+        self.assertEqual(st.sample_rate, 12000)
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
+            st.set_rate_for_mode("mhires")
+        self.assertEqual(st.sample_rate, 10000)
+        for mode in ("petscii", None):
+            st.set_rate_for_mode("hires")
+            with self.assertLogs("c64cast.audio.audio", level="INFO"):
+                st.set_rate_for_mode(mode)
+            self.assertEqual(st.sample_rate, 12000, mode)
+
+    def test_a_set_rate_wins_even_at_the_default(self):
+        for rate in (12000, 11025):
+            st = self._streamer(rate)
+            st.set_rate_for_mode("mhires")
+            self.assertEqual(st.sample_rate, rate)
+
+    def test_the_dsp_chain_runs_at_the_scene_rate(self):
+        st = self._streamer(None)
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
+            st.set_rate_for_mode("mhires")
+        self.assertEqual(st._dsp.sample_rate, 10000)
+
+    def test_scene_setup_picks_the_rate_from_its_display_mode(self):
+        from c64cast.scenes.scenes import Scene
+
+        st = self._streamer(None)
+        mode = mock.MagicMock()
+        mode.name = "mhires"
+        scene = Scene(cast(Ultimate64API, st.api), st, mode, "clip")
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
+            with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+                scene.setup()
+        self.assertEqual(st.sample_rate, 10000)
+
+
 class NmiRateSafetyTest(unittest.TestCase):
     """The NMI sample-rate guard (c64.nmi_rate_safety) + its config wiring.
 
@@ -2463,12 +2512,10 @@ class NmiRateSafetyTest(unittest.TestCase):
     slower clock = tighter ceiling than NTSC. See [[project-nmi-rate-intelligibility]]."""
 
     def test_default_rate_is_safe_both_standards(self):
-        from c64cast.app.config import AudioCfg
-        from c64cast.hw.c64 import nmi_rate_safety
+        from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, nmi_rate_safety
 
-        self.assertEqual(AudioCfg().sample_rate, 12000)
         for system in ("NTSC", "PAL"):
-            self.assertEqual(nmi_rate_safety(system, 12000)[0], "ok")
+            self.assertEqual(nmi_rate_safety(system, DEFAULT_DAC_SAMPLE_RATE)[0], "ok")
 
     def test_legacy_and_candidate_rates_ok(self):
         from c64cast.hw.c64 import nmi_rate_safety

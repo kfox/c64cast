@@ -9,7 +9,8 @@ architecture overview see [architecture.md](architecture.md).
 ## Audio is intentionally lo-fi (the 4-bit `$D418` DAC)
 
 The SID DAC streaming path writes samples to the SID volume nibble at
-$D418 at 12 kHz by default (`[audio] sample_rate`). The classic path is
+$D418 at 12 kHz by default (`[audio] sample_rate`; 10 kHz on a bitmap scene
+while a TeensyROM+ locks its DMA slices). The classic path is
 4-bit (0-15) — an objectively bad audio format, but the one a real C64
 plays back. You *can* raise `sample_rate`, but it isn't the quality lever:
 the C64-side NMI period is derived *from* it (it programs the CIA #2 Timer A

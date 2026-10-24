@@ -40,14 +40,13 @@ import time
 
 import _diaglib as d
 
-from c64cast.app.config import AudioCfg
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR as RING_ADDR
 from c64cast.audio.audio_handlers import RING_BUFFER_SIZE as RING_SIZE
-from c64cast.hw.c64 import actual_rate_for_latch, cia1_latch_for_rate
+from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, actual_rate_for_latch, cia1_latch_for_rate
 
-# The NTSC effective rate at the shipped [audio].sample_rate, for the
+# The NTSC effective rate at the default [audio].sample_rate, for the
 # ms-of-audio conversion: what the CIA #2 latch actually clocks, not the request.
-DAC_RATE_HZ = actual_rate_for_latch(cia1_latch_for_rate(AudioCfg().sample_rate, "NTSC"), "NTSC")
+DAC_RATE_HZ = actual_rate_for_latch(cia1_latch_for_rate(DEFAULT_DAC_SAMPLE_RATE, "NTSC"), "NTSC")
 
 
 def _slot_addr(slot: int, quantum: int) -> int:

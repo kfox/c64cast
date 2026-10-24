@@ -111,6 +111,7 @@ from .audio_handlers import (
 from .audio_rate import NmiTimer, RateServo
 from .audio_servo import (
     HOST_DMA_SERVO_TARGET_GAP,
+    NMI_BITMAP_SEED_MODES,
     NMI_RATE_LOOP_WARMUP_S,
     STALL_INSIDE_LEAD_SLACK,
     STALL_REANCHOR_READ_BUDGET_FRAC,
@@ -287,7 +288,7 @@ class AudioStreamer:
     def __init__(
         self,
         api: C64Backend,
-        sample_rate: int,
+        sample_rate: int | None,
         system: str,
         *,
         dither: bool = True,
@@ -307,7 +308,8 @@ class AudioStreamer:
         # never see its IDENTIFY answered. SocketDMAClient is thread-safe and
         # audio ~8/sec + render ~30-60/sec stays under the ~200/sec ceiling.
         self.api = api
-        self.sample_rate = sample_rate
+        self._rate_follows_scene = sample_rate is None
+        self.sample_rate = api.dac_sample_rate(bitmap=False) if sample_rate is None else sample_rate
         self.system = system
         self.dither_enabled = dither
         # One generator per streamer rather than numpy's process-wide one, so a
@@ -347,7 +349,7 @@ class AudioStreamer:
         # start methods rebuild it with is_mic=True to activate AGC. Disabled
         # params give an identity chain that the encode paths short-circuit.
         self._dsp_params = dsp_params if dsp_params is not None else DSPParams()
-        self._dsp = AudioDSP(self._dsp_params, sample_rate=sample_rate, is_mic=False)
+        self._dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
         # REU-staged mode: a scene that knows the whole track upfront preloads
         # it into REU and lets a C64-side IRQ pump refill the ring, replacing
         # the host-DMA worker. False = start_for_external_source / start_mic.
@@ -1617,6 +1619,20 @@ class AudioStreamer:
         decide whether the mic path's legacy hard gate is bypassed (the DSP's
         expander replaces it)."""
         return self._dsp.active
+
+    def set_rate_for_mode(self, display_mode: str | None) -> None:
+        """Take the backend's DAC rate for a scene in `display_mode` when no
+        rate was configured. Called at scene setup, with the streamer stopped:
+        every start_* arms the NMI and paces from the rate in force."""
+        if not self._rate_follows_scene:
+            return
+        bitmap = display_mode is not None and display_mode.lower() in NMI_BITMAP_SEED_MODES
+        rate = self.api.dac_sample_rate(bitmap=bitmap)
+        if rate == self.sample_rate:
+            return
+        log.info("audio: DAC rate %d Hz for display mode %s", rate, display_mode)
+        self.sample_rate = rate
+        self._dsp = AudioDSP(self._dsp_params, sample_rate=rate, is_mic=False)
 
     def set_pre_emphasis(self, amount: float | None) -> None:
         """Override the DSP chain's pre-emphasis for the upcoming scene.

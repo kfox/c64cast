@@ -511,6 +511,14 @@ NMI_ENTRY_LATENCY_CYCLES: Final = 7  # margin for entry latency + PAL/unit varia
 NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 75
 NMI_CEILING_LATCH: Final = max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
 
+# The live-pipeline overrun onset is ~12.5 kHz (docs/architecture/audio.md).
+DEFAULT_DAC_SAMPLE_RATE: Final = 12000
+# A TeensyROM+ slice locked to the sample store shrinks with the NMI period:
+# at the default rate a bitmap video cannot reach its frame rate through them
+# (measured NTSC MultiHires: ~14 fps at 12 kHz and 20-byte slices, the clip's
+# full 20 fps at 10 kHz and 36).
+LOCKED_BITMAP_DAC_SAMPLE_RATE: Final = 10000
+
 
 def clamp_nmi_latch(latch: int, *, ceiling: int = NMI_CEILING_LATCH) -> int:
     """`latch` held to [``ceiling``, ``CIA_TIMER_LATCH_MAX``]: the handler

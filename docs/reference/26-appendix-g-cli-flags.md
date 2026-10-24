@@ -54,7 +54,7 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 |---|---|
 | **`--audio`, `--no-audio`** | Stream audio to the 4-bit SID volume DAC; `--no-audio` mutes (default: True) |
 | **`-D`, `--audio-device`**<br>`AUDIO_DEVICE` | Audio input device: an int index (-1 = system default microphone), or a device name substring (needs the 'mic' extra) (default: -1) |
-| **`-r`, `--sample-rate`**<br>`SAMPLE_RATE` | Audio sample rate in Hz (default: 12000) |
+| **`-r`, `--sample-rate`**<br>`SAMPLE_RATE` | Audio sample rate in Hz (default: 12000, or 10000 on a Hires/MultiHires scene while a TeensyROM+ locks its DMA slices) |
 | **`-m`, `--mic-sensitivity`**<br>`MIC_SENSITIVITY` | Microphone input gain multiplier (default: 1.5) |
 | **`-n`, `--noise-gate`**<br>`NOISE_GATE` | Threshold below which mic input is muted (default: 0.05) |
 | **`--dac-calibration-profile`**<br>`NAME\|PATH` | Override the auto-derived DAC calibration file key, for both `--calibrate-dac` and playback. A name keys a file under calibration/dac/profile-<name>.json, or names an existing file there as-is, e.g. the device-keyed 'ultimate-<id>' files `--calibrate-dac` writes (use when a TeensyROM+ moves between physical C64s: name each host's calibration once, reuse the name on every run there); a path (ending .json, or containing a separator) names a calibration file directly, which is how one machine's calibration is reused from another backend (default: None) |

@@ -78,6 +78,7 @@ from c64cast.hw.api import (
 from c64cast.hw.backend import BackendCapabilityError
 from c64cast.hw.c64 import (
     CPU,
+    DEFAULT_DAC_SAMPLE_RATE,
     U64_API,
     VECTORS,
     VIC,
@@ -132,6 +133,22 @@ class DmaLatencyTest(unittest.TestCase):
         # ceil(0.95 * 100) - 1 = 94 → sorted[94] = 95 ms.
         self.assertAlmostEqual(p95, 0.095)
         self.assertAlmostEqual(mx, 0.100)
+
+
+class DacSampleRateTest(unittest.TestCase):
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+
+    def tearDown(self):
+        with patch.object(self.api.socket_dma, "close"):
+            self.api.close()
+
+    def test_every_scene_defaults_to_the_shipped_rate(self):
+        self.assertEqual(self.api.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE)
+        self.assertEqual(self.api.dac_sample_rate(False), DEFAULT_DAC_SAMPLE_RATE)
 
 
 class DmaWriteErrorHandlingTest(unittest.TestCase):

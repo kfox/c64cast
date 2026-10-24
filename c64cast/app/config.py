@@ -29,6 +29,7 @@ from c64cast.audio.audio_features import check_layout
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
+from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, LOCKED_BITMAP_DAC_SAMPLE_RATE
 from c64cast.sid.sid_autoconfig import SID_MODEL_CHOICES
 from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
@@ -659,10 +660,16 @@ class AudioCfg:
             )
         },
     )
-    sample_rate: int = field(
-        default=12000,
+    sample_rate: int | None = field(
+        default=None,
         metadata={
-            "help": "Audio sample rate in Hz fed to the SID DAC. Default 12000 lifts "
+            "help": "Audio sample rate in Hz fed to the SID DAC. Unset = "
+            f"{DEFAULT_DAC_SAMPLE_RATE}, except {LOCKED_BITMAP_DAC_SAMPLE_RATE} on a "
+            "Hires/MultiHires scene while a TeensyROM+ locks its "
+            "DMA slices to the sample store ([teensyrom].dma_slicing), where the "
+            f"smaller slices at {DEFAULT_DAC_SAMPLE_RATE} hold bitmap video well under "
+            "its frame rate. "
+            "A set value applies to every scene. 12000 lifts "
             "the Nyquist to ~6.0 kHz so fricatives/sibilants survive (8000 lost them). "
             "HW-verified clean on a real NTSC U64-II via a pitch A/B sweep (no NMI "
             "handler overrun) in both char and bitmap modes, and safe on PAL. Note the "

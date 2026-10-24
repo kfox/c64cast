@@ -78,7 +78,8 @@ that character *is* the sound of a real C64. But if reaching for `[audio]
 sample_rate` is your instinct, that's the wrong lever; here's the accurate
 picture and the knobs that actually help:
 
-- **Rate isn't the quality knob.** The default is 12 kHz. The C64-side NMI
+- **Rate isn't the quality knob.** The default is 12 kHz (10 kHz on a bitmap
+  scene while a TeensyROM+ locks its DMA slices). The C64-side NMI
   period is derived *from* `sample_rate` (it programs the CIA #2 Timer A
   latch), so raising the rate keeps pitch correct and lifts the Nyquist
   modestly — 12 kHz already carries the fricatives/sibilants 8 kHz lost. But

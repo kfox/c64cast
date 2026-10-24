@@ -1319,14 +1319,14 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
     target system: one that overruns the handler or its entry-latency margin,
     or is too slow for the 16-bit timer. Thin pass-through to
     `c64.nmi_rate_safety` so the rule lives in one place (shared with --doctor).
-    No-op when audio is disabled.
+    No-op when audio is disabled or the rate is unset (the backend's default).
 
     Runs before hardware opens (see `validate_configs`'s docstring), so
     `[ultimate64].system` may still be the unresolved "auto" — assume NTSC,
     matching that field's own documented fallback and `hw_provision.
     resolve_system`'s convention, rather than falling through to PAL the way
     `c64.py`'s helpers used to for any non-"NTSC" string."""
-    if not cfg.audio.enabled:
+    if not cfg.audio.enabled or cfg.audio.sample_rate is None:
         return
     system = "NTSC" if cfg.ultimate64.system.upper() == "AUTO" else cfg.ultimate64.system
     level, message = nmi_rate_safety(system, cfg.audio.sample_rate)
