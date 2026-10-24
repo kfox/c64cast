@@ -423,8 +423,8 @@ CYCLES_PER_FRAME_NTSC: Final = 65 * 263  # 17095
 FRAME_HZ_PAL: Final = CLOCK_PAL / CYCLES_PER_FRAME_PAL  # 50.1246
 FRAME_HZ_NTSC: Final = CLOCK_NTSC / CYCLES_PER_FRAME_NTSC  # 59.8261
 
-# A badline holds BA low for its 40 matrix fetches, and a TeensyROM+ DMA that
-# meets one spends 3 more re-syncing to the bus after it.
+# BA drops 3 cycles before a badline's 40 matrix fetches, so the 6510 can lose
+# all 43.
 BADLINE_STALL_CYCLES: Final = 43
 BADLINES_PER_FRAME: Final = 25
 

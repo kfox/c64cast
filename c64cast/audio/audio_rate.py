@@ -80,6 +80,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# A TeensyROM+ halt that meets a badline spends 3 more cycles re-syncing to the
+# bus after BA returns (DMATransferISR).
 NMI_BADLINE_RESERVE_MARGIN_CYCLES = 3
 
 
