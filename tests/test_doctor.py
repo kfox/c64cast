@@ -123,6 +123,29 @@ class RunDoctorMergedLoadResultTest(unittest.TestCase):
         self.assertIs(captured["merged"].master_web, web)
 
 
+class MistypedConfigTest(unittest.TestCase):
+    """A quoted `sample_rate = "12000"` reached nmi_rate_safety as a string and
+    the doctor died on a TypeError there (#724). The loader now refuses it,
+    naming the key, which the doctor reports like any other config error."""
+
+    BODY = '[audio]\nsample_rate = "12000"\n'
+
+    def test_the_load_names_the_key(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            _load(self.BODY)
+        self.assertIn("[audio].sample_rate", str(ctx.exception))
+
+    def test_the_doctor_exits_with_a_config_error_instead_of_crashing(self):
+        from c64cast.app import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bad.toml")
+            _write(path, self.BODY)
+            with quiet_logging(), contextlib.redirect_stdout(io.StringIO()):
+                rc = cli.main(["--config", path, "--doctor", "--skip-probe"])
+        self.assertEqual(rc, 5)
+
+
 class ValidateScenesTest(unittest.TestCase):
     """Per-scene validation — every misconfig surfaces as its own
     Diagnostic instead of aborting at the first error."""

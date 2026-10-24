@@ -324,6 +324,11 @@ value passes through untouched.
 else. A near-miss like `"on"` or `"yes"` is rejected at load rather than
 quietly read as truthy.
 
+**Types.** A value must have the type its field documents. A quoted
+number (`sample_rate = "12000"`), a float where an integer is wanted, and
+`true` or `false` where a number is wanted are all rejected at load, naming the
+key. An integer is accepted wherever a float is.
+
 **Durations** are seconds, written as floats by convention though TOML accepts
 an integer. Zero carries a per-field meaning — usually "no limit" — which that
 field's entry in Appendix A states.

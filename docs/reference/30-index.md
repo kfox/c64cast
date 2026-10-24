@@ -467,7 +467,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | Term | See |
 |---|---|
 | `--sample-rate` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [The 4-Bit DAC (4)](05-sound-and-music.md#the-4-bit-dac), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
-| `sample_rate` | [The 4-Bit DAC (4)](05-sound-and-music.md#the-4-bit-dac), [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen), [`audio` (A)](20-appendix-a-configuration.md#audio) |
+| `sample_rate` | [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [The 4-Bit DAC (4)](05-sound-and-music.md#the-4-bit-dac), [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen) |
 | `sampler_bits` | [The Ultimate Audio Sampler (4)](05-sound-and-music.md#the-ultimate-audio-sampler), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `sampler_clock_hz` | [The Ultimate Audio Sampler (4)](05-sound-and-music.md#the-ultimate-audio-sampler), [The Sampler's Clock (4)](05-sound-and-music.md#the-samplers-clock), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `sampler_sample_rate` | [The Ultimate Audio Sampler (4)](05-sound-and-music.md#the-ultimate-audio-sampler), [`audio` (A)](20-appendix-a-configuration.md#audio) |
