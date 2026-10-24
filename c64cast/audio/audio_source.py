@@ -465,6 +465,7 @@ class AudioFileSource:
         *,
         reactive: bool = True,
         features_cfg: AudioFeaturesCfg | None = None,
+        measured_drain: float | None = None,
     ):
         self._audio = audio
         # The sampler's start() blocks collecting a prebuffer, so setup()
@@ -491,8 +492,8 @@ class AudioFileSource:
         # The DAC drain the last activation followed: the next starts from it
         # rather than playing its first window slow, and predicts none once
         # one was measured. Decode thread only.
-        self._drain_scale = 1.0
-        self._drain_measured = False
+        self._drain_scale = 1.0 if measured_drain is None else measured_drain
+        self._drain_measured = measured_drain is not None
         # At build time, so a misconfigured single scene raises there
         # (parity with SidFileAudioSource.__init__).
         self._pick_and_probe()
@@ -700,6 +701,14 @@ class AudioFileSource:
             drained = self._drained_rate(rate, scale)
             resampler = av.AudioResampler(format="s16", layout="mono", rate=drained)
             self._note_content_rate(drained, rate)
+            if scale != 1.0:
+                log.info(
+                    "audio file: starting %s at a DAC drain of %.3f of real time — "
+                    "resampling to %d Hz",
+                    os.path.basename(self._path),
+                    scale,
+                    drained,
+                )
             a_stream = container.streams.audio[0]
             for packet in container.demux(a_stream):
                 if self._stop.is_set():
@@ -753,8 +762,9 @@ class AudioFileSource:
         clock. None where the link counts no bytes or the figure is unmeasured.
 
         A REU-staged bitmap's REC copies are not counted, so on a bitmap
-        mode this predicts a drain nearer 1.0 than it is and the window
-        finishes the job. Counted at the REC's cycle per byte staged, they
+        mode this predicts a drain nearer 1.0 than it is; such a scene starts
+        from `HardwareProfile.staged_bitmap_drain` instead where the machine
+        has one, and elsewhere the window finishes the job. Counted at the REC's cycle per byte staged, they
         predicted 0.80 on hardware where mhires drained at 0.95, so far from
         every staged byte is copied."""
         from c64cast.hw.c64 import cpu_clock
