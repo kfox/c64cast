@@ -111,6 +111,7 @@ from .audio_handlers import (
 from .audio_rate import NmiTimer, RateServo
 from .audio_servo import (
     HOST_DMA_SERVO_TARGET_GAP,
+    NMI_BITMAP_SEED_MODES,
     NMI_RATE_LOOP_WARMUP_S,
     STALL_INSIDE_LEAD_SLACK,
     STALL_REANCHOR_READ_BUDGET_FRAC,
@@ -379,6 +380,11 @@ class AudioStreamer:
         # worker-thread closed loops own their own state; the streamer drives.
         self.nmi = NmiTimer(self)
         self.servo = RateServo(self, self.nmi)
+        # Whether the scene in force draws a bitmap, whose screen a crash can
+        # drop back to text mode.
+        self.bitmap_scene = False
+        # Set by the stall watchdog on the worker; the playlist takes it.
+        self.machine_crashed = threading.Event()
         # _reu_pump_start_time is what position_seconds() uses in REU mode: the
         # host never sees the samples, so the queue counter does not apply.
         self._reu_pump_armed = False
@@ -1626,7 +1632,12 @@ class AudioStreamer:
     def set_scene_rate(self, rate: int, display_mode: str | None) -> None:
         """Take `rate`, the backend's DAC rate for a scene in `display_mode`,
         when no rate was configured. Called at scene setup, with the streamer
-        stopped: every start_* arms the NMI and paces from the rate in force."""
+        stopped: every start_* arms the NMI and paces from the rate in force.
+        Records whether the scene draws a bitmap either way, for the stall
+        watchdog's look for a crash (`machine_crash_sign`)."""
+        self.bitmap_scene = (
+            display_mode is not None and display_mode.lower() in NMI_BITMAP_SEED_MODES
+        )
         if not self._rate_follows_scene:
             return
         if rate == self.sample_rate:
@@ -1634,6 +1645,13 @@ class AudioStreamer:
         log.info("audio: DAC rate %d Hz for display mode %s", rate, display_mode)
         self.sample_rate = rate
         self._dsp = AudioDSP(self._dsp_params, sample_rate=rate, is_mic=False)
+
+    def take_machine_crash(self) -> bool:
+        """True once after the stall watchdog found the C64 crashed."""
+        if not self.machine_crashed.is_set():
+            return False
+        self.machine_crashed.clear()
+        return True
 
     def set_pre_emphasis(self, amount: float | None) -> None:
         """Override the DSP chain's pre-emphasis for the upcoming scene.

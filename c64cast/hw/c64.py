@@ -25,6 +25,7 @@ class VIC:
     # Screen control / mode registers.
     D011_CONTROL_1: Final = 0xD011  # bit 7 = raster MSB, 4 = display enable, etc.
     D011_DISPLAY_ENABLE: Final = 0x10  # bit 4 (DEN): 0 = screen blanked to border
+    D011_BITMAP_MODE: Final = 0x20  # bit 5 (BMM): 0 = a character (text) mode
     D012_RASTER: Final = 0xD012  # current raster line (read) / IRQ line (write)
     D015_SPRITE_EN: Final = 0xD015  # bit per sprite — enable/disable
     D016_CONTROL_2: Final = 0xD016  # bit 4 = multicolor mode, 3 = 38/40-col

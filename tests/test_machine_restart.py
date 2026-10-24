@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from _fakes import fake_system_stack, quiet_logging
+from test_audio_lifecycle import _CrashedMachineAPI
 from test_playlist import FakeApi, FakeScene, _transition_factory
 
 from c64cast.app import config as cfgmod
@@ -28,6 +29,9 @@ from c64cast.app.playlist_support import (
     RESTART_SENTINEL_LEN,
     MachineRestartWatch,
 )
+from c64cast.audio import audio_rate
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import NMI_STALL_WARN_CHUNKS, RING_BUFFER_ADDR
 from c64cast.control.keyboard import ADDR_MODIFIERS, CommodoreKeyPoller
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.backend import LinkError
@@ -590,6 +594,62 @@ class ResetWithoutALinkChangeTest(unittest.TestCase):
         with self.assertLogs("c64cast.app.playlist", level="WARNING"):
             pl.run()
         self.assertEqual(scene.setup_count, 2, "the restore's loss retried the re-setup")
+
+
+class _CrashUnderneath(FakeScene):
+    """At frame `crash_at` the C64 crashes, taking the NMI vector with it,
+    and the audio worker's stall watchdog sees R stand still. A scene still
+    running 50 frames later stops the run, so the test fails rather than
+    hangs."""
+
+    def __init__(self, audio: AudioStreamer, crash_at: int, stop: threading.Event) -> None:
+        super().__init__("Video", frames_until_done=10_000)
+        self.audio = audio
+        self.crash_at = crash_at
+        self.stop = stop
+
+    def process_frame(self, current_time: float) -> bool:
+        if super().process_frame(current_time) and self.frame_count == self.crash_at:
+            for _ in range(NMI_STALL_WARN_CHUNKS + 1):
+                self.audio.servo.next_pace_increment(RING_BUFFER_ADDR + 4096, 0.064)
+        if self.frame_count >= self.crash_at + 50:
+            self.stop.set()
+        return True
+
+
+class CrashFoundByTheAudioStallTest(unittest.TestCase):
+    """A crash leaves the link up and RAM's page 3 alone, so only the audio
+    stall watchdog sees it; the scene then ends instead of streaming on into
+    a machine that is no longer running it (c64cast#720)."""
+
+    def test_a_crashed_nmi_vector_ends_the_scene_and_puts_the_machine_back(self):
+        machine = _CrashedMachineAPI(nmi_vector=0xFE47)
+        audio = AudioStreamer(machine, 8000, "NTSC", host_dma_servo=True)
+        stop = threading.Event()
+        scene = _CrashUnderneath(audio, crash_at=3, stop=stop)
+        pl = Playlist(
+            [scene],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            loop=False,
+            audio=audio,
+        )
+        restores: list[int] = []
+        pl.on_machine_restart = lambda: restores.append(scene.teardown_count)
+        with (
+            self.assertLogs(audio_rate.log, level="ERROR") as audio_logs,
+            self.assertLogs("c64cast.app.playlist", level="WARNING") as playlist_logs,
+        ):
+            pl.run()
+        self.assertEqual(len(audio_logs.records), 1)
+        self.assertIn("C64 has crashed", audio_logs.output[0])
+        self.assertEqual(sum("crashed under it" in line for line in playlist_logs.output), 1)
+        self.assertEqual(scene.frame_count, 3, "the scene streamed on after the crash")
+        self.assertEqual(restores, [1], "the machine was not put back after the teardown")
+        self.assertTrue(stop.is_set())
 
 
 class _ZeroingTune(FakeScene):
