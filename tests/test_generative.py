@@ -3292,9 +3292,11 @@ class ConfigGenerativeTest(unittest.TestCase):
             self.assertIs(scene.audio_source._audio, streamer)  # type: ignore[attr-defined]
             self.assertEqual(scene.target_fps, 20.0)
 
-    def _dac_file_source(self, display: str, system: str, *, ultimate_64: bool = True) -> Any:
-        """The AudioFileSource a DAC file scene over ``display`` builds on a
-        machine with a usable REU, at ``system`` timing."""
+    def _dac_file_source(
+        self, display: str, system: str, *, ultimate_64: bool = True, reu_available: bool = True
+    ) -> Any:
+        """The AudioFileSource a DAC file scene over ``display`` builds at
+        ``system`` timing."""
         import tempfile
         from dataclasses import replace
 
@@ -3313,7 +3315,9 @@ class ConfigGenerativeTest(unittest.TestCase):
                 type="generative", source="plasma", display=display, audio_source="file", file=wav
             )
             streamer = cast(AudioStreamer, _FakeStreamer())
-            scene = build_scene(s, cfg, cast(C64Backend, api), streamer, None, reu_available=True)
+            scene = build_scene(
+                s, cfg, cast(C64Backend, api), streamer, None, reu_available=reu_available
+            )
         assert isinstance(scene, SourceScene)
         src = scene.audio_source
         assert isinstance(src, AudioFileSource)
@@ -3338,6 +3342,14 @@ class ConfigGenerativeTest(unittest.TestCase):
             src = self._dac_file_source(display, system, ultimate_64=ultimate_64)
             self.assertEqual(src._drain_scale, 1.0, (display, system, ultimate_64))
             self.assertFalse(src._drain_measured, (display, system, ultimate_64))
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_audio_source_file_over_an_unstaged_bitmap_keeps_the_prediction(self):
+        # Without the REU a bitmap's frames cross the link, where the halt
+        # prediction holds.
+        src = self._dac_file_source("hires", "NTSC", reu_available=False)
+        self.assertEqual(src._drain_scale, 1.0)
+        self.assertFalse(src._drain_measured)
 
     def test_audio_source_file_falls_back_to_null_without_streamer(self):
         s = SceneCfg(
