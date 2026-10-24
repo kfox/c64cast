@@ -4248,6 +4248,7 @@ class FollowDrainTest(unittest.TestCase):
         self._play(scene, 0.79, 112.0)
         self.assertAlmostEqual(scene._followed_tempo or 0.0, 0.79, places=3)
         self.assertEqual(scene._followed_file, scene.filepath)
+        self.assertEqual(scene._followed_from, 0.88)
 
     def _setup_after_following(self, followed_file: str, followed_from: float = 0.88) -> Any:
         """The source kwargs a run on a link whose bitmap tempo is 0.88 opens
