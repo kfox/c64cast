@@ -25,7 +25,7 @@ from unittest import mock
 
 from c64cast._wire_log import LogThrottle
 from c64cast.hw import vdc
-from c64cast.hw.backend import HardwareProfile, NmiSampleStore
+from c64cast.hw.backend import DacPacing, HardwareProfile, NmiSampleStore
 from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, actual_rate_for_latch, kernal_cia1_latch
 
 
@@ -326,11 +326,9 @@ class FakeAPI:
     def invalidate_cache(self):
         self.cache_invalidations += 1
 
-    def dac_bitmap_tempo(self, multicolor):
-        return 0.88 if multicolor else 0.89
-
-    def dac_sample_rate(self, bitmap):
-        return DEFAULT_DAC_SAMPLE_RATE
+    def dac_pacing(self, *, bitmap, multicolor):
+        tempo = (0.88 if multicolor else 0.89) if bitmap else 1.0
+        return DacPacing(DEFAULT_DAC_SAMPLE_RATE, tempo)
 
     def note_nmi_consumer(self, active, store=None):
         self.nmi_consumer_notes.append(active)

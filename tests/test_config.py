@@ -2663,19 +2663,24 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
         scene = self._scene(self._dac_cfg(), display="hires_edges", audio=self.audio)
         self.assertEqual(scene.tempo_scale, 0.90)
 
-    def test_unset_resolves_from_the_connected_backend(self):
+    def test_unset_is_left_to_the_link_at_setup(self):
         from c64cast.scenes.scenes import VideoScene
 
         cfg = self._dac_cfg()
         cfg.audio.dac_bitmap_tempo_hires = None
         cfg.audio.dac_bitmap_tempo_mhires = None
         api = FakeAPI()
-        api.dac_bitmap_tempo = lambda multicolor: 0.97 if multicolor else 0.95  # type: ignore[method-assign]
-        for display, want in (("mhires", 0.97), ("hires", 0.95)):
-            s = cfgmod.SceneCfg(type="video", display=display, file=self.clip)
-            scene = scene_factory.build_scene(s, cfg, cast(C64Backend, api), self.audio, None)
-            assert isinstance(scene, VideoScene)
-            self.assertEqual(scene.tempo_scale, want, display)
+        with mock.patch.object(api, "dac_pacing") as pacing:
+            for display in ("mhires", "hires"):
+                s = cfgmod.SceneCfg(type="video", display=display, file=self.clip)
+                scene = scene_factory.build_scene(s, cfg, cast(C64Backend, api), self.audio, None)
+                assert isinstance(scene, VideoScene)
+                self.assertTrue(scene.tempo_from_link, display)
+        pacing.assert_not_called()
+
+    def test_a_configured_factor_is_not_left_to_the_link(self):
+        scene = self._scene(self._dac_cfg(), display="mhires", audio=self.audio)
+        self.assertFalse(scene.tempo_from_link)
 
     def test_unset_is_valid(self):
         cfg = self._dac_cfg()

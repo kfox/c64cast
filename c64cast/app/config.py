@@ -976,7 +976,7 @@ class AudioCfg:
     # modes.
     #
     # Unset starts from the figure for the connected backend
-    # (C64Backend.dac_bitmap_tempo): the fraction depends on how the link's
+    # (C64Backend.dac_pacing, at scene setup): the fraction depends on how the link's
     # writes halt the NMI, so one number cannot serve the U64 and a slicing TR+
     # alike. It then follows the drain the scene measures while it plays
     # (VideoScene._follow_drain), since the fraction also moves with how many
@@ -991,10 +991,10 @@ class AudioCfg:
             "plays at real time. 1.0 = off. Host-DMA DAC path only — no effect "
             "on the Ultimate Audio sampler or the REU pump. Unset = start from "
             "the figure for the connected hardware, 0.89 (Ultimate 64-II NTSC, "
-            "and a TeensyROM writing unsliced) or 0.97 (TeensyROM+ writing sliced "
-            "at the default slice shape), and follow the speed measured while the "
-            "scene plays; "
-            "a set value stays fixed."
+            "and a TeensyROM writing unsliced), 0.97 (TeensyROM+ writing sliced "
+            "at the default slice shape) or 1.0 (TeensyROM+ with each slice "
+            "locked to the NMI sample store), and, below 1.0, follow the speed "
+            "measured while the scene plays; a set value stays fixed."
         },
     )
     dac_bitmap_tempo_mhires: float | None = field(
@@ -1006,10 +1006,10 @@ class AudioCfg:
             "1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio "
             "sampler or the REU pump. Unset = start from the figure for the "
             "connected hardware, 0.88 (Ultimate 64-II NTSC, and a TeensyROM "
-            "writing unsliced) or 0.97 (TeensyROM+ writing sliced at the default "
-            "slice shape), "
-            "and follow the speed measured while the scene plays; a set value "
-            "stays fixed."
+            "writing unsliced), 0.97 (TeensyROM+ writing sliced at the default "
+            "slice shape) or 1.0 (TeensyROM+ with each slice locked to the NMI "
+            "sample store), and, below 1.0, follow the speed measured while the "
+            "scene plays; a set value stays fixed."
         },
     )
 

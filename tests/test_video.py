@@ -26,7 +26,8 @@ from c64cast.audio.sampler import DEFAULT_LEAD_SECONDS, UltimateAudioSampler
 from c64cast.audio.splice import FlushCut
 from c64cast.control.transport import LoopPresetStore, timecode
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import RegionID
+from c64cast.hw.backend import DacPacing
+from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.scenes.video_transport import VideoTransportControls, _Anchor
@@ -4183,6 +4184,23 @@ class _UnderrunStubAudio:
         return {"full_underruns": self.underruns, "partial_underruns": 0}
 
 
+def _link_tempo_scene(link_tempo: float) -> VideoScene:
+    """A video with an unset tempo, with DAC audio over a link whose bitmap
+    tempo is `link_tempo`."""
+    api = mock.MagicMock()
+    api.dac_pacing.return_value = DacPacing(DEFAULT_DAC_SAMPLE_RATE, link_tempo)
+    audio = mock.MagicMock()
+    audio.effective_rate = DEFAULT_DAC_SAMPLE_RATE
+    return VideoScene(
+        api=api,
+        audio=audio,
+        display_mode=mock.MagicMock(),
+        file="https://stub.invalid/clip.mp4",
+        tempo_scale=None,
+        setup_progress=False,
+    )
+
+
 class FollowDrainTest(unittest.TestCase):
     """`VideoScene._follow_drain`: the bitmap+DAC tempo compensation follows
     clock/wall measured over the last few seconds of displayed frames."""
@@ -4230,25 +4248,21 @@ class FollowDrainTest(unittest.TestCase):
         self._play(scene, 0.79, 112.0)
         self.assertAlmostEqual(scene._followed_tempo or 0.0, 0.79, places=3)
         self.assertEqual(scene._followed_file, scene.filepath)
+        self.assertEqual(scene._followed_from, 0.88)
 
-    def _setup_after_following(self, followed_file: str) -> Any:
-        """The source kwargs a run opens with after a drain of 0.79 was
-        followed on ``followed_file``."""
+    def _setup_after_following(self, followed_file: str, followed_from: float = 0.88) -> Any:
+        """The source kwargs a run on a link whose bitmap tempo is 0.88 opens
+        with, after a drain of 0.79 was followed on ``followed_file`` from
+        ``followed_from``."""
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
         ):
-            scene = VideoScene(
-                api=mock.MagicMock(),
-                audio=None,
-                display_mode=mock.MagicMock(),
-                file="https://stub.invalid/clip.mp4",
-                tempo_scale=0.88,
-                setup_progress=False,
-                tempo_follow=True,
-            )
+            source_cls.return_value.a_stream = None
+            scene = _link_tempo_scene(0.88)
             scene._followed_tempo = 0.79
             scene._followed_file = followed_file
+            scene._followed_from = followed_from
             scene.setup()
             scene.teardown()
         return source_cls.call_args.kwargs
@@ -4263,22 +4277,19 @@ class FollowDrainTest(unittest.TestCase):
         kwargs = self._setup_after_following("https://stub.invalid/other.mp4")
         self.assertEqual(kwargs["tempo_scale"], 0.88)
 
+    def test_a_drain_followed_while_the_link_wrote_another_way_is_not_reused(self):
+        kwargs = self._setup_after_following("https://stub.invalid/clip.mp4", followed_from=0.97)
+        self.assertEqual(kwargs["tempo_scale"], 0.88)
+
     def test_setup_arms_the_following_clock_on_the_monotonic_clock(self):
         clock = FrozenClock(1000.0, "time", monotonic=777.0)
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
-            mock.patch("c64cast.scenes.scenes.AVFileSource"),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
             mock.patch.object(scenes, "time", clock),
         ):
-            scene = VideoScene(
-                api=mock.MagicMock(),
-                audio=None,
-                display_mode=mock.MagicMock(),
-                file="https://stub.invalid/clip.mp4",
-                tempo_scale=0.88,
-                setup_progress=False,
-                tempo_follow=True,
-            )
+            source_cls.return_value.a_stream = None
+            scene = _link_tempo_scene(0.88)
             scene.setup()
             scene.teardown()
         self.assertEqual(scene._follow_start, 777.0)

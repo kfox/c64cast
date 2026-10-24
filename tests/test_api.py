@@ -147,8 +147,18 @@ class DacSampleRateTest(unittest.TestCase):
             self.api.close()
 
     def test_every_scene_defaults_to_the_shipped_rate(self):
-        self.assertEqual(self.api.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE)
-        self.assertEqual(self.api.dac_sample_rate(False), DEFAULT_DAC_SAMPLE_RATE)
+        for bitmap, multicolor in ((True, True), (True, False), (False, False)):
+            pacing = self.api.dac_pacing(bitmap=bitmap, multicolor=multicolor)
+            self.assertEqual(pacing.sample_rate, DEFAULT_DAC_SAMPLE_RATE)
+
+    def test_only_a_bitmap_scene_is_paced_below_real_time(self):
+        for bitmap, multicolor, tempo in (
+            (True, True, 0.88),
+            (True, False, 0.89),
+            (False, False, 1.0),
+        ):
+            pacing = self.api.dac_pacing(bitmap=bitmap, multicolor=multicolor)
+            self.assertEqual(pacing.bitmap_tempo, tempo, (bitmap, multicolor))
 
 
 class DmaWriteErrorHandlingTest(unittest.TestCase):

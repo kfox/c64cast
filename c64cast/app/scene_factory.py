@@ -2275,10 +2275,9 @@ def _resolve_sampler_audio(ctx: _SceneBuildContext) -> UltimateAudioSampler | No
     )
 
 
-def _video_tempo_scale(
-    cfg: Config, mode: DisplayMode, api: C64Backend, *, dac_audio: bool
-) -> float:
-    """Bitmap + ``$D418``-DAC tempo compensation factor (1.0 = none).
+def _video_tempo_scale(cfg: Config, mode: DisplayMode, *, dac_audio: bool) -> float | None:
+    """Bitmap + ``$D418``-DAC tempo compensation factor (1.0 = none), or None
+    for the link's figure, which VideoScene takes at setup.
 
     On the host-DMA 4-bit DAC path over a bitmap mode, heavy REU bank-swap
     bitmap writes bias the audio servo and time-stretch playback ~1/s SLOW at
@@ -2288,9 +2287,7 @@ def _video_tempo_scale(
     stretch (``dac_audio`` False covers sampler and muted)."""
     if not dac_audio or cfg.audio.use_reu_pump or not isinstance(mode, BitmapDisplayMode):
         return 1.0
-    configured = _video_tempo_configured(cfg, mode)
-    multicolor = isinstance(mode, MultiHiresDisplayMode)
-    return api.dac_bitmap_tempo(multicolor) if configured is None else configured
+    return _video_tempo_configured(cfg, mode)
 
 
 def _video_tempo_configured(cfg: Config, mode: DisplayMode) -> float | None:
@@ -2422,10 +2419,9 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
         color=ctx.color,
         start_s=start_s or 0.0,
-        tempo_scale=_video_tempo_scale(cfg, mode, ctx.api, dac_audio=has_dac_audio),
+        tempo_scale=_video_tempo_scale(cfg, mode, dac_audio=has_dac_audio),
         loop_audio=cfg.midi_control.loop_audio,
         setup_progress=cfg.video.setup_progress_bar,
-        tempo_follow=_video_tempo_configured(cfg, mode) is None,
     )
     if video_name:
         scene.name = video_name

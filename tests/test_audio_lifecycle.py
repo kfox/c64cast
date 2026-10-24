@@ -49,6 +49,7 @@ from c64cast.audio.audio_servo import (
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
+from c64cast.hw.backend import DacPacing
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
@@ -2456,8 +2457,8 @@ class StallResyncTest(unittest.TestCase):
 
 
 class _BitmapRateAPI(FakeAPI):
-    def dac_sample_rate(self, bitmap):
-        return 10000 if bitmap else 12000
+    def dac_pacing(self, *, bitmap, multicolor):
+        return DacPacing(10000 if bitmap else 12000, 1.0)
 
 
 class SceneDacRateTest(unittest.TestCase):
@@ -2467,28 +2468,38 @@ class SceneDacRateTest(unittest.TestCase):
     def _streamer(self, rate: int | None) -> AudioStreamer:
         return AudioStreamer(cast(Ultimate64API, _BitmapRateAPI()), rate, "NTSC")
 
+    def _set_up(self, st: AudioStreamer, display: str | None) -> None:
+        from c64cast.scenes.scenes import Scene
+
+        mode = None
+        if display is not None:
+            mode = mock.MagicMock()
+            mode.name = display
+        Scene(cast(Ultimate64API, st.api), st, mode, "clip").setup()
+
     def test_an_unset_rate_follows_each_scenes_display_mode(self):
         st = self._streamer(None)
         self.assertEqual(st.sample_rate, 12000)
-        with self.assertLogs("c64cast.audio.audio", level="INFO"):
-            st.set_rate_for_mode("mhires")
+        with self.assertLogs("c64cast", level="INFO"):
+            self._set_up(st, "mhires")
         self.assertEqual(st.sample_rate, 10000)
         for mode in ("petscii", None):
-            st.set_rate_for_mode("hires")
-            with self.assertLogs("c64cast.audio.audio", level="INFO"):
-                st.set_rate_for_mode(mode)
+            with self.assertLogs("c64cast", level="INFO"):
+                self._set_up(st, "hires")
+            with self.assertLogs("c64cast", level="INFO"):
+                self._set_up(st, mode)
             self.assertEqual(st.sample_rate, 12000, mode)
 
     def test_a_set_rate_wins_even_at_the_default(self):
         for rate in (12000, 11025):
             st = self._streamer(rate)
-            st.set_rate_for_mode("mhires")
+            st.set_scene_rate(10000, "mhires")
             self.assertEqual(st.sample_rate, rate)
 
     def test_the_dsp_chain_runs_at_the_scene_rate(self):
         st = self._streamer(None)
         with self.assertLogs("c64cast.audio.audio", level="INFO"):
-            st.set_rate_for_mode("mhires")
+            st.set_scene_rate(10000, "mhires")
         self.assertEqual(st._dsp.sample_rate, 10000)
 
     def test_scene_setup_picks_the_rate_from_its_display_mode(self):

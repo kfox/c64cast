@@ -9,16 +9,20 @@ against the firmware protocol.
 
 from __future__ import annotations
 
+import os
 import struct
+import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
 from unittest import mock
 
 from _fakes import FakeTime, SleepDrivenClock, make_psid
 
 from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.hw import api
@@ -55,6 +59,7 @@ from c64cast.hw.teensyrom_dma import (
     TRTransport,
     span_touches_cart_io,
 )
+from c64cast.scenes.scenes import VideoScene
 
 
 class LoopbackTransport(TRTransport):
@@ -266,6 +271,14 @@ class _SpansLoopback(LoopbackTransport):
 
 
 _NEXT_FRAME = TRClient._u16(0x64FB) + bytes([0xD0, 0x20, 0x00, 0x01, 0x0E])
+
+
+def _bitmap_tempo(b: TeensyROMBackend, multicolor: bool) -> float:
+    return b.dac_pacing(bitmap=True, multicolor=multicolor).bitmap_tempo
+
+
+def _dac_rate(b: TeensyROMBackend, *, bitmap: bool) -> int:
+    return b.dac_pacing(bitmap=bitmap, multicolor=bitmap).sample_rate
 
 
 def _frozen_clock(test: unittest.TestCase) -> SleepDrivenClock:
@@ -841,14 +854,14 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertTrue(any("bus held" in m for m in cm.output))
         b.note_nmi_consumer(True)
         self.assertNotIn(_SPANS_TOK, self._write(b, t, "4000", 256, 1))
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(_bitmap_tempo(b, True), 0.88)
 
     def test_a_reset_ends_a_remembered_refusal(self):
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b, t = self._backend(held=True)
         t.queue_stale(b"Reset cmd received\n")
         b.reset()
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+        self.assertEqual(_bitmap_tempo(b, True), 0.97)
         b.note_nmi_consumer(True)
         t.sent.clear()
         self.assertTrue(self._write(b, t, "4000", 64, 3).startswith(_SPANS_TOK))
@@ -891,11 +904,11 @@ class SlicingBackendTest(unittest.TestCase):
         clock = [100.0]
         with mock.patch.object(tr_api.time, "monotonic", lambda: clock[0]):
             self._refuse_then_carry(b, t)
-            self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
-            self.assertEqual(b.dac_bitmap_tempo(False), 0.89)
+            self.assertEqual(_bitmap_tempo(b, True), 0.88)
+            self.assertEqual(_bitmap_tempo(b, False), 0.89)
             clock[0] += tr_api.SPANS_REFUSED_BACKOFF_MIN_S
             self._write(b, t, "4000", 64, 3)
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.97)
+        self.assertEqual(_bitmap_tempo(b, True), 0.97)
 
     def test_the_measured_slice_shape_is_the_config_default(self):
         # The config help and the books promise 0.97 at the default shape.
@@ -907,8 +920,8 @@ class SlicingBackendTest(unittest.TestCase):
             with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
                 b, _ = self._backend(slice_bytes=slice_bytes, gap_us=gap_us)
             self.assertTrue(any("was not measured" in m for m in cm.output))
-            self.assertEqual(b.dac_bitmap_tempo(True), 0.88, (slice_bytes, gap_us))
-            self.assertEqual(b.dac_bitmap_tempo(False), 0.89, (slice_bytes, gap_us))
+            self.assertEqual(_bitmap_tempo(b, True), 0.88, (slice_bytes, gap_us))
+            self.assertEqual(_bitmap_tempo(b, False), 0.89, (slice_bytes, gap_us))
 
     def test_off_never_probes(self):
         b, t = self._backend("off")
@@ -939,18 +952,18 @@ class SlicingBackendTest(unittest.TestCase):
 
     def test_bitmap_tempo_follows_the_write_path(self):
         sliced, _ = self._backend()
-        self.assertEqual(sliced.dac_bitmap_tempo(True), 0.97)
-        self.assertEqual(sliced.dac_bitmap_tempo(False), 0.97)
+        self.assertEqual(_bitmap_tempo(sliced, True), 0.97)
+        self.assertEqual(_bitmap_tempo(sliced, False), 0.97)
         plain, _ = self._backend("off")
-        self.assertEqual(plain.dac_bitmap_tempo(True), 0.88)
-        self.assertEqual(plain.dac_bitmap_tempo(False), 0.89)
+        self.assertEqual(_bitmap_tempo(plain, True), 0.88)
+        self.assertEqual(_bitmap_tempo(plain, False), 0.89)
 
     def test_bitmap_tempo_at_slice_zero_is_the_unsliced_figure(self):
         # Each command is then one 1 KiB halt, as costly to the NMI player
         # per byte as WriteC64Mem's.
         whole, _ = self._backend(slice_bytes=0)
-        self.assertEqual(whole.dac_bitmap_tempo(True), 0.88)
-        self.assertEqual(whole.dac_bitmap_tempo(False), 0.89)
+        self.assertEqual(_bitmap_tempo(whole, True), 0.88)
+        self.assertEqual(_bitmap_tempo(whole, False), 0.89)
 
 
 _STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=25)
@@ -976,8 +989,8 @@ class LockedSlicingBackendTest(unittest.TestCase):
 
     def test_bitmap_tempo_is_real_time_while_the_lock_holds(self):
         b, _ = self._locked()
-        self.assertEqual(b.dac_bitmap_tempo(True), 1.0)
-        self.assertEqual(b.dac_bitmap_tempo(False), 1.0)
+        self.assertEqual(_bitmap_tempo(b, True), 1.0)
+        self.assertEqual(_bitmap_tempo(b, False), 1.0)
 
     def test_bitmap_tempo_falls_back_when_the_snoop_is_held(self):
         b, t = self._backend(lock=True)
@@ -985,12 +998,12 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.queue_stale(b"Bus snoop in use")
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b.note_nmi_consumer(True, _STORE)
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(_bitmap_tempo(b, True), 0.88)
 
     def test_bitmap_tempo_falls_back_when_no_slice_fits_the_period(self):
         b, _ = self._backend(lock=True)
         b.note_nmi_consumer(True, replace(_STORE, free_cycles=12))
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(_bitmap_tempo(b, True), 0.88)
 
     def test_bitmap_tempo_falls_back_after_a_locked_write_is_refused(self):
         b, t = self._locked()
@@ -1000,25 +1013,83 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.queue_token(TOK_ACK)
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b.write_memory_file("4000", bytes(64))
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(_bitmap_tempo(b, True), 0.88)
 
     def test_bitmap_scenes_default_to_the_locked_rate_before_any_consumer(self):
         b, _ = self._backend(lock=True)
-        self.assertEqual(b.dac_sample_rate(True), LOCKED_BITMAP_DAC_SAMPLE_RATE)
-        self.assertEqual(b.dac_sample_rate(False), DEFAULT_DAC_SAMPLE_RATE)
+        self.assertEqual(_dac_rate(b, bitmap=True), LOCKED_BITMAP_DAC_SAMPLE_RATE)
+        self.assertEqual(_dac_rate(b, bitmap=False), DEFAULT_DAC_SAMPLE_RATE)
 
     def test_an_unset_rate_arms_the_locked_bitmap_latch_only_for_bitmap_scenes(self):
         b, _ = self._backend(lock=True)
         st = AudioStreamer(b, None, "NTSC")
-        st.set_rate_for_mode("mhires")
+        st.set_scene_rate(_dac_rate(b, bitmap=True), "mhires")
         self.assertEqual(st.nmi.nominal_latch(), nmi_latch_for_rate(10000, "NTSC"))
-        st.set_rate_for_mode("petscii")
+        st.set_scene_rate(_dac_rate(b, bitmap=False), "petscii")
         self.assertEqual(st.nmi.nominal_latch(), nmi_latch_for_rate(12000, "NTSC"))
+
+    def _lose_the_snoop(self, b: TeensyROMBackend, t: _SpansLoopback) -> None:
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"Bus snoop in use")
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b.note_nmi_consumer(True, _STORE)
+
+    def _win_the_snoop(self, b: TeensyROMBackend, t: _SpansLoopback) -> None:
+        t.queue_token(TOK_ACK)
+        t.queue_raw(bytes(28))
+        b.note_nmi_consumer(True, _STORE)
+
+    def _set_up_after(
+        self, b: TeensyROMBackend, t: _SpansLoopback, flip: Callable[[], None]
+    ) -> tuple[AudioStreamer, VideoScene, mock.MagicMock]:
+        """An mhires video with an unset tempo and sample rate, built, then
+        `flip` changes the lock state, then it is set up."""
+        st = AudioStreamer(b, None, "NTSC")
+        clip_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(clip_dir.cleanup)
+        clip = os.path.join(clip_dir.name, "clip.mp4")
+        with open(clip, "wb") as f:
+            f.write(b"\x00")
+        cfg = cfgmod.Config()
+        cfg.audio.backend = "dac"
+        s = cfgmod.SceneCfg(type="video", display="mhires", file=clip)
+        scene = scene_factory.build_scene(s, cfg, b, st, None)
+        assert isinstance(scene, VideoScene)
+        scene._setup_progress = False
+        flip()
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+            mock.patch.object(scene.display_mode, "setup"),
+            mock.patch.object(b, "dac_pacing", wraps=b.dac_pacing) as pacing,
+        ):
+            source_cls.return_value.a_stream = None
+            with self.assertLogs("c64cast", level="INFO"):
+                scene.setup()
+        self.assertEqual(pacing.call_count, 1)
+        return st, scene, source_cls
+
+    def test_a_lock_lost_between_build_and_setup_paces_the_scene_unlocked(self):
+        b, t = self._backend(lock=True)
+        st, scene, source_cls = self._set_up_after(b, t, lambda: self._lose_the_snoop(b, t))
+        self.assertEqual(st.sample_rate, DEFAULT_DAC_SAMPLE_RATE)
+        self.assertEqual(scene.tempo_scale, 0.88)
+        self.assertEqual(source_cls.call_args.kwargs["tempo_scale"], 0.88)
+        self.assertTrue(scene.tempo_follow)
+
+    def test_a_lock_won_between_build_and_setup_paces_the_scene_locked(self):
+        b, t = self._backend(lock=True)
+        self._lose_the_snoop(b, t)
+        st, scene, source_cls = self._set_up_after(b, t, lambda: self._win_the_snoop(b, t))
+        self.assertEqual(st.sample_rate, LOCKED_BITMAP_DAC_SAMPLE_RATE)
+        self.assertEqual(scene.tempo_scale, 1.0)
+        self.assertEqual(source_cls.call_args.kwargs["tempo_scale"], 1.0)
+        self.assertFalse(scene.tempo_follow)
 
     def test_bitmap_rate_is_the_default_without_the_lock(self):
         for mode, lock in (("auto", False), ("on", True)):
             b, _ = self._backend(mode, lock=lock)
-            self.assertEqual(b.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE, mode)
+            self.assertEqual(_dac_rate(b, bitmap=True), DEFAULT_DAC_SAMPLE_RATE, mode)
 
     def test_bitmap_rate_falls_back_when_the_snoop_is_held(self):
         b, t = self._backend(lock=True)
@@ -1026,7 +1097,7 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.queue_stale(b"Bus snoop in use")
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b.note_nmi_consumer(True, _STORE)
-        self.assertEqual(b.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE)
+        self.assertEqual(_dac_rate(b, bitmap=True), DEFAULT_DAC_SAMPLE_RATE)
 
     def test_auto_starts_the_watch_and_locks_writes_to_the_store(self):
         b, t = self._locked()
@@ -1055,7 +1126,7 @@ class LockedSlicingBackendTest(unittest.TestCase):
         b.note_nmi_consumer(True, _STORE)
         self.assertNotIn(_WATCH_TOK, bytes(t.sent))
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
-        self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(_bitmap_tempo(b, True), 0.88)
 
     def test_locked_mode_on_firmware_without_the_lock_warns(self):
         with self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
@@ -1137,7 +1208,7 @@ class LockedSlicingBackendTest(unittest.TestCase):
         b.write_memory_file("4000", bytes(64))
         self.assertEqual(b.stats["errors"], 1)
         self.assertNotIn(_MEM_TOK, bytes(t.sent))
-        self.assertEqual(b.dac_bitmap_tempo(True), 1.0)
+        self.assertEqual(_bitmap_tempo(b, True), 1.0)
         t.sent.clear()
         self.assertTrue(self._write(b, t, "4000", 256, 3).startswith(_LOCKED_HEADER))
 

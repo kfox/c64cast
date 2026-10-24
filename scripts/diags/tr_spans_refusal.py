@@ -111,10 +111,11 @@ def main() -> int:
             # Fresh bytes each time, so the delta cache cannot skip the write.
             be.write_memory_file(f"{_TARGET:04X}", os.urandom(args.size))
             ms = (time.perf_counter() - t0) * 1000
+            tempo = be.dac_pacing(bitmap=True, multicolor=True).bitmap_tempo
             print(
                 f"{phase:6s} t={time.monotonic() - t_start:6.2f}s write={ms:7.1f} ms "
                 f"asked={asked['n'] - n0} refused={asked['refused'] - r0} "
-                f"in_spans={asked['ms'] - m0:6.1f} ms tempo={be.dac_bitmap_tempo(True):.2f}"
+                f"in_spans={asked['ms'] - m0:6.1f} ms tempo={tempo:.2f}"
             )
             time.sleep(args.period)
 
