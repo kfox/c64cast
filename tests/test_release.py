@@ -113,6 +113,23 @@ beneath `## [Unreleased]`.
 
 _BODY = "### Added\n\n- A thing worth announcing.\n"
 
+# Cut before releases carried highlights; every later version must have them.
+_CUT_BEFORE_HIGHLIGHTS = frozenset({"0.1.0", "0.2.0", "0.2.1", "0.3.0", "0.4.0"})
+
+_RELEASABLE_BODY = (
+    "### Highlights\n\n- **Scenes start twice as fast.**\n\n"
+    "### Upgrade notes\n\n- **Reinstall with `[all]`.** A new extra.\n\n"
+    "### Added\n\n- A detail only the changelog needs.\n"
+)
+
+
+def _cut(body: str = _RELEASABLE_BODY, version: str = "1.0.0") -> str:
+    return bv.apply_changelog(_CHANGELOG, version, "2026-07-29", body)
+
+
+def _is_highlights_problem(problem: str) -> bool:
+    return "highlight" in problem.lower()
+
 
 class TestVersionIsSingleSourced(unittest.TestCase):
     def test_pyproject_declares_a_release_version(self) -> None:
@@ -143,6 +160,8 @@ class TestChangelogIsReleasable(unittest.TestCase):
     def test_current_version_has_a_dated_section(self) -> None:
         version = bv.pyproject_version()
         problems = [p for p in bv.check(version) if "CHANGELOG" in p]
+        if version in _CUT_BEFORE_HIGHLIGHTS:
+            problems = [p for p in problems if not _is_highlights_problem(p)]
         self.assertEqual(
             problems,
             [],
@@ -169,12 +188,13 @@ class TestChangelogIsReleasable(unittest.TestCase):
 
 
 class TestUpgradeNotesConvention(unittest.TestCase):
-    """`### Upgrade notes` leads a version's section, or is absent entirely.
+    """`### Upgrade notes` comes first in a version's section after its
+    Highlights, or is absent entirely.
 
-    A version's section becomes its GitHub release body verbatim, so the block
-    only does its job -- being read before anyone downloads anything -- while it
-    sits at the top. One spelling, because a reader who learns to look for it in
-    one release has to find it in the next.
+    The release body carries the Highlights and the Upgrade notes and links the
+    rest, so the notes are read before anyone upgrades only while nothing else
+    of the section comes between them and the top. One spelling, because a
+    reader who learns to look for it in one release has to find it in the next.
     """
 
     HEADING = "### Upgrade notes"
@@ -203,13 +223,108 @@ class TestUpgradeNotesConvention(unittest.TestCase):
             subsections = re.findall(r"(?m)^### .+$", bv.section_body(changelog, version))
             if self.HEADING not in subsections:
                 continue
+            above = subsections[: subsections.index(self.HEADING)]
+            with self.subTest(version=version):
+                self.assertIn(
+                    above,
+                    ([], ["### Highlights"]),
+                    f"[{version}] buries its upgrade notes under {above!r} -- only "
+                    "the Highlights may come before them",
+                )
+
+
+class TestHighlightsConvention(unittest.TestCase):
+    """The release body is a highlights block plus a link (RELEASING.md)."""
+
+    def test_every_release_since_the_rule_has_highlights(self) -> None:
+        changelog = _read("CHANGELOG.md")
+        for version in bv.released_versions(changelog):
+            if version in _CUT_BEFORE_HIGHLIGHTS:
+                continue
             with self.subTest(version=version):
                 self.assertEqual(
-                    subsections[0],
-                    self.HEADING,
-                    f"[{version}] buries its upgrade notes under "
-                    f"{subsections[0]!r} -- they have to lead the release body",
+                    bv.highlights_problems(bv.section_body(changelog, version), version), []
                 )
+
+    def test_the_rule_is_written_where_a_release_is_cut(self) -> None:
+        releasing = _read("RELEASING.md")
+        self.assertIn("a highlights block plus a link", releasing)
+        self.assertIn("Upgrade notes", releasing)
+
+    def test_no_document_still_promises_a_verbatim_release_body(self) -> None:
+        for name in ("RELEASING.md", "CHANGELOG.md", "CONTRIBUTING.md", "changelog.d/README.md"):
+            with self.subTest(name=name):
+                self.assertNotRegex(
+                    _read(name).split("\n## [0.4.0]", 1)[0],
+                    r"(?i)verbatim",
+                    f"{name} still says the release body is the changelog verbatim",
+                )
+
+
+class TestReleaseNotes(unittest.TestCase):
+    def test_the_body_is_highlights_then_upgrade_notes_then_the_link(self) -> None:
+        notes = bv.release_notes(_cut(), "1.0.0")
+        self.assertEqual(
+            re.findall(r"(?m)^### .+$", notes), ["### Highlights", "### Upgrade notes"]
+        )
+        self.assertIn("Scenes start twice as fast.", notes)
+        self.assertIn("Reinstall with `[all]`.", notes)
+        link = "https://github.com/kfox/c64cast/blob/v1.0.0/CHANGELOG.md#100---2026-07-29"
+        self.assertIn(f"]({link})", notes)
+        self.assertLess(notes.index("### Upgrade notes"), notes.index(link))
+
+    def test_every_other_entry_stays_behind_the_link(self) -> None:
+        notes = bv.release_notes(_cut(), "1.0.0")
+        self.assertNotIn("A detail only the changelog needs.", notes)
+        self.assertNotIn("### Added", notes)
+
+    def test_a_release_with_nothing_to_act_on_has_no_upgrade_notes(self) -> None:
+        body = "### Highlights\n\n- One.\n\n### Fixed\n\n- A bug.\n"
+        notes = bv.release_notes(_cut(body), "1.0.0")
+        self.assertEqual(re.findall(r"(?m)^### .+$", notes), ["### Highlights"])
+
+    def test_a_release_without_highlights_is_refused_not_pasted_whole(self) -> None:
+        with self.assertRaisesRegex(bv.BumpError, "no '### Highlights'"):
+            bv.release_notes(_cut(_BODY), "1.0.0")
+
+    def test_notes_exit_nonzero_and_print_nothing_without_highlights(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            changelog = Path(tmp) / "CHANGELOG.md"
+            changelog.write_text(_cut(_BODY), encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                patch.object(bv, "CHANGELOG", changelog),
+                contextlib.redirect_stdout(out),
+                contextlib.redirect_stderr(err),
+            ):
+                status = bv.main(["--notes", "1.0.0"])
+        self.assertEqual(status, 1)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("Highlights", err.getvalue())
+
+    def test_more_than_a_handful_of_highlights_is_refused(self) -> None:
+        many = "\n\n".join(f"- Highlight {n}." for n in range(bv.MAX_HIGHLIGHTS + 1))
+        problems = bv.highlights_problems(f"### Highlights\n\n{many}\n", "1.0.0")
+        self.assertTrue(any(f"{bv.MAX_HIGHLIGHTS + 1} highlights" in p for p in problems), problems)
+
+    def test_continuation_lines_do_not_count_as_highlights(self) -> None:
+        body = "### Highlights\n\n" + "\n\n".join(
+            f"- **Highlight {n}.**\n  - not a highlight" for n in range(bv.MAX_HIGHLIGHTS)
+        )
+        self.assertEqual(bv.highlights_problems(body + "\n", "1.0.0"), [])
+
+    def test_highlights_moved_below_another_subsection_are_refused(self) -> None:
+        body = "### Added\n\n- A thing.\n\n### Highlights\n\n- One.\n"
+        problems = bv.highlights_problems(body, "1.0.0")
+        self.assertTrue(any("opens with '### Added'" in p for p in problems), problems)
+
+    def test_an_empty_highlights_subsection_is_refused(self) -> None:
+        problems = bv.highlights_problems("### Highlights\n\n### Added\n\n- A.\n", "1.0.0")
+        self.assertTrue(any("has 0 highlights" in p for p in problems), problems)
+
+    def test_the_link_anchor_matches_what_github_renders(self) -> None:
+        self.assertEqual(bv.github_anchor("[0.5.0] - 2026-11-01"), "050---2026-11-01")
+        self.assertEqual(bv.github_anchor("[1.2.3rc1] - 2026-11-01"), "123rc1---2026-11-01")
 
 
 class TestBumpRewrites(unittest.TestCase):
@@ -301,7 +416,8 @@ class TestFragments(unittest.TestCase):
         self.assertEqual(bv.fragment_problems(self.dir), [])
         self.assertEqual(bv.read_fragments(self.dir), [])
 
-    def test_upgrade_notes_lead_whatever_order_the_files_sort_in(self) -> None:
+    def test_highlights_then_upgrade_notes_lead_whatever_order_the_files_sort_in(self) -> None:
+        self._write("zzzz.highlights.md", "- **The best part.**\n")
         self._write("aaa.fixed.md", "- A fix.\n")
         self._write("bbb.added.md", "- An addition.\n")
         self._write("zzz.upgrade-notes.md", "- **Do this first.**\n")
@@ -310,7 +426,14 @@ class TestFragments(unittest.TestCase):
         body = bv.render_fragments(bv.read_fragments(self.dir))
         self.assertEqual(
             re.findall(r"(?m)^### .+$", body),
-            ["### Upgrade notes", "### Added", "### Changed", "### Removed", "### Fixed"],
+            [
+                "### Highlights",
+                "### Upgrade notes",
+                "### Added",
+                "### Changed",
+                "### Removed",
+                "### Fixed",
+            ],
         )
 
     def test_entries_within_a_category_sort_by_slug(self) -> None:
@@ -365,29 +488,61 @@ class TestFragments(unittest.TestCase):
 
 
 class TestCutCollectsFragments(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.fragments = root / "changelog.d"
+        self.fragments.mkdir()
+        (self.fragments / "README.md").write_text("docs\n", encoding="utf-8")
+        (self.fragments / "thing.added.md").write_text("- A thing.\n", encoding="utf-8")
+        self.changelog = root / "CHANGELOG.md"
+        self.changelog.write_text(_CHANGELOG, encoding="utf-8")
+        self.pyproject = root / "pyproject.toml"
+        self.pyproject.write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
+
+    def _bump(self) -> None:
+        with (
+            patch.object(bv, "FRAGMENT_DIR", self.fragments),
+            patch.object(bv, "CHANGELOG", self.changelog),
+            patch.object(bv, "PYPROJECT", self.pyproject),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            bv.bump("1.0.0", "2026-07-29", do_lock=False)
+
     def test_cut_writes_the_changelog_and_deletes_the_fragments(self) -> None:
+        (self.fragments / "thing.highlights.md").write_text("- A big thing.\n", encoding="utf-8")
+        self._bump()
+        self.assertEqual(
+            bv.section_body(self.changelog.read_text(encoding="utf-8"), "1.0.0"),
+            "### Highlights\n\n- A big thing.\n\n### Added\n\n- A thing.\n",
+        )
+        self.assertEqual(sorted(p.name for p in self.fragments.iterdir()), ["README.md"])
+
+    def test_cut_without_highlights_is_refused_and_writes_nothing(self) -> None:
+        with self.assertRaisesRegex(bv.BumpError, "no '### Highlights'"):
+            self._bump()
+        self.assertEqual(self.changelog.read_text(encoding="utf-8"), _CHANGELOG)
+        self.assertIn("0.1.0", self.pyproject.read_text(encoding="utf-8"))
+        self.assertTrue((self.fragments / "thing.added.md").exists())
+
+
+class TestCheckRefusesAReleaseWithoutHighlights(unittest.TestCase):
+    def _check(self, body: str) -> list[str]:
+        version = bv.pyproject_version()
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            fragments = root / "changelog.d"
-            fragments.mkdir()
-            (fragments / "README.md").write_text("docs\n", encoding="utf-8")
-            (fragments / "thing.added.md").write_text("- A thing.\n", encoding="utf-8")
-            changelog = root / "CHANGELOG.md"
-            changelog.write_text(_CHANGELOG, encoding="utf-8")
-            pyproject = root / "pyproject.toml"
-            pyproject.write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
-            with (
-                patch.object(bv, "FRAGMENT_DIR", fragments),
-                patch.object(bv, "CHANGELOG", changelog),
-                patch.object(bv, "PYPROJECT", pyproject),
-                contextlib.redirect_stdout(io.StringIO()),
-            ):
-                bv.bump("1.0.0", "2026-07-29", do_lock=False)
-            self.assertEqual(
-                bv.section_body(changelog.read_text(encoding="utf-8"), "1.0.0"),
-                "### Added\n\n- A thing.\n",
-            )
-            self.assertEqual([p.name for p in fragments.iterdir()], ["README.md"])
+            changelog = Path(tmp) / "CHANGELOG.md"
+            changelog.write_text(_cut(body, version), encoding="utf-8")
+            with patch.object(bv, "CHANGELOG", changelog):
+                return bv.check(version)
+
+    def test_a_section_without_highlights_fails_the_check(self) -> None:
+        problems = self._check(_BODY)
+        self.assertTrue(any("no '### Highlights'" in p for p in problems), problems)
+
+    def test_a_section_with_highlights_passes_that_part_of_the_check(self) -> None:
+        problems = self._check(_RELEASABLE_BODY)
+        self.assertEqual([p for p in problems if _is_highlights_problem(p)], [])
 
 
 class TestCheckRefusesUncollectedFragments(unittest.TestCase):
@@ -403,8 +558,11 @@ class TestCheckRefusesUncollectedFragments(unittest.TestCase):
 class TestVersionArgumentParsing(unittest.TestCase):
     def test_a_leading_v_is_accepted(self) -> None:
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            status = bv.main(["--notes", "v" + bv.pyproject_version()])
+        with tempfile.TemporaryDirectory() as tmp:
+            changelog = Path(tmp) / "CHANGELOG.md"
+            changelog.write_text(_cut(), encoding="utf-8")
+            with patch.object(bv, "CHANGELOG", changelog), contextlib.redirect_stdout(out):
+                status = bv.main(["--notes", "v1.0.0"])
         self.assertEqual(status, 0)
         self.assertTrue(out.getvalue().strip(), "--notes printed nothing")
 
@@ -578,9 +736,17 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertNotIn("releases/latest/download", self.code)
         self.assertIn("--notes-file body.md", self.code)
 
-    def test_the_body_leads_with_how_to_install_and_upgrade(self) -> None:
-        # A page that opens with a list of files teaches that upgrading means
-        # downloading files, which cannot upgrade an install. The order is asserted.
+    def test_the_body_leads_with_the_highlights_and_upgrade_notes(self) -> None:
+        compose = self.code.split("Compose the release notes", 1)[1]
+        self.assertLess(
+            compose.index("cat release-notes.md"),
+            compose.index("### Install or upgrade"),
+            "the release body no longer opens with why to upgrade and what it asks",
+        )
+
+    def test_the_body_says_how_to_install_before_listing_files(self) -> None:
+        # A page that lists files before the install command teaches that
+        # upgrading means downloading files, which cannot upgrade an install.
         for needle in ("### Install or upgrade", "uv tool upgrade c64cast"):
             self.assertIn(needle, self.code, f"the release body no longer says {needle!r}")
         self.assertLess(

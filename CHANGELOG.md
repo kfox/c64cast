@@ -11,13 +11,19 @@ Work lands as one file per entry under `changelog.d/`, and `## [Unreleased]`
 only points there; cutting a release collects those files into a section named
 for the version, stamps it with the date, and deletes them.
 
+Every version after 0.4.0 opens with **Highlights**: the handful of changes a
+user would most want to hear about, chosen when the release is cut
+(`highlights` fragments). Its GitHub release body is a highlights block plus a
+link: the Highlights, then the Upgrade notes in full, then a link back to the
+version's section here, which holds every entry.
+
 A version that needs the reader to *do* something — reinstall to pick up a new
-extra, re-measure a calibration, rename a setting — opens with an
-**Upgrade notes** subsection, above the Keep a Changelog ones (an
-`upgrade-notes` fragment; the cut puts that category first). A version's
-section is lifted verbatim into its GitHub release body, so that block is the
-first thing anyone upgrading reads, and an instruction anywhere further down is
-in practice not read at all. Releases that ask nothing of anyone leave it out.
+extra, re-measure a calibration, rename a setting — follows the Highlights with
+an **Upgrade notes** subsection, above the Keep a Changelog ones (an
+`upgrade-notes` fragment; the cut puts that category right after Highlights).
+Those notes are the only entries the release body carries whole, so they are
+read before anyone upgrades; an instruction left among the other entries is in
+practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 

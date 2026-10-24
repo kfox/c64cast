@@ -104,7 +104,7 @@ jobs:
           done
           ls -l dist/
 
-      - name: Extract the changelog section for this version
+      - name: Extract the highlights, upgrade notes and changelog link
         run: |
           uv run --no-project python scripts/bump_version.py \
             --notes "${{ steps.version.outputs.version }}" > release-notes.md
@@ -176,6 +176,10 @@ jobs:
           base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v$VERSION"
           tree="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/v$VERSION"
           {
+            cat release-notes.md
+            echo
+            echo "---"
+            echo
             echo "### Install or upgrade"
             echo
             echo '```bash'
@@ -206,10 +210,6 @@ jobs:
             echo "* 📦 [\`c64cast-$VERSION-py3-none-any.whl\`]($base/c64cast-$VERSION-py3-none-any.whl)"
             echo "  · [\`c64cast-$VERSION.tar.gz\`]($base/c64cast-$VERSION.tar.gz)"
             echo "  ([PyPI](https://pypi.org/project/c64cast/$VERSION/))."
-            echo
-            echo "---"
-            echo
-            cat release-notes.md
           } > body.md
           cat body.md
 

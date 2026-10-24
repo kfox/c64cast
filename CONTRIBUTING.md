@@ -406,5 +406,7 @@ above keep working.
 
 Cutting a release is a maintainer task and lives in
 [`RELEASING.md`](RELEASING.md). The one thing worth knowing as a contributor is
-that the fragments under `changelog.d/` become the release notes verbatim, so
-write an entry as the announcement it will be.
+that the fragments under `changelog.d/` become the changelog entries
+unchanged, so write an entry as the record a user will read. The GitHub release
+body carries only the highlights chosen at the cut and the upgrade notes, so an
+`upgrade-notes` fragment is the one a user is sure to see.
