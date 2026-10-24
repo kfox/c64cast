@@ -1005,6 +1005,10 @@ class LockedSlicingBackendTest(unittest.TestCase):
             self._backend("locked", lock=False)
         self.assertIn("the firmware lacks the flag, or REU emulation or a pause", cm.output[0])
 
+    def test_auto_mode_on_firmware_without_the_lock_does_not_warn(self):
+        with self.assertNoLogs("c64cast.hw.teensyrom_api", level="WARNING"):
+            self._backend("auto", lock=False)
+
     def test_locked_mode_with_the_bus_held_at_connect_blames_the_hold(self):
         with self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
             b, _ = self._backend("locked", held=True, lock=True)
