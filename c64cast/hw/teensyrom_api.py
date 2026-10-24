@@ -266,12 +266,24 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         try:
             capable = self.tr.probe_spans_lock()
         except (OSError, TRError) as e:
-            log.debug("TR lock-to-store probe failed (%s); assuming absent", e)
-            capable = False
-        if not capable and mode == "locked":
-            log.warning(
-                "[teensyrom].dma_slicing = 'locked' but this firmware cannot start a "
-                "slice on a sample store — writing with WriteC64Mem"
+            capable, cause = False, f"the lock-to-store probe failed ({e})"
+        else:
+            # A held bus refuses the probe at its token, whatever the firmware
+            # carries; at slice 0 a hold is not recorded, hence the either-or.
+            cause = (
+                "REU emulation or a pause held the bus at connect, so the "
+                "lock-to-store probe could not run"
+                if self._spans_held
+                else "the lock-to-store probe was refused: the firmware lacks the "
+                "flag, or REU emulation or a pause held the bus"
+            )
+        if not capable:
+            log.log(
+                logging.WARNING if mode == "locked" else logging.DEBUG,
+                "[teensyrom].dma_slicing = %r but %s — writing with WriteC64Mem "
+                "until the next connect",
+                mode,
+                cause,
             )
         return capable
 
