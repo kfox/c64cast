@@ -19,6 +19,7 @@ from unittest import mock
 from _fakes import FakeTime, SleepDrivenClock, make_psid
 
 from c64cast.app import config as cfgmod
+from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw import teensyrom_dma as tr_dma
@@ -29,6 +30,7 @@ from c64cast.hw.backend import (
     NmiSampleStore,
     make_backend,
 )
+from c64cast.hw.c64 import nmi_latch_for_rate
 from c64cast.hw.teensyrom_api import TeensyROMBackend
 from c64cast.hw.teensyrom_dma import (
     DRIVE_SD,
@@ -922,9 +924,9 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertEqual(whole.dac_bitmap_tempo(False), 0.89)
 
 
-_STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=38)
-# 38 free cycles less the firmware's 5 per slice; two 83.1 us periods to wait.
-_LOCKED_HEADER = _SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 33, 167])
+_STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=22)
+# 22 free cycles less the firmware's 5 per slice; two 83.1 us periods to wait.
+_LOCKED_HEADER = _SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 17, 167])
 _WATCH_TOK = bytes([0x64, 0xF9])
 
 
@@ -1086,11 +1088,22 @@ class LockedSlicingBackendTest(unittest.TestCase):
 
     def test_a_retuned_period_resizes_the_locked_slices(self):
         b, t = self._locked()
-        b.note_nmi_period(replace(_STORE, period_cycles=75, period_s=75 / 1022727, free_cycles=28))
+        b.note_nmi_period(replace(_STORE, period_cycles=75, period_s=75 / 1022727, free_cycles=13))
         sent = self._write(b, t, "4000", 256, 3)
         self.assertTrue(
-            sent.startswith(_SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 23, 147]))
+            sent.startswith(_SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 8, 147]))
         )
+
+    def test_the_slice_at_12_khz_leaves_the_6510_room_for_the_handler(self):
+        # A cycle simulation of the handler, the KERNAL hop and the badlines
+        # overloads the 6510 past about 26 bytes on NTSC and 24 on PAL: NMIs
+        # nest and the stack wraps.
+        for system, slice_bytes in (("NTSC", 17), ("PAL", 15)):
+            with self.subTest(system=system):
+                store = nmi_sample_store(nmi_latch_for_rate(12000, system), system)
+                lock = TeensyROMBackend._lock_for(store)
+                assert lock is not None
+                self.assertEqual(lock[1], slice_bytes)
 
     def test_a_retuned_period_with_no_lock_stays_unsliced(self):
         b, t = self._backend(lock=True)

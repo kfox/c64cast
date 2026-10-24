@@ -423,6 +423,19 @@ CYCLES_PER_FRAME_NTSC: Final = 65 * 263  # 17095
 FRAME_HZ_PAL: Final = CLOCK_PAL / CYCLES_PER_FRAME_PAL  # 50.1246
 FRAME_HZ_NTSC: Final = CLOCK_NTSC / CYCLES_PER_FRAME_NTSC  # 59.8261
 
+# A badline holds BA low for its 40 matrix fetches, and a TeensyROM+ DMA that
+# meets one spends 3 more re-syncing to the bus after it.
+BADLINE_STALL_CYCLES: Final = 43
+BADLINES_PER_FRAME: Final = 25
+
+
+def cycles_per_frame(system: str) -> int:
+    """Return the PHI2 cycles in one VIC-II frame for the given system.
+
+    Raises ValueError for anything but 'NTSC'/'PAL' — see :func:`_canonical_system`.
+    """
+    return CYCLES_PER_FRAME_NTSC if _canonical_system(system) == "NTSC" else CYCLES_PER_FRAME_PAL
+
 
 def frame_rate(system: str) -> float:
     """Return the VIC-II frame rate in Hz for the given system.

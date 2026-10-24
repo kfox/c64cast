@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 from c64cast._transport_log import quiet_transport
 from c64cast.hw.backend import NmiSampleStore
 from c64cast.hw.c64 import (
+    BADLINE_STALL_CYCLES,
+    BADLINES_PER_FRAME,
     CIA2,
     CIA_TIMER_LATCH_MAX,
     NMI_CEILING_LATCH,
@@ -38,6 +40,7 @@ from c64cast.hw.c64 import (
     actual_rate_for_latch,
     clamp_nmi_latch,
     cpu_clock,
+    cycles_per_frame,
     nearest_latch,
     nmi_latch_for_rate,
 )
@@ -77,6 +80,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+NMI_BADLINE_RESERVE_MARGIN_CYCLES = 3
+
+
+def badline_reserve_cycles(period: int, system: str) -> int:
+    """The cycles of a `period`-cycle NMI period that badlines take from the
+    6510 on average on `system`, rounded up, plus a margin."""
+    stalled = period * BADLINE_STALL_CYCLES * BADLINES_PER_FRAME
+    return -(-stalled // cycles_per_frame(system)) + NMI_BADLINE_RESERVE_MARGIN_CYCLES
+
+
 def nmi_sample_store(latch: int, system: str) -> NmiSampleStore:
     """Where and when the $D418 NMI routine stores each sample, armed at
     `latch` on `system`."""
@@ -85,7 +98,10 @@ def nmi_sample_store(latch: int, system: str) -> NmiSampleStore:
         addr=NMI_STORE_ADDR,
         period_cycles=period,
         period_s=period / cpu_clock(system),
-        free_cycles=period - NMI_CYCLES_TO_STORE - NMI_CYCLES_AFTER_STORE,
+        free_cycles=period
+        - NMI_CYCLES_TO_STORE
+        - NMI_CYCLES_AFTER_STORE
+        - badline_reserve_cycles(period, system),
     )
 
 

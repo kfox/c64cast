@@ -109,11 +109,14 @@ assert NMI_ROUTINE[4] == 0xAD and NMI_ROUTINE_ADDR + 5 == READ_PTR_LO_ADDR, (
 
 # When the routine's fast path stores its sample, counted from the underflow:
 # the 7-cycle NMI sequence, up to 6 more finishing the interrupted instruction,
-# then PHA, LDA, LDA and the STA's write cycle. INC, the taken BNE, PLA and RTI
-# run after it. A halt placed right after the store and ending within the rest
-# of the period delays neither this handler's return nor the next NMI.
+# the KERNAL's hop through $0318, then PHA, LDA, LDA and the STA's write cycle.
+# INC, the taken BNE, PLA and RTI run after the store, so a halt that starts
+# there delays them: the halt and that tail have to fit before the next
+# underflow on average, or each NMI is taken inside the last and the stack
+# grows until it wraps.
 NMI_STORE_ADDR = 0xD418
-NMI_CYCLES_TO_STORE = 7 + 6 + 3 + 4 + 4 + 4
+KERNAL_NMI_HOP_CYCLES = 2 + 5  # $FE43: SEI, JMP ($0318)
+NMI_CYCLES_TO_STORE = 7 + 6 + KERNAL_NMI_HOP_CYCLES + 3 + 4 + 4 + 4
 NMI_CYCLES_AFTER_STORE = 6 + 3 + 4 + 6
 assert NMI_ROUTINE[7:10] == bytes([0x8D, NMI_STORE_ADDR & 0xFF, NMI_STORE_ADDR >> 8])
 

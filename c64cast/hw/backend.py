@@ -57,7 +57,8 @@ class NmiSampleStore:
     """Where an NMI sample player stores each sample, and when: `free_cycles`
     of every `period_cycles`-cycle NMI period (`period_s` seconds) are left
     after the store once the handler has returned, counting the latest the
-    store can land after the timer underflows."""
+    store can land after the timer underflows and setting aside the cycles
+    badlines take from the 6510 in an average period."""
 
     addr: int
     period_cycles: int
