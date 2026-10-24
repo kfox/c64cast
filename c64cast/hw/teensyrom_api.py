@@ -558,8 +558,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         2. **Keep DEN on (don't blank_display).** The TR's cycle-clean DMA
            gates its /DMA assert on a safe VIC cycle (a badline). Turning the
            display OFF (DEN=0) removes badlines, so the DMA can never assert —
-           every subsequent read (and write) hangs, which both strands resume
-           AND wedges the TR until a power-cycle.
+           every subsequent read (and write) fails, which strands resume.
+           Firmware before v0.9 also wedges the TR until a power-cycle; from
+           v0.9 it abandons the transfer and answers FailToken.
 
         Neither a reset nor a blank is needed: the IRQ-enabled BASIC clear-loop
         set up at bring-up is still running underneath every scene (it's what
