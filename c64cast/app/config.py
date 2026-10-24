@@ -3401,6 +3401,7 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
     documented there; one inside a single grid is an authoring mistake.)"""
     allowed = _clip_allowed_keys()
     scene_annotations = {f.name: str(f.type) for f in fields(SceneCfg)}
+    color_annotations = {f.name: str(f.type) for f in fields(ColorCfg)}
     seen_slots: set[int] = set()
     seen_pads: dict[tuple[str, int], int] = {}
     for i, clip in enumerate(clips):
@@ -3413,6 +3414,13 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
                 raise ValueError(f"[[performance.clips]][{i}] unknown key {k!r}{hint}")
             if k not in _CLIP_LAUNCH_KEYS:
                 _refuse_mistyped(scene_annotations[k], clip[k], f"[[performance.clips]][{i}].{k}")
+        clip_color = clip.get("color")
+        if isinstance(clip_color, dict):
+            for k, v in clip_color.items():
+                if k in color_annotations:
+                    _refuse_mistyped(
+                        color_annotations[k], v, f"[[performance.clips]][{i}].color.{k}"
+                    )
         slot = clip.get("slot")
         if isinstance(slot, bool) or not isinstance(slot, int) or slot < 1:
             raise ValueError(f"[[performance.clips]][{i}] needs an int `slot` >= 1, got {slot!r}")

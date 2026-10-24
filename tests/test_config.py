@@ -1554,6 +1554,13 @@ class FieldTypingTest(unittest.TestCase):
             "[[performance.clips]][0].duration_s",
         )
 
+    def test_a_clip_color_field_is_checked_at_load(self):
+        self._assert_refused(
+            '[[performance.clips]]\nslot = 1\ntype = "blank"\n'
+            '[performance.clips.color]\nauto_fit_strength = "0.5"\n',
+            "[[performance.clips]][0].color.auto_fit_strength",
+        )
+
     def test_an_ensemble_master_section_is_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
             master = os.path.join(tmp, "master.toml")
