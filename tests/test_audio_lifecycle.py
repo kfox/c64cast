@@ -2583,9 +2583,9 @@ class SceneDacRateTest(unittest.TestCase):
         for rate in (None, 11025):
             st = self._streamer(rate)
             with quiet_logging():
-                st.set_rate_for_mode("hires")
+                st.set_scene_rate(10000, "hires")
                 self.assertTrue(st.bitmap_scene, rate)
-                st.set_rate_for_mode("petscii")
+                st.set_scene_rate(12000, "petscii")
                 self.assertFalse(st.bitmap_scene, rate)
 
     def test_a_set_rate_wins_even_at_the_default(self):
