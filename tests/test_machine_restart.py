@@ -651,6 +651,19 @@ class CrashFoundByTheAudioStallTest(unittest.TestCase):
         self.assertEqual(restores, [1], "the machine was not put back after the teardown")
         self.assertTrue(stop.is_set())
 
+    def test_the_crashed_scene_skips_its_fade_out(self):
+        audio = MagicMock()
+        audio.take_machine_crash.return_value = True
+        scene = FakeScene("Video")
+        pl = Playlist(
+            [scene], FakeApi(), target_fps=30.0, interstitial_factory=_transition_factory()[0]
+        )
+        pl.audio = audio
+        with self.assertLogs("c64cast.app.playlist", level="WARNING"):
+            pl._end_scene_if_machine_crashed(scene)
+        self.assertTrue(scene.is_done)
+        self.assertTrue(pl.fades.ended_via_skip, "the fade-out would dim a crashed screen")
+
 
 class _ZeroingTune(FakeScene):
     """A scene whose player zeroes `$0334-$033B` every frame, as a tune that

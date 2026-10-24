@@ -2579,6 +2579,15 @@ class SceneDacRateTest(unittest.TestCase):
                 self._set_up(st, mode)
             self.assertEqual(st.sample_rate, 12000, mode)
 
+    def test_each_scene_records_whether_it_draws_a_bitmap_for_the_crash_look(self):
+        for rate in (None, 11025):
+            st = self._streamer(rate)
+            with quiet_logging():
+                st.set_rate_for_mode("hires")
+                self.assertTrue(st.bitmap_scene, rate)
+                st.set_rate_for_mode("petscii")
+                self.assertFalse(st.bitmap_scene, rate)
+
     def test_a_set_rate_wins_even_at_the_default(self):
         for rate in (12000, 11025):
             st = self._streamer(rate)
