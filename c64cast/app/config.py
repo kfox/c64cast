@@ -3414,13 +3414,14 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
                 raise ValueError(f"[[performance.clips]][{i}] unknown key {k!r}{hint}")
             if k not in _CLIP_LAUNCH_KEYS:
                 _refuse_mistyped(scene_annotations[k], clip[k], f"[[performance.clips]][{i}].{k}")
-        clip_color = clip.get("color")
-        if isinstance(clip_color, dict):
-            for k, v in clip_color.items():
-                if k in color_annotations:
-                    _refuse_mistyped(
-                        color_annotations[k], v, f"[[performance.clips]][{i}].color.{k}"
-                    )
+        clip_color = clip.get("color", {})
+        if not isinstance(clip_color, dict):
+            raise ValueError(
+                f"[[performance.clips]][{i}].color must be a table, got {clip_color!r}"
+            )
+        for k, v in clip_color.items():
+            if k in color_annotations:
+                _refuse_mistyped(color_annotations[k], v, f"[[performance.clips]][{i}].color.{k}")
         slot = clip.get("slot")
         if isinstance(slot, bool) or not isinstance(slot, int) or slot < 1:
             raise ValueError(f"[[performance.clips]][{i}] needs an int `slot` >= 1, got {slot!r}")
