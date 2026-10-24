@@ -5,4 +5,4 @@
   sample player's interrupts piled up inside one another until the stack
   wrapped and the C64 fell into a KERNAL warm start, about a minute and a half
   into a music video at 12 kHz. Slices are now sized to leave room for both:
-  17 bytes at 12 kHz on NTSC and 15 on PAL, down from 33 and 30.
+  20 bytes at 12 kHz on NTSC and 18 on PAL, down from 33 and 30.

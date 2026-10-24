@@ -4593,7 +4593,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(store.addr, 0xD418)
         self.assertEqual(store.period_cycles, period)
         self.assertAlmostEqual(store.period_s, period / cpu_clock(s.system))
-        self.assertEqual(store.free_cycles, period - 35 - 19 - 12)
+        self.assertEqual(store.free_cycles, period - 48 - 9 - 6)
 
     def test_a_retune_tells_the_backend_of_a_shorter_period_before_arming_it(self):
         s = _make()

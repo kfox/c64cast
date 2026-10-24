@@ -924,9 +924,9 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertEqual(whole.dac_bitmap_tempo(False), 0.89)
 
 
-_STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=22)
-# 22 free cycles less the firmware's 5 per slice; two 83.1 us periods to wait.
-_LOCKED_HEADER = _SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 17, 167])
+_STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=25)
+# 25 free cycles less the firmware's 5 per slice; two 83.1 us periods to wait.
+_LOCKED_HEADER = _SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 20, 167])
 _WATCH_TOK = bytes([0x64, 0xF9])
 
 
@@ -1088,17 +1088,17 @@ class LockedSlicingBackendTest(unittest.TestCase):
 
     def test_a_retuned_period_resizes_the_locked_slices(self):
         b, t = self._locked()
-        b.note_nmi_period(replace(_STORE, period_cycles=75, period_s=75 / 1022727, free_cycles=13))
+        b.note_nmi_period(replace(_STORE, period_cycles=75, period_s=75 / 1022727, free_cycles=16))
         sent = self._write(b, t, "4000", 256, 3)
         self.assertTrue(
-            sent.startswith(_SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 8, 147]))
+            sent.startswith(_SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 11, 147]))
         )
 
     def test_the_slice_at_12_khz_leaves_the_6510_room_for_the_handler(self):
         # A cycle simulation of the handler, the KERNAL hop and the badlines
         # overloads the 6510 past about 26 bytes on NTSC and 24 on PAL: NMIs
         # nest and the stack wraps.
-        for system, slice_bytes in (("NTSC", 17), ("PAL", 15)):
+        for system, slice_bytes in (("NTSC", 20), ("PAL", 18)):
             with self.subTest(system=system):
                 store = nmi_sample_store(nmi_latch_for_rate(12000, system), system)
                 lock = TeensyROMBackend._lock_for(store)

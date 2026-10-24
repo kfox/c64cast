@@ -54,11 +54,10 @@ DELTA_CHUNK_BYTES = 256
 
 @dataclass(frozen=True)
 class NmiSampleStore:
-    """Where an NMI sample player stores each sample, and when: `free_cycles`
-    of every `period_cycles`-cycle NMI period (`period_s` seconds) are left
-    after the store once the handler has returned, counting the latest the
-    store can land after the timer underflows and setting aside the cycles
-    badlines take from the 6510 in an average period."""
+    """Where an NMI sample player stores each sample, once every
+    `period_cycles`-cycle NMI period (`period_s` seconds), and `free_cycles`:
+    how many cycles of a period the C64 can spend halted on average, once the
+    handler, the badlines and the main program have had theirs."""
 
     addr: int
     period_cycles: int

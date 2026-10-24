@@ -50,8 +50,7 @@ from .audio_handlers import (
     CIA2_TIMER_A_CONTINUOUS,
     NMI_ARM_MAX_ATTEMPTS,
     NMI_ARM_VERIFY_DELAY_S,
-    NMI_CYCLES_AFTER_STORE,
-    NMI_CYCLES_TO_STORE,
+    NMI_HANDLER_CYCLES,
     NMI_ROUTINE_ADDR,
     NMI_STALL_WARN_CHUNKS,
     NMI_STORE_ADDR,
@@ -80,16 +79,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# A TeensyROM+ halt that meets a badline spends 3 more cycles re-syncing to the
-# bus after BA returns (DMATransferISR).
-NMI_BADLINE_RESERVE_MARGIN_CYCLES = 3
+# Raster IRQs and the player loop, plus slack for how far the firmware's
+# per-slice overhead may run past its nominal count.
+NMI_MAIN_PROGRAM_RESERVE_CYCLES = 6
 
 
-def badline_reserve_cycles(period: int, system: str) -> int:
+def badline_tax_cycles(period: int, system: str) -> int:
     """The cycles of a `period`-cycle NMI period that badlines take from the
-    6510 on average on `system`, rounded up, plus a margin."""
+    6510 on average on `system`, rounded up."""
     stalled = period * BADLINE_STALL_CYCLES * BADLINES_PER_FRAME
-    return -(-stalled // cycles_per_frame(system)) + NMI_BADLINE_RESERVE_MARGIN_CYCLES
+    return -(-stalled // cycles_per_frame(system))
 
 
 def nmi_sample_store(latch: int, system: str) -> NmiSampleStore:
@@ -101,9 +100,9 @@ def nmi_sample_store(latch: int, system: str) -> NmiSampleStore:
         period_cycles=period,
         period_s=period / cpu_clock(system),
         free_cycles=period
-        - NMI_CYCLES_TO_STORE
-        - NMI_CYCLES_AFTER_STORE
-        - badline_reserve_cycles(period, system),
+        - NMI_HANDLER_CYCLES
+        - badline_tax_cycles(period, system)
+        - NMI_MAIN_PROGRAM_RESERVE_CYCLES,
     )
 
 
