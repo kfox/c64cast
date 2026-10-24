@@ -111,7 +111,6 @@ from .audio_handlers import (
 from .audio_rate import NmiTimer, RateServo
 from .audio_servo import (
     HOST_DMA_SERVO_TARGET_GAP,
-    NMI_BITMAP_SEED_MODES,
     NMI_RATE_LOOP_WARMUP_S,
     STALL_INSIDE_LEAD_SLACK,
     STALL_REANCHOR_READ_BUDGET_FRAC,
@@ -309,7 +308,11 @@ class AudioStreamer:
         # audio ~8/sec + render ~30-60/sec stays under the ~200/sec ceiling.
         self.api = api
         self._rate_follows_scene = sample_rate is None
-        self.sample_rate = api.dac_sample_rate(bitmap=False) if sample_rate is None else sample_rate
+        self.sample_rate = (
+            api.dac_pacing(bitmap=False, multicolor=False).sample_rate
+            if sample_rate is None
+            else sample_rate
+        )
         self.system = system
         self.dither_enabled = dither
         # One generator per streamer rather than numpy's process-wide one, so a
@@ -1620,14 +1623,12 @@ class AudioStreamer:
         expander replaces it)."""
         return self._dsp.active
 
-    def set_rate_for_mode(self, display_mode: str | None) -> None:
-        """Take the backend's DAC rate for a scene in `display_mode` when no
-        rate was configured. Called at scene setup, with the streamer stopped:
-        every start_* arms the NMI and paces from the rate in force."""
+    def set_scene_rate(self, rate: int, display_mode: str | None) -> None:
+        """Take `rate`, the backend's DAC rate for a scene in `display_mode`,
+        when no rate was configured. Called at scene setup, with the streamer
+        stopped: every start_* arms the NMI and paces from the rate in force."""
         if not self._rate_follows_scene:
             return
-        bitmap = display_mode is not None and display_mode.lower() in NMI_BITMAP_SEED_MODES
-        rate = self.api.dac_sample_rate(bitmap=bitmap)
         if rate == self.sample_rate:
             return
         log.info("audio: DAC rate %d Hz for display mode %s", rate, display_mode)

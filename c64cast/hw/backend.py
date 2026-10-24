@@ -65,6 +65,18 @@ class NmiSampleStore:
     free_cycles: int
 
 
+@dataclass(frozen=True)
+class DacPacing:
+    """How a ``$D418``-DAC scene plays over this link: `sample_rate`, the DAC
+    rate for an unset [audio].sample_rate, and `bitmap_tempo`, the clock/wall
+    speed a bitmap video drains at, for an unset [audio].dac_bitmap_tempo_*
+    (1.0 outside a bitmap mode). One answer, so the two describe the same
+    write path."""
+
+    sample_rate: int
+    bitmap_tempo: float
+
+
 class BackendCapabilityError(RuntimeError):
     """Raised when code invokes a backend method the active hardware doesn't
     support (e.g. ``read_memory`` on a write-only TeensyROM+ test build).
@@ -436,17 +448,13 @@ class C64Backend(ABC):
         backend with no cheap round trip lets the setup itself try."""
         return True
 
-    def dac_bitmap_tempo(self, multicolor: bool) -> float:
-        """The clock/wall speed a $D418-DAC video drains at over a bitmap mode
-        on this link, for an unset [audio].dac_bitmap_tempo_*. Measured on an
-        Ultimate 64-II NTSC; a TeensyROM writing with WriteC64Mem lands within
-        1% of the same figures."""
-        return 0.88 if multicolor else 0.89
-
-    def dac_sample_rate(self, bitmap: bool) -> int:
-        """The $D418 DAC rate for a scene, bitmap or not, on this link, for an
-        unset [audio].sample_rate."""
-        return DEFAULT_DAC_SAMPLE_RATE
+    def dac_pacing(self, *, bitmap: bool, multicolor: bool) -> DacPacing:
+        """The DAC pacing for a scene in a bitmap mode (MultiHires when
+        `multicolor`) or not. The bitmap tempo was measured on an Ultimate
+        64-II NTSC; a TeensyROM writing with WriteC64Mem lands within 1% of the
+        same figures."""
+        tempo = (0.88 if multicolor else 0.89) if bitmap else 1.0
+        return DacPacing(DEFAULT_DAC_SAMPLE_RATE, tempo)
 
     def note_nmi_consumer(self, active: bool, store: NmiSampleStore | None = None) -> None:
         """A sample player driven by the CIA2 NMI has started (or stopped)

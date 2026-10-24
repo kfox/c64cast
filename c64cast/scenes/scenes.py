@@ -32,10 +32,11 @@ from c64cast.audio.audio_handlers import (
     REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
     encode_floats_to_dac,
 )
+from c64cast.audio.audio_servo import NMI_BITMAP_SEED_MODES
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw import machine_input
-from c64cast.hw.backend import C64Backend, LinkError
+from c64cast.hw.backend import C64Backend, DacPacing, LinkError
 from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.modes_irq import reu_pump_skips_irq_hook
@@ -319,6 +320,11 @@ def _annotate_osd(img: np.ndarray, text: str, position: str = "bottom") -> np.nd
     return _blit_c64_text(img, text, width_frac=0.85, vpos=vpos, margin_y_frac=0.06)
 
 
+def _dac_pacing_for(api: C64Backend, mode_name: str | None) -> DacPacing:
+    name = (mode_name or "").lower()
+    return api.dac_pacing(bitmap=name in NMI_BITMAP_SEED_MODES, multicolor=name == "mhires")
+
+
 class Scene:
     # Consulted by the Playlist's ensemble audio lock before setup; ignored
     # entirely in single-system mode.
@@ -369,6 +375,7 @@ class Scene:
         self._orchestrator: Any = None
         self._is_conductor: bool = False
         self._system_index: int = 0
+        self.dac_pacing: DacPacing | None = None
 
     def bind_orchestrator(self, orch: Any, *, conductor: bool, index: int) -> None:
         """Stamp the cross-ensemble orchestrator role onto this scene, before
@@ -467,11 +474,12 @@ class Scene:
             eff.reset()
         # Before the subclass brings audio up: mic start and the video
         # pre-encode both read the updated DSP params.
-        if isinstance(self.audio, AudioStreamer):
-            self.audio.set_rate_for_mode(
-                self.display_mode.name if self.display_mode is not None else None
-            )
+        self.dac_pacing = None
         if self.audio is not None:
+            display = self.display_mode.name if self.display_mode is not None else None
+            self.dac_pacing = _dac_pacing_for(self.api, display)
+            if isinstance(self.audio, AudioStreamer):
+                self.audio.set_scene_rate(self.dac_pacing.sample_rate, display)
             self.audio.set_pre_emphasis(self.pre_emphasis)
         if self.display_mode is not None:
             self.display_mode.setup(self.api)
@@ -1320,16 +1328,18 @@ class VideoScene(MediaFileMixin, Scene):
         prepend_alignment_marker: bool = False,
         color: ColorCfg | None = None,
         start_s: float = 0.0,
-        tempo_scale: float = 1.0,
+        tempo_scale: float | None = 1.0,
         loop_audio: str = "on",
         setup_progress: bool = True,
-        tempo_follow: bool = False,
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
         pool). The candidate pool is resolved here once; each `setup()`
         re-resolves so a directory's contents can change between scene
-        repeats. Single-entry pools stay deterministic."""
+        repeats. Single-entry pools stay deterministic.
+
+        `tempo_scale` None takes the link's bitmap tempo at each setup and
+        follows the drain from it; a number is fixed."""
         self.file_spec = file
         # Resolve once so a bad spec raises at construction; picked again at
         # each setup().
@@ -1362,13 +1372,13 @@ class VideoScene(MediaFileMixin, Scene):
         self.start_s = max(0.0, start_s)
         # Bitmap + $D418-DAC tempo compensation (1.0 = off): AVFileSource
         # time-compresses the audio by 1/tempo_scale and scales video PTS by
-        # tempo_scale, canceling the bitmap+DAC slowdown. Resolved in
-        # scene_factory.build_scene.
-        self.tempo_scale = tempo_scale
+        # tempo_scale, canceling the bitmap+DAC slowdown.
+        self.tempo_from_link = tempo_scale is None
+        self.tempo_scale = 1.0 if tempo_scale is None else tempo_scale
         # Retune that compensation to the drain measured while the scene plays
         # (`_follow_drain`), from tempo_scale as the starting point. Off for a
         # configured value, which is what the operator measured.
-        self.tempo_follow = tempo_follow and tempo_scale < 1.0
+        self.tempo_follow = False
         # (wall, clock) at the displayed frames in the drain window, and the
         # last drain followed with the file it was followed on. The next run
         # starts from it when it picks that file again: the drain differs from
@@ -1377,6 +1387,7 @@ class VideoScene(MediaFileMixin, Scene):
         self._drain_marks: deque[tuple[float, float]] = deque()
         self._followed_tempo: float | None = None
         self._followed_file: str | None = None
+        self._followed_from: float | None = None
         # The window's trust stamp (underruns, delivery_epoch), the monotonic
         # time following was armed at, and the last retune's.
         self._drain_trust: tuple[int, int] | None = None
@@ -1442,6 +1453,9 @@ class VideoScene(MediaFileMixin, Scene):
             self.is_done = True
             return
         super().setup()
+        if self.tempo_from_link and self.dac_pacing is not None:
+            self.tempo_scale = self.dac_pacing.bitmap_tempo
+            self.tempo_follow = self.tempo_scale < 1.0
         # Back onto the audio-master clock, untouched, rather than inheriting a
         # prior run's pause/seek/loop/mute.
         self.transport.reset()
@@ -1489,11 +1503,7 @@ class VideoScene(MediaFileMixin, Scene):
                 scan_audio_peak=will_push_audio,
                 start_s=self.start_s,
                 decode_target_size=decode_target,
-                tempo_scale=(
-                    self._followed_tempo
-                    if self._followed_tempo is not None and self._followed_file == self.filepath
-                    else self.tempo_scale
-                ),
+                tempo_scale=self._starting_tempo(),
                 tempo_follow=self.tempo_follow,
             )
         except PermissionError as e:
@@ -2003,6 +2013,18 @@ class VideoScene(MediaFileMixin, Scene):
         self._last_osd_shown = None
         self._last_render_epoch = None
 
+    def _starting_tempo(self) -> float:
+        """The drain last followed on this file from the same starting figure,
+        else the starting figure. A drain followed while the link wrote
+        another way is not this run's: it was paced for another DAC rate."""
+        if (
+            self._followed_tempo is not None
+            and self._followed_file == self.filepath
+            and self._followed_from == self.tempo_scale
+        ):
+            return self._followed_tempo
+        return self.tempo_scale
+
     def _follow_drain(self, clock_s: float, now: float) -> None:
         """Retune the bitmap+DAC tempo compensation to the drain measured
         over the last `TEMPO_FOLLOW_WINDOW_S`: clock/wall, the fraction of real
@@ -2069,6 +2091,7 @@ class VideoScene(MediaFileMixin, Scene):
         source.request_tempo_scale(retuned)
         self._followed_tempo = retuned
         self._followed_file = self.filepath
+        self._followed_from = self.tempo_scale
         self._last_retune_t = now
 
     def _log_av_lag_summary(self) -> None:

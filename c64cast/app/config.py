@@ -976,7 +976,7 @@ class AudioCfg:
     # modes.
     #
     # Unset starts from the figure for the connected backend
-    # (C64Backend.dac_bitmap_tempo): the fraction depends on how the link's
+    # (C64Backend.dac_pacing, at scene setup): the fraction depends on how the link's
     # writes halt the NMI, so one number cannot serve the U64 and a slicing TR+
     # alike. It then follows the drain the scene measures while it plays
     # (VideoScene._follow_drain), since the fraction also moves with how many
