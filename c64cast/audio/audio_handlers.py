@@ -107,14 +107,17 @@ assert NMI_ROUTINE[4] == 0xAD and NMI_ROUTINE_ADDR + 5 == READ_PTR_LO_ADDR, (
     "READ_PTR_* must name the routine's LDA operand"
 )
 
-# When the routine's fast path stores its sample, counted from the underflow:
-# the 7-cycle NMI sequence, up to 6 more finishing the interrupted instruction,
-# then PHA, LDA, LDA and the STA's write cycle. INC, the taken BNE, PLA and RTI
-# run after it. A halt placed right after the store and ending within the rest
-# of the period delays neither this handler's return nor the next NMI.
+# A halt that starts right after the store still has INC, BNE, PLA and RTI to
+# wait for, so what bounds nesting is the average: the handler, the halt and
+# whatever else the period holds must fit in it, or each NMI is taken inside
+# the last and the stack grows until it wraps. The cycles spent finishing the
+# interrupted instruction are the main program's, not the handler's.
 NMI_STORE_ADDR = 0xD418
-NMI_CYCLES_TO_STORE = 7 + 6 + 3 + 4 + 4 + 4
-NMI_CYCLES_AFTER_STORE = 6 + 3 + 4 + 6
+NMI_SEQUENCE_CYCLES = 7
+KERNAL_NMI_HOP_CYCLES = 2 + 5  # $FE43: SEI, JMP ($0318)
+# PHA, LDA, LDA, STA, INC, taken BNE, PLA, RTI
+NMI_FAST_PATH_CYCLES = 3 + 4 + 4 + 4 + 6 + 3 + 4 + 6
+NMI_HANDLER_CYCLES = NMI_SEQUENCE_CYCLES + KERNAL_NMI_HOP_CYCLES + NMI_FAST_PATH_CYCLES
 assert NMI_ROUTINE[7:10] == bytes([0x8D, NMI_STORE_ADDR & 0xFF, NMI_STORE_ADDR >> 8])
 
 # A transport pause NEUTRAL-fills the unplayed span [R + guard, W). The guard

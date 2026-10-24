@@ -47,7 +47,7 @@ from .api import (
     _StubRunnerBackend,
 )
 from .backend import BackendCapabilityError, HardwareProfile, NmiSampleStore
-from .c64 import SCREEN, VECTORS
+from .c64 import LOCKED_BITMAP_DAC_SAMPLE_RATE, SCREEN, VECTORS
 from .teensyrom_dma import (
     DRIVE_SD,
     DRIVE_USB,
@@ -314,11 +314,19 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         # 0.974 Hires). Any other shape, slice 0 (one 1 KiB halt per command)
         # and a held bus (writes go on WriteC64Mem) get the measured unsliced
         # figure rather than a guess between the two.
-        if self._lock_capable and not self._lock_lost and not self._spans_held:
+        if self._writes_locked():
             return _LOCKED_TEMPO
         if self._slice_unlocked and self._spans == _SLICED_TEMPO_SHAPE and not self._spans_held:
             return _SLICED_TEMPO
         return super().dac_bitmap_tempo(multicolor)
+
+    def dac_sample_rate(self, bitmap: bool) -> int:
+        if bitmap and self._writes_locked():
+            return LOCKED_BITMAP_DAC_SAMPLE_RATE
+        return super().dac_sample_rate(bitmap)
+
+    def _writes_locked(self) -> bool:
+        return self._lock_capable and not self._lock_lost and not self._spans_held
 
     def _spans_backing_off(self) -> bool:
         return self._spans_held and time.monotonic() < self._spans_retry_at

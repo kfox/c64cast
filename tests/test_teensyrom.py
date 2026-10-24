@@ -19,6 +19,8 @@ from unittest import mock
 from _fakes import FakeTime, SleepDrivenClock, make_psid
 
 from c64cast.app import config as cfgmod
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw import teensyrom_dma as tr_dma
@@ -28,6 +30,11 @@ from c64cast.hw.backend import (
     BackendCapabilityError,
     NmiSampleStore,
     make_backend,
+)
+from c64cast.hw.c64 import (
+    DEFAULT_DAC_SAMPLE_RATE,
+    LOCKED_BITMAP_DAC_SAMPLE_RATE,
+    nmi_latch_for_rate,
 )
 from c64cast.hw.teensyrom_api import TeensyROMBackend
 from c64cast.hw.teensyrom_dma import (
@@ -922,9 +929,9 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertEqual(whole.dac_bitmap_tempo(False), 0.89)
 
 
-_STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=38)
-# 38 free cycles less the firmware's 5 per slice; two 83.1 us periods to wait.
-_LOCKED_HEADER = _SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 33, 167])
+_STORE = NmiSampleStore(addr=0xD418, period_cycles=85, period_s=85 / 1022727, free_cycles=25)
+# 25 free cycles less the firmware's 5 per slice; two 83.1 us periods to wait.
+_LOCKED_HEADER = _SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 20, 167])
 _WATCH_TOK = bytes([0x64, 0xF9])
 
 
@@ -970,6 +977,32 @@ class LockedSlicingBackendTest(unittest.TestCase):
         with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
             b.write_memory_file("4000", bytes(64))
         self.assertEqual(b.dac_bitmap_tempo(True), 0.88)
+
+    def test_bitmap_scenes_default_to_the_locked_rate_before_any_consumer(self):
+        b, _ = self._backend(lock=True)
+        self.assertEqual(b.dac_sample_rate(True), LOCKED_BITMAP_DAC_SAMPLE_RATE)
+        self.assertEqual(b.dac_sample_rate(False), DEFAULT_DAC_SAMPLE_RATE)
+
+    def test_an_unset_rate_arms_the_locked_bitmap_latch_only_for_bitmap_scenes(self):
+        b, _ = self._backend(lock=True)
+        st = AudioStreamer(b, None, "NTSC")
+        st.set_rate_for_mode("mhires")
+        self.assertEqual(st.nmi.nominal_latch(), nmi_latch_for_rate(10000, "NTSC"))
+        st.set_rate_for_mode("petscii")
+        self.assertEqual(st.nmi.nominal_latch(), nmi_latch_for_rate(12000, "NTSC"))
+
+    def test_bitmap_rate_is_the_default_without_the_lock(self):
+        for mode, lock in (("auto", False), ("on", True)):
+            b, _ = self._backend(mode, lock=lock)
+            self.assertEqual(b.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE, mode)
+
+    def test_bitmap_rate_falls_back_when_the_snoop_is_held(self):
+        b, t = self._backend(lock=True)
+        t.queue_token(TOK_FAIL)
+        t.queue_stale(b"Bus snoop in use")
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b.note_nmi_consumer(True, _STORE)
+        self.assertEqual(b.dac_sample_rate(True), DEFAULT_DAC_SAMPLE_RATE)
 
     def test_auto_starts_the_watch_and_locks_writes_to_the_store(self):
         b, t = self._locked()
@@ -1086,11 +1119,22 @@ class LockedSlicingBackendTest(unittest.TestCase):
 
     def test_a_retuned_period_resizes_the_locked_slices(self):
         b, t = self._locked()
-        b.note_nmi_period(replace(_STORE, period_cycles=75, period_s=75 / 1022727, free_cycles=28))
+        b.note_nmi_period(replace(_STORE, period_cycles=75, period_s=75 / 1022727, free_cycles=16))
         sent = self._write(b, t, "4000", 256, 3)
         self.assertTrue(
-            sent.startswith(_SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 23, 147]))
+            sent.startswith(_SPANS_TOK + bytes([tr_dma.SPANS_FLAG_LOCK_TO_STORE, 11, 147]))
         )
+
+    def test_the_slice_at_12_khz_leaves_the_6510_room_for_the_handler(self):
+        # A cycle simulation of the handler, the KERNAL hop and the badlines
+        # overloads the 6510 past about 26 bytes on NTSC and 24 on PAL: NMIs
+        # nest and the stack wraps.
+        for system, slice_bytes in (("NTSC", 20), ("PAL", 18)):
+            with self.subTest(system=system):
+                store = nmi_sample_store(nmi_latch_for_rate(12000, system), system)
+                lock = TeensyROMBackend._lock_for(store)
+                assert lock is not None
+                self.assertEqual(lock[1], slice_bytes)
 
     def test_a_retuned_period_with_no_lock_stays_unsliced(self):
         b, t = self._backend(lock=True)

@@ -423,6 +423,19 @@ CYCLES_PER_FRAME_NTSC: Final = 65 * 263  # 17095
 FRAME_HZ_PAL: Final = CLOCK_PAL / CYCLES_PER_FRAME_PAL  # 50.1246
 FRAME_HZ_NTSC: Final = CLOCK_NTSC / CYCLES_PER_FRAME_NTSC  # 59.8261
 
+# BA drops 3 cycles before a badline's 40 matrix fetches, so the 6510 can lose
+# all 43.
+BADLINE_STALL_CYCLES: Final = 43
+BADLINES_PER_FRAME: Final = 25
+
+
+def cycles_per_frame(system: str) -> int:
+    """Return the PHI2 cycles in one VIC-II frame for the given system.
+
+    Raises ValueError for anything but 'NTSC'/'PAL' — see :func:`_canonical_system`.
+    """
+    return CYCLES_PER_FRAME_NTSC if _canonical_system(system) == "NTSC" else CYCLES_PER_FRAME_PAL
+
 
 def frame_rate(system: str) -> float:
     """Return the VIC-II frame rate in Hz for the given system.
@@ -497,6 +510,14 @@ NMI_HANDLER_WORST_CYCLES: Final = 68  # measured overrun onset
 NMI_ENTRY_LATENCY_CYCLES: Final = 7  # margin for entry latency + PAL/unit variation
 NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 75
 NMI_CEILING_LATCH: Final = max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
+
+# The live-pipeline overrun onset is ~12.5 kHz (docs/architecture/audio.md).
+DEFAULT_DAC_SAMPLE_RATE: Final = 12000
+# A TeensyROM+ slice locked to the sample store shrinks with the NMI period:
+# at the default rate a bitmap video cannot reach its frame rate through them
+# (measured NTSC MultiHires: ~14 fps at 12 kHz and 20-byte slices, the clip's
+# full 20 fps at 10 kHz and 36).
+LOCKED_BITMAP_DAC_SAMPLE_RATE: Final = 10000
 
 
 def clamp_nmi_latch(latch: int, *, ceiling: int = NMI_CEILING_LATCH) -> int:

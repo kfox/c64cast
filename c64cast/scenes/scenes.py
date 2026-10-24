@@ -467,6 +467,10 @@ class Scene:
             eff.reset()
         # Before the subclass brings audio up: mic start and the video
         # pre-encode both read the updated DSP params.
+        if isinstance(self.audio, AudioStreamer):
+            self.audio.set_rate_for_mode(
+                self.display_mode.name if self.display_mode is not None else None
+            )
         if self.audio is not None:
             self.audio.set_pre_emphasis(self.pre_emphasis)
         if self.display_mode is not None:

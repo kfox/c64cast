@@ -2455,6 +2455,55 @@ class StallResyncTest(unittest.TestCase):
         self.assertTrue(any("Re-anchored" in line for line in cm.output))
 
 
+class _BitmapRateAPI(FakeAPI):
+    def dac_sample_rate(self, bitmap):
+        return 10000 if bitmap else 12000
+
+
+class SceneDacRateTest(unittest.TestCase):
+    """An unset [audio].sample_rate takes the backend's rate per scene; a set
+    one holds for every scene."""
+
+    def _streamer(self, rate: int | None) -> AudioStreamer:
+        return AudioStreamer(cast(Ultimate64API, _BitmapRateAPI()), rate, "NTSC")
+
+    def test_an_unset_rate_follows_each_scenes_display_mode(self):
+        st = self._streamer(None)
+        self.assertEqual(st.sample_rate, 12000)
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
+            st.set_rate_for_mode("mhires")
+        self.assertEqual(st.sample_rate, 10000)
+        for mode in ("petscii", None):
+            st.set_rate_for_mode("hires")
+            with self.assertLogs("c64cast.audio.audio", level="INFO"):
+                st.set_rate_for_mode(mode)
+            self.assertEqual(st.sample_rate, 12000, mode)
+
+    def test_a_set_rate_wins_even_at_the_default(self):
+        for rate in (12000, 11025):
+            st = self._streamer(rate)
+            st.set_rate_for_mode("mhires")
+            self.assertEqual(st.sample_rate, rate)
+
+    def test_the_dsp_chain_runs_at_the_scene_rate(self):
+        st = self._streamer(None)
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
+            st.set_rate_for_mode("mhires")
+        self.assertEqual(st._dsp.sample_rate, 10000)
+
+    def test_scene_setup_picks_the_rate_from_its_display_mode(self):
+        from c64cast.scenes.scenes import Scene
+
+        st = self._streamer(None)
+        mode = mock.MagicMock()
+        mode.name = "mhires"
+        scene = Scene(cast(Ultimate64API, st.api), st, mode, "clip")
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
+            with self.assertLogs("c64cast.scenes.scenes", level="INFO"):
+                scene.setup()
+        self.assertEqual(st.sample_rate, 10000)
+
+
 class NmiRateSafetyTest(unittest.TestCase):
     """The NMI sample-rate guard (c64.nmi_rate_safety) + its config wiring.
 
@@ -2463,12 +2512,10 @@ class NmiRateSafetyTest(unittest.TestCase):
     slower clock = tighter ceiling than NTSC. See [[project-nmi-rate-intelligibility]]."""
 
     def test_default_rate_is_safe_both_standards(self):
-        from c64cast.app.config import AudioCfg
-        from c64cast.hw.c64 import nmi_rate_safety
+        from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, nmi_rate_safety
 
-        self.assertEqual(AudioCfg().sample_rate, 12000)
         for system in ("NTSC", "PAL"):
-            self.assertEqual(nmi_rate_safety(system, 12000)[0], "ok")
+            self.assertEqual(nmi_rate_safety(system, DEFAULT_DAC_SAMPLE_RATE)[0], "ok")
 
     def test_legacy_and_candidate_rates_ok(self):
         from c64cast.hw.c64 import nmi_rate_safety
@@ -2691,8 +2738,15 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
 
     def test_seed_prefers_learned_value(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s.nmi.learned_latch["mhires"] = 90
+        s.nmi.learned_latch["mhires", 10500] = 90
         self.assertEqual(s.nmi.seed_latch_for_mode("mhires"), 90)  # learned beats the class default
+
+    def test_seed_ignores_a_latch_learned_at_another_rate(self):
+        # A latch learned at 12 kHz arms ~13 kHz once the scene's rate drops to 10 kHz.
+        s = _make(sample_rate=12000, nmi_rate_adaptive=True)
+        s.nmi.learned_latch["petscii", 12000] = s.nmi.ceiling_latch() + 4
+        s.sample_rate = 10000
+        self.assertEqual(s.nmi.seed_latch_for_mode("petscii"), s.nmi.nominal_latch())
 
     def test_start_timer_arms_at_mode_seed(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
@@ -2709,7 +2763,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.servo.last_r_addr = -1
         s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
         s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s.nmi.learned_latch["mhires"], 88)
+        self.assertEqual(s.nmi.learned_latch["mhires", 10500], 88)
 
     def _converge(self, s: AudioStreamer) -> None:
         """One adaptive decision with R at target, so the loop settles."""
@@ -2729,7 +2783,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s.nmi.latch = s.nmi.nominal_latch()
         s.set_nmi_latch_for_mode("mhires")
         self._converge(s)
-        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
+        self.assertEqual(s.nmi.learned_latch, {("mhires", 10500): s.nmi.ceiling_latch()})
         s._worker_thread = None
         s.stop()
         # The next scene: no display_mode, adaptive start.
@@ -2737,7 +2791,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
         s.nmi.latch = 90  # wherever this scene's load settles
         self._converge(s)
-        self.assertEqual(s.nmi.learned_latch, {"mhires": s.nmi.ceiling_latch()})
+        self.assertEqual(s.nmi.learned_latch, {("mhires", 10500): s.nmi.ceiling_latch()})
 
     def test_loop_discards_torn_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
@@ -2876,7 +2930,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         # sample_rate and hold it there through the whole warm-up; the seed
         # keeps to the [ceiling, nominal] range the loop itself steps in.
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s.nmi.learned_latch["petscii"] = s.nmi.nominal_latch() + 20
+        s.nmi.learned_latch["petscii", 10500] = s.nmi.nominal_latch() + 20
         self.assertEqual(s.nmi.seed_latch_for_mode("petscii"), s.nmi.nominal_latch())
 
     def test_the_rate_reads_across_the_ring_end_as_a_forward_advance(self):
@@ -4593,7 +4647,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(store.addr, 0xD418)
         self.assertEqual(store.period_cycles, period)
         self.assertAlmostEqual(store.period_s, period / cpu_clock(s.system))
-        self.assertEqual(store.free_cycles, period - 28 - 19)
+        self.assertEqual(store.free_cycles, period - 48 - 9 - 6)
 
     def test_a_retune_tells_the_backend_of_a_shorter_period_before_arming_it(self):
         s = _make()

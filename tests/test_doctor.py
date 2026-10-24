@@ -23,7 +23,7 @@ from c64cast.app import doctor, paths, scene_factory
 from c64cast.app.upgrade import Release
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
-from c64cast.hw.c64 import max_safe_sample_rate
+from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, max_safe_sample_rate
 
 # The doctor loads configs, and loading reads the machine-settings file, so point
 # $C64CAST_SETTINGS at a missing path for the module. Tests that want a machine
@@ -2257,7 +2257,7 @@ class SampleRateHintTest(unittest.TestCase):
 
     def test_hint_quotes_the_shipped_default(self):
         hint = doctor._sample_rate_hint("NTSC", 20000)
-        self.assertIn(str(cfgmod.AudioCfg().sample_rate), hint)
+        self.assertIn(str(DEFAULT_DAC_SAMPLE_RATE), hint)
 
     def test_hint_quotes_both_standard_ceilings(self):
         hint = doctor._sample_rate_hint("NTSC", 20000)

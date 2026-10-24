@@ -23,7 +23,7 @@ get is the single most audible choice in the program.
 |---|---|---|
 | Where it plays | The SID's `$D418` volume register | An FPGA PCM channel, off the bus |
 | Resolution | 4 bits, or ≈6–7 effective with a companding curve | 8 or 16 bits |
-| Rate | 12 kHz by default | 44.1 kHz by default |
+| Rate | 12 kHz by default (10 kHz for bitmap scenes on a TeensyROM+ that locks its DMA slices) | 44.1 kHz by default |
 | Costs the 6510 | An interrupt per sample | Nothing at all |
 | Available on | Everything | The Ultimate 64 / Ultimate II+ |
 
@@ -57,6 +57,15 @@ processor cycles — starts overrunning near 12.5 kHz. Above that, handlers
 queue behind each other and samples stretch: the tone goes flat. Rates that
 overrun are rejected when the configuration loads, and `--doctor` reports
 them.
+
+On a TeensyROM+ that locks its DMA slices to the sample store (the
+`[teensyrom].dma_slicing` default), a Hires or MultiHires scene plays at
+10 kHz instead. Each slice has to fit inside one interrupt period, so at
+12 kHz the slices are small enough to hold a bitmap video well under its frame
+rate; at 10 kHz the period is longer, the slices nearly double, and the video
+keeps its full rate. Character modes send far less per frame and stay at
+12 kHz. Setting `[audio].sample_rate` (or `--sample-rate`) fixes the rate for
+every scene, and the slices follow whatever rate you choose.
 
 > [!NOTE]
 > The obvious alternative — pulse-width modulation on `$D402` — was

@@ -26,6 +26,7 @@ from typing import NoReturn
 
 from c64cast import UNINSTALLED_VERSION, __version__
 from c64cast.hw.backend import make_backend  # noqa: F401 — re-export (diag scripts)
+from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, LOCKED_BITMAP_DAC_SAMPLE_RATE
 
 from . import config as cfgmod
 from . import (
@@ -258,7 +259,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--sample-rate",
         type=int,
         default=None,
-        help=f"Audio sample rate in Hz (default: {audio_def.sample_rate})",
+        help=f"Audio sample rate in Hz (default: {DEFAULT_DAC_SAMPLE_RATE}, or "
+        f"{LOCKED_BITMAP_DAC_SAMPLE_RATE} on a Hires/MultiHires scene while a TeensyROM+ "
+        "locks its DMA slices)",
     )
     a.add_argument(
         "-m",

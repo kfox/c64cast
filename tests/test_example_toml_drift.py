@@ -86,6 +86,9 @@ _COVERAGE_EXEMPT = {
     # would pin every copy of the example to the U64's numbers.
     ("audio", "dac_bitmap_tempo_hires"),
     ("audio", "dac_bitmap_tempo_mhires"),
+    # Unset picks the rate per scene from the connected backend; a live key
+    # would pin every scene to one rate.
+    ("audio", "sample_rate"),
 }
 
 
