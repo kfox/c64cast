@@ -4085,9 +4085,9 @@ def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
             if not isinstance(ov_raw, dict):
                 raise ValueError(f"scenes.overlays entry must be a table, got {ov_raw!r}")
             sc.overlays.append(dict(ov_raw))
+        if not isinstance(raw_color, dict):
+            raise ValueError(f"scenes.color must be a table, got {raw_color!r}")
         if raw_color:
-            if not isinstance(raw_color, dict):
-                raise ValueError(f"scenes.color must be a table, got {raw_color!r}")
             # hue_corrections is a real ColorCfg field (list[dict]), so this
             # also validates a [[scenes.color.hue_corrections]] block's shape;
             # scene_color() is what gives it replace-not-extend semantics.

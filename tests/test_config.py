@@ -1566,6 +1566,11 @@ class FieldTypingTest(unittest.TestCase):
             self._load('[[performance.clips]]\nslot = 1\ntype = "blank"\ncolor = 5\n')
         self.assertIn("[[performance.clips]][0].color must be a table", str(ctx.exception))
 
+    def test_a_falsy_scene_color_that_is_not_a_table_is_refused_at_load(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[[scenes]]\ntype = "blank"\ncolor = false\n')
+        self.assertIn("scenes.color must be a table", str(ctx.exception))
+
     def test_an_ensemble_master_section_is_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
             master = os.path.join(tmp, "master.toml")
