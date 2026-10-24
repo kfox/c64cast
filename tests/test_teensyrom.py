@@ -498,7 +498,7 @@ class SlicingBackendTest(unittest.TestCase):
             if supported:
                 t.queue_token(TOK_FAIL if held else TOK_ACK)
                 if mode in ("auto", "locked"):
-                    t.queue_token(TOK_ACK)
+                    t.queue_token(TOK_FAIL if held else TOK_ACK)
             else:
                 t.queue_raw(b"Un")
         b = TeensyROMBackend(
@@ -1003,7 +1003,27 @@ class LockedSlicingBackendTest(unittest.TestCase):
     def test_locked_mode_on_firmware_without_the_lock_warns(self):
         with self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
             self._backend("locked", lock=False)
-        self.assertIn("cannot start a slice on a sample store", cm.output[0])
+        self.assertIn("the firmware lacks the flag, or REU emulation or a pause", cm.output[0])
+
+    def test_auto_mode_on_firmware_without_the_lock_does_not_warn(self):
+        with self.assertNoLogs("c64cast.hw.teensyrom_api", level="WARNING"):
+            self._backend("auto", lock=False)
+
+    def test_locked_mode_with_the_bus_held_at_connect_blames_the_hold(self):
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
+            b, _ = self._backend("locked", held=True, lock=True)
+        self.assertFalse(b._lock_capable)
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("held the bus at connect", cm.output[0])
+        self.assertNotIn("firmware lacks", cm.output[0])
+
+    def test_locked_mode_with_a_failed_lock_probe_names_the_failure(self):
+        failed = mock.patch.object(
+            tr_dma.TRClient, "probe_spans_lock", side_effect=TRError("no reply")
+        )
+        with failed, self.assertLogs("c64cast.hw.teensyrom_api", level="WARNING") as cm:
+            self._backend("locked", lock=True)
+        self.assertIn("the lock-to-store probe failed (no reply)", cm.output[0])
 
     def test_a_consumer_with_no_store_writes_unsliced(self):
         b, t = self._backend(lock=True)
@@ -1555,8 +1575,8 @@ class BackendTest(unittest.TestCase):
     def test_pause_idle_clears_screen_keeping_display_on(self):
         # A pause on TR must not reset — a reset lands at the TeensyROM menu, freezing
         # $028D and stranding the resume-hold — and must not turn the VIC display off:
-        # DEN=0 removes badlines, hanging the cycle-clean DMA (HW-confirmed, wedges
-        # the TR). So it clears screen RAM with DEN on: WriteC64Mem to $0400, and no
+        # DEN=0 removes badlines, hanging the cycle-clean DMA (HW-confirmed; wedges
+        # the TR on firmware before v0.9). So it clears screen RAM with DEN on: WriteC64Mem to $0400, and no
         # ResetC64, no $D011, no $00CC (the running clear loop holds the cursor off).
         b, t = self._backend(read=True)
         t.queue_token(TOK_ACK)  # screen-clear write (<4096 -> 1 seg)

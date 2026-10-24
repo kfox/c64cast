@@ -266,12 +266,24 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         try:
             capable = self.tr.probe_spans_lock()
         except (OSError, TRError) as e:
-            log.debug("TR lock-to-store probe failed (%s); assuming absent", e)
-            capable = False
-        if not capable and mode == "locked":
-            log.warning(
-                "[teensyrom].dma_slicing = 'locked' but this firmware cannot start a "
-                "slice on a sample store — writing with WriteC64Mem"
+            capable, cause = False, f"the lock-to-store probe failed ({e})"
+        else:
+            # A held bus refuses the probe at its token, whatever the firmware
+            # carries; at slice 0 a hold is not recorded, hence the either-or.
+            cause = (
+                "REU emulation or a pause held the bus at connect, so the "
+                "lock-to-store probe could not run"
+                if self._spans_held
+                else "the lock-to-store probe was refused: the firmware lacks the "
+                "flag, or REU emulation or a pause held the bus"
+            )
+        if not capable:
+            log.log(
+                logging.WARNING if mode == "locked" else logging.DEBUG,
+                "[teensyrom].dma_slicing = %r but %s — writing with WriteC64Mem "
+                "until the next connect",
+                mode,
+                cause,
             )
         return capable
 
@@ -558,8 +570,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         2. **Keep DEN on (don't blank_display).** The TR's cycle-clean DMA
            gates its /DMA assert on a safe VIC cycle (a badline). Turning the
            display OFF (DEN=0) removes badlines, so the DMA can never assert —
-           every subsequent read (and write) hangs, which both strands resume
-           AND wedges the TR until a power-cycle.
+           every subsequent read (and write) fails, which strands resume.
+           Firmware before v0.9 also wedges the TR until a power-cycle; from
+           v0.9 it abandons the transfer and answers FailToken.
 
         Neither a reset nor a blank is needed: the IRQ-enabled BASIC clear-loop
         set up at bring-up is still running underneath every scene (it's what

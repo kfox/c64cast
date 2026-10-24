@@ -126,7 +126,7 @@ def main() -> int:
         lock = None
         if args.nmi_rate:
             if not tr.probe_spans_lock():
-                print("[abort] firmware cannot lock slices to a sample store")
+                print("[abort] lock probe refused: no lock-to-store flag, or a held bus")
                 return 1
             setup(be, args.system)
             arm(be, args.nmi_rate, args.system)
