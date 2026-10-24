@@ -458,6 +458,15 @@ class SpansFramingTest(unittest.TestCase):
         self.assertEqual(bytes(t.sent), _SPANS_TOK)
         self.assertEqual(_next_write_events(t, c), _IN_STEP)
 
+    def test_lock_probe_the_firmware_timed_out_on_resyncs(self):
+        t = _SpansLoopback(on_token=b"Timeout!\n")
+        t.queue_token(TOK_FAIL)
+        c = TRClient(t)
+        with self.assertRaisesRegex(TRError, "timed out on the token"):
+            c.probe_spans_lock()
+        self.assertEqual(bytes(t.sent), _SPANS_TOK)
+        self.assertEqual(_next_write_events(t, c), _RESYNCED)
+
     def test_lock_probe_answered_by_neither_refusal_resyncs(self):
         t = _SpansLoopback(on_lock_header=b"Timeout!")
         t.queue_token(TOK_ACK)

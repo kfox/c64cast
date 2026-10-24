@@ -974,8 +974,9 @@ class TRClient:
         with it)? For firmware `probe_spans` found READY: a zero-span header
         with the flag set is refused for its span count by firmware that knows
         the flag, and for the flag by firmware that does not, with nothing
-        owed either way. A FailToken (a held bus) counts as no; any other
-        answer leaves the link out of step and counts as no too."""
+        owed either way. A FailToken (a held bus) counts as no, and one with
+        the firmware's ``Timeout!`` raises TRError, as `probe_spans` does; any
+        other answer leaves the link out of step and counts as no too."""
         with self._command():
             self._drain_stale()
             try:
@@ -986,6 +987,8 @@ class TRClient:
                 raise
             text = self._finish_spans_probe(tok, bytes([SPANS_FLAG_LOCK_TO_STORE, 0, 0, 0]))
             if tok == TOK_FAIL:
+                if _FIRMWARE_TIMEOUT_TEXT in text:
+                    raise TRError("WriteC64Spans lock probe: TR timed out on the token")
                 return False
             if tok != TOK_ACK or _SPANS_COUNT_REFUSAL not in text:
                 if _SPANS_FLAGS_REFUSAL not in text:
