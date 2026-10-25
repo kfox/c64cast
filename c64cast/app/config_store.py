@@ -503,8 +503,8 @@ def _check_edit_shape(owner: type, field: str, value: object) -> None:
     into the value assuming this shape and otherwise raise a bare
     `TypeError`/`AttributeError` from inside `dumps()` — the class of failure
     `EditRejected` exists to turn into a 4xx instead. Scalar fields are
-    unchecked here; a wrong scalar type still fails, later, in
-    `config_serialize._fmt_value`."""
+    unchecked here; the write's validate refuses a wrong scalar type when it
+    loads the re-serialized text."""
     type_str = next(f.type for f in fields(owner) if f.name == field)
     if not isinstance(type_str, str):
         return

@@ -3166,6 +3166,48 @@ def _unknown_key_hint(section_name: str, key: str, valid: set[str]) -> str | Non
     return None
 
 
+# What each member of a scalar field annotation accepts from TOML. TOML has no
+# null, so a `None` member accepts nothing a file can write.
+_SCALAR_ACCEPTS: dict[str, tuple[type, ...]] = {
+    "bool": (bool,),
+    "int": (int,),
+    "float": (int, float),
+    "str": (str,),
+    "None": (),
+}
+_SCALAR_WANT = {
+    "bool": "true or false",
+    "int": "an integer",
+    "float": "a number",
+    "str": "a string",
+}
+
+
+def _scalar_type_mismatch(annotation: str, value: Any) -> str | None:
+    """What a scalar-annotated field wants, when `value` does not fit it.
+
+    ``None`` when it fits, and for any annotation with a container member
+    (``list[...]``, ``dict[...]``): those fields' own validators own their shape."""
+    members = [m.strip() for m in annotation.split("|")]
+    if not all(m in _SCALAR_ACCEPTS for m in members):
+        return None
+    for m in members:
+        # bool subclasses int: True would otherwise pass as an int or a number.
+        if isinstance(value, _SCALAR_ACCEPTS[m]) and (m == "bool" or not isinstance(value, bool)):
+            return None
+    return " or ".join(_SCALAR_WANT[m] for m in members if m != "None")
+
+
+def _refuse_mistyped(annotation: str, value: Any, label: str) -> None:
+    """Rationale: docs/architecture/config.md, "A scalar field refuses a value
+    of the wrong type"."""
+    want = _scalar_type_mismatch(annotation, value)
+    if want is None:
+        return
+    quoted = " (a quoted value is a string)" if isinstance(value, str) else ""
+    raise ConfigError(f"{label} = {value!r} — want {want}{quoted}")
+
+
 def _apply_section(
     dc: Any,
     data: dict[str, Any],
@@ -3181,12 +3223,8 @@ def _apply_section(
     `load()` callers — SIGHUP reload, the interstitial factory — have no
     collector to drain). Otherwise it is appended for the caller to present.
 
-    A field whose annotation is exactly ``bool`` refuses a non-bool value. Every
-    consumer of a bool field is a plain truthiness test, so a quoted TOML
-    ``allow_unauthenticated = "false"`` stored the truthy string "false" and
-    meant the *opposite* of what it read as — on two of the switches that decide
-    network exposure. The tri-states (``bool | str``) are unaffected: their
-    annotation is not ``bool``, and their own validators own them.
+    A value that does not fit its field's scalar annotation raises
+    :class:`ConfigError` (see :func:`_refuse_mistyped`).
 
     A field carrying ``internal`` metadata is derived run state, not a config
     key, so it is treated like an unknown one: ``cc_map_is_default`` is set
@@ -3194,7 +3232,7 @@ def _apply_section(
     flag directly inverted the controller-profile merge with no cc_map in
     sight."""
     valid = {f.name for f in fields(dc) if not f.metadata.get("internal")}
-    annotations = {f.name: f.type for f in fields(dc)}
+    annotations = {f.name: str(f.type) for f in fields(dc)}
     for k, v in data.items():
         if k not in valid:
             rec = UnknownKey(section_name, k, source, _unknown_key_hint(section_name, k, valid))
@@ -3203,11 +3241,7 @@ def _apply_section(
             else:
                 unknown.append(rec)
             continue
-        if annotations[k] in ("bool", bool) and not isinstance(v, bool):
-            raise ConfigError(
-                f"[{section_name}].{k} must be true or false, got {v!r} — "
-                "a quoted value is a string, and a non-empty string reads as true"
-            )
+        _refuse_mistyped(annotations[k], v, f"[{section_name}].{k}")
         setattr(dc, k, v)
 
 
@@ -3366,6 +3400,8 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
     message. (A collision *across* systems at that call site is deliberate and
     documented there; one inside a single grid is an authoring mistake.)"""
     allowed = _clip_allowed_keys()
+    scene_annotations = {f.name: str(f.type) for f in fields(SceneCfg)}
+    color_annotations = {f.name: str(f.type) for f in fields(ColorCfg)}
     seen_slots: set[int] = set()
     seen_pads: dict[tuple[str, int], int] = {}
     for i, clip in enumerate(clips):
@@ -3376,6 +3412,16 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
                 close = difflib.get_close_matches(k, allowed, n=1)
                 hint = f" — did you mean {close[0]!r}?" if close else ""
                 raise ValueError(f"[[performance.clips]][{i}] unknown key {k!r}{hint}")
+            if k not in _CLIP_LAUNCH_KEYS:
+                _refuse_mistyped(scene_annotations[k], clip[k], f"[[performance.clips]][{i}].{k}")
+        clip_color = clip.get("color", {})
+        if not isinstance(clip_color, dict):
+            raise ValueError(
+                f"[[performance.clips]][{i}].color must be a table, got {clip_color!r}"
+            )
+        for k, v in clip_color.items():
+            if k in color_annotations:
+                _refuse_mistyped(color_annotations[k], v, f"[[performance.clips]][{i}].color.{k}")
         slot = clip.get("slot")
         if isinstance(slot, bool) or not isinstance(slot, int) or slot < 1:
             raise ValueError(f"[[performance.clips]][{i}] needs an int `slot` >= 1, got {slot!r}")
@@ -4039,9 +4085,9 @@ def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
             if not isinstance(ov_raw, dict):
                 raise ValueError(f"scenes.overlays entry must be a table, got {ov_raw!r}")
             sc.overlays.append(dict(ov_raw))
+        if not isinstance(raw_color, dict):
+            raise ValueError(f"scenes.color must be a table, got {raw_color!r}")
         if raw_color:
-            if not isinstance(raw_color, dict):
-                raise ValueError(f"scenes.color must be a table, got {raw_color!r}")
             # hue_corrections is a real ColorCfg field (list[dict]), so this
             # also validates a [[scenes.color.hue_corrections]] block's shape;
             # scene_color() is what gives it replace-not-extend semantics.

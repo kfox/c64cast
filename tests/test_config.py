@@ -1492,6 +1492,117 @@ class BoolFieldTypingTest(unittest.TestCase):
         )
 
 
+def _scalar_fields() -> list[tuple[str, object, dataclasses.Field[object]]]:
+    probe = cfgmod.Config()
+    sections = [(n, getattr(probe, n)) for n in cfgmod._TOML_SCALAR_SECTIONS]
+    sections += [("color", cfgmod.ColorCfg()), ("scenes", cfgmod.SceneCfg())]
+    return [
+        (name, dc, f)
+        for name, dc in sections
+        for f in dataclasses.fields(dc)
+        if "[" not in str(f.type) and not f.metadata.get("internal")
+    ]
+
+
+class FieldTypingTest(unittest.TestCase):
+    """A TOML value of the wrong type used to be stored as-is and fail wherever
+    it was first used — a quoted `sample_rate = "12000"` crashed `--doctor`
+    with a TypeError in nmi_rate_safety instead of naming the key (#724)."""
+
+    def _load(self, body: str, name: str = "c.toml") -> cfgmod.Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, name)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(body)
+            return cfgmod.load(path)
+
+    def _assert_refused(self, body: str, key: str) -> None:
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._load(body)
+        self.assertIn(key, str(ctx.exception))
+
+    def test_a_string_for_an_int_is_refused(self):
+        self._assert_refused('[audio]\nsample_rate = "12000"\n', "[audio].sample_rate")
+
+    def test_a_bool_for_an_int_is_refused(self):
+        self._assert_refused("[teensyrom]\nbaud = true\n", "[teensyrom].baud")
+
+    def test_a_float_for_an_int_is_refused(self):
+        self._assert_refused("[audio]\nsample_rate = 12000.0\n", "[audio].sample_rate")
+
+    def test_a_string_for_a_float_is_refused(self):
+        self._assert_refused('[performance]\nbpm = "120"\n', "[performance].bpm")
+
+    def test_an_int_for_a_float_is_accepted(self):
+        self.assertEqual(self._load("[performance]\nbpm = 120\n").performance.bpm, 120)
+
+    def test_an_optional_int_takes_an_int(self):
+        self.assertEqual(self._load("[audio]\nsample_rate = 12000\n").audio.sample_rate, 12000)
+
+    def test_a_scene_field_is_checked(self):
+        self._assert_refused('[[scenes]]\ntype = "blank"\nduration_s = "5"\n', "duration_s")
+
+    def test_a_scene_color_field_is_checked(self):
+        self._assert_refused(
+            '[[scenes]]\ntype = "blank"\n[scenes.color]\nauto_fit_strength = "0.5"\n',
+            "[scenes.color].auto_fit_strength",
+        )
+
+    def test_a_clip_scene_field_is_checked_at_load(self):
+        self._assert_refused(
+            '[[performance.clips]]\nslot = 1\ntype = "blank"\nduration_s = "5"\n',
+            "[[performance.clips]][0].duration_s",
+        )
+
+    def test_a_clip_color_field_is_checked_at_load(self):
+        self._assert_refused(
+            '[[performance.clips]]\nslot = 1\ntype = "blank"\n'
+            '[performance.clips.color]\nauto_fit_strength = "0.5"\n',
+            "[[performance.clips]][0].color.auto_fit_strength",
+        )
+
+    def test_a_clip_color_that_is_not_a_table_is_refused_at_load(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[[performance.clips]]\nslot = 1\ntype = "blank"\ncolor = 5\n')
+        self.assertIn("[[performance.clips]][0].color must be a table", str(ctx.exception))
+
+    def test_a_falsy_scene_color_that_is_not_a_table_is_refused_at_load(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[[scenes]]\ntype = "blank"\ncolor = false\n')
+        self.assertIn("scenes.color must be a table", str(ctx.exception))
+
+    def test_an_ensemble_master_section_is_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            master = os.path.join(tmp, "master.toml")
+            with open(master, "w", encoding="utf-8") as f:
+                f.write(
+                    '[audio]\nsample_rate = "12000"\n'
+                    '[ensemble]\nsystems = [{ name = "a", config = "a.toml" }]\n'
+                )
+            with open(os.path.join(tmp, "a.toml"), "w", encoding="utf-8") as f:
+                f.write("")
+            with self.assertRaises(cfgmod.ConfigError) as ctx:
+                cfgmod.load_master(master)
+        self.assertIn("[audio].sample_rate", str(ctx.exception))
+
+    def test_every_scalar_field_refuses_a_table(self):
+        # A table is the wrong type for every scalar annotation, so this holds
+        # each scalar field across every section to the check, not a sample.
+        for section, dc, f in _scalar_fields():
+            with self.subTest(f"{section}.{f.name}"):
+                with self.assertRaises(cfgmod.ConfigError) as ctx:
+                    cfgmod._apply_section(dc, {f.name: {"x": 1}}, section)
+                self.assertIn(f"[{section}].{f.name}", str(ctx.exception))
+
+    def test_every_non_bool_scalar_field_refuses_a_bool(self):
+        for section, dc, f in _scalar_fields():
+            if "bool" in str(f.type):
+                continue
+            with self.subTest(f"{section}.{f.name}"):
+                with self.assertRaises(cfgmod.ConfigError):
+                    cfgmod._apply_section(dc, {f.name: True}, section)
+
+
 class InternalFieldNotAuthorableTest(unittest.TestCase):
     """`cc_map_is_default` is derived run state: it is set False only when a
     layer really authored a cc_map. Authoring the flag directly inverted
