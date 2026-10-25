@@ -859,6 +859,24 @@ class Playlist:
         self.safe_setup(scene, announcing=announcing, after_restart=True)
         scene.is_done = False
 
+    def _end_scene_if_machine_crashed(self, scene: Scene) -> None:
+        """End `scene` when the audio stall watchdog found the C64 crashed
+        under it, and put the run's machine state back once it is torn
+        down, as for a restart on the frame a scene ends. Rendering on was
+        rejected: it streams into a machine no longer running the program,
+        and the screen shows whatever the crash left. The fade-out is
+        skipped, as for a skip: there is no picture left to fade."""
+        if self.audio is None or not self.audio.take_machine_crash():
+            return
+        self.log.warning(
+            "ending %r: the C64 crashed under it; putting its state back once it is torn down",
+            scene.name,
+        )
+        scene.is_done = True
+        self.fades.cancel_fade_in(scene)
+        self.fades.ended_via_skip = True
+        self._restore_after_teardown = True
+
     def _put_machine_back(self, message: str, scene_name: str) -> None:
         """Log the restart, then put back the run's machine state through
         `on_machine_restart`; a failure there is logged and the scene sets
@@ -1402,6 +1420,7 @@ class Playlist:
                     continue
                 self.menu.repaint = False
                 next_deadline = self.run_one_frame(self.current, next_deadline)
+                self._end_scene_if_machine_crashed(self.current)
                 # A restart on the frame the scene ends sets nothing up again,
                 # so it cannot loop and does not count toward the limit.
                 ended = self.current.is_done or self._content_done

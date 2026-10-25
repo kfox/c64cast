@@ -53,8 +53,10 @@ from c64cast.hw.backend import DacPacing
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
+    KERNAL,
     SID,
     VECTORS,
+    VIC,
     cpu_clock,
     halt_quantum_bytes,
     kernal_cia1_latch,
@@ -1525,6 +1527,93 @@ class NmiStallWatchdogTest(unittest.TestCase):
         self.assertEqual(s.servo.r_stall_chunks, 0)
 
 
+class _CrashedMachineAPI(_RFakeAPI):
+    """R pinned, as under a dead consumer, with the NMI vector and `$D011`
+    reading back as given; None for either reads as a failed read."""
+
+    def __init__(self, nmi_vector: int | None, d011: int | None = 0x3B) -> None:
+        super().__init__([0])
+        self.ram = {}
+        if nmi_vector is not None:
+            self.ram[VECTORS.NMI] = bytes([nmi_vector & 0xFF, nmi_vector >> 8])
+        if d011 is not None:
+            self.ram[VIC.D011_CONTROL_1] = bytes([d011])
+        self.looks = 0
+
+    def read_memory(self, address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+        if address in self.ram:
+            self.looks += 1
+            return self.ram[address]
+        return super().read_memory(address, length, timeout)
+
+
+class StallFindsACrashedMachineTest(unittest.TestCase):
+    """When the stall watchdog fires, one look at the NMI vector and `$D011`
+    tells a crashed C64 from a consumer that merely stopped, and a crash is
+    raised for the playlist to end the scene by (c64cast#720)."""
+
+    def _stall(
+        self, api: _CrashedMachineAPI, *, bitmap: bool = False, current: Any = None
+    ) -> AudioStreamer:
+        s = AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC", host_dma_servo=True)
+        s.bitmap_scene = bitmap
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        for _ in range(audio_rate_mod.NMI_STALL_WARN_CHUNKS + 8):
+            s.servo.next_pace_increment(write_addr, 0.064, current)
+        return s
+
+    def test_a_vector_off_the_handler_is_a_crash(self):
+        api = _CrashedMachineAPI(nmi_vector=KERNAL.DEFAULT_NMI)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s = self._stall(api)
+        errors = [r.getMessage() for r in cm.records if r.levelno == logging.ERROR]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("C64 has crashed", errors[0])
+        self.assertIn(f"${KERNAL.DEFAULT_NMI:04X}", errors[0])
+        self.assertTrue(s.take_machine_crash())
+        self.assertFalse(s.take_machine_crash(), "the crash is taken once")
+        self.assertEqual(api.looks, 1, "the vector is read once, at the stall, not polled")
+
+    def test_text_mode_under_a_bitmap_scene_is_a_crash(self):
+        api = _CrashedMachineAPI(nmi_vector=audio_mod.NMI_ROUTINE_ADDR, d011=0x1B)
+        with self.assertLogs(audio_rate_mod.log, level="ERROR") as cm:
+            s = self._stall(api, bitmap=True)
+        self.assertIn("text mode", cm.output[0])
+        self.assertTrue(s.machine_crashed.is_set())
+
+    def test_text_mode_under_a_text_scene_is_not_a_crash(self):
+        api = _CrashedMachineAPI(nmi_vector=audio_mod.NMI_ROUTINE_ADDR, d011=0x1B)
+        with self.assertNoLogs(audio_rate_mod.log, level="ERROR"):
+            with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+                s = self._stall(api, bitmap=False)
+        self.assertFalse(s.machine_crashed.is_set())
+
+    def test_an_intact_machine_only_warns(self):
+        api = _CrashedMachineAPI(nmi_vector=audio_mod.NMI_ROUTINE_ADDR, d011=0x3B)
+        with self.assertNoLogs(audio_rate_mod.log, level="ERROR"):
+            with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+                s = self._stall(api, bitmap=True)
+        self.assertFalse(s.machine_crashed.is_set())
+        self.assertEqual(api.looks, 2)
+
+    def test_an_unanswered_look_is_not_taken_for_a_crash(self):
+        api = _CrashedMachineAPI(nmi_vector=None)
+        with self.assertNoLogs(audio_rate_mod.log, level="ERROR"):
+            with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+                s = self._stall(api, bitmap=True)
+        self.assertFalse(s.machine_crashed.is_set())
+
+    def test_a_stop_during_the_look_is_not_taken_for_a_crash(self):
+        # stop() puts the KERNAL's NMI vector back, which the look would
+        # otherwise read as a crash.
+        api = _CrashedMachineAPI(nmi_vector=KERNAL.DEFAULT_NMI)
+        fence = iter([True] * (audio_rate_mod.NMI_STALL_WARN_CHUNKS + 1) + [False] * 64)
+        with self.assertNoLogs(audio_rate_mod.log, level="ERROR"):
+            with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+                s = self._stall(api, current=lambda: next(fence))
+        self.assertFalse(s.machine_crashed.is_set())
+
+
 class SlowReadPointerTest(unittest.TestCase):
     """The R read sits inside the paced loop. One slower than the time the
     loop can spare is not paced by, and stops the servo reading for a backoff
@@ -2489,6 +2578,15 @@ class SceneDacRateTest(unittest.TestCase):
             with self.assertLogs("c64cast", level="INFO"):
                 self._set_up(st, mode)
             self.assertEqual(st.sample_rate, 12000, mode)
+
+    def test_each_scene_records_whether_it_draws_a_bitmap_for_the_crash_look(self):
+        for rate in (None, 11025):
+            st = self._streamer(rate)
+            with quiet_logging():
+                st.set_scene_rate(10000, "hires")
+                self.assertTrue(st.bitmap_scene, rate)
+                st.set_scene_rate(12000, "petscii")
+                self.assertFalse(st.bitmap_scene, rate)
 
     def test_a_set_rate_wins_even_at_the_default(self):
         for rate in (12000, 11025):

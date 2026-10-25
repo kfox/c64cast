@@ -29,7 +29,7 @@ import time
 from typing import TYPE_CHECKING
 
 from c64cast._transport_log import quiet_transport
-from c64cast.hw.backend import NmiSampleStore
+from c64cast.hw.backend import C64Backend, NmiSampleStore
 from c64cast.hw.c64 import (
     BADLINE_STALL_CYCLES,
     BADLINES_PER_FRAME,
@@ -37,6 +37,7 @@ from c64cast.hw.c64 import (
     CIA_TIMER_LATCH_MAX,
     NMI_CEILING_LATCH,
     VECTORS,
+    VIC,
     actual_rate_for_latch,
     clamp_nmi_latch,
     cpu_clock,
@@ -104,6 +105,27 @@ def nmi_sample_store(latch: int, system: str) -> NmiSampleStore:
         - badline_tax_cycles(period, system)
         - NMI_MAIN_PROGRAM_RESERVE_CYCLES,
     )
+
+
+def machine_crash_sign(api: C64Backend, *, bitmap_scene: bool) -> str | None:
+    """What says the C64 crashed under a stalled NMI consumer, or None when
+    nothing does or a read failed. Read once per stall, never polled: polling
+    during a stream is what wedges an Ultimate."""
+    vector = api.read_memory(VECTORS.NMI, 2)
+    if vector is None or len(vector) != 2:
+        return None
+    target = vector[0] | (vector[1] << 8)
+    if target != NMI_ROUTINE_ADDR:
+        return (
+            f"the NMI vector at ${VECTORS.NMI:04X} points at ${target:04X}, "
+            f"not c64cast's handler at ${NMI_ROUTINE_ADDR:04X}"
+        )
+    if not bitmap_scene:
+        return None
+    d011 = api.read_memory(VIC.D011_CONTROL_1, 1)
+    if d011 is None or len(d011) != 1 or d011[0] & VIC.D011_BITMAP_MODE:
+        return None
+    return f"the screen fell back to text mode under a bitmap scene ($D011 = ${d011[0]:02X})"
 
 
 class NmiTimer:
@@ -449,7 +471,7 @@ class RateServo:
             # A late reading is too late to pace by but still says whether the
             # consumer is alive: a server that stays slow sends every reading
             # past the gap servo, and the watchdog would otherwise see none.
-            self.note_r_reading(r_addr)
+            self.note_r_reading(r_addr, current)
         if r_addr is None or not prompt:
             return servo_hold_period(self.integ, chunk_period=chunk_period)
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
@@ -557,7 +579,7 @@ class RateServo:
             self.slow_reads,
         )
 
-    def note_r_reading(self, r_addr: int) -> None:
+    def note_r_reading(self, r_addr: int, current: Callable[[], bool] | None = None) -> None:
         """Watch for an NMI consumer that stopped after a verified start.
 
         A consumer killed mid-session (a stray `#$7F` to `$DD0D`, a reset
@@ -567,6 +589,12 @@ class RateServo:
 
         The count is of readings, not chunks: behind a slow server they come
         a read backoff apart, so the warning reports the time R stood still.
+
+        With the warning comes one look for a crashed machine
+        (`machine_crash_sign`); a crash found is logged as an error and
+        raised on the streamer for the playlist to end the scene by.
+        ``current`` is the worker's fence: a stop() that lands during that
+        look puts the KERNAL's NMI vector back, which reads as a crash.
         """
         now = time.monotonic()
         if r_addr == self.last_r_reading:
@@ -584,6 +612,15 @@ class RateServo:
                 now - self.last_r_reading_since,
                 self.r_stall_chunks + 1,
             )
+            self._look_for_crash(current)
+
+    def _look_for_crash(self, current: Callable[[], bool] | None) -> None:
+        st = self._st
+        sign = machine_crash_sign(st.api, bitmap_scene=st.bitmap_scene)
+        if sign is None or (current is not None and not current()):
+            return
+        log.error("audio: the C64 has crashed — %s. Stopping the scene.", sign)
+        st.machine_crashed.set()
 
     def observe_r_rate(self, r_addr: int) -> None:
         """Track the NMI consumer's byte rate dR/dt, from the R the gap servo
