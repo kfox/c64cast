@@ -14,10 +14,10 @@
     "@tailwindcss/vite": "^4.1.16",
     "@types/node": "^26.6.5",
     "svelte": "^5.57.2",
-    "svelte-check": "^4.3.3",
+    "svelte-check": "^4.7.7",
     "tailwindcss": "^4.1.16",
     "typescript": "^6.0.3",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vitest": "^5.0.5"
   }
 }
