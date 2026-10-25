@@ -133,9 +133,9 @@ all = [
 ]
 [dependency-groups]
 dev = [
-    "ruff==0.17.1",
+    "ruff==0.17.2",
     "pre-commit==4.7.0",
-    "coverage==7.16.2",
+    "coverage==7.17.0",
     "mypy==2.4.0",
     "types-requests==2.33.0.20261006",
     "pyright==1.1.414",
