@@ -662,6 +662,13 @@ class FloodBoundsTest(unittest.TestCase):
         s.service(pl)
         self.assertEqual(len(builds.running()), 1)
 
+    def test_an_arm_still_building_is_not_built_again_on_later_frames(self):
+        s, pl, builds = self._session()
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        for _ in range(MAX_CLIP_BUILDS):
+            s.service(pl)
+        self.assertEqual(len(builds.running()), 1)
+
     def test_superseded_builds_still_running_cap_the_new_ones(self):
         s, pl, builds = self._session()
         for i in range(3 * MAX_CLIP_BUILDS):
@@ -704,6 +711,25 @@ class FloodBoundsTest(unittest.TestCase):
             with mock.patch.object(store, "get", wraps=store.get) as reads:
                 s.service(pl)
             self.assertEqual(reads.call_count, MAX_QUEUED_EVENTS)
+
+
+class DeferredCallTest(unittest.TestCase):
+    def test_a_failing_call_does_not_drop_the_rest_of_the_frame(self):
+        s = PerformanceSession([{"slot": 1, "type": "generative", "quantize": "off"}])
+        pl = _FakePlaylist()
+        ran: list[str] = []
+
+        def failing(_pl: Any) -> None:
+            raise OSError("link dropped")
+
+        s.defer(failing)
+        s.defer(lambda _pl: ran.append("after"))
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        with self.assertLogs("c64cast.control.performance", "ERROR") as logs:
+            _pump(s, pl)
+        self.assertEqual(ran, ["after"])
+        self.assertEqual(s.active_slot, 1)
+        self.assertIn("deferred live-tune call failed", logs.output[0])
 
 
 if __name__ == "__main__":
