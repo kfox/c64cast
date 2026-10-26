@@ -716,8 +716,11 @@ def _compare_named_schema(named: Path, subject: str, hint: str) -> list[Diagnost
     generates is doing its job, whichever tree it sits in, and a copy that
     differs is describing a different c64cast whatever it is called."""
     mine = _packaged_schema()
+    theirs: str | None
     try:
         theirs = named.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        theirs = None
     except OSError:
         return [
             Diagnostic(

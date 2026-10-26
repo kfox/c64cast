@@ -2290,6 +2290,14 @@ class SchemaDirectiveDiagnosticTest(unittest.TestCase):
         self.assertEqual([r.level for r in rows], ["warn"])
         self.assertIn("isn't the one this install generates", rows[0].message)
 
+    def test_a_copy_that_is_not_utf8_is_flagged_rather_than_raised(self):
+        with _loaded_config_file("#:schema ./c64cast.schema.json\n") as (loaded, tmp):
+            body = paths.packaged_schema_path().read_text(encoding="utf-8")
+            Path(tmp, "c64cast.schema.json").write_bytes(body.encode("utf-16"))
+            rows = doctor._validate_schema_directive(loaded)
+        self.assertEqual([r.level for r in rows], ["warn"])
+        self.assertIn("isn't the one this install generates", rows[0].message)
+
     def test_an_identical_copy_elsewhere_is_fine(self):
         # Judged by content, not by location: a vendored copy that matches is
         # doing its job, and nagging about it would train people to ignore this.
