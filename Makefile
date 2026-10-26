@@ -17,7 +17,7 @@ HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync venv-check lint fmt test coverage typecheck doctor bench check preflight clean schema web web-check \
+.PHONY: help sync venv-check lint fmt test coverage typecheck doctor bench check preflight clean schema web web-check web-bump \
 	mutation-ready \
 	mutation-check \
         guide reference card books guide-figures reference-figures \
@@ -89,6 +89,7 @@ help:
 	@echo "  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata"
 	@echo "  web        rebuild the web console into c64cast/web/dist (needs Node)"
 	@echo "  web-check  the committed bundle matches a fresh build, emitted files and all (what CI runs)"
+	@echo "  web-bump   rebuild the bundle for Dependabot npm PR=N onto its own branch, staged (BRANCH=name optional)"
 	@echo "  guide      render docs/guide/*.md to the User's Guide PDF (needs typst)"
 	@echo "  reference  render docs/reference/*.md to the Reference Guide PDF (needs typst)"
 	@echo "  card       render docs/card/*.md to the Performance Card PDF (needs typst)"
@@ -186,6 +187,10 @@ web-check:
 	    echo "$$stray" | sed 's/^/  /'; \
 	    echo "Stage them: git add c64cast/web/dist"; \
 	    exit 1; }
+
+web-bump:
+	@[ -n "$(PR)" ] || { echo "Usage: make web-bump PR=<number> [BRANCH=<name>]"; exit 1; }
+	scripts/rebuild_bundle_for_bump.sh $(PR) $(BRANCH)
 
 # Real captures saved over the same filenames are left alone; the script's
 # --force-all is the escape.

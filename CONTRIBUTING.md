@@ -124,6 +124,7 @@ whether or not the current shell has `.venv` activated:
 | `make doctor` | offline environment + config diagnostics |
 | `make schema` | regenerate `c64cast/data/c64cast.schema.json` from the config metadata |
 | `make web` | rebuild the web console into `c64cast/web/dist` (needs Node — only if you changed `web/`) |
+| `make web-bump PR=N` | rebuild the bundle for a Dependabot npm PR onto its own branch and stage it — see [web/README.md](web/README.md#when-dependabot-bumps-a-web-dependency) |
 | `make guide` | render the User's Guide to a typeset PDF (needs `typst`) |
 | `make bench` | the async write-pipeline benchmark |
 | `make mutation-ready` | arm the tree's bytecode for a mutation proof (see [Proving a test can fail](#proving-a-test-can-fail)) |
