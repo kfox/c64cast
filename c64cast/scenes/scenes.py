@@ -52,6 +52,7 @@ from c64cast.video.video import (
     AVFileSource,
     WebcamSource,
     _compute_normalization_gain,
+    _plan_decode_size,
     decode_audio_full,
     ensure_pyav,
     prescan_source_color,
@@ -1190,7 +1191,7 @@ class SlideshowScene(MediaFileMixin, Scene):
                 self._shuffle_bag = [p for p in self._shuffle_bag if p != path]
                 continue
             self._current_path = path
-            self._current_img = _apply_aspect(img, self._aspect_mode)
+            self._current_img = _apply_aspect(self._shrink_for_display(img), self._aspect_mode)
             if self.display_mode is not None:
                 c = self._color
                 if c.auto_fit:
@@ -1214,6 +1215,15 @@ class SlideshowScene(MediaFileMixin, Scene):
                 len(self._shuffle_bag),
             )
             return
+
+    def _shrink_for_display(self, img: np.ndarray) -> np.ndarray:
+        """`img` at the size VideoScene decodes to, once per slide: the mode
+        resizes the held still on every frame."""
+        target = getattr(self.display_mode, "frame_target_size", None)
+        size = _plan_decode_size(img.shape[1], img.shape[0], *target) if target else None
+        if size is None:
+            return img
+        return cv2.resize(img, size, interpolation=cv2.INTER_AREA)
 
     def _pick_first_image(self) -> bool:
         """Reset the shuffle bag and load the opening slide (updating

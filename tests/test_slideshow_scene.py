@@ -22,7 +22,7 @@ class UndecodablePictureTest(unittest.TestCase):
         self.bad = os.path.join(tmp.name, "bad.png")
         for path in (self.good, self.bad):
             open(path, "wb").close()
-        self.scene = SlideshowScene(MagicMock(), MagicMock(), tmp.name)
+        self.scene = SlideshowScene(MagicMock(), MagicMock(frame_target_size=(160, 200)), tmp.name)
         img = np.zeros((4, 4, 3), dtype=np.uint8)
         imread = mock.patch(
             "c64cast.scenes.scenes.cv2.imread",
@@ -45,6 +45,27 @@ class UndecodablePictureTest(unittest.TestCase):
         with self.assertLogs("c64cast.scenes.scenes", "WARNING"):
             self.scene._advance_image()
         self.assertTrue(self.scene.is_done)
+
+
+class LargePictureTest(unittest.TestCase):
+    """A phone photo held at its decoded size made the display mode resize
+    the same 12-megapixel still on every frame."""
+
+    def test_a_large_picture_is_held_at_the_size_the_display_mode_needs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "photo.jpg")
+            open(path, "wb").close()
+            display_mode = MagicMock()
+            display_mode.frame_target_size = (160, 200)
+            scene = SlideshowScene(MagicMock(), display_mode, path)
+            photo = np.zeros((3024, 4032, 3), dtype=np.uint8)
+            with (
+                mock.patch("c64cast.scenes.scenes.cv2.imread", return_value=photo),
+                self.assertLogs("c64cast.scenes.scenes", "INFO"),
+            ):
+                scene._advance_image()
+        assert scene._current_img is not None
+        self.assertEqual(scene._current_img.shape, (400, 640, 3))
 
 
 if __name__ == "__main__":

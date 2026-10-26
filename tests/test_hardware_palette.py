@@ -650,6 +650,7 @@ class SlideshowPushTest(unittest.TestCase):
         api.hardware_palette = self.control
         mode = mock.MagicMock()
         mode.quantizer_input.side_effect = lambda img: img
+        mode.frame_target_size = (160, 200)
         self.mode = mode
         self.scene = SlideshowScene(
             api, mode, tmp.name, color=ColorCfg(hardware_palette="source", auto_fit=False)

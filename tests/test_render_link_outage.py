@@ -653,6 +653,7 @@ class SetupRetryKeepsThePickTest(unittest.TestCase):
             cv2.imwrite(os.path.join(self.tmp.name, f"s{i:02d}.png"), img)
         mode = MagicMock()
         mode.default_target_fps = None
+        mode.frame_target_size = (160, 200)
         scene = SlideshowScene(MagicMock(), mode, self.tmp.name)
         random.seed(609)
         scene.prepare_next()
