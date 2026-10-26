@@ -363,10 +363,9 @@ def _table_of(applicable: tuple[str, dict[str, Any]] | None) -> bytes | None:
     table = applicable[1].get("sidtable")
     if not isinstance(table, list) or len(table) != 256:
         return None
-    try:
-        return bytes(int(v) & 0xFF for v in table)
-    except (TypeError, ValueError):
+    if not all(type(v) is int and 0 <= v <= 0xFF for v in table):
         return None
+    return bytes(table)
 
 
 def _note_one_sid_assumption(cfg: Config, be: C64Backend | None, entry_key: str) -> None:

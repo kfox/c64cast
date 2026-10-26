@@ -363,6 +363,19 @@ class PersistenceTest(DataDirIsolated):
         dcs.calibration_path(cfg).write_text("{ not json")
         self.assertIsNone(dcs.load_calibrated_table(cfg))
 
+    def test_load_rejects_a_sidtable_value_that_is_not_a_register_byte(self):
+        # A hand-edited table: masking 300 to $2C would play a curve nobody
+        # measured, and json reads a bare Infinity that int() cannot convert.
+        cfg = _u64_cfg()
+        path = self.save(cfg, {"default": _result(0)})
+        good = json.loads(path.read_text())
+        for bad in ("300", "-1", "12.5", "true", "Infinity", "NaN", '"7"'):
+            with self.subTest(value=bad):
+                doc = json.loads(json.dumps(good))
+                doc["sids"]["default"]["sidtable"][3] = "__BAD__"
+                path.write_text(json.dumps(doc).replace('"__BAD__"', bad))
+                self.assertIsNone(dcs.load_calibrated_table(cfg))
+
     def test_load_old_schema_returns_none(self):
         # Clean cutover: an old schema=1 single-sidtable file is never read
         # under the new (also-renamed) key scheme; guard the shape too.
