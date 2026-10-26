@@ -570,7 +570,6 @@ class MidiControlListener:
                     self._controller_profile,
                     max(0, n_profile),
                 )
-            self._add_clip_pad_mappings()
         except ValueError:
             # A malformed profile file must never take down the listener — keep
             # the already-parsed base mapping and warn.
@@ -579,6 +578,7 @@ class MidiControlListener:
                 self._controller_profile,
                 exc_info=True,
             )
+        self._add_clip_pad_mappings()
         self._open_clock_port()
         # LED feedback needs the final effective mapping (for fx pads) and the
         # clip pad folds already done above, so set it up here.

@@ -11,9 +11,12 @@ hardware, only in-process Playlist Events and plain attribute writes.
 
 from __future__ import annotations
 
+import json
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -823,6 +826,30 @@ class LifecycleTests(_MidiControlTestCase):
             listener.stop()
             self.assertTrue(port.closed)
             self.assertFalse(listener._reader_poll.is_running())
+
+    def test_a_malformed_profile_keeps_the_clip_pads(self):
+        profiles = Path(tempfile.mkdtemp())
+        (profiles / "broken.json").write_text(
+            json.dumps({"port": "Pads", "mappings": [{"type": "note", "number": 999}]})
+        )
+        pl = _fake_playlist("system")
+        pl.performance.clip_pad_mappings.return_value = [("note", 60, 1)]
+        listener = MidiControlListener(
+            {"system": pl}, [], controller_profile="broken", profiles_dir=profiles
+        )
+        with (
+            mock.patch.object(
+                listener,
+                "_open_port",
+                side_effect=lambda: setattr(listener, "_midi_port", _FakePort()),
+            ),
+            self.assertLogs("c64cast.control.midi_control", level="WARNING"),
+        ):
+            listener.start()
+        try:
+            self.assertEqual(listener._mapping[("note", 60)].action, "clip_launch")
+        finally:
+            listener.stop()
 
     def test_empty_playlists_rejected(self):
         with self.assertRaises(ValueError):
