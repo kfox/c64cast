@@ -297,15 +297,15 @@ class ReadBurstTests(unittest.TestCase):
         self.assertEqual(midi_setup.dominant_control(events), ("cc", 7))
 
     def test_a_pad_press_and_release_settle_into_one_burst(self):
-        pad = [
-            types.SimpleNamespace(type="note_on", note=36, velocity=100),
-            types.SimpleNamespace(type="note_off", note=36, velocity=0),
-        ]
-        batches = iter([pad])
+        press = [types.SimpleNamespace(type="note_on", note=36, velocity=100)]
+        release = [types.SimpleNamespace(type="note_off", note=36, velocity=0)]
+        batches = iter([press, *[[]] * 20, release])
         port = types.SimpleNamespace(iter_pending=lambda: iter(next(batches, [])))
-        with mock.patch.object(midi_setup, "time", FrozenClock(0.0, "monotonic", 0.01, sleep=None)):
-            events = midi_setup._read_burst(port)
+        clock = FrozenClock(0.0, "monotonic", 0.01, sleep=None)
+        with mock.patch.object(midi_setup, "time", clock):
+            events = midi_setup._read_burst(port, settle_s=0.6, max_burst_s=5.0)
         self.assertEqual(events, [("note", 36, 100, True), ("note", 36, 0, False)])
+        self.assertLess(clock.monotonic(), 1.0)
 
 
 class ReviewTests(unittest.TestCase):
