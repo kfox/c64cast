@@ -177,6 +177,13 @@ class QuantizeLabTest(unittest.TestCase):
         self.assertEqual(d.shape, (1, 16))
         self.assertTrue(np.all(np.isfinite(d)))
 
+    def test_fractional_pixels_round_to_nearest_level(self):
+        rng = np.random.default_rng(3)
+        px = (rng.integers(1, 255, (2000, 3)) + 0.7).astype(np.float32)
+        np.testing.assert_array_equal(
+            quantize_distances_lab(px), quantize_distances_lab(np.rint(px))
+        )
+
 
 class GrayPenaltyTest(unittest.TestCase):
     def test_default_shape_and_values(self):

@@ -914,7 +914,7 @@ def _bgr_to_lab(flat_pixels: np.ndarray) -> np.ndarray:
     OpenCV's 8-bit Lab conversion needs uint8 input, so the float pixels are
     clipped + rounded first — sub-integer precision is irrelevant to a
     nearest-of-16 decision (the source pixels are uint8-derived anyway)."""
-    u8 = np.clip(flat_pixels, 0, 255).astype(np.uint8).reshape(-1, 1, 3)
+    u8 = np.clip(np.rint(flat_pixels), 0, 255).astype(np.uint8).reshape(-1, 1, 3)
     return cv2.cvtColor(u8, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
 
 
