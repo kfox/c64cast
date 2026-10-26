@@ -304,9 +304,30 @@ class ReviewTests(unittest.TestCase):
         q.select.return_value.ask.side_effect = ["Remove one", "Save these"]
         q.text.return_value.ask.return_value = None
         mappings = [midi_setup.build_jump_entry("note", 40, 0)]
-        with contextlib.redirect_stdout(io.StringIO()):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
             reviewed = midi_setup._review(q, mappings)
         self.assertEqual(reviewed, [midi_setup.build_jump_entry("note", 40, 0)])
+        self.assertEqual(out.getvalue().count("Learned mappings:"), 2)
+
+
+class LearnFeedbackTests(unittest.TestCase):
+    def test_an_out_of_range_channel_is_reported_and_not_saved(self):
+        q = mock.MagicMock()
+        q.confirm.return_value.ask.return_value = True
+        answers = {"LED MIDI channel": "16"}
+        q.text.side_effect = lambda label, default: mock.Mock(
+            ask=mock.Mock(return_value=next((v for k, v in answers.items() if k in label), default))
+        )
+        out = io.StringIO()
+        with (
+            mock.patch.object(midi_setup, "_pick_output_port", return_value=None),
+            contextlib.redirect_stdout(out),
+        ):
+            block = midi_setup._learn_feedback(q, None)
+        assert block is not None
+        self.assertEqual(block["channel"], mc.FeedbackMap().channel)
+        self.assertIn("out of range — keeping 0", out.getvalue())
 
 
 class LiveTargetsDriftTests(unittest.TestCase):

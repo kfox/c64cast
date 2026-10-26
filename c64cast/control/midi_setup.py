@@ -365,9 +365,14 @@ def _learn_feedback(q: Any, existing: dict[str, Any] | None) -> dict[str, Any] |
             if raw is None:
                 continue
             try:
-                overrides[key] = int(raw)
+                value = int(raw)
             except ValueError:
                 print(f"    (not a number — keeping {base[key]})")
+                continue
+            if FeedbackMap.accepts(value, field=key):
+                overrides[key] = value
+            else:
+                print(f"    (out of range — keeping {base[key]})")
     return build_feedback_block(port=port, overrides=overrides)
 
 
