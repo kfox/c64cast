@@ -8,7 +8,12 @@ from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import SCREEN, VIC, RegionID
 from c64cast.scenes.text_surface import CharTextSurface
 from c64cast.video.modes_irq import push_screen_via_reu
-from c64cast.video.palette import C64_COLORS, color_display_name, resolve_color
+from c64cast.video.palette import (
+    C64_COLORS,
+    build_fade_lut,
+    color_display_name,
+    resolve_color,
+)
 
 from .base import ComposeBuffers
 from .char import CharDisplayMode, clear_char_screen
@@ -45,14 +50,14 @@ class BlankDisplayMode(CharDisplayMode):
         clear_char_screen(api)
         api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
         api.write_memory("d016", "08")
-        api.write_regs("d020", self.border, self.background)
+        api.write_regs("d020", *self._registers())
         api.write_memory("d011", "1b")
 
     def set_border(self, api: C64Backend, value: str) -> str:
         """Live-tune ``mode.border``. Poked here so the change shows at once;
         ``push()`` keeps $D020/$D021 asserted through the dirty cache after."""
         self.border = resolve_color(value)
-        api.write_regs("d020", self.border, self.background)
+        api.write_regs("d020", *self._registers())
         return f"border {color_display_name(self.border)}"
 
     def set_background(self, api: C64Backend, value: str) -> str:
@@ -60,7 +65,7 @@ class BlankDisplayMode(CharDisplayMode):
         style feedback; the color-RAM fill (what actually shows through the
         blank screen) follows on the next frame's ``compose()``."""
         self.background = resolve_color(value)
-        api.write_regs("d020", self.border, self.background)
+        api.write_regs("d020", *self._registers())
         return f"background {color_display_name(self.background)}"
 
     def compose(self, frame=None) -> ComposeBuffers:
@@ -77,6 +82,10 @@ class BlankDisplayMode(CharDisplayMode):
         else:
             api.write_region(SCREEN.RAM, screen_bytes, region_id=RegionID.SCREEN)
         api.write_region(SCREEN.COLOR_RAM, buffers["color"].tobytes(), region_id=RegionID.COLOR)
-        api.write_region(
-            VIC.D020_BORDER, bytes([self.border, self.background]), region_id=RegionID.VIC_D020
-        )
+        api.write_region(VIC.D020_BORDER, bytes(self._registers()), region_id=RegionID.VIC_D020)
+
+    def _registers(self) -> tuple[int, int]:
+        """$D020/$D021 at the current fade and dim, which ``apply_fade``
+        cannot reach because the registers are not in the compose buffers."""
+        lut = build_fade_lut(self._fade_lut_alpha)
+        return int(lut[self.border]), int(lut[self.background])

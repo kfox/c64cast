@@ -71,6 +71,28 @@ class BlankDisplayModeTest(unittest.TestCase):
         self.assertTrue(all(b == 0x20 for b in api.regions[0x0400]))
         self.assertTrue(all(b == 6 for b in api.regions[0xD800]))
 
+    def test_fade_out_dims_border_and_background_to_black(self):
+        # The blank canvas is $D021 showing through invisible spaces, so a
+        # fade that dims only color RAM leaves the screen at full color.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.last_buffers = m.compose()
+        m.repush_faded(api, 0.0)
+        self.assertEqual(api.regions[0xD020], bytes([0, 0]))
+
+    def test_user_dim_dims_border_and_background(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=1, background=1)
+        m.user_dim = 0.0
+        m.push(api, m.apply_fade(m.compose()))
+        self.assertEqual(api.regions[0xD020], bytes([0, 0]))
+
+    def test_full_brightness_pushes_the_configured_registers(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.push(api, m.compose())
+        self.assertEqual(api.regions[0xD020], bytes([2, 6]))
+
 
 class BlankDisplayModeLiveTuneTest(unittest.TestCase):
     """`border`/`background` as live-tune targets (Live DJ/VJ Phase 7) — the
@@ -101,6 +123,17 @@ class BlankDisplayModeLiveTuneTest(unittest.TestCase):
         self.assertEqual(m.background, 2)
         self.assertEqual(api.regs["D020"], (2, 2))
         self.assertIn("red", label.lower())
+
+    def test_a_live_color_change_under_a_dim_pokes_the_dimmed_registers(self):
+        # push() writes $D020/$D021 through the dirty cache; a full-brightness
+        # poke whose dimmed value matches the cached one would never be undone.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=0, background=0)
+        m.user_dim = 0.0
+        m.set_live_choice(api, "border", "light blue")
+        self.assertEqual(api.regs["D020"], (0, 0))
+        m.set_live_choice(api, "background", "red")
+        self.assertEqual(api.regs["D020"], (0, 0))
 
     def test_get_live_choice_reads_back_the_canonical_spelling(self):
         m = BlankDisplayMode(border=14, background=2)
