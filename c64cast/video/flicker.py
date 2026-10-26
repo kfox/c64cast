@@ -21,12 +21,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 
-import cv2
 import numpy as np
 
 from c64cast.video.palette import (
     C64_PALETTE_BGR,
     DISTANCE_WEIGHTS,
+    _bgr_to_lab,
     color_display_name,
     on_palette_change,
     resolve_color,
@@ -145,13 +145,7 @@ def fuse_indices(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return _linear_to_srgb(0.5 * (_PALETTE_LINEAR[a] + _PALETTE_LINEAR[b]))
 
 
-def _to_lab(bgr: np.ndarray) -> np.ndarray:
-    """(N, 3) float32 BGR 0..255 → (N, 3) float32 OpenCV 8-bit Lab."""
-    u8 = np.clip(bgr, 0, 255).astype(np.uint8).reshape(-1, 1, 3)
-    return cv2.cvtColor(u8, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
-
-
-_PALETTE_LAB = _to_lab(C64_PALETTE_BGR)
+_PALETTE_LAB = _bgr_to_lab(C64_PALETTE_BGR)
 
 
 def pair_flicker_tier(a: int, b: int) -> str | None:
@@ -204,7 +198,9 @@ def blend_pairs(
         tier = SCORED_FLICKER.get((a, b))
         if tier is None or FLICKER_TIERS.index(tier) > worst:
             continue
-        gain = float(np.min(np.linalg.norm(_PALETTE_LAB - _to_lab(fuse(a, b)[None, :]), axis=1)))
+        gain = float(
+            np.min(np.linalg.norm(_PALETTE_LAB - _bgr_to_lab(fuse(a, b)[None, :]), axis=1))
+        )
         if gain >= MIN_BLEND_LAB_GAIN:
             scored.append((gain, (a, b)))
     scored.sort(key=lambda s: -s[0])
@@ -261,8 +257,8 @@ class BlendTable:
         nor selected by $D018, so a blend picked there has to be demoted to a
         real color rather than dropped.
         """
-        ent = _to_lab(self.bgr)
-        sol = _to_lab(self.bgr[:16])
+        ent = _bgr_to_lab(self.bgr)
+        sol = _bgr_to_lab(self.bgr[:16])
         return np.argmin(((ent[:, None, :] - sol[None, :, :]) ** 2).sum(axis=2), axis=1).astype(
             np.uint8
         )
@@ -275,7 +271,7 @@ class BlendTable:
         slot that cannot alternate has to be filled from them: the cheapest is
         the blend that was closest to a real color anyway.
         """
-        ent = _to_lab(self.bgr)
+        ent = _bgr_to_lab(self.bgr)
         return np.linalg.norm(ent - ent[self.nearest_solid], axis=1).astype(np.float32)
 
     def describe(self) -> list[str]:
@@ -295,7 +291,7 @@ def _rebuild_palette_tables() -> None:
     global _PALETTE_LINEAR, _PALETTE_Y, _PALETTE_LAB
     _PALETTE_LINEAR = _srgb_to_linear(C64_PALETTE_BGR)
     _PALETTE_Y = _PALETTE_LINEAR @ _LUMA_WEIGHTS_BGR
-    _PALETTE_LAB = _to_lab(C64_PALETTE_BGR)
+    _PALETTE_LAB = _bgr_to_lab(C64_PALETTE_BGR)
     _TABLE_CACHE.clear()
 
 
@@ -349,8 +345,8 @@ def _weighted_distances(flat_pixels: np.ndarray, table: BlendTable) -> np.ndarra
 
 def _lab_distances(flat_pixels: np.ndarray, table: BlendTable) -> np.ndarray:
     """(N, 3) BGR → (N, size) squared CIE-Lab distance to the widened palette."""
-    lab = _to_lab(flat_pixels)
-    pal_lab = _to_lab(table.bgr)
+    lab = _bgr_to_lab(flat_pixels)
+    pal_lab = _bgr_to_lab(table.bgr)
     px_normsq = (lab**2).sum(axis=1)
     pal_normsq = (pal_lab**2).sum(axis=1)
     return px_normsq[:, None] - 2.0 * (lab @ pal_lab.T) + pal_normsq[None, :]

@@ -555,6 +555,18 @@ class ColorMapTest(unittest.TestCase):
         self.assertEqual(len(cmap.indices), 2)
         self.assertLessEqual(acc.lab_samples().shape[0], palette_mod._FORCE_PALETTE_SAMPLE_CAP)
 
+    def test_a_capped_scan_weights_early_and_late_frames_evenly(self):
+        acc = ColorMapAccumulator(n_colors=2)
+        red = np.full((90, 160, 3), (10, 10, 200), dtype=np.uint8)
+        blue = np.full((90, 160, 3), (200, 10, 10), dtype=np.uint8)
+        for frame in [red] * 60 + [blue] * 60:
+            acc.add(frame)
+        samples = acc.lab_samples()
+        red_lab = palette_mod._bgr_to_lab(red[0, :1].astype(np.float32))[0]
+        n_red = int(np.all(samples == red_lab, axis=1).sum())
+        n_blue = samples.shape[0] - n_red
+        self.assertAlmostEqual(n_red / n_blue, 1.0, delta=0.05)
+
 
 class RollingColorMapAccumulatorTest(unittest.TestCase):
     """Sliding-window live force_palette: window bounds, warm-start, hysteresis."""

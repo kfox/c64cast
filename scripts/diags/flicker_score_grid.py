@@ -179,12 +179,13 @@ def candidate_pairs(cap: float) -> list[tuple[int, int]]:
     import numpy as np
 
     from c64cast.video import flicker
+    from c64cast.video.palette import _bgr_to_lab
 
     out = []
     for a, b in itertools.combinations(range(16), 2):
         if flicker.pair_luma_delta(a, b) > cap:
             continue
-        fused = flicker._to_lab(flicker.fuse(a, b)[None, :])
+        fused = _bgr_to_lab(flicker.fuse(a, b)[None, :])
         gain = float(np.min(np.linalg.norm(flicker._PALETTE_LAB - fused, axis=1)))
         if gain >= flicker.MIN_BLEND_LAB_GAIN:
             out.append((a, b))
