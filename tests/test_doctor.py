@@ -29,13 +29,19 @@ from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, max_safe_sample_rate
 # $C64CAST_SETTINGS at a missing path for the module. Tests that want a machine
 # layer write their own file and re-patch over this.
 _iso = MachineSettingsIsolation()
+# CI installs no `mic` extra, and without sounddevice every config with the
+# default audio-on gets an extra error. The test that wants that error patches
+# over this.
+_sounddevice = mock.patch("c64cast.audio.audio.AUDIO_AVAILABLE", True)
 
 
 def setUpModule():
     _iso.start()
+    _sounddevice.start()
 
 
 def tearDownModule():
+    _sounddevice.stop()
     _iso.stop()
 
 
@@ -1294,7 +1300,12 @@ class EnvironmentProbeTest(unittest.TestCase):
         self.assertIn("skipped", diags[0].message)
 
     def test_uv_lock_drift_warns(self):
-        fake = mock.MagicMock(returncode=1, stdout="", stderr="")
+        fake = mock.MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="error: The lockfile at `uv.lock` needs to be updated, but `--check` "
+            "was provided.\n",
+        )
         with (
             mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/uv"),
             mock.patch.object(doctor.subprocess, "run", return_value=fake),
@@ -1323,6 +1334,23 @@ class EnvironmentProbeTest(unittest.TestCase):
                     "Permission denied (os error 13))",
                 )
             ],
+        )
+
+    def test_uv_lock_resolution_failure_is_not_reported_as_drift(self):
+        fake = mock.MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="error: No solution found when resolving dependencies\n"
+            "  cause: Because six was not found in the cache ...\n",
+        )
+        with (
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/uv"),
+            mock.patch.object(doctor.subprocess, "run", return_value=fake),
+        ):
+            diags = doctor._probe_uv_lock()
+        self.assertEqual(
+            [(d.level, d.message) for d in diags],
+            [("warn", "could not check (error: No solution found when resolving dependencies)")],
         )
 
     def test_uv_lock_probe_is_skipped_outside_a_source_checkout(self):

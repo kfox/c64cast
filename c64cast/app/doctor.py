@@ -445,9 +445,10 @@ def _dist_version(dist: str) -> str:
         return "?"
 
 
-# uv exits 1 when the check itself fails (the lockfile needs updating) and 2
-# when uv could not run the check at all.
-_UV_EXIT_FAILURE = 1
+# uv exits 1 both for a drifted lockfile and for a resolution that failed
+# (offline, a package missing from the cache), so only its error text tells
+# the two apart.
+_UV_LOCK_DRIFT_TEXT = "needs to be updated"
 
 
 def _probe_uv_lock() -> list[Diagnostic]:
@@ -469,7 +470,7 @@ def _probe_uv_lock() -> list[Diagnostic]:
         return [Diagnostic("warn", "environment", "uv.lock", f"could not check ({e})")]
     if r.returncode == 0:
         return [Diagnostic("ok", "environment", "uv.lock", "up to date with pyproject.toml")]
-    if r.returncode != _UV_EXIT_FAILURE:
+    if _UV_LOCK_DRIFT_TEXT not in r.stderr:
         detail = r.stderr.strip().splitlines()[0] if r.stderr.strip() else f"exit {r.returncode}"
         return [Diagnostic("warn", "environment", "uv.lock", f"could not check ({detail})")]
     return [
