@@ -555,9 +555,15 @@ class PerformanceSession:
         the accumulator to cross into the next whole beat/bar past the arm."""
         if armed.quantize == "off" or not pl.tempo.running:
             return True
+        beat, bar = pl.tempo.beat_phase, pl.tempo.bar_phase
+        if beat < armed.arm_beat or bar < armed.arm_bar:
+            # A MIDI Start or Song Position Pointer moved the grid back; the
+            # boundary to wait for is the next one on the grid as it is now.
+            armed.arm_beat, armed.arm_bar = beat, bar
+            return False
         if armed.quantize == "beat":
-            return math.floor(pl.tempo.beat_phase) > math.floor(armed.arm_beat)
-        return math.floor(pl.tempo.bar_phase) > math.floor(armed.arm_bar)
+            return math.floor(beat) > math.floor(armed.arm_beat)
+        return math.floor(bar) > math.floor(armed.arm_bar)
 
     def _activate(self, pl: Playlist, armed: _Armed) -> None:
         """Swap the armed clip in as the current program, remembering what it

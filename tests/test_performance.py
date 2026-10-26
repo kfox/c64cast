@@ -118,6 +118,29 @@ class LaunchSemanticsTest(unittest.TestCase):
         self.assertEqual(pl.swaps, ["S1"])
         self.assertEqual(s.active_slot, 1)
 
+    def test_a_grid_moved_back_launches_on_its_next_boundary(self):
+        # A MIDI Start (or a Song Position Pointer) puts the grid back to bar 0
+        # while a clip is armed at bar 25: the next boundary is bar 1, not 26.
+        s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "bar"}])
+        pl.tempo.bar_phase = 25.3
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        _pump(s, pl)
+        pl.tempo.bar_phase = 0.1
+        self.assertFalse(_pump(s, pl))
+        pl.tempo.bar_phase = 1.01
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(pl.swaps, ["S1"])
+
+    def test_a_beat_grid_moved_back_launches_on_its_next_beat(self):
+        s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "beat"}])
+        pl.tempo.beat_phase = 101.5
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        _pump(s, pl)
+        pl.tempo.beat_phase = 0.2
+        self.assertFalse(_pump(s, pl))
+        pl.tempo.beat_phase = 1.0
+        self.assertTrue(_pump(s, pl))
+
     def test_quantize_off_launches_immediately(self):
         s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "off"}])
         s.enqueue(ClipEvent(slot=1, pressed=True))
