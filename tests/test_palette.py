@@ -10,6 +10,7 @@ import unittest
 
 import numpy as np
 
+from c64cast.video import palette as palette_mod
 from c64cast.video.palette import (
     _PALETTE_HUES_DEG,
     _PALETTE_LAB,
@@ -541,6 +542,18 @@ class ColorMapTest(unittest.TestCase):
 
     def test_no_samples_returns_none(self):
         self.assertIsNone(ColorMapAccumulator(n_colors=8).result())
+
+    def test_late_frames_of_a_full_scan_reach_the_map(self):
+        # A video pre-scan's 120 seek-sampled frames arrive in timeline order.
+        acc = ColorMapAccumulator(n_colors=2)
+        red = np.full((90, 160, 3), (10, 10, 200), dtype=np.uint8)
+        blue = np.full((90, 160, 3), (200, 10, 10), dtype=np.uint8)
+        for frame in [red] * 60 + [blue] * 60:
+            acc.add(frame)
+        cmap = acc.result()
+        assert cmap is not None
+        self.assertEqual(len(cmap.indices), 2)
+        self.assertLessEqual(acc.lab_samples().shape[0], palette_mod._FORCE_PALETTE_SAMPLE_CAP)
 
 
 class RollingColorMapAccumulatorTest(unittest.TestCase):
