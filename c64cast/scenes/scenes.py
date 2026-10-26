@@ -1168,9 +1168,13 @@ class SlideshowScene(MediaFileMixin, Scene):
             log.error("slideshow: file spec %r failed to resolve at advance: %s", self.file_spec, e)
             self.is_done = True
             return
+        undecodable: set[str] = set()
         while True:
             if not self._shuffle_bag:
-                self._shuffle_bag = list(candidates)
+                self._shuffle_bag = [p for p in candidates if p not in undecodable]
+                if not self._shuffle_bag:
+                    self.is_done = True
+                    return
                 random.shuffle(self._shuffle_bag)
                 # No-immediate-repeat across reshuffle boundaries.
                 if len(self._shuffle_bag) > 1 and self._shuffle_bag[0] == self._current_path:
@@ -1182,12 +1186,8 @@ class SlideshowScene(MediaFileMixin, Scene):
             img = cv2.imread(path, cv2.IMREAD_COLOR)
             if img is None:
                 log.warning("slideshow: failed to decode %s; skipping", path)
+                undecodable.add(path)
                 self._shuffle_bag = [p for p in self._shuffle_bag if p != path]
-                if not self._shuffle_bag:
-                    # Whole pool consumed and nothing decoded — bail rather
-                    # than loop forever.
-                    self.is_done = True
-                    return
                 continue
             self._current_path = path
             self._current_img = _apply_aspect(img, self._aspect_mode)
