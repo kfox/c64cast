@@ -150,7 +150,6 @@ jobs:
     name: coverage (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    needs: test
     permissions:
       contents: read
       id-token: write
