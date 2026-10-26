@@ -8,9 +8,11 @@ controller reading and its full scale, a real value, or "step to the next
 choice". The OSD line (``Move.osd``) and the ``mode.<name>`` tracker entry ride
 along here, so every surface gets them by coming through this module.
 
-Every write is a plain attribute set on an object the render loop reads next
+A scalar is a plain attribute set on an object the render loop reads next
 frame — safe from a MIDI reader thread, an HTTP worker or the WLED listener. A
-target that does not resolve is a silent no-op returning False.
+choice is checked on the calling thread and applied on the playlist thread
+(``PerformanceSession.defer``), because its setter may write to the machine.
+A target that does not resolve is a silent no-op returning False.
 
 See docs/architecture/control.md#live_tunepy--the-one-live-tune-seam-live-djvj-phase-7.
 """
@@ -198,20 +200,36 @@ def _scalar_value(found: LiveTarget, move: Move) -> float | None:
 def _apply_choice(pl: Playlist, found: LiveTarget, move: Move) -> bool:
     """Choices are set through the holder's ``set_live_choice`` rather than by
     assignment: picking a palette mode rebuilds state the attribute alone does
-    not carry, and the helper returns the OSD label to show for it."""
-    setter = getattr(found.holder, "set_live_choice", None)
-    if setter is None or not found.choices:
+    not carry, and the helper returns the OSD label to show for it.
+
+    That rebuild can poke a VIC register or drop the dirty cache, so it runs on
+    the playlist thread at the top of the next frame; what is checked here is
+    only whether the Move selects anything at all."""
+    if getattr(found.holder, "set_live_choice", None) is None or not found.choices:
         return False
+    if _chosen(found, move, current(found)) is None:
+        return False
+    pl.performance.defer(lambda playing: _apply_choice_now(playing, found, move))
+    return True
+
+
+def _apply_choice_now(pl: Playlist, queued: LiveTarget, move: Move) -> None:
+    """The playlist-thread half of :func:`_apply_choice`. The target is resolved
+    again because the scene may have changed since the move was made, and a
+    border color meant for one scene must not land on the next one's VIC. A
+    cycle steps from the value it finds now, so two taps queued in one frame
+    step twice."""
+    found = resolve(pl.current, f"{queued.holder_attr}.{queued.name}")
+    if found is None or found.holder is not queued.holder:
+        return
     old = current(found)
     chosen = _chosen(found, move, old)
     if chosen is None:
-        return False
-    # The api handle: a mode that repaints on a choice change needs it.
-    label = setter(getattr(pl.current, "api", None), found.name, chosen)
+        return
+    label = found.holder.set_live_choice(getattr(pl.current, "api", None), found.name, chosen)
     if move.osd:
         pl.post_osd(label or f"{found.name} {chosen}")
     _record(pl, found, old, chosen)
-    return True
 
 
 def _chosen(found: LiveTarget, move: Move, old: float | str | None) -> str | None:

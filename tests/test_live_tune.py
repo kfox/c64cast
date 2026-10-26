@@ -13,6 +13,7 @@ whose result it then caches process-wide for every other test in the worker.
 
 import os
 import sys
+import threading
 import time
 import unittest
 from dataclasses import fields, replace
@@ -28,6 +29,7 @@ from _fakes import FakeAPI, MachineSettingsIsolation  # noqa: E402
 
 from c64cast.control import live_tune as lt
 from c64cast.control.midi_control import MidiControlListener
+from c64cast.control.performance import PerformanceSession
 from c64cast.control.transport import LiveTuneTracker, atomic_write_text
 from c64cast.hw import char_rom
 from c64cast.video.dither import DITHER_METHODS
@@ -311,9 +313,14 @@ class _FakePlaylist:
         self.name = "s"
         self.osd_posts: list[str] = []
         self.live_tracker = LiveTuneTracker(cfg)
+        self.performance = PerformanceSession()
 
     def post_osd(self, text, duration_s=2.5):
         self.osd_posts.append(text)
+
+    def frame(self) -> None:
+        """The top of the playlist thread's next frame, where queued work runs."""
+        self.performance.service(cast(Any, self))
 
 
 class MidiModeHolderTests(unittest.TestCase):
@@ -334,6 +341,7 @@ class MidiModeHolderTests(unittest.TestCase):
         pl = _FakePlaylist(_FakeScene(mode))
         lis = self._listener(pl)
         lis._apply_param(pl, "mode.dither_method", 127, "cc")  # type: ignore[arg-type]
+        pl.frame()
         self.assertEqual(mode._dither_method, DITHER_METHODS[-1])
 
     def test_mode_choice_note_cycles(self):
@@ -342,6 +350,7 @@ class MidiModeHolderTests(unittest.TestCase):
         pl = _FakePlaylist(_FakeScene(mode))
         lis = self._listener(pl)
         lis._apply_param(pl, "mode.dither_method", 100, "note")  # type: ignore[arg-type]
+        pl.frame()
         self.assertEqual(mode._dither_method, DITHER_METHODS[1])
         self.assertNotEqual(mode._dither_method, start)
 
@@ -385,7 +394,7 @@ class _RichScene:
 
 def _rich(cfg_index=None, cfg=None) -> tuple[Any, _FakeMode, _RichScene]:
     """A playlist standing in for the real one. The fake exposes exactly what
-    `live_tune` touches — `current`, `post_osd`, `live_tracker` — which is most
+    `live_tune` touches — `current`, `post_osd`, `live_tracker`, `performance` — which is most
     of what makes the module worth having as one."""
     mode = _FakeMode()
     scene = _RichScene(mode, cfg_index)
@@ -461,10 +470,13 @@ class LiveTuneApplyTests(unittest.TestCase):
     def test_a_choice_by_name_by_position_and_by_cycle(self):
         pl, mode, _scene = _rich()
         lt.apply(pl, "mode.dither_method", lt.Move(value=DITHER_METHODS[2]))
+        pl.frame()
         self.assertEqual(mode._dither_method, DITHER_METHODS[2])
         lt.apply(pl, "mode.dither_method", lt.Move(cycle=True))
+        pl.frame()
         self.assertEqual(mode._dither_method, DITHER_METHODS[3 % len(DITHER_METHODS)])
         lt.apply(pl, "mode.dither_method", lt.Move(position=0, full_scale=127.0))
+        pl.frame()
         self.assertEqual(mode._dither_method, DITHER_METHODS[0])
 
     def test_a_choice_the_list_does_not_contain_is_refused(self):
@@ -499,6 +511,7 @@ class LiveTuneApplyTests(unittest.TestCase):
         # which — and the only moment that is knowable is the move itself.
         pl, _mode, _scene = _rich(cfg_index=3)
         lt.apply(pl, "mode.palette_mode", lt.Move(value="vivid"))
+        pl.frame()
         (row,) = pl.live_tracker.pending()
         self.assertEqual((row["field"], row["scene"]), ("palette_mode", 3))
 
@@ -514,6 +527,7 @@ class LiveTuneApplyTests(unittest.TestCase):
         # and unsavable rather than written into whatever scene 0 happens to be.
         pl, _mode, _scene = _rich()
         lt.apply(pl, "mode.palette_mode", lt.Move(value="vivid"))
+        pl.frame()
         (row,) = pl.live_tracker.pending()
         self.assertIsNone(row["scene"])
         self.assertIsNone(row["field"])
@@ -606,12 +620,14 @@ class BlankModeColorLiveTuneTests(unittest.TestCase):
     def test_border_applies_and_repaints_live(self):
         pl, mode, scene = self._pl()
         self.assertTrue(lt.apply(pl, "mode.border", lt.Move(value="light blue")))
+        pl.frame()
         self.assertEqual(mode.border, 14)
         self.assertEqual(scene.api.regs["D020"], (14, 0))
 
     def test_background_applies_and_repaints_live(self):
         pl, mode, scene = self._pl()
         self.assertTrue(lt.apply(pl, "mode.background", lt.Move(value="red")))
+        pl.frame()
         self.assertEqual(mode.background, 2)
         self.assertEqual(scene.api.regs["D020"], (0, 2))
 
@@ -620,6 +636,7 @@ class BlankModeColorLiveTuneTests(unittest.TestCase):
         # [color] — the save-back writes one scene's block, not the show.
         pl, _mode, _scene = self._pl(cfg_index=3)
         lt.apply(pl, "mode.border", lt.Move(value="red"))
+        pl.frame()
         (row,) = pl.live_tracker.pending()
         self.assertEqual((row["target"], row["field"], row["scene"]), ("mode.border", "border", 3))
 
@@ -627,6 +644,98 @@ class BlankModeColorLiveTuneTests(unittest.TestCase):
         pl, mode, _scene = self._pl()
         self.assertFalse(lt.apply(pl, "mode.border", lt.Move(value="not a color")))
         self.assertEqual(mode.border, 0)
+
+
+class _ThreadRecordingAPI(FakeAPI):
+    """Records which thread each backend touch ran on — the DMA socket and the
+    dirty cache belong to the playlist thread alone."""
+
+    def __init__(self):
+        super().__init__()
+        self.touch_threads: list[str] = []
+
+    def write_regs(self, base, *vals):
+        self.touch_threads.append(threading.current_thread().name)
+        super().write_regs(base, *vals)
+
+    def invalidate_cache(self):
+        self.touch_threads.append(threading.current_thread().name)
+        super().invalidate_cache()
+
+
+class ChoiceRunsOnThePlaylistThreadTests(unittest.TestCase):
+    """A choice setter may write VIC registers (`mode.border`) or drop the dirty
+    cache and the compose state (`mode.palette_mode`), so it must not run on the
+    control thread that turned the knob — the MIDI reader, an HTTP worker, the
+    WLED listener — racing the frame the playlist thread is composing."""
+
+    def _apply_from_control_thread(self, pl: Any, target: str, move: lt.Move) -> bool:
+        result: list[bool] = []
+        t = threading.Thread(
+            target=lambda: result.append(lt.apply(pl, target, move)), name="midi-reader"
+        )
+        t.start()
+        t.join(5.0)
+        return result[0]
+
+    def _pl(self, mode: Any) -> tuple[Any, _ThreadRecordingAPI]:
+        scene = _RichScene(mode, 0)
+        api = _ThreadRecordingAPI()
+        scene.api = api
+        return _FakePlaylist(scene), api
+
+    def test_a_border_write_waits_for_the_playlist_thread(self):
+        from c64cast.video.modes.blank import BlankDisplayMode
+
+        mode = BlankDisplayMode()
+        pl, api = self._pl(mode)
+        self.assertTrue(self._apply_from_control_thread(pl, "mode.border", lt.Move(value="red")))
+        self.assertEqual(api.touch_threads, [])
+        pl.frame()
+        self.assertEqual(api.touch_threads, [threading.current_thread().name])
+        self.assertEqual((mode.border, api.regs["D020"]), (2, (2, 0)))
+
+    def test_a_palette_change_drops_the_cache_on_the_playlist_thread(self):
+        mode = MCMDisplayMode()
+        pl, api = self._pl(mode)
+        self.assertTrue(
+            self._apply_from_control_thread(pl, "mode.palette_mode", lt.Move(value="vivid"))
+        )
+        self.assertEqual((api.touch_threads, mode.palette_mode != "vivid"), ([], True))
+        pl.frame()
+        self.assertEqual(api.touch_threads, [threading.current_thread().name])
+        self.assertEqual(mode.palette_mode, "vivid")
+
+    def test_a_move_made_on_one_scene_does_not_land_on_the_next(self):
+        from c64cast.video.modes.blank import BlankDisplayMode
+
+        first = BlankDisplayMode()
+        pl, api = self._pl(first)
+        lt.apply(pl, "mode.border", lt.Move(value="red"))
+        second = BlankDisplayMode()
+        pl.current = _RichScene(second, 1)
+        pl.current.api = api
+        pl.frame()
+        self.assertEqual((first.border, second.border, api.touch_threads), (0, 0, []))
+        self.assertFalse(pl.live_tracker.has_changes())
+
+    def test_two_taps_before_a_frame_step_twice(self):
+        pl, mode, _scene = _rich()
+        lt.apply(pl, "mode.dither_method", lt.Move(cycle=True))
+        lt.apply(pl, "mode.dither_method", lt.Move(cycle=True))
+        pl.frame()
+        self.assertEqual(mode._dither_method, DITHER_METHODS[2])
+
+    def test_moves_queued_while_nothing_drains_are_bounded(self):
+        # A paused playlist runs no frames, while the surface keeps sending.
+        from c64cast.control.performance import MAX_DEFERRED_CALLS
+
+        pl, mode, _scene = _rich()
+        for i in range(MAX_DEFERRED_CALLS * 4):
+            lt.apply(pl, "mode.dither_method", lt.Move(value=DITHER_METHODS[i % 3]))
+        self.assertEqual(len(pl.performance._deferred), MAX_DEFERRED_CALLS)
+        pl.frame()
+        self.assertEqual(mode._dither_method, DITHER_METHODS[(MAX_DEFERRED_CALLS * 4 - 1) % 3])
 
 
 class LiveTuneTrackerTests(unittest.TestCase):

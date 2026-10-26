@@ -30,6 +30,8 @@ import logging
 import math
 import re
 import threading
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +42,11 @@ if TYPE_CHECKING:
     from c64cast.scenes.scenes import Scene
 
 log = logging.getLogger(__name__)
+
+#: Nothing drains the deferred calls while the playlist is paused, and a control
+#: surface keeps sending meanwhile; past this many the oldest are dropped, since
+#: a later move to the same knob supersedes an earlier one.
+MAX_DEFERRED_CALLS = 64
 
 
 @dataclass(frozen=True)
@@ -228,6 +235,7 @@ class PerformanceSession:
         # Effect state a pending look recall will apply once its clip activates
         # (set by a recall that also launches a clip; consumed in `_activate`).
         self._pending_look_effects: list[dict[str, Any]] | None = None
+        self._deferred: deque[Callable[[Playlist], None]] = deque(maxlen=MAX_DEFERRED_CALLS)
         # slot -> clip dict, in declaration order.
         self._clips: dict[int, dict[str, Any]] = {}
         for clip in clips or []:
@@ -320,6 +328,12 @@ class PerformanceSession:
         store is wired (the events drain to nothing)."""
         self._look_queue.put(LookEvent(slot=slot, save=save))
 
+    def defer(self, call: Callable[[Playlist], None]) -> None:
+        """Run ``call(pl)`` on the playlist thread at the top of its next frame —
+        for a control-thread action that writes to the machine or touches the
+        dirty cache, which the render loop owns."""
+        self._deferred.append(call)
+
     def advance_clip(self) -> int | None:
         """Enqueue a launch of the clip slot *after* the currently active/armed
         one, cycling back to the first — the "next clip in a row" gesture the
@@ -347,6 +361,7 @@ class PerformanceSession:
         frame. Never raises: a bug here must not abort the playlist loop."""
         try:
             self._reconcile(pl)
+            self._run_deferred(pl)
             self._drain(pl)
             self._drain_looks(pl)
             self._progress_armed(pl)
@@ -368,6 +383,12 @@ class PerformanceSession:
             self._return = None
             self._armed = None
             self._pending_look_effects = None
+
+    def _run_deferred(self, pl: Playlist) -> None:
+        # Only what was queued before this frame: a surface still sending must
+        # not hold the frame here.
+        for _ in range(len(self._deferred)):
+            self._deferred.popleft()(pl)
 
     def _drain(self, pl: Playlist) -> None:
         import queue
