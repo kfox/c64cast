@@ -61,6 +61,9 @@ class FireworksSource(GenerativeSource):
     _DOT_RADIUS_KERNEL = 2
     _ONSET_THRESHOLD = 0.55
     _LEVEL_INTERVAL_GAIN = 0.6  # loudness shortens the next launch interval
+    # A frame held for minutes (the on-C64 menu's idle pacing) would otherwise
+    # replay every missed tick inside one render call.
+    _MAX_CATCHUP_STEPS = 30
 
     def __init__(
         self,
@@ -178,7 +181,7 @@ class FireworksSource(GenerativeSource):
         if dt > 0.0:
             speed = max(self.speed, 0.0)
             level_gain = 0.0 if modulation is None else self._LEVEL_INTERVAL_GAIN * modulation.level
-            self._accum += dt * speed
+            self._accum = min(self._accum + dt * speed, self._MAX_CATCHUP_STEPS * self._STEP_S)
             while self._accum >= self._STEP_S:
                 self._step()
                 self._accum -= self._STEP_S

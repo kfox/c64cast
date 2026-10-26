@@ -49,6 +49,9 @@ class SoapSource(GenerativeSource):
     _PHASE_STEP = 0.012  # radians the flow field's rotation advances per step
     _FLOW_FRAC = 0.05  # base flow displacement, as a fraction of min(width,height)
     _INJECT = 0.006  # per-step blend-back of the original seed pattern
+    # A frame held for minutes (the on-C64 menu's idle pacing) would otherwise
+    # replay every missed tick inside one render call.
+    _MAX_CATCHUP_STEPS = 8
 
     def __init__(
         self,
@@ -100,7 +103,9 @@ class SoapSource(GenerativeSource):
         dt = t - self._last_t
         self._last_t = t
         if dt > 0.0:
-            self._accum += dt * max(self.speed, 0.0)
+            self._accum = min(
+                self._accum + dt * max(self.speed, 0.0), self._MAX_CATCHUP_STEPS * self._STEP_S
+            )
             while self._accum >= self._STEP_S:
                 self._step()
                 self._accum -= self._STEP_S

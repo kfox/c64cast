@@ -316,6 +316,9 @@ def _coerce(kind: str, raw: str) -> object:
     return raw
 
 
+_LEAVE_UNSET = "(leave unset)"
+
+
 def _prompt_typed(
     q,
     *,
@@ -330,12 +333,19 @@ def _prompt_typed(
     (Ellipsis) meaning "leave at default / omit"."""
     instruction = f"  {help_}" if help_ else None
     if choices:
-        return q.select(
+        if default in choices:
+            return q.select(
+                label, choices=list(choices), default=default, instruction=instruction
+            ).ask()
+        # A select always answers with one of its choices, so a field that
+        # defaults to none of them needs a choice that leaves it unset.
+        answer = q.select(
             label,
-            choices=list(choices),
-            default=default if default in choices else None,
+            choices=[_LEAVE_UNSET, *choices],
+            default=_LEAVE_UNSET,
             instruction=instruction,
         ).ask()
+        return ... if answer == _LEAVE_UNSET else answer
     if kind == "bool":
         return q.confirm(label, default=bool(default), instruction=instruction).ask()
 

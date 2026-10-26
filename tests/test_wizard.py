@@ -457,5 +457,28 @@ class FieldKindsTest(unittest.TestCase):
         self.assertEqual(wizard.field_kinds(color["force_palette_colors"].type), ("int", "complex"))
 
 
+class _EnterEverywhereQ:
+    """A user who presses Enter at every prompt: each answer is what the
+    prompt preselects, and a select with no default preselects its first
+    choice, as questionary's does."""
+
+    def select(self, label, choices=None, default=None, instruction=None):
+        assert choices is not None
+        return _Resp(default if default is not None else choices[0])
+
+    def text(self, label, default="", validate=None, instruction=None):
+        return _Resp(default)
+
+    def confirm(self, label, default=False, instruction=None):
+        return _Resp(default)
+
+
+class AdvancedWalkDefaultsTest(unittest.TestCase):
+    def test_accepting_every_default_leaves_an_unset_choice_field_unset(self):
+        collected = wizard._prompt_scene_fields(_EnterEverywhereQ(), "webcam")
+        assert collected is not None
+        self.assertNotIn("effect", collected)
+
+
 if __name__ == "__main__":
     unittest.main()
