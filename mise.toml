@@ -2,7 +2,7 @@
 idiomatic_version_file_enable_tools = ["node"]
 
 [tools]
-python = { version = "3.15.0", install_env = { CONFIGURE_OPTS = "--enable-optimizations" } }
+python = { version = "3.15.1", install_env = { CONFIGURE_OPTS = "--enable-optimizations" } }
 uv = "latest"
 
 [env]
