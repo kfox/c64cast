@@ -296,6 +296,17 @@ class ReadBurstTests(unittest.TestCase):
             events = midi_setup._read_burst(port)
         self.assertEqual(midi_setup.dominant_control(events), ("cc", 7))
 
+    def test_a_pad_press_and_release_settle_into_one_burst(self):
+        pad = [
+            types.SimpleNamespace(type="note_on", note=36, velocity=100),
+            types.SimpleNamespace(type="note_off", note=36, velocity=0),
+        ]
+        batches = iter([pad])
+        port = types.SimpleNamespace(iter_pending=lambda: iter(next(batches, [])))
+        with mock.patch.object(midi_setup, "time", FrozenClock(0.0, "monotonic", 0.01, sleep=None)):
+            events = midi_setup._read_burst(port)
+        self.assertEqual(events, [("note", 36, 100, True), ("note", 36, 0, False)])
+
 
 class ReviewTests(unittest.TestCase):
     def test_canceling_the_remove_prompt_returns_to_the_review(self):
@@ -328,6 +339,21 @@ class LearnFeedbackTests(unittest.TestCase):
         assert block is not None
         self.assertEqual(block["channel"], mc.FeedbackMap().channel)
         self.assertIn("out of range — keeping 0", out.getvalue())
+
+    def test_a_non_number_keeps_the_default_rather_than_the_previous_answer(self):
+        q = mock.MagicMock()
+        q.confirm.return_value.ask.return_value = True
+        q.text.return_value.ask.side_effect = ["5", "not a number", None, None, None]
+        out = io.StringIO()
+        with (
+            mock.patch.object(midi_setup, "_pick_output_port", return_value=None),
+            contextlib.redirect_stdout(out),
+        ):
+            block = midi_setup._learn_feedback(q, None)
+        assert block is not None
+        self.assertEqual(block["loaded"], 5)
+        self.assertEqual(block["armed"], mc.FeedbackMap().armed)
+        self.assertIn("not a number — keeping 13", out.getvalue())
 
 
 class LiveTargetsDriftTests(unittest.TestCase):
