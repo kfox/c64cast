@@ -370,6 +370,21 @@ class PlanModelConfigForHeaderTest(unittest.TestCase):
             },
         )
 
+    def test_an_unreadable_filter_curve_is_not_a_match(self):
+        class UltiSidReadFails(FakeAPI):
+            def get_config_category(self, category, *, timeout=3.0):
+                if category == CAT_ULTISID:
+                    raise RuntimeError("boom")
+                return super().get_config_category(category, timeout=timeout)
+
+        api = UltiSidReadFails.ultimate()
+        api.config_store[CAT_ADDRESSING] = {ITEM_ULTISID1_ADDR: "$D400"}
+        api.config_store[CAT_ULTISID] = {ITEM_ULTISID1_FILTER: "8580 Hi"}
+        header = _header(sid_addresses=(0xD400,), sid_models=("8580",))
+        plan = sa.plan_model_config_for_header(api, header, "auto")
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "8580 Lo")
+
 
 class ApplySidAutoconfigTest(unittest.TestCase):
     def test_off_makes_no_rest_calls_and_returns_empty(self):
