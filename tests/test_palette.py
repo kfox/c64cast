@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -566,6 +567,30 @@ class ColorMapTest(unittest.TestCase):
         n_red = int(np.all(samples == red_lab, axis=1).sum())
         n_blue = samples.shape[0] - n_red
         self.assertAlmostEqual(n_red / n_blue, 1.0, delta=0.05)
+
+    def test_more_single_pixel_blocks_than_the_cap_stop_thinning(self):
+        # Halving a 1-sample block keeps 1 sample, so the thinning loop can
+        # never get under the cap; the bounded `sum` turns a spin into a
+        # failure instead of a 60 s test timeout.
+        sum_calls = 0
+
+        def bounded_sum(values):
+            nonlocal sum_calls
+            sum_calls += 1
+            if sum_calls > 50:
+                raise AssertionError("thinning loop did not terminate")
+            return sum(values)
+
+        pixels = [np.full((1, 1, 3), (i * 40, 10, 10), dtype=np.uint8) for i in range(5)]
+        acc = ColorMapAccumulator(n_colors=2)
+        with (
+            mock.patch.object(palette_mod, "_FORCE_PALETTE_SAMPLE_CAP", 3),
+            mock.patch.object(palette_mod, "sum", bounded_sum, create=True),
+        ):
+            for px in pixels:
+                acc.add(px)
+        self.assertEqual(acc.lab_samples().shape[0], len(pixels))
+        self.assertIsNotNone(acc.result())
 
 
 class RollingColorMapAccumulatorTest(unittest.TestCase):
