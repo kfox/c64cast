@@ -46,11 +46,13 @@ class BlankDisplayMode(CharDisplayMode):
     def setup(self, api):
         super().setup(api)
         # Clear-then-reveal: blank the screen before the register pokes and
-        # flip $D011 last, so a scene switch never shows stale glyphs.
+        # flip $D011 last, so a scene switch never shows stale glyphs. The
+        # registers are pinned black because a fade-in is armed only after
+        # setup returns; the first push() lands the faded colors.
         clear_char_screen(api)
         api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
         api.write_memory("d016", "08")
-        api.write_regs("d020", *self._registers())
+        api.write_regs("d020", 0, 0)
         api.write_memory("d011", "1b")
 
     def set_border(self, api: C64Backend, value: str) -> str:

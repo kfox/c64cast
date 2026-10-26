@@ -59,8 +59,8 @@ class BlankDisplayModeTest(unittest.TestCase):
         self.assertEqual(api.memories["D018"], "14")
         self.assertEqual(api.memories["D016"], "08")
         self.assertEqual(api.memories["D011"], "1b")
-        # Border + background written as a contiguous pair.
-        self.assertEqual(api.regs["D020"], (2, 6))
+        # Border + background pinned black; the first push() lands them.
+        self.assertEqual(api.regs["D020"], (0, 0))
 
     def test_push_writes_screen_and_color(self):
         api = FakeAPI()
@@ -87,13 +87,36 @@ class BlankDisplayModeTest(unittest.TestCase):
         m.push(api, m.apply_fade(m.compose()))
         self.assertEqual(api.regions[0xD020], bytes([0, 0]))
 
-    def test_setup_again_under_a_dim_pokes_the_dimmed_registers(self):
+    def test_setup_under_a_dim_pins_the_registers_black(self):
         # A restart sets the same mode up again, user_dim already stamped on it.
         api = FakeAPI()
         m = BlankDisplayMode(border=1, background=1)
         m.user_dim = 0.0
         m.setup(api)
         self.assertEqual(api.regs["D020"], (0, 0))
+
+    def test_a_fade_in_never_flashes_the_configured_colors(self):
+        # The playlist arms the fade-in only after setup() has run at
+        # fade_alpha 1.0, so setup cannot know a fade is coming.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.setup(api)
+        m.fade_alpha = 0.0
+        m.push(api, m.apply_fade(m.compose()))
+        d020_writes = [
+            op[-1] if op[0] == "write_regs" else op[2]
+            for op in api.ops
+            if op[0] in ("write_regs", "write_region") and op[1] in ("D020", 0xD020)
+        ]
+        self.assertNotIn((2, 6), [tuple(w) for w in d020_writes])
+
+    def test_without_a_fade_the_first_push_lands_the_configured_colors(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.setup(api)
+        self.assertGreater(api.cache_invalidations, 0)
+        m.push(api, m.compose())
+        self.assertEqual(api.regions[0xD020], bytes([2, 6]))
 
     def test_full_brightness_pushes_the_configured_registers(self):
         api = FakeAPI()
