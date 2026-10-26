@@ -958,6 +958,12 @@ class FeedbackMapTests(unittest.TestCase):
         self.assertEqual(fm.loaded, d.loaded)  # 200 out of range → default
         self.assertEqual(fm.armed, d.armed)  # bool rejected → default
 
+    @unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
+    def test_a_channel_mido_rejects_falls_back_to_the_default(self):
+        fm = midi_control.FeedbackMap.from_dict({"channel": 16})
+        self.assertEqual(fm.channel, midi_control.FeedbackMap().channel)
+        mido.Message("note_on", channel=fm.channel, note=60, velocity=fm.active)
+
     def test_round_trip_to_dict(self):
         fm = midi_control.FeedbackMap(channel=1, active=7)
         self.assertEqual(midi_control.FeedbackMap.from_dict(fm.to_dict()), fm)

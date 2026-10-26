@@ -35,7 +35,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
@@ -381,6 +381,8 @@ _LED_BLINK_HALF_PERIOD_S = 0.25
 # The velocity fields of a FeedbackMap / a profile `feedback` block (excludes
 # `port`, which is a device name, not a velocity).
 _FEEDBACK_KEYS: tuple[str, ...] = ("channel", "off", "loaded", "armed", "active", "fx_on")
+_MIDI_CHANNEL_MAX = 15
+_MIDI_DATA_MAX = 127
 
 
 @dataclass(frozen=True)
@@ -410,12 +412,15 @@ class FeedbackMap:
         vals: dict[str, int] = {}
         for k in _FEEDBACK_KEYS:
             v = raw.get(k)
-            vals[k] = (
-                v
-                if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 127
-                else getattr(default, k)
-            )
+            vals[k] = v if cls.accepts(v, field=k) else getattr(default, k)
         return cls(**vals)
+
+    @staticmethod
+    def accepts(value: Any, *, field: str) -> TypeGuard[int]:
+        """Whether `value` is usable for `field`: an int (not a bool) in the
+        range mido accepts for it — a channel, or a velocity."""
+        top = _MIDI_CHANNEL_MAX if field == "channel" else _MIDI_DATA_MAX
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= top
 
     def to_dict(self) -> dict[str, int]:
         return {k: getattr(self, k) for k in _FEEDBACK_KEYS}

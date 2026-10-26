@@ -254,6 +254,10 @@ class WizardHelperTests(unittest.TestCase):
         # Round-trips through the runtime reader without loss.
         self.assertEqual(mc.FeedbackMap.from_dict(block).active, 5)
 
+    def test_build_feedback_block_refuses_a_channel_the_listener_cannot_send_on(self):
+        block = midi_setup.build_feedback_block(overrides={"channel": 16})
+        self.assertEqual(block["channel"], mc.FeedbackMap().channel)
+
     def test_build_feedback_block_no_port(self):
         block = midi_setup.build_feedback_block()
         self.assertNotIn("port", block)

@@ -111,7 +111,7 @@ def build_feedback_block(
     :meth:`c64cast.control.midi_control.FeedbackMap.from_dict` reads back at runtime."""
     block: dict[str, Any] = dict(FeedbackMap().to_dict())
     for k, v in (overrides or {}).items():
-        if k in block and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 127:
+        if k in block and FeedbackMap.accepts(v, field=k):
             block[k] = v
     if port:
         block["port"] = port
