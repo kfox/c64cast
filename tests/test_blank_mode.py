@@ -87,6 +87,14 @@ class BlankDisplayModeTest(unittest.TestCase):
         m.push(api, m.apply_fade(m.compose()))
         self.assertEqual(api.regions[0xD020], bytes([0, 0]))
 
+    def test_setup_again_under_a_dim_pokes_the_dimmed_registers(self):
+        # A restart sets the same mode up again, user_dim already stamped on it.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=1, background=1)
+        m.user_dim = 0.0
+        m.setup(api)
+        self.assertEqual(api.regs["D020"], (0, 0))
+
     def test_full_brightness_pushes_the_configured_registers(self):
         api = FakeAPI()
         m = BlankDisplayMode(border=2, background=6)
