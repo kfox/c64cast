@@ -21,6 +21,7 @@ See docs/architecture/control.md#midi_setuppy--the---midi-setup-midi-learn-wizar
 
 from __future__ import annotations
 
+import math
 import time
 from collections import Counter
 from typing import Any
@@ -144,14 +145,16 @@ def _drain(port: Any) -> None:
 
 
 def _read_burst(
-    port: Any, *, settle_s: float = 0.6, timeout_s: float = 15.0
+    port: Any, *, settle_s: float = 0.6, timeout_s: float = 15.0, max_burst_s: float = 5.0
 ) -> list[tuple[str, int, int, bool]]:
     """Block until the first mappable message arrives (or `timeout_s` elapses),
     then keep collecting for `settle_s` after the last message so a knob sweep /
-    a pad's note-on+off both land in one burst. Returns the classified events."""
+    a pad's note-on+off both land in one burst, for at most `max_burst_s` after
+    the first. Returns the classified events."""
     events: list[tuple[str, int, int, bool]] = []
     deadline = time.monotonic() + timeout_s
     last_msg = 0.0
+    burst_end = math.inf
     while True:
         got = False
         for msg in port.iter_pending():
@@ -161,8 +164,9 @@ def _read_burst(
                 got = True
         now = time.monotonic()
         if got:
+            burst_end = min(burst_end, now + max_burst_s)
             last_msg = now
-        if events and (now - last_msg) >= settle_s:
+        if events and ((now - last_msg) >= settle_s or now >= burst_end):
             break
         if not events and now >= deadline:
             break

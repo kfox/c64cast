@@ -277,6 +277,24 @@ class WizardHelperTests(unittest.TestCase):
         mc._parse_cc_map(maps)  # runtime parser must accept them too
 
 
+class ReadBurstTests(unittest.TestCase):
+    def test_a_control_that_never_stops_sending_still_ends_the_burst(self):
+        # A jittery fader or an expression pedal keeps a CC arriving on every
+        # pass, so the settle window after the last message never opens.
+        calls = {"n": 0}
+
+        def iter_pending():
+            calls["n"] += 1
+            if calls["n"] > 100_000:
+                raise RuntimeError("the burst never ended")
+            return iter([types.SimpleNamespace(type="control_change", control=7, value=64)])
+
+        port = types.SimpleNamespace(iter_pending=iter_pending)
+        with mock.patch.object(midi_setup, "time", FrozenClock(0.0, "monotonic", 0.01, sleep=None)):
+            events = midi_setup._read_burst(port)
+        self.assertEqual(midi_setup.dominant_control(events), ("cc", 7))
+
+
 class LiveTargetsDriftTests(unittest.TestCase):
     """live_targets() must expose exactly the LIVE_PARAMS/LIVE_CHOICES declared
     across the effect/generator/mode/scope registries — same spirit as the
