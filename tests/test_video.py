@@ -4475,12 +4475,12 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         self.assertFalse(scene._audio_held)
 
     def test_a_soundtrack_the_reu_decode_rejects_plays_the_clip_silent(self):
-        import av.error
-
         audio = mock.create_autospec(AudioStreamer, instance=True)
         audio.use_reu_pump = True
         audio.effective_rate = 8000.0
-        bad = av.error.InvalidDataError(1094995529, "Invalid data found when processing input")
+        # PyAV's InvalidDataError is a ValueError; the plain base keeps the
+        # test runnable without the optional `video` extra.
+        bad = ValueError("Invalid data found when processing input")
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource"),
