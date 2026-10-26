@@ -558,6 +558,12 @@ class PerfBridgeTest(unittest.TestCase):
         bridge.apply({"action": "jump", "index": 0})
         self.assertEqual(pl.jumps, [(0, True)])
 
+    def test_apply_passes_a_pickers_choice_through_by_name(self):
+        bridge, _pl = _bridge()
+        with patch.object(bridge, "live", return_value=True) as live:
+            bridge.apply({"action": "live", "target": "mode.dither_method", "value": "atkinson"})
+        live.assert_called_once_with(None, "mode.dither_method", value="atkinson")
+
     def test_apply_carries_the_transport_verbs_extra_fields(self):
         bridge, pl = _bridge(scene=_FakeTransportScene())
         bridge.apply({"action": "transport", "verb": "seek", "target": 30.0})

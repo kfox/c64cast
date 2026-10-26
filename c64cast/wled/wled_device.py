@@ -214,8 +214,7 @@ def _apply_palette(pl: Playlist, index: int) -> None:
         return
 
     def install(mode: Any, api: Any) -> None:
-        if hasattr(mode, "set_color_map"):
-            mode.set_color_map(None)  # drop a prior color-picker force
+        mode.set_color_map(None)  # drop a prior color-picker force
         mode.set_palette_mode(api, PALETTE_MODES[index], force_palette=False)
 
     _on_playlist_thread(pl, mode, install)

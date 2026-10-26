@@ -144,6 +144,19 @@ class LaunchSemanticsTest(unittest.TestCase):
         pl.tempo.beat_phase = 1.0
         self.assertTrue(_pump(s, pl))
 
+    def test_advance_clip_launches_the_next_slot_in_declaration_order(self):
+        s, pl = self._session(
+            [
+                {"slot": 3, "type": "generative", "quantize": "off"},
+                {"slot": 1, "type": "generative", "quantize": "off"},
+            ]
+        )
+        self.assertEqual(s.advance_clip(), 3)
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(s.advance_clip(), 1)
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(pl.swaps, ["S3", "S1"])
+
     def test_quantize_off_launches_immediately(self):
         s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "off"}])
         s.enqueue(ClipEvent(slot=1, pressed=True))

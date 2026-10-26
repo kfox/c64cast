@@ -205,8 +205,6 @@ def _apply_choice(pl: Playlist, found: LiveTarget, move: Move) -> bool:
     That rebuild can poke a VIC register or drop the dirty cache, so it runs on
     the playlist thread at the top of the next frame; what is checked here is
     only whether the Move selects anything at all."""
-    if getattr(found.holder, "set_live_choice", None) is None or not found.choices:
-        return False
     if _chosen(found, move, current(found)) is None:
         return False
     pl.performance.defer(lambda playing: _apply_choice_now(playing, found, move))
@@ -224,8 +222,8 @@ def _apply_choice_now(pl: Playlist, queued: LiveTarget, move: Move) -> None:
         return
     old = current(found)
     chosen = _chosen(found, move, old)
-    if chosen is None:
-        return
+    # The same Move selected a choice of the same holder when it was queued.
+    assert chosen is not None
     label = found.holder.set_live_choice(getattr(pl.current, "api", None), found.name, chosen)
     if move.osd:
         pl.post_osd(label or f"{found.name} {chosen}")

@@ -540,8 +540,7 @@ class PerformanceSession:
         if armed is None or armed.building:
             return
         factory = pl.build_performance_scene
-        if factory is None:
-            return
+        assert factory is not None, "_arm refuses a slot when no factory is wired"
         self._builds = [t for t in self._builds if t.is_alive()]
         if len(self._builds) >= MAX_CLIP_BUILDS:
             return
