@@ -172,8 +172,8 @@ what it handed back:
 
 - **Advisory** — fix it here as its own commit, reviewed by the table above, or
   open a labeled GitHub issue when it is genuinely separate work.
-- **Outside this change** — collect these for the step 7 report. Do not open
-  issues for them; the user decides which are worth tracking.
+- **Outside this change** — file each as its own GitHub issue, linked back to
+  the PR, unless it is fixed here. Never list them in the PR description.
 - **A commit-message finding** — the reviewer is told not to raise one; if one
   arrives anyway, drop it.
 
@@ -256,7 +256,7 @@ Report to the user:
   — with reasons for the declines.
 - Advisory findings and where each was routed — the commit that fixed it here,
   or the issue it became.
-- The "Outside this change" findings, as one list, for the user to decide on.
+- The issues filed for "Outside this change" findings.
 - Anything still open, stated plainly.
 
 Then stop. The merge is the user's, and they squash-merge from the GitHub UI.
