@@ -14,11 +14,12 @@ import time
 import unittest
 import warnings
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
 from c64cast.app.playlist import Playlist
+from c64cast.control.performance import PerformanceSession
 from c64cast.wled.wled_device import (
     PresetStore,
     WledBridge,
@@ -72,6 +73,7 @@ class _FakeMode:
         self.palette_mode = "percell"
         self.color_map = "UNSET"  # sentinel: distinguishes "never set" from None
         self.palette_calls: list[tuple[str, bool | None]] = []
+        self.palette_threads: list[str] = []
         self.user_dim = 1.0  # mirrors DisplayMode.user_dim (the WLED bri dim)
 
     def set_color_map(self, cmap: object) -> None:
@@ -80,6 +82,7 @@ class _FakeMode:
     def set_palette_mode(self, api: object, mode: str, *, force_palette: bool | None = None) -> str:
         self.palette_mode = mode
         self.palette_calls.append((mode, force_palette))
+        self.palette_threads.append(threading.current_thread().name)
         return mode
 
 
@@ -124,6 +127,11 @@ class _FakePlaylist:
         self.skip_event = threading.Event()
         self.jumps: list[int] = []
         self.osd_posts: list[str] = []
+        self.performance = PerformanceSession()
+
+    def frame(self) -> None:
+        """The top of the playlist thread's next frame, where deferred work runs."""
+        self.performance.service(cast(Any, self))
 
     def post_osd(self, text: str, duration_s: float = 2.5) -> None:
         # Mirrors Playlist.post_osd: a live-param slider write routes "name value"
@@ -409,8 +417,9 @@ class BridgePaletteColorTests(unittest.TestCase):
 
     def test_pal_swaps_palette_mode(self):
         mode = _FakeMode()
-        bridge, _ = _bridge(display_mode=mode)
+        bridge, pl = _bridge(display_mode=mode)
         bridge.apply({"seg": [{"id": 0, "pal": 2}]})  # index 2 -> "vivid"
+        pl.frame()
         self.assertEqual(mode.palette_mode, "vivid")
         # Selecting a palette clears any force + turns the force toggle off.
         self.assertIsNone(mode.color_map)
@@ -419,8 +428,9 @@ class BridgePaletteColorTests(unittest.TestCase):
 
     def test_pal_out_of_range_is_noop(self):
         mode = _FakeMode()
-        bridge, _ = _bridge(display_mode=mode)
+        bridge, pl = _bridge(display_mode=mode)
         bridge.apply({"seg": [{"id": 0, "pal": 99}]})
+        pl.frame()
         self.assertEqual(mode.palette_calls, [])  # nothing applied
         self.assertEqual(bridge.state_dict()["seg"][0]["pal"], 99)  # still echoed
 
@@ -429,9 +439,10 @@ class BridgePaletteColorTests(unittest.TestCase):
 
         mode = _FakeMode()
         mode.palette_mode = "grayscale"  # a non-percell mode
-        bridge, _ = _bridge(display_mode=mode)
+        bridge, pl = _bridge(display_mode=mode)
         # orange + cyan -> two distinct C64 indices, force toggle on.
         bridge.apply({"seg": [{"id": 0, "col": [[255, 160, 0], [0, 255, 255]]}]})
+        pl.frame()
         assert isinstance(mode.color_map, pal.ColorMap)
         self.assertEqual(len(mode.color_map.indices), 2)
         # Forcing colors snaps to percell (the mode force_palette pairs with) so
@@ -443,8 +454,9 @@ class BridgePaletteColorTests(unittest.TestCase):
         from c64cast.video import palette as pal
 
         mode = _FakeMode()
-        bridge, _ = _bridge(display_mode=mode)
+        bridge, pl = _bridge(display_mode=mode)
         bridge.apply({"seg": [{"id": 0, "col": [[255, 160, 0]]}]})  # one color
+        pl.frame()
         assert isinstance(mode.color_map, pal.ColorMap)
         self.assertEqual(len(mode.color_map.indices), 2)  # partner added
         self.assertIn(0, mode.color_map.indices)  # black contrast partner
@@ -453,21 +465,25 @@ class BridgePaletteColorTests(unittest.TestCase):
         # The WLED app re-POSTs the full segment (pal AND col) on every change, so a
         # palette pick echoing an unchanged col must not re-apply that col's force.
         mode = _FakeMode()
-        bridge, _ = _bridge(display_mode=mode)
+        bridge, pl = _bridge(display_mode=mode)
         # Establish a color force first.
         bridge.apply({"seg": [{"id": 0, "col": [[255, 160, 0], [0, 255, 255]]}]})
+        pl.frame()
         forced_calls = len(mode.palette_calls)
         # Now the app changes only the palette, but echoes the unchanged col.
         bridge.apply({"seg": [{"id": 0, "pal": 2, "col": [[255, 160, 0], [0, 255, 255]]}]})
+        pl.frame()
         self.assertEqual(mode.palette_mode, "vivid")
         self.assertEqual(mode.palette_calls[forced_calls:], [("vivid", False)])
 
     def test_unchanged_pal_does_not_reapply(self):
         mode = _FakeMode()
-        bridge, _ = _bridge(display_mode=mode)
+        bridge, pl = _bridge(display_mode=mode)
         bridge.apply({"seg": [{"id": 0, "pal": 2}]})  # vivid
+        pl.frame()
         n = len(mode.palette_calls)
         bridge.apply({"seg": [{"id": 0, "pal": 2}]})  # same again -> no-op
+        pl.frame()
         self.assertEqual(len(mode.palette_calls), n)
 
     def test_segment_name_single_system_uses_device_name(self):
@@ -480,11 +496,48 @@ class BridgePaletteColorTests(unittest.TestCase):
         class _BareMode:
             name = "hires"
 
-        bridge, _ = _bridge(display_mode=_BareMode())
+        bridge, pl = _bridge(display_mode=_BareMode())
         bridge.apply({"seg": [{"id": 0, "pal": 1, "col": [[10, 20, 30]]}]})  # must not raise
+        pl.frame()
         seg = bridge.state_dict()["seg"][0]
         self.assertEqual(seg["pal"], 1)
         self.assertEqual(seg["col"], [[10, 20, 30]])
+
+
+class PaletteRunsOnThePlaylistThreadTests(unittest.TestCase):
+    """`set_palette_mode` drops the dirty cache and the mode's compose state,
+    which belong to the playlist thread — not the WLED server's worker."""
+
+    def _apply_from_server_thread(self, bridge: WledBridge, partial: dict[str, Any]) -> None:
+        t = threading.Thread(target=bridge.apply, args=(partial,), name="wled-http")
+        t.start()
+        t.join(5.0)
+
+    def test_a_palette_pick_waits_for_the_playlist_thread(self):
+        mode = _FakeMode()
+        bridge, pl = _bridge(display_mode=mode)
+        self._apply_from_server_thread(bridge, {"seg": [{"id": 0, "pal": 2}]})
+        self.assertEqual(mode.palette_threads, [])
+        pl.frame()
+        self.assertEqual(mode.palette_threads, [threading.current_thread().name])
+        self.assertEqual(mode.palette_mode, "vivid")
+
+    def test_a_color_pick_waits_for_the_playlist_thread(self):
+        mode = _FakeMode()
+        bridge, pl = _bridge(display_mode=mode)
+        self._apply_from_server_thread(bridge, {"seg": [{"id": 0, "col": [[255, 160, 0]]}]})
+        self.assertEqual((mode.palette_threads, mode.color_map), ([], "UNSET"))
+        pl.frame()
+        self.assertEqual(mode.palette_threads, [threading.current_thread().name])
+
+    def test_a_pick_made_on_one_scene_does_not_land_on_the_next(self):
+        first = _FakeMode()
+        bridge, pl = _bridge(display_mode=first)
+        bridge.apply({"seg": [{"id": 0, "pal": 2}]})
+        second = _FakeMode()
+        cast("_FakeScene", pl.current).display_mode = second
+        pl.frame()
+        self.assertEqual((first.palette_calls, second.palette_calls), ([], []))
 
 
 class SegCapsTests(unittest.TestCase):
@@ -723,6 +776,7 @@ class BridgePresetTests(unittest.TestCase):
         )
         mode.palette_calls.clear()
         self.bridge.apply({"ps": 1})
+        self.pl.frame()
         # Forced apply happened despite the unchanged echo (vivid = PALETTE_MODES[2]).
         self.assertIn("vivid", [c[0] for c in mode.palette_calls])
         self.assertEqual(self.bridge.state_dict()["ps"], 1)
