@@ -97,7 +97,8 @@ Which bumps move it:
 does the mechanical part:
 
 ```bash
-scripts/rebuild_bundle_for_bump.sh 497            # or: ... 497 some-branch-name
+make web-bump PR=497                     # or: make web-bump PR=497 BRANCH=some-branch-name
+scripts/rebuild_bundle_for_bump.sh 497   # the same thing, called directly
 ```
 
 It refuses a PR touching anything beyond those two files, and one whose base has
