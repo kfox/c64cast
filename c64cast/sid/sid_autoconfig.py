@@ -103,7 +103,8 @@ def plan_sid_model_config(
          ARMSID answering there is switched to the required model instead.
          An UltiSID core matches when its curve in `ultisid_curves`
          (``{"ultisid1": "8580 Hi", ...}``) starts with the required model, the
-         same test the resolved-audio line applies.
+         same test the resolved-audio line applies. A source an earlier chip
+         in this pass claimed has moved, so it no longer answers here.
       2. The *other* physical socket reports the required model, or is an
          ARMSID (and isn't already claimed by an earlier chip in this same
          pass) → remap that socket's address to this chip's address (same
@@ -141,6 +142,9 @@ def plan_sid_model_config(
             continue
 
         current_source = current_addr_map.get(address)
+        if current_source in reserved:
+            # An earlier chip in this pass moved that source to its own address.
+            current_source = None
         if current_source in ("socket1", "socket2"):
             idx = 0 if current_source == "socket1" else 1
             if armsid.label_model(socket_models[idx]) == required:

@@ -207,6 +207,35 @@ class PlanSidModelConfigTest(unittest.TestCase):
         self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)], "$D420")
         self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "8580 Lo")
 
+    def test_a_socket_an_earlier_chip_moved_no_longer_answers_its_old_address(self):
+        # Chip 0 takes socket 2 (the 8580) to $D400. Chip 1 at $D420 was on
+        # socket 2 too, but socket 2 has just left: it needs a place of its own.
+        plan = sa.plan_sid_model_config(
+            chips=((0xD400, "8580"), (0xD420, "8580")),
+            current_addr_map={0xD400: "socket1", 0xD420: "socket2"},
+            socket_models=("6581", "8580"),
+            ultisid_allowed=True,
+        )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_SOCKET2_ADDR)], "$D400")
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)], "$D420")
+        self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "8580 Lo")
+        self.assertNotEqual(plan.get((CAT_SOCKETS, ITEM_SOCKET2_EN)), "Disabled")
+
+    def test_a_core_an_earlier_chip_moved_no_longer_answers_its_old_address(self):
+        # Chip 0 takes UltiSID 1 from $D420 to $D400; chip 1 at $D420 must not
+        # count UltiSID 1's curve as still serving it there.
+        plan = sa.plan_sid_model_config(
+            chips=((0xD400, "8580"), (0xD420, "8580")),
+            current_addr_map={0xD400: "socket1", 0xD420: "ultisid1"},
+            socket_models=("6581", None),
+            ultisid_allowed=True,
+            ultisid_curves={"ultisid1": "8580 Lo"},
+        )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)], "$D400")
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)], "$D420")
+
 
 class RequiredModelsForTest(unittest.TestCase):
     """The shared sid_model -> per-chip requirement mapping."""
@@ -328,13 +357,16 @@ class PlanModelConfigForHeaderTest(unittest.TestCase):
         # ignore that and force "8580" on every chip anyway.
         header = _header(sid_addresses=(0xD400, 0xD420), sid_models=("6581", "6581"))
         plan = sa.plan_model_config_for_header(api, header, "8580")
-        # $D400 (socket1=6581) doesn't match -> swap to socket2. $D420
-        # (socket2=8580) already matches -> no-op for that chip.
+        # $D400 (socket1=6581) doesn't match -> swap to socket2. That takes
+        # socket2 off $D420, so the chip there goes to an UltiSID core.
         self.assertEqual(
             plan,
             {
                 (CAT_ADDRESSING, ITEM_SOCKET2_ADDR): "$D400",
                 (CAT_SOCKETS, ITEM_SOCKET2_EN): "Enabled",
+                (CAT_ADDRESSING, ITEM_ULTISID1_ADDR): "$D420",
+                (CAT_ULTISID, ITEM_ULTISID1_FILTER): "8580 Lo",
+                (CAT_ADDRESSING, ITEM_AUTO_MIRROR): "Disabled",
             },
         )
 
