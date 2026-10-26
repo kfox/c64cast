@@ -19,6 +19,7 @@ from unittest import mock
 import numpy as np
 from _fakes import FakeAPI, FrozenClock
 
+from c64cast.audio import sampler as sampler_mod
 from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import CHUNK_SIZE, PREBUFFER_CHUNKS
 from c64cast.audio.audio_servo import HOST_DMA_SERVO_TARGET_GAP
@@ -3688,20 +3689,28 @@ class SpliceAnchorTest(unittest.TestCase):
         self.assertTrue(scene.transport.resync)
         return scene
 
-    def test_a_splice_after_the_samplers_eof_anchors_on_its_unclamped_clock(self):
-        # mark_eof clamps the sampler's clock to the pushed total while the
-        # wall runs on, and the flush clears the clamp: an anchor read before
-        # the flush put the picture the clamp's overrun ahead of the sound.
+    def _sampler_past_its_eof(self) -> UltimateAudioSampler:
+        """A sampler 5 s into its wall clock with 1 s pushed, clamped by
+        mark_eof, on a frozen monotonic clock."""
+        clock = FrozenClock(1000.0, "monotonic")
+        self.enterContext(mock.patch.object(sampler_mod, "time", clock))
         smp = UltimateAudioSampler(
             cast(Any, mock.MagicMock()), sample_rate=2000, bits=8, ring_size=0x4000
         )
         smp._running = True
-        smp._gate_time = time.monotonic() - 5.0
-        smp._pushed_samples = 2000  # 1 s pushed, 5 s on the wall
+        smp._gate_time = clock.monotonic() - 5.0
+        smp._pushed_samples = 2000
         smp.mark_eof()
+        return smp
+
+    def test_a_splice_after_the_samplers_eof_anchors_on_its_unclamped_clock(self):
+        # mark_eof clamps the sampler's clock to the pushed total while the
+        # wall runs on, and the flush clears the clamp: an anchor read before
+        # the flush put the picture the clamp's overrun ahead of the sound.
+        smp = self._sampler_past_its_eof()
         scene = self._touched(smp)
         scene.transport_seek(0.5)
-        self.assertAlmostEqual(scene.transport.clock_s(), 0.5 - smp.ring_lead_seconds(), delta=0.05)
+        self.assertAlmostEqual(scene.transport.clock_s(), 0.5 - smp.ring_lead_seconds())
 
     def _positions_through(self, scene: VideoScene, act: Callable[[], None]) -> list[float]:
         """The position a poll off another thread would read after each store
@@ -3854,13 +3863,7 @@ class SpliceAnchorTest(unittest.TestCase):
         # The cut-over clears mark_eof's clamp before flush() returns. Held on
         # an estimate read while the clamp stood, a poll there read the target
         # plus the clamp's overrun.
-        smp = UltimateAudioSampler(
-            cast(Any, mock.MagicMock()), sample_rate=2000, bits=8, ring_size=0x4000
-        )
-        smp._running = True
-        smp._gate_time = time.monotonic() - 5.0
-        smp._pushed_samples = 2000  # 1 s pushed, 5 s on the wall
-        smp.mark_eof()
+        smp = self._sampler_past_its_eof()
         scene = self._touched(smp)
         polls: list[float] = []
         cut_over = smp._cut_over
