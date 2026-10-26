@@ -1428,6 +1428,33 @@ class Volume0SelfTestTest(DataDirIsolated):
         self.assertEqual(len(entry["raw_signed_levels"]), 256)
         self.assertIsNone(dcs.load_calibrated_table(cfg))
 
+    def test_a_rejected_rerun_keeps_the_previous_table(self):
+        # The CLI and troubleshooting.md both promise playback keeps the
+        # previous curve when a run is rejected.
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": _result(1), "2": _result(2)})
+        raw = [(c, v + 0.3 if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
+        sidtable, metrics = dsr.build_sidtable_from_levels(raw)
+        rejected = dcs.CalibrationResult(sidtable, metrics, "6581", raw)
+        path = self.save(cfg, {"1": _result(9), "2": rejected})
+        sids = json.loads(path.read_text())["sids"]
+        self.assertEqual(sids["1"]["sidtable"], [9] * 256)
+        self.assertEqual(sids["2"]["sidtable"], [2] * 256)
+        self.assertEqual(len(sids["2"]["rejected"]["raw_signed_levels"]), 256)
+        self.assertNotIn("sidtable", sids["2"]["rejected"])
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_ADDRESSING] = {
+            "SID Socket 1 Address": "$D420",
+            "SID Socket 2 Address": "$D400",
+        }
+        api.config_store[CAT_SOCKETS] = {
+            "SID Socket 1": "Enabled",
+            "SID Socket 2": "Enabled",
+            "SID Detected Socket 1": "6581",
+            "SID Detected Socket 2": "6581",
+        }
+        self.assertEqual(dcs.load_calibrated_table(cfg, be=api), bytes([2] * 256))
+
 
 class LadderMetricsTest(unittest.TestCase):
     def test_quality_is_independent_of_capture_gain(self):

@@ -390,7 +390,8 @@ def _note_one_sid_assumption(cfg: Config, be: C64Backend | None, entry_key: str)
 @dataclass(frozen=True)
 class CalibrationResult:
     # 256 entries, amplitude index → $D418 byte. None when the measurement
-    # failed its self-test; playback then falls back to the baked/linear curve.
+    # failed its self-test; playback then keeps the entry's previous table, or
+    # falls back to the baked/linear curve.
     sidtable: list[int] | None
     metrics: dict[str, Any]
     # The chip measured, e.g. "6581" (SID Detected Socket N) or "ARMSID 6581" —
@@ -414,6 +415,19 @@ class CalibrationDocument:
     d400_socket: int | None = None
 
 
+def _saved_entries(path: Path) -> dict[str, Any]:
+    """The ``sids`` map already on disk at `path`, or empty when there is no
+    readable schema-2 file there."""
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
+        return {}
+    sids = raw.get("sids")
+    return sids if isinstance(sids, dict) else {}
+
+
 def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system.
 
@@ -431,6 +445,9 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     missing/malformed table as "no calibration applies" and falls back, so the
     rejection needs no reader change, and keeping its ``raw_levels`` +
     ``metrics`` means the failure can be investigated without re-measuring.
+    When the file already holds a usable table for that entry, the old entry
+    is kept and the rejected one is filed under its ``rejected`` key instead,
+    so a failed re-measure leaves playback on the table it had.
 
     ``d400_socket`` — which socket answered ``$D400`` *before* the run isolated
     anything — is written the same additive way. Every socket is measured at
@@ -448,13 +465,21 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
         return out
 
     path = path_for_key(cfg, doc.key)
+    previous = _saved_entries(path)
+    sids: dict[str, Any] = {}
+    for name, r in doc.entries.items():
+        kept = previous.get(name)
+        if r.sidtable is None and isinstance(kept, dict) and _table_of((name, kept)) is not None:
+            sids[name] = {**kept, "rejected": entry(r)}
+        else:
+            sids[name] = entry(r)
     record: dict[str, Any] = {
         "schema": _SCHEMA_VERSION,
         "key": doc.key,
         "backend": cfg.hardware.backend,
         "device": doc.device,
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
-        "sids": {name: entry(r) for name, r in doc.entries.items()},
+        "sids": sids,
     }
     if doc.d400_socket is not None:
         record["d400_socket"] = doc.d400_socket
