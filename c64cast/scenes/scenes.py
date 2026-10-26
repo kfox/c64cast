@@ -2472,6 +2472,10 @@ class LauncherScene(MediaFileMixin, Scene):
             self.api.send_input([machine_input.RELEASE_ALL])
 
     def process_frame(self, current_time: float) -> bool:
+        # The playlist takes is_done from this return, so a setup that never
+        # launched would otherwise hold a reset machine for the idle timeout.
+        if self.is_done:
+            return False
         if (current_time - self.start_time) >= self.max_duration_s:
             return False
         if (current_time - self.start_time) < self.min_duration_s:
