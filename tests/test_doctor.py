@@ -167,6 +167,25 @@ class SamplerSettingsDiagnosticTest(unittest.TestCase):
         self.assertEqual(self._errors(""), [])
 
 
+class AudioWithoutSounddeviceDiagnosticTest(unittest.TestCase):
+    """A run with audio on refuses to start without sounddevice, and audio is
+    on by default, so the doctor must not pass that config."""
+
+    def _errors(self, toml: str) -> list[doctor.Diagnostic]:
+        loaded = _load(toml)
+        with mock.patch("c64cast.audio.audio.AUDIO_AVAILABLE", False):
+            diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        return [d for d in diags if d.level == "error"]
+
+    def test_default_audio_without_sounddevice_is_an_error(self):
+        errors = self._errors("")
+        self.assertEqual([(d.category, d.subject) for d in errors], [("audio", "system/audio")])
+        self.assertIn("--no-audio", errors[0].hint or "")
+
+    def test_audio_off_without_sounddevice_is_fine(self):
+        self.assertEqual(self._errors("[audio]\nenabled = false\n"), [])
+
+
 class ValidateScenesTest(unittest.TestCase):
     """Per-scene validation — every misconfig surfaces as its own
     Diagnostic instead of aborting at the first error."""

@@ -192,6 +192,7 @@ def validate_load_result(
     out.extend(_validate_unknown_keys(loaded))
     out.extend(_validate_schema_directive(loaded))
     out.extend(_validate_scenes(loaded))
+    out.extend(_validate_audio_available(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve_cfg(loaded))
     out.extend(_validate_sampler(loaded))
@@ -797,6 +798,27 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
                     )
                 )
     return out
+
+
+def _validate_audio_available(loaded: LoadResult) -> list[Diagnostic]:
+    """A system with audio on refuses to start when sounddevice is missing
+    (session.validate_configs), and audio is on by default — so a plain
+    install without the `mic` extra fails every run unless this says so."""
+    from c64cast.audio import audio
+
+    if audio.AUDIO_AVAILABLE:
+        return []
+    return [
+        Diagnostic(
+            level="error",
+            category="audio",
+            subject=f"{name}/audio",
+            message="audio is enabled but sounddevice is not installed — the run will not start",
+            hint="Install the `mic` extra, or run with --no-audio / set [audio].enabled = false.",
+        )
+        for name, cfg in zip(loaded.names, loaded.cfgs, strict=True)
+        if cfg.audio.enabled
+    ]
 
 
 def _sample_rate_hint(system: str, rate: int) -> str:
