@@ -1286,8 +1286,8 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
             log.error(detail)
             raise SessionConfigError(3, detail)
         # Every whole-Config validator `scene_factory` owns, in one pass. The
-        # tuple lives beside the validators, so this cannot fall behind the list
-        # `doctor` walks.
+        # tuple lives beside the validators, so this cannot fall behind them.
+        # `doctor` names each one separately and has to be told about a new one.
         try:
             for validate in scene_factory.PER_SYSTEM_VALIDATORS:
                 validate(cfg)

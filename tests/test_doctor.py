@@ -146,6 +146,27 @@ class MistypedConfigTest(unittest.TestCase):
         self.assertEqual(rc, 5)
 
 
+class SamplerSettingsDiagnosticTest(unittest.TestCase):
+    """A sampler setting the run refuses at startup is an error here too."""
+
+    def _errors(self, audio: str) -> list[tuple[str, str]]:
+        loaded = _load(f"[audio]\n{audio}\n")
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        return [(d.subject, d.message) for d in diags if d.level == "error"]
+
+    def test_a_clock_in_the_wrong_unit_is_an_error(self):
+        errors = self._errors("sampler_clock_hz = 6160")
+        self.assertEqual([subject for subject, _ in errors], ["system/sampler"])
+        self.assertIn("[audio].sampler_clock_hz", errors[0][1])
+
+    def test_an_unsupported_bit_depth_is_an_error(self):
+        errors = self._errors("sampler_bits = 12")
+        self.assertEqual([subject for subject, _ in errors], ["system/sampler"])
+
+    def test_the_shipped_defaults_report_nothing(self):
+        self.assertEqual(self._errors(""), [])
+
+
 class ValidateScenesTest(unittest.TestCase):
     """Per-scene validation — every misconfig surfaces as its own
     Diagnostic instead of aborting at the first error."""

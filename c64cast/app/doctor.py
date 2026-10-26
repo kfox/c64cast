@@ -69,6 +69,7 @@ from .scene_factory import (
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
     validate_midi_control_cfg,
+    validate_sampler_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
     validate_wled_cfg,
@@ -193,6 +194,7 @@ def validate_load_result(
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve_cfg(loaded))
+    out.extend(_validate_sampler(loaded))
     out.extend(_validate_dac_bitmap_tempo(loaded))
     out.extend(_validate_sid_model(loaded))
     out.extend(_validate_dither(loaded))
@@ -894,6 +896,26 @@ def _validate_dac_curve_cfg(loaded: LoadResult) -> list[Diagnostic]:
                     subject=f"{name}/dac_curve",
                     message=str(e),
                     hint="See [audio].dac_curve in the config reference / --describe section:audio.",
+                )
+            )
+    return out
+
+
+def _validate_sampler(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unusable [audio].sampler_* value per system. Offline —
+    delegates to scene_factory.validate_sampler_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_sampler_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/sampler",
+                    message=str(e),
+                    hint="See [audio] in the config reference / --describe section:audio.",
                 )
             )
     return out
