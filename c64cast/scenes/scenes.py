@@ -1637,35 +1637,9 @@ class VideoScene(MediaFileMixin, Scene):
             # again would compete with video decode on the same thread and lag
             # the picture at scene start.
             assert isinstance(self.audio, AudioStreamer)
-            audio_4bit = self._preencode_audio_for_reu()
-            progress.complete("encode")
-            # Bitmap modes already halt the bus in long bursts that cost the NMI
-            # ticks, so their pump DMAs stay short (REU_PUMP_CHUNK_SIZE_HEAVY_BUS);
-            # the CIA #1 latch scales with the chunk, so the byte rate does not
-            # change. Char modes carry no bitmap traffic and keep the default.
-            chunk = (
-                REU_PUMP_CHUNK_SIZE_HEAVY_BUS
-                if isinstance(self.display_mode, BitmapDisplayMode)
-                else None
-            )
-            # A mode that installs the bank-swap dispatcher at $0314 (the
-            # merged variant JMPs to $C100 on non-raster IRQs) owns that vector,
-            # and its installer has already pre-uploaded a JMP $EA31 stub at
-            # $C100 covering the gap until real audio bytes land there.
-            skip_hook = reu_pump_skips_irq_hook(self.display_mode)
-            try:
-                self.audio.start_for_reu_staged(
-                    audio_4bit,
-                    chunk_size=chunk,
-                    skip_irq_vector_hook=skip_hook,
-                    on_progress=progress.reporter("upload"),
-                    hold=True,
-                )
-                self._audio_held = True
-            except PumpInstallError:
-                # The streamer logged it and undid its bring-up. Without this the
-                # transport would clock off a pump that never armed and hold the
-                # picture on its first frame.
+            if not self._start_reu_pump(self.audio, progress):
+                # Without this the transport would clock off a pump that never
+                # armed and hold the picture on its first frame.
                 self._audio_set_aside, self.audio = self.audio, None
             self.source.start(audio_push=None)
         elif has_audio:
@@ -1682,6 +1656,49 @@ class VideoScene(MediaFileMixin, Scene):
         progress.finish()
         self._start_clocks()
         self._hold_since = time.monotonic()
+
+    def _start_reu_pump(self, audio: AudioStreamer, progress: SegmentedProgress) -> bool:
+        """Pre-encode the soundtrack and stage it on the REU pump, held.
+        False when the clip has to play silent instead."""
+        try:
+            audio_4bit = self._preencode_audio_for_reu()
+        except Exception as e:
+            # The container open is guarded the same way: a setup() raise ends
+            # the whole show, not the scene.
+            log.error(
+                "video: cannot decode the soundtrack of %s (%s); playing it silent",
+                self.filepath,
+                e,
+            )
+            return False
+        progress.complete("encode")
+        # Bitmap modes already halt the bus in long bursts that cost the NMI
+        # ticks, so their pump DMAs stay short (REU_PUMP_CHUNK_SIZE_HEAVY_BUS);
+        # the CIA #1 latch scales with the chunk, so the byte rate does not
+        # change. Char modes carry no bitmap traffic and keep the default.
+        chunk = (
+            REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+            if isinstance(self.display_mode, BitmapDisplayMode)
+            else None
+        )
+        # A mode that installs the bank-swap dispatcher at $0314 (the merged
+        # variant JMPs to $C100 on non-raster IRQs) owns that vector, and its
+        # installer has already pre-uploaded a JMP $EA31 stub at $C100 covering
+        # the gap until real audio bytes land there.
+        skip_hook = reu_pump_skips_irq_hook(self.display_mode)
+        try:
+            audio.start_for_reu_staged(
+                audio_4bit,
+                chunk_size=chunk,
+                skip_irq_vector_hook=skip_hook,
+                on_progress=progress.reporter("upload"),
+                hold=True,
+            )
+        except PumpInstallError:
+            # The streamer logged it and undid its bring-up.
+            return False
+        self._audio_held = True
+        return True
 
     def _start_clocks(self) -> None:
         self.wall_start_time = time.time()
