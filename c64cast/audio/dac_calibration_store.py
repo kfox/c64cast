@@ -428,6 +428,18 @@ def _saved_entries(path: Path) -> dict[str, Any]:
     return sids if isinstance(sids, dict) else {}
 
 
+def _still_applies(name: str, kept: dict[str, Any], detected: str | None) -> bool:
+    """Whether `kept`, the entry on disk for socket `name`, holds a usable
+    table for the chip a run just found there. A table measured on another
+    chip is the cross-chip mismatch the linear fallback exists to avoid, so a
+    swapped chip does not keep it; an entry or run that names no chip cannot
+    tell, and keeps it."""
+    if _table_of((name, kept)) is None:
+        return False
+    was = kept.get("detected")
+    return not (isinstance(was, str) and isinstance(detected, str) and was != detected)
+
+
 def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system.
 
@@ -445,9 +457,10 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     missing/malformed table as "no calibration applies" and falls back, so the
     rejection needs no reader change, and keeping its ``raw_levels`` +
     ``metrics`` means the failure can be investigated without re-measuring.
-    When the file already holds a usable table for that entry, the old entry
-    is kept and the rejected one is filed under its ``rejected`` key instead,
-    so a failed re-measure leaves playback on the table it had.
+    When the file already holds a usable table for that entry, measured on the
+    same chip, the old entry is kept and the rejected one is filed under its
+    ``rejected`` key instead, so a failed re-measure leaves playback on the
+    table it had.
 
     ``d400_socket`` — which socket answered ``$D400`` *before* the run isolated
     anything — is written the same additive way. Every socket is measured at
@@ -469,7 +482,7 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     sids: dict[str, Any] = {}
     for name, r in doc.entries.items():
         kept = previous.get(name)
-        if r.sidtable is None and isinstance(kept, dict) and _table_of((name, kept)) is not None:
+        if r.sidtable is None and isinstance(kept, dict) and _still_applies(name, kept, r.detected):
             sids[name] = {**kept, "rejected": entry(r)}
         else:
             sids[name] = entry(r)

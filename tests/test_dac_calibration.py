@@ -1455,6 +1455,42 @@ class Volume0SelfTestTest(DataDirIsolated):
         }
         self.assertEqual(dcs.load_calibrated_table(cfg, be=api), bytes([2] * 256))
 
+    def _rejected(self, detected=None):
+        raw = [(c, v + 0.3 if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
+        sidtable, metrics = dsr.build_sidtable_from_levels(raw)
+        return dcs.CalibrationResult(sidtable, metrics, detected, raw)
+
+    def test_a_rejected_rerun_on_a_swapped_chip_drops_the_old_table(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": dcs.CalibrationResult([4] * 256, {}, "6581")})
+        path = self.save(cfg, {"1": self._rejected("8580")})
+        entry = json.loads(path.read_text())["sids"]["1"]
+        self.assertNotIn("sidtable", entry)
+        self.assertEqual(entry["detected"], "8580")
+
+    def test_a_second_rejection_replaces_the_first(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"default": self._rejected()})
+        second = self._rejected("ARMSID 6581")
+        path = self.save(cfg, {"default": second})
+        entry = json.loads(path.read_text())["sids"]["default"]
+        self.assertNotIn("rejected", entry)
+        self.assertEqual(entry["detected"], "ARMSID 6581")
+
+    def test_a_rejection_over_an_unreadable_file_still_saves(self):
+        cfg = _u64_cfg()
+        path = self.save(cfg, {"default": _result(5)})
+        for previous in (
+            "{ not json",
+            json.dumps({"schema": 1, "sids": {"default": {"sidtable": [5] * 256}}}),
+        ):
+            with self.subTest(previous=previous[:9]):
+                path.write_text(previous)
+                self.save(cfg, {"default": self._rejected()})
+                entry = json.loads(path.read_text())["sids"]["default"]
+                self.assertNotIn("sidtable", entry)
+                self.assertNotIn("rejected", entry)
+
 
 class LadderMetricsTest(unittest.TestCase):
     def test_quality_is_independent_of_capture_gain(self):
