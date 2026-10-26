@@ -1069,6 +1069,47 @@ class PerfEndpointsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.json()["ok"])
 
+    # `json.loads` turns a long digit run into an int that `float()` cannot
+    # hold, and the bare literals `NaN` / `Infinity` into floats a clamp lets
+    # through as the range's top.
+    UNUSABLE_LIVE_VALUES = (b"1" + b"0" * 400, b"NaN", b"Infinity", b"-Infinity", b"true", b"[1]")
+
+    def _live_frame(self, value: bytes) -> bytes:
+        return b'{"action": "live", "target": "fx0.decay", "value": ' + value + b"}"
+
+    def test_a_live_value_no_float_can_hold_is_refused_over_post(self):
+        client, pl = self._client()
+        for value in self.UNUSABLE_LIVE_VALUES:
+            with self.subTest(value=value[:12]):
+                r = client.post(
+                    "/perf/command",
+                    content=self._live_frame(value),
+                    headers={"content-type": "application/json"},
+                )
+                self.assertEqual(r.status_code, 200)
+                self.assertFalse(r.json()["ok"])
+                self.assertEqual(pl.current.effects[0].decay, 0.0)
+
+    def test_a_live_value_no_float_can_hold_is_refused_over_the_socket(self):
+        client, pl = self._client()
+        with client.websocket_connect("/perf/ws") as ws:
+            ws.receive_json()
+            for value in self.UNUSABLE_LIVE_VALUES:
+                ws.send_text(self._live_frame(value).decode())
+                self.assertIn("systems", ws.receive_json())
+            ws.send_json({"action": "launch", "slot": 1})
+            self.assertIn("systems", ws.receive_json())
+        self.assertEqual(pl.current.effects[0].decay, 0.0)
+        self.assertEqual(pl.performance.events, [(1, True)])
+
+    def test_a_finite_live_value_still_lands(self):
+        client, pl = self._client()
+        r = client.post(
+            "/perf/command", json={"action": "live", "target": "fx0.decay", "value": 0.25}
+        )
+        self.assertTrue(r.json()["ok"])
+        self.assertAlmostEqual(pl.current.effects[0].decay, 0.25)
+
     def test_the_page_refuses_to_be_framed(self):
         client, _pl = self._client()
         headers = client.get("/perf").headers

@@ -1009,7 +1009,12 @@ class PerfBridge:
             # A slider sends `norm`, a picker sends `value` — the two are not
             # interchangeable and the key says which one this is.
             if cmd.get("norm") is None:
-                return self.live(system, target, value=cmd.get("value"))
+                value = cmd.get("value")
+                if value is not None and not isinstance(value, str):
+                    value = _as_float(cmd, "value")
+                    if value is None:
+                        return self._malformed(cmd, "value")
+                return self.live(system, target, value=value)
             norm = _as_float(cmd, "norm")
             if norm is None:
                 return self._malformed(cmd, "norm")
