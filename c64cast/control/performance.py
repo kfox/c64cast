@@ -432,6 +432,20 @@ class PerformanceSession:
                 and self._armed.launch == "gate"
             ):
                 self._cancel_arm()
+            elif self._returns_to_gate(event.slot):
+                # Its pad is up now, so it must not come back when the clip
+                # playing over it ends.
+                self._return = _Return(kind="playlist", index=self._base_index)
+
+    def _returns_to_gate(self, slot: int) -> bool:
+        ret = self._return
+        return (
+            ret is not None
+            and ret.kind == "clip"
+            and ret.clip is not None
+            and ret.clip.get("slot") == slot
+            and ret.clip.get("launch") == "gate"
+        )
 
     def _drain_looks(self, pl: Playlist) -> None:
         import queue

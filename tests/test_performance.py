@@ -227,6 +227,29 @@ class LaunchSemanticsTest(unittest.TestCase):
         self.assertTrue(_pump(s, pl))
         self.assertEqual(s.active_slot, 1)
 
+    def test_a_gate_released_under_another_gate_does_not_come_back(self):
+        # Two held gate pads, released in the order they were pressed: when the
+        # second lets go, the first is no longer held, so the program it
+        # interrupted comes back rather than the first clip.
+        s, pl = self._session(
+            [
+                {"slot": 1, "type": "generative", "quantize": "off", "launch": "gate"},
+                {"slot": 2, "type": "generative", "quantize": "off", "launch": "gate"},
+            ]
+        )
+        base = pl.current
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        _pump(s, pl)
+        s.enqueue(ClipEvent(slot=2, pressed=True))
+        _pump(s, pl)
+        s.enqueue(ClipEvent(slot=1, pressed=False))
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(s.active_slot, 2)
+        s.enqueue(ClipEvent(slot=2, pressed=False))
+        self.assertFalse(_pump(s, pl))
+        self.assertIsNone(s.active_slot)
+        self.assertIs(pl.current, base)
+
     def test_reconcile_relinquishes_when_current_torn_down(self):
         # pause/reload/broadcast tear down pl.current out from under an active
         # clip; the next service() must relinquish ownership rather than think it
