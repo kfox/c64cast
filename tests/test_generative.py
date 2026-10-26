@@ -3392,5 +3392,36 @@ class ConfigGenerativeTest(unittest.TestCase):
             validate_scene_cfg(s, self.cfg, audio_enabled=False)
 
 
+class StatefulGeneratorCatchUpTest(unittest.TestCase):
+    """The playlist holds a scene's frame while the on-C64 menu is open and
+    idle (`Playlist._idle_pace`), so the next `read` can arrive minutes of
+    scene time after the last one."""
+
+    def _steps_after_gap(self, name: str, gap_s: float) -> int:
+        gen = build_generator(name)
+        gen.read(0.0)
+        steps = 0
+        real_step = gen._step  # type: ignore[attr-defined]
+
+        def counting_step() -> None:
+            nonlocal steps
+            steps += 1
+            real_step()
+
+        with mock.patch.object(gen, "_step", counting_step):
+            gen.read(gap_s)
+        return steps
+
+    def test_a_long_gap_does_not_replay_every_missed_tick(self):
+        for name in ("soap", "fireworks"):
+            with self.subTest(name=name):
+                self.assertLessEqual(self._steps_after_gap(name, 600.0), 60)
+
+    def test_an_ordinary_frame_still_steps(self):
+        for name in ("soap", "fireworks"):
+            with self.subTest(name=name):
+                self.assertGreaterEqual(self._steps_after_gap(name, 0.2), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
