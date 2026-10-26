@@ -48,6 +48,16 @@ log = logging.getLogger(__name__)
 #: a later move to the same knob supersedes an earlier one.
 MAX_DEFERRED_CALLS = 64
 
+#: Pad and look events held for the playlist thread, which drains none while it
+#: is paused; past this many the oldest are dropped, so what survives is the
+#: newest stretch of presses and releases, in order.
+MAX_QUEUED_EVENTS = 64
+
+#: Clip builds left running at once. A superseded build cannot be stopped (it may
+#: be inside a URL resolve), so presses faster than builds finish would otherwise
+#: add a thread each; past this many, the newest arm waits for one to end.
+MAX_CLIP_BUILDS = 4
+
 
 @dataclass(frozen=True)
 class ClipEvent:
@@ -139,6 +149,12 @@ def _apply_effects_state(scene: Any, states: list[dict[str, Any]]) -> None:
                     log.debug("performance: look choice %r=%r rejected", k, v, exc_info=True)
 
 
+def _taken[T](pending: deque[T]) -> list[T]:
+    """What ``pending`` held when this frame started, removed from it. Taken
+    before any of it runs, so a surface still sending cannot hold the frame."""
+    return [pending.popleft() for _ in range(len(pending))]
+
+
 def _slugify_name(name: str) -> str:
     """Filesystem-safe slug for a system name (the look-preset filename)."""
     slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-")
@@ -196,6 +212,7 @@ class _Armed:
     built: threading.Event = field(default_factory=threading.Event)
     scene: Scene | None = None
     error: bool = False
+    building: bool = False
 
 
 @dataclass
@@ -225,12 +242,10 @@ class PerformanceSession:
     def __init__(
         self, clips: list[dict[str, Any]] | None = None, look_store: LookStore | None = None
     ) -> None:
-        import queue
-
-        self._queue: queue.SimpleQueue[ClipEvent] = queue.SimpleQueue()
+        self._queue: deque[ClipEvent] = deque(maxlen=MAX_QUEUED_EVENTS)
         # A separate queue so a save/recall doesn't interleave with the
         # clip-event stream; both drain on the playlist thread in `service`.
-        self._look_queue: queue.SimpleQueue[LookEvent] = queue.SimpleQueue()
+        self._look_queue: deque[LookEvent] = deque(maxlen=MAX_QUEUED_EVENTS)
         self._look_store = look_store
         # Effect state a pending look recall will apply once its clip activates
         # (set by a recall that also launches a clip; consumed in `_activate`).
@@ -248,6 +263,7 @@ class PerformanceSession:
         # Playlist index performance first took over from — the ultimate fallback
         # a restored-clip chain collapses back to.
         self._base_index: int = 0
+        self._builds: list[threading.Thread] = []
 
     @property
     def has_clips(self) -> bool:
@@ -319,14 +335,14 @@ class PerformanceSession:
         return sorted(int(k) for k in self._look_store.load())
 
     def enqueue(self, event: ClipEvent) -> None:
-        self._queue.put(event)
+        self._queue.append(event)
 
     def enqueue_look(self, slot: int, *, save: bool) -> None:
         """Queue a look save (``save=True``) or recall for pad ``slot`` — drained
         on the playlist thread in :meth:`service`, so a control thread never
         reads/writes a scene or the store directly. A no-op stream when no look
         store is wired (the events drain to nothing)."""
-        self._look_queue.put(LookEvent(slot=slot, save=save))
+        self._look_queue.append(LookEvent(slot=slot, save=save))
 
     def defer(self, call: Callable[[Playlist], None]) -> None:
         """Run ``call(pl)`` on the playlist thread at the top of its next frame —
@@ -350,7 +366,7 @@ class PerformanceSession:
             nxt = slots[0]
         else:
             nxt = slots[(slots.index(current) + 1) % len(slots)]
-        self._queue.put(ClipEvent(slot=nxt, pressed=True))
+        self._queue.append(ClipEvent(slot=nxt, pressed=True))
         return nxt
 
     def service(self, pl: Playlist) -> bool:
@@ -364,6 +380,7 @@ class PerformanceSession:
             self._run_deferred(pl)
             self._drain(pl)
             self._drain_looks(pl)
+            self._start_build(pl)
             self._progress_armed(pl)
             self._progress_active(pl)
         except Exception:
@@ -385,19 +402,11 @@ class PerformanceSession:
             self._pending_look_effects = None
 
     def _run_deferred(self, pl: Playlist) -> None:
-        # Only what was queued before this frame: a surface still sending must
-        # not hold the frame here.
-        for _ in range(len(self._deferred)):
-            self._deferred.popleft()(pl)
+        for call in _taken(self._deferred):
+            call(pl)
 
     def _drain(self, pl: Playlist) -> None:
-        import queue
-
-        while True:
-            try:
-                event = self._queue.get_nowait()
-            except queue.Empty:
-                break
+        for event in _taken(self._queue):
             self._handle_event(pl, event)
 
     def _handle_event(self, pl: Playlist, event: ClipEvent) -> None:
@@ -448,13 +457,7 @@ class PerformanceSession:
         )
 
     def _drain_looks(self, pl: Playlist) -> None:
-        import queue
-
-        while True:
-            try:
-                event = self._look_queue.get_nowait()
-            except queue.Empty:
-                break
+        for event in _taken(self._look_queue):
             self._handle_look(pl, event)
 
     def _handle_look(self, pl: Playlist, event: LookEvent) -> None:
@@ -507,9 +510,10 @@ class PerformanceSession:
             log.info("performance: recalled look %d → effects on current scene", slot)
 
     def _arm(self, pl: Playlist, slot: int, clip: dict[str, Any]) -> None:
-        """Arm a slot: capture the quantize anchor and kick off the background
-        build. Supersedes any pending arm (last press wins, like a performer
-        re-choosing before the boundary)."""
+        """Arm a slot and capture the quantize anchor; :meth:`_start_build` kicks
+        off its build once this frame's events are drained. Supersedes any
+        pending arm (last press wins, like a performer re-choosing before the
+        boundary)."""
         if pl.build_performance_scene is None:
             log.warning("performance: clip slot %d armed but no build factory wired", slot)
             return
@@ -524,7 +528,18 @@ class PerformanceSession:
             arm_bar=pl.tempo.bar_phase,
         )
         self._armed = armed
+
+    def _start_build(self, pl: Playlist) -> None:
+        armed = self._armed
+        if armed is None or armed.building:
+            return
         factory = pl.build_performance_scene
+        if factory is None:
+            return
+        self._builds = [t for t in self._builds if t.is_alive()]
+        if len(self._builds) >= MAX_CLIP_BUILDS:
+            return
+        clip, slot = armed.clip, armed.slot
 
         def _build() -> None:
             try:
@@ -537,7 +552,10 @@ class PerformanceSession:
             finally:
                 armed.built.set()
 
-        threading.Thread(target=_build, name=f"clip-build-{slot}", daemon=True).start()
+        thread = threading.Thread(target=_build, name=f"clip-build-{slot}", daemon=True)
+        armed.building = True
+        self._builds.append(thread)
+        thread.start()
 
     def _cancel_arm(self) -> None:
         """Drop the pending arm. A scene already built but never swapped in is
