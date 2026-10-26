@@ -729,7 +729,7 @@ class DeferredCallTest(unittest.TestCase):
             _pump(s, pl)
         self.assertEqual(ran, ["after"])
         self.assertEqual(s.active_slot, 1)
-        self.assertIn("deferred live-tune call failed", logs.output[0])
+        self.assertIn("deferred call failed", logs.output[0])
 
 
 if __name__ == "__main__":

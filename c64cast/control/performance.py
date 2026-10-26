@@ -403,12 +403,13 @@ class PerformanceSession:
 
     def _run_deferred(self, pl: Playlist) -> None:
         for call in _taken(self._deferred):
-            # A choice's setter can raise mid-DMA on a dropped link; the calls
-            # taken after it, and this frame's pad events, still have to run.
+            # A live-tune choice or a WLED palette install can raise mid-DMA on
+            # a dropped link; the calls taken after it, and this frame's pad
+            # events, still have to run.
             try:
                 call(pl)
             except Exception:
-                log.exception("performance: deferred live-tune call failed")
+                log.exception("performance: deferred call failed")
 
     def _drain(self, pl: Playlist) -> None:
         for event in _taken(self._queue):
