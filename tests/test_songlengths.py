@@ -41,6 +41,24 @@ class SongLengthsTest(unittest.TestCase):
         self.assertAlmostEqual(s3, 30.5)
         self.assertIsNone(db.lookup(sid_bytes, 99))
 
+    def test_an_unconvertible_duration_costs_only_that_subtune(self):
+        from c64cast.sid.songlengths import LengthsDB
+
+        sid = b"PSID" + b"\x00" * 124
+        md5 = hashlib.md5(sid).hexdigest()
+        too_many_digits = "9" * 5000 + ":00"
+        too_big_for_a_float = "1" + "0" * 400 + ":00"
+        with tempfile.NamedTemporaryFile("w", suffix=".md5", delete=False) as f:
+            f.write(f"{md5}={too_many_digits} {too_big_for_a_float} 1:05\n")
+            path = f.name
+        try:
+            db = LengthsDB.load(path)
+        finally:
+            os.unlink(path)
+        self.assertIsNone(db.lookup(sid, 1))
+        self.assertIsNone(db.lookup(sid, 2))
+        self.assertEqual(db.lookup(sid, 3), 65.0)
+
     def test_unknown_sid_returns_none(self):
         from c64cast.sid.songlengths import LengthsDB
 

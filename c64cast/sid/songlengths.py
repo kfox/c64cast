@@ -38,10 +38,13 @@ def _parse_duration(text: str) -> float | None:
     m = _DUR_RE.match(text.strip())
     if not m:
         return None
-    minutes = int(m.group(1))
-    seconds = int(m.group(2))
     millis = int((m.group(3) or "0").ljust(3, "0")[:3])
-    return minutes * 60.0 + seconds + millis / 1000.0
+    # int() refuses a string past sys.get_int_max_str_digits(), and float()
+    # refuses an int past ~1e308.
+    try:
+        return int(m.group(1)) * 60.0 + int(m.group(2)) + millis / 1000.0
+    except (ValueError, OverflowError):
+        return None
 
 
 def md5_of_sid(sid_bytes: bytes) -> str:
