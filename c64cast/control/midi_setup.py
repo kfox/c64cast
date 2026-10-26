@@ -385,6 +385,8 @@ def _review(q: Any, mappings: list[dict[str, Any]]) -> list[dict[str, Any]] | No
         if action == "Save these":
             return mappings
         idx = q.text("Remove which index?", default="0").ask()
+        if idx is None:
+            continue
         try:
             mappings.pop(int(idx))
         except (ValueError, IndexError):

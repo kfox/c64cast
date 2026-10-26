@@ -9,6 +9,8 @@ resolver take an injected tempdir.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import logging
 import tempfile
@@ -293,6 +295,18 @@ class ReadBurstTests(unittest.TestCase):
         with mock.patch.object(midi_setup, "time", FrozenClock(0.0, "monotonic", 0.01, sleep=None)):
             events = midi_setup._read_burst(port)
         self.assertEqual(midi_setup.dominant_control(events), ("cc", 7))
+
+
+class ReviewTests(unittest.TestCase):
+    def test_canceling_the_remove_prompt_returns_to_the_review(self):
+        # questionary's ask() answers None when the user presses Ctrl-C.
+        q = mock.MagicMock()
+        q.select.return_value.ask.side_effect = ["Remove one", "Save these"]
+        q.text.return_value.ask.return_value = None
+        mappings = [midi_setup.build_jump_entry("note", 40, 0)]
+        with contextlib.redirect_stdout(io.StringIO()):
+            reviewed = midi_setup._review(q, mappings)
+        self.assertEqual(reviewed, [midi_setup.build_jump_entry("note", 40, 0)])
 
 
 class LiveTargetsDriftTests(unittest.TestCase):
