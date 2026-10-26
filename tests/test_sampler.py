@@ -14,7 +14,7 @@ from unittest import mock
 
 import numpy as np
 import requests
-from _fakes import quiet_logging
+from _fakes import FrozenClock, quiet_logging
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -188,6 +188,13 @@ def _make(api: _FakeBackend, **kw) -> s.UltimateAudioSampler:
     return s.UltimateAudioSampler(cast(Any, api), **kw)
 
 
+def _frozen_monotonic(test: unittest.TestCase) -> FrozenClock:
+    """The sampler module's monotonic clock, frozen for the rest of ``test``."""
+    clock = FrozenClock(1000.0, "monotonic")
+    test.enterContext(mock.patch.object(s, "time", clock))
+    return clock
+
+
 def _signal_on_put(smp: s.UltimateAudioSampler) -> threading.Event:
     """An event set when anything next calls ``smp._q.put``, just before the
     put itself runs."""
@@ -235,18 +242,22 @@ class StreamerTest(unittest.TestCase):
         self.assertEqual(smp.position_seconds(), 0.0)
 
     def test_position_seconds_tracks_wallclock(self):
+        clock = _frozen_monotonic(self)
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
         smp._running = True
-        smp._gate_time = time.monotonic() - 2.0
-        self.assertAlmostEqual(smp.position_seconds(), 2.0, delta=0.2)
+        smp._gate_time = clock.monotonic()
+        self.assertEqual(smp.position_seconds(), 0.0)
+        clock.advance(2.0)
+        self.assertAlmostEqual(smp.position_seconds(), 2.0)
 
     def test_position_clamps_after_eof(self):
+        clock = _frozen_monotonic(self)
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
         smp._running = True
-        smp._gate_time = time.monotonic() - 100.0
+        smp._gate_time = clock.monotonic() - 100.0
         smp._pushed_samples = smp.sample_rate  # ~1 s of audio pushed
         smp.mark_eof()
-        self.assertAlmostEqual(smp.position_seconds(), 1.0, delta=0.1)
+        self.assertAlmostEqual(smp.position_seconds(), smp.sample_rate / smp._actual_rate)
 
     def test_the_eof_clamp_lets_a_reanchored_track_be_heard_to_its_end(self):
         # A re-anchor plays the track's last sample its lag past the pushed
@@ -2994,12 +3005,13 @@ class SamplerFlushTests(unittest.TestCase):
         self.assertEqual(smp._flush_epoch, 0)
 
     def test_flush_position_unchanged(self):
+        clock = _frozen_monotonic(self)
         smp = self._running(_FakeBackend(), consumed=100)
-        smp._gate_time = time.monotonic() - 3.0
+        smp._gate_time = clock.monotonic() - 3.0
         smp._written = 100 + self._margin(smp) + 50
         before = smp.position_seconds()
         smp.flush()
-        self.assertAlmostEqual(smp.position_seconds(), before, delta=0.05)
+        self.assertEqual(smp.position_seconds(), before)
 
     def test_lead_below_margin_blanks_skip_region(self):
         api = _FakeBackend()
