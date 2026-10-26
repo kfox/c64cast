@@ -1263,6 +1263,28 @@ class EnvironmentProbeTest(unittest.TestCase):
         self.assertEqual(diags[0].level, "warn")
         self.assertIn("out of date", diags[0].message)
 
+    def test_uv_lock_check_that_errors_is_not_reported_as_drift(self):
+        fake = mock.MagicMock(
+            returncode=2,
+            stdout="",
+            stderr="error: failed to read from file `uv.lock`: Permission denied (os error 13)\n",
+        )
+        with (
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/uv"),
+            mock.patch.object(doctor.subprocess, "run", return_value=fake),
+        ):
+            diags = doctor._probe_uv_lock()
+        self.assertEqual(
+            [(d.level, d.message) for d in diags],
+            [
+                (
+                    "warn",
+                    "could not check (error: failed to read from file `uv.lock`: "
+                    "Permission denied (os error 13))",
+                )
+            ],
+        )
+
     def test_uv_lock_probe_is_skipped_outside_a_source_checkout(self):
         # For an installed package _REPO_ROOT is site-packages, which has no
         # pyproject.toml. `uv lock --check` exits nonzero there for "no project
