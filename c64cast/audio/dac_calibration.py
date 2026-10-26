@@ -563,8 +563,9 @@ def _measure_one(
             f"{SELFTEST_TOLERANCE * 100:.0f}%). Codes $h0 set the master volume "
             "to 0, so they must measure as silence; that they don't means these "
             "are not consistent output levels, and any ladder folded from them "
-            f"would be wrong. No table written for {label} — playback keeps the "
-            "baked/linear curve, which is better than a bad table. The raw "
+            f"would be wrong. No table written for {label} — playback keeps its "
+            "previous calibration, else the baked/linear curve, which is better "
+            "than a bad table. The raw "
             "levels are saved for diagnosis."
         )
     return sidtable, metrics, raw

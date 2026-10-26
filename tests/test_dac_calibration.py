@@ -363,6 +363,19 @@ class PersistenceTest(DataDirIsolated):
         dcs.calibration_path(cfg).write_text("{ not json")
         self.assertIsNone(dcs.load_calibrated_table(cfg))
 
+    def test_load_rejects_a_sidtable_value_that_is_not_a_register_byte(self):
+        # A hand-edited table: masking 300 to $2C would play a curve nobody
+        # measured, and json reads a bare Infinity that int() cannot convert.
+        cfg = _u64_cfg()
+        path = self.save(cfg, {"default": _result(0)})
+        good = json.loads(path.read_text())
+        for bad in ("300", "-1", "12.5", "true", "Infinity", "NaN", '"7"'):
+            with self.subTest(value=bad):
+                doc = json.loads(json.dumps(good))
+                doc["sids"]["default"]["sidtable"][3] = "__BAD__"
+                path.write_text(json.dumps(doc).replace('"__BAD__"', bad))
+                self.assertIsNone(dcs.load_calibrated_table(cfg))
+
     def test_load_old_schema_returns_none(self):
         # Clean cutover: an old schema=1 single-sidtable file is never read
         # under the new (also-renamed) key scheme; guard the shape too.
@@ -1414,6 +1427,69 @@ class Volume0SelfTestTest(DataDirIsolated):
         # The raw levels are kept so the failure can be investigated offline.
         self.assertEqual(len(entry["raw_signed_levels"]), 256)
         self.assertIsNone(dcs.load_calibrated_table(cfg))
+
+    def test_a_rejected_rerun_keeps_the_previous_table(self):
+        # The CLI and troubleshooting.md both promise playback keeps the
+        # previous curve when a run is rejected.
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": _result(1), "2": _result(2)})
+        raw = [(c, v + 0.3 if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
+        sidtable, metrics = dsr.build_sidtable_from_levels(raw)
+        rejected = dcs.CalibrationResult(sidtable, metrics, "6581", raw)
+        path = self.save(cfg, {"1": _result(9), "2": rejected})
+        sids = json.loads(path.read_text())["sids"]
+        self.assertEqual(sids["1"]["sidtable"], [9] * 256)
+        self.assertEqual(sids["2"]["sidtable"], [2] * 256)
+        self.assertEqual(len(sids["2"]["rejected"]["raw_signed_levels"]), 256)
+        self.assertNotIn("sidtable", sids["2"]["rejected"])
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_ADDRESSING] = {
+            "SID Socket 1 Address": "$D420",
+            "SID Socket 2 Address": "$D400",
+        }
+        api.config_store[CAT_SOCKETS] = {
+            "SID Socket 1": "Enabled",
+            "SID Socket 2": "Enabled",
+            "SID Detected Socket 1": "6581",
+            "SID Detected Socket 2": "6581",
+        }
+        self.assertEqual(dcs.load_calibrated_table(cfg, be=api), bytes([2] * 256))
+
+    def _rejected(self, detected=None):
+        raw = [(c, v + 0.3 if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
+        sidtable, metrics = dsr.build_sidtable_from_levels(raw)
+        return dcs.CalibrationResult(sidtable, metrics, detected, raw)
+
+    def test_a_rejected_rerun_on_a_swapped_chip_drops_the_old_table(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": dcs.CalibrationResult([4] * 256, {}, "6581")})
+        path = self.save(cfg, {"1": self._rejected("8580")})
+        entry = json.loads(path.read_text())["sids"]["1"]
+        self.assertNotIn("sidtable", entry)
+        self.assertEqual(entry["detected"], "8580")
+
+    def test_a_second_rejection_replaces_the_first(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"default": self._rejected()})
+        second = self._rejected("ARMSID 6581")
+        path = self.save(cfg, {"default": second})
+        entry = json.loads(path.read_text())["sids"]["default"]
+        self.assertNotIn("rejected", entry)
+        self.assertEqual(entry["detected"], "ARMSID 6581")
+
+    def test_a_rejection_over_an_unreadable_file_still_saves(self):
+        cfg = _u64_cfg()
+        path = self.save(cfg, {"default": _result(5)})
+        for previous in (
+            "{ not json",
+            json.dumps({"schema": 1, "sids": {"default": {"sidtable": [5] * 256}}}),
+        ):
+            with self.subTest(previous=previous[:9]):
+                path.write_text(previous)
+                self.save(cfg, {"default": self._rejected()})
+                entry = json.loads(path.read_text())["sids"]["default"]
+                self.assertNotIn("sidtable", entry)
+                self.assertNotIn("rejected", entry)
 
 
 class LadderMetricsTest(unittest.TestCase):
