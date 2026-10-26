@@ -17,6 +17,7 @@ real-`mido`-guarded listener path the rest of the suite uses.
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -25,6 +26,8 @@ from unittest import mock
 
 from c64cast.app import config as cfgmod
 from c64cast.control.performance import (
+    MAX_CLIP_BUILDS,
+    MAX_QUEUED_EVENTS,
     ClipEvent,
     LookStore,
     PerformanceSession,
@@ -118,6 +121,42 @@ class LaunchSemanticsTest(unittest.TestCase):
         self.assertEqual(pl.swaps, ["S1"])
         self.assertEqual(s.active_slot, 1)
 
+    def test_a_grid_moved_back_launches_on_its_next_boundary(self):
+        # A MIDI Start (or a Song Position Pointer) puts the grid back to bar 0
+        # while a clip is armed at bar 25: the next boundary is bar 1, not 26.
+        s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "bar"}])
+        pl.tempo.bar_phase = 25.3
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        _pump(s, pl)
+        pl.tempo.bar_phase = 0.1
+        self.assertFalse(_pump(s, pl))
+        pl.tempo.bar_phase = 1.01
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(pl.swaps, ["S1"])
+
+    def test_a_beat_grid_moved_back_launches_on_its_next_beat(self):
+        s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "beat"}])
+        pl.tempo.beat_phase = 101.5
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        _pump(s, pl)
+        pl.tempo.beat_phase = 0.2
+        self.assertFalse(_pump(s, pl))
+        pl.tempo.beat_phase = 1.0
+        self.assertTrue(_pump(s, pl))
+
+    def test_advance_clip_launches_the_next_slot_in_declaration_order(self):
+        s, pl = self._session(
+            [
+                {"slot": 3, "type": "generative", "quantize": "off"},
+                {"slot": 1, "type": "generative", "quantize": "off"},
+            ]
+        )
+        self.assertEqual(s.advance_clip(), 3)
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(s.advance_clip(), 1)
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(pl.swaps, ["S3", "S1"])
+
     def test_quantize_off_launches_immediately(self):
         s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "off"}])
         s.enqueue(ClipEvent(slot=1, pressed=True))
@@ -203,6 +242,29 @@ class LaunchSemanticsTest(unittest.TestCase):
         s.enqueue(ClipEvent(slot=2, pressed=False))
         self.assertTrue(_pump(s, pl))
         self.assertEqual(s.active_slot, 1)
+
+    def test_a_gate_released_under_another_gate_does_not_come_back(self):
+        # Two held gate pads, released in the order they were pressed: when the
+        # second lets go, the first is no longer held, so the program it
+        # interrupted comes back rather than the first clip.
+        s, pl = self._session(
+            [
+                {"slot": 1, "type": "generative", "quantize": "off", "launch": "gate"},
+                {"slot": 2, "type": "generative", "quantize": "off", "launch": "gate"},
+            ]
+        )
+        base = pl.current
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        _pump(s, pl)
+        s.enqueue(ClipEvent(slot=2, pressed=True))
+        _pump(s, pl)
+        s.enqueue(ClipEvent(slot=1, pressed=False))
+        self.assertTrue(_pump(s, pl))
+        self.assertEqual(s.active_slot, 2)
+        s.enqueue(ClipEvent(slot=2, pressed=False))
+        self.assertFalse(_pump(s, pl))
+        self.assertIsNone(s.active_slot)
+        self.assertIs(pl.current, base)
 
     def test_reconcile_relinquishes_when_current_torn_down(self):
         # pause/reload/broadcast tear down pl.current out from under an active
@@ -375,11 +437,11 @@ class MidiClipLaunchTest(unittest.TestCase):
         cc_map = [{"type": "note", "number": 48, "action": "clip_launch", "slot": 3}]
         lis = self._listener([pl], cc_map)
         lis._dispatch(mido.Message("note_on", note=48, velocity=100))
-        ev = pl.performance._queue.get_nowait()
+        ev = pl.performance._queue.popleft()
         self.assertEqual((ev.slot, ev.pressed), (3, True))
         # Release is delivered too (a gate clip needs it).
         lis._dispatch(mido.Message("note_on", note=48, velocity=0))
-        ev = pl.performance._queue.get_nowait()
+        ev = pl.performance._queue.popleft()
         self.assertEqual((ev.slot, ev.pressed), (3, False))
 
     def test_clip_pad_auto_maps_without_a_cc_map_entry(self):
@@ -387,7 +449,7 @@ class MidiClipLaunchTest(unittest.TestCase):
         lis = self._listener([pl], [])
         lis._add_clip_pad_mappings()
         lis._dispatch(mido.Message("note_on", note=64, velocity=100))
-        ev = pl.performance._queue.get_nowait()
+        ev = pl.performance._queue.popleft()
         self.assertEqual((ev.slot, ev.pressed), (5, True))
 
     def test_explicit_cc_map_wins_over_clip_pad(self):
@@ -398,7 +460,7 @@ class MidiClipLaunchTest(unittest.TestCase):
         lis = self._listener([pl], cc_map)
         lis._add_clip_pad_mappings()
         lis._dispatch(mido.Message("note_on", note=64, velocity=100))
-        ev = pl.performance._queue.get_nowait()
+        ev = pl.performance._queue.popleft()
         self.assertEqual(ev.slot, 9)
 
 
@@ -564,6 +626,123 @@ class LookSessionTest(unittest.TestCase):
             store.save(2, {"clip": None})
             self.assertEqual(session.saved_look_slots(), [2, 5])
             self.assertTrue(session.has_looks)
+
+
+class _BlockingBuilds:
+    """A build factory that holds every build until released, standing in for a
+    clip whose URL resolve is slow — the case where builds overlap."""
+
+    def __init__(self, test: unittest.TestCase) -> None:
+        self.release = threading.Event()
+        self.calls: list[int] = []
+        test.addCleanup(self._finish)
+
+    def __call__(self, clip: dict[str, Any]) -> _FakeScene:
+        self.calls.append(clip["slot"])
+        self.release.wait(10)
+        return _FakeScene(f"S{clip['slot']}")
+
+    @staticmethod
+    def running() -> list[threading.Thread]:
+        return [t for t in threading.enumerate() if t.name.startswith("clip-build")]
+
+    def _finish(self) -> None:
+        self.release.set()
+        for t in self.running():
+            t.join(5)
+
+
+class FloodBoundsTest(unittest.TestCase):
+    """What a control surface sending faster than the playlist drains can cost:
+    the web console's POST route has no rate limit, and nothing drains the pad
+    queues while the playlist is paused."""
+
+    CLIPS = [
+        {"slot": 1, "type": "generative", "quantize": "off"},
+        {"slot": 2, "type": "generative", "quantize": "off"},
+    ]
+
+    def _session(self) -> tuple[PerformanceSession, Any, _BlockingBuilds]:
+        pl = _FakePlaylist()
+        builds = _BlockingBuilds(self)
+        pl.build_performance_scene = builds
+        return PerformanceSession(self.CLIPS), pl, builds
+
+    def test_presses_queued_in_one_frame_start_one_build(self):
+        s, pl, builds = self._session()
+        for i in range(50):
+            s.enqueue(ClipEvent(slot=1 + i % 2, pressed=True))
+        s.service(pl)
+        self.assertEqual(len(builds.running()), 1)
+
+    def test_an_arm_still_building_is_not_built_again_on_later_frames(self):
+        s, pl, builds = self._session()
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        for _ in range(MAX_CLIP_BUILDS):
+            s.service(pl)
+        self.assertEqual(len(builds.running()), 1)
+
+    def test_superseded_builds_still_running_cap_the_new_ones(self):
+        s, pl, builds = self._session()
+        for i in range(3 * MAX_CLIP_BUILDS):
+            s.enqueue(ClipEvent(slot=1 + i % 2, pressed=True))
+            s.service(pl)
+        self.assertEqual(len(builds.running()), MAX_CLIP_BUILDS)
+
+    def test_an_arm_held_at_the_cap_builds_and_launches_once_one_finishes(self):
+        s, pl, builds = self._session()
+        presses = 3 * MAX_CLIP_BUILDS
+        for i in range(presses):
+            s.enqueue(ClipEvent(slot=1 + i % 2, pressed=True))
+            s.service(pl)
+        last = 1 + (presses - 1) % 2
+        builds.release.set()
+        deadline = time.monotonic() + 5
+        while s.active_slot is None and time.monotonic() < deadline:
+            _pump(s, pl, times=1)
+        self.assertEqual(s.active_slot, last)
+        self.assertEqual(pl.swaps, [f"S{last}"])
+
+    def test_a_flood_while_paused_is_drained_in_a_bounded_frame(self):
+        s, pl, _ = self._session()
+        presses = 20 * MAX_QUEUED_EVENTS
+        for i in range(presses):
+            s.enqueue(ClipEvent(slot=1 + i % 2, pressed=True))
+        with mock.patch.object(s, "_handle_event", wraps=s._handle_event) as handled:
+            s.service(pl)
+        self.assertEqual(handled.call_count, MAX_QUEUED_EVENTS)
+        # The newest press is the one kept: the performer's last word wins.
+        self.assertEqual(s.armed_slot, 1 + (presses - 1) % 2)
+
+    def test_a_look_flood_while_paused_reads_the_store_a_bounded_number_of_times(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = LookStore(Path(d) / "looks.json")
+            s = PerformanceSession(look_store=store)
+            pl: Any = _FakePlaylist()
+            for _ in range(20 * MAX_QUEUED_EVENTS):
+                s.enqueue_look(1, save=False)
+            with mock.patch.object(store, "get", wraps=store.get) as reads:
+                s.service(pl)
+            self.assertEqual(reads.call_count, MAX_QUEUED_EVENTS)
+
+
+class DeferredCallTest(unittest.TestCase):
+    def test_a_failing_call_does_not_drop_the_rest_of_the_frame(self):
+        s = PerformanceSession([{"slot": 1, "type": "generative", "quantize": "off"}])
+        pl = _FakePlaylist()
+        ran: list[str] = []
+
+        def failing(_pl: Any) -> None:
+            raise OSError("link dropped")
+
+        s.defer(failing)
+        s.defer(lambda _pl: ran.append("after"))
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        with self.assertLogs("c64cast.control.performance", "ERROR") as logs:
+            _pump(s, pl)
+        self.assertEqual(ran, ["after"])
+        self.assertEqual(s.active_slot, 1)
+        self.assertIn("deferred call failed", logs.output[0])
 
 
 if __name__ == "__main__":

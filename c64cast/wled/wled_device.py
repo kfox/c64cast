@@ -37,7 +37,7 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from c64cast.app import paths
@@ -212,9 +212,12 @@ def _apply_palette(pl: Playlist, index: int) -> None:
     mode, api = _current_mode_api(pl)
     if not _can_swap_palette(mode, api):
         return
-    if hasattr(mode, "set_color_map"):
+
+    def install(mode: Any, api: Any) -> None:
         mode.set_color_map(None)  # drop a prior color-picker force
-    mode.set_palette_mode(api, PALETTE_MODES[index], force_palette=False)
+        mode.set_palette_mode(api, PALETTE_MODES[index], force_palette=False)
+
+    _on_playlist_thread(pl, mode, install)
 
 
 def _apply_force_colors(pl: Playlist, cols: Any) -> None:
@@ -244,11 +247,29 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
     cmap = build_fixed_color_map(indices)
     if cmap is None:
         return
-    mode.set_color_map(cmap)
-    # A forced palette pairs with "percell", the pairing MCM's ctor and the
-    # SHIFT cycle both hold: under grayscale the chromatic penalty and fixed
-    # gray backgrounds would render the picked colors flat gray.
-    mode.set_palette_mode(api, "percell", force_palette=True)
+
+    def install(mode: Any, api: Any) -> None:
+        mode.set_color_map(cmap)
+        # A forced palette pairs with "percell", the pairing MCM's ctor and the
+        # SHIFT cycle both hold: under grayscale the chromatic penalty and fixed
+        # gray backgrounds would render the picked colors flat gray.
+        mode.set_palette_mode(api, "percell", force_palette=True)
+
+    _on_playlist_thread(pl, mode, install)
+
+
+def _on_playlist_thread(pl: Playlist, mode: Any, install: Callable[[Any, Any], None]) -> None:
+    """Run `install(mode, api)` at the top of the playlist thread's next frame,
+    if `mode` is still the one on screen then. `set_palette_mode` drops the
+    dirty cache and the mode's compose state, which the frame being drawn is
+    using; a pick made just before a scene change belongs to the old scene."""
+
+    def run(playing: Playlist) -> None:
+        current, api = _current_mode_api(playing)
+        if current is mode:
+            install(mode, api)
+
+    pl.performance.defer(run)
 
 
 # One JSON file per device name under `paths.presets_dir()`, resolved at use

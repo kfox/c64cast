@@ -64,7 +64,7 @@ Top-level `on` gates **every** system's transport (a master switch) and top-leve
 
 Module helpers `_apply_palette` and `_apply_force_colors`, both routed through `_current_mode_api(pl)`.
 
-**`pal`** → `DisplayMode.set_palette_mode(api, PALETTE_MODES[i], force_palette=False)` on the current scene's mode — the same live seam the on-C64 menu and SHIFT cycle use, updating state and calling `invalidate_cache` with no socket write. It also **clears any active color force** (`set_color_map(None)`), which is the intuitive "back to normal palette" path.
+**`pal`** → `DisplayMode.set_palette_mode(api, PALETTE_MODES[i], force_palette=False)` on the current scene's mode — the same live seam the on-C64 menu and SHIFT cycle use, updating state and calling `invalidate_cache` with no socket write — on the playlist thread (see "Dispatch and thread safety" below). It also **clears any active color force** (`set_color_map(None)`), which is the intuitive "back to normal palette" path.
 
 **`col`** snaps its up-to-3 `[R,G,B]` slots to nearest C64 indices via `palette.nearest_palette_index` (perceptual/Lab), builds a source-scan-free `palette.build_fixed_color_map`, and installs it live with the mode's force toggle on. It snaps the mode to `percell` — the invariant a forced palette pairs with — so a color pick shows even when grayscale was active. The scene then **posterizes to the picked colors**; a single color gets a black or white partner for contrast.
 
@@ -78,7 +78,7 @@ Brightness is a **real output dim** (`_apply_dim`, under Lifecycle below).
 
 `apply` dispatches the WLED preset verbs (`psave`/`pdel`/`ps`) first, and otherwise delegates to `_apply_locked(partial, *, force_palcol=False)` — see the presets note below.
 
-Transport is event-based and the preset/echo state is lock-guarded, so `apply` is safe from both the uvicorn threadpool (POST) and the event loop (WS). The numpy/cv2 ColorMap bake runs on the infrequent, user-driven WLED thread before the atomic attribute swap.
+Transport is event-based and the preset/echo state is lock-guarded, so `apply` is safe from both the uvicorn threadpool (POST) and the event loop (WS). The numpy/cv2 ColorMap bake runs on the infrequent, user-driven WLED thread; the install — `set_color_map` and `set_palette_mode`, which drops the dirty cache and the mode's compose state — is handed to `pl.performance.defer` (`_on_playlist_thread`) and runs at the top of the playlist thread's next frame, and only if the same mode is still on screen, so a pick made just before a scene change is dropped rather than applied to the next scene.
 
 ### The app + server
 `build_wled_app` exposes:

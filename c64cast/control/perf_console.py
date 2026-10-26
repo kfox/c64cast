@@ -236,10 +236,10 @@ class ConsoleFeed:
 
     * **The frame build and the dispatch run off the event loop.** Both do real
       blocking work — one frame reads the look store and the loop-preset store
-      from disk, and a ``mode.border`` write is a DMA over TCP port 64 — and
+      from disk, and ``/api/ws``'s dispatch starts and stops sessions — and
       the loop they used to run on also serves ``/status``, every ``/api``
-      route and the MJPEG screen stream, so a slow data dir or a stalled link
-      stalled all of it. The sync ``perf_state`` route got the threadpool for
+      route and the MJPEG screen stream, so a slow data dir or a slow session
+      change stalled all of it. The sync ``perf_state`` route got the threadpool for
       free and was never affected, which was the tell.
     * **A command frame cannot end the feed.** :meth:`PerfBridge.apply`
       validates rather than coerces, *and* the dispatch has its own guard here,
@@ -708,14 +708,12 @@ class PerfBridge:
 
     **Not every method is cheap in-memory work**, which this docstring used to
     claim ("no DMA, no lock needed"). :meth:`state` reads the look store and
-    the loop-preset store off disk per call, and :meth:`live` on
-    ``mode.border`` / ``mode.background`` reaches
-    ``BlankDisplayMode.set_border``, which is an ``api.write_regs("d020", …)``
-    — a DMA write over TCP port 64, behind the render thread's per-command
-    mutex, unboundedly long on a stalled link. That sentence mattered more than
+    the loop-preset store off disk per call. That sentence mattered more than
     the latency did, because it is the one a contributor would trust when
     deciding where to call these from; both callers now go through
-    :class:`ConsoleFeed`, which puts them on a thread.
+    :class:`ConsoleFeed`, which puts them on a thread. (:meth:`live` on a
+    choice such as ``mode.border`` no longer writes to the machine here:
+    ``live_tune`` defers it to the playlist thread.)
 
     An idle console gets an empty ``systems`` list rather than the ``503`` the
     control-plane routes answer with: the page is the gig-day fallback surface
@@ -1011,7 +1009,12 @@ class PerfBridge:
             # A slider sends `norm`, a picker sends `value` — the two are not
             # interchangeable and the key says which one this is.
             if cmd.get("norm") is None:
-                return self.live(system, target, value=cmd.get("value"))
+                value = cmd.get("value")
+                if value is not None and not isinstance(value, str):
+                    value = _as_float(cmd, "value")
+                    if value is None:
+                        return self._malformed(cmd, "value")
+                return self.live(system, target, value=value)
             norm = _as_float(cmd, "norm")
             if norm is None:
                 return self._malformed(cmd, "norm")
@@ -1157,8 +1160,8 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
     @app.post("/perf/command")
     async def perf_command(request: Request) -> dict[str, Any]:
         body = await _command_body(request)
-        # Off the loop for the same reason the feed's dispatch is: a
-        # `mode.border` pick is a DMA write over TCP port 64.
+        # Off the loop for the same reason the feed's dispatch is (see
+        # `ConsoleFeed`).
         return {"ok": bool(await asyncio.to_thread(bridge.apply, body))}
 
     @app.websocket("/perf/ws")
