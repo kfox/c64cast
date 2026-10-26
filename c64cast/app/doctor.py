@@ -16,6 +16,7 @@ provisioner can't disagree about what a run needs.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import importlib.util
 import logging
@@ -1849,8 +1850,9 @@ def _probe_tr_reachability(
     name: str, cfg: Config, api: object, status: str | None
 ) -> list[Diagnostic]:
     """The TeensyROM has no REST surface; probe() is the ping/FW line. It
-    also has no REU, so the REST REU/SID-enable probes don't apply — instead
-    just flag a REU opt-in as ignored."""
+    also has no REU and no sampler, so the REST REU/SID-enable probes don't
+    apply — instead flag a REU opt-in as ignored, and an explicit
+    `[audio].backend = "sampler"` as played on the DAC."""
     if status is None:
         return [
             Diagnostic(
@@ -1870,6 +1872,7 @@ def _probe_tr_reachability(
         )
     ]
     out.extend(_probe_reu_unavailable(name, cfg, api))
+    out.extend(_probe_sampler_status(name, cfg, api))
     return out
 
 
@@ -1978,8 +1981,12 @@ def _device_identity_diagnostic(name: str, api: object) -> Diagnostic:
 def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """On a backend with no REU (e.g. TeensyROM), report that a config's
     REU-staged opt-in is ignored. session.build_stack coerces these off to the
-    host-DMA paths, so this is informational, not a failure."""
-    wants, reasons = hw_provision.wants_reu(cfg)
+    host-DMA paths, so this is informational, not a failure. The sampler's
+    REU ring is left to `_probe_sampler_status`, because `[audio].backend =
+    "auto"` falls back to the DAC by design and there is no opt-in to remove."""
+    wants, reasons = hw_provision.wants_reu(
+        dataclasses.replace(cfg, audio=dataclasses.replace(cfg.audio, backend="dac"))
+    )
     if not wants or getattr(api, "profile", None) is None or api.profile.supports_reu:  # type: ignore[attr-defined]
         return []
     return [

@@ -999,6 +999,43 @@ class SidStatusOnUltimate64Test(unittest.TestCase):
         )
 
 
+class TeensyRomProbeTest(unittest.TestCase):
+    """The live probe against a reachable TeensyROM, which has neither an REU
+    nor the Ultimate Audio sampler."""
+
+    def _probe(self, audio: str) -> list[doctor.Diagnostic]:
+        from c64cast.hw.backend import TEENSYROM_PROFILE
+
+        loaded = _load(f"""
+            [hardware]
+            backend = "teensyrom"
+            [teensyrom]
+            transport = "tcp"
+            host = "fake"
+            [audio]
+            {audio}
+            [[scenes]]
+            type = "video"
+            file = "x.mp4"
+        """)
+        api = mock.MagicMock(profile=TEENSYROM_PROFILE)
+        api.probe.return_value = "TeensyROM ready"
+        with mock.patch("c64cast.hw.backend.make_backend", return_value=api):
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.category == "connectivity"]
+
+    def test_default_audio_backend_reports_only_reachability(self):
+        conn = self._probe("")
+        self.assertEqual([(d.level, d.subject) for d in conn], [("ok", "system")])
+
+    def test_explicit_sampler_warns_that_the_dac_plays_instead(self):
+        conn = self._probe('backend = "sampler"')
+        self.assertEqual(
+            [(d.level, d.subject) for d in conn if d.level != "ok"],
+            [("warn", "system (Ultimate Audio sampler)")],
+        )
+
+
 class MasterVolumeProbeTest(unittest.TestCase):
     """Firmware 3.15's Vol Master scales every source, so at OFF the machine
     is silent whatever the per-source rows say. The probe names it when the
