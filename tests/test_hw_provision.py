@@ -14,6 +14,8 @@ import textwrap
 import unittest
 from unittest import mock
 
+import requests
+
 from c64cast.app import config as cfgmod
 from c64cast.hw import hw_provision
 
@@ -308,7 +310,10 @@ class _FakeVideoApi:
 
         self.base_url = "http://fake"
         self.profile = HardwareProfile(
-            name="Fake", family="fake", supports_system_mode=supports_system_mode
+            name="Fake",
+            family="fake",
+            supports_read=False,
+            supports_system_mode=supports_system_mode,
         )
         self.put_calls: list[tuple[str, str, str]] = []
         self._put_error = put_error
@@ -331,6 +336,37 @@ class _FakeVideoApi:
         if self._put_error is not None:
             raise self._put_error
         self.put_calls.append((category, item, value))
+
+
+class _FakeMemoryApi:
+    """A fake backend that can read C64 memory but whose config surface, if
+    its profile claims one, is unreachable — a TeensyROM+ by default:
+    `kernal_flag` is what a read of $02A6 returns (None = the read failed)."""
+
+    def __init__(
+        self,
+        *,
+        kernal_flag: bytes | None,
+        supports_read: bool = True,
+        supports_system_mode: bool = False,
+    ) -> None:
+        from c64cast.hw.backend import HardwareProfile
+
+        self.profile = HardwareProfile(
+            name="Fake",
+            family="fake",
+            supports_read=supports_read,
+            supports_system_mode=supports_system_mode,
+        )
+        self.reads: list[tuple[int, int]] = []
+        self._kernal_flag = kernal_flag
+        self.base_url = "http://fake"
+        self.session = mock.MagicMock()
+        self.session.get.side_effect = requests.ConnectionError("unreachable")
+
+    def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
+        self.reads.append((address, length))
+        return self._kernal_flag
 
 
 def _video_cfg(system: str = "PAL", **overrides: str) -> cfgmod.Config:
@@ -583,6 +619,75 @@ class ResolveSystemTest(unittest.TestCase):
         hw_provision.resolve_system(cfg, api)
         self.assertEqual(cfg.ultimate64.system, "PAL")
         self.assertEqual(api.profile.system, "PAL")
+
+    def test_auto_reads_pal_from_the_kernal_flag_without_system_mode(self):
+        api = _FakeMemoryApi(kernal_flag=b"\x01")
+        cfg = _video_cfg("auto")
+        with self.assertLogs("c64cast.hw.hw_provision", level="INFO") as logs:
+            hw_provision.resolve_system(cfg, api)
+        self.assertEqual(cfg.ultimate64.system, "PAL")
+        self.assertEqual(api.profile.system, "PAL")
+        self.assertEqual(api.profile.default_fps, 50.0)
+        self.assertEqual(api.reads, [(hw_provision.KERNAL_PAL_NTSC_FLAG, 1)])
+        self.assertIn("auto -> PAL", "".join(logs.output))
+
+    def test_auto_reads_ntsc_from_the_kernal_flag_without_system_mode(self):
+        api = _FakeMemoryApi(kernal_flag=b"\x00")
+        cfg = _video_cfg("auto")
+        with self.assertLogs("c64cast.hw.hw_provision", level="INFO") as logs:
+            hw_provision.resolve_system(cfg, api)
+        self.assertEqual(cfg.ultimate64.system, "NTSC")
+        self.assertIn("auto -> NTSC", "".join(logs.output))
+
+    def test_auto_falls_back_to_ntsc_when_the_kernal_flag_is_unusable(self):
+        for flag in (None, b"", b"\x02", b"\xff", b"\x01\x01"):
+            with self.subTest(flag=flag):
+                api = _FakeMemoryApi(kernal_flag=flag)
+                cfg = _video_cfg("auto")
+                with self.assertLogs("c64cast.hw.hw_provision", level="INFO") as logs:
+                    hw_provision.resolve_system(cfg, api)
+                self.assertEqual(cfg.ultimate64.system, "NTSC")
+                self.assertEqual(api.profile.default_fps, 60.0)
+                output = "".join(logs.output)
+                self.assertIn("could not read", output)
+                self.assertIn("assuming NTSC", output)
+                self.assertNotIn("can't report", output)
+
+    def test_auto_names_a_backend_with_nothing_to_ask(self):
+        api = _FakeMemoryApi(kernal_flag=b"\x01", supports_read=False)
+        cfg = _video_cfg("auto")
+        with self.assertLogs("c64cast.hw.hw_provision", level="INFO") as logs:
+            hw_provision.resolve_system(cfg, api)
+        self.assertEqual(cfg.ultimate64.system, "NTSC")
+        self.assertEqual(api.reads, [])
+        self.assertIn("can't report", "".join(logs.output))
+
+    def test_the_kernal_flag_is_not_read_under_skip_probe(self):
+        api = _FakeMemoryApi(kernal_flag=b"\x01")
+        cfg = _video_cfg("auto")
+        cfg.debug.skip_probe = True
+        with self.assertLogs("c64cast.hw.hw_provision", level="INFO") as logs:
+            hw_provision.resolve_system(cfg, api)
+        self.assertEqual(cfg.ultimate64.system, "NTSC")
+        self.assertEqual(api.reads, [])
+        self.assertIn("--skip-probe", "".join(logs.output))
+
+    def test_an_explicit_value_disagreeing_with_the_kernal_flag_warns(self):
+        api = _FakeMemoryApi(kernal_flag=b"\x01")
+        cfg = _video_cfg("NTSC")
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+            hw_provision.resolve_system(cfg, api)
+        self.assertEqual(cfg.ultimate64.system, "NTSC")
+        self.assertIn("PAL timing", "".join(logs.output))
+
+    def test_an_unreadable_system_mode_is_not_retried_through_the_kernal_flag(self):
+        api = _FakeMemoryApi(kernal_flag=b"\x01", supports_system_mode=True)
+        cfg = _video_cfg("auto")
+        with self.assertLogs("c64cast.hw.hw_provision", level="INFO") as logs:
+            hw_provision.resolve_system(cfg, api)
+        self.assertEqual(cfg.ultimate64.system, "NTSC")
+        self.assertEqual(api.reads, [])
+        self.assertIn("could not read it from the machine's System Mode", "".join(logs.output))
 
     def test_a_lowercase_explicit_value_is_normalized_not_treated_as_a_mismatch(self):
         # Nothing at config load enforces SYSTEM_CHOICES' canonical spelling;

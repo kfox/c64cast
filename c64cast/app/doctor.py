@@ -1908,7 +1908,8 @@ def _probe_tr_reachability(
     """The TeensyROM has no REST surface; probe() is the ping/FW line. It
     also has no REU and no sampler, so the REST REU/SID-enable probes don't
     apply — instead flag a REU opt-in as ignored, and an explicit
-    `[audio].backend = "sampler"` as played on the DAC."""
+    `[audio].backend = "sampler"` as played on the DAC. Its memory read still
+    answers the system-timing check."""
     if status is None:
         return [
             Diagnostic(
@@ -1927,6 +1928,7 @@ def _probe_tr_reachability(
             message=f"TeensyROM reachable ({status})",
         )
     ]
+    out.extend(_probe_system_mode(name, cfg, api))
     out.extend(_probe_reu_unavailable(name, cfg, api))
     out.extend(_probe_sampler_status(name, cfg, api))
     return out
@@ -2179,7 +2181,8 @@ def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
 
 
 def _probe_system_mode(name: str, cfg: Config, api: object) -> list[Diagnostic]:
-    """Compare `[ultimate64].system` against the machine's live System Mode.
+    """Compare `[ultimate64].system` against the machine's live timing
+    (`hw_provision.read_machine_timing`: System Mode, else the KERNAL flag).
 
     This one field sets the CPU clock, the frame rate, the DAC NMI latches and
     the SID PLAY rate all at once, and a wrong value is silent — everything
@@ -2188,10 +2191,10 @@ def _probe_system_mode(name: str, cfg: Config, api: object) -> list[Diagnostic]:
       * ok    — "auto" (it will be read at run time), or an explicit value that
                 matches
       * error — an explicit value that disagrees with the machine
-      * (quiet) — a backend with no System Mode surface, or an unreadable one
+      * (quiet) — a backend with nothing to ask, or an unreadable answer
     """
     subject = f"{name} (system)"
-    live = hw_provision.read_system_timing(api)
+    live, source = hw_provision.read_machine_timing(api)
     if live is None:
         return []
     configured = cfg.ultimate64.system
@@ -2201,7 +2204,7 @@ def _probe_system_mode(name: str, cfg: Config, api: object) -> list[Diagnostic]:
                 level="ok",
                 category="connectivity",
                 subject=subject,
-                message=f"system = auto resolves to {live} on this machine",
+                message=f"system = auto resolves to {live} on this machine (from its {source})",
             )
         ]
     if configured.upper() == live:
@@ -2219,7 +2222,7 @@ def _probe_system_mode(name: str, cfg: Config, api: object) -> list[Diagnostic]:
             category="connectivity",
             subject=subject,
             message=(
-                f"[ultimate64].system = {configured} but the machine is running {live} timing"
+                f"[ultimate64].system = {configured} but the machine's {source} says {live} timing"
             ),
             hint="Frame rate, CPU clock, DAC NMI rate and SID PLAY rate are all "
             'computed from this. Set system = "auto" to read it from the '
