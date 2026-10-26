@@ -101,6 +101,20 @@ class LogThrottleTest(unittest.TestCase):
             throttle.warn("lonely")
         self.assertEqual([r.levelname for r in caught.records], ["WARNING", "WARNING"])
 
+    def test_a_lone_recurrence_after_a_flood_has_ended_is_a_warning_again(self):
+        # The flood's last window is suppressed and counted; that count must
+        # not turn the next occurrence, long after the flood stopped, into a
+        # DEBUG record nobody at the default level sees.
+        clock = _StepClock(step=0.0)
+        throttle = LogThrottle(self.log, monotonic=clock)
+        with self.assertLogs(self.log, "DEBUG") as caught:
+            for _ in range(50):
+                throttle.warn("flooding")
+            clock.now += THROTTLE_INTERVAL_S * 3600
+            throttle.warn("back again")
+        self.assertEqual([r.levelname for r in caught.records], ["WARNING", "WARNING"])
+        self.assertIn("and 49 more since the previous report", caught.records[1].getMessage())
+
     def test_the_window_is_read_off_the_injected_clock_not_the_wall_clock(self):
         # Trap shape 5: a throttle that consulted time.monotonic() directly would
         # emit one record here (the loop takes microseconds), so this fails the
@@ -166,6 +180,18 @@ class LogThrottleExceptionTest(unittest.TestCase):
                 self._report(throttle, "dispatch failed")
         self.assertEqual([r.levelname for r in caught.records], ["ERROR", "DEBUG"])
         self.assertIn("and 3 more since the previous report", caught.records[1].getMessage())
+        self.assertIs(logged_exception_type(caught.records[1]), RuntimeError)
+
+    def test_a_lone_recurrence_after_a_flood_has_ended_is_an_error_again(self):
+        clock = _StepClock(step=0.0)
+        throttle = LogThrottle(self.log, monotonic=clock)
+        with self.assertLogs(self.log, "DEBUG") as caught:
+            for _ in range(50):
+                self._report(throttle, "dispatch failed")
+            clock.now += THROTTLE_INTERVAL_S * 3600
+            self._report(throttle, "dispatch failed")
+        self.assertEqual([r.levelname for r in caught.records], ["ERROR", "ERROR"])
+        self.assertIn("and 49 more since the previous report", caught.records[1].getMessage())
         self.assertIs(logged_exception_type(caught.records[1]), RuntimeError)
 
     def test_warn_and_exception_share_one_site_budget(self):

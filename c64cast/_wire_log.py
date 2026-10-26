@@ -14,8 +14,11 @@ Two design points worth not re-deriving:
 * **The level says whether the site is flooding.** A record that stands for a
   single occurrence is news and goes out at WARNING; a record that stands for
   several ("[and 900 more since the previous report]") is a flood you have
-  already been told about, and goes out at DEBUG. That makes a lone recurrence
-  an hour later visible again without a per-activation reset. The count is
+  already been told about, and goes out at DEBUG — unless the site had gone
+  quiet for a whole interval before it, when it is the first of a new episode
+  and goes out at WARNING carrying the ended flood's count. That makes a lone
+  recurrence an hour later visible again without a per-activation reset, even
+  right after a flood. The count is
   "since the previous report", not "in the last second": the interval bounds
   how *often* a record goes out, not how far back one reaches, so a site that
   fires twice an hour apart reports a span of an hour.
@@ -72,20 +75,25 @@ class LogThrottle:
         self._lock = threading.Lock()
         self._since_report = 0
         self._reported_at: float | None = None
+        self._occurred_at: float | None = None
 
-    def _admit(self) -> int:
+    def _admit(self) -> tuple[int, bool]:
         """Count one occurrence and return how many occurrences the record that
-        should now go out stands for — 0 when this occurrence is suppressed."""
+        should now go out stands for — 0 when this occurrence is suppressed —
+        and whether it is news: the first occurrence, or the first after the
+        site went quiet for a whole interval."""
         with self._lock:
             self._since_report += 1
             now = self._monotonic()
+            last = self._occurred_at
+            self._occurred_at = now
             previous = self._reported_at
             if previous is not None and now - previous < self._interval_s:
-                return 0
+                return 0, False
             stands_for = self._since_report
             self._since_report = 0
             self._reported_at = now
-            return stands_for
+            return stands_for, last is None or now - last >= self._interval_s
 
     @property
     def logger(self) -> logging.Logger:
@@ -98,13 +106,14 @@ class LogThrottle:
 
         ``msg``/``args`` are the ordinary lazy %-style logging pair, so the
         formatting a suppressed occurrence would have cost is never paid."""
-        stands_for = self._admit()
+        stands_for, news = self._admit()
         if not stands_for:
             return
         if stands_for == 1:
             self._log.warning(msg, *args)
             return
-        self._log.debug(msg + _MORE_SUFFIX, *args, stands_for - 1)
+        level = logging.WARNING if news else logging.DEBUG
+        self._log.log(level, msg + _MORE_SUFFIX, *args, stands_for - 1)
 
     def exception(self, msg: str, *args: object) -> None:
         """:meth:`warn` for a site inside an ``except`` block: the emitted
@@ -112,14 +121,15 @@ class LogThrottle:
 
         Same gate, one level up — a single occurrence goes out at ERROR (what
         ``log.exception`` does), a record standing for several at DEBUG with the
-        count. The traceback rides on both, because it is the whole diagnostic
+        count, or at ERROR when it opens a new episode. The traceback rides on both, because it is the whole diagnostic
         value here and the *interval*, not the level, is what bounds the cost.
         Must be called from an active exception handler, exactly like
         ``log.exception``."""
-        stands_for = self._admit()
+        stands_for, news = self._admit()
         if not stands_for:
             return
         if stands_for == 1:
             self._log.exception(msg, *args)
             return
-        self._log.debug(msg + _MORE_SUFFIX, *args, stands_for - 1, exc_info=True)
+        level = logging.ERROR if news else logging.DEBUG
+        self._log.log(level, msg + _MORE_SUFFIX, *args, stands_for - 1, exc_info=True)
