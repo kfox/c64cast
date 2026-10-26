@@ -160,16 +160,17 @@ def resolve_color(token: int | str, *, default: int | None = None) -> int:
             return default
         raise ValueError(f"C64 palette index must be 0..15, got {token}")
 
-    norm = _normalize_color_token(token)
-    if norm.isdigit():
-        return resolve_color(int(norm), default=default)
-    if norm in _COLOR_ALIASES:
-        return _COLOR_ALIASES[norm]
-    if norm in C64_COLORS:
-        return C64_COLORS[norm]
-    close = difflib.get_close_matches(norm, _COLOR_ALIASES.keys(), n=1, cutoff=0.6)
-    if close:
-        return _COLOR_ALIASES[close[0]]
+    if isinstance(token, str):
+        norm = _normalize_color_token(token)
+        if norm.isdigit():
+            return resolve_color(int(norm), default=default)
+        if norm in _COLOR_ALIASES:
+            return _COLOR_ALIASES[norm]
+        if norm in C64_COLORS:
+            return C64_COLORS[norm]
+        close = difflib.get_close_matches(norm, _COLOR_ALIASES.keys(), n=1, cutoff=0.6)
+        if close:
+            return _COLOR_ALIASES[close[0]]
     if default is not None:
         log.warning(
             "unknown C64 color %r — using %s (valid: %s)",
@@ -913,7 +914,7 @@ def _bgr_to_lab(flat_pixels: np.ndarray) -> np.ndarray:
     OpenCV's 8-bit Lab conversion needs uint8 input, so the float pixels are
     clipped + rounded first — sub-integer precision is irrelevant to a
     nearest-of-16 decision (the source pixels are uint8-derived anyway)."""
-    u8 = np.clip(flat_pixels, 0, 255).astype(np.uint8).reshape(-1, 1, 3)
+    u8 = np.clip(np.rint(flat_pixels), 0, 255).astype(np.uint8).reshape(-1, 1, 3)
     return cv2.cvtColor(u8, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
 
 
@@ -983,6 +984,7 @@ class ColorMapAccumulator:
             self._k = int(np.clip(n_colors, 2, 16))
         self._samples: list[np.ndarray] = []
         self._total = 0
+        self._decimation = 1
 
     def lab_samples(self) -> np.ndarray:
         """The accumulated Lab pixel reservoir as one (N, 3) float32 array (empty
@@ -994,9 +996,11 @@ class ColorMapAccumulator:
         return np.concatenate(self._samples)
 
     def add(self, img_bgr: np.ndarray) -> None:
-        """Fold one frame/image's pixels into the running Lab sample reservoir."""
-        if self._total >= _FORCE_PALETTE_SAMPLE_CAP:
-            return
+        """Fold one frame/image's pixels into the running Lab sample reservoir.
+
+        Past _FORCE_PALETTE_SAMPLE_CAP every block, held and incoming, is
+        thinned by the same factor, so a long scan is weighted evenly across
+        its frames instead of by arrival order."""
         h, w = img_bgr.shape[:2]
         if w > _FORCE_PALETTE_SCAN_WIDTH:
             new_h = max(1, h * _FORCE_PALETTE_SCAN_WIDTH // w)
@@ -1010,8 +1014,15 @@ class ColorMapAccumulator:
         if n > _FORCE_PALETTE_PER_FRAME:
             stride = max(1, n // _FORCE_PALETTE_PER_FRAME)
             lab = lab[::stride]
-        self._samples.append(lab.astype(np.float32))
-        self._total += lab.shape[0]
+        self._samples.append(lab[:: self._decimation].astype(np.float32))
+        self._total += self._samples[-1].shape[0]
+        while self._total > _FORCE_PALETTE_SAMPLE_CAP:
+            thinned = [block[::2] for block in self._samples]
+            thinned_total = sum(block.shape[0] for block in thinned)
+            if thinned_total == self._total:
+                break
+            self._samples, self._total = thinned, thinned_total
+            self._decimation *= 2
 
     def result(self) -> ColorMap | None:
         """Derive the ColorMap; None when there's nothing to cluster."""

@@ -281,10 +281,10 @@ class UnresolvedImportDetectionTests(unittest.TestCase):
 
     def test_a_submodule_missing_a_third_party_dependency_is_not_reported_as_stale(self):
         with patch.dict(sys.modules, {"cv2": None}), patch.dict(c64cast.video.__dict__):
-            sys.modules.pop("c64cast.video.flicker", None)
-            c64cast.video.__dict__.pop("flicker", None)
+            sys.modules.pop("c64cast.video.rolling_palette", None)
+            c64cast.video.__dict__.pop("rolling_palette", None)
             with self.assertRaises(ModuleNotFoundError) as caught:
-                self._check("from c64cast.video import flicker\n")
+                self._check("from c64cast.video import rolling_palette\n")
         self.assertEqual(caught.exception.name, "cv2")
 
     def test_a_missing_sibling_tool_imported_by_bare_name_is_reported(self):

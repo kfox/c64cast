@@ -221,7 +221,8 @@ class BlendTableTest(unittest.TestCase):
         for entry in range(16, table.size):
             gain = np.min(
                 np.linalg.norm(
-                    flicker._to_lab(table.bgr[:16]) - flicker._to_lab(table.bgr[entry : entry + 1]),
+                    palette._bgr_to_lab(table.bgr[:16])
+                    - palette._bgr_to_lab(table.bgr[entry : entry + 1]),
                     axis=1,
                 )
             )

@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from c64cast.video import palette as palette_mod
 from c64cast.video.palette import (
     _PALETTE_HUES_DEG,
     _PALETTE_LAB,
@@ -107,6 +109,15 @@ class ResolveColorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_color(True)
 
+    def test_non_string_non_int_raises_value_error(self):
+        for token in (6.5, None, [1]):
+            with self.subTest(token=token), self.assertRaises(ValueError):
+                resolve_color(token)  # type: ignore[arg-type]
+
+    def test_non_string_non_int_falls_back_to_default(self):
+        with self.assertLogs("c64cast.video.palette", level="WARNING"):
+            self.assertEqual(resolve_color(6.5, default=1), 1)  # type: ignore[arg-type]
+
     def test_every_canonical_name_resolves_to_its_index(self):
         for name, idx in C64_COLORS.items():
             self.assertEqual(resolve_color(name), idx, name)
@@ -167,6 +178,13 @@ class QuantizeLabTest(unittest.TestCase):
         d = quantize_distances_lab(px)
         self.assertEqual(d.shape, (1, 16))
         self.assertTrue(np.all(np.isfinite(d)))
+
+    def test_fractional_pixels_round_to_nearest_level(self):
+        rng = np.random.default_rng(3)
+        px = (rng.integers(1, 255, (2000, 3)) + 0.7).astype(np.float32)
+        np.testing.assert_array_equal(
+            quantize_distances_lab(px), quantize_distances_lab(np.rint(px))
+        )
 
 
 class GrayPenaltyTest(unittest.TestCase):
@@ -525,6 +543,54 @@ class ColorMapTest(unittest.TestCase):
 
     def test_no_samples_returns_none(self):
         self.assertIsNone(ColorMapAccumulator(n_colors=8).result())
+
+    def test_late_frames_of_a_full_scan_reach_the_map(self):
+        # A video pre-scan's 120 seek-sampled frames arrive in timeline order.
+        acc = ColorMapAccumulator(n_colors=2)
+        red = np.full((90, 160, 3), (10, 10, 200), dtype=np.uint8)
+        blue = np.full((90, 160, 3), (200, 10, 10), dtype=np.uint8)
+        for frame in [red] * 60 + [blue] * 60:
+            acc.add(frame)
+        cmap = acc.result()
+        assert cmap is not None
+        self.assertEqual(len(cmap.indices), 2)
+        self.assertLessEqual(acc.lab_samples().shape[0], palette_mod._FORCE_PALETTE_SAMPLE_CAP)
+
+    def test_a_capped_scan_weights_early_and_late_frames_evenly(self):
+        acc = ColorMapAccumulator(n_colors=2)
+        red = np.full((90, 160, 3), (10, 10, 200), dtype=np.uint8)
+        blue = np.full((90, 160, 3), (200, 10, 10), dtype=np.uint8)
+        for frame in [red] * 60 + [blue] * 60:
+            acc.add(frame)
+        samples = acc.lab_samples()
+        red_lab = palette_mod._bgr_to_lab(red[0, :1].astype(np.float32))[0]
+        n_red = int(np.all(samples == red_lab, axis=1).sum())
+        n_blue = samples.shape[0] - n_red
+        self.assertAlmostEqual(n_red / n_blue, 1.0, delta=0.05)
+
+    def test_more_single_pixel_blocks_than_the_cap_stop_thinning(self):
+        # Halving a 1-sample block keeps 1 sample, so the thinning loop can
+        # never get under the cap; the bounded `sum` turns a spin into a
+        # failure instead of a 60 s test timeout.
+        sum_calls = 0
+
+        def bounded_sum(values):
+            nonlocal sum_calls
+            sum_calls += 1
+            if sum_calls > 50:
+                raise AssertionError("thinning loop did not terminate")
+            return sum(values)
+
+        pixels = [np.full((1, 1, 3), (i * 40, 10, 10), dtype=np.uint8) for i in range(5)]
+        acc = ColorMapAccumulator(n_colors=2)
+        with (
+            mock.patch.object(palette_mod, "_FORCE_PALETTE_SAMPLE_CAP", 3),
+            mock.patch.object(palette_mod, "sum", bounded_sum, create=True),
+        ):
+            for px in pixels:
+                acc.add(px)
+        self.assertEqual(acc.lab_samples().shape[0], len(pixels))
+        self.assertIsNotNone(acc.result())
 
 
 class RollingColorMapAccumulatorTest(unittest.TestCase):

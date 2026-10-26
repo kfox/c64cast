@@ -208,6 +208,11 @@ hue_hi_deg = 195
             self._load("[color]\nforce_palette_colors = [0, 99]\n")
         self.assertIn("force_palette_colors", str(ctx.exception))
 
+    def test_force_palette_colors_float_entry_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load("[color]\nforce_palette_colors = [0, 6.5]\n")
+        self.assertIn("force_palette_colors", str(ctx.exception))
+
     def test_force_palette_colors_unknown_name_raises(self):
         with self.assertRaises(ValueError) as ctx:
             self._load('[color]\nforce_palette_colors = ["black", "chartreuse"]\n')
