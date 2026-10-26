@@ -52,6 +52,7 @@ from c64cast.video.video import (
     AVFileSource,
     WebcamSource,
     _compute_normalization_gain,
+    _plan_decode_size,
     decode_audio_full,
     ensure_pyav,
     prescan_source_color,
@@ -1168,9 +1169,13 @@ class SlideshowScene(MediaFileMixin, Scene):
             log.error("slideshow: file spec %r failed to resolve at advance: %s", self.file_spec, e)
             self.is_done = True
             return
+        undecodable: set[str] = set()
         while True:
             if not self._shuffle_bag:
-                self._shuffle_bag = list(candidates)
+                self._shuffle_bag = [p for p in candidates if p not in undecodable]
+                if not self._shuffle_bag:
+                    self.is_done = True
+                    return
                 random.shuffle(self._shuffle_bag)
                 # No-immediate-repeat across reshuffle boundaries.
                 if len(self._shuffle_bag) > 1 and self._shuffle_bag[0] == self._current_path:
@@ -1182,15 +1187,11 @@ class SlideshowScene(MediaFileMixin, Scene):
             img = cv2.imread(path, cv2.IMREAD_COLOR)
             if img is None:
                 log.warning("slideshow: failed to decode %s; skipping", path)
+                undecodable.add(path)
                 self._shuffle_bag = [p for p in self._shuffle_bag if p != path]
-                if not self._shuffle_bag:
-                    # Whole pool consumed and nothing decoded — bail rather
-                    # than loop forever.
-                    self.is_done = True
-                    return
                 continue
             self._current_path = path
-            self._current_img = _apply_aspect(img, self._aspect_mode)
+            self._current_img = _apply_aspect(self._shrink_for_display(img), self._aspect_mode)
             if self.display_mode is not None:
                 c = self._color
                 if c.auto_fit:
@@ -1214,6 +1215,15 @@ class SlideshowScene(MediaFileMixin, Scene):
                 len(self._shuffle_bag),
             )
             return
+
+    def _shrink_for_display(self, img: np.ndarray) -> np.ndarray:
+        """`img` at the size VideoScene decodes to, once per slide: the mode
+        resizes the held still on every frame."""
+        target = getattr(self.display_mode, "frame_target_size", None)
+        size = _plan_decode_size(img.shape[1], img.shape[0], *target) if target else None
+        if size is None:
+            return img
+        return cv2.resize(img, size, interpolation=cv2.INTER_AREA)
 
     def _pick_first_image(self) -> bool:
         """Reset the shuffle bag and load the opening slide (updating
@@ -1637,35 +1647,9 @@ class VideoScene(MediaFileMixin, Scene):
             # again would compete with video decode on the same thread and lag
             # the picture at scene start.
             assert isinstance(self.audio, AudioStreamer)
-            audio_4bit = self._preencode_audio_for_reu()
-            progress.complete("encode")
-            # Bitmap modes already halt the bus in long bursts that cost the NMI
-            # ticks, so their pump DMAs stay short (REU_PUMP_CHUNK_SIZE_HEAVY_BUS);
-            # the CIA #1 latch scales with the chunk, so the byte rate does not
-            # change. Char modes carry no bitmap traffic and keep the default.
-            chunk = (
-                REU_PUMP_CHUNK_SIZE_HEAVY_BUS
-                if isinstance(self.display_mode, BitmapDisplayMode)
-                else None
-            )
-            # A mode that installs the bank-swap dispatcher at $0314 (the
-            # merged variant JMPs to $C100 on non-raster IRQs) owns that vector,
-            # and its installer has already pre-uploaded a JMP $EA31 stub at
-            # $C100 covering the gap until real audio bytes land there.
-            skip_hook = reu_pump_skips_irq_hook(self.display_mode)
-            try:
-                self.audio.start_for_reu_staged(
-                    audio_4bit,
-                    chunk_size=chunk,
-                    skip_irq_vector_hook=skip_hook,
-                    on_progress=progress.reporter("upload"),
-                    hold=True,
-                )
-                self._audio_held = True
-            except PumpInstallError:
-                # The streamer logged it and undid its bring-up. Without this the
-                # transport would clock off a pump that never armed and hold the
-                # picture on its first frame.
+            if not self._start_reu_pump(self.audio, progress):
+                # Without this the transport would clock off a pump that never
+                # armed and hold the picture on its first frame.
                 self._audio_set_aside, self.audio = self.audio, None
             self.source.start(audio_push=None)
         elif has_audio:
@@ -1682,6 +1666,49 @@ class VideoScene(MediaFileMixin, Scene):
         progress.finish()
         self._start_clocks()
         self._hold_since = time.monotonic()
+
+    def _start_reu_pump(self, audio: AudioStreamer, progress: SegmentedProgress) -> bool:
+        """Pre-encode the soundtrack and stage it on the REU pump, held.
+        False when the clip has to play silent instead."""
+        try:
+            audio_4bit = self._preencode_audio_for_reu()
+        except Exception as e:
+            # The container open is guarded the same way: a setup() raise ends
+            # the whole show, not the scene.
+            log.error(
+                "video: cannot decode the soundtrack of %s (%s); playing it silent",
+                self.filepath,
+                e,
+            )
+            return False
+        progress.complete("encode")
+        # Bitmap modes already halt the bus in long bursts that cost the NMI
+        # ticks, so their pump DMAs stay short (REU_PUMP_CHUNK_SIZE_HEAVY_BUS);
+        # the CIA #1 latch scales with the chunk, so the byte rate does not
+        # change. Char modes carry no bitmap traffic and keep the default.
+        chunk = (
+            REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+            if isinstance(self.display_mode, BitmapDisplayMode)
+            else None
+        )
+        # A mode that installs the bank-swap dispatcher at $0314 (the merged
+        # variant JMPs to $C100 on non-raster IRQs) owns that vector, and its
+        # installer has already pre-uploaded a JMP $EA31 stub at $C100 covering
+        # the gap until real audio bytes land there.
+        skip_hook = reu_pump_skips_irq_hook(self.display_mode)
+        try:
+            audio.start_for_reu_staged(
+                audio_4bit,
+                chunk_size=chunk,
+                skip_irq_vector_hook=skip_hook,
+                on_progress=progress.reporter("upload"),
+                hold=True,
+            )
+        except PumpInstallError:
+            # The streamer logged it and undid its bring-up.
+            return False
+        self._audio_held = True
+        return True
 
     def _start_clocks(self) -> None:
         self.wall_start_time = time.time()
@@ -2472,6 +2499,10 @@ class LauncherScene(MediaFileMixin, Scene):
             self.api.send_input([machine_input.RELEASE_ALL])
 
     def process_frame(self, current_time: float) -> bool:
+        # The playlist takes is_done from this return, so a setup that never
+        # launched would otherwise hold a reset machine for the idle timeout.
+        if self.is_done:
+            return False
         if (current_time - self.start_time) >= self.max_duration_s:
             return False
         if (current_time - self.start_time) < self.min_duration_s:

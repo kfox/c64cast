@@ -4477,6 +4477,36 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         scene = self._setup(audio)
         self.assertFalse(scene._audio_held)
 
+    def test_a_soundtrack_the_reu_decode_rejects_plays_the_clip_silent(self):
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        audio.effective_rate = 8000.0
+        # PyAV's InvalidDataError is a ValueError; the plain base keeps the
+        # test runnable without the optional `video` extra.
+        bad = ValueError("Invalid data found when processing input")
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource"),
+            mock.patch("c64cast.scenes.scenes.decode_audio_full", side_effect=bad),
+            mock.patch.object(scenes, "reu_pump_skips_irq_hook", return_value=False),
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=audio,
+                display_mode=mock.MagicMock(),
+                file=STUB_VIDEO_URL,
+                setup_progress=False,
+            )
+            self.addCleanup(scene.teardown)
+            with self.assertLogs("c64cast.scenes.scenes", "ERROR"):
+                scene.setup()
+        audio.start_for_reu_staged.assert_not_called()
+        self.assertIsNone(scene.audio)
+        self.assertFalse(scene._audio_held)
+        self.assertFalse(scene.is_done)
+        assert scene.source is not None
+        cast(Any, scene.source).start.assert_called_once_with(audio_push=None)
+
     def _held_scene(self) -> tuple[VideoScene, _FakeSceneAudio, list[str]]:
         events: list[str] = []
         audio = _FakeSceneAudio()

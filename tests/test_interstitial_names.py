@@ -123,7 +123,7 @@ class SlideshowPrepareNextTest(unittest.TestCase):
             cv2.imwrite(os.path.join(self.tmp.name, n), img)
 
     def _scene(self):
-        return SlideshowScene(MagicMock(), MagicMock(), self.tmp.name)
+        return SlideshowScene(MagicMock(), MagicMock(frame_target_size=(160, 200)), self.tmp.name)
 
     def test_init_name_is_dir_spec_for_multi_pool(self):
         scene = self._scene()
