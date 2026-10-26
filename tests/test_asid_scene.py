@@ -355,6 +355,35 @@ class AsidSceneTest(unittest.TestCase):
             api.config_puts,
         )
 
+    def test_remap_mixer_pass_keeps_the_users_original_levels(self):
+        """Setup mutes the core the single-chip stream doesn't use; the remap
+        then claims it and raises it. The remap's "original" is setup's OFF,
+        not the user's level, and teardown must put back the user's."""
+        from c64cast.sid.asid_sidmap import CAT_ADDRESSING
+
+        scene, api = self._make_multi()
+        api.config_store[CAT_ADDRESSING] = {"UltiSID 1 Address": "$D400"}
+        api.config_store["Audio Mixer"] = {
+            "Vol UltiSid 1": " 0 dB",
+            "Vol UltiSid 2": "-6 dB",
+            "Pan UltiSID 1": "Left 5",
+            "Pan UltiSID 2": "Center",
+        }
+        with _stub_port(scene), quiet_logging():
+            scene.setup()
+            self.assertEqual(api.config_store["Audio Mixer"]["Vol UltiSid 2"], "OFF")
+            scene._reconfigure_chips(2)
+            scene.teardown()
+        self.assertEqual(
+            api.config_store["Audio Mixer"],
+            {
+                "Vol UltiSid 1": " 0 dB",
+                "Vol UltiSid 2": "-6 dB",
+                "Pan UltiSID 1": "Left 5",
+                "Pan UltiSID 2": "Center",
+            },
+        )
+
     def test_a_second_lap_gets_its_own_baseline_after_a_failing_teardown(self):
         """The starved restore compounded across laps, and the guarded steps are
         what stop it.
