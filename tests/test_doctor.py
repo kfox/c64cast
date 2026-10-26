@@ -29,13 +29,19 @@ from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, max_safe_sample_rate
 # $C64CAST_SETTINGS at a missing path for the module. Tests that want a machine
 # layer write their own file and re-patch over this.
 _iso = MachineSettingsIsolation()
+# CI installs no `mic` extra, and without sounddevice every config with the
+# default audio-on gets an extra error. The test that wants that error patches
+# over this.
+_sounddevice = mock.patch("c64cast.audio.audio.AUDIO_AVAILABLE", True)
 
 
 def setUpModule():
     _iso.start()
+    _sounddevice.start()
 
 
 def tearDownModule():
+    _sounddevice.stop()
     _iso.stop()
 
 
@@ -144,6 +150,46 @@ class MistypedConfigTest(unittest.TestCase):
             with quiet_logging(), contextlib.redirect_stdout(io.StringIO()):
                 rc = cli.main(["--config", path, "--doctor", "--skip-probe"])
         self.assertEqual(rc, 5)
+
+
+class SamplerSettingsDiagnosticTest(unittest.TestCase):
+    """A sampler setting the run refuses at startup is an error here too."""
+
+    def _errors(self, audio: str) -> list[tuple[str, str]]:
+        loaded = _load(f"[audio]\n{audio}\n")
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        return [(d.subject, d.message) for d in diags if d.level == "error"]
+
+    def test_a_clock_in_the_wrong_unit_is_an_error(self):
+        errors = self._errors("sampler_clock_hz = 6160")
+        self.assertEqual([subject for subject, _ in errors], ["system/sampler"])
+        self.assertIn("[audio].sampler_clock_hz", errors[0][1])
+
+    def test_an_unsupported_bit_depth_is_an_error(self):
+        errors = self._errors("sampler_bits = 12")
+        self.assertEqual([subject for subject, _ in errors], ["system/sampler"])
+
+    def test_the_shipped_defaults_report_nothing(self):
+        self.assertEqual(self._errors(""), [])
+
+
+class AudioWithoutSounddeviceDiagnosticTest(unittest.TestCase):
+    """A run with audio on refuses to start without sounddevice, and audio is
+    on by default, so the doctor must not pass that config."""
+
+    def _errors(self, toml: str) -> list[doctor.Diagnostic]:
+        loaded = _load(toml)
+        with mock.patch("c64cast.audio.audio.AUDIO_AVAILABLE", False):
+            diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        return [d for d in diags if d.level == "error"]
+
+    def test_default_audio_without_sounddevice_is_an_error(self):
+        errors = self._errors("")
+        self.assertEqual([(d.category, d.subject) for d in errors], [("audio", "system/audio")])
+        self.assertIn("--no-audio", errors[0].hint or "")
+
+    def test_audio_off_without_sounddevice_is_fine(self):
+        self.assertEqual(self._errors("[audio]\nenabled = false\n"), [])
 
 
 class ValidateScenesTest(unittest.TestCase):
@@ -999,6 +1045,43 @@ class SidStatusOnUltimate64Test(unittest.TestCase):
         )
 
 
+class TeensyRomProbeTest(unittest.TestCase):
+    """The live probe against a reachable TeensyROM, which has neither an REU
+    nor the Ultimate Audio sampler."""
+
+    def _probe(self, audio: str) -> list[doctor.Diagnostic]:
+        from c64cast.hw.backend import TEENSYROM_PROFILE
+
+        loaded = _load(f"""
+            [hardware]
+            backend = "teensyrom"
+            [teensyrom]
+            transport = "tcp"
+            host = "fake"
+            [audio]
+            {audio}
+            [[scenes]]
+            type = "video"
+            file = "x.mp4"
+        """)
+        api = mock.MagicMock(profile=TEENSYROM_PROFILE)
+        api.probe.return_value = "TeensyROM ready"
+        with mock.patch("c64cast.hw.backend.make_backend", return_value=api):
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.category == "connectivity"]
+
+    def test_default_audio_backend_reports_only_reachability(self):
+        conn = self._probe("")
+        self.assertEqual([(d.level, d.subject) for d in conn], [("ok", "system")])
+
+    def test_explicit_sampler_warns_that_the_dac_plays_instead(self):
+        conn = self._probe('backend = "sampler"')
+        self.assertEqual(
+            [(d.level, d.subject) for d in conn if d.level != "ok"],
+            [("warn", "system (Ultimate Audio sampler)")],
+        )
+
+
 class MasterVolumeProbeTest(unittest.TestCase):
     """Firmware 3.15's Vol Master scales every source, so at OFF the machine
     is silent whatever the per-source rows say. The probe names it when the
@@ -1217,7 +1300,12 @@ class EnvironmentProbeTest(unittest.TestCase):
         self.assertIn("skipped", diags[0].message)
 
     def test_uv_lock_drift_warns(self):
-        fake = mock.MagicMock(returncode=1, stdout="", stderr="")
+        fake = mock.MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="error: The lockfile at `uv.lock` needs to be updated, but `--check` "
+            "was provided.\n",
+        )
         with (
             mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/uv"),
             mock.patch.object(doctor.subprocess, "run", return_value=fake),
@@ -1225,6 +1313,45 @@ class EnvironmentProbeTest(unittest.TestCase):
             diags = doctor._probe_uv_lock()
         self.assertEqual(diags[0].level, "warn")
         self.assertIn("out of date", diags[0].message)
+
+    def test_uv_lock_check_that_errors_is_not_reported_as_drift(self):
+        fake = mock.MagicMock(
+            returncode=2,
+            stdout="",
+            stderr="error: failed to read from file `uv.lock`: Permission denied (os error 13)\n",
+        )
+        with (
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/uv"),
+            mock.patch.object(doctor.subprocess, "run", return_value=fake),
+        ):
+            diags = doctor._probe_uv_lock()
+        self.assertEqual(
+            [(d.level, d.message) for d in diags],
+            [
+                (
+                    "warn",
+                    "could not check (error: failed to read from file `uv.lock`: "
+                    "Permission denied (os error 13))",
+                )
+            ],
+        )
+
+    def test_uv_lock_resolution_failure_is_not_reported_as_drift(self):
+        fake = mock.MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="error: No solution found when resolving dependencies\n"
+            "  cause: Because six was not found in the cache ...\n",
+        )
+        with (
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/uv"),
+            mock.patch.object(doctor.subprocess, "run", return_value=fake),
+        ):
+            diags = doctor._probe_uv_lock()
+        self.assertEqual(
+            [(d.level, d.message) for d in diags],
+            [("warn", "could not check (error: No solution found when resolving dependencies)")],
+        )
 
     def test_uv_lock_probe_is_skipped_outside_a_source_checkout(self):
         # For an installed package _REPO_ROOT is site-packages, which has no
@@ -2227,6 +2354,14 @@ class SchemaDirectiveDiagnosticTest(unittest.TestCase):
         # different c64cast — which is exactly the case a path check misses.
         with _loaded_config_file("#:schema ./c64cast.schema.json\n") as (loaded, tmp):
             _write(os.path.join(tmp, "c64cast.schema.json"), '{"title": "an older c64cast"}')
+            rows = doctor._validate_schema_directive(loaded)
+        self.assertEqual([r.level for r in rows], ["warn"])
+        self.assertIn("isn't the one this install generates", rows[0].message)
+
+    def test_a_copy_that_is_not_utf8_is_flagged_rather_than_raised(self):
+        with _loaded_config_file("#:schema ./c64cast.schema.json\n") as (loaded, tmp):
+            body = paths.packaged_schema_path().read_text(encoding="utf-8")
+            Path(tmp, "c64cast.schema.json").write_bytes(body.encode("utf-16"))
             rows = doctor._validate_schema_directive(loaded)
         self.assertEqual([r.level for r in rows], ["warn"])
         self.assertIn("isn't the one this install generates", rows[0].message)

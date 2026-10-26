@@ -16,6 +16,7 @@ provisioner can't disagree about what a run needs.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import importlib.util
 import logging
@@ -68,6 +69,7 @@ from .scene_factory import (
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
     validate_midi_control_cfg,
+    validate_sampler_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
     validate_wled_cfg,
@@ -190,8 +192,10 @@ def validate_load_result(
     out.extend(_validate_unknown_keys(loaded))
     out.extend(_validate_schema_directive(loaded))
     out.extend(_validate_scenes(loaded))
+    out.extend(_validate_audio_available(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve_cfg(loaded))
+    out.extend(_validate_sampler(loaded))
     out.extend(_validate_dac_bitmap_tempo(loaded))
     out.extend(_validate_sid_model(loaded))
     out.extend(_validate_dither(loaded))
@@ -441,6 +445,12 @@ def _dist_version(dist: str) -> str:
         return "?"
 
 
+# uv exits 1 both for a drifted lockfile and for a resolution that failed
+# (offline, a package missing from the cache), so only its error text tells
+# the two apart.
+_UV_LOCK_DRIFT_TEXT = "needs to be updated"
+
+
 def _probe_uv_lock() -> list[Diagnostic]:
     """Best-effort `uv lock --check` — warns when uv.lock has drifted from
     pyproject.toml (CI installs `--frozen`, so drift breaks CI). Skips cleanly
@@ -460,6 +470,9 @@ def _probe_uv_lock() -> list[Diagnostic]:
         return [Diagnostic("warn", "environment", "uv.lock", f"could not check ({e})")]
     if r.returncode == 0:
         return [Diagnostic("ok", "environment", "uv.lock", "up to date with pyproject.toml")]
+    if _UV_LOCK_DRIFT_TEXT not in r.stderr:
+        detail = r.stderr.strip().splitlines()[0] if r.stderr.strip() else f"exit {r.returncode}"
+        return [Diagnostic("warn", "environment", "uv.lock", f"could not check ({detail})")]
     return [
         Diagnostic(
             "warn",
@@ -707,8 +720,11 @@ def _compare_named_schema(named: Path, subject: str, hint: str) -> list[Diagnost
     generates is doing its job, whichever tree it sits in, and a copy that
     differs is describing a different c64cast whatever it is called."""
     mine = _packaged_schema()
+    theirs: str | None
     try:
         theirs = named.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        theirs = None
     except OSError:
         return [
             Diagnostic(
@@ -783,6 +799,27 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
                     )
                 )
     return out
+
+
+def _validate_audio_available(loaded: LoadResult) -> list[Diagnostic]:
+    """A system with audio on refuses to start when sounddevice is missing
+    (session.validate_configs), and audio is on by default — so a plain
+    install without the `mic` extra fails every run unless this says so."""
+    from c64cast.audio import audio
+
+    if audio.AUDIO_AVAILABLE:
+        return []
+    return [
+        Diagnostic(
+            level="error",
+            category="audio",
+            subject=f"{name}/audio",
+            message="audio is enabled but sounddevice is not installed — the run will not start",
+            hint="Install the `mic` extra, or run with --no-audio / set [audio].enabled = false.",
+        )
+        for name, cfg in zip(loaded.names, loaded.cfgs, strict=True)
+        if cfg.audio.enabled
+    ]
 
 
 def _sample_rate_hint(system: str, rate: int) -> str:
@@ -882,6 +919,26 @@ def _validate_dac_curve_cfg(loaded: LoadResult) -> list[Diagnostic]:
                     subject=f"{name}/dac_curve",
                     message=str(e),
                     hint="See [audio].dac_curve in the config reference / --describe section:audio.",
+                )
+            )
+    return out
+
+
+def _validate_sampler(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unusable [audio].sampler_* value per system. Offline —
+    delegates to scene_factory.validate_sampler_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_sampler_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/sampler",
+                    message=str(e),
+                    hint="See [audio] in the config reference / --describe section:audio.",
                 )
             )
     return out
@@ -1849,8 +1906,9 @@ def _probe_tr_reachability(
     name: str, cfg: Config, api: object, status: str | None
 ) -> list[Diagnostic]:
     """The TeensyROM has no REST surface; probe() is the ping/FW line. It
-    also has no REU, so the REST REU/SID-enable probes don't apply — instead
-    just flag a REU opt-in as ignored."""
+    also has no REU and no sampler, so the REST REU/SID-enable probes don't
+    apply — instead flag a REU opt-in as ignored, and an explicit
+    `[audio].backend = "sampler"` as played on the DAC."""
     if status is None:
         return [
             Diagnostic(
@@ -1870,6 +1928,7 @@ def _probe_tr_reachability(
         )
     ]
     out.extend(_probe_reu_unavailable(name, cfg, api))
+    out.extend(_probe_sampler_status(name, cfg, api))
     return out
 
 
@@ -1978,8 +2037,12 @@ def _device_identity_diagnostic(name: str, api: object) -> Diagnostic:
 def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """On a backend with no REU (e.g. TeensyROM), report that a config's
     REU-staged opt-in is ignored. session.build_stack coerces these off to the
-    host-DMA paths, so this is informational, not a failure."""
-    wants, reasons = hw_provision.wants_reu(cfg)
+    host-DMA paths, so this is informational, not a failure. The sampler's
+    REU ring is left to `_probe_sampler_status`, because `[audio].backend =
+    "auto"` falls back to the DAC by design and there is no opt-in to remove."""
+    wants, reasons = hw_provision.wants_reu(
+        dataclasses.replace(cfg, audio=dataclasses.replace(cfg.audio, backend="dac"))
+    )
     if not wants or getattr(api, "profile", None) is None or api.profile.supports_reu:  # type: ignore[attr-defined]
         return []
     return [
