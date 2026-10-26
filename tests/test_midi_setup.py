@@ -9,6 +9,8 @@ resolver take an injected tempdir.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import logging
 import tempfile
@@ -254,6 +256,10 @@ class WizardHelperTests(unittest.TestCase):
         # Round-trips through the runtime reader without loss.
         self.assertEqual(mc.FeedbackMap.from_dict(block).active, 5)
 
+    def test_build_feedback_block_refuses_a_channel_the_listener_cannot_send_on(self):
+        block = midi_setup.build_feedback_block(overrides={"channel": 16})
+        self.assertEqual(block["channel"], mc.FeedbackMap().channel)
+
     def test_build_feedback_block_no_port(self):
         block = midi_setup.build_feedback_block()
         self.assertNotIn("port", block)
@@ -271,6 +277,83 @@ class WizardHelperTests(unittest.TestCase):
         cfg = cfgmod.MidiControlCfg(enabled=True, cc_map=maps)
         scene_factory.validate_midi_control_cfg(cfg)  # must not raise
         mc._parse_cc_map(maps)  # runtime parser must accept them too
+
+
+class ReadBurstTests(unittest.TestCase):
+    def test_a_control_that_never_stops_sending_still_ends_the_burst(self):
+        # A jittery fader or an expression pedal keeps a CC arriving on every
+        # pass, so the settle window after the last message never opens.
+        calls = {"n": 0}
+
+        def iter_pending():
+            calls["n"] += 1
+            if calls["n"] > 100_000:
+                raise RuntimeError("the burst never ended")
+            return iter([types.SimpleNamespace(type="control_change", control=7, value=64)])
+
+        port = types.SimpleNamespace(iter_pending=iter_pending)
+        with mock.patch.object(midi_setup, "time", FrozenClock(0.0, "monotonic", 0.01, sleep=None)):
+            events = midi_setup._read_burst(port)
+        self.assertEqual(midi_setup.dominant_control(events), ("cc", 7))
+
+    def test_a_pad_press_and_release_settle_into_one_burst(self):
+        press = [types.SimpleNamespace(type="note_on", note=36, velocity=100)]
+        release = [types.SimpleNamespace(type="note_off", note=36, velocity=0)]
+        batches = iter([press, *[[]] * 20, release])
+        port = types.SimpleNamespace(iter_pending=lambda: iter(next(batches, [])))
+        clock = FrozenClock(0.0, "monotonic", 0.01, sleep=None)
+        with mock.patch.object(midi_setup, "time", clock):
+            events = midi_setup._read_burst(port, settle_s=0.6, max_burst_s=5.0)
+        self.assertEqual(events, [("note", 36, 100, True), ("note", 36, 0, False)])
+        self.assertLess(clock.monotonic(), 1.0)
+
+
+class ReviewTests(unittest.TestCase):
+    def test_canceling_the_remove_prompt_returns_to_the_review(self):
+        # questionary's ask() answers None when the user presses Ctrl-C.
+        q = mock.MagicMock()
+        q.select.return_value.ask.side_effect = ["Remove one", "Save these"]
+        q.text.return_value.ask.return_value = None
+        mappings = [midi_setup.build_jump_entry("note", 40, 0)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            reviewed = midi_setup._review(q, mappings)
+        self.assertEqual(reviewed, [midi_setup.build_jump_entry("note", 40, 0)])
+        self.assertEqual(out.getvalue().count("Learned mappings:"), 2)
+
+
+class LearnFeedbackTests(unittest.TestCase):
+    def test_an_out_of_range_channel_is_reported_and_not_saved(self):
+        q = mock.MagicMock()
+        q.confirm.return_value.ask.return_value = True
+        answers = {"LED MIDI channel": "16"}
+        q.text.side_effect = lambda label, default: mock.Mock(
+            ask=mock.Mock(return_value=next((v for k, v in answers.items() if k in label), default))
+        )
+        out = io.StringIO()
+        with (
+            mock.patch.object(midi_setup, "_pick_output_port", return_value=None),
+            contextlib.redirect_stdout(out),
+        ):
+            block = midi_setup._learn_feedback(q, None)
+        assert block is not None
+        self.assertEqual(block["channel"], mc.FeedbackMap().channel)
+        self.assertIn("out of range — keeping 0", out.getvalue())
+
+    def test_a_non_number_keeps_the_default_rather_than_the_previous_answer(self):
+        q = mock.MagicMock()
+        q.confirm.return_value.ask.return_value = True
+        q.text.return_value.ask.side_effect = ["5", "not a number", None, None, None]
+        out = io.StringIO()
+        with (
+            mock.patch.object(midi_setup, "_pick_output_port", return_value=None),
+            contextlib.redirect_stdout(out),
+        ):
+            block = midi_setup._learn_feedback(q, None)
+        assert block is not None
+        self.assertEqual(block["loaded"], 5)
+        self.assertEqual(block["armed"], mc.FeedbackMap().armed)
+        self.assertIn("not a number — keeping 13", out.getvalue())
 
 
 class LiveTargetsDriftTests(unittest.TestCase):

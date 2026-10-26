@@ -21,6 +21,7 @@ See docs/architecture/control.md#midi_setuppy--the---midi-setup-midi-learn-wizar
 
 from __future__ import annotations
 
+import math
 import time
 from collections import Counter
 from typing import Any
@@ -111,7 +112,7 @@ def build_feedback_block(
     :meth:`c64cast.control.midi_control.FeedbackMap.from_dict` reads back at runtime."""
     block: dict[str, Any] = dict(FeedbackMap().to_dict())
     for k, v in (overrides or {}).items():
-        if k in block and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 127:
+        if k in block and FeedbackMap.accepts(v, field=k):
             block[k] = v
     if port:
         block["port"] = port
@@ -144,14 +145,16 @@ def _drain(port: Any) -> None:
 
 
 def _read_burst(
-    port: Any, *, settle_s: float = 0.6, timeout_s: float = 15.0
+    port: Any, *, settle_s: float = 0.6, timeout_s: float = 15.0, max_burst_s: float = 5.0
 ) -> list[tuple[str, int, int, bool]]:
     """Block until the first mappable message arrives (or `timeout_s` elapses),
     then keep collecting for `settle_s` after the last message so a knob sweep /
-    a pad's note-on+off both land in one burst. Returns the classified events."""
+    a pad's note-on+off both land in one burst, for at most `max_burst_s` after
+    the first. Returns the classified events."""
     events: list[tuple[str, int, int, bool]] = []
     deadline = time.monotonic() + timeout_s
     last_msg = 0.0
+    burst_end = math.inf
     while True:
         got = False
         for msg in port.iter_pending():
@@ -161,8 +164,9 @@ def _read_burst(
                 got = True
         now = time.monotonic()
         if got:
+            burst_end = min(burst_end, now + max_burst_s)
             last_msg = now
-        if events and (now - last_msg) >= settle_s:
+        if events and ((now - last_msg) >= settle_s or now >= burst_end):
             break
         if not events and now >= deadline:
             break
@@ -361,9 +365,14 @@ def _learn_feedback(q: Any, existing: dict[str, Any] | None) -> dict[str, Any] |
             if raw is None:
                 continue
             try:
-                overrides[key] = int(raw)
+                value = int(raw)
             except ValueError:
                 print(f"    (not a number — keeping {base[key]})")
+                continue
+            if FeedbackMap.accepts(value, field=key):
+                overrides[key] = value
+            else:
+                print(f"    (out of range — keeping {base[key]})")
     return build_feedback_block(port=port, overrides=overrides)
 
 
@@ -381,6 +390,8 @@ def _review(q: Any, mappings: list[dict[str, Any]]) -> list[dict[str, Any]] | No
         if action == "Save these":
             return mappings
         idx = q.text("Remove which index?", default="0").ask()
+        if idx is None:
+            continue
         try:
             mappings.pop(int(idx))
         except (ValueError, IndexError):

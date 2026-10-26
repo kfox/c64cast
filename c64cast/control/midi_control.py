@@ -35,9 +35,9 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
-from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
+from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast._wire_log import LogThrottle
 from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
@@ -381,6 +381,8 @@ _LED_BLINK_HALF_PERIOD_S = 0.25
 # The velocity fields of a FeedbackMap / a profile `feedback` block (excludes
 # `port`, which is a device name, not a velocity).
 _FEEDBACK_KEYS: tuple[str, ...] = ("channel", "off", "loaded", "armed", "active", "fx_on")
+_MIDI_CHANNEL_MAX = 15
+_MIDI_DATA_MAX = 127
 
 
 @dataclass(frozen=True)
@@ -410,12 +412,15 @@ class FeedbackMap:
         vals: dict[str, int] = {}
         for k in _FEEDBACK_KEYS:
             v = raw.get(k)
-            vals[k] = (
-                v
-                if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 127
-                else getattr(default, k)
-            )
+            vals[k] = v if cls.accepts(v, field=k) else getattr(default, k)
         return cls(**vals)
+
+    @staticmethod
+    def accepts(value: Any, *, field: str) -> TypeGuard[int]:
+        """Whether `value` is usable for `field`: an int (not a bool) in the
+        range mido accepts for it — a channel, or a velocity."""
+        top = _MIDI_CHANNEL_MAX if field == "channel" else _MIDI_DATA_MAX
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= top
 
     def to_dict(self) -> dict[str, int]:
         return {k: getattr(self, k) for k in _FEEDBACK_KEYS}
@@ -516,9 +521,8 @@ class MidiControlListener:
         self._warned_channels: set[int] = set()
         # A dispatch/clock-feed failure is per *message*, and the message comes
         # off the wire: a controller sending something this build mishandles
-        # would buy a full traceback per message inside an unbounded
-        # `iter_pending()` drain, on the thread a performer's next pad press
-        # waits behind. One throttle per reader, so a jammed dispatch cannot
+        # would buy a full traceback per message, on the thread a performer's
+        # next pad press waits behind. One throttle per reader, so a jammed dispatch cannot
         # swallow the clock port's first report.
         self._dispatch_errors = LogThrottle(log)
         self._clock_feed_errors = LogThrottle(log)
@@ -571,7 +575,6 @@ class MidiControlListener:
                     self._controller_profile,
                     max(0, n_profile),
                 )
-            self._add_clip_pad_mappings()
         except ValueError:
             # A malformed profile file must never take down the listener — keep
             # the already-parsed base mapping and warn.
@@ -580,6 +583,7 @@ class MidiControlListener:
                 self._controller_profile,
                 exc_info=True,
             )
+        self._add_clip_pad_mappings()
         self._open_clock_port()
         # LED feedback needs the final effective mapping (for fx pads) and the
         # clip pad folds already done above, so set it up here.
@@ -815,7 +819,7 @@ class MidiControlListener:
             return
         try:
             while not stop.is_set():
-                for msg in port.iter_pending():
+                for msg in poll_pending(port, stop):
                     try:
                         self._dispatch(msg)
                     except Exception:
@@ -833,7 +837,7 @@ class MidiControlListener:
             return
         try:
             while not stop.is_set():
-                for msg in port.iter_pending():
+                for msg in poll_pending(port, stop):
                     try:
                         self._feed_tempo(msg)
                     except Exception:
