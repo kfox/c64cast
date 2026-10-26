@@ -160,16 +160,17 @@ def resolve_color(token: int | str, *, default: int | None = None) -> int:
             return default
         raise ValueError(f"C64 palette index must be 0..15, got {token}")
 
-    norm = _normalize_color_token(token)
-    if norm.isdigit():
-        return resolve_color(int(norm), default=default)
-    if norm in _COLOR_ALIASES:
-        return _COLOR_ALIASES[norm]
-    if norm in C64_COLORS:
-        return C64_COLORS[norm]
-    close = difflib.get_close_matches(norm, _COLOR_ALIASES.keys(), n=1, cutoff=0.6)
-    if close:
-        return _COLOR_ALIASES[close[0]]
+    if isinstance(token, str):
+        norm = _normalize_color_token(token)
+        if norm.isdigit():
+            return resolve_color(int(norm), default=default)
+        if norm in _COLOR_ALIASES:
+            return _COLOR_ALIASES[norm]
+        if norm in C64_COLORS:
+            return C64_COLORS[norm]
+        close = difflib.get_close_matches(norm, _COLOR_ALIASES.keys(), n=1, cutoff=0.6)
+        if close:
+            return _COLOR_ALIASES[close[0]]
     if default is not None:
         log.warning(
             "unknown C64 color %r — using %s (valid: %s)",

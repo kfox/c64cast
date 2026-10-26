@@ -107,6 +107,15 @@ class ResolveColorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_color(True)
 
+    def test_non_string_non_int_raises_value_error(self):
+        for token in (6.5, None, [1]):
+            with self.subTest(token=token), self.assertRaises(ValueError):
+                resolve_color(token)  # type: ignore[arg-type]
+
+    def test_non_string_non_int_falls_back_to_default(self):
+        with self.assertLogs("c64cast.video.palette", level="WARNING"):
+            self.assertEqual(resolve_color(6.5, default=1), 1)  # type: ignore[arg-type]
+
     def test_every_canonical_name_resolves_to_its_index(self):
         for name, idx in C64_COLORS.items():
             self.assertEqual(resolve_color(name), idx, name)
