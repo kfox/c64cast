@@ -24,10 +24,15 @@ Stages per transport (--tcp HOST and/or --serial PORT):
      SHIFT, bit1 COMMODORE, bit2 CTRL). Only meaningful once an IRQ-enabled
      idle (c64cast's clear-loop bring-up) is running so the kernal keyboard
      scan updates $028D — at the bare TR menu it may read 0.
+  5. PAL/NTSC (--timing): read the KERNAL's flag at $02A6 the way
+     `[ultimate64].system = "auto"` does, and settle the answer independently
+     from the raster: sample $D011/$D012 and report the highest line seen. A
+     line past 262 exists only on PAL (312 lines); NTSC never passes 262.
 
     scripts/diags/tr_read_probe.py --tcp HOST
     scripts/diags/tr_read_probe.py --serial /dev/cu.usbmodem1234
     scripts/diags/tr_read_probe.py --tcp HOST --serial <PORT> --watch 028d
+    scripts/diags/tr_read_probe.py --serial auto --timing
 
 Resets the C64 on the way out (the standing silence-and-reset rule) unless
 --no-reset-exit; reset boots the TR to its menu.
@@ -41,6 +46,7 @@ import time
 
 import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work)
 
+from c64cast.hw.hw_provision import KERNAL_PAL_NTSC_FLAG, KERNAL_PAL_NTSC_TIMING
 from c64cast.hw.teensyrom_dma import (
     DEFAULT_BAUD,
     DEFAULT_TCP_PORT,
@@ -48,11 +54,14 @@ from c64cast.hw.teensyrom_dma import (
     TcpTransport,
     TRClient,
     TRError,
+    autodetect_serial_port,
 )
 
 RAM_ADDR = 0x4000  # plain RAM, clear of BASIC / screen / our helpers
 ROM_ADDR = 0xFFFC  # KERNAL reset vector -> E2 FC on a stock machine
 MOD_ADDR = 0x028D  # kernal keyboard-modifier scratch byte
+VIC_CTRL1_RASTER = 0xD011  # bit 7 is raster bit 8; $D012 holds bits 0-7
+NTSC_LAST_RASTER_LINE = 262
 
 
 def connect(kind: str, *, tcp_host: str | None, serial_port: str | None) -> TRClient:
@@ -124,7 +133,29 @@ def run_transport(label: str, client: TRClient, args) -> dict:
                 print(f"        read failed: {e}")
             time.sleep(args.watch_interval)
 
+    if args.timing:
+        result["timing"] = probe_timing(client, args.timing_samples)
+
     return result
+
+
+def probe_timing(client: TRClient, samples: int) -> dict:
+    flag = client.read_segment(KERNAL_PAL_NTSC_FLAG, 1)[0]
+    kernal = KERNAL_PAL_NTSC_TIMING.get(flag, "unusable")
+    print(f"  [timing] ${KERNAL_PAL_NTSC_FLAG:04X} = {flag:#04x} -> {kernal}")
+    lines = []
+    for _ in range(samples):
+        ctrl1, low = client.read_segment(VIC_CTRL1_RASTER, 2)
+        lines.append(((ctrl1 & 0x80) << 1) | low)
+    top = max(lines)
+    raster = "PAL" if top > NTSC_LAST_RASTER_LINE else "NTSC"
+    print(
+        f"  [timing] raster: {samples} samples, {len(set(lines))} distinct lines, "
+        f"highest {top} -> {raster}"
+    )
+    agree = "agree" if kernal == raster else "DISAGREE"
+    print(f"  [timing] KERNAL flag and raster {agree}")
+    return {"flag": flag, "kernal": kernal, "raster_top": top, "raster": raster}
 
 
 def main() -> int:
@@ -132,7 +163,12 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--tcp", metavar="HOST", default=None, help="probe over TCP to this TR host")
-    ap.add_argument("--serial", metavar="PORT", default=None, help="probe over this serial device")
+    ap.add_argument(
+        "--serial",
+        metavar="PORT",
+        default=None,
+        help="probe over this serial device, or auto to find it",
+    )
     ap.add_argument("--watch", action="store_true", help="poll $028D live (needs an IRQ idle)")
     ap.add_argument("--watch-count", type=int, default=20, help="how many $028D reads (default 20)")
     ap.add_argument(
@@ -141,8 +177,18 @@ def main() -> int:
         default=0.5,
         help="seconds between $028D reads (default 0.5)",
     )
+    ap.add_argument(
+        "--timing", action="store_true", help="read $02A6 and check it against the raster"
+    )
+    ap.add_argument(
+        "--timing-samples", type=int, default=400, help="raster reads for --timing (default 400)"
+    )
     ap.add_argument("--no-reset-exit", action="store_true", help="skip the final reset")
     args = ap.parse_args()
+    if args.serial == "auto":
+        args.serial = autodetect_serial_port()
+        if args.serial is None:
+            ap.error("--serial auto: no TeensyROM serial port found")
     if not args.tcp and not args.serial:
         ap.error("specify at least one of --tcp HOST / --serial PORT")
 

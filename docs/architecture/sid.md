@@ -194,11 +194,19 @@ letting the two overwrite each other.
 
 This one field sets the CPU clock, the frame rate, the DAC NMI latches and the
 scope rate at once, and a wrong value is silent. `hw_provision.resolve_system`
-reads it off the machine's live System Mode after the backend opens — it cannot
-happen in `make_backend`, which bakes `default_fps` and `host_sid_model` from it
-before any API exists, so those profile fields are re-folded once the answer is
-known. An explicit value still wins (it is how you describe a TeensyROM-driven
-C64), but disagreeing with the machine logs a warning and is a `--doctor` error.
+reads it off the machine after the backend opens — it cannot happen in
+`make_backend`, which bakes `default_fps` and `host_sid_model` from it before any
+API exists, so those profile fields are re-folded once the answer is known.
+`read_machine_timing` asks the Ultimate 64's System Mode where the backend has
+one, and otherwise reads the KERNAL's PAL/NTSC flag at `$02A6` (TeensyROM+,
+Ultimate II+): CINT sets it from a raster probe at every reset, so only 0 (NTSC)
+and 1 (PAL) are believed — a cartridge that skips CINT or a program that reuses
+the byte leaves anything else there, and a failed read or another value falls
+back to NTSC with a log that names the surface it could not read. An unreadable
+System Mode is not retried through `$02A6`: on the Ultimate both are REST reads.
+An explicit value still wins (it is how you describe a machine nothing can
+read), but disagreeing with the machine logs a warning and is a `--doctor`
+error.
 
 ### Capture devices and 576p50
 

@@ -71,6 +71,7 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
     with mock.patch.object(Ultimate64API, "__init__", return_value=None):
         api_instance = Ultimate64API.__new__(Ultimate64API)
         api_instance.base_url = base_url
+        api_instance.read_url = f"{base_url}{U64_API.READ_MEM}"
         api_instance.session = mock.MagicMock()
         api_instance.probe = mock.MagicMock(return_value="HTTP 200")
         api_instance.close = mock.MagicMock()
@@ -549,6 +550,49 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "warn")
         self.assertIn("REST probe failed", conn[0].message)
         self.assertNotIn("cannot start", conn[0].message)
+
+
+class _KernalFlagApi:
+    """A TeensyROM-shaped backend: no System Mode, a memory read answering
+    $02A6 with `flag` (None = the read failed)."""
+
+    def __init__(self, flag: bytes | None) -> None:
+        self.profile = HardwareProfile(name="Fake", family="fake", supports_read=True)
+        self._flag = flag
+
+    def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
+        return self._flag
+
+
+class SystemTimingProbeTest(unittest.TestCase):
+    """The system-timing row on a backend that answers through the KERNAL's
+    PAL/NTSC flag instead of the Ultimate's System Mode."""
+
+    def _rows(self, system: str, flag: bytes | None) -> list:
+        cfg = cfgmod.Config()
+        cfg.ultimate64.system = system
+        return doctor._probe_system_mode("sys", cfg, _KernalFlagApi(flag))
+
+    def test_auto_reports_the_flags_answer(self):
+        (row,) = self._rows("auto", b"\x01")
+        self.assertEqual(row.level, "ok")
+        self.assertIn("PAL", row.message)
+        self.assertIn("$02A6", row.message)
+
+    def test_an_explicit_value_disagreeing_with_the_flag_is_an_error(self):
+        (row,) = self._rows("NTSC", b"\x01")
+        self.assertEqual(row.level, "error")
+        self.assertIn("PAL timing", row.message)
+
+    def test_an_unusable_flag_is_quiet(self):
+        for flag in (None, b"\x07"):
+            with self.subTest(flag=flag):
+                self.assertEqual(self._rows("PAL", flag), [])
+
+    def test_the_teensyrom_reachability_probe_includes_the_row(self):
+        cfg = cfgmod.Config()
+        rows = doctor._probe_tr_reachability("sys", cfg, _KernalFlagApi(b"\x01"), "fw 0.7")
+        self.assertIn("sys (system)", [d.subject for d in rows])
 
 
 class MenuOpenProbeTest(unittest.TestCase):

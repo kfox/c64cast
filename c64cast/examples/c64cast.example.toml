@@ -157,9 +157,10 @@ url = "http://192.168.2.64"         # a bare host, or the u64://HOST form
 system = "auto"                     # "auto" | NTSC | PAL — the machine's timing
                                     # standard (affects fps, frame_time, CPU
                                     # clock, SID PLAY rate). "auto" reads the
-                                    # Ultimate's live System Mode; it falls back
-                                    # to NTSC on a backend that can't be asked
-                                    # or under --skip-probe.
+                                    # Ultimate 64's live System Mode, or else
+                                    # the KERNAL's PAL/NTSC flag ($02A6); it
+                                    # falls back to NTSC when neither can be
+                                    # read or under --skip-probe.
 sid_play_rate = "auto"              # PLAY-call rate for VSYNC-timed SID tunes.
                                     #   "auto" (default) = the tune's own frame
                                     #     rate from its PSID clock flag, so a PAL

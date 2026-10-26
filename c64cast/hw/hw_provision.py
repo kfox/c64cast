@@ -696,6 +696,47 @@ def read_system_timing(api: object) -> str | None:
     return timing
 
 
+# The KERNAL's CINT sets this from a raster probe at every reset; a cartridge
+# that skips CINT, or a program that reuses the byte, leaves something else
+# there, which is why only 0 and 1 are believed.
+KERNAL_PAL_NTSC_FLAG = 0x02A6
+KERNAL_PAL_NTSC_TIMING: dict[int, str] = {0: "NTSC", 1: "PAL"}
+
+
+def read_kernal_timing(api: object) -> str | None:
+    """The machine's timing standard from the KERNAL's PAL/NTSC flag, or None
+    when the read fails or the byte holds anything but 0 or 1."""
+    data = api.read_memory(KERNAL_PAL_NTSC_FLAG, 1)  # type: ignore[attr-defined]
+    if data is None or len(data) != 1:
+        return None
+    return KERNAL_PAL_NTSC_TIMING.get(data[0])
+
+
+class MachineTiming(NamedTuple):
+    """What `read_machine_timing` learned. `source` names the surface that was
+    asked, None when the backend has none; `timing` is None when there was no
+    surface or its answer was unusable."""
+
+    timing: str | None
+    source: str | None
+
+
+def read_machine_timing(api: object) -> MachineTiming:
+    """Ask the machine for its PAL/NTSC timing: the Ultimate 64's System Mode
+    where it has one, else the KERNAL flag in C64 RAM.
+
+    An unreadable System Mode does not fall through to the KERNAL flag: on the
+    Ultimate both are REST reads, so whatever failed one fails the other."""
+    profile = getattr(api, "profile", None)
+    if getattr(profile, "supports_system_mode", False):
+        return MachineTiming(read_system_timing(api), "System Mode")
+    if getattr(profile, "supports_read", False):
+        return MachineTiming(
+            read_kernal_timing(api), f"KERNAL PAL/NTSC flag (${KERNAL_PAL_NTSC_FLAG:04X})"
+        )
+    return MachineTiming(None, None)
+
+
 def read_video_output(api: object) -> tuple[str | None, str | None]:
     """Read the Ultimate's live ``(System Mode, HDMI Scan Resolution)`` labels.
 
@@ -853,8 +894,9 @@ def restore_video_output(api: object, restore: dict[str, str] | None) -> None:
 
 
 def resolve_system(cfg: Config, api: object) -> None:
-    """Settle `[ultimate64].system = "auto"` against the machine's live System
-    Mode, and fold the result back into the already-built hardware profile.
+    """Settle `[ultimate64].system = "auto"` against the machine's live timing
+    (`read_machine_timing`), and fold the result back into the already-built
+    hardware profile.
 
     Must run after the backend exists rather than inside `make_backend`: the
     profile bakes `default_fps` + `host_sid_model` from the system at
@@ -862,9 +904,10 @@ def resolve_system(cfg: Config, api: object) -> None:
     are rebuilt in place once the answer is known.
 
     An explicitly configured system always wins — it stays the way to describe
-    a machine the probe can't read (a TeensyROM-driven C64, `--skip-probe`) —
-    but it is checked against the live mode and a disagreement is warned about,
-    because every timing constant in the run derives from this one field.
+    a machine nothing can read (`--skip-probe`, a backend with no read path, a
+    KERNAL that never set its flag) — but it is checked against the live
+    timing and a disagreement is warned about, because every timing constant
+    in the run derives from this one field.
     """
     import dataclasses
 
@@ -875,30 +918,34 @@ def resolve_system(cfg: Config, api: object) -> None:
     # code skips load, and make_backend's own fold normalizes the same way —
     # see the comment there for why a bare comparison is a trap.
     configured = cfg.ultimate64.system.upper()
-    live = (
-        read_system_timing(api)
-        if profile is not None
-        and not cfg.debug.skip_probe
-        and getattr(profile, "supports_system_mode", False)
-        else None
-    )
+    if profile is None or cfg.debug.skip_probe:
+        live, source = None, None
+    else:
+        live, source = read_machine_timing(api)
     if configured == "AUTO":
-        if live is None:
-            log.info(
-                "[ultimate64].system = auto: this backend can't report its "
-                "PAL/NTSC timing%s — assuming NTSC. Set it explicitly if that's "
-                "wrong (every frame-rate and clock constant depends on it).",
-                " (--skip-probe)" if cfg.debug.skip_probe else "",
-            )
+        if live is not None:
+            log.info("[ultimate64].system = auto -> %s (read from the machine's %s)", live, source)
         else:
-            log.info("[ultimate64].system = auto -> %s (read from the machine)", live)
+            if cfg.debug.skip_probe:
+                why = "the machine is not asked under --skip-probe"
+            elif source is None:
+                why = f"the {getattr(profile, 'name', 'connected')} backend can't report it"
+            else:
+                why = f"could not read it from the machine's {source}"
+            log.info(
+                "[ultimate64].system = auto: PAL/NTSC timing unknown (%s) — "
+                "assuming NTSC. Set it explicitly if that's wrong (every "
+                "frame-rate and clock constant depends on it).",
+                why,
+            )
         cfg.ultimate64.system = live or "NTSC"
     elif live is not None and live != configured:
         log.warning(
-            "[ultimate64].system = %s but the machine is running %s timing. "
+            "[ultimate64].system = %s but the machine's %s says %s timing. "
             "Frame rate, CPU clock and SID PLAY rate will all be computed for "
             "the wrong standard. Use 'auto', or fix one of the two.",
             configured,
+            source,
             live,
         )
 

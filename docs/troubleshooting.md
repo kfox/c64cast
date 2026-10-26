@@ -237,9 +237,11 @@ That is the signature of `[ultimate64] system` disagreeing with the machine
 — one field feeds the CPU clock, the frame rate, the DAC NMI latches and the
 SID PLAY rate, so a wrong value moves all of them together.
 
-Set `system = "auto"` (the default) and c64cast reads it off the Ultimate's
-live System Mode at startup. `--doctor` reports the disagreement as an error
-if you would rather pin it explicitly.
+Set `system = "auto"` (the default) and c64cast reads it off the machine at
+startup: the Ultimate 64's live System Mode, or on a TeensyROM+ or Ultimate
+II+ the PAL/NTSC flag the KERNAL sets at `$02A6` when the C64 resets.
+`--doctor` reports the disagreement as an error if you would rather pin it
+explicitly.
 
 ### "Webcam shows but everything is solid black / one color"
 

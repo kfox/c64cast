@@ -163,7 +163,7 @@ class HardwareProfile:
 
     system: str = "NTSC"  # resolved machine timing standard ("NTSC"/"PAL").
     #   Set by make_backend from [ultimate64].system and re-folded by
-    #   hw_provision.resolve_system once the live System Mode has been read.
+    #   hw_provision.resolve_system once the machine's timing has been read.
     #   Carried
     #   here so anything holding a backend (the SID player's CIA math) can
     #   reach the machine's clock without also holding the Config.
@@ -1020,9 +1020,10 @@ def make_backend(cfg: Config) -> C64Backend:
     password it cannot send.
     """
     backend = cfg.hardware.backend
-    # `system = "auto"` can't be settled yet (it needs a live REST read, and
-    # there is no API until this function returns) — assume NTSC and let
-    # hw_provision.resolve_system re-fold these fields once the answer is in.
+    # `system = "auto"` can't be settled yet (it needs a live read of the
+    # machine, and there is no API until this function returns) — assume NTSC
+    # and let hw_provision.resolve_system re-fold these fields once the answer
+    # is in.
     # Normalize once: load canonicalizes the spelling, but a Config built in
     # code skips load, and there a bare `== "NTSC"` would fold "ntsc" onto
     # the PAL fps with no diagnostic.

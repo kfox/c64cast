@@ -429,8 +429,9 @@ class Ultimate64Cfg:
         default="auto",
         metadata={
             "help": "Machine timing standard (affects frame rate, CPU clock, SID PLAY "
-            "rate). 'auto' reads it from the Ultimate's live System Mode; on a "
-            "backend that can't be asked, or under --skip-probe, it falls back to NTSC.",
+            "rate). 'auto' reads it from the Ultimate 64's live System Mode, or "
+            "elsewhere from the KERNAL's PAL/NTSC flag ($02A6); when neither can be "
+            "read, or under --skip-probe, it falls back to NTSC.",
             "choices": SYSTEM_CHOICES,
         },
     )
