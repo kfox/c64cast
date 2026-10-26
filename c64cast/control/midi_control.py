@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
+from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast._wire_log import LogThrottle
 from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
@@ -516,9 +516,8 @@ class MidiControlListener:
         self._warned_channels: set[int] = set()
         # A dispatch/clock-feed failure is per *message*, and the message comes
         # off the wire: a controller sending something this build mishandles
-        # would buy a full traceback per message inside an unbounded
-        # `iter_pending()` drain, on the thread a performer's next pad press
-        # waits behind. One throttle per reader, so a jammed dispatch cannot
+        # would buy a full traceback per message, on the thread a performer's
+        # next pad press waits behind. One throttle per reader, so a jammed dispatch cannot
         # swallow the clock port's first report.
         self._dispatch_errors = LogThrottle(log)
         self._clock_feed_errors = LogThrottle(log)
@@ -815,7 +814,7 @@ class MidiControlListener:
             return
         try:
             while not stop.is_set():
-                for msg in port.iter_pending():
+                for msg in poll_pending(port, stop):
                     try:
                         self._dispatch(msg)
                     except Exception:
@@ -833,7 +832,7 @@ class MidiControlListener:
             return
         try:
             while not stop.is_set():
-                for msg in port.iter_pending():
+                for msg in poll_pending(port, stop):
                     try:
                         self._feed_tempo(msg)
                     except Exception:

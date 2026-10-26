@@ -14,6 +14,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -59,27 +60,23 @@ class _FakePort:
     def __init__(self) -> None:
         self.closed = False
 
-    def iter_pending(self):
-        return iter(())
+    def poll(self):
+        return None
 
     def close(self) -> None:
         self.closed = True
 
 
 class _ScriptedPort:
-    """Yields one queued batch of messages on the first iter_pending() call,
-    then nothing — mirrors test_midi_scene.py's _ScriptedPort."""
+    """Hands out one queued batch of messages, then nothing — mirrors
+    test_midi_scene.py's _ScriptedPort."""
 
     def __init__(self, batch) -> None:
-        self._batch = batch
-        self._done = False
+        self._batch = list(batch)
         self.closed = False
 
-    def iter_pending(self):
-        if self._done:
-            return iter(())
-        self._done = True
-        return iter(self._batch)
+    def poll(self):
+        return self._batch.pop(0) if self._batch else None
 
     def close(self) -> None:
         self.closed = True
@@ -655,8 +652,7 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
     each per *message*, and the message comes off the wire. `log.exception`
     renders a full traceback — dearer than the WARNING `_wire_log.py` exists
     to bound, and at ERROR it is not something a level check would have rejected
-    — while both readers drain with mido's unbounded `iter_pending()`, on the
-    thread a performer's next pad press waits behind. So all three sites report
+    — on the thread a performer's next pad press waits behind. So all three sites report
     once per second per site, not once per message."""
 
     N_MESSAGES = 20
@@ -723,6 +719,45 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
             listener._action_errors,
         )
         self.assertEqual(len({id(t) for t in throttles}), len(throttles))
+
+
+class ReaderDrainBoundTests(_MidiControlTestCase):
+    """rtmidi's input queue has no size limit, so a controller sending faster
+    than the reader retires messages must not keep a reader inside one drain:
+    the `stop` check lives outside it, and `PollThread`'s bounded join abandons
+    a worker that never reaches that check."""
+
+    BACKLOG = 5000
+
+    def _flooded_port(self, msg):
+        polls = {"n": 0}
+
+        def poll():
+            polls["n"] += 1
+            return msg if polls["n"] <= self.BACKLOG else None
+
+        return SimpleNamespace(poll=poll), polls
+
+    def _assert_stop_ends_the_drain(self, reader, port_attr, consumer, msg):
+        from c64cast._midi import MAX_MSGS_PER_DRAIN
+
+        listener = MidiControlListener({"system": _fake_playlist("system")}, [])
+        port, polls = self._flooded_port(msg)
+        setattr(listener, port_attr, port)
+        stop = threading.Event()
+        with mock.patch.object(listener, consumer, side_effect=lambda _m: stop.set()):
+            getattr(listener, reader)(stop)
+        self.assertLessEqual(polls["n"], MAX_MSGS_PER_DRAIN)
+
+    def test_control_reader_honors_stop_inside_a_flood(self):
+        self._assert_stop_ends_the_drain(
+            "_reader", "_midi_port", "_dispatch", mido.Message("note_on", note=36, velocity=1)
+        )
+
+    def test_clock_reader_honors_stop_inside_a_flood(self):
+        self._assert_stop_ends_the_drain(
+            "_clock_reader", "_clock_port", "_feed_tempo", mido.Message("clock")
+        )
 
 
 class PortSelectionTests(_MidiControlTestCase):
