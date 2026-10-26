@@ -27,6 +27,7 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID1_FILTER,
     ITEM_ULTISID2_ADDR,
+    ITEM_ULTISID2_FILTER,
 )
 from c64cast.sid.sid_host_emu import SidHeader
 
@@ -356,6 +357,26 @@ class ApplySidAutoconfigTest(unittest.TestCase):
         api.config_store[CAT_ADDRESSING] = {ITEM_SOCKET1_ADDR: "$D400"}
         header = _header(sid_addresses=(0xD400,), sid_models=("6581",))
         saved = sa.apply_sid_autoconfig(api, header, "auto")
+        self.assertEqual(saved, {})
+        self.assertEqual(api.config_puts, [])
+
+    def test_ultisid_already_on_the_required_model_applies_nothing(self):
+        # A U64 with empty sockets plays $D400 on UltiSID 1. A curve of the
+        # requested model is a match — not a reason to re-route the core onto
+        # itself, swap the user's "8580 Hi" for "8580 Lo" and turn mirroring off.
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_ADDRESSING] = {
+            ITEM_ULTISID1_ADDR: "$D400",
+            ITEM_ULTISID2_ADDR: "$D420",
+            ITEM_AUTO_MIRROR: "Enabled",
+        }
+        api.config_store[CAT_ULTISID] = {
+            ITEM_ULTISID1_FILTER: "8580 Hi",
+            ITEM_ULTISID2_FILTER: "6581",
+        }
+        header = _header(sid_addresses=(0xD400,), sid_models=("8580",))
+        with self.assertLogs("c64cast.sid.sid_autoconfig", level="INFO"):
+            saved = sa.apply_sid_autoconfig(api, header, "auto")
         self.assertEqual(saved, {})
         self.assertEqual(api.config_puts, [])
 
