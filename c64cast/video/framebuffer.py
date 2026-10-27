@@ -264,13 +264,25 @@ class Framebuffer:
                         img[cy * 8 + row, x + 1] = c
         return img
 
+    def _char_layout(self, ram: bytes) -> tuple[np.ndarray, bytes]:
+        """The (25, 40) screen matrix and the 2 KB charset $D018 selects in
+        VIC bank 0."""
+        d018 = ram[VIC.D018_MEMORY]
+        screen_base = ((d018 >> 4) & 0x0F) * 0x400
+        charset_base = ((d018 >> 1) & 0x07) * 0x800
+        screen = np.frombuffer(
+            ram[screen_base : screen_base + SCREEN.N_CELLS],
+            dtype=np.uint8,
+        ).reshape(25, 40)
+        # The VIC sees the character ROM, not RAM, at $1000-$1FFF of bank 0.
+        if VIC_BANK_0.CHAR_ROM <= charset_base < VIC_BANK_0.CHAR_ROM + 0x1000:
+            return screen, self.charset
+        return screen, ram[charset_base : charset_base + 0x800]
+
     def _render_text(self, ram: bytes) -> np.ndarray:
         """Standard 40×25 char mode. Each cell: screen code, FG from color
         RAM, BG from $D021."""
-        screen = np.frombuffer(
-            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
-            dtype=np.uint8,
-        ).reshape(25, 40)
+        screen, cs = self._char_layout(ram)
         color_ram = np.frombuffer(
             ram[SCREEN.COLOR_RAM : SCREEN.COLOR_RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
@@ -279,7 +291,6 @@ class Framebuffer:
         bg_col = C64_PALETTE_BGR[bg0]
         img = np.empty((200, 320, 3), dtype=np.uint8)
         img[:, :] = bg_col
-        cs = self.charset
         for cy in range(25):
             for cx in range(40):
                 code = int(screen[cy, cx])
@@ -296,10 +307,7 @@ class Framebuffer:
         """Multicolor text. If color RAM bit 3 = 0, behave as standard text
         (FG = color RAM low 3 bits). If bit 3 = 1, multicolor: 4 colors per
         cell — 00=$D021, 01=$D022, 10=$D023, 11=color RAM low 3 bits."""
-        screen = np.frombuffer(
-            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
-            dtype=np.uint8,
-        ).reshape(25, 40)
+        screen, cs = self._char_layout(ram)
         color_ram = np.frombuffer(
             ram[SCREEN.COLOR_RAM : SCREEN.COLOR_RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
@@ -309,7 +317,6 @@ class Framebuffer:
         bg2 = ram[VIC.D023_BG2] & 0x0F
         img = np.empty((200, 320, 3), dtype=np.uint8)
         img[:, :] = C64_PALETTE_BGR[bg0]
-        cs = self.charset
         for cy in range(25):
             for cx in range(40):
                 code = int(screen[cy, cx])
