@@ -3231,10 +3231,11 @@ class ScanVideoSamplesTest(unittest.TestCase):
     def test_a_resolution_change_mid_stream_is_planned_again(self):
         frames = [_FakeFrame(0, width=64, height=40), _FakeFrame(1, width=3840, height=2160)]
         stream = SimpleNamespace(frames=len(frames))
-        container = SimpleNamespace(decode=lambda s: iter(frames))
+        packets = [SimpleNamespace(stream=stream, decode=lambda f=f: [f]) for f in frames]
+        container = SimpleNamespace(demux=lambda: iter(packets))
         shapes: list[tuple[int, int]] = []
         acc = SimpleNamespace(add=lambda img: shapes.append(img.shape[1::-1]))
-        video_mod._decode_sample_frames(container, stream, [acc], 2, (320, 200))
+        video_mod._decode_sample_frames(container, "clip.mp4", stream, [acc], 2, (320, 200))
         self.assertEqual(shapes, [(64, 40), _plan_decode_size(3840, 2160, 320, 200)])
 
     def test_falls_back_to_sequential_when_seek_fails(self):
@@ -3606,6 +3607,31 @@ def _ts_with_a_silent_audio_track() -> bytes:
     return buf.getvalue()
 
 
+def _ts_with_a_silent_video_track() -> bytes:
+    """An MPEG-TS whose program lists a video stream that carries no packet."""
+    import io
+
+    import av
+
+    buf = io.BytesIO()
+    container = av.open(buf, "w", format="mpegts")
+    video = container.add_stream("mpeg2video", rate=30)
+    video.width, video.height, video.pix_fmt = 64, 40, "yuv420p"
+    audio = container.add_stream("mp2", rate=48000)
+    audio.layout = "stereo"
+    for i in range(20):
+        frame = av.AudioFrame.from_ndarray(
+            np.zeros((1, 2 * 1152), np.int16), format="s16", layout="stereo"
+        )
+        frame.sample_rate, frame.pts = 48000, i * 1152
+        for packet in audio.encode(frame):
+            container.mux(packet)
+    for packet in audio.encode():
+        container.mux(packet)
+    container.close()
+    return buf.getvalue()
+
+
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class RemotePeakScanBoundTest(unittest.TestCase):
     """The peak scan reads its input to the end before playback starts, and
@@ -3640,6 +3666,27 @@ class RemotePeakScanBoundTest(unittest.TestCase):
         # The part read still sets the gain.
         self.assertEqual(peak, 1000)
         self.assertTrue(any("peak scan stopped" in m for m in logs), logs)
+
+    def test_a_live_stream_whose_video_track_is_silent_ends_the_color_prescan(self):
+        # PyAV's decode(v_stream) reads the audio packets inside its
+        # generator, so a stream whose picture never comes held the color
+        # pre-scan, and the scene's setup with it, for good.
+        server = _EndlessHttpServer("live.ts", b"", _ts_with_a_silent_video_track())
+        self.addCleanup(server.close)
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 0.5))
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        box: list = []
+        worker = threading.Thread(
+            target=lambda: box.append(scan_video_samples(server.url, [_RecordingAcc()])),
+            daemon=True,
+        )
+        self.addCleanup(lambda: worker.is_alive() and worker.join(5.0))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            worker.start()
+            worker.join(10.0)
+            self.assertFalse(worker.is_alive(), "the color pre-scan never ended")
+        self.assertEqual(box, [False])
+        self.assertTrue(any("no picture" in m for m in logs.output), logs.output)
 
     def test_a_live_stream_whose_audio_track_is_silent_ends_the_scan(self):
         # Packets of a stream the scan does not decode are read inside

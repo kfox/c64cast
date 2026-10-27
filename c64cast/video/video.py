@@ -741,6 +741,30 @@ def _frame_to_scan_bgr(frame: Any, plan: _DecodePlan) -> np.ndarray:
     return frame.to_ndarray(format="bgr24")
 
 
+class RemoteScanStalled(RuntimeError):
+    """A network input went `_REMOTE_READ_TIMEOUT_S` without a picture
+    during the color pre-scan."""
+
+
+def _video_frames(container: Any, path: str, v_stream: Any) -> Iterator[Any]:
+    """``container.decode(v_stream)``, raising `RemoteScanStalled` on a
+    network input once reading goes `_REMOTE_READ_TIMEOUT_S` without a
+    picture. ``decode(v_stream)`` reads the other streams' packets inside
+    PyAV's generator, so a live stream whose picture never comes kept it
+    reading for good while every read answered within PyAV's own bound."""
+    bounded = not _is_local_file(path)
+    since = time.monotonic()
+    for packet in container.demux():
+        if bounded and time.monotonic() - since > _REMOTE_READ_TIMEOUT_S:
+            raise RemoteScanStalled(
+                f"the media server sent no picture within {_REMOTE_READ_TIMEOUT_S:g} s"
+            )
+        if packet.stream is v_stream:
+            for frame in packet.decode():
+                yield frame
+                since = time.monotonic()
+
+
 def _source_duration_s(container: Any, v_stream: Any) -> float | None:
     """Playback duration of ``v_stream`` in seconds, or None when unknown.
 
@@ -786,7 +810,7 @@ def _seek_sample_frames(
         target_s = (n + 0.5) / max_samples * duration_s
         ts = start_time + int(target_s / time_base)
         _seek(container, path, ts, stream=v_stream)  # backward=True (default) → keyframe ≤ ts
-        frame = next(container.decode(v_stream), None)
+        frame = next(_video_frames(container, path, v_stream), None)
         if frame is None:
             continue
         img = _frame_to_scan_bgr(frame, plan)
@@ -798,6 +822,7 @@ def _seek_sample_frames(
 
 def _decode_sample_frames(
     container: Any,
+    path: str,
     v_stream: Any,
     accumulators: list[Any],
     max_samples: int,
@@ -811,7 +836,7 @@ def _decode_sample_frames(
     stride = max(1, total // max_samples) if total else 5
     taken = 0
     plan = _DecodePlan(decode_target_size)
-    for i, frame in enumerate(container.decode(v_stream)):
+    for i, frame in enumerate(_video_frames(container, path, v_stream)):
         if i % stride:
             continue
         img = _frame_to_scan_bgr(frame, plan)
@@ -896,6 +921,8 @@ def scan_video_samples(
                     # The abandoned seek owns the container now.
                     container = None
                     raise
+                except RemoteScanStalled:
+                    raise
                 except Exception as e:
                     # Non-seekable source: fall through to sequential decode.
                     log.debug(
@@ -910,7 +937,7 @@ def scan_video_samples(
                 v_stream = container.streams.video[0]
                 v_stream.thread_type = "AUTO"
                 _decode_sample_frames(
-                    container, v_stream, accumulators, max_samples, decode_target_size
+                    container, path, v_stream, accumulators, max_samples, decode_target_size
                 )
         finally:
             if container is not None:
