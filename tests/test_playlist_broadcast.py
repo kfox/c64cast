@@ -398,6 +398,43 @@ class BroadcastInterruptTest(unittest.TestCase):
                     self.assertTrue(in_line_at_claims[-1], "the wait did not rejoin the line")
                 self.assertNotIn(pl.name, ens.audio_queue)
 
+    def test_a_waiter_with_no_broadcast_pending_keeps_its_place_in_line(self):
+        pl = _build_playlist()
+        ens = Ensemble(
+            stacks=[_fake_ensemble_stack(n) for n in (pl.name, "other", "third")],
+            stop_event=pl.stop_event,
+        )
+        pl.bind_ensemble(
+            ens,
+            interrupt=ens.broadcast_interrupt[pl.name],
+            resume=ens.broadcast_resume[pl.name],
+            build_follower_scene=lambda cfg: _FakeScene("follower"),
+        )
+        self.assertTrue(ens.try_claim_audio("other"))
+        scene = pl.scenes[0]
+        scene.competes_for_audio_lock = lambda: True
+        line_seen: list[list[str]] = []
+        polls = [0]
+        stop = pl.stop_event
+
+        def wait(timeout: float | None = None) -> bool:
+            polls[0] += 1
+            if polls[0] == 1:
+                ens.join_audio_queue("third")
+            elif polls[0] == 2:
+                line_seen.append(list(ens.audio_queue))
+                ens.release_audio("other")
+            elif polls[0] >= 10:
+                stop.set()
+            return stop.is_set()
+
+        stop.wait = wait  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            claimed = pl.ensemble_coord.wait_for_audio_claim(scene)
+        self.assertEqual(line_seen, [[pl.name, "third"]])
+        self.assertTrue(claimed)
+        self.assertEqual(ens.audio_holder, pl.name)
+
     def test_no_factory_logs_error_and_returns(self):
         pl = _build_playlist()
         ens = Ensemble(stacks=[], stop_event=pl.stop_event)
