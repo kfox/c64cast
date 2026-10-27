@@ -230,6 +230,23 @@ class RedactionTest(unittest.TestCase):
         self.assertNotIn("192.168.2.99", blob)
         self.assertEqual(set(payload["hardware"].keys()), {"backend", "system", "sid_model"})
 
+    def test_page_url_yt_dlp_echoes_keeps_no_credential(self):
+        # yt-dlp's generic extractor sets `webpage_url` to the URL it was
+        # given, userinfo and all.
+        page = "https://alice:hunter2@media.example/private/page"
+        scene = _FakeVideoScene(
+            "Private",
+            page,
+            "https://cdn.example.com/stream.mp4",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4", kind="video", webpage_url=page
+            ),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        self.assertNotIn("hunter2", json.dumps(payload))
+        self.assertEqual(payload["source"]["webpage_url"], payload["source"]["url"])
+        self.assertNotIn("Original page", render_description(payload))
+
 
 class LogAndParseRoundTripTest(unittest.TestCase):
     def test_log_line_round_trips_through_extract_scene_configs(self):

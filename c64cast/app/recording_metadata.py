@@ -179,7 +179,9 @@ def _video_source(scene: Scene) -> dict[str, Any]:
     if is_url:
         resolved = getattr(scene, "source_info", None)
         out["uploader"] = getattr(resolved, "uploader", None)
-        out["webpage_url"] = getattr(resolved, "webpage_url", None)
+        webpage_url = getattr(resolved, "webpage_url", None)
+        # yt-dlp's generic extractor echoes the URL it was given, userinfo included.
+        out["webpage_url"] = scene_factory.redact_media_spec(webpage_url) if webpage_url else None
         out["copyright"] = _url_copyright(resolved)
     else:
         out["copyright"] = _local_file_copyright(scene)
