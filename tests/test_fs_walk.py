@@ -101,6 +101,7 @@ class ClaimNewFileTest(unittest.TestCase):
     def test_a_dangling_symlink_counts_as_taken(self):
         # Opening it would create the file it points at, wherever that is.
         victim = self.dir / "elsewhere" / "victim.mp4"
+        victim.parent.mkdir()
         try:
             (self.dir / "clip.mp4").symlink_to(victim)
         except (OSError, NotImplementedError):
