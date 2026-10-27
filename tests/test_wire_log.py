@@ -330,8 +330,8 @@ def _package_modules():
     All of them import cleanly with the package's hard dependencies alone, so a
     failure here is a real import failure rather than a missing extra — though
     no CI leg installs only the hard dependencies (`uv sync --frozen
-    --no-default-groups --group dev --extra web`), so that is a property of the
-    tree and not something the pipeline proves.
+    --no-default-groups --group dev --extra web --extra video`), so that is a
+    property of the tree and not something the pipeline proves.
     """
     yield c64cast
     for found in pkgutil.walk_packages(c64cast.__path__, "c64cast."):
