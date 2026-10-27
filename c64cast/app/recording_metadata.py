@@ -15,7 +15,9 @@ end up in a public video description:
   `[teensyrom].host`/`serial_port`). Only the backend kind + NTSC/PAL +
   sid_model are surfaced from that area. The device's own identity from
   ``GET /v1/info`` (`unique_id`, `hostname`, and the `ethernet_mac`/`wifi_mac`
-  that firmware 3.15a added) is per-unit too and never appears.
+  that firmware 3.15a added) is per-unit too and never appears, and neither
+  do the per-scene fields of the same kind: a `wled` scene's `sink_allow`
+  addresses and a `midi`/`asid` scene's port name.
 - Any live hardware read. Everything here comes from the already-resolved
   `Config`/`SceneCfg`/scene instance state — no extra U64 traffic, which
   matters mid-recording.
@@ -81,6 +83,12 @@ _SCENE_CFG_SKIP_FIELDS = frozenset(
         "effect",
         "effects",
         "overlays",
+        # Machine-identifying, like the connection target: the hosts the WLED
+        # sink trusts (which also tells a LAN peer what source address to
+        # forge) and MIDI port names, which carry a device's or owner's name.
+        "sink_allow",
+        "midi_port",
+        "asid_port",
     }
 )
 

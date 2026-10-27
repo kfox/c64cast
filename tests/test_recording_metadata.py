@@ -280,6 +280,21 @@ class LocalIdentityTest(unittest.TestCase):
                 self.assertNotIn("alice", blob.replace("REDACTED", ""))
                 self.assertEqual(payload["source"], {"file_spec": expected})
 
+    def test_network_addresses_and_device_names_stay_out(self):
+        for scene_cfg in (
+            SceneCfg(type="wled", name="Lights", sink_allow=["203.0.113.7", "192.168.7.0/24"]),
+            SceneCfg(type="midi", name="Keys", midi_port="Alice's iPad Bluetooth"),
+            SceneCfg(type="asid", name="Tracker", asid_port="Alice's MacBook Network Session"),
+        ):
+            with self.subTest(scene_type=scene_cfg.type):
+                payload = build_scene_recording_metadata(
+                    _FakeGenericScene(scene_cfg), Config(), "system"
+                )
+                blob = json.dumps(payload)
+                self.assertNotIn("203.0.113.7", blob)
+                self.assertNotIn("192.168.7.0", blob)
+                self.assertNotIn("Alice", blob)
+
 
 class LogAndParseRoundTripTest(unittest.TestCase):
     def test_log_line_round_trips_through_extract_scene_configs(self):
