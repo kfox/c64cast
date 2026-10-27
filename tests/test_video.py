@@ -406,6 +406,7 @@ class ResamplerTailTest(unittest.TestCase):
         src._audio_jump_warned = False
         src._dry_stall_level, src._dry_window = 0, None
         src._frames_taken, src._clock_read = 0, None
+        src._video_buf = []
         src._pts_offset = None
         src._pts_anchor_target = 0.0
         src._tempo_scale = 1.0
@@ -3499,10 +3500,18 @@ class _RangeHttpServer:
         self._srv.close()
 
 
-def _write_av_mkv(path: str, *, seconds: int = 6, fps: int = 30, rate: int = 8000) -> None:
+def _write_av_mkv(
+    path: str,
+    *,
+    seconds: int = 6,
+    fps: int = 30,
+    rate: int = 8000,
+    audio_seconds: float | None = None,
+) -> None:
     """A Matroska clip with noise video (so it is too large to arrive in one
-    read) and a tone on a PCM audio stream. Matroska keeps its seek index at
-    the end of the file, so every seek in it opens a new range request."""
+    read) and a tone on a PCM audio stream, ``audio_seconds`` long (the
+    picture's length by default). Matroska keeps its seek index at the end of
+    the file, so every seek in it opens a new range request."""
     import av
 
     rng = np.random.default_rng(0)
@@ -3519,7 +3528,7 @@ def _write_av_mkv(path: str, *, seconds: int = 6, fps: int = 30, rate: int = 800
             img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
             for packet in video.encode(av.VideoFrame.from_ndarray(img, "rgb24")):
                 container.mux(packet)
-        t = np.arange(seconds * rate) / rate
+        t = np.arange(int((seconds if audio_seconds is None else audio_seconds) * rate)) / rate
         pcm = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16).reshape(1, -1)
         frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
         frame.sample_rate = rate
@@ -3531,6 +3540,55 @@ def _write_av_mkv(path: str, *, seconds: int = 6, fps: int = 30, rate: int = 800
                 container.mux(packet)
     finally:
         container.close()
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class SoundtrackShorterThanPictureTest(unittest.TestCase):
+    """A file whose audio ends before its picture: the clock is the sound
+    played, so the pictures past the end of the sound were never reached,
+    `finished` never flipped, and the scene held its frame for good."""
+
+    SECONDS, AUDIO_SECONDS, FPS, RATE = 2, 0.5, 30, 8000
+
+    def setUp(self):
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(
+            path,
+            seconds=self.SECONDS,
+            fps=self.FPS,
+            rate=self.RATE,
+            audio_seconds=self.AUDIO_SECONDS,
+        )
+        self.path = path
+
+    def test_the_demuxer_feeds_silence_to_the_last_picture_at_eof(self):
+        src = AVFileSource(self.path, self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        pushed = [0]
+        lock = threading.Lock()
+
+        def push(arr, epoch=None):
+            with lock:
+                pushed[0] += arr.size
+
+        src.start(push)
+
+        def played_to_the_end() -> bool:
+            with lock:
+                clock = pushed[0] / self.RATE
+            src.current_frame(clock)
+            return src.finished
+
+        self.assertTrue(_wait_until(played_to_the_end, limit_s=10.0))
+
+    def test_the_preload_runs_to_the_end_of_the_last_picture(self):
+        from c64cast.video.video import decode_audio_full
+
+        # Matroska stamps in milliseconds, so the last picture ends a hair off.
+        played = decode_audio_full(self.path, self.RATE).size / self.RATE
+        self.assertAlmostEqual(played, self.SECONDS, delta=0.001)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")

@@ -686,11 +686,23 @@ def decode_audio_full(
                 if arr.size:
                     chunks.append(arr.astype(np.int16, copy=False))
                     room -= arr.size
+        if picture_s is not None and origin_s is not None and v_stream is not None:
+            end_s = picture_s - origin_s + _frame_interval_s(v_stream)
+            short = math.ceil(end_s * target_sample_rate) - sum(c.size for c in chunks)
+            short = min(short, room)
+            if short > 0:
+                chunks.append(np.zeros(short, dtype=np.int16))
     finally:
         container.close()
     if not chunks:
         return np.zeros(0, dtype=np.int16)
     return np.concatenate(chunks)
+
+
+def _frame_interval_s(v_stream: Any) -> float:
+    """Seconds one picture of ``v_stream`` is shown, at the 30 fps
+    `AVFileSource` assumes when the stream reports no rate."""
+    return 1.0 / (float(v_stream.average_rate) if v_stream.average_rate else 30.0)
 
 
 def _frame_to_scan_bgr(frame: Any, decode_size: tuple[int, int] | None) -> np.ndarray:
@@ -1993,6 +2005,7 @@ class AVFileSource:
             while (end := self._demux_pass()) != "closed":
                 if end == "eof":
                     self._flush_resampler()
+                    self._fill_to_last_picture()
                     self._flush_atempo()
                     self._end_audio_input()
                     log.debug("demux %s: EOF", self.path)
@@ -2010,6 +2023,26 @@ class AVFileSource:
             with self._lock:
                 self._eof = True
                 self._demux_exited = True
+
+    def _fill_to_last_picture(self) -> None:
+        """At EOF, feed silence up to the end of the newest picture still
+        buffered. The sink's clock is the sound played, so a soundtrack that
+        ends before its picture stopped the clock short of the last pictures,
+        and the source never finished. Exact, not within
+        `AUDIO_ALIGN_TOLERANCE_S`: a frame interval is shorter than it above
+        33 fps."""
+        if not self._dry_fill_applies() or self._closed:
+            return
+        with self._lock:
+            if not self._video_buf:
+                return
+            newest = max(pts for pts, _ in self._video_buf)
+        end = self._clock_to_content(newest) + 1.0 / self.video_fps
+        fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
+        silence = math.ceil((end - fed) * self.target_sr)
+        if silence > 0:
+            self._audio_fed_s = fed + silence / self.target_sr
+            self._feed_silence(silence)
 
     def _end_audio_input(self) -> None:
         """Tell the sink this pass pushed its last sample (see `start`). Not

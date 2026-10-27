@@ -2563,6 +2563,10 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         starts = [loud[0], *loud[np.flatnonzero(np.diff(loud) > self.RATE // 10) + 1]]
         return [int(s) / self.RATE for s in starts]
 
+    def _last_sound_s(self, pcm: np.ndarray) -> float:
+        """Where the last sound ends, in seconds."""
+        return int(np.flatnonzero(np.abs(pcm) > 1000)[-1] + 1) / self.RATE
+
     def test_a_sound_back_after_a_gap_keeps_the_gap(self):
         from c64cast.video.video import decode_audio_full
 
@@ -2664,7 +2668,12 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
             pcm = decode_audio_full(clip, self.RATE, origin_s=0.0)
         self.assertEqual(len(logs.records), 1)
-        self.assertAlmostEqual(pcm.size / self.RATE, 0.8, delta=0.03)
+        starts = self._sound(pcm)
+        self.assertEqual(len(starts), 1)
+        self.assertAlmostEqual(starts[0], 0.0, delta=0.03)
+        self.assertAlmostEqual(self._last_sound_s(pcm), 0.8, delta=0.03)
+        # The rest is the silence up to the end of the 4 s picture.
+        self.assertAlmostEqual(pcm.size / self.RATE, 4.0, delta=0.03)
 
     def test_a_soundtrack_running_past_its_picture_is_no_jump(self):
         # The picture ends at 4 s and the sound goes on to 40, with no gap.
