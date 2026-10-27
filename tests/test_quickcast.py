@@ -177,6 +177,26 @@ class ClassifyDirAndGlobTest(unittest.TestCase):
         self.assertEqual(scene.type, "video")
         self.assertEqual(scene.file, path)
 
+    def test_existing_file_with_a_comma_plays_as_one_file(self):
+        # yt-dlp names a download after its title, and titles carry commas; the
+        # `file =` grammar splits on them, so the scene used to be refused.
+        name = "Hello, World [gO8P3oMijWs].mp4"
+        self._touch(name)
+        path = os.path.join(self.tmp, name)
+        scene = quickcast.classify_local(path, display=None, duration_s=None)
+        assert scene.file is not None
+        self.assertEqual(resolve_file_spec(scene.file, (".mp4",), label="video"), [path])
+
+    def test_existing_directory_with_a_comma_plays_its_contents(self):
+        with tempfile.TemporaryDirectory() as parent:
+            folder = os.path.join(parent, "Clips, 2024")
+            os.mkdir(folder)
+            clip = os.path.join(folder, "a.mp4")
+            open(clip, "w", encoding="utf-8").close()
+            scene = quickcast.classify_local(folder, display=None, duration_s=None)
+            assert scene.file is not None
+            self.assertEqual(resolve_file_spec(scene.file, (".mp4",), label="video"), [clip])
+
 
 class BuildConfigTest(unittest.TestCase):
     def test_playlist_semantics(self):

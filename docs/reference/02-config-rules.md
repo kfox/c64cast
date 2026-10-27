@@ -300,6 +300,8 @@ to 15. Names are matched loosely and case-insensitively, so `"light green"`,
 **Asset specs.** A scene's `file` is a comma-separated list whose members may
 be literal paths, directories, or glob patterns; their union forms a pool. A
 bare directory is scanned one level deep, and `**` walks a tree at any depth.
+A spec that as a whole names an existing file or directory is that one path,
+commas and all.
 
 ```toml
 file = "~/Music/hvsc/MUSICIANS/G"    # a directory
