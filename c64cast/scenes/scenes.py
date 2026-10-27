@@ -197,7 +197,7 @@ def _media_basename(path: str) -> str:
     and the name is drawn on screen and published in SCENE_CONFIG_JSON."""
     if path.lower().startswith(("http://", "https://")):
         path = urlsplit(path).path
-    return os.path.basename(path)
+    return os.path.basename(path.rstrip("/" + os.sep))
 
 
 def _display_name(path: str) -> str:
@@ -1029,11 +1029,14 @@ class MediaFileMixin:
 
     def _initial_scene_name(self, candidates: list[str]) -> str:
         """The build-time scene name: the file's basename for a single-entry
-        pool, the raw spec for a multi-entry one (the picked file's basename
-        gets prefixed at each setup)."""
+        pool, each spec entry's basename for a multi-entry one (the picked
+        file's basename gets prefixed at each setup)."""
+        from c64cast.app.scene_factory import split_file_spec
+
         if len(candidates) == 1:
             return f"{self.MEDIA_LABEL.title()}: {self._display_name_for(candidates[0])}"
-        return f"{self.MEDIA_LABEL.title()}: {self.file_spec}"
+        entries = ", ".join(_media_basename(e) for e in split_file_spec(self.file_spec))
+        return f"{self.MEDIA_LABEL.title()}: {entries}"
 
     def _pick_filepath(self) -> bool:
         """Re-resolve the spec (directories rescan between iterations so
