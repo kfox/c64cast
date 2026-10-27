@@ -1015,12 +1015,22 @@ needs a capture device.
 same blind spots, needing nothing beyond the core dependencies. `path`, `fps`,
 `scale` and `fourcc` are the knobs.
 
+`path` has to end in `.mp4`, `.m4v`, `.mov`, `.mkv`, `.avi` or `.webm`, and a
+recording never overwrites anything: when the name is taken, the run records to
+`recording-2.mp4`, then `recording-3.mp4`, and so on, and logs the name it chose.
+
+A show started from the web console (`--serve`) keeps only the file name of
+`path` and records into `[web].recording_dir` — `recordings` under the data
+directory unless the host's own config names another. That setting is read from
+the config the host was launched with, never from the show, so a config saved
+through the console cannot put a recording anywhere else on the host.
+
 Across an ensemble, `enabled` in the master turns recording on everywhere, but
 `path` is one of the few settings that does **not** cascade — every system needs
 its own file. Leave it alone and each system records to `recording-<system>.mp4`;
-set it per system and that path is used exactly as written. Pointing two systems
-at one name is the one way left to lose a recording, so `--doctor` treats it as
-an error.
+set it per system and that path is used as written. Two systems pointed at one
+name would end up in `name.mp4` and `name-2.mp4` with nothing saying which is
+which, so `--doctor` treats it as an error.
 
 ### OBS
 

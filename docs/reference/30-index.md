@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 462 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 463 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -449,6 +449,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | `rate_hz` | [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `reactive` | [`generative` (2)](03-vocabulary.md#generative), [Generators (3)](04-display-pipeline.md#generators), [Listening Back (4)](05-sound-and-music.md#listening-back) |
 | `[recording]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`recording` (A)](20-appendix-a-configuration.md#recording) |
+| `recording_dir` | [Recording (6)](07-inputs-and-outputs.md#recording), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `refresh_minutes` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss), [`weather` (C)](22-appendix-c-overlays.md#weather) |
 | `refresh_s` | [`clock` (C)](22-appendix-c-overlays.md#clock), [`countdown` (C)](22-appendix-c-overlays.md#countdown), [`network` (C)](22-appendix-c-overlays.md#network) |
 | `--reset-setup` | [`web` (A)](20-appendix-a-configuration.md#web), [Updates (G)](26-appendix-g-cli-flags.md#updates) |
@@ -483,7 +484,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | `scrolling_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`scrolling_text` (C)](22-appendix-c-overlays.md#scrolling_text), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `separator` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `serial_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
-| `--serve` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Living Through a Crash (6)](07-inputs-and-outputs.md#living-through-a-crash), [`web` (A)](20-appendix-a-configuration.md#web) |
+| `--serve` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Living Through a Crash (6)](07-inputs-and-outputs.md#living-through-a-crash), [Recording (6)](07-inputs-and-outputs.md#recording) |
 | `settle_s` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `setup_progress_bar` | [`video` (A)](20-appendix-a-configuration.md#video) |
 | `setup_wizard` | [`web` (A)](20-appendix-a-configuration.md#web) |

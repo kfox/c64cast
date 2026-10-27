@@ -19,6 +19,7 @@ import os
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from _fakes import fake_system_stack, tmp_cwd
@@ -823,6 +824,7 @@ class BuildPreviewAndRecordingTest(unittest.TestCase):
         cfg.recording.enabled = True
         api = mock.MagicMock(name="api")
         with (
+            tmp_cwd(),
             mock.patch("c64cast.video.framebuffer.Framebuffer") as fb_cls,
             mock.patch("c64cast.video.preview.StreamRecorder", side_effect=RuntimeError("fourcc")),
         ):
@@ -830,12 +832,80 @@ class BuildPreviewAndRecordingTest(unittest.TestCase):
                 framebuffer, preview_window, recorder = session._build_preview_and_recording(
                     cfg, api, "a", is_ensemble=False
                 )
+            self.assertEqual(os.listdir("."), [], "the claimed file was left behind")
         self.assertIsNone(framebuffer)
         self.assertIsNone(preview_window)
         self.assertIsNone(recorder)
         on_write = fb_cls.return_value.on_write
         api.add_write_listener.assert_called_once_with(on_write)
         api.remove_write_listener.assert_called_once_with(on_write)
+
+    def _record(self, path: str, recording_dir: Path | None = None, *, start_error=None):
+        cfg = cfgmod.Config()
+        cfg.recording.enabled = True
+        cfg.recording.path = path
+        api = mock.MagicMock(name="api")
+        with (
+            mock.patch("c64cast.video.framebuffer.Framebuffer"),
+            mock.patch("c64cast.video.preview.StreamRecorder") as recorder_cls,
+        ):
+            recorder_cls.return_value.start.side_effect = start_error
+            _, _, recorder = session._build_preview_and_recording(
+                cfg, api, "a", is_ensemble=False, recording_dir=recording_dir
+            )
+        return recorder, recorder_cls
+
+    def test_a_recording_never_overwrites_an_existing_file(self):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "show.mp4").write_bytes(b"last night")
+        with self.assertLogs("c64cast", level="INFO") as logs:
+            recorder, recorder_cls = self._record(str(tmp / "show.mp4"))
+        self.assertIsNotNone(recorder)
+        self.assertEqual(recorder_cls.call_args.args[1], str(tmp / "show-2.mp4"))
+        self.assertEqual((tmp / "show.mp4").read_bytes(), b"last night")
+        self.assertTrue(any("show-2.mp4" in m for m in logs.output), logs.output)
+
+    def test_a_recording_dir_keeps_only_the_file_name(self):
+        tmp = Path(tempfile.mkdtemp())
+        jail = tmp / "recordings"
+        elsewhere = tmp / "home" / ".ssh"
+        recorder, recorder_cls = self._record(str(elsewhere / "authorized_keys.mp4"), jail)
+        self.assertIsNotNone(recorder)
+        self.assertEqual(recorder_cls.call_args.args[1], str(jail / "authorized_keys.mp4"))
+        self.assertFalse(elsewhere.exists())
+
+    def test_a_recorder_that_fails_to_open_is_not_kept(self):
+        # A recorder whose writer never opened was returned anyway, and the
+        # stack later stopped it as if it were recording.
+        tmp = Path(tempfile.mkdtemp())
+        with self.assertLogs("c64cast", level="ERROR"):
+            recorder, _ = self._record(
+                str(tmp / "show.mp4"), start_error=RuntimeError("VideoWriter failed")
+            )
+        self.assertIsNone(recorder)
+        self.assertEqual(os.listdir(tmp), [])
+
+    def test_a_recording_in_a_missing_directory_is_disabled_not_fatal(self):
+        tmp = Path(tempfile.mkdtemp())
+        with self.assertLogs("c64cast", level="ERROR") as logs:
+            recorder, recorder_cls = self._record(str(tmp / "missing" / "show.mp4"))
+        self.assertIsNone(recorder)
+        recorder_cls.assert_not_called()
+        self.assertTrue(any("recording disabled" in m for m in logs.output), logs.output)
+
+    def test_a_recording_with_every_numbered_name_taken_is_disabled_not_fatal(self):
+        tmp = Path(tempfile.mkdtemp())
+        for name in ("show.mp4", "show-2.mp4"):
+            (tmp / name).write_bytes(b"keep")
+        with (
+            mock.patch.object(session, "_MAX_RECORDING_NAME_ATTEMPTS", 2),
+            self.assertLogs("c64cast", level="ERROR") as logs,
+        ):
+            recorder, recorder_cls = self._record(str(tmp / "show.mp4"))
+        self.assertIsNone(recorder)
+        recorder_cls.assert_not_called()
+        self.assertTrue(any("recording disabled" in m for m in logs.output), logs.output)
+        self.assertEqual(sorted(os.listdir(tmp)), ["show-2.mp4", "show.mp4"])
 
 
 class StartServicesTest(unittest.TestCase):

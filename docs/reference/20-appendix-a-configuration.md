@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order, and the fields within each in alphabetical order too: 20 sections and 182 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order, and the fields within each in alphabetical order too: 20 sections and 183 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -350,7 +350,7 @@ scale = 2
 | **`enabled`**<br>*Type:* `bool`<br>*Default:* `False` | Record the rendered display to a video file (cv2.VideoWriter). |
 | **`fourcc`**<br>*Type:* `str`<br>*Default:* `'mp4v'` | FourCC codec code passed to cv2.VideoWriter. |
 | **`fps`**<br>*Type:* `int`<br>*Default:* `30` | Recording frame rate. |
-| **`path`**<br>*Type:* `str`<br>*Default:* `'recording.mp4'` | Output video file path. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4' so the wall's systems don't overwrite each other. Setting it explicitly uses that path verbatim. |
+| **`path`**<br>*Type:* `str`<br>*Default:* `'recording.mp4'` | Output video file path, ending in one of .mp4, .m4v, .mov, .mkv, .avi, .webm. Never overwrites: a name already taken records to 'recording-2.mp4', 'recording-3.mp4', and so on. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4'. A show started from the web console (`--serve`) keeps only the file name and records into [web].recording_dir. |
 | **`scale`**<br>*Type:* `int`<br>*Default:* `2` | Integer pixel scale factor for the recording. |
 
 ## `[teensyrom]`
@@ -476,6 +476,7 @@ autostart = false
 | **`media_read_only`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Additional directories the media picker may browse but never write to — a library you want offered without exposing it to uploads, e.g. ["~/Movies", "/mnt/hvsc"]. Empty adds nothing. |
 | **`media_read_write`**<br>*Type:* `dict[str, str]`<br>*Default:* `{}` | Kind (video/sid/picture/program/audio) to directory, both browsable and uploadable to. Unset kinds fall back to the loader's own defaults (assets/videos, assets/sids, assets/pictures, assets/programs); audio has no default, so name one to allow audio uploads. Set a kind to "" to disable uploading it while leaving the rest at their defaults (this is the only way to turn one off — an empty table means every default applies). Uploads never overwrite: a name already taken is renamed clip-2.mp4, clip-3.mp4, and so on. |
 | **`port`**<br>*Type:* `int`<br>*Default:* `8123` | Bind port for the web console host. |
+| **`recording_dir`**<br>*Type:* `str`<br>*Default:* `''` | Directory every show started from the web console records into. Only the file name of [recording].path is kept, so a config saved through the console cannot write a recording anywhere else. Empty = 'recordings' under the data dir. |
 | **`screen_fps`**<br>*Type:* `float`<br>*Default:* `10.0` | How often the console's live screen picture is refreshed, in frames per second (0 turns the screen off entirely). The picture is the Ultimate 64's own VIC stream, so this caps how often the host encodes a frame, not how fast the machine sends. Ultimate 64 only — an Ultimate II+ has no VIC of its own and a TeensyROM+ no video path. |
 | **`settle_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Seconds to leave the hardware alone between tearing one session down and building the next: on firmware before 3.15 the U64's DMA service refuses new connections for a few seconds after one closes, and a camera will not reopen instantly. |
 | **`setup_wizard`**<br>*Type:* `bool`<br>*Default:* `False` | Serve a one-time, unauthenticated setup form (connection target + token choice) until it is completed, instead of the normal token-gated console. For a pre-provisioned appliance image only — leave this off on a console you configure yourself. See `c64cast --reset-setup`. |

@@ -1439,6 +1439,16 @@ class ChoiceEnforcementTest(unittest.TestCase):
             self._load("[audio]\npitch_mult_blank = 0.9\n").audio.pitch_mult_blank, 0.9
         )
 
+    def test_a_recording_path_without_a_video_extension_is_refused(self):
+        # A config saved through the web console sets it, and the recorder
+        # truncates what it names.
+        for value in ("~/.zshrc", "~/.ssh/authorized_keys", "out", "clip.mp4.bak"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self._load(f'[recording]\npath = "{value}"\n')
+        self.assertEqual(
+            self._load('[recording]\npath = "shows/Gig.MKV"\n').recording.path, "shows/Gig.MKV"
+        )
+
     def test_a_system_typo_is_still_refused(self):
         with self.assertRaises(ValueError):
             self._load('[ultimate64]\nsystem = "ntscc"\n')
