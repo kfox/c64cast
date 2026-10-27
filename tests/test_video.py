@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
@@ -3545,10 +3547,6 @@ class RemoteSeekBoundTest(unittest.TestCase):
     def setUp(self):
         stack = ExitStack()
         self.addCleanup(stack.close)
-        # Runs after every server is closed. An abandoned seek ends only on
-        # FFmpeg's rw_timeout where closing the server does not wake it
-        # (Windows), which outlasts the thread sandbox's grace.
-        self.addCleanup(self._wait_for_abandoned_seeks)
         stack.enter_context(mock.patch("c64cast.video.video._REMOTE_OPEN_TIMEOUT_S", 0.5))
         stack.enter_context(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 0.5))
         # The reconnect backoff would keep an abandoned seek redialing the
@@ -3561,17 +3559,24 @@ class RemoteSeekBoundTest(unittest.TestCase):
         self.local = path
 
     def _wait_for_abandoned_seeks(self) -> None:
-        self.assertTrue(
-            _wait_until(
-                lambda: not any(t.name == "av-seek" for t in threading.enumerate()), limit_s=10.0
-            ),
-            "an abandoned seek is still blocked",
-        )
+        def seeks() -> list[threading.Thread]:
+            return [t for t in threading.enumerate() if t.name == "av-seek"]
+
+        if _wait_until(lambda: not seeks(), limit_s=10.0):
+            return
+        frames = sys._current_frames()
+        stacks = [
+            "".join(traceback.format_stack(frames[t.ident])) for t in seeks() if t.ident in frames
+        ]
+        self.fail("an abandoned seek is still blocked:\n" + "\n".join(stacks))
 
     def _server(self, serve: int | None) -> str:
         """A server for the clip; opening it takes the first connection."""
         server = _RangeHttpServer(Path(self.local).read_bytes(), serve)
         self.addCleanup(server.close)
+        # Before the close: on Windows an abandoned seek outlasts 10 s once
+        # the server is gone, so it has to end against one still holding it.
+        self.addCleanup(self._wait_for_abandoned_seeks)
         return server.url
 
     def _bounded(self, fn, limit_s: float = 10.0):
