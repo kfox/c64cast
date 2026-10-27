@@ -361,6 +361,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # own voice. Unused in shared mode.
         self._mt_held: list[list[int]] = [[] for _ in range(SID.N_VOICES)]
         self._mt_held_vel: list[dict[int, int]] = [{} for _ in range(SID.N_VOICES)]
+        self._voice_bend: list[float] = [0.0] * SID.N_VOICES
         self._allocation_lock = threading.Lock()
         # Monotonic assignment counter feeding `_VoiceState.seq`.
         self._assign_seq = 0
@@ -559,10 +560,10 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._dirty = True  # controller row reflects the new value
 
     def _pitchwheel(self, pitch: int) -> None:
-        # Re-emit frequency for every gated voice with a +/- 2 semitone bend.
         bend_semitones = (pitch / 8192.0) * 2.0
         touched = False
         for idx, v in enumerate(self.voices):
+            self._voice_bend[idx] = bend_semitones
             if v.on and v.note is not None:
                 freq = _note_to_sid_freq(v.note + bend_semitones, self.system)
                 base = SID.voice_base(idx)
@@ -650,7 +651,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self, voice_idx: int, midi_note: int, gate: bool, velocity: int | None = None
     ) -> None:
         base = SID.voice_base(voice_idx)
-        freq = _note_to_sid_freq(midi_note, self.system)
+        freq = _note_to_sid_freq(midi_note + self._voice_bend[voice_idx], self.system)
         # freq + pulse-width + control + ADSR are 7 contiguous bytes: one PUT.
         wave_bits = self.voice_wave_bits[voice_idx]
         ctrl = wave_bits | (SID.GATE if gate else 0)

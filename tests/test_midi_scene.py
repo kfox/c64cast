@@ -465,6 +465,22 @@ class PitchWheelTests(_MidiTestCase):
         # Voice 0 is released → no frequency re-emit.
         self.assertNotIn("D400", api.regs)
 
+    def test_a_note_pressed_under_a_held_bend_sounds_bent(self):
+        scene, api = _make_scene()
+        scene._pitchwheel(8191)
+        scene._note_on(60, 100)
+        bent = _note_to_sid_freq(60 + 8191 / 8192.0 * 2.0, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (bent & 0xFF, bent >> 8))
+
+    def test_a_resurrected_note_keeps_the_held_bend(self):
+        scene, api = _make_scene()
+        for note in (60, 62, 64, 65):  # 65 steals voice 2, suspending 64
+            scene._note_on(note, 100)
+        scene._pitchwheel(-8192)
+        scene._note_off(65)  # 64 resurrects on voice 2
+        bent = _note_to_sid_freq(64 - 2.0, "NTSC")
+        self.assertEqual(api.regs["D40E"][:2], (bent & 0xFF, bent >> 8))
+
 
 class HandleMsgDispatchTests(_MidiTestCase):
     def test_note_on_then_off_via_messages(self):
