@@ -41,6 +41,10 @@ _PULSE_EMA_ALPHA = 0.2
 # a fresh average.
 _TAP_RESET_S = 2.0
 
+# A tap sooner than one beat at _BPM_MAX after the last is a bounce (a pad
+# double-firing, a doubled console request), not a beat.
+_TAP_MIN_INTERVAL_S = 60.0 / _BPM_MAX
+
 
 class TempoClock:
     """A process-wide beat grid, GIL-atomically readable by every consumer.
@@ -174,6 +178,8 @@ class TempoClock:
         downbeat to this tap. The first tap of a group (or after a >2 s gap) just
         seeds the timing; two or more set the tempo."""
         with self._lock:
+            if self._tap_times and (now - self._tap_times[-1]) < _TAP_MIN_INTERVAL_S:
+                return
             if self._tap_times and (now - self._tap_times[-1]) > _TAP_RESET_S:
                 self._tap_times.clear()
             self._tap_times.append(now)

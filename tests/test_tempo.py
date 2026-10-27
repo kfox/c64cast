@@ -194,6 +194,12 @@ class TapTempoTest(unittest.TestCase):
         c.tap(10.0)  # 6 BPM, below the floor + past the reset window -> no change
         self.assertAlmostEqual(c.bpm, 100.0, places=6)
 
+    def test_a_bounced_tap_does_not_skew_the_tempo(self):
+        c = TempoClock(bpm=60.0, source="internal", now=0.0)
+        for t in (0.0, 0.5, 1.0, 1.01, 1.5):
+            c.tap(t)
+        self.assertAlmostEqual(c.bpm, 120.0, places=6)
+
 
 class AudioDriveTest(unittest.TestCase):
     def test_audio_source_idles_until_a_tempo_locks(self):
