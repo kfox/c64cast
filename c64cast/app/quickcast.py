@@ -329,6 +329,9 @@ def resolve_media_url(url: str) -> ResolvedMedia:
         # Only the first entry of a playlist or feed is played, and yt-dlp
         # otherwise resolves every entry, one fetch and one timeout each.
         "playlist_items": "1",
+        # A share link names both a video and the playlist it was opened from
+        # (`watch?v=X&list=PL…`); without this yt-dlp plays the playlist.
+        "noplaylist": True,
         # `YoutubeDL._format_err` wraps "ERROR: " in raw ANSI escapes whenever it
         # thinks its stderr is a tty, and those land in the DownloadError message
         # below regardless of quiet/logger.

@@ -532,6 +532,54 @@ class ResolveFeedUrlTest(unittest.TestCase):
         self.assertEqual(self.server.paths, ["/feed.xml", "/page0.html"])  # type: ignore[attr-defined]
 
 
+@unittest.skipUnless(importlib.util.find_spec("yt_dlp"), "needs the yt extra")
+class ResolveYouTubeShareLinkTest(unittest.TestCase):
+    """yt-dlp's own YouTube extractors decide video-or-playlist; only their
+    page fetches are stubbed, and any other network use fails the test."""
+
+    def setUp(self):
+        import yt_dlp  # type: ignore[import-untyped]  # noqa: PLC0415
+        from yt_dlp.extractor.youtube import (  # type: ignore[import-untyped]  # noqa: PLC0415
+            YoutubeIE,
+            YoutubeTabIE,
+        )
+        from yt_dlp.utils import ExtractorError  # noqa: PLC0415
+
+        def fetch_video(ie, url):
+            video_id = ie._match_id(url)
+            return {
+                "id": video_id,
+                "title": video_id,
+                "url": f"https://stream.example/{video_id}.mp4",
+                "ext": "mp4",
+                "vcodec": "h264",
+                "acodec": "aac",
+            }
+
+        def fetch_playlist(ie, url, item_id, *args, **kwargs):  # noqa: ARG001
+            raise ExtractorError(f"fetched playlist {item_id}", expected=True)
+
+        def no_network(ydl, request, *args, **kwargs):  # noqa: ARG001
+            raise AssertionError(f"network request: {request}")
+
+        home = tempfile.mkdtemp()
+        env = {"HOME": home, "XDG_CONFIG_HOME": home, "XDG_CACHE_HOME": home}
+        for patcher in (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(YoutubeIE, "_real_extract", fetch_video),
+            mock.patch.object(YoutubeTabIE, "_extract_data", fetch_playlist),
+            mock.patch.object(yt_dlp.YoutubeDL, "urlopen", no_network),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_video_shared_from_a_playlist_plays_that_video(self):
+        resolved = quickcast.resolve_media_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabcdefghijklmnopqrstuvwxyz012345"
+        )
+        self.assertEqual(resolved.stream_url, "https://stream.example/dQw4w9WgXcQ.mp4")
+
+
 class ParseTimestrTest(unittest.TestCase):
     def test_bare_seconds(self):
         self.assertEqual(quickcast._parse_timestr("90"), 90.0)
