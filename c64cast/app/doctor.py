@@ -1719,8 +1719,9 @@ def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
 
     `resolve_recording_path` only disambiguates systems that left `path` at
     the default, so spelling out one shared path across two per-system TOMLs
-    still points two cv2.VideoWriters at one file — which produces a single
-    truncated stream, with no error from either writer.
+    still names one file twice. Neither recording is lost — the second claim
+    numbers itself `-2` — but which system's stream is in which file is then
+    down to which one started first.
 
     Two names for one file have to compare equal or the check misses exactly
     the case it exists for, so paths are normalized the way the filesystem
@@ -1746,7 +1747,8 @@ def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
             subject=display,
             message=(
                 f"{len(names)} systems record to this one file "
-                f"({', '.join(sorted(names))}); only one stream survives."
+                f"({', '.join(sorted(names))}); all but the first to start "
+                "record to a numbered name instead, so nothing says which is which."
             ),
             hint=(
                 "Give each system's [recording] its own `path`, or delete the "

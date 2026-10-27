@@ -1832,6 +1832,9 @@ class PreviewCfg:
     )
 
 
+RECORDING_EXTENSIONS: tuple[str, ...] = (".mp4", ".m4v", ".mov", ".mkv", ".avi", ".webm")
+
+
 @dataclass
 class RecordingCfg:
     """Capture the rendered display to a video file. Uses cv2.VideoWriter,
@@ -1844,10 +1847,13 @@ class RecordingCfg:
     path: str = field(
         default="recording.mp4",
         metadata={
-            "help": "Output video file path. Does not cascade from an ensemble "
-            "master: a system that leaves this alone records to "
-            "'recording-<system>.mp4' so the wall's systems don't overwrite "
-            "each other. Setting it explicitly uses that path verbatim."
+            "help": "Output video file path, ending in one of "
+            f"{', '.join(RECORDING_EXTENSIONS)}. Never overwrites: a name already "
+            "taken records to 'recording-2.mp4', 'recording-3.mp4', and so on. "
+            "Does not cascade from an ensemble master: a system that leaves this "
+            "alone records to 'recording-<system>.mp4'. A show started from the "
+            "web console (--serve) keeps only the file name and records into "
+            "[web].recording_dir."
         },
     )
     fps: int = field(default=30, metadata={"help": "Recording frame rate."})
@@ -2514,6 +2520,17 @@ class WebCfg:
             "help": "Additional directories the media picker may browse but never "
             "write to — a library you want offered without exposing it to uploads, "
             'e.g. ["~/Movies", "/mnt/hvsc"]. Empty adds nothing.'
+        },
+    )
+    # Read from the config the host was launched with, never from the show being
+    # started: a show that could name this directory could name any directory.
+    recording_dir: str = field(
+        default="",
+        metadata={
+            "help": "Directory every show started from the web console records "
+            "into. Only the file name of [recording].path is kept, so a config "
+            "saved through the console cannot write a recording anywhere else. "
+            "Empty = 'recordings' under the data dir."
         },
     )
 
@@ -3258,6 +3275,17 @@ def _validate_use_reu_staged(video: VideoCfg) -> None:
         raise ValueError(f'[video].use_reu_staged must be true, false, or "auto", got {v!r}')
 
 
+def _validate_recording_path(recording: RecordingCfg) -> None:
+    """A path a web-saved config sets is a write anywhere the host user can
+    write, so it is held to a video file name; anything else is a typo or an
+    attempt on a file that is not a recording."""
+    if not recording.path.lower().endswith(RECORDING_EXTENSIONS):
+        raise ValueError(
+            f"[recording].path must end in one of {', '.join(RECORDING_EXTENSIONS)}, "
+            f"got {recording.path!r}"
+        )
+
+
 def _validate_double_buffer(video: VideoCfg) -> None:
     """The tri-state [video].double_buffer accepts only a bool or the literal
     string "auto" — same shape as use_reu_staged. Catch a typo at load time."""
@@ -3850,6 +3878,7 @@ def validate_sections(cfg: Config) -> None:
     fail mid-show instead — the exact thing each of these validators' own
     docstring says it exists to prevent."""
     _validate_use_reu_staged(cfg.video)
+    _validate_recording_path(cfg.recording)
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
     _validate_audio_device(cfg.audio)
@@ -4272,10 +4301,10 @@ def resolve_recording_path(
 ) -> str:
     """Per-system output file for `[recording]`, unexpanded.
 
-    cv2.VideoWriter has no notion of sharing a file, so N systems opening one
-    path produce one truncated stream rather than N recordings. In an ensemble
-    a system that left `path` at the default gets the system name folded into
-    the stem — `recording.mp4` -> `recording-left.mp4` — which is the same
+    Each run claims its file exclusively, so N systems naming one path would
+    land in `-2`, `-3`, … in start order with nothing saying whose is whose.
+    In an ensemble a system that left `path` at the default gets the system
+    name folded into the stem — `recording.mp4` -> `recording-left.mp4` — which is the same
     disambiguation the preview window applies to its HighGUI title.
 
     An explicit per-system `path` is honored verbatim: the user naming the file

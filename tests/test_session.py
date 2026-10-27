@@ -19,6 +19,7 @@ import os
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from _fakes import fake_system_stack, tmp_cwd
@@ -823,6 +824,7 @@ class BuildPreviewAndRecordingTest(unittest.TestCase):
         cfg.recording.enabled = True
         api = mock.MagicMock(name="api")
         with (
+            tmp_cwd(),
             mock.patch("c64cast.video.framebuffer.Framebuffer") as fb_cls,
             mock.patch("c64cast.video.preview.StreamRecorder", side_effect=RuntimeError("fourcc")),
         ):
@@ -830,6 +832,7 @@ class BuildPreviewAndRecordingTest(unittest.TestCase):
                 framebuffer, preview_window, recorder = session._build_preview_and_recording(
                     cfg, api, "a", is_ensemble=False
                 )
+            self.assertEqual(os.listdir("."), [], "the claimed file was left behind")
         self.assertIsNone(framebuffer)
         self.assertIsNone(preview_window)
         self.assertIsNone(recorder)
@@ -837,23 +840,50 @@ class BuildPreviewAndRecordingTest(unittest.TestCase):
         api.add_write_listener.assert_called_once_with(on_write)
         api.remove_write_listener.assert_called_once_with(on_write)
 
-    def test_a_recorder_that_fails_to_open_is_not_kept(self):
-        # A recorder whose writer never opened was returned anyway, and the
-        # stack later stopped it as if it were recording.
+    def _record(self, path: str, recording_dir: Path | None = None, *, start_error=None):
         cfg = cfgmod.Config()
         cfg.recording.enabled = True
-        cfg.recording.path = os.path.join(tempfile.mkdtemp(), "show.mp4")
+        cfg.recording.path = path
         api = mock.MagicMock(name="api")
         with (
             mock.patch("c64cast.video.framebuffer.Framebuffer"),
             mock.patch("c64cast.video.preview.StreamRecorder") as recorder_cls,
         ):
-            recorder_cls.return_value.start.side_effect = RuntimeError("VideoWriter failed")
-            with self.assertLogs("c64cast", level="ERROR"):
-                _, _, recorder = session._build_preview_and_recording(
-                    cfg, api, "a", is_ensemble=False
-                )
+            recorder_cls.return_value.start.side_effect = start_error
+            _, _, recorder = session._build_preview_and_recording(
+                cfg, api, "a", is_ensemble=False, recording_dir=recording_dir
+            )
+        return recorder, recorder_cls
+
+    def test_a_recording_never_overwrites_an_existing_file(self):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "show.mp4").write_bytes(b"last night")
+        with self.assertLogs("c64cast", level="INFO") as logs:
+            recorder, recorder_cls = self._record(str(tmp / "show.mp4"))
+        self.assertIsNotNone(recorder)
+        self.assertEqual(recorder_cls.call_args.args[1], str(tmp / "show-2.mp4"))
+        self.assertEqual((tmp / "show.mp4").read_bytes(), b"last night")
+        self.assertTrue(any("show-2.mp4" in m for m in logs.output), logs.output)
+
+    def test_a_recording_dir_keeps_only_the_file_name(self):
+        tmp = Path(tempfile.mkdtemp())
+        jail = tmp / "recordings"
+        elsewhere = tmp / "home" / ".ssh"
+        recorder, recorder_cls = self._record(str(elsewhere / "authorized_keys.mp4"), jail)
+        self.assertIsNotNone(recorder)
+        self.assertEqual(recorder_cls.call_args.args[1], str(jail / "authorized_keys.mp4"))
+        self.assertFalse(elsewhere.exists())
+
+    def test_a_recorder_that_fails_to_open_is_not_kept(self):
+        # A recorder whose writer never opened was returned anyway, and the
+        # stack later stopped it as if it were recording.
+        tmp = Path(tempfile.mkdtemp())
+        with self.assertLogs("c64cast", level="ERROR"):
+            recorder, _ = self._record(
+                str(tmp / "show.mp4"), start_error=RuntimeError("VideoWriter failed")
+            )
         self.assertIsNone(recorder)
+        self.assertEqual(os.listdir(tmp), [])
 
 
 class StartServicesTest(unittest.TestCase):

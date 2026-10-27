@@ -645,7 +645,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Output video file path. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4' so the wall's systems don't overwrite each other. Setting it explicitly uses that path verbatim.",
+          "description": "Output video file path, ending in one of .mp4, .m4v, .mov, .mkv, .avi, .webm. Never overwrites: a name already taken records to 'recording-2.mp4', 'recording-3.mp4', and so on. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4'. A show started from the web console (--serve) keeps only the file name and records into [web].recording_dir.",
           "default": "recording.mp4"
         },
         "fps": {
@@ -1066,6 +1066,11 @@
           "type": "array",
           "description": "Additional directories the media picker may browse but never write to \u2014 a library you want offered without exposing it to uploads, e.g. [\"~/Movies\", \"/mnt/hvsc\"]. Empty adds nothing.",
           "default": []
+        },
+        "recording_dir": {
+          "type": "string",
+          "description": "Directory every show started from the web console records into. Only the file name of [recording].path is kept, so a config saved through the console cannot write a recording anywhere else. Empty = 'recordings' under the data dir.",
+          "default": ""
         }
       }
     },

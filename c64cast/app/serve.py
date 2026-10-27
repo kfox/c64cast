@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -177,14 +178,28 @@ TransitionFn = Callable[[SessionStatus], None]
 
 
 def build_and_start(
-    req: StartRequest, generation: int, publish: Callable[[Session], None]
+    req: StartRequest,
+    generation: int,
+    publish: Callable[[Session], None],
+    *,
+    recording_dir: Path | None = None,
 ) -> Session:
     """The real build: hardware up, services up, playlists running.
 
     ``publish`` is called the moment the session object exists — from there on
     the supervisor owns teardown, so a failure in ``start_services`` or in
-    thread start still releases the hardware."""
-    sess = build_session(req.args, req.loaded, req.cfgs, interactive=False, generation=generation)
+    thread start still releases the hardware.
+
+    Every recording lands in ``recording_dir``, the default one when it is
+    None: a show here may come from a config the console just saved."""
+    sess = build_session(
+        req.args,
+        req.loaded,
+        req.cfgs,
+        interactive=False,
+        generation=generation,
+        recording_dir=recording_dir if recording_dir is not None else paths.recordings_dir(),
+    )
     publish(sess)
     start_services(sess)
     # Threads last: the reap poller treats a session with live threads as
@@ -1466,6 +1481,12 @@ def _serve_once(host: _Host, web_cfg: cfgmod.WebCfg) -> _Cycle:
     return _Cycle.SHUTDOWN if host.shutdown.is_set() else _Cycle.RESTART
 
 
+def _recording_dir(web_cfg: cfgmod.WebCfg) -> Path:
+    if web_cfg.recording_dir:
+        return Path(paths.expand_user(web_cfg.recording_dir))
+    return paths.recordings_dir()
+
+
 def run_daemon(
     web_cfg: cfgmod.WebCfg,
     load: ConfigLoader,
@@ -1488,7 +1509,10 @@ def run_daemon(
     log_buffer = SessionLogBuffer()
     log_buffer.install()
     manager = SessionManager(
-        settle_s=web_cfg.settle_s, log_buffer=log_buffer, launch_config_path=config_path
+        build=functools.partial(build_and_start, recording_dir=_recording_dir(web_cfg)),
+        settle_s=web_cfg.settle_s,
+        log_buffer=log_buffer,
+        launch_config_path=config_path,
     )
     host = _Host(
         manager=manager,

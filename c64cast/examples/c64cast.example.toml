@@ -728,7 +728,8 @@ scale = 3                           # window pixels per C64 pixel
 
 [recording]
 enabled = false                     # cv2.VideoWriter; uses opencv-python
-path = "recording.mp4"
+path = "recording.mp4"              # .mp4/.m4v/.mov/.mkv/.avi/.webm; never
+                                    #   overwrites (recording-2.mp4, ...)
 fps = 30
 scale = 2
 fourcc = "mp4v"
@@ -1084,6 +1085,11 @@ config_roots = []
 media_read_write = {}
 # Additional directories the picker may browse but never write to.
 media_read_only = []
+# Where every show started from the console records: only the file name of
+# [recording].path is kept, so a config saved through the console cannot
+# write a recording anywhere else. Read from the config the host was
+# launched with, never from the show. Empty = "recordings" under the data dir.
+recording_dir = ""
 
 [midi_control]
 # Process-wide MIDI control surface for live performance: scene jumps,
