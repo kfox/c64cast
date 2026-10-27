@@ -55,4 +55,8 @@ export class HeldKeys<K> implements Holds<K> {
     if (!this.#held.delete(key)) return;
     this.#send(key, false);
   }
+
+  releaseAll(): void {
+    for (const key of [...this.#held]) this.release(key);
+  }
 }

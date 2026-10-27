@@ -96,6 +96,20 @@ describe("HeldKeys", () => {
     expect(sent).toEqual([]);
   });
 
+  it("releases every held pad once on releaseAll", () => {
+    const { sent, pads, captured } = setup();
+    pointerHold(pads, 3, event("pointerdown", captured), false);
+    pointerHold(pads, 5, event("pointerdown", captured), false);
+    pads.releaseAll();
+    pads.releaseAll();
+    expect(sent).toEqual([
+      [3, true],
+      [5, true],
+      [3, false],
+      [5, false],
+    ]);
+  });
+
   it("sends one press for a second pointer on a pad already down", () => {
     const { sent, pads, captured } = setup();
     pointerHold(pads, 3, event("pointerdown", captured), false);

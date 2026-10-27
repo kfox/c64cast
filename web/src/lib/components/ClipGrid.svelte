@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+
   import { HeldKeys, pointerHold } from "$lib/pointerHold";
   import type { Clip } from "$lib/types";
 
@@ -14,6 +16,12 @@
   // (performance.py `_handle_event`), so this is safe for every launch type
   // and is what the MIDI surface sends too.
   const pads = new HeldKeys<number>((slot, pressed) => onpress(slot, pressed));
+  onDestroy(() => pads.releaseAll());
+  // A disabled pad never sees its pointerup, so a gate clip held while the
+  // grid went read-only would otherwise keep playing.
+  $effect(() => {
+    if (readOnly) pads.releaseAll();
+  });
 
   function press(slot: number, event: PointerEvent & { currentTarget: HTMLButtonElement }): void {
     event.preventDefault();
