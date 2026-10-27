@@ -3271,6 +3271,38 @@ class ScanVideoSamplesTest(unittest.TestCase):
         video_mod._decode_sample_frames(container, "clip.mp4", stream, [acc], 2, (320, 200))
         self.assertEqual(shapes, [(64, 40), _plan_decode_size(3840, 2160, 320, 200)])
 
+    def test_the_picture_bound_is_on_the_gap_between_pictures(self):
+        # A remote file served slowly takes longer than the bound to read in
+        # full, and only a gap with no picture in it may end the read.
+        now = [0.0]
+        stream = SimpleNamespace()
+
+        def packets(gap_s: float):
+            for i in range(4):
+                now[0] += gap_s
+                yield SimpleNamespace(stream=stream, decode=lambda i=i: [i])
+
+        self.enterContext(
+            mock.patch.object(video_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        )
+        bound = video_mod._REMOTE_READ_TIMEOUT_S
+        url = "http://127.0.0.1/clip.mp4"
+        slow = SimpleNamespace(demux=lambda: packets(bound * 0.75))
+        self.assertEqual(list(video_mod._video_frames(slow, url, stream)), [0, 1, 2, 3])
+        stalled = SimpleNamespace(demux=lambda: packets(bound * 1.5))
+        with self.assertRaises(video_mod.RemoteScanStalled):
+            list(video_mod._video_frames(stalled, url, stream))
+
+    def test_a_seek_sample_with_no_picture_skips_the_sequential_fallback(self):
+        # The fallback would read the same server for another whole bound.
+        stalled = video_mod.RemoteScanStalled("the media server sent no picture")
+        self.enterContext(mock.patch.object(video_mod, "_seek_sample_frames", side_effect=stalled))
+        sequential = self.enterContext(mock.patch.object(video_mod, "_decode_sample_frames"))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            self.assertFalse(scan_video_samples(self._make(), [_RecordingAcc()]))
+        sequential.assert_not_called()
+        self.assertTrue(any("no picture" in m for m in logs.output), logs.output)
+
     def test_falls_back_to_sequential_when_seek_fails(self):
         # A non-seekable source (seek raises) must still get sampled via the
         # sequential-decode fallback — and still span the whole timeline.
@@ -3826,10 +3858,10 @@ class CloseDuringAStalledReadTest(unittest.TestCase):
     """A network input that stops sending mid-stream holds the demux thread
     inside FFmpeg's read for up to the read bound, past close()'s 1 s join.
     Closing the container then freed the context that read was using, and
-    the process died of a segfault when the read returned."""
+    the process died of a segfault when the read returned. The server's close
+    is what returns the read here, so no step races the read bound."""
 
     def test_the_container_is_closed_by_the_demux_thread_once_its_read_returns(self):
-        self.enterContext(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 3.0))
         self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
         fd, path = tempfile.mkstemp(suffix=".mkv")
         os.close(fd)
@@ -3856,12 +3888,14 @@ class CloseDuringAStalledReadTest(unittest.TestCase):
         src.max_video_buffer = 100_000
         with self.assertLogs("c64cast", level="WARNING") as logs:
             src.start(audio_push=None)
+            self.assertTrue(_wait_until(lambda: src.video_buffer_depth > 0))
             depth = -1
             while src.video_buffer_depth != depth:
                 depth = src.video_buffer_depth
                 time.sleep(0.5)
             src.close()
             self.assertEqual(closed_by, [], "close() freed the container under a live read")
+            server.close()
             self.assertTrue(_wait_until(lambda: closed_by, limit_s=10.0))
         self.assertEqual(closed_by, ["av-demux"])
         self.assertTrue(any("did not stop" in m for m in logs.output), logs.output)
