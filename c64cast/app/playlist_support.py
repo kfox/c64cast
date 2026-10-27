@@ -356,6 +356,8 @@ class EnsembleCoordinator:
                     )
                     first_wait = False
                 pl.stop_event.wait(timeout=poll_interval)
+                if self._serve_broadcast_while_waiting():
+                    pl.ensemble.join_audio_queue(pl.name)
             return False
         finally:
             pl.ensemble.leave_audio_queue(pl.name)
@@ -408,9 +410,31 @@ class EnsembleCoordinator:
                     first_full_wait = False
                 pl.ensemble.join_audio_queue(pl.name)
                 pl.stop_event.wait(timeout=poll_interval)
+                self._serve_broadcast_while_waiting()
             return None
         finally:
             pl.ensemble.leave_audio_queue(pl.name)
+
+    def _serve_broadcast_while_waiting(self) -> bool:
+        """Run a broadcast interlude that arrived while this playlist waits
+        for the audio slot, and say whether one ran. The wait's place in
+        line is given up for it, so a slot that frees meanwhile goes to the
+        next system rather than being held for a playlist that is not
+        polling. The waiting caller has already torn its scene down, so the
+        interlude must not drop it again, and gets it back as it left it."""
+        pl = self._pl
+        if pl.ensemble is None or pl.broadcast_interrupt is None:
+            return False
+        if not pl.broadcast_interrupt.is_set() or pl.stop_event.is_set():
+            return False
+        pl.ensemble.leave_audio_queue(pl.name)
+        waiting = pl.current
+        pl.current = None
+        try:
+            self.handle_broadcast_interrupt()
+        finally:
+            pl.current = waiting
+        return True
 
     def maybe_install_conductor(self, scene: Scene) -> None:
         """If this scene's SceneCfg has `orchestrate = true` AND we're

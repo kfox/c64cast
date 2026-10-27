@@ -266,9 +266,10 @@ class BroadcastInterruptTest(unittest.TestCase):
         pl.ensemble_coord.handle_broadcast_interrupt()
         self.assertFalse(pl.broadcast_interrupt.is_set())
 
-    def _wire_real_broadcast(self, pl: Playlist) -> Any:
+    def _wire_real_broadcast(self, pl: Playlist, extra: tuple[str, ...] = ()) -> Any:
         """A real Orchestrator, opened by a conductor system, with `pl` as
-        its follower: `follower_scene_cfg_for` raises once `end()` has run."""
+        its follower: `follower_scene_cfg_for` raises once `end()` has run.
+        `extra` names further systems in the ensemble."""
         from c64cast.app.orchestrator import Orchestrator
 
         class _SpanOrchestrator(Orchestrator):
@@ -282,7 +283,12 @@ class BroadcastInterruptTest(unittest.TestCase):
         follower_stack = _fake_ensemble_stack(pl.name)
         follower_stack.cfg.scenes = []
         ens = Ensemble(
-            stacks=[follower_stack, _fake_ensemble_stack("conductor")], stop_event=pl.stop_event
+            stacks=[
+                follower_stack,
+                _fake_ensemble_stack("conductor"),
+                *(_fake_ensemble_stack(n) for n in extra),
+            ],
+            stop_event=pl.stop_event,
         )
         orch = _SpanOrchestrator(ens, "conductor")
         ens.active_orchestrator = orch
@@ -321,6 +327,53 @@ class BroadcastInterruptTest(unittest.TestCase):
         self.assertIs(pl.current, current)
         self.assertEqual(current.teardown_calls, 0)
         self.assertFalse(pl.broadcast_interrupt.is_set())
+
+    def test_a_follower_waiting_for_the_audio_slot_still_serves_a_broadcast(self):
+        # Three systems: "other" holds the slot this playlist waits on, and
+        # "conductor" opens a broadcast meanwhile.
+        for wait in ("wait_for_audio_claim", "resolve_next_index"):
+            with self.subTest(wait=wait):
+                pl = _build_playlist()
+                for scene in pl.scenes:
+                    scene.competes_for_audio_lock = lambda: True
+                orch = self._wire_real_broadcast(pl, extra=("other",))
+                ens = pl.ensemble
+                self.assertTrue(ens.try_claim_audio("other"))
+                follower = _FakeScene("follower")
+
+                def setup_and_finish(
+                    scene: _FakeScene = follower, orch: Any = orch, ens: Any = ens
+                ) -> None:
+                    scene.setup_calls += 1
+                    orch.end()
+                    ens.release_audio("other")
+
+                follower.setup = setup_and_finish
+                pl.build_follower_scene = lambda cfg, f=follower: f
+                waiting = pl.current = _FakeScene("torn-down")
+                polls = [0]
+                stop = pl.stop_event
+
+                def bounded_wait(
+                    timeout: float | None = None, stop: Any = stop, polls: list[int] = polls
+                ) -> bool:
+                    polls[0] += 1
+                    if polls[0] >= 20:
+                        stop.set()
+                    return stop.is_set()
+
+                stop.wait = bounded_wait
+                with self.assertLogs("c64cast.app.playlist", level="INFO"):
+                    if wait == "wait_for_audio_claim":
+                        got = pl.ensemble_coord.wait_for_audio_claim(pl.scenes[0])
+                    else:
+                        got = pl.ensemble_coord.resolve_next_index()
+                self.assertEqual(follower.setup_calls, 1, "the broadcast waited on the slot")
+                self.assertEqual(follower.teardown_calls, 1)
+                self.assertIn(got, (True, 0))
+                self.assertIs(pl.current, waiting, "the waiting caller's scene is not dropped")
+                self.assertEqual(waiting.teardown_calls, 0)
+                self.assertNotIn(pl.name, ens.audio_queue)
 
     def test_no_factory_logs_error_and_returns(self):
         pl = _build_playlist()
