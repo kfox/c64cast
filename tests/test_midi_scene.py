@@ -949,12 +949,17 @@ class ReaderCoalescingTests(_MidiTestCase):
         stop = threading.Event()
         t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
         t.start()
-        time.sleep(0.1)
+
+        def voice_writes():
+            return [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline and len(voice_writes()) < 16:
+            time.sleep(0.005)
         stop.set()
         t.join(timeout=1.0)
-        voice_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
         # Each on/off reprograms voice 0 → ~16 writes, not collapsed to one.
-        self.assertGreaterEqual(len(voice_writes), 16)
+        self.assertGreaterEqual(len(voice_writes()), 16)
 
     def test_coalescing_keeps_each_channels_bend(self):
         scene, api = _make_scene(voice_mode="multitimbral")
