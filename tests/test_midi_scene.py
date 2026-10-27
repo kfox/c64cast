@@ -998,15 +998,17 @@ class ReaderCoalescingTests(_MidiTestCase):
         stop = threading.Event()
         t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
         t.start()
+        unbent = _note_to_sid_freq(60, "NTSC")
         deadline = time.time() + 5.0
-        while (
-            time.time() < deadline
-            and sum(op[0] == "write_regs" and op[1] == "D400" for op in api.ops) < 2
+        # A pass that runs past its drain budget splits the bends across two
+        # flushes, so the wait is for the final value, not a write count.
+        while time.time() < deadline and (
+            sum(op[0] == "write_regs" and op[1] == "D400" for op in api.ops) < 2
+            or api.regs["D400"][:2] != (unbent & 0xFF, unbent >> 8)
         ):
             time.sleep(0.005)
         stop.set()
         t.join(timeout=1.0)
-        unbent = _note_to_sid_freq(60, "NTSC")
         self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
 
 
