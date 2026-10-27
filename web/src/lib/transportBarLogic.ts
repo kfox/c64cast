@@ -71,3 +71,29 @@ export class HoldKeepAlive {
     for (const verb of [...this.#timers.keys()]) this.release(verb);
   }
 }
+
+/** The parts of a `PointerEvent` that `pointerHold` reads. */
+export interface PointerHoldEvent {
+  type: string;
+  pointerId: number;
+  currentTarget: { setPointerCapture(pointerId: number): void } | null;
+}
+
+/** One pointer event on a ◀◀/▶▶ button, applied to `holds`. A press captures
+ *  the pointer: without it, a drag off the button before letting go sends its
+ *  pointerup elsewhere and the keep-alive renews the hold forever. A release
+ *  is never gated on `readOnly`, so a hold always lets go. */
+export function pointerHold(
+  holds: HoldKeepAlive,
+  verb: string,
+  event: PointerHoldEvent,
+  readOnly: boolean,
+): void {
+  if (event.type === "pointerdown") {
+    if (readOnly) return;
+    event.currentTarget?.setPointerCapture(event.pointerId);
+    holds.press(verb);
+  } else {
+    holds.release(verb);
+  }
+}

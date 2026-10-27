@@ -6,6 +6,7 @@
     HoldKeepAlive,
     keyNudgeEvents,
     loopButtonLabel,
+    pointerHold,
     slotEnabled,
   } from "$lib/transportBarLogic";
   import type { TransportState } from "$lib/types";
@@ -50,10 +51,12 @@
     if (readOnly) holds.releaseAll();
   });
 
-  function hold(action: "rw" | "ff", pressed: boolean, event: Event): void {
+  function hold(
+    action: "rw" | "ff",
+    event: PointerEvent & { currentTarget: EventTarget & HTMLButtonElement },
+  ): void {
     event.preventDefault();
-    if (!pressed) holds.release(action);
-    else if (!readOnly) holds.press(action);
+    pointerHold(holds, action, event, readOnly);
   }
 
   // A keyboard-synthesized click (Enter/Space on a focused button) reports
@@ -117,9 +120,10 @@
     <button
       type="button"
       disabled={readOnly}
-      onpointerdown={(e) => hold("rw", true, e)}
-      onpointerup={(e) => hold("rw", false, e)}
-      onpointercancel={(e) => hold("rw", false, e)}
+      onpointerdown={(e) => hold("rw", e)}
+      onpointerup={(e) => hold("rw", e)}
+      onpointercancel={(e) => hold("rw", e)}
+      onlostpointercapture={(e) => hold("rw", e)}
       onclick={(e) => keyNudge("rw", e)}
       class="min-h-9 touch-none rounded-lg border border-[var(--edge)] px-3 font-mono text-xs
              text-[var(--ink)] transition enabled:active:brightness-125 disabled:cursor-not-allowed
@@ -131,9 +135,10 @@
     <button
       type="button"
       disabled={readOnly}
-      onpointerdown={(e) => hold("ff", true, e)}
-      onpointerup={(e) => hold("ff", false, e)}
-      onpointercancel={(e) => hold("ff", false, e)}
+      onpointerdown={(e) => hold("ff", e)}
+      onpointerup={(e) => hold("ff", e)}
+      onpointercancel={(e) => hold("ff", e)}
+      onlostpointercapture={(e) => hold("ff", e)}
       onclick={(e) => keyNudge("ff", e)}
       class="min-h-9 touch-none rounded-lg border border-[var(--edge)] px-3 font-mono text-xs
              text-[var(--ink)] transition enabled:active:brightness-125 disabled:cursor-not-allowed

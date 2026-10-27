@@ -5,6 +5,8 @@ import {
   HOLD_KEEPALIVE_MS,
   HoldKeepAlive,
   keyNudgeEvents,
+  type PointerHoldEvent,
+  pointerHold,
   loopButtonLabel,
   slotEnabled,
 } from "./transportBarLogic";
@@ -111,5 +113,60 @@ describe("HoldKeepAlive", () => {
       ["rw", false],
       ["ff", false],
     ]);
+  });
+});
+
+describe("pointerHold", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function setup(): { sent: [string, boolean][]; holds: HoldKeepAlive; captured: number[] } {
+    const sent: [string, boolean][] = [];
+    return {
+      sent,
+      holds: new HoldKeepAlive((verb, pressed) => sent.push([verb, pressed])),
+      captured: [],
+    };
+  }
+
+  function event(type: string, captured: number[]): PointerHoldEvent {
+    return { type, pointerId: 7, currentTarget: { setPointerCapture: (id) => captured.push(id) } };
+  }
+
+  it("captures the pointer on press, so the release lands after a drag off", () => {
+    const { sent, holds, captured } = setup();
+    pointerHold(holds, "ff", event("pointerdown", captured), false);
+    expect(captured).toEqual([7]);
+    expect(sent).toEqual([["ff", true]]);
+  });
+
+  it("lets go when the capture is lost", () => {
+    const { sent, holds, captured } = setup();
+    pointerHold(holds, "rw", event("pointerdown", captured), false);
+    pointerHold(holds, "rw", event("lostpointercapture", captured), false);
+    vi.advanceTimersByTime(HOLD_KEEPALIVE_MS * 3);
+    expect(sent).toEqual([
+      ["rw", true],
+      ["rw", false],
+    ]);
+  });
+
+  it("lets go on pointerup and pointercancel, read-only or not", () => {
+    for (const type of ["pointerup", "pointercancel"]) {
+      const { sent, holds, captured } = setup();
+      pointerHold(holds, "ff", event("pointerdown", captured), false);
+      pointerHold(holds, "ff", event(type, captured), true);
+      expect(sent).toEqual([
+        ["ff", true],
+        ["ff", false],
+      ]);
+    }
+  });
+
+  it("neither presses nor captures while read-only", () => {
+    const { sent, holds, captured } = setup();
+    pointerHold(holds, "ff", event("pointerdown", captured), true);
+    expect(sent).toEqual([]);
+    expect(captured).toEqual([]);
   });
 });
