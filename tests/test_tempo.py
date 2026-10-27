@@ -261,6 +261,39 @@ class AudioDriveTest(unittest.TestCase):
         self.assertLessEqual(c.bpm, 400.0)
 
 
+class SourceAfterTapTest(unittest.TestCase):
+    def _tapped(self) -> TempoClock:
+        c = TempoClock(bpm=120.0, source="midi", now=0.0)
+        c.tap(1.0)
+        c.tap(1.5)
+        self.assertEqual(c.source, "internal")
+        return c
+
+    def test_start_hands_the_grid_back_to_midi(self):
+        c = self._tapped()
+        c.start(2.0)
+        self.assertEqual(c.source, "midi")
+
+    def test_continue_hands_the_grid_back_to_midi(self):
+        c = self._tapped()
+        c.continue_(2.0)
+        self.assertEqual(c.source, "midi")
+
+    def test_a_running_clock_takes_the_grid_back_from_a_tap(self):
+        c = self._tapped()
+        dt = _pulse_dt(120.0)
+        for k in range(1, 4):
+            c.clock_pulse(2.0 + k * dt)
+        self.assertEqual(c.source, "midi")
+
+    def test_midi_bytes_leave_the_audio_source_alone(self):
+        c = TempoClock(bpm=120.0, source="audio", now=0.0)
+        c.audio_drive(128.0, now=1.0)
+        c.start(1.5)
+        c.clock_pulse(1.6)
+        self.assertEqual(c.source, "audio")
+
+
 class FeedMessageTest(unittest.TestCase):
     def test_routes_clock_messages_and_reports_consumption(self):
         c = TempoClock(bpm=120.0, source="midi", now=0.0)

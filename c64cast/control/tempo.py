@@ -103,6 +103,12 @@ class TempoClock:
             advance = min(advance, 1.0 / self.PPQN)
         return self._phase_base + advance
 
+    def _claim_for_midi_locked(self) -> None:
+        # The audio drive re-claims the grid every frame, so a MIDI byte
+        # taking it from "audio" would only make the reported source flicker.
+        if self._source == "internal":
+            self._source = "midi"
+
     def clock_pulse(self, now: float) -> None:
         """A ``0xF8`` MIDI clock byte (24 per quarter note). Advances the grid by
         exactly 1/24 beat and refreshes the BPM estimate from the inter-pulse
@@ -133,6 +139,7 @@ class TempoClock:
                 return
             self._running = True
             self._base_time = now
+            self._claim_for_midi_locked()
 
     def start(self, now: float) -> None:
         """A ``0xFA`` Start: reset to the top of bar 1, beat 0, and run."""
@@ -140,6 +147,7 @@ class TempoClock:
             self._external = True
             self._halted = False
             self._running = True
+            self._claim_for_midi_locked()
             self._phase_base = 0.0
             self._base_time = now
             self._last_pulse_time = None
@@ -151,6 +159,7 @@ class TempoClock:
             self._external = True
             self._halted = False
             self._running = True
+            self._claim_for_midi_locked()
             self._base_time = now
             self._last_pulse_time = None
 
