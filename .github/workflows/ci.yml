@@ -100,7 +100,7 @@ jobs:
           enable-cache: true
           python-version: "3.14"
       - name: Install runtime + dev deps
-        run: uv sync --frozen --no-default-groups --group dev --extra web
+        run: uv sync --frozen --no-default-groups --group dev --extra web --extra video
       - name: Pyright (basic, whole tree)
         run: uv run pyright --pythonplatform ${{ matrix.pyright }}
       - name: Mypy --strict (hot modules)
@@ -126,10 +126,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install runtime + dev deps
-        # `web` is not optional: without it the @skipUnless(HAVE_TESTCLIENT)
-        # suites skip -- hundreds of tests -- and the HTTP surface stops being
+        # `web` and `video` are not optional: without them the
+        # @skipUnless(HAVE_TESTCLIENT) and PyAV suites skip -- hundreds of
+        # tests -- and the HTTP surface and the video decoder stop being
         # exercised.
-        run: uv sync --frozen --no-default-groups --group dev --extra web
+        run: uv sync --frozen --no-default-groups --group dev --extra web --extra video
 
       - name: Warm node (timed)
         # The first node launch on a fresh Windows runner has outlasted the
@@ -168,9 +169,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dev deps
-        # `web` for the same reason as the test legs: a skipped HTTP-surface
+        # `web` and `video` for the same reason as the test legs: a skipped
         # suite reads as uncovered and tanks the codecov patch/project gates.
-        run: uv sync --frozen --no-default-groups --group dev --extra web
+        run: uv sync --frozen --no-default-groups --group dev --extra web --extra video
 
       - name: Coverage
         run: uv run make coverage
