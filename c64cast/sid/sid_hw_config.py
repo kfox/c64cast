@@ -268,12 +268,15 @@ class SidHwSession:
 
     def fold(self, originals: dict[tuple[str, str], str]) -> None:
         """Merge mixer/model originals into the restore set, so one restore
-        puts addressing, model and mixer state back together."""
+        puts addressing, model and mixer state back together. An item already
+        recorded keeps its first value: a later pass's "original" is what an
+        earlier pass of this session wrote."""
         if not originals:
             return
         if self._saved is None:
             self._saved = {}
-        self._saved.update(originals)
+        for key, value in originals.items():
+            self._saved.setdefault(key, value)
 
     def restore(self) -> None:
         """Restore everything recorded (best-effort), then reset for reuse."""

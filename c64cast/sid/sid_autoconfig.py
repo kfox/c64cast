@@ -19,7 +19,7 @@ See docs/architecture/sid.md#sid-player-autoconfig.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final
 
 from . import armsid
@@ -86,6 +86,7 @@ def plan_sid_model_config(
     socket_models: tuple[str | None, str | None],
     *,
     ultisid_allowed: bool,
+    ultisid_curves: Mapping[str, str] | None = None,
 ) -> dict[tuple[str, str], str] | None:
     """Pure, hardware-free decision function: given a tune's ``(address,
     required_model)`` chips, what currently answers each address, and what
@@ -100,6 +101,10 @@ def plan_sid_model_config(
 
       1. Whatever currently answers that address already matches → no-op; an
          ARMSID answering there is switched to the required model instead.
+         An UltiSID core matches when its curve in `ultisid_curves`
+         (``{"ultisid1": "8580 Hi", ...}``) starts with the required model, the
+         same test the resolved-audio line applies. A source an earlier chip
+         in this pass claimed has moved, so it no longer answers here.
       2. The *other* physical socket reports the required model, or is an
          ARMSID (and isn't already claimed by an earlier chip in this same
          pass) → remap that socket's address to this chip's address (same
@@ -137,6 +142,9 @@ def plan_sid_model_config(
             continue
 
         current_source = current_addr_map.get(address)
+        if current_source in reserved:
+            # An earlier chip in this pass moved that source to its own address.
+            current_source = None
         if current_source in ("socket1", "socket2"):
             idx = 0 if current_source == "socket1" else 1
             if armsid.label_model(socket_models[idx]) == required:
@@ -159,6 +167,17 @@ def plan_sid_model_config(
                     socket_models[idx],
                 )
                 continue
+        elif current_source is not None and (ultisid_curves or {}).get(
+            current_source, ""
+        ).startswith(required):
+            log.info(
+                "sid autoconfig: chip at $%04X (%s) already on %s — no change",
+                address,
+                required,
+                current_source,
+            )
+            reserved.add(current_source)
+            continue
 
         # An ARM2SID's right channel is not a socket that can be moved: socket 2's
         # address item does not reach it. Nor is socket 1 while the right channel
@@ -270,6 +289,22 @@ def resolve_sid_model_cfg(cfg: Config) -> str:
     return cfg.ultimate64.sid_model
 
 
+def _ultisid_curves(api: C64Backend) -> dict[str, str]:
+    """Each UltiSID core's live filter curve, keyed as
+    :func:`~c64cast.sid.sid_hw_config.current_source_map` names the cores
+    (best-effort; ``{}`` on a read failure, which matches nothing)."""
+    try:
+        category = api.get_config_category(CAT_ULTISID)
+    except Exception:
+        log.debug("sid autoconfig: UltiSID filter-curve read failed", exc_info=True)
+        return {}
+    return {
+        core: category[item]
+        for core, item in (("ultisid1", ITEM_ULTISID1_FILTER), ("ultisid2", ITEM_ULTISID2_FILTER))
+        if item in category
+    }
+
+
 def plan_model_config_for_header(
     api: C64Backend, header: SidHeader, sid_model: str
 ) -> dict[tuple[str, str], str] | None:
@@ -304,7 +339,13 @@ def plan_model_config_for_header(
     # Detection first: the address map reads the ARM2SID labels it caches.
     socket_models = detect_socket_models(api)
     current_addr_map = _current_addr_map(api)
-    plan = plan_sid_model_config(chips, current_addr_map, socket_models, ultisid_allowed=True)
+    plan = plan_sid_model_config(
+        chips,
+        current_addr_map,
+        socket_models,
+        ultisid_allowed=True,
+        ultisid_curves=_ultisid_curves(api),
+    )
     if not plan:
         log.info(
             "sid autoconfig: mode=%s — every chip already matches (or none has "

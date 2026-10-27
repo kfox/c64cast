@@ -27,6 +27,7 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID1_FILTER,
     ITEM_ULTISID2_ADDR,
+    ITEM_ULTISID2_FILTER,
 )
 from c64cast.sid.sid_host_emu import SidHeader
 
@@ -206,6 +207,35 @@ class PlanSidModelConfigTest(unittest.TestCase):
         self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)], "$D420")
         self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "8580 Lo")
 
+    def test_a_socket_an_earlier_chip_moved_no_longer_answers_its_old_address(self):
+        # Chip 0 takes socket 2 (the 8580) to $D400. Chip 1 at $D420 was on
+        # socket 2 too, but socket 2 has just left: it needs a place of its own.
+        plan = sa.plan_sid_model_config(
+            chips=((0xD400, "8580"), (0xD420, "8580")),
+            current_addr_map={0xD400: "socket1", 0xD420: "socket2"},
+            socket_models=("6581", "8580"),
+            ultisid_allowed=True,
+        )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_SOCKET2_ADDR)], "$D400")
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)], "$D420")
+        self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "8580 Lo")
+        self.assertNotEqual(plan.get((CAT_SOCKETS, ITEM_SOCKET2_EN)), "Disabled")
+
+    def test_a_core_an_earlier_chip_moved_no_longer_answers_its_old_address(self):
+        # Chip 0 takes UltiSID 1 from $D420 to $D400; chip 1 at $D420 must not
+        # count UltiSID 1's curve as still serving it there.
+        plan = sa.plan_sid_model_config(
+            chips=((0xD400, "8580"), (0xD420, "8580")),
+            current_addr_map={0xD400: "socket1", 0xD420: "ultisid1"},
+            socket_models=("6581", None),
+            ultisid_allowed=True,
+            ultisid_curves={"ultisid1": "8580 Lo"},
+        )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)], "$D400")
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)], "$D420")
+
 
 class RequiredModelsForTest(unittest.TestCase):
     """The shared sid_model -> per-chip requirement mapping."""
@@ -327,15 +357,33 @@ class PlanModelConfigForHeaderTest(unittest.TestCase):
         # ignore that and force "8580" on every chip anyway.
         header = _header(sid_addresses=(0xD400, 0xD420), sid_models=("6581", "6581"))
         plan = sa.plan_model_config_for_header(api, header, "8580")
-        # $D400 (socket1=6581) doesn't match -> swap to socket2. $D420
-        # (socket2=8580) already matches -> no-op for that chip.
+        # $D400 (socket1=6581) doesn't match -> swap to socket2. That takes
+        # socket2 off $D420, so the chip there goes to an UltiSID core.
         self.assertEqual(
             plan,
             {
                 (CAT_ADDRESSING, ITEM_SOCKET2_ADDR): "$D400",
                 (CAT_SOCKETS, ITEM_SOCKET2_EN): "Enabled",
+                (CAT_ADDRESSING, ITEM_ULTISID1_ADDR): "$D420",
+                (CAT_ULTISID, ITEM_ULTISID1_FILTER): "8580 Lo",
+                (CAT_ADDRESSING, ITEM_AUTO_MIRROR): "Disabled",
             },
         )
+
+    def test_an_unreadable_filter_curve_is_not_a_match(self):
+        class UltiSidReadFails(FakeAPI):
+            def get_config_category(self, category, *, timeout=3.0):
+                if category == CAT_ULTISID:
+                    raise RuntimeError("boom")
+                return super().get_config_category(category, timeout=timeout)
+
+        api = UltiSidReadFails.ultimate()
+        api.config_store[CAT_ADDRESSING] = {ITEM_ULTISID1_ADDR: "$D400"}
+        api.config_store[CAT_ULTISID] = {ITEM_ULTISID1_FILTER: "8580 Hi"}
+        header = _header(sid_addresses=(0xD400,), sid_models=("8580",))
+        plan = sa.plan_model_config_for_header(api, header, "auto")
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "8580 Lo")
 
 
 class ApplySidAutoconfigTest(unittest.TestCase):
@@ -356,6 +404,26 @@ class ApplySidAutoconfigTest(unittest.TestCase):
         api.config_store[CAT_ADDRESSING] = {ITEM_SOCKET1_ADDR: "$D400"}
         header = _header(sid_addresses=(0xD400,), sid_models=("6581",))
         saved = sa.apply_sid_autoconfig(api, header, "auto")
+        self.assertEqual(saved, {})
+        self.assertEqual(api.config_puts, [])
+
+    def test_ultisid_already_on_the_required_model_applies_nothing(self):
+        # A U64 with empty sockets plays $D400 on UltiSID 1. A curve of the
+        # requested model is a match — not a reason to re-route the core onto
+        # itself, swap the user's "8580 Hi" for "8580 Lo" and turn mirroring off.
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_ADDRESSING] = {
+            ITEM_ULTISID1_ADDR: "$D400",
+            ITEM_ULTISID2_ADDR: "$D420",
+            ITEM_AUTO_MIRROR: "Enabled",
+        }
+        api.config_store[CAT_ULTISID] = {
+            ITEM_ULTISID1_FILTER: "8580 Hi",
+            ITEM_ULTISID2_FILTER: "6581",
+        }
+        header = _header(sid_addresses=(0xD400,), sid_models=("8580",))
+        with self.assertLogs("c64cast.sid.sid_autoconfig", level="INFO"):
+            saved = sa.apply_sid_autoconfig(api, header, "auto")
         self.assertEqual(saved, {})
         self.assertEqual(api.config_puts, [])
 
