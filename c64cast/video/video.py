@@ -2103,7 +2103,7 @@ class AVFileSource:
             log.error("demux %s: %s; ending playback", self.path, e)
         except Exception as e:
             if self._closed:
-                # A read the close outlived, ended by its own bound.
+                # A read the close outlived, ended by the read bound or a dropped connection.
                 log.debug("demux %s: read after close ended (%s)", self.path, type(e).__name__)
                 return
             log.exception("demux %s crashed", self.path)
