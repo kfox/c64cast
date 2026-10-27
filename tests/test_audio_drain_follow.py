@@ -6,6 +6,7 @@ own frequencies."""
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 import wave
@@ -328,6 +329,63 @@ class _LinkApi:
     @property
     def stats(self) -> dict[str, int]:
         return {"bytes": self._written()}
+
+
+class MeasuredDrainStartTest(unittest.TestCase):
+    """A measured drain handed to an `AudioFileSource` is where its first
+    activation starts, in place of the link's prediction. Without PyAV: the
+    probe is skipped and the decoder reads an empty stand-in container."""
+
+    def _source(self, *, measured_drain: float | None = None) -> AudioFileSource:
+        # The link a REU-staged bitmap writes over, which would predict.
+        sink = _DrainingSink([0.0], 0.952)
+        sink.api = _LinkApi(lambda: 0)  # type: ignore[attr-defined]
+        with mock.patch.object(AudioFileSource, "_pick_and_probe"):
+            src = AudioFileSource(
+                cast("audio_source.AudioStreamer", sink),
+                "tone.wav",
+                reactive=False,
+                measured_drain=measured_drain,
+            )
+        src._path = "tone.wav"
+        return src
+
+    def _decode_logs(self, src: AudioFileSource) -> list[str]:
+        container = SimpleNamespace(
+            streams=SimpleNamespace(audio=[None]), demux=lambda stream: [], close=lambda: None
+        )
+        resampler = SimpleNamespace(resample=lambda frame: [])
+        av = SimpleNamespace(AudioResampler=lambda **kw: resampler)
+        with (
+            mock.patch("c64cast.video.video.av_open", return_value=container),
+            mock.patch.dict(sys.modules, {"av": av}),
+            self.assertLogs("c64cast.audio.audio_source", "INFO") as logs,
+        ):
+            src._decode_loop()
+        return logs.output
+
+    def test_a_measured_drain_starts_the_follower_without_a_prediction(self):
+        follower = self._source(measured_drain=0.952)._new_drain_follower()
+        assert follower is not None
+        self.assertEqual(follower.scale, 0.952)
+        self.assertFalse(follower.predicting)
+
+    def test_without_one_the_follower_predicts_from_real_time(self):
+        follower = self._source()._new_drain_follower()
+        assert follower is not None
+        self.assertEqual(follower.scale, 1.0)
+        self.assertTrue(follower.predicting)
+
+    def test_the_decoder_logs_the_drain_it_starts_at(self):
+        logs = self._decode_logs(self._source(measured_drain=0.952))
+        self.assertIn(
+            "starting tone.wav at a DAC drain of 0.952 of real time — resampling to 7616 Hz",
+            logs[0],
+        )
+
+    def test_a_real_time_start_logs_no_drain(self):
+        logs = self._decode_logs(self._source())
+        self.assertFalse(any("at a DAC drain" in line for line in logs), logs)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")

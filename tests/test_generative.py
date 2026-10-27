@@ -3315,15 +3315,15 @@ class ConfigGenerativeTest(unittest.TestCase):
                 type="generative", source="plasma", display=display, audio_source="file", file=wav
             )
             streamer = cast(AudioStreamer, _FakeStreamer())
-            scene = build_scene(
-                s, cfg, cast(C64Backend, api), streamer, None, reu_available=reu_available
-            )
+            with mock.patch.object(AudioFileSource, "_pick_and_probe"):
+                scene = build_scene(
+                    s, cfg, cast(C64Backend, api), streamer, None, reu_available=reu_available
+                )
         assert isinstance(scene, SourceScene)
         src = scene.audio_source
         assert isinstance(src, AudioFileSource)
         return src
 
-    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_starts_at_the_measured_staged_bitmap_drain(self):
         # The REU-staged frames never cross the link, so the halt prediction
         # reads 0.985 where an Ultimate 64 NTSC measured ~0.95 (#686).
@@ -3332,7 +3332,6 @@ class ConfigGenerativeTest(unittest.TestCase):
             self.assertEqual(src._drain_scale, 0.952, display)
             self.assertTrue(src._drain_measured, display)
 
-    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_unmeasured_drain_keeps_the_prediction(self):
         for display, system, ultimate_64 in (
             ("hires", "PAL", True),
@@ -3343,7 +3342,6 @@ class ConfigGenerativeTest(unittest.TestCase):
             self.assertEqual(src._drain_scale, 1.0, (display, system, ultimate_64))
             self.assertFalse(src._drain_measured, (display, system, ultimate_64))
 
-    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_over_an_unstaged_bitmap_keeps_the_prediction(self):
         # Without the REU a bitmap's frames cross the link, where the halt
         # prediction holds.
