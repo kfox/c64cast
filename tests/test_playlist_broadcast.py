@@ -340,13 +340,33 @@ class BroadcastInterruptTest(unittest.TestCase):
                 ens = pl.ensemble
                 self.assertTrue(ens.try_claim_audio("other"))
                 follower = _FakeScene("follower")
+                in_line_during: list[bool] = []
+                in_line_at_claims: list[bool] = []
 
                 def setup_and_finish(
-                    scene: _FakeScene = follower, orch: Any = orch, ens: Any = ens
+                    scene: _FakeScene = follower,
+                    orch: Any = orch,
+                    ens: Any = ens,
+                    seen: list[bool] = in_line_during,
+                    waiter: str = pl.name,
                 ) -> None:
                     scene.setup_calls += 1
+                    seen.append(waiter in ens.audio_queue)
                     orch.end()
                     ens.release_audio("other")
+
+                claim = ens.try_claim_audio
+
+                def recording_claim(
+                    name: str,
+                    claim: Any = claim,
+                    ens: Any = ens,
+                    seen: list[bool] = in_line_at_claims,
+                ) -> bool:
+                    seen.append(name in ens.audio_queue)
+                    return bool(claim(name))
+
+                ens.try_claim_audio = recording_claim
 
                 follower.setup = setup_and_finish
                 pl.build_follower_scene = lambda cfg, f=follower: f
@@ -373,6 +393,9 @@ class BroadcastInterruptTest(unittest.TestCase):
                 self.assertIn(got, (True, 0))
                 self.assertIs(pl.current, waiting, "the waiting caller's scene is not dropped")
                 self.assertEqual(waiting.teardown_calls, 0)
+                self.assertEqual(in_line_during, [False], "the line was held through the interlude")
+                if wait == "wait_for_audio_claim":
+                    self.assertTrue(in_line_at_claims[-1], "the wait did not rejoin the line")
                 self.assertNotIn(pl.name, ens.audio_queue)
 
     def test_no_factory_logs_error_and_returns(self):

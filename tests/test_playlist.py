@@ -2151,13 +2151,41 @@ class FailedSetupBackoffTest(unittest.TestCase):
         self.assertEqual(pl._failed_setup_wait_s, 0.0)
         self.assertEqual(pl._failed_setup_retry_at, 0.0)
 
-    def test_the_wait_gives_way_to_a_stop_reload_pause_or_skip(self):
-        for event in ("stop_event", "reload_event", "pause_event", "skip_event"):
+    def test_a_reload_starts_the_wait_over(self):
+        scene = self._failing_scene(fails=10)
+        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True)
+        self._fake_time(pl)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._advance()
+            for _ in range(3):
+                scene.is_done = True
+                pl._advance()
+            self.assertEqual(pl._failed_setup_wait_s, 8.0)
+            pl.request_reload([self._failing_scene(fails=10)])
+            pl._apply_reload()
+            pl._advance()
+        self.assertEqual(pl._failed_setup_wait_s, 1.0)
+
+    def test_a_once_through_scene_that_fails_to_start_stops_without_a_retry(self):
+        scene = self._failing_scene(fails=10)
+        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=False)
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
+            pl._advance()
+            pl._advance()
+        self.assertTrue(pl.stop_event.is_set())
+        self.assertEqual(scene.setup_count, 1)
+        self.assertFalse([r for r in cap.records if "trying again" in r.getMessage()])
+
+    def test_the_wait_gives_way_to_a_stop_reload_pause_broadcast_or_skip(self):
+        for event in ("stop_event", "reload_event", "pause_event", "broadcast", "skip_event"):
             with self.subTest(event=event):
                 scene = self._failing_scene(fails=10)
                 pl = Playlist(
                     [scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True
                 )
+                if event == "broadcast":
+                    pl.broadcast_interrupt = threading.Event()
+                    event = "broadcast_interrupt"
                 now = self._fake_time(pl)
                 with self.assertLogs("c64cast.app.playlist", level="INFO"):
                     pl._advance()
