@@ -59,8 +59,8 @@ class BlankDisplayModeTest(unittest.TestCase):
         self.assertEqual(api.memories["D018"], "14")
         self.assertEqual(api.memories["D016"], "08")
         self.assertEqual(api.memories["D011"], "1b")
-        # Border + background written as a contiguous pair.
-        self.assertEqual(api.regs["D020"], (2, 6))
+        # Border + background pinned black; the first push() lands them.
+        self.assertEqual(api.regs["D020"], (0, 0))
 
     def test_push_writes_screen_and_color(self):
         api = FakeAPI()
@@ -70,6 +70,59 @@ class BlankDisplayModeTest(unittest.TestCase):
         self.assertEqual(len(api.regions[0xD800]), 1000)
         self.assertTrue(all(b == 0x20 for b in api.regions[0x0400]))
         self.assertTrue(all(b == 6 for b in api.regions[0xD800]))
+
+    def test_fade_out_dims_border_and_background_to_black(self):
+        # The blank canvas is $D021 showing through invisible spaces, so a
+        # fade that dims only color RAM leaves the screen at full color.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.last_buffers = m.compose()
+        m.repush_faded(api, 0.0)
+        self.assertEqual(api.regions[0xD020], bytes([0, 0]))
+
+    def test_user_dim_dims_border_and_background(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=1, background=1)
+        m.user_dim = 0.0
+        m.push(api, m.apply_fade(m.compose()))
+        self.assertEqual(api.regions[0xD020], bytes([0, 0]))
+
+    def test_setup_under_a_dim_pins_the_registers_black(self):
+        # A restart sets the same mode up again, user_dim already stamped on it.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=1, background=1)
+        m.user_dim = 0.0
+        m.setup(api)
+        self.assertEqual(api.regs["D020"], (0, 0))
+
+    def test_a_fade_in_never_flashes_the_configured_colors(self):
+        # The playlist arms the fade-in only after setup() has run at
+        # fade_alpha 1.0, so setup cannot know a fade is coming.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.setup(api)
+        m.fade_alpha = 0.0
+        m.push(api, m.apply_fade(m.compose()))
+        d020_writes = [
+            op[-1] if op[0] == "write_regs" else op[2]
+            for op in api.ops
+            if op[0] in ("write_regs", "write_region") and op[1] in ("D020", 0xD020)
+        ]
+        self.assertNotIn((2, 6), [tuple(w) for w in d020_writes])
+
+    def test_without_a_fade_the_first_push_lands_the_configured_colors(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.setup(api)
+        self.assertGreater(api.cache_invalidations, 0)
+        m.push(api, m.compose())
+        self.assertEqual(api.regions[0xD020], bytes([2, 6]))
+
+    def test_full_brightness_pushes_the_configured_registers(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        m.push(api, m.compose())
+        self.assertEqual(api.regions[0xD020], bytes([2, 6]))
 
 
 class BlankDisplayModeLiveTuneTest(unittest.TestCase):
@@ -101,6 +154,17 @@ class BlankDisplayModeLiveTuneTest(unittest.TestCase):
         self.assertEqual(m.background, 2)
         self.assertEqual(api.regs["D020"], (2, 2))
         self.assertIn("red", label.lower())
+
+    def test_a_live_color_change_under_a_dim_pokes_the_dimmed_registers(self):
+        # push() writes $D020/$D021 through the dirty cache; a full-brightness
+        # poke whose dimmed value matches the cached one would never be undone.
+        api = FakeAPI()
+        m = BlankDisplayMode(border=0, background=0)
+        m.user_dim = 0.0
+        m.set_live_choice(api, "border", "light blue")
+        self.assertEqual(api.regs["D020"], (0, 0))
+        m.set_live_choice(api, "background", "red")
+        self.assertEqual(api.regs["D020"], (0, 0))
 
     def test_get_live_choice_reads_back_the_canonical_spelling(self):
         m = BlankDisplayMode(border=14, background=2)
