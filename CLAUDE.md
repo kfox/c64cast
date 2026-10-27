@@ -147,6 +147,10 @@ a subagent says "follow CLAUDE.md → Findings" rather than paraphrasing them.
    line under "Declined" in the report that reaches the user; none is committed
    or filed. Don't manufacture work — there is plenty of real work queued.
 
+**A defect found in merged code is labeled `escaped-review`**: on its issue when
+it is filed, otherwise on the PR that fixes it. The `review-audit` skill counts
+those labels to tell whether review is missing things.
+
 **Reviews** run through the agents in [.claude/agents/](.claude/agents/):
 `reviewer` for every change, and the four lanes `/panel-review`
 ([.claude/skills/panel-review/](.claude/skills/panel-review/SKILL.md)) launches
