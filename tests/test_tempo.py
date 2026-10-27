@@ -127,6 +127,24 @@ class TransportTest(unittest.TestCase):
             c.clock_pulse(5.0 + (k + 1) * dt)
         self.assertAlmostEqual(c.beat_phase_at(5.0 + 25 * dt), 2.0 + 1.0, places=9)
 
+    def test_clock_after_stop_holds_until_continue(self):
+        c = TempoClock(bpm=120.0, source="midi", now=0.0)
+        dt = _pulse_dt(120.0)
+        c.start(0.0)
+        for k in range(25):
+            c.clock_pulse((k + 1) * dt)
+        c.stop(25 * dt)
+        frozen = c.beat_phase_at(25 * dt)
+        for k in range(26, 74):
+            c.clock_pulse(k * dt)
+        self.assertFalse(c.running)
+        self.assertAlmostEqual(c.beat_phase_at(73 * dt), frozen, places=9)
+        c.continue_(73 * dt)
+        for k in range(74, 99):
+            c.clock_pulse(k * dt)
+        self.assertTrue(c.running)
+        self.assertAlmostEqual(c.beat_phase_at(98 * dt), frozen + 1.0, places=9)
+
 
 class SongPositionTest(unittest.TestCase):
     def test_spp_sets_beat_phase_in_quarters(self):

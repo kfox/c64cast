@@ -83,6 +83,8 @@ class TempoClock:
         # Flips True once any external transport/clock byte arrives; gates the
         # per-pulse extrapolation cap (external is pulse-truthed, internal isn't).
         self._external = False
+        # Set by a 0xFC Stop, cleared by Start/Continue/tap.
+        self._halted = False
         self._last_pulse_time: float | None = None
         self._pulse_bpm: float | None = None
         self._tap_times: deque[float] = deque(maxlen=8)
@@ -101,14 +103,14 @@ class TempoClock:
         """A ``0xF8`` MIDI clock byte (24 per quarter note). Advances the grid by
         exactly 1/24 beat and refreshes the BPM estimate from the inter-pulse
         interval. A free-running clock with no preceding Start still starts the
-        grid on its first pulse."""
+        grid on its first pulse; after a Stop, pulses only track the BPM until a
+        Start or Continue, since a device keeps sending clock while stopped."""
         with self._lock:
             self._external = True
-            first = self._last_pulse_time is None
-            self._running = True
-            if not first:
-                self._phase_base += 1.0 / self.PPQN
-                dt = now - self._last_pulse_time  # type: ignore[operator]
+            if self._last_pulse_time is not None:
+                if not self._halted:
+                    self._phase_base += 1.0 / self.PPQN
+                dt = now - self._last_pulse_time
                 if dt > 1e-6:
                     inst = 60.0 / (self.PPQN * dt)
                     if _BPM_MIN <= inst <= _BPM_MAX:
@@ -119,13 +121,17 @@ class TempoClock:
                                 1.0 - _PULSE_EMA_ALPHA
                             ) * self._pulse_bpm + _PULSE_EMA_ALPHA * inst
                         self._bpm = self._pulse_bpm
-            self._base_time = now
             self._last_pulse_time = now
+            if self._halted:
+                return
+            self._running = True
+            self._base_time = now
 
     def start(self, now: float) -> None:
         """A ``0xFA`` Start: reset to the top of bar 1, beat 0, and run."""
         with self._lock:
             self._external = True
+            self._halted = False
             self._running = True
             self._phase_base = 0.0
             self._base_time = now
@@ -136,6 +142,7 @@ class TempoClock:
         preceding ``0xF2`` song-position parked it)."""
         with self._lock:
             self._external = True
+            self._halted = False
             self._running = True
             self._base_time = now
             self._last_pulse_time = None
@@ -146,6 +153,7 @@ class TempoClock:
             self._phase_base = self._phase_at_locked(now)
             self._base_time = now
             self._running = False
+            self._halted = True
             self._last_pulse_time = None
 
     def song_position(self, sixteenths: int, now: float) -> None:
@@ -170,6 +178,7 @@ class TempoClock:
                 self._tap_times.clear()
             self._tap_times.append(now)
             self._external = False
+            self._halted = False
             self._source = "internal"
             if len(self._tap_times) >= 2:
                 taps = list(self._tap_times)
