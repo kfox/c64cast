@@ -1721,6 +1721,14 @@ class PlaylistAudioTempoDriveTest(unittest.TestCase):
         pl._drive_tempo_from_audio(self._FeatureScene("B", None), now=1.0)
         self.assertFalse(pl.tempo.running)
 
+    def test_a_tap_between_frames_keeps_the_phase_on_the_grid(self):
+        pl = self._playlist("audio")
+        scene = self._FeatureScene("A", 120.0)
+        pl._drive_tempo_from_audio(scene, now=time.time())
+        pl.tempo.tap(time.monotonic())
+        pl._drive_tempo_from_audio(scene, now=time.time())
+        self.assertLess(pl.tempo.beat_phase, 4.0)
+
 
 class ScriptedStopEvent(threading.Event):
     """A stop event that runs the next step of `steps` in place of blocking and
