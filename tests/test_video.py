@@ -3545,6 +3545,10 @@ class RemoteSeekBoundTest(unittest.TestCase):
     def setUp(self):
         stack = ExitStack()
         self.addCleanup(stack.close)
+        # Runs after every server is closed. An abandoned seek ends only on
+        # FFmpeg's rw_timeout where closing the server does not wake it
+        # (Windows), which outlasts the thread sandbox's grace.
+        self.addCleanup(self._wait_for_abandoned_seeks)
         stack.enter_context(mock.patch("c64cast.video.video._REMOTE_OPEN_TIMEOUT_S", 0.5))
         stack.enter_context(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 0.5))
         # The reconnect backoff would keep an abandoned seek redialing the
@@ -3555,6 +3559,14 @@ class RemoteSeekBoundTest(unittest.TestCase):
         self.addCleanup(os.remove, path)
         _write_av_mkv(path)
         self.local = path
+
+    def _wait_for_abandoned_seeks(self) -> None:
+        self.assertTrue(
+            _wait_until(
+                lambda: not any(t.name == "av-seek" for t in threading.enumerate()), limit_s=10.0
+            ),
+            "an abandoned seek is still blocked",
+        )
 
     def _server(self, serve: int | None) -> str:
         """A server for the clip; opening it takes the first connection."""
