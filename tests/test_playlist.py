@@ -681,9 +681,6 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        # Wait past the playlist's own startup interstitial before firing: a
-        # jump landing while the first "UP NEXT" card is still transitioning
-        # is consumed as a plain skip into scene A.
         driven = _drive(
             stop,
             lambda: scenes[0].setup_count >= 1,
@@ -735,6 +732,49 @@ class PlaylistTest(unittest.TestCase):
         assert baseline is not None, "startup interstitial never completed"
         self.assertEqual(counter["n"], baseline, "a cut jump must never build an interstitial")
         self.assertGreaterEqual(scenes[1].setup_count, 1)
+
+    def _on_card_announcing_b(self) -> tuple[Playlist, list[FakeScene], Callable[[], int]]:
+        scenes = [FakeScene(n, frames_until_done=10_000_000) for n in "ABC"]
+        factory, counter = _transition_factory()
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=factory,
+        )
+        pl.current = scenes[0]
+        scenes[0].is_done = True
+        pl._advance()
+        self.assertTrue(pl.on_card)
+        self.assertEqual(pl.index, 1)
+        return pl, scenes, lambda: counter["n"]
+
+    def test_a_cut_requested_during_the_card_lands_on_its_target(self):
+        pl, scenes, _ = self._on_card_announcing_b()
+        card = pl.current
+        assert card is not None
+        pl.request_jump(2, skip_interstitial=True)
+        pl._apply_frame_events(card, still_active=True)
+        pl._advance()
+        self.assertIs(pl.current, scenes[2])
+        self.assertEqual(pl.index, 2)
+        self.assertEqual(scenes[1].setup_count, 0, "the announced scene must not play")
+        self.assertIsNone(pl._jump_target, "the jump must not wait for the next scene to end")
+
+    def test_a_carded_jump_requested_during_the_card_announces_its_target(self):
+        pl, scenes, cards_built = self._on_card_announcing_b()
+        card = pl.current
+        assert card is not None
+        before = cards_built()
+        pl.request_jump(2, skip_interstitial=False)
+        pl._apply_frame_events(card, still_active=True)
+        pl._advance()
+        self.assertTrue(pl.on_card)
+        self.assertEqual(pl.index, 2)
+        self.assertEqual(cards_built(), before + 1)
+        self.assertEqual(scenes[1].setup_count, 0)
+        self.assertIsNone(pl._jump_target)
 
     def _writes_seen_by_the_next_setup(self, cut: str) -> list[tuple[str, object]]:
         scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
