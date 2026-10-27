@@ -217,6 +217,19 @@ class HardwareProfile:
         # survives them and raises there instead of reading as a size.
         return int(min(max(knee, 0.0), sys.maxsize))
 
+    def staged_bitmap_drain(self) -> float | None:
+        """The fraction of real time the `$D418` DAC's clock advances at while
+        an audio file plays over a REU-staged bitmap mode on this machine, or
+        None where that is unmeasured. The staged frames never cross the link,
+        so `halt_cycles_per_byte` cannot predict it.
+
+        Not `C64Backend.dac_bitmap_tempo`: that is the drain under a bitmap
+        video's writes, 0.88..0.89 on the same machine, and starting a file
+        there plays it about 7% fast."""
+        if not self.supports_system_mode:
+            return None
+        return ULTIMATE_64_STAGED_BITMAP_DRAIN.get(self.system)
+
     # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
     # convention rather than a user declaration, so consumers can say so.
@@ -299,6 +312,11 @@ ULTIMATE_PROFILE = HardwareProfile(
 # Measured on an Ultimate 64 with scripts/diags/halt_shape_probe.py
 # (2026-08-05, see audio.md).
 ULTIMATE_64_HALT_CYCLES_PER_BYTE = 1.270
+
+# Keyed by the resolved video standard. Measured on an Ultimate 64 off the
+# drain follower's window, hires and mhires alike (see audio.md); a standard
+# not listed has not been measured.
+ULTIMATE_64_STAGED_BITMAP_DRAIN: dict[str, float] = {"NTSC": 0.952}
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
 # is declared True at the protocol level here; TeensyROMBackend.__init__ probes

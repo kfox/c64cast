@@ -3292,6 +3292,63 @@ class ConfigGenerativeTest(unittest.TestCase):
             self.assertIs(scene.audio_source._audio, streamer)  # type: ignore[attr-defined]
             self.assertEqual(scene.target_fps, 20.0)
 
+    def _dac_file_source(
+        self, display: str, system: str, *, ultimate_64: bool = True, reu_available: bool = True
+    ) -> Any:
+        """The AudioFileSource a DAC file scene over ``display`` builds at
+        ``system`` timing."""
+        import tempfile
+        from dataclasses import replace
+
+        from c64cast.audio.audio_source import AudioFileSource
+
+        api = _DummyAPI()
+        api.profile = replace(
+            api.profile, supports_reu=True, supports_system_mode=ultimate_64, system=system
+        )
+        cfg = Config()
+        cfg.audio.backend = "dac"
+        with tempfile.TemporaryDirectory() as d:
+            wav = f"{d}/tune.wav"
+            self._make_wav(wav, seconds=0.4)
+            s = SceneCfg(
+                type="generative", source="plasma", display=display, audio_source="file", file=wav
+            )
+            streamer = cast(AudioStreamer, _FakeStreamer())
+            with mock.patch.object(AudioFileSource, "_pick_and_probe"):
+                scene = build_scene(
+                    s, cfg, cast(C64Backend, api), streamer, None, reu_available=reu_available
+                )
+        assert isinstance(scene, SourceScene)
+        src = scene.audio_source
+        assert isinstance(src, AudioFileSource)
+        return src
+
+    def test_audio_source_file_starts_at_the_measured_staged_bitmap_drain(self):
+        # The REU-staged frames never cross the link, so the halt prediction
+        # reads 0.985 where an Ultimate 64 NTSC measured ~0.95 (#686).
+        for display in ("hires", "mhires"):
+            src = self._dac_file_source(display, "NTSC")
+            self.assertEqual(src._drain_scale, 0.952, display)
+            self.assertTrue(src._drain_measured, display)
+
+    def test_audio_source_file_unmeasured_drain_keeps_the_prediction(self):
+        for display, system, ultimate_64 in (
+            ("hires", "PAL", True),
+            ("mhires", "NTSC", False),
+            ("mcm", "NTSC", True),
+        ):
+            src = self._dac_file_source(display, system, ultimate_64=ultimate_64)
+            self.assertEqual(src._drain_scale, 1.0, (display, system, ultimate_64))
+            self.assertFalse(src._drain_measured, (display, system, ultimate_64))
+
+    def test_audio_source_file_over_an_unstaged_bitmap_keeps_the_prediction(self):
+        # Without the REU a bitmap's frames cross the link, where the halt
+        # prediction holds.
+        src = self._dac_file_source("hires", "NTSC", reu_available=False)
+        self.assertEqual(src._drain_scale, 1.0)
+        self.assertFalse(src._drain_measured)
+
     def test_audio_source_file_falls_back_to_null_without_streamer(self):
         s = SceneCfg(
             type="generative", source="plasma", display="mcm", audio_source="file", file="x.mp3"
