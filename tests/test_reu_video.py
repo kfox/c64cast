@@ -15,6 +15,8 @@ output of each display mode against the FakeAPI's recorded write log.
 
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from typing import cast
 from unittest import mock
@@ -276,11 +278,15 @@ class ScenePumpStartRecOwnershipTest(unittest.TestCase):
         from c64cast.scenes.scenes import VideoScene
 
         audio = self._audio(use_reu_pump=True)
+        # Local: a network input streams its sound and never starts the pump.
+        fd, clip = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(os.remove, clip)
         scene = VideoScene(
             cast(Ultimate64API, FakeAPI()),
             audio,
             PETSCIIDisplayMode(use_reu_staged=True),
-            "https://stub.invalid/clip.mp4",
+            clip,
             setup_progress=False,
         )
         with (

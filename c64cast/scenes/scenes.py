@@ -52,6 +52,7 @@ from c64cast.video.video import (
     AVFileSource,
     WebcamSource,
     _compute_normalization_gain,
+    _is_local_file,
     _plan_decode_size,
     decode_audio_full,
     ensure_pyav,
@@ -1501,7 +1502,7 @@ class VideoScene(MediaFileMixin, Scene):
         # The peak scan only matters on the non-REU audible path: a muted scene
         # never pushes, and the REU path pre-encodes with its own gain. Skipping
         # it removes a full audio decode from setup.
-        will_push_audio = self.audio is not None and not getattr(self.audio, "use_reu_pump", False)
+        will_push_audio = self.audio is not None and not self.preloads_to_reu
         # The only resolution the display mode consumes (≤320×200); AVFileSource
         # downscales to it during decode rather than converting the full source
         # frame. See video._plan_decode_size.
@@ -1641,7 +1642,7 @@ class VideoScene(MediaFileMixin, Scene):
                 self.audio.start(hold=True)
                 self._audio_held = True
             progress.complete("audio-start")
-        elif has_audio and getattr(self.audio, "use_reu_pump", False):
+        elif has_audio and self.preloads_to_reu:
             # audio_push=None makes the demuxer skip audio decode entirely: the
             # REU path has already pre-encoded the whole track, and decoding it
             # again would compete with video decode on the same thread and lag
@@ -1740,6 +1741,14 @@ class VideoScene(MediaFileMixin, Scene):
         with self._audio_hold_lock:
             self._audio_held = False
 
+    @property
+    def preloads_to_reu(self) -> bool:
+        """Whether the soundtrack goes to the REU pump whole, before playback.
+        Not from a network input, which streams its sound as if
+        `[audio].use_reu_pump` were off: the preload reads to an end a live
+        stream never reaches."""
+        return bool(getattr(self.audio, "use_reu_pump", False)) and _is_local_file(self.filepath)
+
     def _setup_segments(self) -> list[tuple[str, float]]:
         """The SegmentedProgress weights for this scene's blocking setup
         steps: coarse relative costs, decided from config before the
@@ -1752,7 +1761,7 @@ class VideoScene(MediaFileMixin, Scene):
             segments.append(("prescan", 3.0))
         if isinstance(self.audio, UltimateAudioSampler):
             segments.append(("audio-start", 1.0))
-        elif self.audio is not None and getattr(self.audio, "use_reu_pump", False):
+        elif self.audio is not None and self.preloads_to_reu:
             segments.extend((("encode", 1.0), ("upload", 4.0)))
         return segments
 

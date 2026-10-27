@@ -2064,6 +2064,14 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertFalse(scene.transport.resync)
         self.assertEqual(source.muted_calls, [True])
 
+    def test_a_network_input_resyncs_its_streamed_sound_under_the_reu_pump_setting(self):
+        # Its sound streams rather than going to the pump, so the transport
+        # follows it as it would with the pump off.
+        scene, _, audio = self._resync_scene(position=7.0)
+        audio.use_reu_pump = True
+        scene.transport.touch()
+        self.assertTrue(scene.transport.resync)
+
     def test_on_without_audio_falls_back_to_mute(self):
         scene = _make_video_scene_stub(_StubSource(duration=100.0))  # audio=None
         scene.transport.loop_audio = "on"
@@ -4797,7 +4805,15 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
     """The sound at clip time 0 starts with its picture: setup() brings the
     sink up with its clock held, and the first shown frame releases it."""
 
+    def _local_clip(self) -> str:
+        """An existing local path: a network input never takes the REU preload."""
+        fd, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        return path
+
     def _setup(self, audio: Any, *, start_s: float = 0.0) -> VideoScene:
+        clip = self._local_clip()
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource"),
@@ -4808,7 +4824,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
                 api=mock.MagicMock(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
-                file=STUB_VIDEO_URL,
+                file=clip,
                 setup_progress=False,
                 start_s=start_s,
             )
@@ -4839,6 +4855,36 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         audio.release_hold.assert_not_called()
         self.assertTrue(scene._audio_held)
 
+    def test_a_network_input_streams_its_sound_instead_of_preloading_it(self):
+        # A stream has no end for the preload to reach: a live one held setup
+        # for as long as the REU's worth of sound took to arrive, and one whose
+        # sound track sends nothing held it for good.
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        audio.effective_rate = 8000.0
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+            mock.patch("c64cast.scenes.scenes.decode_audio_full") as preload,
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=audio,
+                display_mode=mock.MagicMock(),
+                file=STUB_VIDEO_URL,
+                setup_progress=False,
+            )
+            self.addCleanup(scene.teardown)
+            scene.setup()
+        preload.assert_not_called()
+        audio.start_for_reu_staged.assert_not_called()
+        audio.start_for_external_source.assert_called_once_with(hold=True)
+        # Streamed sound is normalized by the source's own peak scan.
+        self.assertIs(source_cls.call_args.kwargs["scan_audio_peak"], True)
+        self.assertEqual(
+            source_cls.return_value.start.call_args.kwargs["audio_push"], audio.push_samples
+        )
+
     def test_a_failed_reu_install_holds_nothing(self):
         audio = mock.create_autospec(AudioStreamer, instance=True)
         audio.use_reu_pump = True
@@ -4853,6 +4899,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         # PyAV's InvalidDataError is a ValueError; the plain base keeps the
         # test runnable without the optional `video` extra.
         bad = ValueError("Invalid data found when processing input")
+        clip = self._local_clip()
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource"),
@@ -4863,7 +4910,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
                 api=mock.MagicMock(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
-                file=STUB_VIDEO_URL,
+                file=clip,
                 setup_progress=False,
             )
             self.addCleanup(scene.teardown)
