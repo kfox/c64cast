@@ -776,6 +776,32 @@ class PlaylistTest(unittest.TestCase):
         self.assertEqual(scenes[1].setup_count, 0)
         self.assertIsNone(pl._jump_target)
 
+    def test_a_reload_drops_a_jump_aimed_at_the_old_scene_list(self):
+        scenes = [FakeScene(n, frames_until_done=10_000_000) for n in "ABC"]
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.current = scenes[0]
+        pl.request_jump(2)
+        reloaded = [FakeScene("X"), FakeScene("Y")]
+        pl.request_reload(reloaded)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+            pl._advance()
+            card = pl.current
+            assert card is not None and pl.on_card
+            card.is_done = True
+            pl._advance()
+            self.assertIs(pl.current, reloaded[0])
+            reloaded[0].is_done = True
+            pl._advance()
+        self.assertTrue(pl.on_card)
+        self.assertEqual(pl.index, 1, "the reloaded list walks on from X to Y")
+
     def _writes_seen_by_the_next_setup(self, cut: str) -> list[tuple[str, object]]:
         scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
         if cut == "lap":

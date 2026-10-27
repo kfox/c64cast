@@ -521,6 +521,8 @@ class Playlist:
             return
         self.log.info("playlist: reloading (%d → %d scenes)", len(self.scenes), len(new_scenes))
         self.drop_current()
+        with self._jump_lock:
+            self._jump_target = None
         self.scenes = new_scenes
         self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
