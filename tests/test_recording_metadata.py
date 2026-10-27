@@ -248,6 +248,39 @@ class RedactionTest(unittest.TestCase):
         self.assertNotIn("Original page", render_description(payload))
 
 
+class _FakeGenericScene:
+    def __init__(self, scene_cfg):
+        self._cfg = scene_cfg
+        self.name = scene_cfg.name
+        self.display_mode = None
+        self.target_fps = None
+        self.duration_s = 30.0
+        self.audio = None
+        self.overlays = []
+
+
+class LocalIdentityTest(unittest.TestCase):
+    def test_slideshow_and_launcher_specs_publish_names_not_paths(self):
+        for scene_type, spec, expected in (
+            ("slideshow", "/home/alice/Pictures/holiday", "holiday"),
+            ("slideshow", "/home/alice/Pictures/holiday/", "holiday"),
+            ("slideshow", "~/Pictures/a.png, /home/alice/b.png", "a.png, b.png"),
+            ("slideshow", "/home/alice/Pictures/*.png", "*.png"),
+            ("launcher", "/home/alice/games/Elite.crt", "Elite.crt"),
+            (
+                "slideshow",
+                "https://alice:hunter2@img.example/pics/a.png",
+                "https://REDACTED@img.example/pics/a.png",
+            ),
+        ):
+            with self.subTest(spec=spec):
+                scene = _FakeGenericScene(SceneCfg(type=scene_type, file=spec, name="Show"))
+                payload = build_scene_recording_metadata(scene, Config(), "system")
+                blob = json.dumps(payload)
+                self.assertNotIn("alice", blob.replace("REDACTED", ""))
+                self.assertEqual(payload["source"], {"file_spec": expected})
+
+
 class LogAndParseRoundTripTest(unittest.TestCase):
     def test_log_line_round_trips_through_extract_scene_configs(self):
         scene = _FakeVideoScene("clip.mp4", "assets/videos/clip.mp4", "assets/videos/clip.mp4")

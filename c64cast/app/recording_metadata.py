@@ -206,10 +206,19 @@ def _generative_source(scene: Scene) -> dict[str, Any]:
     return out
 
 
+def _published_entry(entry: str) -> str:
+    if scene_factory.is_media_url(entry):
+        return scene_factory.redact_media_spec(entry)
+    return os.path.basename(os.path.normpath(entry))
+
+
 def _generic_source(scene: Scene) -> dict[str, Any]:
     scene_cfg = getattr(scene, "_cfg", None)
     file_spec = getattr(scene_cfg, "file", None) if scene_cfg is not None else None
-    return {"file_spec": file_spec} if file_spec else {}
+    if not file_spec:
+        return {}
+    entries = scene_factory.split_file_spec(file_spec)
+    return {"file_spec": ", ".join(_published_entry(entry) for entry in entries)}
 
 
 _SOURCE_BUILDERS = {
