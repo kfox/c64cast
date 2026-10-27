@@ -837,6 +837,24 @@ class BuildPreviewAndRecordingTest(unittest.TestCase):
         api.add_write_listener.assert_called_once_with(on_write)
         api.remove_write_listener.assert_called_once_with(on_write)
 
+    def test_a_recorder_that_fails_to_open_is_not_kept(self):
+        # A recorder whose writer never opened was returned anyway, and the
+        # stack later stopped it as if it were recording.
+        cfg = cfgmod.Config()
+        cfg.recording.enabled = True
+        cfg.recording.path = os.path.join(tempfile.mkdtemp(), "show.mp4")
+        api = mock.MagicMock(name="api")
+        with (
+            mock.patch("c64cast.video.framebuffer.Framebuffer"),
+            mock.patch("c64cast.video.preview.StreamRecorder") as recorder_cls,
+        ):
+            recorder_cls.return_value.start.side_effect = RuntimeError("VideoWriter failed")
+            with self.assertLogs("c64cast", level="ERROR"):
+                _, _, recorder = session._build_preview_and_recording(
+                    cfg, api, "a", is_ensemble=False
+                )
+        self.assertIsNone(recorder)
+
 
 class StartServicesTest(unittest.TestCase):
     def test_a_control_plane_that_refuses_to_start_does_not_kill_the_session(self):

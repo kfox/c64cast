@@ -505,6 +505,7 @@ def _build_preview_and_recording(
             )
             recorder.start()
         except RuntimeError as e:
+            recorder = None
             log.error("recording disabled: %s", e)
     if preview_window is None and recorder is None:
         _detach_framebuffer(api, framebuffer)
