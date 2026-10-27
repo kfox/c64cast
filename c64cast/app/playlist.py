@@ -497,12 +497,14 @@ class Playlist:
         for the target scene like single-scene looping is. False routes
         through the normal transitioning/interstitial path instead, for
         callers that still want the card."""
-        if self.single_scene:
-            self.log.debug("jump to %d ignored — single-scene mode", index)
-            return
-        if not 0 <= index < len(self.scenes):
-            raise ValueError(f"jump index {index} out of range (0..{len(self.scenes) - 1})")
+        # Checked under the lock `_apply_reload` swaps the scene list under, so
+        # a reload cannot land between the bounds check and the write.
         with self._jump_lock:
+            if self.single_scene:
+                self.log.debug("jump to %d ignored — single-scene mode", index)
+                return
+            if not 0 <= index < len(self.scenes):
+                raise ValueError(f"jump index {index} out of range (0..{len(self.scenes) - 1})")
             self._jump_target = index
             self._jump_skip_interstitial = skip_interstitial
         self.skip_event.set()
@@ -523,8 +525,8 @@ class Playlist:
         self.drop_current()
         with self._jump_lock:
             self._jump_target = None
-        self.scenes = new_scenes
-        self.single_scene = len(new_scenes) == 1
+            self.scenes = new_scenes
+            self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
             self.interstitial_factory = new_interstitial
         self.index = 0

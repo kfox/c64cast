@@ -776,6 +776,45 @@ class PlaylistTest(unittest.TestCase):
         self.assertEqual(scenes[1].setup_count, 0)
         self.assertIsNone(pl._jump_target)
 
+    def test_a_reload_cannot_land_between_a_jumps_bounds_check_and_its_write(self):
+        reloaded = [FakeScene("X"), FakeScene("Y")]
+        reload_done = threading.Event()
+        pl: Playlist
+
+        def apply_reload():
+            pl._apply_reload()
+            reload_done.set()
+
+        class ReloadOnFirstLen(list):
+            armed = False
+
+            def __len__(self):
+                if ReloadOnFirstLen.armed:
+                    ReloadOnFirstLen.armed = False
+                    reloader = threading.Thread(target=apply_reload)
+                    self_test.addCleanup(reloader.join)
+                    reloader.start()
+                    reload_done.wait(0.5)
+                return super().__len__()
+
+        self_test = self
+        scenes = ReloadOnFirstLen(FakeScene(n, frames_until_done=10_000_000) for n in "ABC")
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.current = scenes[0]
+        pl.request_reload(reloaded)
+        ReloadOnFirstLen.armed = True
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.request_jump(2)
+            self.assertTrue(reload_done.wait(5.0))
+        self.assertEqual([s.name for s in pl.scenes], ["X", "Y"])
+        self.assertIsNone(pl._jump_target, "a jump checked against the old list must not survive")
+
     def test_a_reload_drops_a_jump_aimed_at_the_old_scene_list(self):
         scenes = [FakeScene(n, frames_until_done=10_000_000) for n in "ABC"]
         pl = Playlist(
