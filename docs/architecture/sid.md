@@ -460,7 +460,7 @@ Each voice has its own waveform: `self.voice_wave_bits[idx]` (authoritative, com
 
 > `pulse+triangle` is the only combined waveform that reliably sounds on a 6581 — sawtooth and noise combos AND down to near-silence on real hardware, so they stay out of the interactive rotation. `midi_voice_waveforms` can still set them explicitly.
 
-**Multitimbral mode** (`midi_voice_mode = "multitimbral"`): `_handle_msg` routes by `msg.channel` through `_chan_to_voice`, built from `midi_voice_channels`, to `_note_on_mt`/`_note_off_mt`. Each voice is monophonic with its own held-note LIFO, and unmapped channels are ignored. Per-voice ADSR, PW, and filter stay global — deferred.
+**Multitimbral mode** (`midi_voice_mode = "multitimbral"`): `_handle_msg` routes by `msg.channel` through `_chan_to_voice`, built from `midi_voice_channels`, to `_note_on_mt`/`_note_off_mt`. Each voice is monophonic with its own held-note LIFO, and unmapped channels are ignored. Pitch bend follows the channel too — the reader coalesces it per channel, and a bend moves only that channel's voice. Per-voice ADSR, PW, and filter stay global — deferred.
 
 **Instrument controls.** Velocity maps to loudness: `_program_voice` writes velocity into that voice's **sustain** nibble as `velocity >> 3`.
 

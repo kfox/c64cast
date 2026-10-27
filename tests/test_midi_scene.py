@@ -481,6 +481,23 @@ class PitchWheelTests(_MidiTestCase):
         bent = _note_to_sid_freq(64 - 2.0, "NTSC")
         self.assertEqual(api.regs["D40E"][:2], (bent & 0xFF, bent >> 8))
 
+    def test_multitimbral_bend_moves_only_its_channels_voice(self):
+        scene, api = _make_scene(voice_mode="multitimbral")
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=0))
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=1))
+        scene._handle_msg(mido.Message("pitchwheel", pitch=8191, channel=1))
+        unbent = _note_to_sid_freq(60, "NTSC")
+        bent = _note_to_sid_freq(60 + 8191 / 8192.0 * 2.0, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
+        self.assertEqual(api.regs["D407"][:2], (bent & 0xFF, bent >> 8))
+
+    def test_multitimbral_bend_on_an_unmapped_channel_is_ignored(self):
+        scene, api = _make_scene(voice_mode="multitimbral")
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=0))
+        scene._handle_msg(mido.Message("pitchwheel", pitch=8191, channel=9))
+        unbent = _note_to_sid_freq(60, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
+
 
 class HandleMsgDispatchTests(_MidiTestCase):
     def test_note_on_then_off_via_messages(self):
@@ -922,6 +939,26 @@ class ReaderCoalescingTests(_MidiTestCase):
         voice_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
         # Each on/off reprograms voice 0 → ~16 writes, not collapsed to one.
         self.assertGreaterEqual(len(voice_writes), 16)
+
+    def test_coalescing_keeps_each_channels_bend(self):
+        scene, api = _make_scene(voice_mode="multitimbral")
+        batch = [
+            mido.Message("note_on", note=60, velocity=100, channel=0),
+            mido.Message("note_on", note=60, velocity=100, channel=1),
+            mido.Message("pitchwheel", pitch=8191, channel=0),
+            mido.Message("pitchwheel", pitch=-8192, channel=1),
+        ]
+        scene._midi_port = _ScriptedPort(batch)
+        stop = threading.Event()
+        t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
+        t.start()
+        time.sleep(0.1)
+        stop.set()
+        t.join(timeout=1.0)
+        up = _note_to_sid_freq(60 + 8191 / 8192.0 * 2.0, "NTSC")
+        down = _note_to_sid_freq(60 - 2.0, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (up & 0xFF, up >> 8))
+        self.assertEqual(api.regs["D407"][:2], (down & 0xFF, down >> 8))
 
 
 class _CostlyAPI(FakeAPI):

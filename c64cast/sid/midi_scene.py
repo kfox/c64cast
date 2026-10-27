@@ -389,28 +389,26 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # outrunning `_handle_msg`'s DMA writes would never reach the flush below
         # or the `stop` check teardown's bounded join needs.
         budget_s = _drain_budget_s(self.api.profile)
-        pending_pitch: int | None = None
+        pending_pitch: dict[int, int] = {}
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
             while not stop.is_set():
                 for msg in poll_pending(port, stop, budget_s=budget_s):
                     if msg.type == "pitchwheel":
-                        pending_pitch = msg.pitch
+                        pending_pitch[msg.channel] = msg.pitch
                     elif msg.type == "control_change":
                         pending_cc[msg.control] = msg.value
                     else:
                         self._handle_msg(msg)
                 now = time.time()
-                if (
-                    pending_pitch is not None or pending_cc
-                ) and now - last_flush >= _CONTROL_FLUSH_INTERVAL_S:
+                if (pending_pitch or pending_cc) and now - last_flush >= _CONTROL_FLUSH_INTERVAL_S:
                     for ctrl, val in pending_cc.items():
                         self._control_change(ctrl, val)
                     pending_cc = {}
-                    if pending_pitch is not None:
-                        self._pitchwheel(pending_pitch)
-                        pending_pitch = None
+                    for channel, pitch in pending_pitch.items():
+                        self._pitchwheel(pitch, channel)
+                    pending_pitch = {}
                     last_flush = now
                 time.sleep(0.001)  # 1 ms poll — keeps note latency tight
         except Exception:
@@ -435,7 +433,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
             if self.program_change_enabled:
                 self._program_change(msg.program, channel)
         elif msg.type == "pitchwheel":
-            self._pitchwheel(msg.pitch)
+            self._pitchwheel(msg.pitch, channel)
 
     def _voice_for_note(self, midi_note: int) -> int | None:
         for i, v in enumerate(self.voices):
@@ -559,10 +557,16 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._feed_emulator()  # keep the host emulator's trace in sync
         self._dirty = True  # controller row reflects the new value
 
-    def _pitchwheel(self, pitch: int) -> None:
+    def _pitchwheel(self, pitch: int, channel: int = 0) -> None:
+        if self.voice_mode == "multitimbral":
+            routed = self._chan_to_voice.get(channel)
+            targets = [] if routed is None else [routed]
+        else:
+            targets = list(range(SID.N_VOICES))
         bend_semitones = (pitch / 8192.0) * 2.0
         touched = False
-        for idx, v in enumerate(self.voices):
+        for idx in targets:
+            v = self.voices[idx]
             self._voice_bend[idx] = bend_semitones
             if v.on and v.note is not None:
                 freq = _note_to_sid_freq(v.note + bend_semitones, self.system)
