@@ -421,6 +421,7 @@ class ResamplerTailTest(unittest.TestCase):
         container = av.open(self._wav())
         self.addCleanup(container.close)
         src.container = container
+        src._closer = _ContainerCloser(container)
         src.path = "t.wav"
         _arm_locks(src)
         src._eof = False
@@ -3821,6 +3822,52 @@ class SoundtrackShorterThanPictureTest(unittest.TestCase):
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class CloseDuringAStalledReadTest(unittest.TestCase):
+    """A network input that stops sending mid-stream holds the demux thread
+    inside FFmpeg's read for up to the read bound, past close()'s 1 s join.
+    Closing the container then freed the context that read was using, and
+    the process died of a segfault when the read returned."""
+
+    def test_the_container_is_closed_by_the_demux_thread_once_its_read_returns(self):
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 3.0))
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(path)
+        body = Path(path).read_bytes()
+        head = b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n"
+        server = _StallingHttpServer(head + body[: len(body) // 2])
+        self.addCleanup(server.close)
+        src = AVFileSource(
+            f"http://127.0.0.1:{server.port}/clip.mkv",
+            target_sample_rate=8000,
+            scan_audio_peak=False,
+        )
+        real = src.container
+        # Closed here only once the demux thread is gone, so a regression
+        # fails the assertions below instead of crashing the run.
+        self.addCleanup(real.close)
+        self.addCleanup(lambda: _wait_until(lambda: src._demux_exited, limit_s=10.0))
+        closed_by: list[str] = []
+        src._closer._container = mock.Mock(
+            close=lambda: closed_by.append(threading.current_thread().name)
+        )
+        src.max_video_buffer = 100_000
+        with self.assertLogs("c64cast", level="WARNING") as logs:
+            src.start(audio_push=None)
+            depth = -1
+            while src.video_buffer_depth != depth:
+                depth = src.video_buffer_depth
+                time.sleep(0.5)
+            src.close()
+            self.assertEqual(closed_by, [], "close() freed the container under a live read")
+            self.assertTrue(_wait_until(lambda: closed_by, limit_s=10.0))
+        self.assertEqual(closed_by, ["av-demux"])
+        self.assertTrue(any("did not stop" in m for m in logs.output), logs.output)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class RemoteSeekBoundTest(unittest.TestCase):
     """A seek on a remote input opens a new range request, which PyAV bounds
     only while a `demux()` generator is live, and then against the clock of
@@ -3942,9 +3989,10 @@ class RemoteSeekBoundTest(unittest.TestCase):
             src.close()
             self.assertEqual(closed_by, [], "close() freed the container under a live seek")
             server.close()
-            self.assertTrue(_wait_until(lambda: closed_by), "the seek never closed the container")
+            self.assertTrue(_wait_until(lambda: closed_by), "the container was never closed")
             self.assertTrue(_wait_until(lambda: src._demux_exited))
-        self.assertEqual(closed_by, ["av-seek"])
+        # By the last thread out of it: the demux thread waits on its seek.
+        self.assertEqual(closed_by, ["av-demux"])
         self.assertTrue(any("did not stop" in m for m in logs.output))
 
     def test_a_seek_after_a_long_pause_reaches_a_healthy_server(self):

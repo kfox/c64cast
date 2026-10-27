@@ -320,13 +320,15 @@ class RemoteSeekStalled(RuntimeError):
 
 
 class _ContainerCloser:
-    """Closes a container once its owner has released it and no `_seek`
-    worker is inside it, whichever comes last.
+    """Closes a container once its owner has released it and no thread that
+    entered it (a `_seek` worker, the demux thread) is still inside it,
+    whichever comes last.
 
-    An owner whose close can run while a seek is in flight on another thread
-    (`AVFileSource.close` against the demux thread's transport seek) releases
-    through this rather than closing directly, because that seek can outlive
-    any join the owner is willing to wait for."""
+    An owner whose close can run while another thread reads the container
+    (`AVFileSource.close` against the demux thread's read or transport seek)
+    releases through this rather than closing directly, because a read from a
+    network input that stops sending outlives any join the owner is willing
+    to wait for, and closing under it frees the context it reads through."""
 
     def __init__(self, container: Any) -> None:
         self._container = container
@@ -2068,6 +2070,7 @@ class AVFileSource:
         lost with nothing left to apply it."""
         # "Container hit EOF" is expected and logs debug; a mid-stream decode
         # failure logs a full traceback and ends the thread.
+        self._closer.enter()
         try:
             while (end := self._demux_pass()) != "closed":
                 if end == "eof":
@@ -2090,6 +2093,7 @@ class AVFileSource:
             with self._lock:
                 self._eof = True
                 self._demux_exited = True
+            self._closer.leave()
 
     def _fill_to_last_picture(self) -> None:
         """At EOF, feed silence up to the end of the newest picture still
