@@ -1448,6 +1448,33 @@ class _NoWriter:
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class AudioFileSourceStopTest(unittest.TestCase):
+    """A stop reaches the decode thread however its input behaves."""
+
+    def test_a_stream_whose_sound_track_sends_nothing_still_stops(self):
+        # demux(a_stream) reads the other streams' packets inside PyAV's
+        # generator, so `_stop` was never checked: teardown's join gave up and
+        # the thread read the stream for as long as the server sent it.
+        from test_video import _EndlessHttpServer, _ts_with_a_silent_audio_track
+
+        from c64cast.audio.audio_source import AudioFileSource
+        from c64cast.video import video
+
+        self.enterContext(mock.patch.object(video, "_HTTP_RECONNECT_OPTIONS", {}))
+        server = _EndlessHttpServer("live.ts", b"", _ts_with_a_silent_audio_track())
+        src = AudioFileSource(cast(AudioStreamer, _FileSink()), server.url, reactive=False)
+        worker = threading.Thread(target=src._decode_loop, daemon=True)
+        # After the server's close, which is what releases a read still going.
+        self.addCleanup(lambda: worker.is_alive() and worker.join(5.0))
+        self.addCleanup(server.close)
+        worker.start()
+        time.sleep(0.5)
+        src._stop.set()
+        worker.join(5.0)
+        self.assertFalse(worker.is_alive(), "the decode thread never saw the stop")
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AudioFileSourceEndTest(unittest.TestCase):
     """The scene ends when the audio does. The container header's duration is
     a claim the file makes about itself: a truncated download or a doctored

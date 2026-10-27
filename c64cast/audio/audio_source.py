@@ -710,9 +710,14 @@ class AudioFileSource:
                     drained,
                 )
             a_stream = container.streams.audio[0]
-            for packet in container.demux(a_stream):
+            # Every stream, not just the audio: PyAV reads the others' packets
+            # inside its generator, where `_stop` is not checked, and a stream's
+            # sound track can send nothing while the rest flows.
+            for packet in container.demux():
                 if self._stop.is_set():
                     return
+                if packet.stream is not a_stream:
+                    continue
                 for frame in packet.decode():
                     retuned = self._observe_drain(follower, rate)
                     if retuned is not None:
