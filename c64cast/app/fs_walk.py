@@ -91,11 +91,7 @@ def claim_new_file(path: Path, max_attempts: int) -> Path:
         target = path.parent / candidate
         if os.path.lexists(target):
             return True
-        try:
-            fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            return True
-        os.close(fd)
+        os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
         return False
 
     name, _ = disambiguate(path.stem, path.suffix, taken, max_attempts)
