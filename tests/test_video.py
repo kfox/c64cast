@@ -3988,6 +3988,9 @@ class CloseDuringAStalledReadTest(unittest.TestCase):
             self.assertTrue(_wait_until(lambda: closed_by, limit_s=10.0))
         self.assertEqual(closed_by, ["av-demux"])
         self.assertTrue(any("did not stop" in m for m in logs.output), logs.output)
+        # The read the close outlived ends in the bound's error, which is the
+        # close's doing, not a crash.
+        self.assertFalse(any("crashed" in m for m in logs.output), logs.output)
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")

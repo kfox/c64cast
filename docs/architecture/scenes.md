@@ -97,8 +97,10 @@ The Phase-2 mute-and-wall-clock described above is now the `loop_audio = "mute"`
 _transport_resync = (loop_audio == "on"
                      and audio present
                      and source.a_stream present
-                     and not use_reu_pump)
+                     and not preloads_to_reu)
 ```
+
+`preloads_to_reu` is `use_reu_pump` on a local file only: a network input streams its sound with the pump on, so it resyncs.
 
 On the resync path it does **not** mute, and seeds an **audio-anchored clock** — the anchor `(clock, ref, rebased)`, whose `ref` is the heard position — instead of the wall anchor. `clock_s()` then returns `clock + (heard − ref)`, held at `clock` while paused or while `ref` is `None`. The anchor is one object, replaced by a single store, because the web console's HTTP worker reads `position()` off the playlist thread, and a read between two separate stores paired one anchor's clock with the previous anchor's position (the target plus everything heard since then) or with the other anchor's rebase flag (a position `start_s` off, for one poll). The mute path's wall anchor is the same object, its `ref` the wall time, and `position()` and `clock_s()` each convert from one read of it.
 

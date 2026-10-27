@@ -2101,7 +2101,11 @@ class AVFileSource:
                 self._apply_pending_seek()
         except RemoteSeekStalled as e:
             log.error("demux %s: %s; ending playback", self.path, e)
-        except Exception:
+        except Exception as e:
+            if self._closed:
+                # A read the close outlived, ended by its own bound.
+                log.debug("demux %s: read after close ended (%s)", self.path, type(e).__name__)
+                return
             log.exception("demux %s crashed", self.path)
             # The crash is this input's end too: a clip that pushed less than
             # the sink's prebuffer before it would otherwise never be played.
@@ -2163,8 +2167,7 @@ class AVFileSource:
         its last read (see `_seek`). The packet in flight when the seek
         arrived was read from the old position and is dropped."""
         if self._closed:
-            # close() may have landed during the seek that ended the last
-            # pass, and that seek's worker has since closed the container.
+            # close() may have landed during the seek that ended the last pass.
             return "closed"
         packets = self.container.demux()
         try:
