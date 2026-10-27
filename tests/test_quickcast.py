@@ -12,9 +12,12 @@ CLI/playlist suites.
 from __future__ import annotations
 
 import dataclasses
+import http.server
+import importlib.util
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -466,6 +469,67 @@ class ResolveMediaUrlTest(unittest.TestCase):
             "could not resolve 'https://youtu.be/abc': [youtube] abc: This video is not available",
         )
         self.assertNotIn("\x1b", message)
+
+
+class _FeedHandler(http.server.BaseHTTPRequestHandler):
+    """An RSS feed of `FEED_ITEMS` pages, each embedding one video."""
+
+    FEED_ITEMS = 20
+
+    def log_message(self, format, *args):  # noqa: A002, ARG002
+        pass
+
+    def do_GET(self):  # noqa: N802
+        self.server.paths.append(self.path)  # type: ignore[attr-defined]
+        base = f"http://{self.headers['Host']}"
+        if self.path == "/feed.xml":
+            items = "".join(
+                f"<item><title>e{i}</title><link>{base}/page{i}.html</link></item>"
+                for i in range(self.FEED_ITEMS)
+            )
+            body = (
+                '<?xml version="1.0"?><rss version="2.0"><channel><title>F</title>'
+                f"<link>{base}/</link>{items}</channel></rss>"
+            )
+            content_type = "application/rss+xml"
+        else:
+            body = '<html><head><title>P</title></head><body><video src="clip.mp4"></video></body></html>'
+            content_type = "text/html"
+        data = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+@unittest.skipUnless(importlib.util.find_spec("yt_dlp"), "needs the yt extra")
+class ResolveFeedUrlTest(unittest.TestCase):
+    """Real yt-dlp against a loopback server. A feed or playlist plays its
+    first entry, so every other entry it resolves is one more page fetch, each
+    with its own `URL_RESOLVE_TIMEOUT_S`, while the C64 is held in reset."""
+
+    def setUp(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FeedHandler)
+        server.paths = []  # type: ignore[attr-defined]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.server = server
+        # yt-dlp looks for plugins and a config file under the user's home.
+        home = tempfile.mkdtemp()
+        env = {"HOME": home, "XDG_CONFIG_HOME": home, "XDG_CACHE_HOME": home}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_feed_resolves_only_the_entry_it_plays(self):
+        port = self.server.server_address[1]
+        resolved = quickcast.resolve_media_url(f"http://127.0.0.1:{port}/feed.xml")
+        self.assertEqual(resolved.stream_url, f"http://127.0.0.1:{port}/clip.mp4")
+        self.assertEqual(self.server.paths, ["/feed.xml", "/page0.html"])  # type: ignore[attr-defined]
 
 
 class ParseTimestrTest(unittest.TestCase):

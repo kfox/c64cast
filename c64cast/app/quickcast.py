@@ -326,6 +326,9 @@ def resolve_media_url(url: str) -> ResolvedMedia:
         # stuck in STARTING where `POST /api/session/stop` could not end it.
         "socket_timeout": URL_RESOLVE_TIMEOUT_S,
         "retries": 2,
+        # Only the first entry of a playlist or feed is played, and yt-dlp
+        # otherwise resolves every entry, one fetch and one timeout each.
+        "playlist_items": "1",
         # `YoutubeDL._format_err` wraps "ERROR: " in raw ANSI escapes whenever it
         # thinks its stderr is a tty, and those land in the DownloadError message
         # below regardless of quiet/logger.
