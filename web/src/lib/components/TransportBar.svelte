@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { formatTime, keyNudgeEvents, loopButtonLabel, slotEnabled } from "$lib/transportBarLogic";
+  import { onDestroy } from "svelte";
+
+  import {
+    formatTime,
+    HoldKeepAlive,
+    keyNudgeEvents,
+    loopButtonLabel,
+    slotEnabled,
+  } from "$lib/transportBarLogic";
   import type { TransportState } from "$lib/types";
 
   interface Props {
@@ -34,10 +42,14 @@
 
   // Press-and-hold rw/ff: the engine's ramp is hold-driven (it accelerates the
   // longer the button stays down), so press and release are sent separately.
+  const holds = new HoldKeepAlive((verb, pressed) => onverb(verb, { pressed }));
+  onDestroy(() => holds.releaseAll());
+
   function hold(action: "rw" | "ff", pressed: boolean, event: Event): void {
     event.preventDefault();
     if (readOnly) return;
-    onverb(action, { pressed });
+    if (pressed) holds.press(action);
+    else holds.release(action);
   }
 
   // A keyboard-synthesized click (Enter/Space on a focused button) reports

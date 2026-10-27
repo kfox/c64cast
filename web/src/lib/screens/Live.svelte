@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
 
   import { api } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
@@ -18,6 +18,7 @@
   import { DocIndex, documentation } from "$lib/introspect";
   import { commandForKey, commandForKeyUp, isTypingTarget } from "$lib/liveKeysLogic";
   import type { Router } from "$lib/router.svelte";
+  import { HoldKeepAlive } from "$lib/transportBarLogic";
 
   interface Props {
     host: Console;
@@ -83,6 +84,10 @@
   // still fires on keyup after focus has moved to a button or field —
   // otherwise the rewind or fast-forward it started never lets go.
   const heldKeys = new Set<string>();
+  const keyHolds = new HoldKeepAlive((verb, pressed) =>
+    send({ action: "transport", verb, pressed }),
+  );
+  onDestroy(() => keyHolds.releaseAll());
 
   function onWindowKeydown(event: KeyboardEvent): void {
     // Auto-repeat would fire a one-shot verb (pause/resume, tap, a clip
@@ -100,8 +105,12 @@
       clips: current.clips,
     });
     if (commands === null) return;
-    if (event.key === "[" || event.key === "]") heldKeys.add(event.key);
     event.preventDefault();
+    if (event.key === "[" || event.key === "]") {
+      heldKeys.add(event.key);
+      for (const cmd of commands) keyHolds.press(String(cmd.verb));
+      return;
+    }
     for (const cmd of commands) send(cmd);
   }
 
@@ -110,7 +119,7 @@
     const commands = commandForKeyUp(event.key);
     if (commands === null) return;
     event.preventDefault();
-    for (const cmd of commands) send(cmd);
+    for (const cmd of commands) keyHolds.release(String(cmd.verb));
   }
 
   // The keyboard equivalent of TransportBar's `onpointercancel`: a window that
@@ -120,7 +129,7 @@
     for (const key of heldKeys) {
       heldKeys.delete(key);
       const commands = commandForKeyUp(key);
-      if (commands !== null) for (const cmd of commands) send(cmd);
+      if (commands !== null) for (const cmd of commands) keyHolds.release(String(cmd.verb));
     }
   }
 

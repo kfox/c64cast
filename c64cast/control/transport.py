@@ -511,6 +511,13 @@ _SCRUB_SETTLE_S = 0.15
 # pad press as a chord for the rest of the session.
 _CHORD_HOLD_WINDOW_S = 5.0
 
+# A leased rw/ff hold (a web console's) is dropped this long after its last
+# press. The console re-sends the press every HOLD_KEEPALIVE_MS
+# (web/src/lib/transportBarLogic.ts) while the button or key stays down, and a
+# background tab's timers fire at most once a second, so this covers both with
+# room for a slow network; a closed tab lets go within it.
+_HOLD_LEASE_S = 2.0
+
 
 @dataclass(frozen=True)
 class TransportEvent:
@@ -532,7 +539,11 @@ class TransportEvent:
     different domain than ``jog``'s 0..127 controller reading. ``save``/
     ``clear`` override ``loop_slot``'s MIDI Stop/Record-held chord detection
     with an explicit choice — what a console with no "hold Stop" gesture
-    sends instead; ``None`` (the MIDI default) falls back to the chord."""
+    sends instead; ``None`` (the MIDI default) falls back to the chord.
+    ``leased`` marks an rw/ff press from a surface that repeats it while held
+    (the web console): the hold lapses ``_HOLD_LEASE_S`` after the last one,
+    since a closed tab never sends the release. A MIDI note-off always
+    arrives, so a MIDI hold is not leased."""
 
     action: str
     pressed: bool = True
@@ -542,6 +553,7 @@ class TransportEvent:
     target: float | None = None
     save: bool | None = None
     clear: bool | None = None
+    leased: bool = False
 
 
 def _decode_relative_jog(value: int) -> int:
@@ -577,6 +589,8 @@ class TransportSession:
         # action name -> wall-time the hold started. Mutated only in tick()
         # (playlist thread) — enqueue() only ever pushes onto _queue.
         self._held: dict[str, float] = {}
+        # action name -> time of the last press of a leased hold.
+        self._lease_renewed: dict[str, float] = {}
         self._last_tick: float | None = None
         # Record/Stop hold state for the loop_slot pad chords — wall-time the
         # button was pressed, or None when released/expired.
@@ -628,6 +642,7 @@ class TransportSession:
             except queue.Empty:
                 break
             self._dispatch(pl, event, now)
+        self._expire_leases(now)
         if pl.on_card or pl.current is None:
             self._scrubbed = None
             return
@@ -645,6 +660,12 @@ class TransportSession:
             self._scrub(scene, position() + delta, now)
         self._settle_scrub(pl, now)
 
+    def _expire_leases(self, now: float) -> None:
+        for action, renewed in list(self._lease_renewed.items()):
+            if now - renewed > _HOLD_LEASE_S:
+                del self._lease_renewed[action]
+                self._held.pop(action, None)
+
     def _dispatch(self, pl: Playlist, event: TransportEvent, now: float) -> None:
         if event.action in _HOLD_ACTIONS:
             # Hold bookkeeping happens regardless of whether a scene is
@@ -652,8 +673,13 @@ class TransportSession:
             # ramp in tick() picks it up from wherever the hold started.
             if event.pressed:
                 self._held.setdefault(event.action, now)
+                if event.leased:
+                    self._lease_renewed[event.action] = now
+                else:
+                    self._lease_renewed.pop(event.action, None)
             else:
                 self._held.pop(event.action, None)
+                self._lease_renewed.pop(event.action, None)
             return
         # Record/Stop chord bookkeeping — same "survives no current scene" rule
         # as rw/ff above, but these ALSO have a one-shot press action, so they
