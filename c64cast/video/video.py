@@ -737,7 +737,7 @@ def decode_audio_full(
                     chunks.append(arr.astype(np.int16, copy=False))
                     room -= arr.size
         if picture_s is not None and origin_s is not None and v_stream is not None:
-            end_s = picture_s - origin_s + _frame_interval_s(v_stream)
+            end_s = picture_s - origin_s + 1.0 / _nominal_fps(v_stream)
             short = math.ceil(end_s * target_sample_rate) - sum(c.size for c in chunks)
             short = min(short, room)
             if short > 0:
@@ -749,10 +749,8 @@ def decode_audio_full(
     return np.concatenate(chunks)
 
 
-def _frame_interval_s(v_stream: Any) -> float:
-    """Seconds one picture of ``v_stream`` is shown, at the 30 fps
-    `AVFileSource` assumes when the stream reports no rate."""
-    return 1.0 / (float(v_stream.average_rate) if v_stream.average_rate else 30.0)
+def _nominal_fps(v_stream: Any) -> float:
+    return float(v_stream.average_rate) if v_stream.average_rate else 30.0
 
 
 def _frame_to_scan_bgr(frame: Any, plan: _DecodePlan) -> np.ndarray:
@@ -1172,7 +1170,7 @@ class AVFileSource:
         self.v_stream = self.container.streams.video[0]
         self.a_stream = self.container.streams.audio[0] if self.container.streams.audio else None
 
-        self.video_fps = float(self.v_stream.average_rate) if self.v_stream.average_rate else 30.0
+        self.video_fps = _nominal_fps(self.v_stream)
         self.video_time_base = float(self.v_stream.time_base or 0)
         # Source duration in seconds, for absolute-jog mapping and seek/loop
         # clamping. None when the container does not report one.

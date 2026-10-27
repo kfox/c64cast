@@ -3931,6 +3931,8 @@ class SoundtrackShorterThanPictureTest(unittest.TestCase):
             return src.finished
 
         self.assertTrue(_wait_until(played_to_the_end, limit_s=10.0))
+        # The last picture is shown for its whole interval, not cut at its stamp.
+        self.assertAlmostEqual(pushed[0] / self.RATE, self.SECONDS, delta=0.005)
 
     def test_the_preload_runs_to_the_end_of_the_last_picture(self):
         from c64cast.video.video import decode_audio_full
