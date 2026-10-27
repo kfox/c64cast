@@ -856,8 +856,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
                 self._last_voice_wave[i] = wave
         # Text rows repaint only on note/CC changes (keeps DMA low).
         if self._dirty:
-            self._paint_info_rows()
             self._dirty = False
+            self._paint_info_rows()
         self._render_hires()
         return True
 

@@ -710,7 +710,7 @@ class PaintTests(_MidiTestCase):
         for cell_row in (0, 7, 14):
             self.assertIn(_BITMAP_BASE + cell_row * 320, api.regions)
         # Both info rows painted: bitmap glyphs + screen-RAM FG nibble.
-        self.assertIn(_TITLE_BITMAP, api.regions)
+        self.assertIn(_TITLE_BITMAP, set(api.regions))
         self.assertIn(_TITLE_SCREEN, api.regions)
         self.assertIn(_META_BITMAP, api.regions)
         # Title = per-voice waveform tags + master volume; controller row = live
@@ -753,6 +753,22 @@ class PaintTests(_MidiTestCase):
         ctl = scene._build_meta_line()
         self.assertIn(f"RES {scene.filter_resonance:2d}", ctl)
         self.assertEqual(len(ctl), 40)  # _paint_text_row needs exactly 40
+
+    def test_a_change_landing_mid_paint_is_painted_next_frame(self):
+        scene, api = _make_scene()
+        _bring_up_display(scene)
+        build_title = scene._build_title_line
+
+        def reader_changes_volume_mid_paint():
+            line = build_title()
+            scene._control_change(midi_scene._CC_VOLUME, 0)
+            return line
+
+        with mock.patch.object(scene, "_build_title_line", reader_changes_volume_mid_paint):
+            scene.process_frame(0.0)
+        api.regions.clear()
+        scene.process_frame(1.0)
+        self.assertIn(_TITLE_BITMAP, set(api.regions))
 
     def test_rows_painted_on_change_are_resent_after_a_lost_write(self):
         # c64cast#531: the info rows and strip colors are painted only when

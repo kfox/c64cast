@@ -161,6 +161,22 @@ class AsidSceneTest(unittest.TestCase):
         self.assertTrue(scene._playing)
         self.assertIn("PLAYING", scene._build_title_line())
 
+    def test_a_change_landing_mid_paint_is_painted_next_frame(self):
+        scene, api = self._make()
+        self._bring_up(scene)
+        build_title = scene._build_title_line
+
+        def reader_starts_playback_mid_paint():
+            line = build_title()
+            scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_START))
+            return line
+
+        with mock.patch.object(scene, "_build_title_line", reader_starts_playback_mid_paint):
+            scene.process_frame(0.0)
+        api.regions.clear()
+        scene.process_frame(1.0)
+        self.assertIn(0x2000 + 22 * 320, set(api.regions))
+
     def test_speed_switches_emulator_clock(self):
         scene, _ = self._make(system="NTSC")
         from c64cast.hw.c64 import CLOCK_PAL
