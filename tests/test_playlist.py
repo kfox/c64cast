@@ -2075,5 +2075,102 @@ class ConfigSaveBackupTest(unittest.TestCase):
         self.assertIn("not overwritten", logs.output[1])
 
 
+class FailedSetupBackoffTest(unittest.TestCase):
+    """A looping single scene that fails to start is tried again after a
+    wait that doubles up to a cap, measured on a fake clock."""
+
+    def _fake_time(self, pl: Playlist, *, until: float = float("inf")) -> list[float]:
+        now = [0.0]
+        stop = pl.stop_event
+        pl._clock = lambda: now[0]
+
+        def wait(timeout: float | None = None) -> bool:
+            now[0] += timeout or 0.0
+            if now[0] >= until:
+                stop.set()
+            return stop.is_set()
+
+        stop.wait = wait  # type: ignore[method-assign]
+        return now
+
+    def test_a_missing_video_is_set_up_again_on_a_doubling_wait(self):
+        from unittest.mock import MagicMock
+
+        from c64cast.scenes.scenes import VideoScene
+
+        dm = MagicMock()
+        dm.default_target_fps = None
+        dm.supports_compose = False
+        missing = os.path.join(tempfile.mkdtemp(), "missing.mp4")
+        scene = VideoScene(MagicMock(), None, dm, missing)
+        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True)
+        now = self._fake_time(pl, until=120.0)
+        setups: list[float] = []
+        setup = scene.setup
+
+        def counted_setup() -> None:
+            setups.append(now[0])
+            if len(setups) >= 300:
+                pl.stop_event.set()
+            setup()
+
+        scene.setup = counted_setup
+        with self.assertLogs("c64cast", level="WARNING") as cap:
+            pl.run()
+        waits = [
+            r.getMessage().rsplit(" ", 2)[-2]
+            for r in cap.records
+            if "failed to start; trying again" in r.getMessage()
+        ]
+        self.assertLessEqual(len(setups), 9, f"{len(setups)} setups in 120 s")
+        self.assertEqual(waits[:7], ["1", "2", "4", "8", "16", "30", "30"])
+        gaps = [b - a for a, b in zip(setups, setups[1:], strict=False)]
+        self.assertTrue(all(g >= 1.0 for g in gaps), gaps)
+
+    def _failing_scene(self, fails: int) -> FakeScene:
+        scene = FakeScene("A", frames_until_done=10_000_000)
+        setup = scene.setup
+
+        def setup_that_fails() -> None:
+            setup()
+            scene.is_done = scene.setup_count <= fails
+
+        scene.setup = setup_that_fails
+        return scene
+
+    def test_a_setup_that_starts_the_scene_clears_the_wait(self):
+        scene = self._failing_scene(fails=2)
+        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True)
+        self._fake_time(pl)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._advance()
+            for _ in range(2):
+                scene.is_done = True
+                pl._advance()
+        self.assertEqual(scene.setup_count, 3)
+        self.assertEqual(pl._failed_setup_wait_s, 0.0)
+        self.assertEqual(pl._failed_setup_retry_at, 0.0)
+
+    def test_the_wait_gives_way_to_a_stop_reload_pause_or_skip(self):
+        for event in ("stop_event", "reload_event", "pause_event", "skip_event"):
+            with self.subTest(event=event):
+                scene = self._failing_scene(fails=10)
+                pl = Playlist(
+                    [scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True
+                )
+                now = self._fake_time(pl)
+                with self.assertLogs("c64cast.app.playlist", level="INFO"):
+                    pl._advance()
+                    getattr(pl, event).set()
+                    scene.is_done = True
+                    pl._advance()
+                self.assertLess(now[0], 1.0, "the wait ran out instead of giving way")
+                expected = 2 if event == "skip_event" else 1
+                self.assertEqual(scene.setup_count, expected)
+                self.assertIs(pl.current, scene)
+                if event == "skip_event":
+                    self.assertFalse(pl.skip_event.is_set())
+
+
 if __name__ == "__main__":
     unittest.main()
