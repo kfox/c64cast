@@ -968,13 +968,41 @@ class ReaderCoalescingTests(_MidiTestCase):
         stop = threading.Event()
         t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
         t.start()
-        time.sleep(0.1)
-        stop.set()
-        t.join(timeout=1.0)
         up = _note_to_sid_freq(60 + 8191 / 8192.0 * 2.0, "NTSC")
         down = _note_to_sid_freq(60 - 2.0, "NTSC")
+        deadline = time.time() + 5.0
+        while time.time() < deadline and api.regs.get("D407", (None,) * 2)[:2] != (
+            down & 0xFF,
+            down >> 8,
+        ):
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=1.0)
         self.assertEqual(api.regs["D400"][:2], (up & 0xFF, up >> 8))
         self.assertEqual(api.regs["D407"][:2], (down & 0xFF, down >> 8))
+
+    def test_shared_mode_coalescing_applies_the_last_bend_from_any_channel(self):
+        scene, api = _make_scene()
+        batch = [
+            mido.Message("note_on", note=60, velocity=100, channel=0),
+            mido.Message("pitchwheel", pitch=8191, channel=0),
+            mido.Message("pitchwheel", pitch=-8192, channel=1),
+            mido.Message("pitchwheel", pitch=0, channel=0),
+        ]
+        scene._midi_port = _ScriptedPort(batch)
+        stop = threading.Event()
+        t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
+        t.start()
+        deadline = time.time() + 5.0
+        while (
+            time.time() < deadline
+            and sum(op[0] == "write_regs" and op[1] == "D400" for op in api.ops) < 2
+        ):
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=1.0)
+        unbent = _note_to_sid_freq(60, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
 
 
 class _CostlyAPI(FakeAPI):

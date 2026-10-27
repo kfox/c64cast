@@ -396,7 +396,11 @@ class MidiScene(VoiceScopeRenderer, Scene):
             while not stop.is_set():
                 for msg in poll_pending(port, stop, budget_s=budget_s):
                     if msg.type == "pitchwheel":
-                        pending_pitch[msg.channel] = msg.pitch
+                        # Shared mode bends every voice from any channel, so
+                        # one slot keeps the newest bend rather than the
+                        # newest per channel replayed in first-seen order.
+                        bend_key = msg.channel if self.voice_mode == "multitimbral" else 0
+                        pending_pitch[bend_key] = msg.pitch
                     elif msg.type == "control_change":
                         pending_cc[msg.control] = msg.value
                     else:
