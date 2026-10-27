@@ -351,6 +351,17 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._voice_sounding: list[bool] = [False, False, False]
         self._last_voice_wave: list[int] = [-1, -1, -1]
 
+        self._reset_performance()
+        self._allocation_lock = threading.Lock()
+        # Monotonic assignment counter feeding `_VoiceState.seq`.
+        self._assign_seq = 0
+        self._midi_port = None
+        self._reader_poll = PollThread(
+            self._reader, name="midi-reader", manual=True, join_timeout=1.0
+        )
+        self._dirty = True  # force first text-row paint
+
+    def _reset_performance(self) -> None:
         self.voices: list[_VoiceState] = [_VoiceState() for _ in range(SID.N_VOICES)]
         # Shared mode: stack of all currently-held MIDI notes (most-recent last)
         # + their press velocities; the top SID.N_VOICES sound.
@@ -362,14 +373,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._mt_held: list[list[int]] = [[] for _ in range(SID.N_VOICES)]
         self._mt_held_vel: list[dict[int, int]] = [{} for _ in range(SID.N_VOICES)]
         self._voice_bend: list[float] = [0.0] * SID.N_VOICES
-        self._allocation_lock = threading.Lock()
-        # Monotonic assignment counter feeding `_VoiceState.seq`.
-        self._assign_seq = 0
-        self._midi_port = None
-        self._reader_poll = PollThread(
-            self._reader, name="midi-reader", manual=True, join_timeout=1.0
-        )
-        self._dirty = True  # force first text-row paint
 
     def _open_port(self):
         self._midi_port, _ = open_input_port(self.port_name, label="MidiScene")
@@ -817,6 +820,9 @@ class MidiScene(VoiceScopeRenderer, Scene):
 
     def setup(self) -> None:
         super().setup()
+        # A looping playlist sets this instance up again, and the note-offs
+        # sent while it was torn down never reached a reader.
+        self._reset_performance()
         self._program_global_sid()
         self._preprogram_voices()
         # invalidate_cache first, so the delta cache gets a clean baseline: the

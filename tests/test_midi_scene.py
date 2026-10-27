@@ -1180,6 +1180,41 @@ class LifecycleTests(_MidiTestCase):
             scene.teardown()
         self.assertFalse(scene._reader_poll.is_running())
 
+    def _lap(self, scene) -> None:
+        with mock.patch.object(
+            scene,
+            "_open_port",
+            side_effect=lambda: setattr(scene, "_midi_port", _FakePort()),
+        ):
+            scene.setup()
+        self.addCleanup(scene.teardown)
+
+    def test_a_relapped_scene_does_not_resurrect_notes_held_at_its_last_teardown(self):
+        # A looping playlist tears a scene down and sets the same instance up
+        # again; note-offs sent between the two never reach a reader.
+        scene, _ = _make_scene()
+        self._lap(scene)
+        for note in (60, 62, 64):
+            scene._note_on(note, 100)
+        scene.teardown()
+        self._lap(scene)
+        scene._note_on(67, 100)
+        scene._note_off(67)
+        self.assertEqual([v.on for v in scene.voices], [False, False, False])
+        for idx in range(SID.N_VOICES):
+            ctrl = scene._sid_shadow[idx * SID.BYTES_PER_VOICE + SID.OFF_CONTROL]
+            self.assertFalse(ctrl & SID.GATE, idx)
+
+    def test_a_relapped_scene_starts_unbent(self):
+        scene, api = _make_scene()
+        self._lap(scene)
+        scene._pitchwheel(8191)
+        scene.teardown()
+        self._lap(scene)
+        scene._note_on(60, 100)
+        unbent = _note_to_sid_freq(60, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
+
 
 if __name__ == "__main__":
     unittest.main()
