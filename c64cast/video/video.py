@@ -513,6 +513,26 @@ def _plan_decode_size(
     return dw, dh
 
 
+class _DecodePlan:
+    """`_plan_decode_size` for each frame, re-planned whenever the frame size
+    changes: a stream can open small and switch resolution mid-way, and a
+    plan kept from its first frame converted every later one at full size."""
+
+    def __init__(self, target: tuple[int, int] | None) -> None:
+        self.target = target
+        self.size: tuple[int, int] | None = None
+        self._source: tuple[int, int] | None = None
+
+    def update(self, frame: Any) -> bool:
+        """Plan for ``frame``'s size; True when that changed the plan's source."""
+        source = (frame.width, frame.height)
+        if source == self._source:
+            return False
+        self._source = source
+        self.size = None if self.target is None else _plan_decode_size(*source, *self.target)
+        return True
+
+
 # PyAV is imported lazily on first AVFileSource construction. On macOS the av
 # wheel bundles a different libavdevice major version than the cv2 wheel, so as
 # av's libavdevice loads on top of cv2's the Obj-C runtime prints a one-time
@@ -705,9 +725,11 @@ def _frame_interval_s(v_stream: Any) -> float:
     return 1.0 / (float(v_stream.average_rate) if v_stream.average_rate else 30.0)
 
 
-def _frame_to_scan_bgr(frame: Any, decode_size: tuple[int, int] | None) -> np.ndarray:
-    """Convert one decoded frame to a BGR ndarray for the accumulators,
-    downscaling DURING the yuv→bgr swscale pass when a decode size is planned."""
+def _frame_to_scan_bgr(frame: Any, plan: _DecodePlan) -> np.ndarray:
+    """Convert one decoded frame to a BGR ndarray, downscaling DURING the
+    yuv→bgr swscale pass when ``plan`` has a decode size for its size."""
+    plan.update(frame)
+    decode_size = plan.size
     if decode_size is not None:
         return frame.reformat(
             width=decode_size[0], height=decode_size[1], format="bgr24"
@@ -752,8 +774,7 @@ def _seek_sample_frames(
     if not time_base:
         return 0
     start_time = v_stream.start_time or 0
-    decode_size: tuple[int, int] | None = None
-    planned = False
+    plan = _DecodePlan(decode_target_size)
     taken = 0
     for n in range(max_samples):
         # Interval midpoints, so the last target is not at/after EOF, where it
@@ -764,11 +785,7 @@ def _seek_sample_frames(
         frame = next(container.decode(v_stream), None)
         if frame is None:
             continue
-        if not planned:
-            planned = True
-            if decode_target_size is not None:
-                decode_size = _plan_decode_size(frame.width, frame.height, *decode_target_size)
-        img = _frame_to_scan_bgr(frame, decode_size)
+        img = _frame_to_scan_bgr(frame, plan)
         for acc in accumulators:
             acc.add(img)
         taken += 1
@@ -789,16 +806,11 @@ def _decode_sample_frames(
     total = v_stream.frames or 0
     stride = max(1, total // max_samples) if total else 5
     taken = 0
-    decode_size: tuple[int, int] | None = None
-    planned = False
+    plan = _DecodePlan(decode_target_size)
     for i, frame in enumerate(container.decode(v_stream)):
         if i % stride:
             continue
-        if not planned:
-            planned = True
-            if decode_target_size is not None:
-                decode_size = _plan_decode_size(frame.width, frame.height, *decode_target_size)
-        img = _frame_to_scan_bgr(frame, decode_size)
+        img = _frame_to_scan_bgr(frame, plan)
         for acc in accumulators:
             acc.add(img)
         taken += 1
@@ -1072,10 +1084,8 @@ class AVFileSource:
         # The display mode's frame_target_size (or None). When set, the demux
         # loop downscales each frame to a headroom multiple of it during the
         # yuv→bgr swscale pass instead of converting the full source frame; the
-        # size is planned once from the first frame (_plan_decode_size).
-        self._decode_target = decode_target_size
-        self._decode_size: tuple[int, int] | None = None
-        self._decode_planned = False
+        # size is planned from each frame size the stream decodes to (_DecodePlan).
+        self._decode_plan = _DecodePlan(decode_target_size)
         # PTS (rebased, seconds) of the frame current_frame() last returned —
         # the A/V-lag telemetry in VideoScene reads it as displayed_frame_pts.
         self.last_frame_pts: float = 0.0
@@ -1478,39 +1488,27 @@ class AVFileSource:
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 
-    def _plan_decode(self, frame: Any) -> None:
-        """Plan the decode downscale once, from the first frame's real
-        dimensions. _decode_size None = source already small enough (or no
-        target) → plain full-res convert."""
-        self._decode_planned = True
-        if self._decode_target is None:
-            return
-        self._decode_size = _plan_decode_size(frame.width, frame.height, *self._decode_target)
-        if self._decode_size is not None:
-            log.info(
-                "av %s: decoding %dx%d→%dx%d (display target %dx%d)",
-                os.path.basename(self.path),
-                frame.width,
-                frame.height,
-                self._decode_size[0],
-                self._decode_size[1],
-                self._decode_target[0],
-                self._decode_target[1],
-            )
+    @property
+    def _decode_size(self) -> tuple[int, int] | None:
+        """The decode size for the current frame size; None = source already
+        small enough (or no target) → plain full-res convert."""
+        return self._decode_plan.size
 
     def _frame_to_bgr(self, frame: Any) -> np.ndarray:
         """Decoded frame → BGR ndarray, at the planned decode size when one
         applies (yuv→bgr + downscale in one swscale pass — cheap, vs a
         full-res bgr buffer + a separate cv2.resize)."""
-        if not self._decode_planned:
-            self._plan_decode(frame)
-        if self._decode_size is not None:
-            return frame.reformat(
-                width=self._decode_size[0],
-                height=self._decode_size[1],
-                format="bgr24",
-            ).to_ndarray()
-        return frame.to_ndarray(format="bgr24")
+        plan = self._decode_plan
+        if plan.update(frame) and plan.size is not None and plan.target is not None:
+            log.info(
+                "av %s: decoding %dx%d→%dx%d (display target %dx%d)",
+                os.path.basename(self.path),
+                frame.width,
+                frame.height,
+                *plan.size,
+                *plan.target,
+            )
+        return _frame_to_scan_bgr(frame, plan)
 
     def _rebase_pts(self, frame: Any) -> float:
         """Stamp a frame on the playback clock: its content time (`_content_time`,

@@ -715,9 +715,7 @@ def _make_demux_source_stub(
     src._audio_jump_warned = False
     src._dry_stall_level, src._dry_window = 0, None
     src._frames_taken, src._clock_read = 0, None
-    src._decode_target = decode_target
-    src._decode_size = None
-    src._decode_planned = False
+    src._decode_plan = video_mod._DecodePlan(decode_target)
     src._tempo_scale = 1.0
     src._atempo_graph = None
     src.last_frame_pts = 0.0
@@ -3064,6 +3062,18 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         self.assertIsNone(src._decode_size)
         self.assertEqual(frame.reformat_calls, [])
 
+    def test_a_resolution_change_mid_stream_is_planned_again(self):
+        # A stream can open small and switch to 4K: planned from the first
+        # frame alone, every later one was converted at full size and the
+        # buffer held up to 240 of them.
+        small = _FakeFrame(0, width=64, height=40)
+        large = _FakeFrame(1, width=3840, height=2160)
+        src = _make_demux_source_stub([_FakePacket([small, large])], decode_target=(320, 200))
+        _demux_until_parked(src)
+        planned = _plan_decode_size(3840, 2160, 320, 200)
+        assert planned is not None
+        self.assertEqual([img.shape[1::-1] for _, img in src._video_buf], [(64, 40), planned])
+
 
 class CurrentFrameTelemetryTest(unittest.TestCase):
     """`current_frame` records the displayed frame's PTS and `video_buffer_depth`
@@ -3217,6 +3227,15 @@ class ScanVideoSamplesTest(unittest.TestCase):
 
     def test_empty_accumulators_short_circuit(self):
         self.assertFalse(scan_video_samples(self._make(), []))
+
+    def test_a_resolution_change_mid_stream_is_planned_again(self):
+        frames = [_FakeFrame(0, width=64, height=40), _FakeFrame(1, width=3840, height=2160)]
+        stream = SimpleNamespace(frames=len(frames))
+        container = SimpleNamespace(decode=lambda s: iter(frames))
+        shapes: list[tuple[int, int]] = []
+        acc = SimpleNamespace(add=lambda img: shapes.append(img.shape[1::-1]))
+        video_mod._decode_sample_frames(container, stream, [acc], 2, (320, 200))
+        self.assertEqual(shapes, [(64, 40), _plan_decode_size(3840, 2160, 320, 200)])
 
     def test_falls_back_to_sequential_when_seek_fails(self):
         # A non-seekable source (seek raises) must still get sampled via the
