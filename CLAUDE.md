@@ -181,6 +181,9 @@ a site the list has not caught up to yet:
 
   This token is the same class of secret as the DMA password, and it gates the
   same kind of remote control of the host.
+- `.github/workflows/`: the jobs that decide whether a PR may merge, and the
+  ones holding publish rights (PyPI, the Pages site, GitHub releases). A change
+  here can turn a gate green without running it, or ship what nobody reviewed.
 
 **Hardware during a review or a ship run.** The suite fakes every backend, so
 prove a finding there first. When the caller's prompt says hardware use is

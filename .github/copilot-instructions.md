@@ -14,7 +14,7 @@ its notes.
 - **Pinned paths get the closest reading.** CLAUDE.md's "Pinned paths" section
   lists the files where a one-line change does the most damage: the DMA write
   path, connection-target parsing, the DMA-password and redaction rules, and
-  the web/control token gate.
+  the web/control token gate, and the CI and release workflows.
 - **The DMA password never rides in a URL or a CLI flag.** It comes from
   `C64CAST_DMA_PASSWORD` or the config file only; flag any change that lets it
   reach a URL, a log, `--save-settings` output or argv. The web/control token
