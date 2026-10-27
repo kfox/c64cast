@@ -196,6 +196,10 @@ _HTTP_RECONNECT_OPTIONS = {
 # and it sits well above the reconnect backoff cap so a reconnect completes.
 _REMOTE_OPEN_TIMEOUT_S = 20.0
 _REMOTE_READ_TIMEOUT_S = 30.0
+# The audio peak scan reads its input to the end before playback starts, and
+# a live stream, which keeps answering, has none: on a network input it stops
+# here and keeps the peak read so far.
+_REMOTE_PEAK_SCAN_S = 10.0
 
 
 def _protocol_options(path: str) -> dict[str, str]:
@@ -1255,6 +1259,7 @@ class AVFileSource:
         already gives us several seconds of cover before a video paints
         its first frame."""
         peak = 0
+        deadline = None if _is_local_file(self.path) else time.monotonic() + _REMOTE_PEAK_SCAN_S
         try:
             container = av_open(self.path)
             try:
@@ -1268,7 +1273,20 @@ class AVFileSource:
                         container = None
                         raise
                 resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
-                for packet in container.demux(a_stream):
+                # Every stream, not just the audio: PyAV reads the packets of
+                # the others inside its generator, where the deadline is not
+                # checked, and a live stream can carry no audio at all.
+                for packet in container.demux():
+                    if deadline is not None and time.monotonic() > deadline:
+                        log.warning(
+                            "av %s: audio peak scan stopped after %g s on a network input; "
+                            "the gain is set from the part read",
+                            os.path.basename(self.path),
+                            _REMOTE_PEAK_SCAN_S,
+                        )
+                        break
+                    if packet.stream is not a_stream:
+                        continue
                     for frame in packet.decode():
                         for resampled in resampler.resample(frame):
                             arr = resampled.to_ndarray().reshape(-1)

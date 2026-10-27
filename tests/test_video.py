@@ -3519,6 +3519,137 @@ class _RangeHttpServer:
         self._srv.close()
 
 
+class _EndlessHttpServer:
+    """A loopback HTTP server that answers every request with `head` and
+    then `chunk` over and over, as fast as the client reads: the shape of a
+    live stream. `close()` releases every socket and joins its threads."""
+
+    def __init__(self, name: str, head: bytes, chunk: bytes):
+        import socket
+
+        self._head = b"HTTP/1.0 200 OK\r\n\r\n" + head
+        self._chunk = chunk
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(4)
+        self._srv.settimeout(0.05)
+        self.url = f"http://127.0.0.1:{self._srv.getsockname()[1]}/{name}"
+        self._held: list = []
+        self._senders: list[threading.Thread] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                continue
+            self._held.append(conn)
+            sender = threading.Thread(target=self._send, args=(conn,), daemon=True)
+            self._senders.append(sender)
+            sender.start()
+
+    def _send(self, conn) -> None:
+        with suppress(OSError):
+            conn.settimeout(2.0)
+            conn.recv(4096)
+            conn.settimeout(None)
+            conn.sendall(self._head)
+            while not self._stop.is_set():
+                conn.sendall(self._chunk)
+
+    def close(self):
+        import socket
+
+        self._stop.set()
+        self._thread.join(2.0)
+        for conn in self._held:
+            with suppress(OSError):
+                conn.shutdown(socket.SHUT_RDWR)
+            conn.close()
+        for sender in self._senders:
+            sender.join(2.0)
+        self._srv.close()
+
+
+def _endless_wav(sample: int) -> tuple[bytes, bytes]:
+    """A WAV header claiming the largest length, and a chunk of ``sample``."""
+    import struct
+
+    rate = 8000
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+    head = b"RIFF\xff\xff\xff\xffWAVEfmt " + fmt + b"data\xff\xff\xff\xff"
+    return head, struct.pack("<h", sample) * 4096
+
+
+def _ts_with_a_silent_audio_track() -> bytes:
+    """An MPEG-TS whose program lists an audio stream that carries no packet."""
+    import io
+
+    import av
+
+    buf = io.BytesIO()
+    container = av.open(buf, "w", format="mpegts")
+    video = container.add_stream("mpeg2video", rate=30)
+    video.width, video.height, video.pix_fmt = 64, 40, "yuv420p"
+    audio = container.add_stream("mp2", rate=48000)
+    audio.layout = "stereo"
+    for _ in range(30):
+        frame = av.VideoFrame.from_ndarray(np.zeros((40, 64, 3), np.uint8), format="rgb24")
+        for packet in video.encode(frame):
+            container.mux(packet)
+    for packet in video.encode():
+        container.mux(packet)
+    container.close()
+    return buf.getvalue()
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemotePeakScanBoundTest(unittest.TestCase):
+    """The peak scan reads its input to the end before playback starts, and
+    a live stream has none: the scene's setup, on the playlist's thread,
+    never returned."""
+
+    def _scan(self, server: _EndlessHttpServer) -> tuple[int, list[str]]:
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(path)
+        src = AVFileSource(path, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        box: list = []
+        worker = threading.Thread(target=lambda: box.append(src._scan_audio_peak()), daemon=True)
+        # After the server's close, which is what releases a scan still reading.
+        self.addCleanup(lambda: worker.is_alive() and worker.join(5.0))
+        self.addCleanup(server.close)
+        src.path = server.url
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_PEAK_SCAN_S", 0.5))
+        # The reconnect backoff would keep a scan redialing the closed server
+        # for seconds, past the thread sandbox's grace.
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            worker.start()
+            worker.join(10.0)
+            self.assertFalse(worker.is_alive(), "the peak scan never ended")
+        return box[0], logs.output
+
+    def test_a_live_stream_ends_the_scan_at_its_budget(self):
+        peak, logs = self._scan(_EndlessHttpServer("live.wav", *_endless_wav(1000)))
+        # The part read still sets the gain.
+        self.assertEqual(peak, 1000)
+        self.assertTrue(any("peak scan stopped" in m for m in logs), logs)
+
+    def test_a_live_stream_whose_audio_track_is_silent_ends_the_scan(self):
+        # Packets of a stream the scan does not decode are read inside
+        # PyAV's demux generator, where no check between packets runs.
+        chunk = _ts_with_a_silent_audio_track()
+        peak, logs = self._scan(_EndlessHttpServer("live.ts", b"", chunk))
+        self.assertEqual(peak, 0)
+        self.assertTrue(any("peak scan stopped" in m for m in logs), logs)
+
+
 def _write_av_mkv(
     path: str,
     *,
