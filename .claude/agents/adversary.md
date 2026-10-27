@@ -132,8 +132,9 @@ Fix only what has a path. A fix ships with a test that feeds the attacker's valu
 and fails without the fix. If no test can reach the guard, the guard is dead code,
 so leave it out. Fix the problem once, at the boundary where the value enters,
 not with another check at each layer it passes through. A `warning` hardening gap
-that is not exploitable today and every `info` finding come back as proposed
-follow-ups, unfixed.
+that is not exploitable today and every `info` finding are declined in one line
+each, not proposed as follow-ups — `CLAUDE.md` → "Findings" says what is fixed,
+filed or dropped.
 
 Come back unfixed, as a report only: anything editorial across the whole change.
 Commit messages are not reviewed in this repository, so do not report on them.

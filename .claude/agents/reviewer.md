@@ -66,8 +66,15 @@ Out of scope, never reported:
 - **Prose as writing**: style, tone, precision, thinness, completeness. "A
   reader could be misled" names no actor, no action and no wrong result.
 - Anything the gate already proves: lint, types, the suite.
-- Pre-existing defects the change did not touch. List each in one line under
-  "Outside this change" — do not fix them, and do not open issues.
+- A guard for a failure nobody has seen, or a suspicion no input reaches. Each
+  gets one line under "Declined".
+
+Pre-existing defects follow `CLAUDE.md` → "Findings". One the change sits next
+to — in a file it touches, or the same mechanism one call away — is fixed in
+your fix commit with its own failing-first test. One that cannot be fixed here
+goes under "Outside this change" only if it names the caller, the reaching
+input and the wrong result; anything less is "Declined". Never open issues
+yourself.
 
 ## Fixing
 
@@ -79,7 +86,9 @@ mutation; reverse the edit, because the checkout also throws away fixes in
 that file you have not committed yet.
 
 A fix that needs a design decision, or would change behavior someone relies
-on, goes back unfixed as **advisory**.
+on, goes back unfixed as **advisory**. A guard in a fix, yours or the
+change's, meets the guard rule in `CLAUDE.md` → "Findings"; a guard that does
+not is a finding, and its fix is deleting it.
 
 ## c64cast specifics
 

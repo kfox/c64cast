@@ -85,10 +85,19 @@ they are enforced by tests that fail late:
   deletes it, and a `uv sync` that moves the Python minor invalidates it.
   `make mutation-check` verifies the state — run it before believing a proof
   whose arming happened earlier in the session or in another directory.
-- **Grep for every other site before committing.** The finding reviews raise
-  most often is a fix that covered the cited site and missed its sibling. Search
-  for the pattern, predicate or idiom you changed, and fix the other sites in
-  the same commit.
+- **Findings are fixed, filed or dropped by [CLAUDE.md](../../../CLAUDE.md) →
+  "Findings"**, and so is every subagent this run starts: its prompt says
+  "follow CLAUDE.md → Findings" rather than restating the rules. The ones that
+  bite hardest:
+  - **Grep for every other site before committing.** The finding reviews raise
+    most often is a fix that covered the cited site and missed its sibling.
+    Fix the other sites in the same commit.
+  - **Fix the related defect, don't file it.** One found in a file the change
+    touches, or in the same mechanism, is fixed here as its own commit with
+    its own failing-first test.
+  - **No guard without the input that reaches it** — an observed failure, an
+    external contract or a trust boundary, and a test that fails without the
+    guard. A guard for a failure never seen is neither committed nor filed.
 - **Check a claim before writing it.** A docstring, comment or doc sentence
   that names code is checked against the code first. A sentence whose job is
   reassurance or exhaustiveness ("no other caller", "the only site") is not
@@ -170,10 +179,14 @@ When it reports, confirm its fix commit is on your branch
 (`git -C <worktree> branch --contains <fix-sha>`), run `make check`, and route
 what it handed back:
 
-- **Advisory** — fix it here as its own commit, reviewed by the table above, or
-  open a labeled GitHub issue when it is genuinely separate work.
-- **Outside this change** — file each as its own GitHub issue, linked back to
-  the PR, unless it is fixed here. Never list them in the PR description.
+- **Advisory** — fix it here as its own commit, reviewed by the table above,
+  when the call is clearly yours. A design decision that is Kelly's goes to the
+  user in the step 7 report; it is not filed on their behalf.
+- **Outside this change** — fix it here if it is related (CLAUDE.md →
+  "Findings", rule 2). Otherwise file it as its own labeled GitHub issue,
+  linked back to the PR, only if it names the caller, the reaching input and
+  the wrong result; anything less is declined. Never list them in the PR
+  description.
 - **A commit-message finding** — the reviewer is told not to raise one; if one
   arrives anyway, drop it.
 
@@ -255,7 +268,7 @@ Report to the user:
 - Each review that ran: its target, its effort, and what it fixed and declined
   — with reasons for the declines.
 - Advisory findings and where each was routed — the commit that fixed it here,
-  or the issue it became.
+  or the decision it needs from the user.
 - The issues filed for "Outside this change" findings.
 - Anything still open, stated plainly.
 
