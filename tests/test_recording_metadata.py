@@ -147,6 +147,21 @@ class VideoSourceTest(unittest.TestCase):
         self.assertEqual(source["local_file"], "clip.mp4")
         self.assertEqual(source["copyright"], _UNKNOWN_COPYRIGHT)
 
+    def test_multi_entry_spec_reports_the_picked_url_redacted(self):
+        picked = "https://cdn.example/private/clip.mp4?token=SECRET"
+        scene = _FakeVideoScene("Video: clip", f"assets/videos, {picked}", picked)
+        source = build_scene_recording_metadata(scene, Config(), "system")["source"]
+        self.assertEqual(source["url"], "https://cdn.example/private/clip.mp4?token=REDACTED")
+        self.assertIsNone(source["local_file"])
+        self.assertNotIn("SECRET", json.dumps(source))
+
+    def test_multi_entry_spec_reports_a_picked_local_file_as_local(self):
+        spec = "https://cdn.example/private/clip.mp4, assets/videos/local.mp4"
+        scene = _FakeVideoScene("Video: local", spec, "assets/videos/local.mp4")
+        source = build_scene_recording_metadata(scene, Config(), "system")["source"]
+        self.assertIsNone(source["url"])
+        self.assertEqual(source["local_file"], "local.mp4")
+
     def test_video_scene_records_the_tempo_the_backend_resolved(self):
         # The config fields stay unset by default, so only the scene knows
         # which compensation the connected hardware chose.
