@@ -530,8 +530,6 @@ def _trim_to_crop(img: np.ndarray) -> np.ndarray:
     same pixels: it rounds the kept length down, which on the exact cut can
     tip the frame to the other side of the aspect and trim the other axis."""
     h, w = img.shape[:2]
-    if not h or not w:
-        return img
     if w / h > _CROP_ASPECT:
         keep = int(h * _CROP_ASPECT)
         x0 = (w - keep) // 2
