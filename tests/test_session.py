@@ -885,6 +885,28 @@ class BuildPreviewAndRecordingTest(unittest.TestCase):
         self.assertIsNone(recorder)
         self.assertEqual(os.listdir(tmp), [])
 
+    def test_a_recording_in_a_missing_directory_is_disabled_not_fatal(self):
+        tmp = Path(tempfile.mkdtemp())
+        with self.assertLogs("c64cast", level="ERROR") as logs:
+            recorder, recorder_cls = self._record(str(tmp / "missing" / "show.mp4"))
+        self.assertIsNone(recorder)
+        recorder_cls.assert_not_called()
+        self.assertTrue(any("recording disabled" in m for m in logs.output), logs.output)
+
+    def test_a_recording_with_every_numbered_name_taken_is_disabled_not_fatal(self):
+        tmp = Path(tempfile.mkdtemp())
+        for name in ("show.mp4", "show-2.mp4"):
+            (tmp / name).write_bytes(b"keep")
+        with (
+            mock.patch.object(session, "_MAX_RECORDING_NAME_ATTEMPTS", 2),
+            self.assertLogs("c64cast", level="ERROR") as logs,
+        ):
+            recorder, recorder_cls = self._record(str(tmp / "show.mp4"))
+        self.assertIsNone(recorder)
+        recorder_cls.assert_not_called()
+        self.assertTrue(any("recording disabled" in m for m in logs.output), logs.output)
+        self.assertEqual(sorted(os.listdir(tmp)), ["show-2.mp4", "show.mp4"])
+
 
 class StartServicesTest(unittest.TestCase):
     def test_a_control_plane_that_refuses_to_start_does_not_kill_the_session(self):
