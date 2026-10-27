@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.hw.delivery import write_confirmed
 
+from .orchestrator import OrchestratorError
+
 if TYPE_CHECKING:
     from c64cast.control.keyboard import CommodoreKeyPoller
     from c64cast.scenes.scenes import Scene
@@ -524,6 +526,13 @@ class EnsembleCoordinator:
             )
             return
         orch = pl.ensemble.active_orchestrator
+        # The conductor ends the broadcast on its own thread before its
+        # teardown clears `active_orchestrator`. Looked up before the drop, so
+        # an end that lands during it still leaves a follower to run out.
+        try:
+            follower_cfg = orch.follower_scene_cfg_for(pl.name)
+        except OrchestratorError:
+            return
 
         # A broadcast overrides a pause, and leaves the system un-paused after:
         # clearing pause_event and setting resume_event lets any concurrent
@@ -538,7 +547,6 @@ class EnsembleCoordinator:
         saved_idx = pl.index
         pl.drop_current()
 
-        follower_cfg = orch.follower_scene_cfg_for(pl.name)
         try:
             follower_scene = pl.build_follower_scene(follower_cfg)
         except Exception:

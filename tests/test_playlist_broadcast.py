@@ -266,6 +266,62 @@ class BroadcastInterruptTest(unittest.TestCase):
         pl.ensemble_coord.handle_broadcast_interrupt()
         self.assertFalse(pl.broadcast_interrupt.is_set())
 
+    def _wire_real_broadcast(self, pl: Playlist) -> Any:
+        """A real Orchestrator, opened by a conductor system, with `pl` as
+        its follower: `follower_scene_cfg_for` raises once `end()` has run."""
+        from c64cast.app.orchestrator import Orchestrator
+
+        class _SpanOrchestrator(Orchestrator):
+            @classmethod
+            def claims(cls, scene_cfg: Any) -> bool:
+                return False
+
+            def snapshot(self) -> dict[str, Any]:
+                return {}
+
+        follower_stack = _fake_ensemble_stack(pl.name)
+        follower_stack.cfg.scenes = []
+        ens = Ensemble(
+            stacks=[follower_stack, _fake_ensemble_stack("conductor")], stop_event=pl.stop_event
+        )
+        orch = _SpanOrchestrator(ens, "conductor")
+        ens.active_orchestrator = orch
+        pl.ensemble = ens
+        pl.broadcast_interrupt = ens.broadcast_interrupt[pl.name]
+        pl.broadcast_resume = ens.broadcast_resume[pl.name]
+        pl.build_follower_scene = lambda cfg: _FakeScene("follower")
+        conductor_cfg = MagicMock(name="conductor-cfg")
+        conductor_cfg.name = "span"
+        self.assertTrue(orch.begin(conductor_cfg))
+        return orch
+
+    def test_a_broadcast_ending_while_the_follower_tears_down_does_not_end_the_run(self):
+        # The conductor's overlay calls `end()` on its own thread, and the
+        # follower's scene teardown is the longest stretch it can land in.
+        pl = _build_playlist()
+        orch = self._wire_real_broadcast(pl)
+        current = _FakeScene("initial")
+        current.teardown = orch.end
+        pl.current = current
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.ensemble_coord.handle_broadcast_interrupt()
+        self.assertIsNone(pl.current)
+        self.assertFalse(pl.broadcast_resume.is_set())
+
+    def test_a_broadcast_that_ended_before_the_interrupt_keeps_the_scene(self):
+        # `end()` runs before the conductor's teardown clears
+        # `active_orchestrator`, so a follower can see an ended broadcast
+        # still installed.
+        pl = _build_playlist()
+        orch = self._wire_real_broadcast(pl)
+        orch.end()
+        current = _FakeScene("initial")
+        pl.current = current
+        pl.ensemble_coord.handle_broadcast_interrupt()
+        self.assertIs(pl.current, current)
+        self.assertEqual(current.teardown_calls, 0)
+        self.assertFalse(pl.broadcast_interrupt.is_set())
+
     def test_no_factory_logs_error_and_returns(self):
         pl = _build_playlist()
         ens = Ensemble(stacks=[], stop_event=pl.stop_event)
