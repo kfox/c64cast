@@ -121,7 +121,7 @@ the resolved target and an explicit **report only, do not touch the tree**.
 Set each launch's `description` to the short SHA alone (`a1b2c3d`): the lane
 name already prints beside it.
 
-The read-only instruction is the whole reason this phase parallelises. Four
+The read-only instruction is the whole reason this phase parallelizes. Four
 agents writing one worktree at once corrupt each other's edits, and an agent
 that fixes a file another lane is mid-review of invalidates that review.
 

@@ -103,6 +103,47 @@ UV_PROJECT_ENVIRONMENT=<worktree>/.venv`) while git needs it as a prefix
 trailing `VAR=value` as a pathspec. A write driven through Bash (`sed -i`, a
 redirection) reaches neither hook, so there it rests on this rule alone.
 
+### Findings: fix it, file it, or drop it
+
+These rules bind every session and subagent that works here: a ship run, a
+one-off fix, a finder, a review lane, the `reviewer`. An agent's definition or
+prompt may narrow its lane; it never loosens these. A prompt that hands work to
+a subagent says "follow CLAUDE.md → Findings" rather than paraphrasing them.
+
+1. **A finding is a real defect:** a concrete input or state that produces a
+   wrong result, a crash, a hang, a leak or a security hole. A test that fails
+   on the current code proves it before the fix lands. Style, refactors and
+   prose as writing are not findings.
+2. **Fix it — the default.** Grep for the pattern, predicate or shape you
+   changed and fix every sibling site in the same commit. A related defect
+   found on the way — in a file the change touches, or the same mechanism one
+   call away — is fixed in this change as its own commit with its own
+   failing-first test, not filed. "Small" is a reason to fix it, never to file
+   it; a two-line fix costs less than the issue describing it.
+3. **A guard ships only with the input that reaches it.** A check, clamp,
+   retry, fallback, `try`/`except`, `None` test or validation names the caller
+   at `file:line`, the value, and the wrong result without it. That value comes
+   from an **observed failure**, an **external contract** (a file format, a
+   device or firmware reply, a third-party API) or a **trust boundary**
+   (network, user config, a MIDI or web peer). A value this code produced, or
+   one its types already rule out, is not an input. The guard's test feeds that
+   value and fails without the guard; a guard no test can reach is dead code.
+   At a trust boundary the bar is reachability, not likelihood: cite the path
+   from entry point to sink, and validate once where the value enters, not
+   again at each layer it passes.
+4. **File it** only when it cannot be fixed here *and* it names (1) the caller
+   at `file:line`, (2) the input that reaches it — observed, from an external
+   contract, or chosen across a trust boundary — and (3) the wrong result.
+   "Cannot be fixed here" means it needs a design decision that is Kelly's,
+   hardware nobody authorized, files another in-flight branch is changing, or
+   would make this change materially bigger or riskier. One labeled issue per
+   item, linked to the PR — never a list in a PR description.
+5. **Drop it — everything else.** Suspicions no input reaches, latent traps
+   ("would become real if…"), guards for failures never seen, design opinions,
+   behavior that matches its docs, flake risks never seen failing. Each gets one
+   line under "Declined" in the report that reaches the user; none is committed
+   or filed. Don't manufacture work — there is plenty of real work queued.
+
 **Reviews** run through the agents in [.claude/agents/](.claude/agents/):
 `reviewer` for every change, and the four lanes `/panel-review`
 ([.claude/skills/panel-review/](.claude/skills/panel-review/SKILL.md)) launches

@@ -173,6 +173,11 @@ no verification you did not run. When you add or repair a test, break the behavi
 deliberately and watch the test fail — "tests cover this" means exactly that, and
 otherwise say "tests exist".
 
+Which findings to fix, file or drop, and the bar a guard has to meet, are
+`CLAUDE.md` → "Findings": a related defect next to the change is fixed here
+with its own failing-first test, a guard ships only with an input that reaches
+it, and an unreached suspicion is declined, not proposed as a follow-up.
+
 Come back unfixed, as a report only:
 
 - **Which side is wrong, when that is genuinely open.** If the claim might be
