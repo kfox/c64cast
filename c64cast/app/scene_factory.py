@@ -2283,9 +2283,11 @@ def _video_tempo_scale(cfg: Config, mode: DisplayMode, *, dac_audio: bool) -> fl
     bitmap writes bias the audio servo and time-stretch playback ~1/s SLOW at
     correct pitch. Pre-compress the content by 1/s (audio time-compress +
     video PTS × s) so it nets to real time. Gated OFF (1.0) for the off-bus
-    sampler, the REU pump, char modes, and muted scenes — none of which
-    stretch (``dac_audio`` False covers sampler and muted)."""
-    if not dac_audio or cfg.audio.use_reu_pump or not isinstance(mode, BitmapDisplayMode):
+    sampler, char modes, and muted scenes — none of which stretch
+    (``dac_audio`` False covers sampler and muted). The REU pump does not
+    stretch either, but whether a pick takes it depends on the file, so
+    VideoScene.setup holds the tempo at 1.0 for a pick that preloads."""
+    if not dac_audio or not isinstance(mode, BitmapDisplayMode):
         return 1.0
     return _video_tempo_configured(cfg, mode)
 

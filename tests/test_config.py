@@ -10,6 +10,7 @@ import os
 import tempfile
 import tomllib
 import unittest
+from types import SimpleNamespace
 from typing import cast
 from unittest import mock
 
@@ -2817,11 +2818,21 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
         scene = self._scene(self._dac_cfg(), display="mhires", audio=None)
         self.assertEqual(scene.tempo_scale, 1.0)
 
-    def test_reu_pump_bitmap_is_off(self):
+    def test_reu_pump_bitmap_is_off_for_a_local_file(self):
         cfg = self._dac_cfg()
         cfg.audio.use_reu_pump = True
-        scene = self._scene(cfg, display="mhires", audio=self.audio)
+        scene = self._scene(cfg, display="mhires", audio=SimpleNamespace(use_reu_pump=True))
+        scene._take_tempo()
         self.assertEqual(scene.tempo_scale, 1.0)
+
+    def test_reu_pump_bitmap_compensates_a_network_input(self):
+        # Its sound streams over the DAC as with the pump off, so it stretches.
+        cfg = self._dac_cfg()
+        cfg.audio.use_reu_pump = True
+        scene = self._scene(cfg, display="mhires", audio=SimpleNamespace(use_reu_pump=True))
+        scene.filepath = "https://stub.invalid/clip.mp4"
+        scene._take_tempo()
+        self.assertEqual(scene.tempo_scale, 0.80)
 
     def test_sampler_bitmap_is_off(self):
         # Sampler path (off the C64 bus) never stretches → no compensation.

@@ -1385,7 +1385,8 @@ class VideoScene(MediaFileMixin, Scene):
         # time-compresses the audio by 1/tempo_scale and scales video PTS by
         # tempo_scale, canceling the bitmap+DAC slowdown.
         self.tempo_from_link = tempo_scale is None
-        self.tempo_scale = 1.0 if tempo_scale is None else tempo_scale
+        self._fixed_tempo = 1.0 if tempo_scale is None else tempo_scale
+        self.tempo_scale = self._fixed_tempo
         # Retune that compensation to the drain measured while the scene plays
         # (`_follow_drain`), from tempo_scale as the starting point. Off for a
         # configured value, which is what the operator measured.
@@ -1464,9 +1465,7 @@ class VideoScene(MediaFileMixin, Scene):
             self.is_done = True
             return
         super().setup()
-        if self.tempo_from_link and self.dac_pacing is not None:
-            self.tempo_scale = self.dac_pacing.bitmap_tempo
-            self.tempo_follow = self.tempo_scale < 1.0
+        self._take_tempo()
         # Back onto the audio-master clock, untouched, rather than inheriting a
         # prior run's pause/seek/loop/mute.
         self.transport.reset()
@@ -1740,6 +1739,19 @@ class VideoScene(MediaFileMixin, Scene):
     def _close_audio_hold(self) -> None:
         with self._audio_hold_lock:
             self._audio_held = False
+
+    def _take_tempo(self) -> None:
+        """Set this pick's bitmap+DAC tempo compensation: none for a pick the
+        REU pump plays, which does not stretch."""
+        if self.preloads_to_reu:
+            self.tempo_scale = 1.0
+            self.tempo_follow = False
+        elif self.tempo_from_link and self.dac_pacing is not None:
+            self.tempo_scale = self.dac_pacing.bitmap_tempo
+            self.tempo_follow = self.tempo_scale < 1.0
+        else:
+            self.tempo_scale = self._fixed_tempo
+            self.tempo_follow = False
 
     @property
     def preloads_to_reu(self) -> bool:
