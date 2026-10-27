@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -190,9 +191,18 @@ def _apply_aspect(
     return _crop_to_aspect(img, target_ratio)
 
 
+def _media_basename(path: str) -> str:
+    """The last path segment of a local path or an http(s) URL. A URL's query
+    and fragment are left out: a private asset's access token rides there,
+    and the name is drawn on screen and published in SCENE_CONFIG_JSON."""
+    if path.lower().startswith(("http://", "https://")):
+        path = urlsplit(path).path
+    return os.path.basename(path)
+
+
 def _display_name(path: str) -> str:
     """Basename without its file extension, for scene-name display."""
-    return os.path.splitext(os.path.basename(path))[0]
+    return os.path.splitext(_media_basename(path))[0]
 
 
 def _blit_c64_text(
@@ -1049,7 +1059,7 @@ class MediaFileMixin:
             log.info(
                 "%s: picked %s from %d candidates",
                 self.MEDIA_LABEL,
-                os.path.basename(self.filepath),
+                _media_basename(self.filepath),
                 len(candidates),
             )
         return True
