@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
 
+  import { pointerHold } from "$lib/pointerHold";
   import {
     formatTime,
     HoldKeepAlive,
     keyNudgeEvents,
     loopButtonLabel,
-    pointerHold,
     slotEnabled,
   } from "$lib/transportBarLogic";
   import type { TransportState } from "$lib/types";

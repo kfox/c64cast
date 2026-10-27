@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { HeldKeys, pointerHold } from "$lib/pointerHold";
   import type { Clip } from "$lib/types";
 
   interface Props {
@@ -12,10 +13,11 @@
   // Press and release both go: only a gate clip acts on the release
   // (performance.py `_handle_event`), so this is safe for every launch type
   // and is what the MIDI surface sends too.
-  function press(slot: number, pressed: boolean, event: Event): void {
+  const pads = new HeldKeys<number>((slot, pressed) => onpress(slot, pressed));
+
+  function press(slot: number, event: PointerEvent & { currentTarget: HTMLButtonElement }): void {
     event.preventDefault();
-    if (readOnly) return;
-    onpress(slot, pressed);
+    pointerHold(pads, slot, event, readOnly);
   }
 
   // A keyboard-synthesized click reports `detail === 0`, which is what tells
@@ -45,9 +47,10 @@
         type="button"
         disabled={readOnly}
         aria-pressed={clip.state === "active"}
-        onpointerdown={(e) => press(clip.slot, true, e)}
-        onpointerup={(e) => press(clip.slot, false, e)}
-        onpointercancel={(e) => press(clip.slot, false, e)}
+        onpointerdown={(e) => press(clip.slot, e)}
+        onpointerup={(e) => press(clip.slot, e)}
+        onpointercancel={(e) => press(clip.slot, e)}
+        onlostpointercapture={(e) => press(clip.slot, e)}
         onclick={(e) => keyFire(clip.slot, e)}
         class="flex min-h-20 touch-none flex-col justify-between rounded-lg border p-2 text-start
                transition enabled:active:brightness-125 disabled:opacity-50

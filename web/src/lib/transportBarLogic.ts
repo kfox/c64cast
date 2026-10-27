@@ -1,6 +1,7 @@
 /** Pure logic behind `TransportBar.svelte`'s time display, loop-button label,
  *  loop-slot enablement and keyboard-tap gesture. */
 
+import type { Holds } from "./pointerHold";
 import type { LoopState } from "./types";
 
 /** `M:SS`, floor-clamped at zero and rounded to the nearest second. */
@@ -42,7 +43,7 @@ export const HOLD_KEEPALIVE_MS = 500;
 
 /** Press-and-hold for rw/ff: sends the press, repeats it every
  *  `HOLD_KEEPALIVE_MS` while held, and sends the release once. */
-export class HoldKeepAlive {
+export class HoldKeepAlive implements Holds<string> {
   readonly #send: (verb: string, pressed: boolean) => void;
   readonly #timers = new Map<string, ReturnType<typeof setInterval>>();
 
@@ -69,31 +70,5 @@ export class HoldKeepAlive {
 
   releaseAll(): void {
     for (const verb of [...this.#timers.keys()]) this.release(verb);
-  }
-}
-
-/** The parts of a `PointerEvent` that `pointerHold` reads. */
-export interface PointerHoldEvent {
-  type: string;
-  pointerId: number;
-  currentTarget: { setPointerCapture(pointerId: number): void } | null;
-}
-
-/** One pointer event on a ◀◀/▶▶ button, applied to `holds`. A press captures
- *  the pointer: without it, a drag off the button before letting go sends its
- *  pointerup elsewhere and the keep-alive renews the hold forever. A release
- *  is never gated on `readOnly`, so a hold always lets go. */
-export function pointerHold(
-  holds: HoldKeepAlive,
-  verb: string,
-  event: PointerHoldEvent,
-  readOnly: boolean,
-): void {
-  if (event.type === "pointerdown") {
-    if (readOnly) return;
-    event.currentTarget?.setPointerCapture(event.pointerId);
-    holds.press(verb);
-  } else {
-    holds.release(verb);
   }
 }
