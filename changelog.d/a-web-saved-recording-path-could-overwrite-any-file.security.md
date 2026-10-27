@@ -8,4 +8,5 @@
   `path` that doesn't end in a video extension (`.mp4`, `.m4v`, `.mov`,
   `.mkv`, `.avi`, `.webm`), and never overwrites an existing file or follows
   a symlink: a name already taken records to `recording-2.mp4`, then
-  `recording-3.mp4`, and so on.
+  `recording-3.mp4`, and so on. A new recording is readable only by the
+  user the host runs as.
