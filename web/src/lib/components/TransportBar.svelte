@@ -44,12 +44,16 @@
   // longer the button stays down), so press and release are sent separately.
   const holds = new HoldKeepAlive((verb, pressed) => onverb(verb, { pressed }));
   onDestroy(() => holds.releaseAll());
+  // A disabled button never sees its pointerup, so a hold the bar went
+  // read-only under would otherwise keep re-sending its press.
+  $effect(() => {
+    if (readOnly) holds.releaseAll();
+  });
 
   function hold(action: "rw" | "ff", pressed: boolean, event: Event): void {
     event.preventDefault();
-    if (readOnly) return;
-    if (pressed) holds.press(action);
-    else holds.release(action);
+    if (!pressed) holds.release(action);
+    else if (!readOnly) holds.press(action);
   }
 
   // A keyboard-synthesized click (Enter/Space on a focused button) reports

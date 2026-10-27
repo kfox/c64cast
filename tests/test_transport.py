@@ -429,6 +429,15 @@ class ConsoleHoldLeaseTests(unittest.TestCase):
         assert found is not None
         self.assertLessEqual(3 * int(found.group(1)) / 1000.0, transport._HOLD_LEASE_S)
 
+    def test_a_midi_press_over_a_console_hold_takes_the_lease_away(self):
+        scene, pl, session, _ = self._console_ff()
+        session.enqueue(TransportEvent(action="ff", pressed=True))
+        _tick(session, pl, 0.2)
+        _tick(session, pl, 0.2 + transport._HOLD_LEASE_S + 0.1)
+        seeks = len(scene.seeks)
+        _tick(session, pl, 30.0)
+        self.assertGreater(len(scene.seeks), seeks)
+
     def test_a_midi_hold_has_no_lease(self):
         scene = _StubScene(position=10_000.0, duration=None)
         pl = _FakePlaylist(scene)

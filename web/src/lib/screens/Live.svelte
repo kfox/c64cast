@@ -84,9 +84,12 @@
   // still fires on keyup after focus has moved to a button or field —
   // otherwise the rewind or fast-forward it started never lets go.
   const heldKeys = new Set<string>();
-  const keyHolds = new HoldKeepAlive((verb, pressed) =>
-    send({ action: "transport", verb, pressed }),
-  );
+  // The system a held key pressed on: switching systems mid-hold must not
+  // carry the keep-alive, or the release, over to the new one.
+  let keySystem: string | null = null;
+  const keyHolds = new HoldKeepAlive((verb, pressed) => {
+    if (keySystem !== null) host.send({ action: "transport", verb, pressed, system: keySystem });
+  });
   onDestroy(() => keyHolds.releaseAll());
 
   function onWindowKeydown(event: KeyboardEvent): void {
@@ -107,6 +110,7 @@
     if (commands === null) return;
     event.preventDefault();
     if (event.key === "[" || event.key === "]") {
+      if (heldKeys.size === 0) keySystem = current.name;
       heldKeys.add(event.key);
       for (const cmd of commands) keyHolds.press(String(cmd.verb));
       return;
