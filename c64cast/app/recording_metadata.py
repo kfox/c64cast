@@ -244,8 +244,9 @@ def _scene_source(scene: Scene, scene_type: str | None) -> dict[str, Any]:
 def build_scene_recording_metadata(scene: Scene, cfg: Config, system_name: str) -> dict[str, Any]:
     """Assemble one scene-start snapshot: coalesced config + scene metadata.
 
-    Safe to call repeatedly (every scene activation) — pure read of already-
-    resolved state, no I/O."""
+    Safe to call repeatedly (every scene activation) — a read of already-
+    resolved state with no device or network I/O; its only filesystem access
+    is the existence check `split_file_spec` makes on a spec with a comma."""
     scene_cfg = getattr(scene, "_cfg", None)
     scene_type = getattr(scene_cfg, "type", None)
     display_mode = getattr(scene, "display_mode", None)
