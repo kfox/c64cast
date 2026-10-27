@@ -197,8 +197,9 @@ _HTTP_RECONNECT_OPTIONS = {
 _REMOTE_OPEN_TIMEOUT_S = 20.0
 _REMOTE_READ_TIMEOUT_S = 30.0
 # The audio peak scan reads its input to the end before playback starts, and
-# a live stream, which keeps answering, has none: on a network input it stops
-# here and keeps the peak read so far.
+# a live stream, which keeps answering, has none: on a network input that
+# reports no length it stops this long after the open and keeps the peak read
+# so far. One that reports a length is read to its end however slowly.
 _REMOTE_PEAK_SCAN_S = 10.0
 
 
@@ -791,7 +792,7 @@ def _video_frames(container: Any, path: str, v_stream: Any) -> Iterator[Any]:
 
 
 def _source_duration_s(container: Any, v_stream: Any) -> float | None:
-    """Playback duration of ``v_stream`` in seconds, or None when unknown.
+    """Playback duration of ``v_stream`` (any stream) in seconds, or None when unknown.
 
     Prefers the stream's own duration (stream time_base units); falls back to
     the container duration (AV_TIME_BASE microseconds). None on a live/unbounded
@@ -1311,7 +1312,6 @@ class AVFileSource:
         already gives us several seconds of cover before a video paints
         its first frame."""
         peak = 0
-        deadline = None if _is_local_file(self.path) else time.monotonic() + _REMOTE_PEAK_SCAN_S
         try:
             container = av_open(self.path)
             try:
@@ -1325,18 +1325,26 @@ class AVFileSource:
                         container = None
                         raise
                 resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
+                bounded = not _is_local_file(self.path)
+                live = _source_duration_s(container, a_stream) is None
+                opened = last_sound = time.monotonic()
                 # Every stream, not just the audio: PyAV reads the packets of
-                # the others inside its generator, where the deadline is not
-                # checked, and a live stream can carry no audio at all.
+                # the others inside its generator, where no bound is checked,
+                # and a stream can carry no audio at all.
                 for packet in container.demux():
-                    if deadline is not None and time.monotonic() > deadline:
-                        log.warning(
-                            "av %s: audio peak scan stopped after %g s on a network input; "
-                            "the gain is set from the part read",
-                            os.path.basename(self.path),
-                            _REMOTE_PEAK_SCAN_S,
-                        )
-                        break
+                    if bounded:
+                        now = time.monotonic()
+                        if packet.stream is a_stream:
+                            last_sound = now
+                        stop = self._peak_scan_stop(now - opened, now - last_sound, live)
+                        if stop is not None:
+                            log.warning(
+                                "av %s: audio peak scan stopped %s; the gain is set from the "
+                                "part read",
+                                os.path.basename(self.path),
+                                stop,
+                            )
+                            break
                     if packet.stream is not a_stream:
                         continue
                     for frame in packet.decode():
@@ -1356,6 +1364,17 @@ class AVFileSource:
             log.exception("av %s: audio peak scan failed; using unity gain", self.path)
             return 0
         return peak
+
+    @staticmethod
+    def _peak_scan_stop(elapsed_s: float, silent_s: float, live: bool) -> str | None:
+        """Why the peak scan of a network input stops here, or None to read on:
+        a live stream (no length) after `_REMOTE_PEAK_SCAN_S`, and any input
+        once `_REMOTE_READ_TIMEOUT_S` passes without a packet of sound."""
+        if live and elapsed_s > _REMOTE_PEAK_SCAN_S:
+            return f"after {_REMOTE_PEAK_SCAN_S:g} s of a stream with no length"
+        if silent_s > _REMOTE_READ_TIMEOUT_S:
+            return f"after {_REMOTE_READ_TIMEOUT_S:g} s with no sound"
+        return None
 
     def start(
         self,

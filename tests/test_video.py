@@ -3812,6 +3812,85 @@ def _write_av_mkv(
         container.close()
 
 
+def _wav_quiet_then_loud(seconds: float = 30.0, rate: int = 8000) -> bytes:
+    """A WAV at 100 for all but its last half second, which is at 20000."""
+    import struct
+
+    loud = int(0.5 * rate)
+    samples = np.full(int(seconds * rate), 100, dtype="<i2")
+    samples[-loud:] = 20000
+    data = samples.tobytes()
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + fmt
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
+    )
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemotePeakScanFitTest(unittest.TestCase):
+    """The peak scan's bound on a network input fits the input: a file that
+    says how long it is is read to its end however slowly it arrives, and a
+    live stream, which has no length, stops after `_REMOTE_PEAK_SCAN_S`.
+    Each read of the module's clock here is a second later than the last."""
+
+    def _scan(self, url: str, *, slow_open_s: float = 0.0) -> int:
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(path)
+        src = AVFileSource(path, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src.path = url
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        clock = FrozenClock(0.0, "monotonic", 1.0)
+        real_open = video_mod.av_open
+
+        def open_slowly(target: str):
+            clock.advance(slow_open_s)
+            return real_open(target)
+
+        self.enterContext(mock.patch.object(video_mod, "time", clock))
+        self.enterContext(mock.patch.object(video_mod, "av_open", open_slowly))
+        return src._scan_audio_peak()
+
+    def test_a_slow_file_of_known_length_is_scanned_to_its_end(self):
+        server = _RangeHttpServer(_wav_quiet_then_loud())
+        self.addCleanup(server.close)
+        with self.assertNoLogs("c64cast.video.video", level="WARNING"):
+            # The loud close sets the gain: a scan stopped short of it set the
+            # gain from the quiet part, and the close clipped.
+            self.assertEqual(self._scan(server.url), 20000)
+
+    def test_a_live_stream_stops_ten_seconds_after_it_opens(self):
+        # The open itself is not the stream's: timed from before it, a slow
+        # open spent the budget and the scan read nothing.
+        server = _EndlessHttpServer("live.wav", *_endless_wav(1000))
+        self.addCleanup(server.close)
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            self.assertEqual(self._scan(server.url, slow_open_s=60.0), 1000)
+        self.assertTrue(any("peak scan stopped" in m for m in logs.output), logs.output)
+
+    def test_a_file_of_known_length_whose_sound_stops_ends_the_scan(self):
+        # The picture runs on past the sound; past the read bound without a
+        # packet of it, the rest of the file is not waited for.
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 3.0))
+        fd, clip = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, clip)
+        _write_av_mkv(clip, audio_seconds=0.5)
+        server = _RangeHttpServer(Path(clip).read_bytes())
+        self.addCleanup(server.close)
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            self.assertEqual(self._scan(server.url), 12000)
+        self.assertTrue(any("no sound" in m for m in logs.output), logs.output)
+
+
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")
 class SoundtrackShorterThanPictureTest(unittest.TestCase):
     """A file whose audio ends before its picture: the clock is the sound
