@@ -87,7 +87,7 @@ class TempoClock:
         # Flips True once any external transport/clock byte arrives; gates the
         # per-pulse extrapolation cap (external is pulse-truthed, internal isn't).
         self._external = False
-        # Set by a 0xFC Stop, cleared by Start/Continue/tap.
+        # Set by a 0xFC Stop, cleared by Start/Continue.
         self._halted = False
         self._last_pulse_time: float | None = None
         self._pulse_bpm: float | None = None
@@ -108,8 +108,11 @@ class TempoClock:
         exactly 1/24 beat and refreshes the BPM estimate from the inter-pulse
         interval. A free-running clock with no preceding Start still starts the
         grid on its first pulse; after a Stop, pulses only track the BPM until a
-        Start or Continue, since a device keeps sending clock while stopped."""
+        Start or Continue, since a device keeps sending clock while stopped, and
+        are ignored once a tap or the audio drive has taken the held grid over."""
         with self._lock:
+            if self._halted and self._running:
+                return
             self._external = True
             if self._last_pulse_time is not None:
                 if not self._halted:
@@ -184,7 +187,6 @@ class TempoClock:
                 self._tap_times.clear()
             self._tap_times.append(now)
             self._external = False
-            self._halted = False
             self._source = "internal"
             if len(self._tap_times) >= 2:
                 taps = list(self._tap_times)
