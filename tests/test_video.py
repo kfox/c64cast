@@ -3045,9 +3045,10 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         w, h, fmt = frame.reformat_calls[0]
         self.assertEqual((w, h), src._decode_size)
         self.assertEqual(fmt, "bgr24")
-        # Buffered frame carries the downscaled dimensions, not the 4K source.
+        # Buffered frame carries the downscaled height, not the 4K source, cut
+        # to the width the scene's crop keeps.
         _, img = src._video_buf[0]
-        self.assertEqual(img.shape[:2], (h, w))
+        self.assertEqual(img.shape[:2], (h, int(h * 1.6) + 2))
 
     def test_no_target_uses_full_res_convert(self):
         src, frame = self._run(decode_target=None)
@@ -3072,7 +3073,38 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         _demux_until_parked(src)
         planned = _plan_decode_size(3840, 2160, 320, 200)
         assert planned is not None
-        self.assertEqual([img.shape[1::-1] for _, img in src._video_buf], [(64, 40), planned])
+        self.assertEqual(
+            [img.shape[0] for _, img in src._video_buf], [40, planned[1]], src._video_buf
+        )
+        self.assertLessEqual(src._video_buf[1][1].shape[1], planned[0])
+
+    def test_an_extreme_aspect_frame_is_buffered_at_the_part_the_scene_keeps(self):
+        # The scene center-crops every frame to 1.6:1, and the plan cannot
+        # shrink the axis that crop keeps below the headroom: a 16000x250
+        # frame was buffered whole, 12 MB, against 0.85 MB for a 4K one.
+        for (w, h), kept in (((16000, 250), (402, 250)), ((250, 16000), (250, 158))):
+            with self.subTest(size=(w, h)):
+                src, _ = self._run(decode_target=(320, 200), src_w=w, src_h=h)
+                self.assertEqual(src._video_buf[0][1].shape[1::-1], kept)
+                self.assertTrue(src._video_buf[0][1].flags.owndata)
+
+    def test_the_scene_crop_keeps_the_same_pixels_after_the_trim(self):
+        rng = np.random.default_rng(7)
+        for w, h in (
+            (641, 401),
+            (401, 641),
+            (1920, 1080),
+            (712, 400),
+            (64, 40),
+            (3, 997),
+            (997, 3),
+        ):
+            with self.subTest(size=(w, h)):
+                img = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+                np.testing.assert_array_equal(
+                    scenes._crop_to_aspect(video_mod._trim_to_crop(img)),
+                    scenes._crop_to_aspect(img),
+                )
 
 
 class CurrentFrameTelemetryTest(unittest.TestCase):

@@ -517,6 +517,29 @@ def _plan_decode_size(
     return dw, dh
 
 
+def _trim_to_crop(img: np.ndarray) -> np.ndarray:
+    """``img`` cut down to what the scene's center-crop to `_CROP_ASPECT`
+    keeps, plus one pixel each side of the cropped axis, as a copy.
+
+    `_plan_decode_size` cannot shrink the kept axis below its headroom, so a
+    frame of extreme aspect (16000x250) reached the video buffer whole. The
+    margin is what keeps the scene's crop (scenes._crop_to_aspect) on the
+    same pixels: it rounds the kept length down, which on the exact cut can
+    tip the frame to the other side of the aspect and trim the other axis."""
+    h, w = img.shape[:2]
+    if not h or not w:
+        return img
+    if w / h > _CROP_ASPECT:
+        keep = int(h * _CROP_ASPECT)
+        x0 = (w - keep) // 2
+        return img[:, x0 - 1 : x0 + keep + 1].copy() if x0 > 0 else img
+    if w / h < _CROP_ASPECT:
+        keep = int(w / _CROP_ASPECT)
+        y0 = (h - keep) // 2
+        return img[y0 - 1 : y0 + keep + 1].copy() if y0 > 0 else img
+    return img
+
+
 class _DecodePlan:
     """`_plan_decode_size` for each frame, re-planned whenever the frame size
     changes: a stream can open small and switch resolution mid-way, and a
@@ -1553,7 +1576,8 @@ class AVFileSource:
                 *plan.size,
                 *plan.target,
             )
-        return _frame_to_scan_bgr(frame, plan)
+        img = _frame_to_scan_bgr(frame, plan)
+        return img if plan.target is None else _trim_to_crop(img)
 
     def _rebase_pts(self, frame: Any) -> float:
         """Stamp a frame on the playback clock: its content time (`_content_time`,

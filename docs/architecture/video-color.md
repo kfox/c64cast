@@ -48,7 +48,7 @@ Config: `decode_target_size` / `_plan_decode_size`.
 
 **Why the decode size is the lever.** Converting every frame to BGR at **full source resolution** (`frame.to_ndarray("bgr24")`) and leaving the downscale to the display mode's `cv2.resize` to ≤320px costs ≈40 ms/frame for a 4K source on the U64 host — over the ≈33 ms budget at 29.97 fps, before codec decode is even counted. The pixels thrown away by the resize are paid for twice: once to convert, once to discard.
 
-**The fix.** `VideoScene` passes the display mode's `frame_target_size` — the only resolution it actually consumes — as `decode_target_size`. The demux loop plans a decode size from the first frame, and again whenever the stream changes resolution (`_DecodePlan`, `_plan_decode_size`), and downscales **during** the yuv→bgr swscale pass, via `av.VideoFrame.reformat(w, h, "bgr24")`.
+**The fix.** `VideoScene` passes the display mode's `frame_target_size` — the only resolution it actually consumes — as `decode_target_size`. The demux loop plans a decode size from the first frame, and again whenever the stream changes resolution (`_DecodePlan`, `_plan_decode_size`), and downscales **during** the yuv→bgr swscale pass, via `av.VideoFrame.reformat(w, h, "bgr24")`. The converted frame is then cut to what the scene's center-crop keeps, plus one pixel each side so that crop lands on the same pixels (`_trim_to_crop`), because the plan cannot shrink the kept axis below its headroom and a frame of extreme aspect (16000x250) otherwise reached the 240-frame buffer whole.
 
 Measured ≈40 ms → ≈4 ms/frame, a 9× speedup on a 4K sync clip. The conversion, the center-crop, the auto_fit accumulator, and the final resize then all work on a ≈640px frame.
 
