@@ -899,7 +899,15 @@ def split_file_spec(spec: str) -> list[str]:
     bare `http://h/a.mp4,b.mp4` is therefore one URL — write
     `http://h/a.mp4, b.mp4`, or put the local path first, for two entries.
     Nothing else changes: a spec whose entries are paths, dirs and globs
-    splits on every comma exactly as before."""
+    splits on every comma exactly as before.
+
+    A whole spec that names an existing file or directory is one entry, the
+    same way an existing path wins over glob interpretation in
+    :func:`resolve_file_spec`: download tools name a file after its title,
+    and titles carry commas."""
+    whole = spec.strip()
+    if "," in whole and os.path.exists(paths.expand_user(whole)):
+        return [whole]
     entries: list[str] = []
     for raw in spec.split(","):
         if (

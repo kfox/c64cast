@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -190,9 +191,18 @@ def _apply_aspect(
     return _crop_to_aspect(img, target_ratio)
 
 
+def _media_basename(path: str) -> str:
+    """The last path segment of a local path or an http(s) URL. A URL's query
+    and fragment are left out: a private asset's access token rides there,
+    and the name is drawn on screen and published in SCENE_CONFIG_JSON."""
+    if path.lower().startswith(("http://", "https://")):
+        path = urlsplit(path).path
+    return os.path.basename(path.rstrip("/" + os.sep))
+
+
 def _display_name(path: str) -> str:
     """Basename without its file extension, for scene-name display."""
-    return os.path.splitext(os.path.basename(path))[0]
+    return os.path.splitext(_media_basename(path))[0]
 
 
 def _blit_c64_text(
@@ -1019,11 +1029,14 @@ class MediaFileMixin:
 
     def _initial_scene_name(self, candidates: list[str]) -> str:
         """The build-time scene name: the file's basename for a single-entry
-        pool, the raw spec for a multi-entry one (the picked file's basename
-        gets prefixed at each setup)."""
+        pool, each spec entry's basename for a multi-entry one (the picked
+        file's basename gets prefixed at each setup)."""
+        from c64cast.app.scene_factory import split_file_spec
+
         if len(candidates) == 1:
             return f"{self.MEDIA_LABEL.title()}: {self._display_name_for(candidates[0])}"
-        return f"{self.MEDIA_LABEL.title()}: {self.file_spec}"
+        entries = ", ".join(_media_basename(e) for e in split_file_spec(self.file_spec))
+        return f"{self.MEDIA_LABEL.title()}: {entries}"
 
     def _pick_filepath(self) -> bool:
         """Re-resolve the spec (directories rescan between iterations so
@@ -1049,7 +1062,7 @@ class MediaFileMixin:
             log.info(
                 "%s: picked %s from %d candidates",
                 self.MEDIA_LABEL,
-                os.path.basename(self.filepath),
+                _media_basename(self.filepath),
                 len(candidates),
             )
         return True

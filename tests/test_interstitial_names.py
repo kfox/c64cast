@@ -39,6 +39,34 @@ class DisplayNameTest(unittest.TestCase):
     def test_only_final_extension_removed(self):
         self.assertEqual(_display_name("archive.tar.gz"), "archive.tar")
 
+    def test_url_query_and_fragment_stay_out_of_the_name(self):
+        # A signed URL's token is dotted (a JWT), so stripping the "extension"
+        # used to keep most of it in the on-screen name and the published
+        # SCENE_CONFIG_JSON snapshot.
+        url = "https://cdn.example/v/clip.mp4?token=eyJhbGc.eyJzdWI.c2ln#t=1.5"
+        self.assertEqual(_display_name(url), "clip")
+
+    def test_url_scene_name_leaves_out_the_query(self):
+        url = "https://cdn.example/v/clip.mp4?token=eyJhbGc.eyJzdWI.c2ln"
+        scene = VideoScene(MagicMock(), None, MagicMock(), url)
+        self.assertEqual(scene.name, "Video: clip")
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO") as logs:
+            scene_pool = VideoScene(
+                MagicMock(), None, MagicMock(), f"{url}, https://cdn.example/v/b.mp4?k=s.e.c"
+            )
+            for _ in range(20):
+                scene_pool._pick_filepath()
+        self.assertIn(scene_pool.name, ("Video: clip", "Video: b"))
+        self.assertNotIn("eyJ", "\n".join(logs.output))
+        self.assertNotIn("s.e.c", "\n".join(logs.output))
+
+    def test_pool_name_before_the_pick_leaves_out_credentials(self):
+        # The pre-pick name is what "UP NEXT" draws and the console serves as
+        # `current_scene` when the pick then fails.
+        spec = "https://alice:hunter2@cdn.example/v/a.mp4?token=SECRET, https://cdn.example/v/b.mp4"
+        scene = VideoScene(MagicMock(), None, MagicMock(), spec)
+        self.assertEqual(scene.name, "Video: a.mp4, b.mp4")
+
 
 class VideoPrepareNextTest(unittest.TestCase):
     def setUp(self):
@@ -54,8 +82,10 @@ class VideoPrepareNextTest(unittest.TestCase):
     def test_init_name_is_dir_spec_for_multi_pool(self):
         # Before prepare_next, a multi-entry pool can't know its pick.
         scene = self._scene()
-        self.assertEqual(scene.name, f"Video: {self.tmp.name}")
+        self.assertEqual(scene.name, f"Video: {os.path.basename(self.tmp.name)}")
         self.assertFalse(scene._prepared)
+        with_slash = VideoScene(MagicMock(), None, MagicMock(), self.tmp.name + os.sep)
+        self.assertEqual(with_slash.name, f"Video: {os.path.basename(self.tmp.name)}")
 
     def test_prepare_next_picks_real_file_without_extension(self):
         scene = self._scene()
@@ -127,7 +157,7 @@ class SlideshowPrepareNextTest(unittest.TestCase):
 
     def test_init_name_is_dir_spec_for_multi_pool(self):
         scene = self._scene()
-        self.assertEqual(scene.name, f"Slideshow: {self.tmp.name}")
+        self.assertEqual(scene.name, f"Slideshow: {os.path.basename(self.tmp.name)}")
         self.assertFalse(scene._prepared)
 
     def test_prepare_next_loads_first_slide_without_extension(self):

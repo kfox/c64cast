@@ -12,9 +12,12 @@ CLI/playlist suites.
 from __future__ import annotations
 
 import dataclasses
+import http.server
+import importlib.util
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -176,6 +179,26 @@ class ClassifyDirAndGlobTest(unittest.TestCase):
         scene = quickcast.classify_local(path, display=None, duration_s=None)
         self.assertEqual(scene.type, "video")
         self.assertEqual(scene.file, path)
+
+    def test_existing_file_with_a_comma_plays_as_one_file(self):
+        # yt-dlp names a download after its title, and titles carry commas; the
+        # `file =` grammar splits on them, so the scene used to be refused.
+        name = "Hello, World [gO8P3oMijWs].mp4"
+        self._touch(name)
+        path = os.path.join(self.tmp, name)
+        scene = quickcast.classify_local(path, display=None, duration_s=None)
+        assert scene.file is not None
+        self.assertEqual(resolve_file_spec(scene.file, (".mp4",), label="video"), [path])
+
+    def test_existing_directory_with_a_comma_plays_its_contents(self):
+        with tempfile.TemporaryDirectory() as parent:
+            folder = os.path.join(parent, "Clips, 2024")
+            os.mkdir(folder)
+            clip = os.path.join(folder, "a.mp4")
+            open(clip, "w", encoding="utf-8").close()
+            scene = quickcast.classify_local(folder, display=None, duration_s=None)
+            assert scene.file is not None
+            self.assertEqual(resolve_file_spec(scene.file, (".mp4",), label="video"), [clip])
 
 
 class BuildConfigTest(unittest.TestCase):
@@ -446,6 +469,115 @@ class ResolveMediaUrlTest(unittest.TestCase):
             "could not resolve 'https://youtu.be/abc': [youtube] abc: This video is not available",
         )
         self.assertNotIn("\x1b", message)
+
+
+class _FeedHandler(http.server.BaseHTTPRequestHandler):
+    """An RSS feed of `FEED_ITEMS` pages, each embedding one video."""
+
+    FEED_ITEMS = 20
+
+    def log_message(self, format, *args):  # noqa: A002, ARG002
+        pass
+
+    def do_GET(self):  # noqa: N802
+        self.server.paths.append(self.path)  # type: ignore[attr-defined]
+        base = f"http://{self.headers['Host']}"
+        if self.path == "/feed.xml":
+            items = "".join(
+                f"<item><title>e{i}</title><link>{base}/page{i}.html</link></item>"
+                for i in range(self.FEED_ITEMS)
+            )
+            body = (
+                '<?xml version="1.0"?><rss version="2.0"><channel><title>F</title>'
+                f"<link>{base}/</link>{items}</channel></rss>"
+            )
+            content_type = "application/rss+xml"
+        else:
+            body = '<html><head><title>P</title></head><body><video src="clip.mp4"></video></body></html>'
+            content_type = "text/html"
+        data = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+@unittest.skipUnless(importlib.util.find_spec("yt_dlp"), "needs the yt extra")
+class ResolveFeedUrlTest(unittest.TestCase):
+    """Real yt-dlp against a loopback server. A feed or playlist plays its
+    first entry, so every other entry it resolves is one more page fetch, each
+    with its own `URL_RESOLVE_TIMEOUT_S`, while the C64 is held in reset."""
+
+    def setUp(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FeedHandler)
+        server.paths = []  # type: ignore[attr-defined]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.server = server
+        # yt-dlp looks for plugins and a config file under the user's home.
+        home = tempfile.mkdtemp()
+        env = {"HOME": home, "XDG_CONFIG_HOME": home, "XDG_CACHE_HOME": home}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_feed_resolves_only_the_entry_it_plays(self):
+        port = self.server.server_address[1]
+        resolved = quickcast.resolve_media_url(f"http://127.0.0.1:{port}/feed.xml")
+        self.assertEqual(resolved.stream_url, f"http://127.0.0.1:{port}/clip.mp4")
+        self.assertEqual(self.server.paths, ["/feed.xml", "/page0.html"])  # type: ignore[attr-defined]
+
+
+@unittest.skipUnless(importlib.util.find_spec("yt_dlp"), "needs the yt extra")
+class ResolveYouTubeShareLinkTest(unittest.TestCase):
+    """yt-dlp's own YouTube extractors decide video-or-playlist; only their
+    page fetches are stubbed, and any other network use fails the test."""
+
+    def setUp(self):
+        import yt_dlp  # type: ignore[import-untyped]  # noqa: PLC0415
+        from yt_dlp.extractor.youtube import (  # type: ignore[import-untyped]  # noqa: PLC0415
+            YoutubeIE,
+            YoutubeTabIE,
+        )
+        from yt_dlp.utils import ExtractorError  # noqa: PLC0415
+
+        def fetch_video(ie, url):
+            video_id = ie._match_id(url)
+            return {
+                "id": video_id,
+                "title": video_id,
+                "url": f"https://stream.example/{video_id}.mp4",
+                "ext": "mp4",
+                "vcodec": "h264",
+                "acodec": "aac",
+            }
+
+        def fetch_playlist(ie, url, item_id, *args, **kwargs):  # noqa: ARG001
+            raise ExtractorError(f"fetched playlist {item_id}", expected=True)
+
+        def no_network(ydl, request, *args, **kwargs):  # noqa: ARG001
+            raise AssertionError(f"network request: {request}")
+
+        home = tempfile.mkdtemp()
+        env = {"HOME": home, "XDG_CONFIG_HOME": home, "XDG_CACHE_HOME": home}
+        for patcher in (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(YoutubeIE, "_real_extract", fetch_video),
+            mock.patch.object(YoutubeTabIE, "_extract_data", fetch_playlist),
+            mock.patch.object(yt_dlp.YoutubeDL, "urlopen", no_network),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_video_shared_from_a_playlist_plays_that_video(self):
+        resolved = quickcast.resolve_media_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabcdefghijklmnopqrstuvwxyz012345"
+        )
+        self.assertEqual(resolved.stream_url, "https://stream.example/dQw4w9WgXcQ.mp4")
 
 
 class ParseTimestrTest(unittest.TestCase):
