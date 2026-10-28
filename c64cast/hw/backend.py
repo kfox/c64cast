@@ -42,6 +42,17 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+def printable_device_text(text: str) -> str:
+    """Strip non-printable characters from device-supplied text before it
+    reaches a log record or an exception message. A status line, NAK reason,
+    IDENTIFY reply or HTTP error body is free text from a LAN/USB peer;
+    keeping only printable characters stops a hostile or malfunctioning
+    device from forging ANSI escapes or embedded newlines into
+    ``--log-file`` output or a rendered error message."""
+    return "".join(c for c in text if c.isprintable())
+
+
 # Callback signature for write listeners (preview / recording / framebuffer
 # shadowing).
 WriteListener = Callable[[int, bytes], None]

@@ -53,6 +53,7 @@ from .backend import (
     BackendSetupError,
     BufferedWriteBackend,
     HardwareProfile,
+    printable_device_text,
 )
 from .c64 import (
     CIA1,
@@ -2037,7 +2038,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 return None
             if r.status_code != 200:
                 self._input_errors.warn(
-                    "input batch refused (HTTP %d): %s", r.status_code, r.text[:200]
+                    "input batch refused (HTTP %d): %s",
+                    r.status_code,
+                    printable_device_text(r.text[:200]),
                 )
                 return None
             try:

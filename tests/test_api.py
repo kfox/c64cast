@@ -1890,6 +1890,19 @@ class SendInputTest(unittest.TestCase):
             self.assertIsNone(self.api.send_input(mi.text_to_events("A" * 65)))
         self.assertEqual(self.post.call_count, 2)
 
+    def test_refusal_body_cannot_forge_a_log_line(self):
+        from c64cast.hw import machine_input as mi
+
+        self.post.return_value = MagicMock(
+            status_code=500, text="busy\r\nERROR:c64cast:forged\x1b[2J"
+        )
+        with self.assertLogs("c64cast.hw.api", level="WARNING") as logs:
+            self.assertIsNone(self.api.send_input([mi.RELEASE_ALL]))
+        message = logs.records[0].getMessage()
+        self.assertIn("busyERROR:c64cast:forged[2J", message)
+        self.assertNotIn("\n", message)
+        self.assertNotIn("\x1b", message)
+
     def test_input_state_returns_the_reported_state(self):
         get = patch.object(self.api.session, "get").start()
         get.return_value.status_code = 200
