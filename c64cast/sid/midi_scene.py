@@ -117,6 +117,11 @@ _WRITES_PER_NOTE = 2
 # reader's 1 ms poll sleep apiece — an audible arpeggio.
 _NOTES_PER_DRAIN = SID.N_VOICES
 
+# How long a gated-off voice takes to reach silence at release rate 0: lowering
+# the rate can first wait out the ADSR rate counter's 15-bit wrap (32768 cycles,
+# ~33 ms), then the release itself takes ~7 ms.
+_ENVELOPE_DRAIN_S = 0.05
+
 
 def _drain_budget_s(profile: HardwareProfile) -> float:
     """Work budget for one `_reader` drain pass on `profile`'s link.
@@ -707,11 +712,21 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._write_filter()
         self._write_mode_vol()
 
-    def _preprogram_voices(self) -> None:
+    def _drain_envelopes(self) -> None:
+        """Release every voice at the fastest rate and wait for it to reach
+        zero, so raising $D418 cannot play a tail the previous scene left
+        decaying under a muted volume."""
+        self._preprogram_voices(release=0)
+        self.api.flush()
+        time.sleep(_ENVELOPE_DRAIN_S)
+
+    def _preprogram_voices(self, release: int | None = None) -> None:
         """Seed each voice's pulse width + waveform + ADSR (gate off) on the
         SID and in the shadow so a note_on only changes freq + gate and the
         emulator starts from the configured (silent) state."""
         a, d, s, r = self.adsr
+        if release is not None:
+            r = release
         for vidx in range(SID.N_VOICES):
             base = SID.voice_base(vidx)
             wave_bits = self.voice_wave_bits[vidx]
@@ -823,8 +838,9 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # A looping playlist sets this instance up again, and the note-offs
         # sent while it was torn down never reached a reader.
         self._reset_performance()
-        self._program_global_sid()
+        self._drain_envelopes()
         self._preprogram_voices()
+        self._program_global_sid()
         # invalidate_cache first, so the delta cache gets a clean baseline: the
         # previous scene may have used $0400/$2000 for char-mode content.
         self.api.invalidate_cache()

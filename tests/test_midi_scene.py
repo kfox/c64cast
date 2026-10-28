@@ -1182,6 +1182,36 @@ class LifecycleTests(_MidiTestCase):
             scene.teardown()
         self.assertFalse(scene._reader_poll.is_running())
 
+    def test_setup_drains_every_envelope_before_raising_the_volume(self):
+        # A blank scene's $D418 DAC leaves the voices at sustain 15 / release 15
+        # (a 24 s tail) under a muted $D418; raising the volume first plays it.
+        scene, api = _make_scene(adsr=(0, 8, 12, 8), master_volume=15)
+        with (
+            mock.patch.object(
+                midi_scene.time, "sleep", side_effect=lambda s: api.ops.append(("sleep", s))
+            ),
+            mock.patch.object(
+                scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", _FakePort())
+            ),
+        ):
+            scene.setup()
+        self.addCleanup(scene.teardown)
+
+        volume_at = next(i for i, op in enumerate(api.ops) if op[:2] == ("write_memory", "D418"))
+        before = api.ops[:volume_at]
+        sleeps = [i for i, op in enumerate(before) if op[0] == "sleep"]
+        self.assertTrue(sleeps, "no envelope drain before $D418")
+        self.assertGreaterEqual(before[sleeps[-1]][1], 0.04)
+        for base in ("D402", "D409", "D410"):
+            drained = [
+                i
+                for i, op in enumerate(before)
+                if op[:2] == ("write_regs", base)
+                and not op[2][2] & SID.GATE
+                and op[2][4] & 0x0F == 0
+            ]
+            self.assertTrue(drained and drained[0] < sleeps[-1], base)
+
     def _lap(self, scene) -> None:
         with mock.patch.object(
             scene,
