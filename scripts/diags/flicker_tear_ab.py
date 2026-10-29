@@ -188,7 +188,7 @@ host_palette = "{HOST_PALETTE}"
 
 [color]
 dither = "none"
-flicker_tolerance = "{"strobe" if flicker else "off"}"
+flicker_tolerance = "{"clean" if flicker else "off"}"
 flicker_max_luma_delta = 0.075
 
 [video]
