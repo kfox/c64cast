@@ -2294,7 +2294,7 @@ class LauncherScene(MediaFileMixin, Scene):
         # Written by the poll thread, read by process_frame; hence the lock.
         self._last_input_t = 0.0
         self._input_lock = threading.Lock()
-        self._baseline: bytes | None = None
+        self._last_snapshot: bytes | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
         # Each event with the monotonic time it was queued.
         self._injected: queue.SimpleQueue[tuple[float, machine_input.Event]] = queue.SimpleQueue()
@@ -2342,7 +2342,7 @@ class LauncherScene(MediaFileMixin, Scene):
         self.start_time = now
         with self._input_lock:
             self._last_input_t = now
-        self._baseline = None
+        self._last_snapshot = None
         # A `.crt` in particular expects a reset to take effect.
         if self.reset_before_launch:
             self.api.reset()
@@ -2597,18 +2597,18 @@ class LauncherScene(MediaFileMixin, Scene):
 
     def _input_loop(self, stop: threading.Event) -> None:
         """Manual poll loop. After a grace window (so the program's INIT
-        churn doesn't seed a bogus baseline), snapshot a baseline, then reset
-        the idle clock whenever a later read deviates from it."""
+        churn doesn't count as input), reset the idle clock whenever a read
+        differs from the one before it. A state that holds — a key or
+        direction held down, a keyboard buffer the program never drains — is
+        one input, not a player at the controls."""
         if stop.wait(self.launch_grace_s):
             return
-        self._baseline = self._read_snapshot()
+        self._last_snapshot = self._read_snapshot()
         while not stop.wait(self.poll_interval_s):
             snap = self._read_snapshot()
             if snap is None:
                 continue
-            if self._baseline is None:
-                self._baseline = snap
-                continue
-            if snap != self._baseline:
+            previous, self._last_snapshot = self._last_snapshot, snap
+            if previous is not None and snap != previous:
                 with self._input_lock:
                     self._last_input_t = time.time()

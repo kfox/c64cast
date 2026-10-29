@@ -1025,6 +1025,9 @@ active). Consequences worth knowing:
   pause/skip/style and must not count as "player active." `input_source`
   picks what *does* count: `cia` ($DC00/$DC01 joystick bits, default),
   `kernal` ($00C5 last-key + $00C6 buffer length), `auto` (both), or `none`.
+  Input means a *change* between two polls, so a state that holds counts
+  once: a key or direction held down, or a keyboard buffer the program never
+  drains (a full one sits at `$C6 = 10` for good).
 
 * **Idle detection is best-effort.** A program that runs its own
   keyboard-matrix scan drives `$DC00` as an output, so `cia` reads can race

@@ -8,8 +8,11 @@ import tempfile
 import threading
 import time
 import unittest
+from typing import cast
 from unittest import mock
 from unittest.mock import MagicMock
+
+from _fakes import FrozenClock
 
 from c64cast.hw import machine_input
 from c64cast.hw.c64 import CIA1
@@ -61,6 +64,43 @@ class IdleTimeoutTest(unittest.TestCase):
             scene.start_time = 0.0
             scene._last_input_t = 19.0  # input is "recent" at t=21
             self.assertFalse(scene.process_frame(21.0))
+
+
+class _Polls:
+    """A stop event for `_input_loop` that lets `polls` reads through."""
+
+    def __init__(self, polls: int):
+        self._left = polls + 1
+
+    def wait(self, _timeout: float) -> bool:
+        self._left -= 1
+        return self._left < 0
+
+
+class InputMeansChangeTest(unittest.TestCase):
+    """A program that fills the keyboard buffer and never drains it leaves
+    $C6 at 10 for good; that is one key event, not a player at the keys."""
+
+    _EMPTY = bytes([0x40, 0x00])
+    _FULL = bytes([0x40, 0x0A])
+
+    def _last_input_after(self, reads: list[bytes]) -> float:
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = _make_scene(tmp, input_source="kernal")
+        clock = FrozenClock(0.0)
+        api.read_memory.side_effect = lambda *_a: (clock.advance(1.0), reads.pop(0))[1]
+        with mock.patch.object(scenes, "time", clock):
+            scene._input_loop(cast(threading.Event, _Polls(len(reads) - 1)))
+        return scene._last_input_t
+
+    def test_a_keyboard_buffer_left_full_is_input_once(self):
+        self.assertEqual(
+            self._last_input_after([self._EMPTY, self._FULL, self._FULL, self._FULL]), 2.0
+        )
+
+    def test_a_buffer_that_drains_and_refills_is_input_each_time(self):
+        reads = [self._EMPTY, self._FULL, self._EMPTY, self._FULL]
+        self.assertEqual(self._last_input_after(reads), 4.0)
 
 
 class FailedLaunchTest(unittest.TestCase):
