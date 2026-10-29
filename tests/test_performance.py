@@ -84,9 +84,13 @@ class _FakePlaylist:
         if self.current is not None:
             self.current.teardown()
         new_scene.setups += 1
+        new_scene.is_done = False
         self.current = new_scene
         self.swaps.append(new_scene.name)
         return True
+
+    def setup_failed(self, scene: _FakeScene) -> bool:
+        return False
 
 
 def _pump(session: PerformanceSession, pl: Any, *, times: int = 5) -> bool:
@@ -326,6 +330,12 @@ class ClipConfigTest(unittest.TestCase):
         self.assertEqual(sc.display, "mhires")
         # A looping continuous scene is pinned to run-forever.
         self.assertEqual(sc.duration_s, 0.0)
+
+    def test_looping_midi_and_asid_clips_hold_until_the_next_launch(self):
+        for scene_type in ("midi", "asid"):
+            with self.subTest(scene_type=scene_type):
+                sc = cfgmod.clip_scene_cfg({"slot": 1, "type": scene_type, "loop": True})
+                self.assertEqual(sc.duration_s, 0.0)
 
     def test_video_clip_keeps_unset_duration(self):
         sc = cfgmod.clip_scene_cfg({"slot": 1, "type": "video", "file": "x.mp4", "loop": True})

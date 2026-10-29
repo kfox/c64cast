@@ -172,6 +172,7 @@ class SlideshowPrepareNextTest(unittest.TestCase):
         scene.prepare_next()
         prepared_name = scene.name
         scene.setup()
+        self.addCleanup(scene.teardown)
         self.assertFalse(scene._prepared)
         self.assertEqual(scene.name, prepared_name)
         self.assertIsNotNone(scene._current_img)
@@ -180,6 +181,7 @@ class SlideshowPrepareNextTest(unittest.TestCase):
     def test_setup_without_prepare_still_picks(self):
         scene = self._scene()
         scene.setup()
+        self.addCleanup(scene.teardown)
         self.assertFalse(scene._prepared)
         self.assertIn(scene.name, ("Slideshow: one", "Slideshow: two"))
         self.assertFalse(scene.is_done)

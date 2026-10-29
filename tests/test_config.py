@@ -15,6 +15,7 @@ from unittest import mock
 
 from _fakes import FakeAPI, MachineSettingsIsolation
 
+from c64cast._midi import MIDI_AVAILABLE
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
 from c64cast.hw.backend import C64Backend
@@ -2336,6 +2337,25 @@ class SceneDurationDefaultTest(unittest.TestCase):
         s = cfgmod.SceneCfg(type="blank")
         scene = self._build(self._cfg(s), s)
         self.assertTrue(math.isinf(scene.duration_s))
+
+    @unittest.skipUnless(MIDI_AVAILABLE, "mido not installed (midi extra)")
+    def test_single_scene_midi_and_asid_unset_are_infinite(self):
+        for scene_type in ("midi", "asid"):
+            with self.subTest(scene_type=scene_type):
+                s = cfgmod.SceneCfg(type=scene_type)
+                cfg = self._cfg(s)
+                cfg.ultimate64.system = "PAL"
+                scene = self._build(cfg, s)
+                self.assertTrue(math.isinf(scene.duration_s))
+
+    @unittest.skipUnless(MIDI_AVAILABLE, "mido not installed (midi extra)")
+    def test_multi_scene_midi_unset_stays_30s(self):
+        s = cfgmod.SceneCfg(type="midi")
+        other = cfgmod.SceneCfg(type="blank")
+        cfg = self._cfg(s, other)
+        cfg.ultimate64.system = "PAL"
+        scene = self._build(cfg, s)
+        self.assertEqual(scene.duration_s, 30.0)
 
     def test_multi_scene_webcam_unset_stays_30s(self):
         # Two scenes → rotation; an infinite live scene would wedge it, so

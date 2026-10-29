@@ -59,7 +59,7 @@ class ScrollingTextOverlay(Overlay):
     PAINTS_INTO_BUFFERS = True
     HELP = "One scrolling row of messages (per-row scroller)."
     PARAM_HELP = {
-        "messages": "List of message strings to cycle through.",
+        "messages": "List of message strings (or {text, color, style, ...} tables) to cycle through.",
         "row": "Screen row (0..24) to scroll along.",
         "speed_cells_per_s": "Scroll speed in character cells per second.",
         "bg_color": "Background color (C64 color name).",
@@ -80,6 +80,8 @@ class ScrollingTextOverlay(Overlay):
         for m in messages:
             if isinstance(m, ScrollMessage):
                 self.messages.append(m)
+            elif isinstance(m, str):
+                self.messages.append(ScrollMessage(text=m))
             elif isinstance(m, dict):
                 self.messages.append(ScrollMessage(**m))
             else:

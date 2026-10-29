@@ -601,6 +601,12 @@ class EnsembleCoordinator:
                 break
             if pl.current is None:
                 break
+            if pl.setup_failed(follower_scene):
+                pl.log.error(
+                    "broadcast: follower %r could not be set up; ending the interlude",
+                    follower_scene.name,
+                )
+                break
         pl.broadcast_resume.clear()
 
         pl.log.info(

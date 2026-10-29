@@ -147,6 +147,15 @@ class PosterizeTest(unittest.TestCase):
         out = eff.apply(ramp, 0.0)
         self.assertLessEqual(len(np.unique(out)), 2)
 
+    def test_every_level_count_yields_exactly_that_many_values(self):
+        ramp = np.tile(np.arange(256, dtype=np.uint8).reshape(1, -1, 1), (1, 1, 3))
+        for levels in range(2, 33):
+            with self.subTest(levels=levels):
+                out = PosterizeEffect(levels=levels).apply(ramp, 0.0)
+                values = np.unique(out)
+                self.assertEqual(len(values), levels)
+                self.assertEqual((int(values[0]), int(values[-1])), (0, 255))
+
     def test_white_band_reaches_full_white(self):
         eff = PosterizeEffect(levels=4)
         out = eff.apply(_img(255), 0.0)

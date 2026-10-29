@@ -122,6 +122,22 @@ class RenderContractTest(unittest.TestCase):
                 # Text band + top must remain untouched.
                 self.assertTrue(np.all(chars[_cells_in(range(0, 20))] == SC_SPACE))
 
+    def test_short_top_strip_never_spills_past_its_last_row(self):
+        # A cell drawn one column past the right edge lands at column 0 of the
+        # next row, outside a strip whose last row it was meant for.
+        top = range(0, 3)
+        outside = _cells_in(range(3, 25))
+        for name, cls in REGISTRY.items():
+            with self.subTest(background=name):
+                for seed in range(200):
+                    bg = cls(seed=seed)
+                    for t in (0.0, 0.25):
+                        chars, _ = bg.render(t, top, range(0, 0), bg_color=0)
+                        self.assertTrue(
+                            np.all(chars[outside] == SC_SPACE),
+                            f"{name} seed={seed} t={t} painted below row 2",
+                        )
+
 
 class FactoryTest(unittest.TestCase):
     def test_build_named(self):

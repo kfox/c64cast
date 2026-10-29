@@ -531,6 +531,10 @@ A single scene that cannot start, because its file is missing or unreadable or
 its tune will not load, ends the run with an error that names the scene and
 the reason, and c64cast exits with status 1, looping or not.
 
+With more than one scene, a scene that cannot start is skipped and the
+playlist moves on. When none of its scenes can start, the run ends with an
+error and c64cast exits with status 1, rather than cycling the "UP NEXT" cards.
+
 Every packaged example is a single-scene configuration, which is why each one
 runs until you stop it.
 

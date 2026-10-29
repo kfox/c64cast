@@ -644,10 +644,14 @@ class PerformanceSession:
         # waveform restarts the SID); one-shot = restore the interrupted program.
         if not active.scene.is_done:
             return
-        if active.loop:
-            pl.perf_swap_scene(active.scene)
-        else:
-            self._end_active(pl)
+        # Setting it up again would fail again, on every frame.
+        if (
+            active.loop
+            and not pl.setup_failed(active.scene)
+            and (not pl.perf_swap_scene(active.scene) or not active.scene.is_done)
+        ):
+            return
+        self._end_active(pl)
 
     def _end_active(self, pl: Playlist) -> None:
         """Tear down the active clip and restore the program it interrupted."""

@@ -1328,7 +1328,7 @@ class RestoreFailureTest(unittest.TestCase):
 
 
 class SetupFailureAfterRestartTest(unittest.TestCase):
-    def test_a_setup_that_raises_after_a_restart_ends_the_run_with_a_log_line(self):
+    def test_a_setup_that_raises_after_a_restart_ends_the_lone_scene_with_a_log_line(self):
         api = _Machine()
         stop = threading.Event()
         scene = _PaintingScene(api, restart_at=3, stop=stop)
@@ -1347,7 +1347,9 @@ class SetupFailureAfterRestartTest(unittest.TestCase):
         pl.on_machine_restart = restore
         with self.assertLogs("c64cast.app.playlist", level="ERROR") as logs:
             pl.run()
-        self.assertTrue(any("failed; aborting" in line for line in logs.output), logs.output)
+        self.assertTrue(any("could not start" in line for line in logs.output), logs.output)
+        self.assertTrue(stop.is_set(), "a lone scene that cannot set up must stop the run")
+        self.assertTrue(pl.failed_to_start)
         self.assertEqual(scene.teardown_count, 2, "the scene the setup left was not torn down")
 
 

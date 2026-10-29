@@ -247,7 +247,7 @@ Restrictions: needs a text-capable mode.
 <!-- table: fields -->
 | Parameter | Description |
 |---|---|
-| **`messages`**<br>*Type:* `list`<br>*Default:* *(required)* | List of message strings to cycle through. |
+| **`messages`**<br>*Type:* `list`<br>*Default:* *(required)* | List of message strings (or {text, color, style, ...} tables) to cycle through. |
 | **`row`**<br>*Type:* `int`<br>*Default:* `24` | Screen row (0..24) to scroll along. |
 | **`speed_cells_per_s`**<br>*Type:* `float`<br>*Default:* `6.0` | Scroll speed in character cells per second. |
 | **`bg_color`**<br>*Type:* `str`<br>*Default:* `'black'` | Background color (C64 color name). |

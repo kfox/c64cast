@@ -1189,8 +1189,8 @@ class SceneCfg:
         default=None,
         metadata={
             "help": "Seconds before auto-advance; 0 = run forever. Unset = "
-            "scene-type default (webcam/blank run forever when they're the "
-            "only scene, else 30s; waveform = song length or 180s; "
+            "scene-type default (webcam/blank/midi/asid run forever when "
+            "they're the only scene, else 30s; waveform = song length or 180s; "
             'generative with audio_source = "file" = the track\'s length, '
             "or 30s when the container reports none; everything else = 30s). "
             "Video scenes reject this (they run until the file ends). "
@@ -2865,8 +2865,8 @@ class PerformanceCfg:
             "no grid. Only `slot` is required; the keys a table omits default to "
             + ", ".join(f"{k} = {v!r}" for k, v in _CLIP_DEFAULTS.items())
             + ' — note that `quantize` defaults to the bar, not to "off", and '
-            "that a looping continuous-frame clip (webcam/blank/slideshow/"
-            "generative/wled) is pinned to duration_s = 0 so it holds until the "
+            "that a looping continuous clip (webcam/blank/slideshow/"
+            "generative/wled/midi/asid) is pinned to duration_s = 0 so it holds until the "
             "next launch."
         },
     )
@@ -3520,10 +3520,10 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
     so a clip inherits every scene knob for free. Called by the launch engine's
     build factory (see session.build_stack / performance.PerformanceSession).
 
-    `loop` and `duration_s` interact: a looping non-video clip is forced to
-    ``duration_s = 0`` (run forever) so it holds until another clip fires; the
-    launch engine re-runs a finished video clip instead (video rejects
-    duration_s). A one-shot clip keeps its scene-type default duration."""
+    `loop` and `duration_s` interact: a looping clip of a continuous type
+    (`_CLIP_CONTINUOUS_TYPES`) is forced to ``duration_s = 0`` (run forever) so
+    it holds until another clip fires; the launch engine re-runs any other
+    finished clip instead (video rejects duration_s). A one-shot clip keeps its scene-type default duration."""
     scene_keys = {k: v for k, v in clip.items() if k not in _CLIP_LAUNCH_KEYS}
     sc = SceneCfg()
     _apply_section(sc, scene_keys, "performance.clips")
@@ -3532,7 +3532,7 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
         and sc.type in _CLIP_CONTINUOUS_TYPES
         and sc.duration_s is None
     ):
-        # Loop forever: hold the continuous-frame scene on screen until the next
+        # Loop forever: hold the continuous scene on screen until the next
         # clip launch, rather than auto-advancing at the scene-type default
         # (e.g. 30 s). Audio-bearing/video clips instead re-setup on is_done (the
         # launch engine's loop path), so their timing/song-length logic is kept.
@@ -3554,8 +3554,10 @@ def scene_and_clip_cfgs(cfg: Config) -> list[tuple[str, SceneCfg]]:
 
 
 # Clip scene types whose "loop" is a continuous hold (run-forever) rather than a
-# re-setup on end — the frame-based visual generators with no natural endpoint.
-_CLIP_CONTINUOUS_TYPES = frozenset({"webcam", "blank", "slideshow", "generative", "wled"})
+# re-setup on end — the generators and live inputs with no natural endpoint.
+_CLIP_CONTINUOUS_TYPES = frozenset(
+    {"webcam", "blank", "slideshow", "generative", "wled", "midi", "asid"}
+)
 
 
 def _validate_sid_panning(u64: Ultimate64Cfg) -> None:

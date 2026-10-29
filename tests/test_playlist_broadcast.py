@@ -554,6 +554,28 @@ class BroadcastInterruptTest(unittest.TestCase):
         self.assertEqual(follower.setup_calls, 1)
         self.assertEqual(follower.teardown_calls, 1)
 
+    def test_a_follower_whose_setup_raises_ends_the_interlude_torn_down(self):
+        pl = _build_playlist()
+        pl.index = 1
+        follower = _FakeScene("follower")
+
+        def boom() -> None:
+            raise RuntimeError("no such port")
+
+        follower.setup = boom  # type: ignore[method-assign]
+        self._wire_broadcast(pl, _FakeOrchestrator(), follower)
+        deadline = threading.Timer(5.0, pl.stop_event.set)
+        self.addCleanup(deadline.cancel)
+        deadline.start()
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as logs:
+            pl.ensemble_coord.handle_broadcast_interrupt()
+        self.assertFalse(pl.stop_event.is_set(), "the interlude ran on until the deadline")
+        self.assertTrue(any("ending the interlude" in line for line in logs.output), logs.output)
+        self.assertEqual(follower.process_calls, 0, "a follower that never set up rendered")
+        self.assertEqual(follower.teardown_calls, 1)
+        self.assertIsNone(pl.current)
+        self.assertEqual(pl.index, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -325,7 +325,7 @@ class CityBackground(Background):
     def __init__(self, seed: int | None = None):
         super().__init__(seed)
         self.planes = [(self.rng.uniform(0, 40), self.rng.randint(0, 4)) for _ in range(2)]
-        self.satellites = [(self.rng.randint(0, 40), self.rng.randint(0, 3)) for _ in range(8)]
+        self.satellites = [(self.rng.randrange(40), self.rng.randint(0, 3)) for _ in range(8)]
         # Picked once per construction, so the skyline does not churn.
         self.buildings = []
         x = 0
