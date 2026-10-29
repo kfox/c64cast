@@ -55,13 +55,6 @@ SETUP_RETRY_S = 0.5
 # scene is kept as the last one left it; an outage waits without a bound.
 SETUP_LOSSY_TRIES = 3
 
-# A looping single scene whose setup fails is tried again after this wait,
-# doubled per failure in a row up to the cap.
-FAILED_SETUP_RETRY_S = 1.0
-FAILED_SETUP_RETRY_MAX_S = 30.0
-# How often a failed-setup wait looks for a skip, reload, pause or broadcast.
-FAILED_SETUP_POLL_S = 0.1
-
 
 class RenderLinkOutage:
     """Log for a render-path link outage: a WARNING when frames start failing
@@ -283,9 +276,7 @@ class Playlist:
 
         self.index = 0
         self.current: Scene | None = None
-        self._clock: Callable[[], float] = time.monotonic
-        self._failed_setup_wait_s = 0.0
-        self._failed_setup_retry_at = 0.0
+        self.failed_to_start = False
         # The WLED `bri` slider, 0 < user_dim <= 1.0. Owned here rather than on
         # the display mode, whose instance is per-scene, so it survives an
         # auto-advance: `safe_setup` re-stamps it onto each fresh scene.
@@ -539,7 +530,6 @@ class Playlist:
             self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
             self.interstitial_factory = new_interstitial
-        self._failed_setup_wait_s = self._failed_setup_retry_at = 0.0
         self.index = 0
         self.transitioning = False
 
@@ -645,8 +635,8 @@ class Playlist:
                 self.current.name,
                 "looping" if self.loop else "once-through",
             )
-            self.safe_setup(self.current)
-            self._note_single_scene_setup(scene)
+            self.safe_setup(scene)
+            self._stop_if_failed_to_start(scene)
         elif self.current.is_done:
             if not self.loop:
                 self.log.info("scene %r finished and loop=False — stopping", self.current.name)
@@ -656,54 +646,28 @@ class Playlist:
                 self.stop_event.set()
                 return
             scene = self.current
-            if not self._wait_out_failed_setup():
-                return
             self.fades.fade_out(scene)
             self.safe_teardown(scene)
             if not self.ensemble_coord.wait_for_audio_claim(scene):
                 self.current = None
                 return
             self.safe_setup(scene)
-            self._note_single_scene_setup(scene)
-            scene.is_done = False
+            if not self._stop_if_failed_to_start(scene):
+                scene.is_done = False
 
-    def _note_single_scene_setup(self, scene: Scene) -> None:
-        """A looping scene that comes back from its setup already done
-        failed to start (a missing file, a SID that would not load): set
-        when it may be tried again, doubling the wait for each failure in a
-        row, so the run does not set it up again on every frame. A setup
-        that starts the scene clears the wait."""
-        if not scene.is_done:
-            self._failed_setup_wait_s = self._failed_setup_retry_at = 0.0
-            return
-        if not self.loop:
-            return
-        self._failed_setup_wait_s = min(
-            FAILED_SETUP_RETRY_MAX_S, 2 * self._failed_setup_wait_s or FAILED_SETUP_RETRY_S
-        )
-        self._failed_setup_retry_at = self._clock() + self._failed_setup_wait_s
-        self.log.warning(
-            "scene %r failed to start; trying again in %.0f s",
+    def _stop_if_failed_to_start(self, scene: Scene) -> bool:
+        """A single scene that comes back from its setup already done failed
+        to start, and there is no other scene to play: stop the run, and
+        mark it failed for the exit status. True when it did."""
+        if not scene.is_done or self.stop_event.is_set():
+            return False
+        self.log.error(
+            "scene %r could not start (%s); stopping",
             scene.name,
-            self._failed_setup_wait_s,
+            getattr(scene, "setup_failure", None) or "its setup ended it",
         )
-
-    def _wait_out_failed_setup(self) -> bool:
-        """Wait until a failed scene may be set up again. True to go ahead,
-        also on a skip, which asks for the retry now; False when a stop,
-        reload, pause or broadcast needs the run loop first."""
-        while (remaining := self._failed_setup_retry_at - self._clock()) > 0:
-            if self.skip_event.is_set():
-                self.skip_event.clear()
-                return True
-            if (
-                self.reload_event.is_set()
-                or self.pause_event.is_set()
-                or (self.broadcast_interrupt is not None and self.broadcast_interrupt.is_set())
-            ):
-                return False
-            if self.stop_event.wait(min(remaining, FAILED_SETUP_POLL_S)):
-                return False
+        self.failed_to_start = True
+        self.stop_event.set()
         return True
 
     def _advance_after_scene(self) -> None:

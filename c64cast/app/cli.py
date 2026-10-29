@@ -738,7 +738,7 @@ def _run_session(
 
     for st in sess.stacks:
         log.info("[%s] %s stats: %s", st.name, st.api.profile.name, st.api.stats)
-    return 0
+    return 1 if any(st.playlist.failed_to_start for st in sess.stacks) else 0
 
 
 def main(argv=None) -> int:

@@ -2075,25 +2075,12 @@ class ConfigSaveBackupTest(unittest.TestCase):
         self.assertIn("not overwritten", logs.output[1])
 
 
-class FailedSetupBackoffTest(unittest.TestCase):
-    """A looping single scene that fails to start is tried again after a
-    wait that doubles up to a cap, measured on a fake clock."""
+class SingleSceneThatFailsToStartTest(unittest.TestCase):
+    """A one-scene playlist whose scene comes back from its setup already
+    done stops the run with an ERROR naming the scene and the cause, looping
+    or not."""
 
-    def _fake_time(self, pl: Playlist, *, until: float = float("inf")) -> list[float]:
-        now = [0.0]
-        stop = pl.stop_event
-        pl._clock = lambda: now[0]
-
-        def wait(timeout: float | None = None) -> bool:
-            now[0] += timeout or 0.0
-            if now[0] >= until:
-                stop.set()
-            return stop.is_set()
-
-        stop.wait = wait  # type: ignore[method-assign]
-        return now
-
-    def test_a_missing_video_is_set_up_again_on_a_doubling_wait(self):
+    def _missing_video(self):
         from unittest.mock import MagicMock
 
         from c64cast.scenes.scenes import VideoScene
@@ -2102,102 +2089,80 @@ class FailedSetupBackoffTest(unittest.TestCase):
         dm.default_target_fps = None
         dm.supports_compose = False
         missing = os.path.join(tempfile.mkdtemp(), "missing.mp4")
-        scene = VideoScene(MagicMock(), None, dm, missing)
-        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True)
-        now = self._fake_time(pl, until=120.0)
-        setups: list[float] = []
-        setup = scene.setup
+        return VideoScene(MagicMock(), None, dm, missing), missing
 
-        def counted_setup() -> None:
-            setups.append(now[0])
-            if len(setups) >= 300:
-                pl.stop_event.set()
-            setup()
+    def test_a_missing_video_stops_the_run_with_its_cause(self):
+        for loop in (True, False):
+            with self.subTest(loop=loop):
+                scene, missing = self._missing_video()
+                pl = Playlist(
+                    [scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=loop
+                )
+                setups: list[int] = []
+                setup = scene.setup
 
-        scene.setup = counted_setup
-        with self.assertLogs("c64cast", level="WARNING") as cap:
-            pl.run()
-        waits = [
-            r.getMessage().rsplit(" ", 2)[-2]
-            for r in cap.records
-            if "failed to start; trying again" in r.getMessage()
-        ]
-        self.assertLessEqual(len(setups), 9, f"{len(setups)} setups in 120 s")
-        self.assertEqual(waits[:7], ["1", "2", "4", "8", "16", "30", "30"])
-        gaps = [b - a for a, b in zip(setups, setups[1:], strict=False)]
-        self.assertTrue(all(g >= 1.0 for g in gaps), gaps)
+                def counted_setup(setup=setup, setups=setups, pl=pl) -> None:
+                    setups.append(1)
+                    if len(setups) >= 3:
+                        pl.stop_event.set()
+                    setup()
 
-    def _failing_scene(self, fails: int) -> FakeScene:
+                scene.setup = counted_setup
+                with self.assertLogs("c64cast", level="INFO") as cap:
+                    pl.run()
+                errors = [
+                    r.getMessage()
+                    for r in cap.records
+                    if r.name.startswith("c64cast.app.playlist") and r.levelno == logging.ERROR
+                ]
+                self.assertEqual(len(setups), 1)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(repr(scene.name), errors[0])
+                self.assertIn(missing, errors[0])
+                self.assertTrue(pl.failed_to_start)
+                self.assertIsNone(pl.current)
+
+    def test_a_lap_that_fails_to_start_stops_the_run(self):
         scene = FakeScene("A", frames_until_done=10_000_000)
         setup = scene.setup
 
-        def setup_that_fails() -> None:
+        def second_setup_fails() -> None:
             setup()
-            scene.is_done = scene.setup_count <= fails
+            scene.is_done = scene.setup_count >= 2
 
-        scene.setup = setup_that_fails
-        return scene
-
-    def test_a_setup_that_starts_the_scene_clears_the_wait(self):
-        scene = self._failing_scene(fails=2)
+        scene.setup = second_setup_fails
         pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True)
-        self._fake_time(pl)
-        with self.assertLogs("c64cast.app.playlist", level="INFO"):
-            pl._advance()
-            for _ in range(2):
-                scene.is_done = True
-                pl._advance()
-        self.assertEqual(scene.setup_count, 3)
-        self.assertEqual(pl._failed_setup_wait_s, 0.0)
-        self.assertEqual(pl._failed_setup_retry_at, 0.0)
-
-    def test_a_reload_starts_the_wait_over(self):
-        scene = self._failing_scene(fails=10)
-        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True)
-        self._fake_time(pl)
-        with self.assertLogs("c64cast.app.playlist", level="INFO"):
-            pl._advance()
-            for _ in range(3):
-                scene.is_done = True
-                pl._advance()
-            self.assertEqual(pl._failed_setup_wait_s, 8.0)
-            pl.request_reload([self._failing_scene(fails=10)])
-            pl._apply_reload()
-            pl._advance()
-        self.assertEqual(pl._failed_setup_wait_s, 1.0)
-
-    def test_a_once_through_scene_that_fails_to_start_stops_without_a_retry(self):
-        scene = self._failing_scene(fails=10)
-        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=False)
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl._advance()
+            self.assertFalse(pl.failed_to_start)
+            scene.is_done = True
             pl._advance()
+        self.assertEqual(scene.setup_count, 2)
+        self.assertTrue(pl.failed_to_start)
         self.assertTrue(pl.stop_event.is_set())
-        self.assertEqual(scene.setup_count, 1)
-        self.assertFalse([r for r in cap.records if "trying again" in r.getMessage()])
+        self.assertTrue(
+            [r for r in cap.records if r.levelno == logging.ERROR and "'A'" in r.getMessage()]
+        )
 
-    def test_the_wait_gives_way_to_a_stop_reload_pause_broadcast_or_skip(self):
-        for event in ("stop_event", "reload_event", "pause_event", "broadcast", "skip_event"):
-            with self.subTest(event=event):
-                scene = self._failing_scene(fails=10)
-                pl = Playlist(
-                    [scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True
-                )
-                if event == "broadcast":
-                    pl.broadcast_interrupt = threading.Event()
-                    event = "broadcast_interrupt"
-                now = self._fake_time(pl)
-                with self.assertLogs("c64cast.app.playlist", level="INFO"):
-                    pl._advance()
-                    getattr(pl, event).set()
-                    scene.is_done = True
-                    pl._advance()
-                self.assertLess(now[0], 1.0, "the wait ran out instead of giving way")
-                expected = 2 if event == "skip_event" else 1
-                self.assertEqual(scene.setup_count, expected)
-                self.assertIs(pl.current, scene)
-                if event == "skip_event":
-                    self.assertFalse(pl.skip_event.is_set())
+    def test_a_stop_while_the_setup_waits_on_the_link_is_no_failure(self):
+        from c64cast.hw.backend import LinkError
+
+        scene = FakeScene("A", frames_until_done=10_000_000)
+
+        def setup_on_a_dead_link() -> None:
+            scene.setup_count += 1
+            scene.is_done = True
+            raise LinkError("link down")
+
+        scene.setup = setup_on_a_dead_link
+        api = FakeApi()
+        api.answers = False
+        pl = Playlist([scene], api, target_fps=30.0, heartbeat_interval=0.0, loop=True)
+        pl.stop_event.set()
+        with self.assertLogs("c64cast", level="INFO") as cap:
+            pl._advance()
+        self.assertFalse(pl.failed_to_start)
+        self.assertFalse([r for r in cap.records if r.levelno >= logging.ERROR])
 
 
 if __name__ == "__main__":

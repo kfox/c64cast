@@ -373,5 +373,31 @@ class RunSessionStopHandlerGapTest(unittest.TestCase):
         teardown.assert_called_once_with(sess)
 
 
+class RunSessionExitStatusTest(unittest.TestCase):
+    def _exit_status(self, *failed_to_start: bool) -> int:
+        from c64cast.app import cli
+
+        stacks = [fake_system_stack(f"s{i}") for i in range(len(failed_to_start))]
+        for st, failed in zip(stacks, failed_to_start, strict=True):
+            st.playlist.failed_to_start = failed
+        sess = MagicMock(name="sess")
+        sess.stacks = stacks
+        with (
+            unittest.mock.patch.object(session, "validate_configs"),
+            unittest.mock.patch.object(session, "build_session", return_value=sess),
+            unittest.mock.patch.object(cli.signal, "signal"),
+            unittest.mock.patch.object(session, "start_services"),
+            unittest.mock.patch.object(session, "run_foreground"),
+            unittest.mock.patch.object(session, "teardown_session"),
+        ):
+            return cli._run_session(argparse.Namespace(), MagicMock(name="loaded"), [])
+
+    def test_a_scene_that_failed_to_start_exits_nonzero(self):
+        self.assertNotEqual(self._exit_status(False, True), 0)
+
+    def test_a_run_whose_scenes_started_exits_zero(self):
+        self.assertEqual(self._exit_status(False, False), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

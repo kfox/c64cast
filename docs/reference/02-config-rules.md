@@ -525,6 +525,10 @@ to. Pause and the style cycle still work. `interleave_videos` is
 short-circuited, because inserting a video would make the playlist two scenes
 long and silently defeat the mode.
 
+A single scene that cannot start, because its file is missing or unreadable or
+its tune will not load, ends the run with an error that names the scene and
+the reason, and c64cast exits with status 1, looping or not.
+
 Every packaged example is a single-scene configuration, which is why each one
 runs until you stop it.
 

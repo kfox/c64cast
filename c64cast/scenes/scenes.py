@@ -338,6 +338,7 @@ class Scene:
     # waveform cycle's re-applied explicit one; None while it has set none.
     # A class attribute so a scene built without __init__ (tests) still has one.
     _derived_duration_s: float | None = None
+    setup_failure: str | None = None
 
     def __init__(
         self,
@@ -467,6 +468,15 @@ class Scene:
         setup() again (a setup the link failed), so the next setup() keeps
         the file this one picked rather than rolling a new one, which the
         "UP NEXT" card would not have named. Default: no-op."""
+
+    def report_setup_failure(
+        self, logger: logging.Logger, msg: str, *args: object, exc_info: bool = False
+    ) -> None:
+        """Log at ERROR why this scene cannot start, and keep the reason as
+        `setup_failure` for a playlist that has no other scene to play and
+        stops on it."""
+        self.setup_failure = msg % args
+        logger.error(msg, *args, exc_info=exc_info)
 
     def setup(self) -> None:
         self.is_done = False
@@ -877,11 +887,14 @@ class SourceScene(Scene):
         # instead and let the playlist advance.
         try:
             self.audio_source.setup()
-        except Exception:
-            log.exception(
-                "scene %r: audio source %s failed to start — aborting scene",
+        except Exception as e:
+            self.report_setup_failure(
+                log,
+                "scene %r: audio source %s failed to start (%s) — aborting scene",
                 self.name,
                 type(self.audio_source).__name__,
+                e,
+                exc_info=True,
             )
             self.is_done = True
         if not self.is_done:
@@ -1004,6 +1017,7 @@ class MediaFileMixin:
     filepath: str
     name: str
     _prepared: bool
+    report_setup_failure: Callable[..., None]
 
     def _resolve_candidates(self) -> list[str]:
         from c64cast.app.scene_factory import resolve_file_spec
@@ -1035,7 +1049,8 @@ class MediaFileMixin:
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error(
+            self.report_setup_failure(
+                log,
                 "%s: file spec %r failed to resolve at setup: %s",
                 self.MEDIA_LABEL,
                 self.file_spec,
@@ -1237,7 +1252,9 @@ class SlideshowScene(MediaFileMixin, Scene):
         try:
             self._resolve_candidates()
         except ValueError as e:
-            log.error("slideshow: file spec %r failed to resolve at setup: %s", self.file_spec, e)
+            self.report_setup_failure(
+                log, "slideshow: file spec %r failed to resolve at setup: %s", self.file_spec, e
+            )
             return False
         self._advance_image()
         self._pick_held = self._current_img is not None
@@ -1472,7 +1489,8 @@ class VideoScene(MediaFileMixin, Scene):
         self._audio_held = False
         self.transport.loop_store = make_loop_preset_store(self.filepath)
         if not ensure_pyav():
-            log.warning(
+            self.report_setup_failure(
+                log,
                 "PyAV unavailable; video scene cannot play %s "
                 "(install with `uv tool install --force 'c64cast[all]'`)",
                 self.filepath,
@@ -1481,7 +1499,8 @@ class VideoScene(MediaFileMixin, Scene):
             return
         is_url = self.filepath.lower().startswith(("http://", "https://"))
         if not is_url and not os.path.exists(self.filepath):
-            log.error(
+            self.report_setup_failure(
+                log,
                 "video: file not found: %s — check the path in "
                 "your config or the [playlist].videos_dir contents",
                 self.filepath,
@@ -1517,11 +1536,14 @@ class VideoScene(MediaFileMixin, Scene):
                 tempo_follow=self.tempo_follow,
             )
         except PermissionError as e:
-            log.error("video: permission denied opening %s (%s)", self.filepath, e)
+            self.report_setup_failure(
+                log, "video: permission denied opening %s (%s)", self.filepath, e
+            )
             self.is_done = True
             return
         except Exception as e:
-            log.error(
+            self.report_setup_failure(
+                log,
                 "video: failed to open %s (%s) — file may be corrupt or in an unsupported codec",
                 self.filepath,
                 e,
@@ -2285,7 +2307,8 @@ class LauncherScene(MediaFileMixin, Scene):
             return
         super().setup()
         if not os.path.exists(self.filepath):
-            log.error(
+            self.report_setup_failure(
+                log,
                 "launcher: file not found: %s — check the path in your "
                 "config or the assets/programs/ contents",
                 self.filepath,
@@ -2303,7 +2326,7 @@ class LauncherScene(MediaFileMixin, Scene):
         try:
             self.api.launch_program(self.filepath)
         except Exception as e:
-            log.error("launcher: failed to launch %s (%s)", self.filepath, e)
+            self.report_setup_failure(log, "launcher: failed to launch %s (%s)", self.filepath, e)
             self.is_done = True
             return
         if self.input_source != "none":
