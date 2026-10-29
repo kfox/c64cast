@@ -584,7 +584,7 @@ The toggle sits deliberately *ahead* of the ready-flag check — the alternation
 
 Tracker at `$C700`, 6 bytes: `[bg0, bank, ready, phase, d018_a, d018_b]`. `phase` is handler-owned, so `_arm_flicker_swap` writes only the first three — re-sending the rest would restart the alternation from page A on every staged frame and stall the blend. `install_bank_swap_irq`'s `tracker_init` seeds the page pair before the raster source is armed, since zeros there would point VIC at the `$0000` matrix offset for the field or two before the first frame stages.
 
-`$0C00` rather than `$0800` because `$0801` is where `run_prg` drops a PRG. It is the same page [`overlays/big_text.py`](control.md) page-flips its own strip into, for the same reason — which is why the two cannot be live at once.
+`$0C00` rather than `$0800` because `$0801` is where a PRG kick drops its program. It is the same page [`overlays/big_text.py`](control.md) page-flips its own strip into, for the same reason — which is why the two cannot be live at once.
 
 #### Gating
 

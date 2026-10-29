@@ -8,7 +8,8 @@ lets ``flush()`` work: a trailing IDENTIFY round-trip only responds once every
 prior command has been processed.
 
 Only the opcodes c64cast's write path needs are covered here (DMAWRITE,
-REUWRITE, IDENTIFY, AUTHENTICATE, plus RESET, KEYB and the VIC stream pair).
+REUWRITE, IDENTIFY, AUTHENTICATE, plus DMARUN, RESET, KEYB and the VIC stream
+pair).
 
 The full set is in the firmware's own protocol table:
 https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc
@@ -37,6 +38,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 64
 
+CMD_DMARUN = 0xFF02
 CMD_KEYB = 0xFF03
 CMD_RESET = 0xFF04
 CMD_DMAWRITE = 0xFF06
@@ -353,15 +355,16 @@ class SocketDMAClient:
                 "or the C64CAST_DMA_PASSWORD env var."
             )
 
-    def _identify_roundtrip_locked(self) -> bytes:
-        """Send IDENTIFY and return the reply's payload."""
+    def _identify_roundtrip_locked(self, reply_timeout: float | None = None) -> bytes:
+        """Send IDENTIFY and return the reply's payload, waiting up to
+        ``reply_timeout`` (default ``io_timeout``) for each part of it."""
         # Guarded whole, not only per wire call: an interrupt landing between
         # the send and the reads leaves the reply in flight, and the next
         # flush() would read it as its own.
         with self._whole_frame_locked(sending=False):
             self._send_cmd_locked(CMD_IDENTIFY, b"")
-            length = self._recv_exact_locked(1)[0]
-            return self._recv_exact_locked(length)
+            length = self._recv_exact_locked(1, reply_timeout)[0]
+            return self._recv_exact_locked(length, reply_timeout)
 
     def _identify_locked(self) -> str:
         assert self._sock is not None
@@ -420,15 +423,15 @@ class SocketDMAClient:
         with self._whole_frame_locked(sending=changes_memory):
             self._sock.sendall(header + payload)
 
-    def _recv_exact_locked(self, n: int) -> bytes:
-        """Read exactly `n` bytes, bounded by one `io_timeout` total rather
-        than one per `recv()` call — a peer that dribbles the reply back
+    def _recv_exact_locked(self, n: int, timeout: float | None = None) -> bytes:
+        """Read exactly `n` bytes, bounded by one `timeout` (default
+        `io_timeout`) total rather than one per `recv()` call — a peer that dribbles the reply back
         slower than `io_timeout` but never idle for a full `io_timeout`
         would otherwise keep this loop (and the process-wide lock it runs
         under) spinning indefinitely."""
         assert self._sock is not None
         sock = self._sock
-        deadline = time.monotonic() + self.io_timeout
+        deadline = time.monotonic() + (self.io_timeout if timeout is None else timeout)
         buf = bytearray()
         with self._whole_frame_locked(sending=False):
             try:
@@ -693,6 +696,19 @@ class SocketDMAClient:
             )
         self._send_with_reconnect(CMD_KEYB, ascii_bytes)
 
+    def dmarun(self, prg: bytes, *, timeout: float) -> None:
+        """Load ``prg`` (load address first, as in a .prg file) through the
+        firmware's boot cartridge and RUN it, returning once the firmware has
+        started it — the same load the REST ``run_prg`` runner does, but from
+        the command's own payload, so nothing is written to the device's
+        ``/Temp`` (where every upload of one name gets a new ``_N`` suffix).
+
+        The firmware runs the load inside its command loop, so the IDENTIFY
+        that follows is answered only once BASIC has started the program;
+        ``timeout`` bounds that wait. Raises like ``flush()`` does."""
+        self._send_with_reconnect(CMD_DMARUN, prg)
+        self.flush(reply_timeout=timeout)
+
     def vicstream_on(self, destination: str, *, stop_after_s: float = 0.0) -> None:
         """Start the machine's own VIC stream to ``destination`` (``host:port``).
 
@@ -729,8 +745,10 @@ class SocketDMAClient:
         clear enable bit without complaint."""
         self._send_with_reconnect(CMD_VICSTREAM_OFF, b"")
 
-    def flush(self) -> None:
-        """Wait for the server to drain every previously-issued command.
+    def flush(self, *, reply_timeout: float | None = None) -> None:
+        """Wait for the server to drain every previously-issued command,
+        each part of the reply within ``reply_timeout`` (default
+        ``io_timeout``).
 
         Implementation: a single IDENTIFY round-trip. Because the server
         processes the per-connection command stream strictly in order
@@ -747,7 +765,7 @@ class SocketDMAClient:
         way this call fails."""
         with self._lock:
             try:
-                self._flush_locked()
+                self._flush_locked(reply_timeout)
             finally:
                 self._clear_pending_loss()
 
@@ -762,11 +780,11 @@ class SocketDMAClient:
             if loss is not None:
                 loss.pending = None
 
-    def _flush_locked(self) -> None:
+    def _flush_locked(self, reply_timeout: float | None = None) -> None:
         self._ensure_live_locked()
         try:
             t0 = time.perf_counter()
-            self._identify_roundtrip_locked()
+            self._identify_roundtrip_locked(reply_timeout)
         except OSError:
             # No transparent retry: callers use flush() as a sync barrier
             # before a REST runner and own the log message. Close, though —

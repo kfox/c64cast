@@ -23,6 +23,7 @@ from unittest.mock import patch
 from c64cast.hw.backend import LinkError
 from c64cast.hw.socket_dma import (
     CMD_AUTHENTICATE,
+    CMD_DMARUN,
     CMD_DMAWRITE,
     CMD_IDENTIFY,
     CMD_KEYB,
@@ -276,6 +277,45 @@ class FlushTest(unittest.TestCase):
         fake.recv = _timed_out_recv  # type: ignore[method-assign]
         with self.assertRaises(OSError):
             c.flush()
+        self.assertIsNone(c._sock)
+
+
+class DmarunTest(unittest.TestCase):
+    def test_sends_the_prg_then_waits_on_an_identify(self):
+        fake = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        c = _client_with(fake)
+        before = len(fake.sent)
+        c.dmarun(b"\x01\x08\xaa", timeout=5.0)
+        self.assertEqual(
+            bytes(fake.sent[before:]),
+            struct.pack("<HH", CMD_DMARUN, 3)
+            + b"\x01\x08\xaa"
+            + struct.pack("<HH", CMD_IDENTIFY, 0),
+        )
+        self.assertEqual(fake._replies, deque())
+
+    def test_waits_past_io_timeout_for_the_load_to_finish(self):
+        # The firmware answers the IDENTIFY only once the load has run, which
+        # takes longer than an ordinary round trip.
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        c.io_timeout = 0.05
+
+        class SlowReplySocket(FakeSocket):
+            def recv(self, n, flags=0):
+                if not flags & socket.MSG_PEEK:
+                    time.sleep(0.01)
+                    n = 1
+                return super().recv(n, flags)
+
+        c._sock = SlowReplySocket([_IDENT_REPLY])  # type: ignore[assignment]
+        c.dmarun(b"\x01\x08", timeout=2.0)
+
+    def test_an_unanswered_load_raises(self):
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        with self.assertRaises(ConnectionError):
+            c.dmarun(b"\x01\x08", timeout=0.05)
         self.assertIsNone(c._sock)
 
 

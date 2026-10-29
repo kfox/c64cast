@@ -53,6 +53,7 @@ from c64cast.hw.api import (
     _SID_PATCH_SONG,
     _SID_PATCH_SPIN_HI,
     _SID_PATCH_SPIN_LO,
+    BASIC_CLEAR_LOOP_PRG,
     CHAR_ROM_DUMP_STUB_ADDR,
     REINIT_STUB_ADDR,
     REINIT_STUB_TEMPLATE,
@@ -237,19 +238,12 @@ class RunSidPlayerTest(unittest.TestCase):
         self.api._emit = _fake_emit  # type: ignore[method-assign]
         patch.object(self.api, "flush").start()
         patch.object(self.api, "_flush_failure", return_value=None).start()
-        self.posts: list[tuple[str, bytes]] = []
-
-        def _fake_post(url, files=None, **_):
-            payload = files["file"][1] if files else b""
-            self.posts.append((url, bytes(payload)))
-
-            class _R:
-                def raise_for_status(self):
-                    pass
-
-            return _R()
-
-        patch.object(self.api.session, "post", side_effect=_fake_post).start()
+        self.kicks: list[bytes] = []
+        patch.object(
+            self.api.socket_dma,
+            "dmarun",
+            side_effect=lambda prg, *, timeout: self.kicks.append(bytes(prg)),
+        ).start()
         patch.object(self.api, "_tune_play_divider", return_value=1).start()
 
     def tearDown(self):
@@ -295,9 +289,9 @@ class RunSidPlayerTest(unittest.TestCase):
 
     def test_accepts_load_addr_just_past_stub(self):
         self.api.run_sid_player(self._make_sid(load=0x0820))
-        # 3 DMA writes (payload + main MC + re-INIT stub) + 1 POST.
+        # 3 DMA writes (payload + main MC + re-INIT stub) + 1 kick.
         self.assertEqual(len(self.dma_writes), 3)
-        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(len(self.kicks), 1)
 
     def test_mc_restores_master_volume_after_init(self):
         # $D418=$0F right after JSR init returns, so the SID is audible whether or
@@ -487,8 +481,8 @@ class RunSidPlayerTest(unittest.TestCase):
 
     def test_basic_stub_posted_targets_player_base(self):
         self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
-        self.assertEqual(len(self.posts), 1)
-        _, prg = self.posts[0]
+        self.assertEqual(len(self.kicks), 1)
+        prg = self.kicks[0]
         # Find the SYS token (0x9E) and read the decimal digits after it.
         sys_idx = prg.index(b"\x9e")
         # Skip 0x9E + 0x20 (space), then ASCII digits, terminator 0x00.
@@ -662,7 +656,7 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(stub[_REINIT_PATCH_IRQ_LO], expected_irq & 0xFF)
         self.assertEqual(stub[_REINIT_PATCH_IRQ_HI], (expected_irq >> 8) & 0xFF)
         # The BASIC SYS stub targets the relocated player_base.
-        _, prg = self.posts[0]
+        prg = self.kicks[0]
         sys_idx = prg.index(b"\x9e")
         digits_end = prg.index(b"\x00", sys_idx)
         digits = prg[sys_idx + 2 : digits_end].decode("ascii")
@@ -687,13 +681,13 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(addr3, VECTORS.IRQ)
         self.assertEqual(payload3, bytes([relocated_stub & 0xFF, (relocated_stub >> 8) & 0xFF]))
 
-    def test_flush_failure_aborts_before_the_run_prg_post(self):
+    def test_flush_failure_aborts_before_the_kick(self):
         # Past a flush it cannot confirm, the player MC / re-INIT stub may not be
-        # in place, so the irreversible run_prg reset must not fire.
+        # in place, so the irreversible DMARUN reset must not fire.
         patch.object(self.api, "_flush_failure", return_value=OSError("scripted")).start()
         with self.assertRaises(RuntimeError):
             self.api.run_sid_player(self._make_sid())
-        self.assertEqual(self.posts, [])
+        self.assertEqual(self.kicks, [])
 
 
 class FootprintLayoutTest(unittest.TestCase):
@@ -890,8 +884,8 @@ class TunePlayDividerTest(unittest.TestCase):
 
 
 class LaunchProgramTest(unittest.TestCase):
-    """`launch_program` picks the firmware runner by extension and POSTs the
-    file as multipart, re-raising failures so LauncherScene can advance."""
+    """`launch_program` runs a .prg over DMARUN and POSTs a .crt to run_crt,
+    re-raising failures so LauncherScene can advance."""
 
     def setUp(self):
         patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
@@ -904,6 +898,7 @@ class LaunchProgramTest(unittest.TestCase):
         patch.object(self.api, "invalidate_cache").start()
         self.post = patch.object(self.api.session, "post").start()
         self.post.return_value.raise_for_status.return_value = None
+        self.dmarun = patch.object(self.api.socket_dma, "dmarun").start()
 
     def _write(self, tmp, name, data=b"\x01\x08"):
         import os
@@ -913,14 +908,21 @@ class LaunchProgramTest(unittest.TestCase):
             f.write(data)
         return p
 
-    def test_prg_uses_run_prg_endpoint(self):
+    def test_prg_runs_over_dmarun_not_rest(self):
         import tempfile
 
-        from c64cast.hw.c64 import U64_API
-
         with tempfile.TemporaryDirectory() as tmp:
-            self.api.launch_program(self._write(tmp, "game.prg"))
-        self.assertTrue(self.post.call_args.args[0].endswith(U64_API.RUN_PRG))
+            self.api.launch_program(self._write(tmp, "game.prg", b"\x01\x08\x60"))
+        self.assertEqual(self.dmarun.call_args.args[0], b"\x01\x08\x60")
+        self.post.assert_not_called()
+
+    def test_a_failed_dmarun_raises_runtime_error(self):
+        import tempfile
+
+        self.dmarun.side_effect = SocketDMAError("down")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "DMARUN failed"):
+                self.api.launch_program(self._write(tmp, "game.prg"))
 
     def test_crt_uses_run_crt_endpoint_case_insensitive(self):
         import tempfile
@@ -930,6 +932,7 @@ class LaunchProgramTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.api.launch_program(self._write(tmp, "cart.CRT"))
         self.assertTrue(self.post.call_args.args[0].endswith(U64_API.RUN_CRT))
+        self.dmarun.assert_not_called()
 
     def test_unsupported_extension_raises(self):
         import tempfile
@@ -938,6 +941,7 @@ class LaunchProgramTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unsupported extension"):
                 self.api.launch_program(self._write(tmp, "disk.d64"))
         self.post.assert_not_called()
+        self.dmarun.assert_not_called()
 
     def test_post_failure_reraises(self):
         import tempfile
@@ -947,18 +951,18 @@ class LaunchProgramTest(unittest.TestCase):
         self.post.return_value.raise_for_status.side_effect = requests.HTTPError("boom")
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(requests.HTTPError):
-                self.api.launch_program(self._write(tmp, "game.prg"))
+                self.api.launch_program(self._write(tmp, "cart.crt"))
 
-    def test_flush_failure_aborts_before_posting(self):
+    def test_flush_failure_aborts_before_the_kick(self):
         import tempfile
 
-        # run_prg resets the C64; it must not fire past a flush that could not
+        # The kick resets the C64; it must not fire past a flush that could not
         # confirm the pending DMA writes landed.
         patch.object(self.api, "_flush_failure", return_value=OSError("scripted")).start()
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(RuntimeError):
                 self.api.launch_program(self._write(tmp, "game.prg"))
-        self.post.assert_not_called()
+        self.dmarun.assert_not_called()
 
 
 class FlushOrRaiseOwnWritesTest(unittest.TestCase):
@@ -1035,7 +1039,7 @@ class FlushOrRaiseOwnWritesTest(unittest.TestCase):
         launch = MagicMock()
         with (
             patch.object(self.api, "_write_sid_blobs", side_effect=self._lose_a_write_mid_setup),
-            patch.object(self.api, "_post_prg") as post,
+            patch.object(self.api, "_run_prg") as post,
             self._redial_socket(),
             self.assertLogs("c64cast.hw", level="DEBUG"),
         ):
@@ -1046,13 +1050,14 @@ class FlushOrRaiseOwnWritesTest(unittest.TestCase):
     def test_a_char_rom_dump_refuses_over_a_write_lost_while_it_uploaded_the_stub(self):
         with (
             patch.object(self.api, "write_memory_file", side_effect=self._lose_a_write_mid_setup),
-            patch.object(self.api, "_post_prg") as post,
+            patch.object(self.api, "_run_prg") as kick,
             self._redial_socket(),
             self.assertLogs("c64cast.hw", level="DEBUG"),
         ):
             with self.assertRaisesRegex(RuntimeError, "dump_char_rom: .*refusing to launch"):
                 self.api.dump_char_rom()
-        post.assert_not_called()
+        # Only the clear loop dump_char_rom restores on the way out, never the stub.
+        self.assertEqual([c.args[0] for c in kick.call_args_list], [BASIC_CLEAR_LOOP_PRG])
 
     def test_a_loss_charged_after_the_mark_still_refuses_the_launch(self):
         self.api._emit(0xD020, b"\x0e")
@@ -1552,20 +1557,16 @@ class RefineCapabilitiesTest(unittest.TestCase):
             self.api.refine_capabilities()
         self.assertFalse(self.api.profile.supports_emusid_mixer)
 
-    def test_run_basic_clear_loop_posts_prg_and_swallows_failure(self):
-        import requests
-
-        from c64cast.hw.c64 import U64_API
-
+    def test_run_basic_clear_loop_runs_the_prg_over_dmarun_and_swallows_failure(self):
         patch.object(self.api, "flush").start()
         patch.object(self.api, "invalidate_cache").start()
+        dmarun = patch.object(self.api.socket_dma, "dmarun").start()
         post = patch.object(self.api.session, "post").start()
-        post.return_value.raise_for_status.return_value = None
         self.api.run_basic_clear_loop()
-        self.assertTrue(post.call_args.args[0].endswith(U64_API.RUN_PRG))
-        self.assertIn("file", post.call_args.kwargs["files"])
+        self.assertEqual(dmarun.call_args.args[0], BASIC_CLEAR_LOOP_PRG)
+        post.assert_not_called()
 
-        post.side_effect = requests.ConnectionError("down")
+        dmarun.side_effect = SocketDMAError("down")
         with self.assertLogs("c64cast.hw.api", level="WARNING"):
             self.api.run_basic_clear_loop()  # best-effort — must not raise
 
@@ -1915,10 +1916,10 @@ class SendInputTest(unittest.TestCase):
 
 class DumpCharRomTest(unittest.TestCase):
     """The shared dump orchestration on the Ultimate: upload the stub, SYS it
-    via run_prg, wait for the completion flag, read the landing zone back.
+    via DMARUN, wait for the completion flag, read the landing zone back.
 
     The flag poll is the part worth pinning — without it the read races the
-    ~45 ms on-C64 copy, and `run_prg` returning tells us nothing about whether
+    ~45 ms on-C64 copy, and the kick returning tells us nothing about whether
     `SYS` has finished."""
 
     def setUp(self):
@@ -1931,18 +1932,12 @@ class DumpCharRomTest(unittest.TestCase):
         patch.object(self.api, "flush").start()
         patch.object(self.api, "_flush_failure", return_value=None).start()
         patch.object(self.api, "run_basic_clear_loop").start()
-        self.posts: list[tuple[str, bytes]] = []
-
-        def _fake_post(url, files=None, **_):
-            self.posts.append((url, bytes(files["file"][1]) if files else b""))
-
-            class _R:
-                def raise_for_status(self):
-                    pass
-
-            return _R()
-
-        patch.object(self.api.session, "post", side_effect=_fake_post).start()
+        self.kicks: list[bytes] = []
+        patch.object(
+            self.api.socket_dma,
+            "dmarun",
+            side_effect=lambda prg, *, timeout: self.kicks.append(bytes(prg)),
+        ).start()
         self.rom = bytes(range(256)) * 16  # 4096 bytes; content is irrelevant here
         # Flag reads answer "not yet" twice, then done — proving the poll loop.
         self.flag_reads = 0
@@ -1968,9 +1963,8 @@ class DumpCharRomTest(unittest.TestCase):
         stub_writes = [w for w in self.writes if w[0] == CHAR_ROM_DUMP_STUB_ADDR]
         self.assertEqual(len(stub_writes), 1)
         self.assertEqual(stub_writes[0][1], build_char_rom_dump_stub(irq_exit=False))
-        # The kick is a `10 SYS <stub addr>` PRG posted to run_prg.
-        self.assertEqual(len(self.posts), 1)
-        self.assertEqual(self.posts[0][1], _build_basic_sys_stub(CHAR_ROM_DUMP_STUB_ADDR))
+        # The kick is a `10 SYS <stub addr>` PRG run over DMARUN.
+        self.assertEqual(self.kicks, [_build_basic_sys_stub(CHAR_ROM_DUMP_STUB_ADDR)])
 
     def test_waits_for_the_completion_flag_before_reading(self):
         self.assertEqual(self.api.dump_char_rom(), self.rom)
@@ -2006,13 +2000,13 @@ class DumpCharRomTest(unittest.TestCase):
         with self.assertRaises(BackendCapabilityError):
             self.api.dump_char_rom()
 
-    def test_flush_failure_aborts_before_the_run_prg_post(self):
-        # run_prg resets the C64; it must not fire past a flush that could not
+    def test_flush_failure_aborts_before_the_kick(self):
+        # The kick resets the C64; it must not fire past a flush that could not
         # confirm the stub upload landed.
         patch.object(self.api, "_flush_failure", return_value=OSError("scripted")).start()
         with self.assertRaises(RuntimeError):
             self.api.dump_char_rom()
-        self.assertEqual(self.posts, [])
+        self.assertEqual(self.kicks, [])
 
 
 class OpenVideoStreamTest(unittest.TestCase):

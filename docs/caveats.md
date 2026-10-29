@@ -152,8 +152,9 @@ Verified on C64 Ultimate firmware 1.1.0.
 
 The same setting cuts the other way for a device that *launches* programs from
 the cartridge port. An Ultimate II+ sitting in an Ultimate 64's (or C64
-Ultimate's) cartridge port cannot start a PRG via its `run_prg` REST runner:
-that launch path asserts RESET over the cartridge port, and under
+Ultimate's) cartridge port cannot start a PRG via its `run_prg` REST runner
+or the DMA socket's DMARUN: both load through the firmware's boot cartridge,
+which asserts RESET over the cartridge port, and under
 `Bus Operation Mode = Writes` the host machine does not honor it. The request
 succeeds, nothing errors, and the machine never restarts into the program.
 
@@ -203,7 +204,7 @@ on screen. The kernal IRQ keeps firing regardless, so PLAY runs at the
 system rate and `$028D` keeps updating for the keyboard poller. Audio
 still comes from the real SID chip.
 
-**Pre-blank before the kick (Ultimate only).** `runners:run_prg` soft-resets
+**Pre-blank before the kick (Ultimate only).** The DMARUN kick soft-resets
 the C64, and like any reset it has a reset-latency window during which the
 VIC still holds the *outgoing* scene's mode/bank/bitmap — so without a guard,
 launching the SID player over a previous hires/mhires scene (another
@@ -497,7 +498,7 @@ The host-side orchestration above (parse / layout / build / divider
 auto-tune / subtune re-INIT) is backend-agnostic and shared via
 `_SidPlayerMixin` in [api.py](../c64cast/hw/api.py); only the **kick** —
 how control reaches the player — differs per backend, behind the abstract
-`_launch_sid_player`. The Ultimate POSTs the `SYS` stub to `run_prg`
+`_launch_sid_player`. The Ultimate runs the `SYS` stub over DMARUN
 (a synchronous soft reset that preserves RAM, then RUNs). The TeensyROM
 has no synchronous run-PRG: `LaunchFile` resets the C64 and boots
 **asynchronously**, and its timing-sensitive fast-LOAD is corrupted by the
@@ -525,7 +526,7 @@ job is to show the waveforms *during* playback, not just play a tune. So
 `run_sid_player(defer_audio=True)` loads the player **silent** (no `$0314`
 swap yet); `WaveformScene` paints the hires scope (`_setup_hires`); then
 `begin_sid_audio()` fires the `$0314` swap that actually starts INIT/PLAY —
-the scope is on screen before the first note. (On the Ultimate, `run_prg`
+the scope is on screen before the first note. (On the Ultimate, the DMARUN kick
 re-inits VIC to text mode, so the bitmap is asserted *after* the player as
 it always was, and `begin_sid_audio()` is a no-op there — the gap is one
 frame.) The scene anchors its host-emu scope clock to `sid_audio_start_time()`,
@@ -707,8 +708,7 @@ Two transports are in play:
   * `GET /v1/machine:readmem` — keyboard poller, waveform scene,
     U64-ping overlay
   * `PUT /v1/machine:reset` — between scenes
-  * `POST /v1/runners:run_prg` — BASIC clear-and-loop at startup/resume,
-    plus the `SYS 49920` stub that kicks the SID player
+  * `POST /v1/runners:run_crt` — a `launcher` scene's `.crt` cartridge
   * `GET /` — startup reachability probe
 
 Older firmware may rename or omit endpoints; newer firmware sometimes
@@ -748,8 +748,8 @@ Every memory write goes over the **Ultimate DMA Service** on TCP port
 write queue to tune: the TCP send buffer is the queue.
 
 REST is used only for the operations that have no DMA equivalent (see
-the firmware section above): `readmem`, `reset`, `run_prg`, `sidplay`,
-the startup probe. Those are low-rate and one-shot.
+the firmware section above): `readmem`, `reset`, `run_crt`, the startup
+probe. Those are low-rate and one-shot.
 
 Measured on U64 Elite II + firmware 3.x + wired LAN:
 
@@ -832,7 +832,7 @@ There is a sharper reason than throughput to keep writes off REST: a
 server**. Afterwards the unit still answered ping and the DMA socket on
 port 64 kept working normally, but every HTTP request was accepted and
 then dropped (curl exit 56) for 25+ minutes, until a power cycle. That
-takes `readmem`, `reset` and `run_prg` down with it — i.e. everything
+takes `readmem`, `reset` and `run_crt` down with it — i.e. everything
 c64cast genuinely needs REST for. Socket DMA is not merely the faster
 write path; it is the one that doesn't put the REST surface at risk.
 
@@ -1006,8 +1006,8 @@ path notes.
 
 ## `LauncherScene` runs a real program and only watches for input
 
-The `launcher` scene resets the U64, uploads a `.prg` (firmware
-`/v1/runners:run_prg`) or `.crt` cartridge (`/v1/runners:run_crt`) chosen
+The `launcher` scene resets the U64, runs a `.prg` (the DMA socket's
+DMARUN) or `.crt` cartridge (`/v1/runners:run_crt`) chosen
 by extension, and then hands the whole machine to it. From that point the
 program owns the VIC, SID, and CIAs — c64cast stops painting; the scene
 only polls for player input and times out. `teardown()` resets the machine
@@ -1299,8 +1299,8 @@ not None` guard — it's a Pylance limitation, not a real issue.
 
 ## BASIC clear-and-loop is how the cursor stays hidden
 
-`api.run_basic_clear_loop()` POSTs `10 PRINT CHR$(147) : 20 GOTO 20`
-to the `/v1/runners:run_prg` endpoint at startup and on resume; a
+`api.run_basic_clear_loop()` runs `10 PRINT CHR$(147) : 20 GOTO 20`
+over the DMA socket's DMARUN at startup and on resume; a
 TeensyROM+ link launches the same program its own way and repairs it
 over DMA when the launcher leaves it unlinked at `$0801`. The
 `PRINT CHR$(147)` clears the screen + homes the cursor; the infinite
