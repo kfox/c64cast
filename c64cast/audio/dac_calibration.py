@@ -166,6 +166,9 @@ def _estimate_text(n_sids: int, secs: float, settle: float) -> str:
     return f"MEASURING {n_sids} {noun} - ABOUT {total} SECONDS"
 
 
+_KEPT_CURVE = "its previous calibration, else the baked/linear curve"
+
+
 def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None) -> str:
     """The message an unsteady — as opposed to unreadable — ring fails with.
 
@@ -216,7 +219,7 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
             "measurement."
         )
     kept = (
-        "Nothing is written: playback keeps the baked/linear curve, which is "
+        f"Nothing is written: playback keeps {_KEPT_CURVE}, which is "
         "better than a table fitted to levels that move."
     )
     if saved is not None:
@@ -563,9 +566,8 @@ def _measure_one(
             f"{SELFTEST_TOLERANCE * 100:.0f}%). Codes $h0 set the master volume "
             "to 0, so they must measure as silence; that they don't means these "
             "are not consistent output levels, and any ladder folded from them "
-            f"would be wrong. No table written for {label} — playback keeps its "
-            "previous calibration, else the baked/linear curve, which is better "
-            "than a bad table. The raw "
+            f"would be wrong. No table written for {label} — playback keeps "
+            f"{_KEPT_CURVE}, which is better than a bad table. The raw "
             "levels are saved for diagnosis."
         )
     return sidtable, metrics, raw

@@ -1190,6 +1190,12 @@ class RingCaptureGateTest(unittest.TestCase):
         # nothing, so anything up in the machine's mixer lands in the measurement.
         self.assertIn("nothing is muted for you", msg)
 
+    def test_the_unsteady_failure_says_an_earlier_calibration_keeps_playing(self):
+        msg = dc._unsteady_ring_message(
+            "its ring passes disagree by 1.85%", {"pass_residual_frac": 0.016}, None
+        )
+        self.assertIn("keeps its previous calibration, else the baked/linear curve", msg)
+
     def test_a_drifting_level_is_not_blamed_on_the_mixer(self):
         """Both failure modes reach the same pass_spread_frac, and the advice for
         one is useless for the other: muting another source cannot fix a capture
