@@ -859,6 +859,18 @@ class MHiresFlickerPushTest(unittest.TestCase):
         for addr in (VIC_BANK_2.SCREEN, VIC_BANK_2.SCREEN_ALT, VIC_BANK_2.BITMAP, 0xD800):
             self.assertIn(addr, written)
 
+    def test_a_forced_palette_arriving_mid_scene_keeps_composing(self):
+        """A live scene's rolling force_palette bakes its first map seconds in,
+        which swaps the widened entry space for the 16 colors between frames."""
+        mode = MultiHiresDisplayMode(force_palette=True, flicker_tolerance=ALL_TIERS)
+        blended = cast(MHiresFlickerComposeBuffers, mode.compose(gradient()))
+        self.assertFalse(np.array_equal(blended["screen"], blended["screen_b"]))
+        mode.set_color_map(palette.build_fixed_color_map([0, 2, 6, 7, 1]))
+        forced = cast(MHiresFlickerComposeBuffers, mode.compose(gradient()))
+        np.testing.assert_array_equal(forced["screen"], forced["screen_b"])
+        mode.set_color_map(None)
+        mode.compose(gradient())
+
     def test_teardown_restores_d018(self):
         api = FakeAPI()
         mode = MultiHiresDisplayMode(flicker_tolerance=ALL_TIERS)

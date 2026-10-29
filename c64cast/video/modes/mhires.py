@@ -270,6 +270,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_error_trio: np.ndarray | None = None
         # None = no prior pick, so the first frame takes the raw argmax.
         self._bg0: int | None = None
+        # Whether the state above was built over the widened blend entries.
+        self._blending = False
         self.use_reu_staged = use_reu_staged
         # The host-DMA page flip: color RAM ($D800) is shared and un-banked, so
         # its c3 slot still tears briefly. Mutually exclusive with use_reu_staged
@@ -312,6 +314,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._entry_penalty(self._blend_table) if self._blend_table is not None else None
         )
         self._apply_grayscale_fixed_slots()
+        self._reset_pick_state()
+        api.invalidate_cache()
+        return f"palette_mode={palette_mode}" + ("+forced" if self._force_palette else "")
+
+    def _reset_pick_state(self) -> None:
+        """Drop the per-frame EMA and hysteresis state, so the next frame
+        re-picks bg0 and every cell's slots from its own content."""
         self._smoothed_counts = None
         self._smoothed_cell_counts = None
         self._last_cand = None
@@ -319,8 +328,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_quantized = None
         self._last_error_trio = None
         self._bg0 = None
-        api.invalidate_cache()
-        return f"palette_mode={palette_mode}" + ("+forced" if self._force_palette else "")
 
     def cycle_style(self, api):
         new_mode, new_force, _label = advance_palette_cycle(
@@ -405,13 +412,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             bg0=0x00,
             clear=single_buffer,
         )
-        self._smoothed_counts = None
-        self._smoothed_cell_counts = None
-        self._last_cand = None
-        self._last_codes = None
-        self._last_quantized = None
-        self._last_error_trio = None
-        self._bg0 = None
+        self._reset_pick_state()
         if self._blend_table is not None:
             # self.double_buffer stays False: the plain host-DMA path installs a
             # swap handler with no $D018 phase toggle, and the two cannot both
@@ -501,6 +502,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # win. The forced-palette remap emits exactly the colors it was given,
         # and a blend is not one of them.
         table = self._blend_table if self.palette_mode == "percell" and not forced else None
+        if (table is not None) != self._blending:
+            # The carried state indexes the other entry space: a pair index
+            # past 15 once the 16 colors take over, or 16-wide counts against
+            # the widened ones. A rolling force_palette's first map lands
+            # mid-scene, which is the one flip set_palette_mode never sees.
+            self._reset_pick_state()
+            self._blending = table is not None
         if forced:
             # The remap already chose each color, so the shaping stages and the
             # gray penalty are skipped.
