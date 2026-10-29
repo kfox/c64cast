@@ -356,7 +356,8 @@ def start_control_server(
     viewer_token: str | ViewerCredential = "",
 ) -> ControlServer:
     """Build the FastAPI app + start a uvicorn server. Returns the server
-    handle (caller calls `.stop()` at shutdown)."""
+    handle (caller calls `.stop()` at shutdown); raises RuntimeError when
+    nothing ends up listening on (host, port)."""
     if token:
         log.info("control plane: token authentication ON%s", " (+ viewer)" if viewer_token else "")
     elif host not in LOOPBACK_HOSTS:
@@ -373,5 +374,6 @@ def start_control_server(
         playlists, config_loaders, interstitial_factories, token=token, viewer_token=viewer_token
     )
     server = ControlServer(host, port, app)
-    server.start()
+    if not server.start():
+        raise RuntimeError(f"could not listen on {host}:{port}")
     return server

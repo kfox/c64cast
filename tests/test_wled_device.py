@@ -15,6 +15,7 @@ import unittest
 import warnings
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -23,6 +24,7 @@ from c64cast.control.performance import PerformanceSession
 from c64cast.wled.wled_device import (
     PresetStore,
     WledBridge,
+    WledDeviceServer,
     _can_force_colors,
     _can_swap_palette,
     build_wled_app,
@@ -985,6 +987,22 @@ class WledApiTests(unittest.TestCase):
         # the open mode is written for.
         with self.client.websocket_connect("/ws") as ws:
             self.assertIn("state", ws.receive_json())
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
+class WledDeviceServerStartTests(unittest.TestCase):
+    def test_a_server_that_never_bound_raises_and_advertises_nothing(self):
+        bridge, _pl = _bridge()
+        with patch("c64cast.control.control_plane.ControlServer") as server_cls:
+            server_cls.return_value.start.return_value = False
+            server = WledDeviceServer("127.0.0.1", 8080, "c64cast", bridge)
+            with (
+                patch.object(server, "_register_mdns") as register,
+                self.assertRaises(RuntimeError) as cm,
+            ):
+                server.start()
+        self.assertIn("127.0.0.1:8080", str(cm.exception))
+        register.assert_not_called()
 
 
 if __name__ == "__main__":

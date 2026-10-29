@@ -956,7 +956,8 @@ class WledDeviceServer:
         log.info("WLED device: advertised as %r on %s:%d (mDNS)", self._name, ip, self._port)
 
     def start(self) -> None:
-        self._server.start()
+        if not self._server.start():
+            raise RuntimeError(f"could not listen on {self._host}:{self._port}")
         try:
             self._register_mdns()
         except Exception:
