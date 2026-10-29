@@ -2115,6 +2115,14 @@ class TokenResolutionTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             serve.resolve_tokens(cfg)
 
+    def test_a_token_file_that_is_not_utf8_is_named_without_quoting_it(self):
+        path = self.tmp / "latin1"
+        path.write_bytes("s\xe9cret".encode("latin-1"))
+        with self.assertRaises(RuntimeError) as cm:
+            serve.resolve_tokens(cfgmod.WebCfg(token_file=str(path)))
+        self.assertIn(str(path), str(cm.exception))
+        self.assertNotIn("0xe9", str(cm.exception))
+
     def test_an_unconfigured_host_generates_and_persists_a_token(self):
         from c64cast.app import paths
 
