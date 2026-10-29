@@ -746,12 +746,12 @@ class RssTitleExtractionTest(unittest.TestCase):
 
 
 class _RemotePeer(http.server.BaseHTTPRequestHandler):
-    """A feed or weather service on loopback; `server.routes` maps a path to
-    the function that answers it."""
+    """A feed or weather service on loopback; `server.routes` maps a path's
+    first segment to the function that answers it."""
 
     def do_GET(self):
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            self.server.routes[self.path.split("?")[0]](self)  # type: ignore[attr-defined]
+            self.server.routes["/" + self.path.split("?")[0].split("/")[1]](self)  # type: ignore[attr-defined]
 
     def log_message(self, format, *args):
         pass
@@ -813,6 +813,69 @@ class RssFetchTest(_RemotePeerTest):
         ov = RssOverlay(url=self.route("/feed", answer))
         ov._fetch_once()
         self.assertEqual(ov._titles, ["It’s"])
+
+    def test_oversized_feed_is_refused_without_reading_it_all(self):
+        from c64cast.scenes.overlays import _fetch
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        padding = b" " * (1 << 20)
+        head = b"<rss><channel>"
+        tail = b"<item><title>LATE</title></item></channel></rss>"
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", len(head) + len(padding) + len(tail))
+            handler.wfile.write(head + padding + tail)
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        with (
+            patch.object(_fetch, "MAX_BODY_BYTES", 64 * 1024),
+            self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
+        ):
+            ov._fetch_once()
+        self.assertEqual(ov._titles, [])
+
+    def test_a_feed_that_drips_forever_gives_up_at_the_deadline(self):
+        from c64cast.scenes.overlays import _fetch
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        ov = RssOverlay(url=self.route("/feed", self.drip))
+        with (
+            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
+        ):
+            self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
+
+
+class WeatherFetchTest(_RemotePeerTest):
+    def test_open_meteo_reply_reads_as_temperature_and_label(self):
+        from c64cast.scenes.overlays import weather
+
+        body = b'{"current": {"temperature_2m": 71.6, "weather_code": 0}}'
+
+        def answer(handler):
+            _send_head(handler, "application/json", len(body))
+            handler.wfile.write(body)
+
+        url = self.route("/forecast", answer)
+        with patch.object(weather, "OPEN_METEO_URL", url):
+            self.assertEqual(weather._fetch_open_meteo(1.0, 2.0, "F"), "72F CLEAR")
+
+    def test_a_service_that_drips_forever_gives_up_at_the_deadline(self):
+        from c64cast.scenes.overlays import _fetch, weather
+
+        for ov in (
+            weather.WeatherOverlay(provider="open-meteo", lat=1.0, lon=2.0),
+            weather.WeatherOverlay(provider="wttr.in", location="Here"),
+        ):
+            with self.subTest(provider=ov.provider):
+                url = self.route("/" + ov.provider.replace(".", ""), self.drip)
+                with (
+                    patch.object(weather, "OPEN_METEO_URL", url),
+                    patch.object(weather, "WTTR_URL", url),
+                    patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+                    self.assertLogs("c64cast.scenes.overlays.weather", level="WARNING"),
+                ):
+                    self.assertTrue(self.finishes_within(ov._poll_once, 5.0))
 
 
 class LogoTest(unittest.TestCase):

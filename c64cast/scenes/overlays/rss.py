@@ -17,7 +17,7 @@ import requests
 
 from c64cast._pollthread import PollThread
 
-from . import register
+from . import _fetch, register
 from .marquee import MarqueeBase
 
 log = logging.getLogger(__name__)
@@ -92,14 +92,15 @@ class RssOverlay(MarqueeBase):
 
     def _fetch_once(self) -> None:
         try:
-            r = requests.get(self.url, timeout=5.0, headers={"User-Agent": "c64cast/1.0"})
-            r.raise_for_status()
-            titles = _extract_titles(r.content, self.max_items)
+            body = _fetch.get_body(self.url, timeout=5.0, headers={"User-Agent": "c64cast/1.0"})
+            titles = _extract_titles(body, self.max_items)
             if titles:
                 with self._lock:
                     self._titles = titles
         except requests.RequestException as e:
             log.info("rss: fetch failed (%s); keeping cached", e)
+        except _fetch.BodyLimitExceeded as e:
+            log.warning("rss: feed refused (%s); keeping cached", e)
         except ET.ParseError as e:
             log.warning("rss: parse failed (%s)", e)
         except Exception:

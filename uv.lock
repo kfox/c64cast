@@ -154,6 +154,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "py65" },
     { name = "requests" },
+    { name = "urllib3" },
 ]
 
 [package.optional-dependencies]
@@ -269,6 +270,7 @@ requires-dist = [
     { name = "rich", marker = "extra == 'logging'", specifier = ">=15.0.0,<16" },
     { name = "sounddevice", marker = "extra == 'all'", specifier = ">=0.5.5,<0.6" },
     { name = "sounddevice", marker = "extra == 'mic'", specifier = ">=0.5.5,<0.6" },
+    { name = "urllib3", specifier = ">=2.2,<3" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.51.0,<1" },
     { name = "uvicorn", marker = "extra == 'control'", specifier = ">=0.51.0,<1" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.51.0,<1" },

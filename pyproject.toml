@@ -75,6 +75,7 @@ dependencies = [
     "opencv-python>=5.0.0.93,<6",
     "py65>=1.2.0,<2",
     "requests>=2.34.2,<3",
+    "urllib3>=2.2,<3",
 ]
 
 [project.optional-dependencies]
