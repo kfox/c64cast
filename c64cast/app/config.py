@@ -3056,10 +3056,12 @@ def _read_toml(path: str | os.PathLike[str], what: str) -> dict[str, Any]:
     except PermissionError as e:
         raise ConfigError(f"Could not read {what} {path}: {e}") from e
     except UnicodeDecodeError as e:
+        # Not chained: the decoder's message quotes the byte, and a logged
+        # traceback (serve._looks_provisioned) would carry it with the cause.
         raise ConfigError(
             f"Could not read {what} {path}: it is not UTF-8 text ({e.reason} at byte "
             f"{e.start}). TOML files have to be saved as UTF-8."
-        ) from e
+        ) from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(_format_toml_error(str(path), e)) from e
 

@@ -1205,6 +1205,19 @@ class MachineSettingsTest(unittest.TestCase):
                     loader(path)
             self.assertIn(path, str(ctx.exception), loader.__name__)
 
+    def test_a_logged_traceback_of_a_non_utf8_settings_file_quotes_no_byte(self):
+        # serve._looks_provisioned logs the whole traceback, and the decoder's
+        # own message names the byte it choked on: a byte of whatever value it
+        # sits in, the DMA password included.
+        from c64cast.app import serve
+
+        with open(self._path, "wb") as f:
+            f.write('[ultimate64]\ndma_password = "h\xe9"\n'.encode("latin-1"))
+        with self._env(), self.assertLogs("c64cast", "ERROR") as logs:
+            serve._looks_provisioned()
+        self.assertIn(self._path, logs.output[0])
+        self.assertNotIn("0xe9", logs.output[0])
+
     def test_unknown_key_warns_but_loads(self):
         self._write_settings('[ultimate64]\nurl = "http://m.lan"\nbogus_key = 1\n')
         with self._env():
