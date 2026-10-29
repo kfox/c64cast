@@ -406,6 +406,44 @@ class RunSessionStopHandlerGapTest(unittest.TestCase):
             handler(signal.SIGTERM, None)
 
 
+class HardwareCommandSigtermTest(unittest.TestCase):
+    """--dump-char-rom and --calibrate-dac reset or restore the machine in a
+    `finally`. SIGTERM's default disposition ends the process without running
+    it, leaving the dump stub parked or the calibration's raised mixer volume
+    and swapped SID models on the machine."""
+
+    def _handler_during(self, flag: str, command: str) -> object:
+        import signal
+
+        from _fakes import quiet_logging
+
+        from c64cast.app import cli
+
+        seen: list[object] = []
+
+        def run(*_a, **_k):
+            seen.append(signal.getsignal(signal.SIGTERM))
+            return 0
+
+        before = signal.getsignal(signal.SIGTERM)
+        with unittest.mock.patch.object(cli, command, side_effect=run), quiet_logging():
+            self.assertEqual(cli.main([flag, "-u", "u64://198.51.100.1"]), 0)
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+        return seen[0]
+
+    def test_a_sigterm_during_a_char_rom_dump_unwinds_it(self):
+        import signal
+
+        handler = self._handler_during("--dump-char-rom", "run_dump_char_rom")
+        self.assertIs(handler, signal.default_int_handler)
+
+    def test_a_sigterm_during_a_dac_calibration_unwinds_it(self):
+        import signal
+
+        handler = self._handler_during("--calibrate-dac", "run_calibrate_dac")
+        self.assertIs(handler, signal.default_int_handler)
+
+
 class RunSessionExitStatusTest(unittest.TestCase):
     def _exit_status(self, *failed_to_start: bool) -> int:
         from c64cast.app import cli
