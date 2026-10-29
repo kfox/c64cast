@@ -103,19 +103,19 @@ def cmd_shoot(args) -> int:
     import cv2
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    argv = [d.python_exe(), "-m", "c64cast"]
+    argv: list[str] = []
     if args.config:
         argv += ["--config", args.config]
     argv += args.media
     d.resolve_capture(args.device)
 
     log = OUT_DIR / f"{args.label}.log"
-    print(f"[run] {' '.join(argv[2:])}  (log -> {log})")
+    print(f"[run] c64cast {' '.join(argv)}  (log -> {log})")
     written: list[Path] = []
     cap = None
     try:
         with open(log, "w") as fh:
-            app = subprocess.Popen(argv, cwd=REPO_ROOT, stdout=fh, stderr=subprocess.STDOUT)
+            app = d.c64cast_popen(argv, cwd=REPO_ROOT, stdout=fh, stderr=subprocess.STDOUT)
             t0 = time.monotonic()
             try:
                 cap = d.open_capture(args.device)

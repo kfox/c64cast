@@ -78,8 +78,8 @@ def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: floa
     print(f"[{mode_name.upper()}] launching c64cast with {cfg}")
     print(f"{'=' * 70}")
 
-    app = subprocess.Popen(
-        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url],
+    app = d.c64cast_popen(
+        ["--config", str(cfg), "--url", url],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

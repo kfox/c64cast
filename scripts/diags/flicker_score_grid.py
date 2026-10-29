@@ -491,8 +491,8 @@ def show_page(
     label = "calibration" if n == 0 else f"page {n}/{total}"
     print(f"\n[{label}] launching …")
     with open(log, "w") as lf:
-        proc = subprocess.Popen(
-            [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-v"],
+        proc = d.c64cast_popen(
+            ["--config", str(cfg), "--url", url, "-v"],
             stdout=lf,
             stderr=subprocess.STDOUT,
             env=dict(os.environ),

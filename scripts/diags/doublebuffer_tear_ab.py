@@ -249,11 +249,8 @@ def run_phase(
     time.sleep(_SETTLE_S)
     print(f"[{label}] launching c64cast …")
     with open(log, "w") as lf:
-        proc = subprocess.Popen(
+        proc = d.c64cast_popen(
             [
-                d.python_exe(),
-                "-m",
-                "c64cast",
                 "--config",
                 str(cfg),
                 "--url",

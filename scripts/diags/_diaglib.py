@@ -5,8 +5,9 @@ hardware defaults, and the U64 REST shims are solved once instead of being
 re-derived (often wrongly) in each one-off script. The recurring pain points
 this module exists to kill:
 
-* **Project home.** ``import c64cast`` must work no matter what the cwd is.
-  Importing this module inserts the repo root onto ``sys.path``.
+* **Project home.** ``import c64cast`` must work no matter what the cwd is,
+  and must find this checkout's code. Importing this module inserts the repo
+  root onto ``sys.path``, and ``c64cast_popen`` starts the app on it too.
 * **Stable output paths.** Captures land under ``scripts/diags/out/`` (git
   ignored), not a coin-flip between ``/tmp`` and ``/private/tmp``.
 * **Hardware indices drift.** The cv2 camera indices, the avfoundation audio
@@ -24,11 +25,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "scripts" / "diags" / "out"
@@ -489,12 +491,25 @@ def refind_sd_audio_input(audio: AudioInput) -> int:
 
 
 def python_exe() -> str:
-    """The interpreter running this tool — use it to spawn ``-m c64cast``
-    so the subprocess gets the same ``.venv`` rather than a stray system
-    Python — mise sets ``UV_PYTHON`` to the bare toolchain interpreter, so a
-    subprocess launched any other way can miss the project's installed
-    extras and report them as unavailable."""
+    """The interpreter running this tool, so a subprocess gets the same
+    ``.venv`` rather than a stray system Python — mise sets ``UV_PYTHON`` to
+    the bare toolchain interpreter, so a subprocess launched any other way can
+    miss the project's installed extras and report them as unavailable."""
     return sys.executable
+
+
+def c64cast_popen(app_args: list[str], **popen_kwargs: Any) -> subprocess.Popen[bytes]:
+    """Start ``python -m c64cast *app_args`` on this checkout's code.
+
+    ``-m`` puts the working directory first on ``sys.path``, ahead of the
+    editable install, so a run started from another checkout ran that
+    checkout's c64cast. ``-P`` leaves the working directory off, and
+    ``PYTHONPATH`` puts this one first; relative paths in ``app_args`` still
+    resolve against the caller's directory."""
+    env = dict(popen_kwargs.pop("env", None) or os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(REPO_ROOT), env.get("PYTHONPATH")) if p)
+    argv = [python_exe(), "-P", "-m", "c64cast", *app_args]
+    return subprocess.Popen(argv, env=env, **popen_kwargs)
 
 
 def rest_request(method: str, url: str, **kwargs):
