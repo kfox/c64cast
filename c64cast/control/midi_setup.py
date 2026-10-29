@@ -283,6 +283,14 @@ def _bind_knobs(q: Any, knobs: list[tuple[int, bool]]) -> list[dict[str, Any]]:
     return out
 
 
+def _parse_index(raw: str) -> int | None:
+    try:
+        index = int(raw)
+    except ValueError:
+        return None
+    return index if index >= 0 else None
+
+
 def _learn_scene_jumps(q: Any, port: Any) -> list[dict[str, Any]]:
     if not q.confirm("Learn scene-jump pads?", default=False).ask():
         return []
@@ -302,10 +310,9 @@ def _learn_scene_jumps(q: Any, port: Any) -> list[dict[str, Any]]:
         scene_raw = q.text("    jump to scene index (0-based)", default="0").ask()
         if scene_raw is None:
             continue
-        try:
-            scene = int(scene_raw)
-        except ValueError:
-            print("    (not a number — skipped)")
+        scene = _parse_index(scene_raw)
+        if scene is None:
+            print("    (not a scene index — skipped)")
             continue
         out.append(build_jump_entry(kind, number, scene))
         print(f"    learned {kind} {number} → jump scene {scene}")
@@ -392,10 +399,11 @@ def _review(q: Any, mappings: list[dict[str, Any]]) -> list[dict[str, Any]] | No
         idx = q.text("Remove which index?", default="0").ask()
         if idx is None:
             continue
-        try:
-            mappings.pop(int(idx))
-        except (ValueError, IndexError):
+        index = _parse_index(idx)
+        if index is None or index >= len(mappings):
             print("  (bad index)")
+            continue
+        mappings.pop(index)
 
 
 def run_setup() -> int:
