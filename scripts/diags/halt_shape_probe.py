@@ -248,6 +248,10 @@ def store_timing(be, args) -> int:
     try:
         setup(be, args.system)
         be.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", store_timing_routine())
+        # A TeensyROM backend slices only while a consumer is noted. No store
+        # is passed: the twin never writes $D418, so a lock waiting on that
+        # store would never see it.
+        be.note_nmi_consumer(True)
         for trial in range(args.trials):
             log = store_timing_trial(
                 be, latch, payload=payload, write_rate=args.write_rate_timing, secs=secs
@@ -265,6 +269,7 @@ def store_timing(be, args) -> int:
             )
     finally:
         be.write_regs(f"{CIA2.ICR:04X}", 0x7F, 0x00, 0x00)
+        be.note_nmi_consumer(False)
         be.silence_sid()
         be.reset()
         be.close()
