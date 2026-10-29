@@ -26,7 +26,7 @@ avfoundation_capture_drops_samples memory). No REST polling of the C64 during
 capture (that can wedge the unit — no_rapid_u64_reads_during_capture memory).
 
     scripts/diags/nmi_rate_sweep_ab.py                       # default sweep, mhires
-    scripts/diags/nmi_rate_sweep_ab.py --rates 11600 13000 13500 --display petscii
+    scripts/diags/nmi_rate_sweep_ab.py --rates 11600 12500 12800 --display petscii
     scripts/diags/nmi_rate_sweep_ab.py --seconds 25 --clip assets/videos/dsp_test_music.mp4
 
 Makes sound on the real U64. Resets the machine on exit unless --no-reset.
@@ -46,7 +46,7 @@ import _diaglib as d
 from nmi_pitch_ab import CAP_SR, analyze  # noqa: E402
 
 DEFAULT_CLIP = "assets/videos/dsp_test_music.mp4"
-DEFAULT_RATES = (11600, 12000, 13000, 13500)
+DEFAULT_RATES = (11600, 12000, 12500, 12800)
 
 
 def _write_config(out: Path, clip: str, rate: int, display: str) -> Path:
