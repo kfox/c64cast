@@ -295,9 +295,6 @@ class LogDeclaredAudioTest(unittest.TestCase):
     from [hardware].host_sid_model, and the NTSC/PAL assumption is stated once
     per run."""
 
-    def setUp(self):
-        sr._assumed_model_logged = False
-
     def test_mismatch_warns_without_a_config_api(self):
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
             sr.log_resolved_audio(_no_config_api("6581"), (0xD400,), ("8580",))
@@ -320,6 +317,14 @@ class LogDeclaredAudioTest(unittest.TestCase):
             sr.log_resolved_audio(api, (0xD400,), ("6581",))
         assumptions = [r for r in cm.records if "convention" in r.getMessage()]
         self.assertEqual(len(assumptions), 1)
+
+    def test_a_second_backend_in_the_same_process_is_told_again(self):
+        # A daemon's next session opens a backend of its own.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            for _ in range(2):
+                sr.log_resolved_audio(_no_config_api("6581", assumed=True), (0xD400,), ("6581",))
+        assumptions = [r for r in cm.records if "convention" in r.getMessage()]
+        self.assertEqual(len(assumptions), 2)
 
     def test_undeclared_model_warns_rather_than_informs(self):
         # Every model verdict on such a link rests on the NTSC/PAL guess, so the
@@ -359,10 +364,6 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
     names the snooping side, its filter curve as the model, and its mixer
     level/pan — with the declared host-SID verdict appended, because the host
     machine's own SID plays the tune too, on its own output."""
-
-    def setUp(self):
-        sr._assumed_model_logged = False
-        sr._output_split_logged = False
 
     def _api(self, *, host_model: str | None = None, curve: str = "6581") -> FakeAPI:
         from dataclasses import replace
@@ -437,6 +438,14 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
             sr.log_resolved_audio(api, (0xD400,), ("8580",))
         said = sum("not a failing SID" in r.getMessage() for r in cm.records)
         self.assertEqual(said, 1)
+
+    def test_output_split_guidance_reaches_a_second_backend(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            for _ in range(2):
+                api = self._api(host_model="6581", curve="8580")
+                sr.log_resolved_audio(api, (0xD400,), ("8580",))
+        said = sum("not a failing SID" in r.getMessage() for r in cm.records)
+        self.assertEqual(said, 2)
 
     def test_no_split_guidance_when_the_emulations_are_wrong_too(self):
         # Both routes wrong means the problem is configuration; pointing at a
@@ -534,9 +543,6 @@ class DeclaredChipsThroughLogTest(unittest.TestCase):
     """log_resolved_audio on a link that can't read SID state, for a machine
     whose chips are declared per chip rather than by a single model."""
 
-    def setUp(self):
-        sr._assumed_model_logged = False
-
     @staticmethod
     def _api(chips, host_model="auto-ish", assumed=False):
         from c64cast.hw.backend import HardwareProfile
@@ -580,11 +586,6 @@ class UnplaceableChipsWarningTest(unittest.TestCase):
     """The multi-SID-tune-on-a-single-SID-machine warning: fires with no
     declaration at all, because that is the configuration a mistaken tune pick
     is likeliest to arrive under."""
-
-    def setUp(self):
-        sr._unplaceable_logged = False
-        sr._output_split_logged = False
-        sr._assumed_model_logged = False
 
     @staticmethod
     def _api(*, chips=(), host_model=None, sid_config=False) -> FakeAPI:
@@ -649,14 +650,14 @@ class UnplaceableChipsWarningTest(unittest.TestCase):
         self.assertIsNotNone(self._warning(api, (0xD400, 0xD420)))
         self.assertIsNone(self._warning(api, (0xD400, 0xD420)))
 
+    def test_stated_again_to_a_second_backend(self):
+        self.assertIsNotNone(self._warning(self._api(), (0xD400, 0xD420)))
+        self.assertIsNotNone(self._warning(self._api(), (0xD400, 0xD420)))
+
 
 class UnplaceableChipsOnEmuSurfaceTest(unittest.TestCase):
     """The same warning on a U2+, where the emulated SIDs do play the tune as
     authored and only the C64's own output collapses."""
-
-    def setUp(self):
-        sr._unplaceable_logged = False
-        sr._output_split_logged = False
 
     @staticmethod
     def _api(*, host_model: str | None = None, curve: str = "6581") -> FakeAPI:
