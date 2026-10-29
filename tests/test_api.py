@@ -943,6 +943,15 @@ class LaunchProgramTest(unittest.TestCase):
         self.post.assert_not_called()
         self.dmarun.assert_not_called()
 
+    def test_prg_loading_past_ffff_is_refused_before_anything_is_sent(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "loads past"):
+                self.api.launch_program(self._write(tmp, "game.prg", b"\x00\xc0" + bytes(0x4001)))
+        self.dmarun.assert_not_called()
+        self.post.assert_not_called()
+
     def test_post_failure_reraises(self):
         import tempfile
 
@@ -1447,6 +1456,15 @@ class ReadSideTest(unittest.TestCase):
             "Ultimate 64-II (firmware 3.15a, FPGA 125, core 1.50)",
         )
 
+    def test_describe_device_cannot_forge_a_log_line(self):
+        self.get.return_value.json.return_value = {
+            "product": "Ultimate 64\r\nERROR:c64cast:forged\x1b[2J",
+            "firmware_version": "3.15a\n",
+        }
+        self.assertEqual(
+            self.api.describe_device(), "Ultimate 64ERROR:c64cast:forged[2J (firmware 3.15a)"
+        )
+
     def test_describe_device_omits_fields_the_device_did_not_report(self):
         self.get.return_value.json.return_value = {"product": "C64 Ultimate"}
         self.assertEqual(self.api.describe_device(), "C64 Ultimate")
@@ -1899,6 +1917,19 @@ class SendInputTest(unittest.TestCase):
         with self.assertLogs("c64cast.hw.api", level="WARNING"):
             self.assertIsNone(self.api.send_input(mi.text_to_events("A" * 65)))
         self.assertEqual(self.post.call_count, 2)
+
+    def test_refusal_body_cannot_forge_a_log_line(self):
+        from c64cast.hw import machine_input as mi
+
+        self.post.return_value = MagicMock(
+            status_code=500, text="busy\r\nERROR:c64cast:forged\x1b[2J"
+        )
+        with self.assertLogs("c64cast.hw.api", level="WARNING") as logs:
+            self.assertIsNone(self.api.send_input([mi.RELEASE_ALL]))
+        message = logs.records[0].getMessage()
+        self.assertIn("busyERROR:c64cast:forged[2J", message)
+        self.assertNotIn("\n", message)
+        self.assertNotIn("\x1b", message)
 
     def test_input_state_returns_the_reported_state(self):
         get = patch.object(self.api.session, "get").start()

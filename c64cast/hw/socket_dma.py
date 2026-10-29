@@ -32,7 +32,7 @@ import weakref
 from collections import deque
 from collections.abc import Iterator
 
-from .backend import LinkError
+from .backend import LinkError, printable_device_text
 
 log = logging.getLogger(__name__)
 
@@ -391,8 +391,7 @@ class SocketDMAClient:
         # The IDENTIFY payload is whatever answers on host:port, up to 255
         # bytes of it, and is logged verbatim here and by callers — filter to
         # printable characters and cap it so it can't forge --log-file lines.
-        text = payload.decode("utf-8", errors="replace")
-        return "".join(c for c in text if c.isprintable())[:64]
+        return printable_device_text(payload.decode("utf-8", errors="replace"))[:64]
 
     def close(self) -> None:
         with self._lock:

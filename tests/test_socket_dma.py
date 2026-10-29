@@ -421,13 +421,11 @@ class WireBoundsTest(unittest.TestCase):
 
 class IdentifySanitizationTest(unittest.TestCase):
     def test_control_bytes_are_stripped_and_length_is_capped(self):
-        dirty = "X" * 80 + "\n\r\x1b[31mFAKE ERROR"
+        dirty = "U64\n\r\x1b[31mFAKE ERROR" + "X" * 80
         reply = dirty.encode("utf-8")
         fake = FakeSocket([bytes([len(reply)]) + reply])
         c = _client_with(fake)
-        self.assertNotIn("\n", c.product)
-        self.assertNotIn("\r", c.product)
-        self.assertLessEqual(len(c.product), 64)
+        self.assertEqual(c.product, ("U64[31mFAKE ERROR" + "X" * 80)[:64])
 
 
 class CumulativeReadDeadlineTest(unittest.TestCase):

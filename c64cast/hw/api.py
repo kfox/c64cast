@@ -54,6 +54,8 @@ from .backend import (
     BackendSetupError,
     BufferedWriteBackend,
     HardwareProfile,
+    printable_device_text,
+    read_program_file,
 )
 from .c64 import (
     CIA1,
@@ -1919,7 +1921,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         ]
         if versions:
             parts.append(f"({', '.join(versions)})")
-        return " ".join(parts)
+        return printable_device_text(" ".join(parts))
 
     def get_config_categories(self, *, timeout: float = 3.0) -> list[str]:
         """The config category *names* this device's firmware exposes
@@ -2037,7 +2039,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 return None
             if r.status_code != 200:
                 self._input_errors.warn(
-                    "input batch refused (HTTP %d): %s", r.status_code, r.text[:200]
+                    "input batch refused (HTTP %d): %s",
+                    r.status_code,
+                    printable_device_text(r.text[:200]),
                 )
                 return None
             try:
@@ -2163,16 +2167,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         (LauncherScene.setup) needs to know the launch never happened so
         it can advance instead of idling on a black screen.
         """
-        ext = os.path.splitext(path)[1].lower()
-        if ext not in (".crt", ".prg"):
-            raise ValueError(
-                f"launch_program: unsupported extension {ext!r} for {path!r} "
-                f"(expected .prg or .crt)"
-            )
-
+        ext, payload = read_program_file(path)
         mark = self.write_loss_mark()
-        with open(path, "rb") as fh:
-            payload = fh.read()
 
         self._flush_or_raise("launch_program", mark)
         self.invalidate_cache()
