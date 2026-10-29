@@ -903,6 +903,12 @@ class OBSStatusTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 obs.OBSStatusOverlay()
 
+    def test_status_before_the_first_poll_is_plain_screen_codes(self):
+        ov = _obs_overlay()
+        lines = ov.compute_strings(t=0.0)
+        assert lines is not None
+        self.assertEqual(ascii_to_screen(lines[0]), ascii_to_screen("OBS ..."))
+
     def test_poll_once_formats_scene_and_dropped(self):
         ov = _obs_overlay(show_dropped=True)
         ov._connect = lambda: _FakeOBSClient(scene="Main", skipped=2, render_skipped=3)

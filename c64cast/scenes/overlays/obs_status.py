@@ -75,7 +75,7 @@ class OBSStatusOverlay(CornerTextOverlay):
         self.password = password
         self.show_dropped = bool(show_dropped)
         self.poll_interval = float(refresh_s)
-        self._lines: list[str] = ["OBS …"]
+        self._lines: list[str] = ["OBS ..."]
         self._lines_lock = threading.Lock()
         self._poll = PollThread(self._worker, name="obs-status", manual=True, join_timeout=1.0)
         self._client = None
