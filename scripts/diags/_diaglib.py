@@ -44,9 +44,10 @@ if str(REPO_ROOT) not in sys.path:
 def toml_string(value: object) -> str:
     """`str(value)` as a quoted TOML basic string, for a path or other free
     text spliced into a generated config. A Windows path's backslashes
-    would otherwise read as escapes; JSON's string escapes are a subset of
-    TOML's."""
-    return json.dumps(str(value))
+    would otherwise read as escapes. JSON's `\\uXXXX` is TOML's only where
+    it is not half of a surrogate pair, so non-ASCII stays literal; TOML
+    also wants DEL escaped, which JSON leaves literal."""
+    return json.dumps(str(value), ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def out_dir() -> Path:
