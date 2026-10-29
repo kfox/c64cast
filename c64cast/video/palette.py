@@ -820,6 +820,19 @@ _FORCE_PALETTE_PER_FRAME = 2000  # pixels sampled per added frame/image
 _FORCE_PALETTE_SCAN_WIDTH = _AUTO_FIT_SCAN_WIDTH
 
 
+def _frame_lab_samples(img_bgr: np.ndarray) -> np.ndarray:
+    """One frame's Lab pixels, downscaled to the scan width and evenly
+    subsampled to at most _FORCE_PALETTE_PER_FRAME."""
+    h, w = img_bgr.shape[:2]
+    if w > _FORCE_PALETTE_SCAN_WIDTH:
+        new_h = max(1, h * _FORCE_PALETTE_SCAN_WIDTH // w)
+        img_bgr = cv2.resize(
+            img_bgr, (_FORCE_PALETTE_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA
+        )
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB).reshape(-1, 3)
+    return lab[:: -(-lab.shape[0] // _FORCE_PALETTE_PER_FRAME)]
+
+
 def _hungarian(cost: np.ndarray) -> np.ndarray:
     """Min-cost perfect assignment on a SQUARE cost matrix.
 
@@ -1001,19 +1014,7 @@ class ColorMapAccumulator:
         Past _FORCE_PALETTE_SAMPLE_CAP every block, held and incoming, is
         thinned by the same factor, so a long scan is weighted evenly across
         its frames instead of by arrival order."""
-        h, w = img_bgr.shape[:2]
-        if w > _FORCE_PALETTE_SCAN_WIDTH:
-            new_h = max(1, h * _FORCE_PALETTE_SCAN_WIDTH // w)
-            small = cv2.resize(
-                img_bgr, (_FORCE_PALETTE_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA
-            )
-        else:
-            small = img_bgr
-        lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).reshape(-1, 3)
-        n = lab.shape[0]
-        if n > _FORCE_PALETTE_PER_FRAME:
-            stride = max(1, n // _FORCE_PALETTE_PER_FRAME)
-            lab = lab[::stride]
+        lab = _frame_lab_samples(img_bgr)
         self._samples.append(lab[:: self._decimation].astype(np.float32))
         self._total += self._samples[-1].shape[0]
         while self._total > _FORCE_PALETTE_SAMPLE_CAP:
@@ -1138,20 +1139,7 @@ class RollingColorMapAccumulator:
     def add(self, img_bgr: np.ndarray) -> None:
         """Fold one frame's pixels into the rolling Lab window (downscale → Lab →
         subsample to ≤ _FORCE_PALETTE_PER_FRAME points; the deque bounds total)."""
-        h, w = img_bgr.shape[:2]
-        if w > _FORCE_PALETTE_SCAN_WIDTH:
-            new_h = max(1, h * _FORCE_PALETTE_SCAN_WIDTH // w)
-            small = cv2.resize(
-                img_bgr, (_FORCE_PALETTE_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA
-            )
-        else:
-            small = img_bgr
-        lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).reshape(-1, 3)
-        n = lab.shape[0]
-        if n > _FORCE_PALETTE_PER_FRAME:
-            stride = max(1, n // _FORCE_PALETTE_PER_FRAME)
-            lab = lab[::stride]
-        self._blocks.append(lab.astype(np.float32))
+        self._blocks.append(_frame_lab_samples(img_bgr).astype(np.float32))
 
     def clear(self) -> None:
         """Drop the sample window + warm-start/hysteresis state (shot-cut reset)."""
