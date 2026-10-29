@@ -32,6 +32,7 @@ except ImportError:
 
 from _fakes import frozen_throttles, logged_exception_type
 
+from c64cast import _midi
 from c64cast.app import config as cfgmod
 from c64cast.control import midi_control
 from c64cast.control.midi_control import (
@@ -385,9 +386,9 @@ class UnpluggedControllerTests(_MidiControlTestCase):
         return listener, pl
 
     def _watch(self, listener, names) -> None:
-        with mock.patch.object(midi_control, "mido") as fake:
+        with mock.patch.object(_midi, "mido") as fake:
             fake.get_input_names.return_value = names
-            listener._watch_port()
+            listener._port_watch.check()
 
     def test_a_held_direction_is_released_when_the_port_disappears(self):
         listener, pl = self._listener()
@@ -444,8 +445,8 @@ class UnpluggedControllerTests(_MidiControlTestCase):
         names = [self.PORT]
         released = threading.Event()
         with (
-            mock.patch.object(midi_control, "mido") as fake,
-            mock.patch.object(midi_control, "_PORT_WATCH_INTERVAL_S", 0.01),
+            mock.patch.object(_midi, "mido") as fake,
+            mock.patch.object(_midi, "PORT_WATCH_INTERVAL_S", 0.01),
             self.assertLogs("c64cast.control.midi_control", level="WARNING"),
         ):
             fake.get_input_names.side_effect = lambda: list(names)

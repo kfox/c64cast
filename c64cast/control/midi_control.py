@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard
 
-from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port, poll_pending
+from c64cast._midi import MIDI_AVAILABLE, PortWatch, mido, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast._wire_log import LogThrottle
 from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
@@ -125,11 +125,6 @@ _MMC_COMMANDS = frozenset({0x01, 0x02, 0x04, 0x05, 0x06, 0x09})
 # module receives is a plain in-process Event/attribute write, not a DMA
 # write, so there's no burst risk to throttle against.
 _POLL_INTERVAL_S = 0.001
-
-# rtmidi never reports an unplugged controller: `poll()` reads a queue nothing
-# fills any more. The port dropping out of the input list is the only sign, and
-# listing the ports costs a few ms, so it is checked on its own thread.
-_PORT_WATCH_INTERVAL_S = 1.0
 
 
 @dataclass(frozen=True)
@@ -525,13 +520,14 @@ class MidiControlListener:
         self._feedback_poll = PollThread(
             self._feedback_reader, name="midi-led-feedback", manual=True, join_timeout=1.0
         )
-        self._port_watch = PollThread(
-            self._watch_port,
+        self._port_watch = PortWatch(
+            lambda: self._opened_port_name,
+            self._release_held_joysticks,
+            label="midi_control",
+            releases="held joystick directions",
+            logger=log,
             name="midi-port-watch",
-            period=_PORT_WATCH_INTERVAL_S,
-            run_first=False,
         )
-        self._port_present = True
         # (id(playlist), port, direction) -> (playlist, the scene it was pressed on)
         self._held_joystick: dict[tuple[int, int, str], tuple[Playlist, Any]] = {}
         self._held_joystick_lock = threading.Lock()
@@ -873,26 +869,6 @@ class MidiControlListener:
                 self._held_joystick[key] = (pl, pl.current)
             else:
                 self._held_joystick.pop(key, None)
-
-    def _watch_port(self) -> None:
-        assert mido is not None
-        present = self._opened_port_name in mido.get_input_names()
-        if present == self._port_present:
-            return
-        self._port_present = present
-        if present:
-            log.info(
-                "midi_control: MIDI port %r is listed again; restart c64cast if its "
-                "pads do nothing",
-                self._opened_port_name,
-            )
-            return
-        log.warning(
-            "midi_control: MIDI port %r is gone (controller unplugged?); releasing "
-            "held joystick directions — restart c64cast to reconnect",
-            self._opened_port_name,
-        )
-        self._release_held_joysticks()
 
     def _release_held_joysticks(self) -> None:
         with self._held_joystick_lock:

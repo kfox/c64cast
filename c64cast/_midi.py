@@ -19,8 +19,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
+
+from c64cast._pollthread import PollThread
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +63,62 @@ def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:
     port = mido.open_input(match)
     log.info("%s: opened MIDI port %r", label, match)
     return port, match
+
+
+# rtmidi never reports an unplugged controller: `poll()` reads a queue nothing
+# fills any more. The port dropping out of the input list is the only sign, and
+# listing the ports costs a few ms, so it is checked on its own thread.
+PORT_WATCH_INTERVAL_S = 1.0
+
+
+class PortWatch(PollThread):
+    """Calls ``on_lost`` once when the input port ``port_name()`` names drops
+    out of ``mido.get_input_names()``, warning on ``logger`` as ``label`` that
+    it is releasing ``releases``."""
+
+    def __init__(
+        self,
+        port_name: Callable[[], str | None],
+        on_lost: Callable[[], None],
+        *,
+        label: str,
+        releases: str,
+        logger: logging.Logger,
+        name: str,
+    ) -> None:
+        super().__init__(self.check, name=name, period=PORT_WATCH_INTERVAL_S, run_first=False)
+        self._on_lost = on_lost
+        self._label = label
+        self._releases = releases
+        self._log = logger
+        self._port_name = port_name
+        self._present = True
+
+    def start(self) -> None:
+        self._present = True
+        super().start()
+
+    def check(self) -> None:
+        name = self._port_name()
+        present = name in mido.get_input_names()
+        if present == self._present:
+            return
+        self._present = present
+        if present:
+            self._log.info(
+                "%s: MIDI port %r is listed again; restart c64cast if its pads do nothing",
+                self._label,
+                name,
+            )
+            return
+        self._log.warning(
+            "%s: MIDI port %r is gone (controller unplugged?); releasing %s — "
+            "restart c64cast to reconnect",
+            self._label,
+            name,
+            self._releases,
+        )
+        self._on_lost()
 
 
 # How many already-queued messages a reader pass may retire — ~7x the busiest
