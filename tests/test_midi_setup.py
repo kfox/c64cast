@@ -341,6 +341,19 @@ class ReviewTests(unittest.TestCase):
         )
         self.assertIn("(bad index)", out.getvalue())
 
+    def test_an_index_past_the_end_or_not_a_number_removes_nothing(self):
+        for answer in ("1", "first"):
+            with self.subTest(answer=answer):
+                q = mock.MagicMock()
+                q.select.return_value.ask.side_effect = ["Remove one", "Save these"]
+                q.text.return_value.ask.return_value = answer
+                mappings = [midi_setup.build_jump_entry("note", 40, 0)]
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    reviewed = midi_setup._review(q, mappings)
+                self.assertEqual(reviewed, [midi_setup.build_jump_entry("note", 40, 0)])
+                self.assertIn("(bad index)", out.getvalue())
+
 
 class LearnSceneJumpsTests(unittest.TestCase):
     def test_a_negative_scene_index_is_reported_and_not_learned(self):
