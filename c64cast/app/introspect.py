@@ -30,7 +30,7 @@ import inspect
 import re
 import textwrap
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -614,6 +614,19 @@ def _jsonable(val: object) -> object:
     return str(val)
 
 
+def _doc_dict(doc: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for f in fields(doc):
+        val = getattr(doc, f.name)
+        if isinstance(val, tuple) and val and is_dataclass(val[0]):
+            out[f.name] = [_doc_dict(v) for v in val]
+        else:
+            out[f.name] = _jsonable(val)
+    if isinstance(doc, FieldDoc):
+        out["required"] = doc.default is REQUIRED
+    return out
+
+
 def as_dict() -> dict[str, Any]:
     """The whole introspection model as JSON-serializable data.
 
@@ -629,85 +642,12 @@ def as_dict() -> dict[str, Any]:
     colors needs the colors, and a browser deriving them from a copy of the
     palette would be a second one to keep in step."""
 
-    def field_dict(fd: FieldDoc) -> dict[str, Any]:
-        return {
-            "name": fd.name,
-            "type": fd.type,
-            "default": _jsonable(fd.default),
-            "required": fd.default is REQUIRED,
-            "help": fd.help,
-            "choices": list(fd.choices),
-            "applies_to": list(fd.applies_to),
-            "apply": fd.apply,
-            "vocabulary": fd.vocabulary,
-        }
-
-    def param_dict(pd: ParamDoc) -> dict[str, Any]:
-        return {
-            "name": pd.name,
-            "type": pd.type,
-            "default": _jsonable(pd.default),
-            "required": pd.required,
-            "help": pd.help,
-        }
-
     return {
-        "sections": [
-            {
-                "name": s.name,
-                "help": s.help,
-                "reload": s.reload,
-                "fields": [field_dict(f) for f in s.fields],
-            }
-            for s in config_sections()
-        ],
-        "scene_types": [
-            {
-                "name": s.name,
-                "help": s.help,
-                "displays": list(s.displays),
-                "fields": [field_dict(f) for f in s.fields],
-                "media_kinds": list(s.media_kinds),
-            }
-            for s in scene_types()
-        ],
-        "overlays": [
-            {
-                "name": o.name,
-                "help": o.help,
-                "params": [param_dict(p) for p in o.params],
-                "requires_petscii": o.requires_petscii,
-                "requires_audio": o.requires_audio,
-                "compatible_modes": list(o.compatible_modes),
-                "supports_bitmap_text": o.supports_bitmap_text,
-                "irq_hook_modes": list(o.irq_hook_modes),
-            }
-            for o in overlay_docs()
-        ],
-        "modes": [
-            {
-                "name": m.name,
-                "runtime_name": m.runtime_name,
-                "is_bitmapped": m.is_bitmapped,
-                "is_petscii_compatible": m.is_petscii_compatible,
-                "is_bitmap_text_compatible": m.is_bitmap_text_compatible,
-                "help": m.help,
-            }
-            for m in display_modes()
-        ],
-        "live_targets": [
-            {
-                "target": t.target,
-                "holder": t.holder,
-                "group": t.group,
-                "kind": t.kind,
-                "lo": t.lo,
-                "hi": t.hi,
-                "choices": list(t.choices),
-                "owners": list(t.owners),
-            }
-            for t in live_targets()
-        ],
+        "sections": [_doc_dict(s) for s in config_sections()],
+        "scene_types": [_doc_dict(s) for s in scene_types()],
+        "overlays": [_doc_dict(o) for o in overlay_docs()],
+        "modes": [_doc_dict(m) for m in display_modes()],
+        "live_targets": [_doc_dict(t) for t in live_targets()],
         "palette": palette_swatches(),
     }
 

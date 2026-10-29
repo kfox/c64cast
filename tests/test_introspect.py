@@ -526,6 +526,33 @@ class MediaKindTest(unittest.TestCase):
         self.assertEqual(kinds["generative"], ["sid", "audio"])
 
 
+class IntrospectionDocumentTest(unittest.TestCase):
+    """`as_dict()` is what the web console renders, so a doc field it leaves
+    out is a field no browser can see (#750)."""
+
+    def test_live_targets_carry_their_vocabulary(self):
+        targets = {t["target"]: t for t in introspect.as_dict()["live_targets"]}
+        self.assertEqual(targets["mode.border"]["vocabulary"], "c64color")
+
+    def test_every_doc_field_reaches_the_document(self):
+        doc = introspect.as_dict()
+        entries = {
+            "sections": (introspect.SectionDoc, doc["sections"]),
+            "scene_types": (introspect.SceneTypeDoc, doc["scene_types"]),
+            "overlays": (introspect.OverlayDoc, doc["overlays"]),
+            "modes": (introspect.ModeDoc, doc["modes"]),
+            "live_targets": (introspect.LiveTargetDoc, doc["live_targets"]),
+            "fields": (introspect.FieldDoc, doc["sections"][0]["fields"]),
+            "params": (
+                introspect.ParamDoc,
+                next(o["params"] for o in doc["overlays"] if o["params"]),
+            ),
+        }
+        for key, (doc_type, rows) in entries.items():
+            expected = {f.name for f in dataclasses.fields(doc_type)}
+            self.assertLessEqual(expected, set(rows[0]), key)
+
+
 class PaletteSwatchTest(unittest.TestCase):
     """The swatch picker's colors are served rather than copied into the
     browser — a second palette to keep in step with the first is the bug this
