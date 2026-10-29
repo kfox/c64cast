@@ -34,6 +34,16 @@ except ImportError:
     OBSWS_AVAILABLE = False
 
 
+def _disconnect(client) -> None:
+    try:
+        # obsws-python's ReqClient has .disconnect() under both v1.x and v2.x.
+        close = getattr(client, "disconnect", None) or getattr(client, "close", None)
+        if close is not None:
+            close()
+    except Exception:
+        log.debug("OBS disconnect failed", exc_info=True)
+
+
 @register("obs_status")
 class OBSStatusOverlay(CornerTextOverlay):
     """Show current OBS scene + dropped-frames count in a screen corner.
@@ -78,7 +88,6 @@ class OBSStatusOverlay(CornerTextOverlay):
         self._lines: list[str] = ["OBS ..."]
         self._lines_lock = threading.Lock()
         self._poll = PollThread(self._worker, name="obs-status", manual=True, join_timeout=1.0)
-        self._client = None
 
     def _connect(self):
         assert _obsws is not None
@@ -89,16 +98,14 @@ class OBSStatusOverlay(CornerTextOverlay):
             timeout=2.0,
         )
 
-    def _poll_once(self) -> list[str]:
-        if self._client is None:
-            self._client = self._connect()
-        scene_resp = self._client.get_current_program_scene()
+    def _poll_once(self, client) -> list[str]:
+        scene_resp = client.get_current_program_scene()
         scene = getattr(scene_resp, "current_program_scene_name", None) or getattr(
             scene_resp, "scene_name", "?"
         )
         lines = [str(scene).upper()[:14]]
         if self.show_dropped:
-            stats = self._client.get_stats()
+            stats = client.get_stats()
             dropped = (getattr(stats, "output_skipped_frames", 0) or 0) + (
                 getattr(stats, "render_skipped_frames", 0) or 0
             )
@@ -106,20 +113,30 @@ class OBSStatusOverlay(CornerTextOverlay):
         return lines
 
     def _worker(self, stop: threading.Event) -> None:
+        # The client belongs to this thread alone: a connect still in flight
+        # when teardown's bounded join gives up lands after teardown has
+        # returned, and only this thread is left to close it.
+        client = None
         backoff = 1.0
-        while not stop.is_set():
-            try:
-                lines = self._poll_once()
-                backoff = 1.0
-                with self._lines_lock:
-                    self._lines = lines
-            except Exception as e:
-                log.debug("OBS poll failed: %s", e)
-                with self._lines_lock:
-                    self._lines = ["OBS OFFLINE"]
-                self._client = None
-                backoff = min(backoff * 2.0, 30.0)
-            stop.wait(timeout=max(self.poll_interval, backoff))
+        try:
+            while not stop.is_set():
+                try:
+                    if client is None:
+                        client = self._connect()
+                    lines = self._poll_once(client)
+                    backoff = 1.0
+                    with self._lines_lock:
+                        self._lines = lines
+                except Exception as e:
+                    log.debug("OBS poll failed: %s", e)
+                    with self._lines_lock:
+                        self._lines = ["OBS OFFLINE"]
+                    client = None
+                    backoff = min(backoff * 2.0, 30.0)
+                stop.wait(timeout=max(self.poll_interval, backoff))
+        finally:
+            if client is not None:
+                _disconnect(client)
 
     def setup(self, api, scene):
         self._poll.start()
@@ -130,16 +147,4 @@ class OBSStatusOverlay(CornerTextOverlay):
 
     def teardown(self, api, scene):
         self._poll.stop()
-        if self._client is not None:
-            try:
-                # obsws-python's ReqClient has .disconnect() under both v1.x
-                # and v2.x.
-                close = getattr(self._client, "disconnect", None)
-                if close is None:
-                    close = getattr(self._client, "close", None)
-                if close is not None:
-                    close()
-            except Exception:
-                log.debug("OBS disconnect failed", exc_info=True)
-            self._client = None
         super().teardown(api, scene)

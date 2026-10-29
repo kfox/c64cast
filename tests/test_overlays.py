@@ -1093,27 +1093,21 @@ class OBSStatusTest(unittest.TestCase):
 
     def test_poll_once_formats_scene_and_dropped(self):
         ov = _obs_overlay(show_dropped=True)
-        ov._connect = lambda: _FakeOBSClient(scene="Main", skipped=2, render_skipped=3)
-        lines = ov._poll_once()
+        lines = ov._poll_once(_FakeOBSClient(scene="Main", skipped=2, render_skipped=3))
         self.assertEqual(lines[0], "MAIN")
         self.assertEqual(lines[1], "DROP    5")  # 2 + 3 summed
 
     def test_poll_once_without_dropped(self):
         ov = _obs_overlay(show_dropped=False)
-        ov._connect = lambda: _FakeOBSClient(scene="Cam")
-        self.assertEqual(ov._poll_once(), ["CAM"])
+        self.assertEqual(ov._poll_once(_FakeOBSClient(scene="Cam")), ["CAM"])
 
     def test_worker_publishes_then_offline_on_failure(self):
-        import threading
-
         ov = _obs_overlay()
         ov._connect = lambda: _FakeOBSClient(scene="Live")
-        # One successful poll updates the cache.
-        ov._poll_once = lambda: ["LIVE", "DROP    0"]
         stop = threading.Event()
         calls = {"n": 0}
 
-        def flaky():
+        def flaky(client):
             calls["n"] += 1
             if calls["n"] == 1:
                 return ["LIVE", "DROP    0"]
@@ -1124,17 +1118,50 @@ class OBSStatusTest(unittest.TestCase):
         ov.poll_interval = 0.0
         with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
             ov._worker(stop)
-        # Final state reflects the failure → OFFLINE banner, client dropped.
         self.assertEqual(ov.compute_strings(t=0.0), ["OBS OFFLINE"])
-        self.assertIsNone(ov._client)
+
+    def test_a_connect_still_running_at_teardown_is_closed_when_it_lands(self):
+        ov = _obs_overlay()
+        client = _FakeOBSClient()
+        connecting = threading.Event()
+        peer_answers = threading.Event()
+        self.addCleanup(peer_answers.set)
+
+        def slow_connect():
+            connecting.set()
+            peer_answers.wait(10.0)
+            return client
+
+        ov._connect = slow_connect
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        self.assertTrue(connecting.wait(5.0))
+        worker = ov._poll._thread
+        assert worker is not None
+        self.addCleanup(worker.join)
+        with self.assertLogs("c64cast._pollthread", level="WARNING"):
+            ov.teardown(api=MagicMock(), scene=MagicMock())
+        peer_answers.set()
+        worker.join(5.0)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(client.disconnected)
 
     def test_teardown_disconnects_client(self):
         ov = _obs_overlay()
         client = _FakeOBSClient()
-        ov._client = client
+        polled = threading.Event()
+        ov._connect = lambda: client
+        real_poll_once = ov._poll_once
+
+        def poll_once(c):
+            polled.set()
+            return real_poll_once(c)
+
+        ov._poll_once = poll_once
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        self.assertTrue(polled.wait(5.0))
         ov.teardown(api=MagicMock(), scene=MagicMock())
+        self.assertFalse(ov._poll.is_running())
         self.assertTrue(client.disconnected)
-        self.assertIsNone(ov._client)
 
 
 if __name__ == "__main__":
