@@ -254,6 +254,25 @@ class ScrollingTextTest(unittest.TestCase):
         ov = ScrollingTextOverlay(messages=["HI"])
         self.assertEqual([(m.text, m.color) for m in ov.messages], [("HI", "white")])
 
+    def test_next_lap_starts_once_the_message_leaves_a_20_column_grid(self):
+        from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
+
+        class _TwentyColumns:
+            cols, rows = 20, 25
+
+            def paint_run(self, row, col, codes, fg, bg, *, draw_chars=True):
+                self.codes = bytes(codes)
+
+        ov = ScrollingTextOverlay(
+            messages=[{"text": "AB", "pre_delay_s": 0.0}], row=0, speed_cells_per_s=10.0
+        )
+        ov.start_time = 100.0
+        surface = _TwentyColumns()
+        # "AB" leaves the 20-column row after (2 + 20) / 10 s; 0.15 s into the
+        # second lap the first glyph has entered at the right edge.
+        ov.compose({"text": surface}, scene=MagicMock(), t=100.0 + 2.2 + 0.15)
+        self.assertEqual(surface.codes[19], ascii_to_screen("A")[0])
+
     def test_bad_row_raises(self):
         from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
 

@@ -90,29 +90,29 @@ class ScrollingTextOverlay(Overlay):
         for m in self.messages:
             color_idx = resolve_color(m.color, default=C64_COLORS["white"])
             self._encoded.append((ascii_to_screen(m.text), color_idx))
-        self._durations = [self._duration_for(m) for m in self.messages]
         self.start_time = 0.0
 
-    def _duration_for(self, m: ScrollMessage) -> float:
+    def _duration_for(self, m: ScrollMessage, width: int) -> float:
         if m.style == "static":
             return m.pre_delay_s + m.pause_time_s
-        # text travels (text_len + SCREEN_W) cells total at self.speed
-        travel_cells = len(m.text) + SCREEN_W
+        travel_cells = len(m.text) + width
         scroll_t = travel_cells / max(self.speed, 0.1)
         return m.pre_delay_s + scroll_t
 
     def setup(self, api, scene):
         self.start_time = time.time()
 
-    def _active_message(self, elapsed: float):
+    def _active_message(self, elapsed: float, width: int):
         """Walk the message list looking for which one is active now and how
-        many seconds into it. Loops forever. Returns (msg, idx, local_t)."""
-        total = sum(self._durations)
+        many seconds into it on a `width`-cell row. Loops forever. Returns
+        (msg, idx, local_t)."""
+        durations = [self._duration_for(m, width) for m in self.messages]
+        total = sum(durations)
         if total <= 0:
             return self.messages[0], 0, 0.0
         t = elapsed % total
         acc = 0.0
-        for i, d in enumerate(self._durations):
+        for i, d in enumerate(durations):
             if t < acc + d:
                 return self.messages[i], i, t - acc
             acc += d
@@ -153,7 +153,7 @@ class ScrollingTextOverlay(Overlay):
         surface = buffers["text"]
         width = surface.cols  # 40 char/hires, 20 mhires (double-wide)
         elapsed = t - self.start_time
-        msg, idx, local_t = self._active_message(elapsed)
+        msg, idx, local_t = self._active_message(elapsed, width)
         row = self._row_for(msg, idx, local_t, width)
         _, color_idx = self._encoded[idx]
         # Spaces take bg_color, so the row reads as a band behind the text.
