@@ -28,7 +28,13 @@ import time
 from collections.abc import Callable
 from functools import partial
 
-from c64cast._midi import MAX_DRAIN_WORK_S, MIDI_AVAILABLE, open_input_port, poll_pending
+from c64cast._midi import (
+    MAX_DRAIN_WORK_S,
+    MIDI_AVAILABLE,
+    PortWatch,
+    open_input_port,
+    poll_pending,
+)
 from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
 from c64cast.hw.backend import HardwareProfile
@@ -362,8 +368,17 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # Monotonic assignment counter feeding `_VoiceState.seq`.
         self._assign_seq = 0
         self._midi_port = None
+        self._opened_port_name: str | None = None
         self._reader_poll = PollThread(
             self._reader, name="midi-reader", manual=True, join_timeout=1.0
+        )
+        self._port_watch = PortWatch(
+            lambda: self._opened_port_name,
+            self._release_all_voices,
+            label="MidiScene",
+            releases="every sounding SID voice",
+            logger=log,
+            name="midi-scene-port-watch",
         )
         self._dirty = True  # force first text-row paint
 
@@ -381,7 +396,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._voice_bend: list[float] = [0.0] * SID.N_VOICES
 
     def _open_port(self):
-        self._midi_port, _ = open_input_port(self.port_name, label="MidiScene")
+        self._midi_port, self._opened_port_name = open_input_port(self.port_name, label="MidiScene")
 
     def _reader(self, stop: threading.Event):
         port = self._midi_port
@@ -492,6 +507,19 @@ class MidiScene(VoiceScopeRenderer, Scene):
             if resurrect is not None:
                 self._assign_voice(idx, resurrect, self._held_vel.get(resurrect, 100))
             self._dirty = True
+
+    def _release_all_voices(self) -> None:
+        with self._allocation_lock:
+            self._held.clear()
+            self._held_vel.clear()
+            for held, held_vel in zip(self._mt_held, self._mt_held_vel, strict=True):
+                held.clear()
+                held_vel.clear()
+            for idx, v in enumerate(self.voices):
+                if v.on and v.note is not None:
+                    v.on = False
+                    self._program_voice(idx, v.note, gate=False)
+        self._dirty = True
 
     def _assign_voice(self, idx: int, note: int, velocity: int) -> None:
         v = self.voices[idx]
@@ -857,6 +885,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._alloc_scope_buffers()
         self._open_port()
         self._reader_poll.start()
+        self._port_watch.start()
         # Advances each voice's ADSR at the video rate, so attack/decay/release
         # tails evolve on screen between MIDI events.
         self._poll = PollThread(self._tick_envelopes, period=self._poll_dt, name="midi-env")
@@ -897,6 +926,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
             ("reader poll stop", self._reader_poll.stop),
+            ("MIDI port watch stop", self._port_watch.stop),
         ]
         if port is not None:
             steps.append(("MIDI port close", port.close))
