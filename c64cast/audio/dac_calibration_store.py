@@ -282,6 +282,20 @@ def d400_owner(be: C64Backend) -> D400Owner:
     return D400_NO_SOCKET
 
 
+def _saved_record(path: Path) -> tuple[dict[str, Any], int | None]:
+    """The ``sids`` map and ``d400_socket`` already on disk at `path`, or
+    ``({}, None)`` when there is no readable schema-2 file there."""
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}, None
+    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
+        return {}, None
+    sids = raw.get("sids")
+    d400 = raw.get("d400_socket")
+    return (sids if isinstance(sids, dict) else {}), (d400 if isinstance(d400, int) else None)
+
+
 def _applicable_entry(
     cfg: Config, be: C64Backend | None, path: Path | None
 ) -> tuple[str, dict[str, Any]] | None:
@@ -290,17 +304,10 @@ def _applicable_entry(
     inapplicable file."""
     if path is None:
         path = calibration_path(cfg, be)
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
+    sids, recorded = _saved_record(path)
+    if not sids:
         return None
-    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
-        return None
-    sids = raw.get("sids")
-    if not isinstance(sids, dict) or not sids:
-        return None
-    recorded = raw.get("d400_socket")
-    entry_key = _select_sid_entry(cfg, be, sids, recorded if isinstance(recorded, int) else None)
+    entry_key = _select_sid_entry(cfg, be, sids, recorded)
     if entry_key is None:
         return None
     entry = sids.get(entry_key)
@@ -415,19 +422,6 @@ class CalibrationDocument:
     d400_socket: int | None = None
 
 
-def _saved_entries(path: Path) -> dict[str, Any]:
-    """The ``sids`` map already on disk at `path`, or empty when there is no
-    readable schema-2 file there."""
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
-        return {}
-    sids = raw.get("sids")
-    return sids if isinstance(sids, dict) else {}
-
-
 def _still_applies(name: str, kept: dict[str, Any], detected: str | None) -> bool:
     """Whether `kept`, the entry on disk for socket `name`, holds a usable
     table for the chip a run just found there. A table measured on another
@@ -442,6 +436,11 @@ def _still_applies(name: str, kept: dict[str, Any], detected: str | None) -> boo
 
 def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system.
+
+    The run's entries are merged into the file already on disk: an entry the
+    run did not measure — the other socket, or the sockets of an earlier run
+    when this one measured only ``default`` — keeps its table, and so does a
+    recorded ``d400_socket`` when this run could not read the mapping.
 
     ``raw_signed_levels`` is written additively under the *same* schema
     version: readers only ever require ``sidtable`` (see
@@ -478,8 +477,8 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
         return out
 
     path = path_for_key(cfg, doc.key)
-    previous = _saved_entries(path)
-    sids: dict[str, Any] = {}
+    previous, previous_d400 = _saved_record(path)
+    sids: dict[str, Any] = dict(previous)
     for name, r in doc.entries.items():
         kept = previous.get(name)
         if r.sidtable is None and isinstance(kept, dict) and _still_applies(name, kept, r.detected):
@@ -494,7 +493,8 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "sids": sids,
     }
-    if doc.d400_socket is not None:
-        record["d400_socket"] = doc.d400_socket
+    d400_socket = doc.d400_socket if doc.d400_socket is not None else previous_d400
+    if d400_socket is not None:
+        record["d400_socket"] = d400_socket
     atomic_write_text(path, json.dumps(record, indent=2) + "\n")
     return path

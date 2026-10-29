@@ -1455,6 +1455,31 @@ class Volume0SelfTestTest(DataDirIsolated):
         }
         self.assertEqual(dcs.load_calibrated_table(cfg, be=api), bytes([2] * 256))
 
+    def test_a_rerun_keeps_the_tables_of_sockets_it_did_not_measure(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": _result(1), "2": _result(2)}, d400=2)
+        path = self.save(cfg, {"1": _result(9)})
+        doc = json.loads(path.read_text())
+        self.assertEqual(doc["sids"]["1"]["sidtable"], [9] * 256)
+        self.assertEqual(doc["sids"]["2"]["sidtable"], [2] * 256)
+        self.assertEqual(doc["d400_socket"], 2)
+
+    def test_a_default_run_keeps_the_socket_tables(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": _result(1), "2": _result(2)}, d400=1)
+        path = self.save(cfg, {"default": _result(7)})
+        sids = json.loads(path.read_text())["sids"]
+        self.assertEqual(
+            {name: entry["sidtable"][0] for name, entry in sids.items()},
+            {"1": 1, "2": 2, "default": 7},
+        )
+
+    def test_a_rerun_that_reads_the_mapping_replaces_the_recorded_one(self):
+        cfg = _u64_cfg()
+        self.save(cfg, {"1": _result(1), "2": _result(2)}, d400=1)
+        path = self.save(cfg, {"2": _result(5)}, d400=2)
+        self.assertEqual(json.loads(path.read_text())["d400_socket"], 2)
+
     def _rejected(self, detected=None):
         raw = [(c, v + 0.3 if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
         sidtable, metrics = dsr.build_sidtable_from_levels(raw)
