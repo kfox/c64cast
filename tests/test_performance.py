@@ -242,9 +242,47 @@ class LaunchSemanticsTest(unittest.TestCase):
         s.enqueue(ClipEvent(slot=2, pressed=True))
         self.assertTrue(_pump(s, pl))
         self.assertEqual(s.active_slot, 2)
-        # Release -> rebuild + return to the prior clip (slot 1), not the playlist.
+        # Release -> return to the prior clip (slot 1), not the playlist.
         s.enqueue(ClipEvent(slot=2, pressed=False))
         self.assertTrue(_pump(s, pl))
+        self.assertEqual(s.active_slot, 1)
+
+    def test_returning_to_a_prior_clip_does_not_build_on_the_playlist_thread(self):
+        # A URL clip's build resolves the URL, so a build here stalls the
+        # render frame for up to the resolve timeout.
+        s, pl = self._session(
+            [
+                {"slot": 1, "type": "generative", "quantize": "off", "loop": True},
+                {"slot": 2, "type": "generative", "quantize": "off", "launch": "gate"},
+            ]
+        )
+        s.enqueue(ClipEvent(slot=1, pressed=True))
+        _pump(s, pl)
+        prior = pl.current
+        s.enqueue(ClipEvent(slot=2, pressed=True))
+        _pump(s, pl)
+
+        resolve = threading.Event()
+        self.addCleanup(resolve.set)
+        builds_on_the_playlist_thread: list[dict[str, Any]] = []
+
+        def stalled_build(clip: dict[str, Any]) -> _FakeScene:
+            builds_on_the_playlist_thread.append(clip)
+            resolve.wait(timeout=5.0)
+            return _FakeScene("rebuilt")
+
+        pl.build_performance_scene = stalled_build
+        s.enqueue(ClipEvent(slot=2, pressed=False))
+        frame = threading.Thread(target=s.service, args=(pl,))
+        frame.start()
+        frame.join(timeout=1.0)
+        stalled = frame.is_alive()
+        resolve.set()
+        frame.join()
+
+        self.assertFalse(stalled, "service() blocked on a clip build")
+        self.assertEqual(builds_on_the_playlist_thread, [])
+        self.assertIs(pl.current, prior)
         self.assertEqual(s.active_slot, 1)
 
     def test_a_gate_released_under_another_gate_does_not_come_back(self):
