@@ -14,6 +14,7 @@ import unittest
 
 import numpy as np
 
+from c64cast.scenes import backgrounds
 from c64cast.scenes.backgrounds import (
     REGISTRY,
     SC_SPACE,
@@ -174,6 +175,65 @@ class BaseClassTest(unittest.TestCase):
         base = Background(seed=0)
         with self.assertRaises(NotImplementedError):
             base.render(0.0, TOP_ROWS, BOTTOM_ROWS)
+
+
+# Rows of the uppercase character ROM for the screen codes the constants below
+# use, or might be mistaken for; a code with bit 7 set draws the inverse of the
+# code 0x80 below it.
+_ROM_ROWS = {
+    0x00: "3C666E6E60623C00",
+    0x0F: "3C66666666663C00",
+    0x16: "66666666663C1800",
+    0x17: "6363636B7F776300",
+    0x20: "0000000000000000",
+    0x27: "060C180000000000",
+    0x2A: "00663CFF3C660000",
+    0x2B: "0018187E18180000",
+    0x2D: "0000007E00000000",
+    0x2E: "0000000000181800",
+    0x3E: "70180C060C187000",
+    0x62: "00000000FFFFFFFF",
+    0x64: "00000000000000FF",
+    0x77: "FFFF000000000000",
+}
+
+_BLANK = "0000000000000000"
+_SOLID = "FFFFFFFFFFFFFFFF"
+_LOWER_HALF = "00000000FFFFFFFF"
+_UPPER_HALF = "FFFFFFFF00000000"
+
+
+def _glyph(screen_code: int) -> str:
+    rows = bytes.fromhex(_ROM_ROWS[screen_code & 0x7F])
+    if screen_code & 0x80:
+        rows = bytes(b ^ 0xFF for b in rows)
+    return rows.hex().upper()
+
+
+class GlyphConstantTest(unittest.TestCase):
+    """Each constant is the screen code of the glyph its name means, read off
+    the stock character ROM rather than a PETSCII table."""
+
+    def test_each_constant_draws_the_glyph_its_name_means(self):
+        expected = {
+            "SC_SPACE": _BLANK,
+            "SC_DOT": "0000000000181800",
+            "SC_STAR": "00663CFF3C660000",
+            "SC_PLUS": "0018187E18180000",
+            "SC_HYPHEN": "0000007E00000000",
+            "SC_GT": "70180C060C187000",
+            "SC_TILDE": "060C180000000000",
+            "SC_FULL": _SOLID,
+            "SC_HBLOCK_BOT": _LOWER_HALF,
+            "SC_HBLOCK_TOP": _UPPER_HALF,
+            "SC_AT": "3C666E6E60623C00",
+            "SC_W": "6363636B7F776300",
+            "SC_V": "66666666663C1800",
+            "SC_O": "3C66666666663C00",
+        }
+        for name, rows in expected.items():
+            with self.subTest(name):
+                self.assertEqual(_glyph(getattr(backgrounds, name)), rows)
 
 
 if __name__ == "__main__":
