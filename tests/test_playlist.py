@@ -471,7 +471,7 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         factory, _ = _transition_factory()
         pl = Playlist(
-            [bad_setup],
+            [bad_setup, FakeScene("Y")],
             api,
             target_fps=10000.0,
             heartbeat_interval=0.0,
@@ -2119,6 +2119,22 @@ class SingleSceneThatFailsToStartTest(unittest.TestCase):
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn(repr(scene.name), errors[0])
                 self.assertIn(missing, errors[0])
+                self.assertTrue(pl.failed_to_start)
+                self.assertIsNone(pl.current)
+
+    def test_a_setup_that_raises_stops_the_run_with_its_exception(self):
+        for loop in (True, False):
+            with self.subTest(loop=loop):
+                scene = FakeScene("A", raise_on_setup=True)
+                pl = Playlist(
+                    [scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=loop
+                )
+                with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+                    pl.run()
+                errors = [r.getMessage() for r in cap.records]
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("'A'", errors[0])
+                self.assertIn("setup blew up in A", errors[0])
                 self.assertTrue(pl.failed_to_start)
                 self.assertIsNone(pl.current)
 

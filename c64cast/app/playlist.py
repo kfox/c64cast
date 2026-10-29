@@ -635,8 +635,7 @@ class Playlist:
                 self.current.name,
                 "looping" if self.loop else "once-through",
             )
-            self.safe_setup(scene)
-            self._stop_if_failed_to_start(scene)
+            self._set_up_single_scene(scene)
         elif self.current.is_done:
             if not self.loop:
                 self.log.info("scene %r finished and loop=False — stopping", self.current.name)
@@ -651,24 +650,31 @@ class Playlist:
             if not self.ensemble_coord.wait_for_audio_claim(scene):
                 self.current = None
                 return
-            self.safe_setup(scene)
-            if not self._stop_if_failed_to_start(scene):
+            if self._set_up_single_scene(scene):
                 scene.is_done = False
 
-    def _stop_if_failed_to_start(self, scene: Scene) -> bool:
-        """A single scene that comes back from its setup already done failed
-        to start, and there is no other scene to play: stop the run, and
-        mark it failed for the exit status. True when it did."""
-        if not scene.is_done or self.stop_event.is_set():
+    def _set_up_single_scene(self, scene: Scene) -> bool:
+        """Set up the one scene. A setup that raises, or that leaves the
+        scene already done, failed to start it, and there is no other scene
+        to play: stop the run. False when it did."""
+        try:
+            self.safe_setup(scene)
+        except Exception as e:
+            self._stop_on_failed_start(scene, f"{type(e).__name__}: {e}", exc_info=True)
             return False
+        if not scene.is_done or self.stop_event.is_set():
+            return True
+        self._stop_on_failed_start(
+            scene, getattr(scene, "setup_failure", None) or "its setup ended it"
+        )
+        return False
+
+    def _stop_on_failed_start(self, scene: Scene, cause: str, *, exc_info: bool = False) -> None:
         self.log.error(
-            "scene %r could not start (%s); stopping",
-            scene.name,
-            getattr(scene, "setup_failure", None) or "its setup ended it",
+            "scene %r could not start (%s); stopping", scene.name, cause, exc_info=exc_info
         )
         self.failed_to_start = True
         self.stop_event.set()
-        return True
 
     def _advance_after_scene(self) -> None:
         """A non-transition scene finished: fade + tear it down, then honor a
