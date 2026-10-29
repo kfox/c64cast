@@ -13,11 +13,14 @@ import os
 import sys
 import unittest
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from _fakes import FakeAPI  # noqa: E402
 
 from c64cast.video.modes import MCMDisplayMode  # noqa: E402
+from c64cast.video.palette import C64_PALETTE_BGR  # noqa: E402
 
 
 def _expected_charset() -> bytes:
@@ -47,6 +50,29 @@ class MCMCharsetUploadTest(unittest.TestCase):
 
         mode.setup(api)
         self.assertEqual(api.mem_files.get("3000"), _expected_charset())
+
+
+def _bands(*colors: int) -> np.ndarray:
+    """A frame of equal horizontal bands, one per C64 palette index."""
+    rows = np.repeat(np.arange(len(colors)), -(-200 // len(colors)))[:200]
+    bgr = C64_PALETTE_BGR[np.array(colors)][rows].astype(np.uint8)
+    return np.broadcast_to(bgr[:, None, :], (200, 320, 3)).copy()
+
+
+class MCMBgPickTest(unittest.TestCase):
+    def test_a_revisited_scene_picks_from_its_own_first_frame(self):
+        """A looping playlist sets the same mode up again; the last lap's
+        colors must not hold $D021-$D023 over the new lap's opening frames."""
+        mode = MCMDisplayMode()
+        mode.setup(FakeAPI())
+        for _ in range(10):
+            mode.compose(_bands(2, 5, 6))
+        mode.setup(FakeAPI())
+        fresh = MCMDisplayMode()
+        fresh.setup(FakeAPI())
+        np.testing.assert_array_equal(
+            mode.compose(_bands(7, 10, 14))["bg"], fresh.compose(_bands(7, 10, 14))["bg"]
+        )
 
 
 if __name__ == "__main__":
