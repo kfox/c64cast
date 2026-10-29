@@ -63,13 +63,13 @@ STALL_INSIDE_LEAD_SLACK = CHUNK_SIZE // 4  # bytes
 # Timer A latch until the *measured* R rate lands back at sample_rate, since the
 # gap servo above otherwise locks playback to the bus-halt-throttled consumer.
 # It servos on dR/dt, not the gap — the gap servo nulls the gap, so it carries
-# no rate signal and the two loops would fight. Clamped to the handler cycle
-# budget (c64.NMI_SAFE_MIN_PERIOD_CYCLES). Off by default; see
+# no rate signal and the two loops would fight. Clamped to the safe minimum
+# NMI period (c64.NMI_SAFE_MIN_PERIOD_CYCLES). Off by default; see
 # docs/architecture/audio.md#host-dma-pitch-compensation--why-two-of-the-three-knobs-default-off.
 #
 # The deadband MUST stay above half a latch quantum. The latch is an integer and
-# one step moves the rate by 1/latch (~0.8% at 8 kHz, ~1.35% at the ceiling latch
-# 74); a target between two grid rates lies within half a step of one of them,
+# one step moves the rate by 1/latch (~0.8% at 8 kHz, ~1.27% at the ceiling latch
+# 79); a target between two grid rates lies within half a step of one of them,
 # so a deadband wider than half the widest step always leaves a latch to park
 # on. Narrower, the loop limit-cycles ±1 step, an audible ~1% pitch wobble.
 # 0.013 is about one full step, which leaves headroom for estimator noise.

@@ -51,12 +51,14 @@ not the requested one, that everything downstream uses as its timebase, so
 nothing drifts against it and a decoded track plays at exactly real time.
 
 12 kHz is the default because the interrupt handler cannot be serviced
-indefinitely faster. The handler itself runs out of time near 13.5 kHz, and
-the full streaming pipeline — where the host's own memory writes steal
-processor cycles — starts overrunning near 12.5 kHz. Above that, handlers
-queue behind each other and samples stretch: the tone goes flat. Rates that
-overrun are rejected when the configuration loads, and `--doctor` reports
-them.
+indefinitely faster. The handler needs about 80 processor cycles between
+interrupts, which caps the rate near 12.8 kHz on NTSC and 12.3 kHz on PAL;
+any faster and an interrupt can arrive before the previous one has stored its
+sample, so one sample plays twice and the next is skipped. The full streaming
+pipeline — where the host's own memory writes steal processor cycles — starts
+overrunning near 12.5 kHz. Above that, handlers queue behind each other and
+samples stretch: the tone goes flat. Rates past the handler's cap are rejected
+when the configuration loads, and `--doctor` reports them.
 
 On a TeensyROM+ that locks its DMA slices to the sample store (the
 `[teensyrom].dma_slicing` default), a Hires or MultiHires scene plays at

@@ -414,7 +414,7 @@ device = -1                         # int index (-1 = system default input), or 
                                     # scene while a TeensyROM+ locks its DMA slices (12000's
                                     # smaller slices cap bitmap video's frame rate). A set
                                     # value applies to every scene.
-                                    # 12000 keeps fricatives (>8000 Nyquist). Live-pipeline overrun onset ~12.5k NTSC (isolated-handler ceiling ~13.6k / ~13.1k PAL).
+                                    # 12000 keeps fricatives (>8000 Nyquist). Live-pipeline overrun onset ~12.5k NTSC (isolated-handler ceiling ~12.8k / ~12.3k PAL).
                                     # A REQUEST, not a guarantee: it picks a CIA timer latch whose period is a
                                     # whole number of cycles, so you land on the nearest achievable rate —
                                     # 12000 NTSC really runs at 12032.08 Hz (+0.27%), PAL at 12015.22 (+0.13%).
