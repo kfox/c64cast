@@ -676,6 +676,7 @@ class WebcamScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
+        self._frame_count = 0
         self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
         _start_scene_mic(self, self.audio_cfg)
 
@@ -891,6 +892,7 @@ class SourceScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
+        self._frame_count = 0
         self.source.setup()
         # The playlist does not wrap setup() in try/except, so a raise from a
         # source that rejects its content would crash the run loop. Self-abort
