@@ -150,7 +150,8 @@ class WeatherOverlay(CornerTextOverlay):
                 return _fetch_open_meteo(self.lat, self.lon, self.units)
             assert self.location is not None
             return _fetch_wttr(self.location)
-        except (requests.RequestException, json.JSONDecodeError) as e:
+        # ValueError: a body that is not UTF-8 JSON (JSONDecodeError, UnicodeDecodeError).
+        except (requests.RequestException, ValueError) as e:
             log.info("weather: fetch failed (%s); keeping cached value", e)
             return ""
         except _fetch.BodyLimitExceeded as e:

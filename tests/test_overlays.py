@@ -846,6 +846,109 @@ class RssFetchTest(_RemotePeerTest):
             self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
 
 
+class FetchTransportErrorTest(_RemotePeerTest):
+    def test_a_body_shorter_than_its_content_length_is_a_fetch_failure(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", 1000)
+            handler.wfile.write(b"<rss>")
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        ov._titles = ["KEPT"]
+        with self.assertLogs("c64cast.scenes.overlays.rss", level="INFO") as logs:
+            ov._fetch_once()
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+        self.assertEqual(ov._titles, ["KEPT"])
+
+    def test_a_body_that_stalls_past_the_read_timeout_is_a_request_exception(self):
+        import requests
+
+        from c64cast.scenes.overlays import _fetch
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", 1000)
+            handler.wfile.write(b"<rss>")
+            handler.wfile.flush()
+            self.peer_stop.wait(5.0)
+
+        url = self.route("/feed", answer)
+        with self.assertRaises(requests.RequestException):
+            _fetch.get_body(url, timeout=0.2)
+
+    def test_a_redirect_whose_body_drips_forever_gives_up_at_the_deadline(self):
+        from c64cast.scenes.overlays import _fetch
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        def answer(handler):
+            handler.send_response(302)
+            handler.send_header("Location", "/elsewhere")
+            handler.send_header("Content-Length", str(1 << 30))
+            handler.end_headers()
+            while not self.peer_stop.wait(0.05):
+                handler.wfile.write(b" ")
+                handler.wfile.flush()
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        self.route("/elsewhere", self.drip)
+        with (
+            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
+        ):
+            self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
+
+    def test_a_feed_behind_a_redirect_is_read(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        body = b"<rss><channel><item><title>MOVED</title></item></channel></rss>"
+
+        def moved(handler):
+            handler.send_response(301)
+            handler.send_header("Location", "/new")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", len(body))
+            handler.wfile.write(body)
+
+        self.route("/new", answer)
+        ov = RssOverlay(url=self.route("/old", moved) + "?x=1")
+        ov._fetch_once()
+        self.assertEqual(ov._titles, ["MOVED"])
+
+    def test_a_redirect_loop_is_a_fetch_failure(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        def loop(handler):
+            handler.send_response(302)
+            handler.send_header("Location", "/loop")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+
+        ov = RssOverlay(url=self.route("/loop", loop))
+        with self.assertLogs("c64cast.scenes.overlays.rss", level="INFO") as logs:
+            ov._fetch_once()
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+
+    def test_a_weather_reply_that_is_not_utf8_is_a_fetch_failure(self):
+        from c64cast.scenes.overlays import weather
+
+        body = b'{"current": "\xff"}'
+
+        def answer(handler):
+            _send_head(handler, "application/json", len(body))
+            handler.wfile.write(body)
+
+        ov = weather.WeatherOverlay(provider="open-meteo", lat=1.0, lon=2.0)
+        with (
+            patch.object(weather, "OPEN_METEO_URL", self.route("/forecast", answer)),
+            self.assertLogs("c64cast.scenes.overlays.weather", level="INFO") as logs,
+        ):
+            self.assertEqual(ov._fetch_once(), "")
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+
+
 class WeatherFetchTest(_RemotePeerTest):
     def test_open_meteo_reply_reads_as_temperature_and_label(self):
         from c64cast.scenes.overlays import weather
@@ -1119,6 +1222,28 @@ class OBSStatusTest(unittest.TestCase):
         with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
             ov._worker(stop)
         self.assertEqual(ov.compute_strings(t=0.0), ["OBS OFFLINE"])
+
+    def test_a_client_whose_poll_failed_is_closed_before_reconnecting(self):
+        class NoBackoff(threading.Event):
+            def wait(self, timeout=None):
+                return self.is_set()
+
+        ov = _obs_overlay()
+        clients = [_FakeOBSClient(), _FakeOBSClient()]
+        failed = clients[0]
+        ov._connect = lambda: clients.pop(0)
+        stop = NoBackoff()
+
+        def fail_then_stop(client):
+            if client is failed:
+                raise OSError("request timed out")
+            stop.set()
+            return ["LIVE"]
+
+        ov._poll_once = fail_then_stop
+        with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
+            ov._worker(stop)
+        self.assertTrue(failed.disconnected)
 
     def test_a_connect_still_running_at_teardown_is_closed_when_it_lands(self):
         ov = _obs_overlay()

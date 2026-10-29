@@ -131,6 +131,7 @@ class OBSStatusOverlay(CornerTextOverlay):
                     log.debug("OBS poll failed: %s", e)
                     with self._lines_lock:
                         self._lines = ["OBS OFFLINE"]
+                    _disconnect(client)
                     client = None
                     backoff = min(backoff * 2.0, 30.0)
                 stop.wait(timeout=max(self.poll_interval, backoff))
