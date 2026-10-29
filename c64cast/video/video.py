@@ -58,6 +58,7 @@ AUDIO_DISCONTINUITY_S = 30.0
 # seconds apart (a screen capture, a slide show) would otherwise leave the
 # last screen up for as long as it takes the demuxer to reach the next one.
 PRE_TARGET_RELEASE_S = 1.0
+_ON_TARGET_S = 1e-6
 # A full video buffer with no audio coming is fed silence up to its newest
 # frame less this much, or less the furthest the file has been seen to write
 # audio behind its picture if that is more: audio for anything earlier would
@@ -1615,13 +1616,15 @@ class AVFileSource:
     def _admit_frame(self, frame: Any) -> bool:
         """Queue a decoded picture, or hold it back while the pass has not
         reached its target (a seek lands on the keyframe before it): only the
-        newest picture before the target is kept, to be shown until one at or
-        after it arrives (or `_release_held_picture` queues it), and none of
-        the pictures it replaces is converted. Returns False only when the
-        source closed mid-wait (stop demuxing)."""
+        newest picture before the target is kept, and none of the pictures it
+        replaces is converted. The held picture is queued ahead of the first
+        one after the target, which it stands in for until then, and dropped
+        if a picture lands on the target itself (or `_release_held_picture`
+        queues it sooner). Returns False only when the source closed mid-wait
+        (stop demuxing)."""
         pts_s = timestamp_s(frame.pts, self.video_time_base)
         content = None if pts_s is None else self._content_time(pts_s)
-        if content is not None and content < self._pts_anchor_target - 1e-6:
+        if content is not None and content < self._pts_anchor_target - _ON_TARGET_S:
             if self._released_s is None:
                 self._pre_target = frame
                 return True
@@ -1630,7 +1633,8 @@ class AVFileSource:
             self._released_s = content
             return self._enqueue_decoded(frame)
         held, self._pre_target = self._pre_target, None
-        if held is not None and not self._enqueue_decoded(held):
+        lands_on_target = content is not None and content <= self._pts_anchor_target + _ON_TARGET_S
+        if held is not None and not lands_on_target and not self._enqueue_decoded(held):
             return False
         return self._enqueue_decoded(frame)
 

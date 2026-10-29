@@ -2654,8 +2654,8 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
 
     def test_the_picture_before_start_s_is_held_back_for_the_frame_at_it(self):
         # The seek lands on the keyframe before start_s. Its frames come due
-        # before the clock's 0, so the first picture shown is the one at 0,
-        # and the pictures it replaces are never converted.
+        # before the clock's 0 and a picture lands on 0 itself, so none of
+        # them is queued or converted.
         import tempfile
         import time
 
@@ -2674,8 +2674,8 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(src._eof)
         stamps = [pts for pts, _ in src._video_buf]
-        self.assertAlmostEqual(stamps[0], -1 / 30, delta=0.002)
-        self.assertAlmostEqual(stamps[1], 0.0, delta=0.002)
+        self.assertAlmostEqual(stamps[0], 0.0, delta=0.002)
+        self.assertAlmostEqual(stamps[1], 1 / 30, delta=0.002)
         shown = src.current_frame(0.0)
         self.assertEqual(origin, 4.5)
         self.assertEqual(frame_index(cast(np.ndarray, shown)), 135)
@@ -2857,6 +2857,26 @@ class ExactSeekTest(unittest.TestCase):
         src.request_seek(4.01, unmute=True)
         self.assertEqual(self._first_picture(src, 4.01), 120)
         self.assertAlmostEqual(self._first_sound_s(sink), 2.0 + 4.01, delta=0.04)
+
+    def test_start_s_never_offers_the_picture_before_it(self):
+        # The consumer may read the buffer between any two of the demuxer's
+        # appends, so the first append must already show the start.
+        seen: list[int] = []
+        enqueue = AVFileSource._enqueue_frame
+
+        def enqueue_then_look(src: AVFileSource, pts: float, img: np.ndarray) -> bool:
+            queued = enqueue(src, pts, img)
+            shown = src.current_frame(0.0)
+            if not seen and shown is not None:
+                seen.append(frame_index(shown))
+            return queued
+
+        with mock.patch.object(AVFileSource, "_enqueue_frame", enqueue_then_look):
+            self._source(self._clip(), start_s=4.5)
+            deadline = time.monotonic() + self.TIMEOUT_S
+            while not seen and time.monotonic() < deadline:
+                time.sleep(0.005)
+        self.assertEqual(seen, [135])
 
     def test_start_s_in_a_file_whose_streams_start_late_lands_on_its_file_position(self):
         clip = self._clip(video_start_s=2.0, audio_start_s=2.0)
