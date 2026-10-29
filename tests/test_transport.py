@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import c64cast.control.transport as transport
@@ -380,6 +382,71 @@ class HoldRampTests(unittest.TestCase):
         _tick(session, pl, 0.2)
         self.assertEqual(len(scene.seeks), 1)
         self.assertGreater(scene.seeks[0], 10.0)
+
+
+class ConsoleHoldLeaseTests(unittest.TestCase):
+    """A web console's rw/ff hold lives only as long as the page keeps
+    re-sending the press: a closed tab or a dropped connection never sends the
+    release. A MIDI hold has no keep-alive and keeps its note-off contract."""
+
+    def _console_ff(self) -> tuple[_StubScene, _FakePlaylist, TransportSession, Any]:
+        from c64cast.control.perf_console import PerfBridge
+
+        scene = _StubScene(position=10_000.0, duration=None)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        pl.transport = session  # type: ignore[attr-defined]
+        bridge = PerfBridge(lambda: [("c64cast", pl)])  # type: ignore[list-item]
+        _tick(session, pl, 0.0)
+        self.assertTrue(bridge.transport(None, "ff", pressed=True))
+        _tick(session, pl, 0.1)
+        self.assertEqual(len(scene.seeks), 1)
+        return scene, pl, session, bridge
+
+    def test_a_console_hold_with_no_release_or_keep_alive_lets_go(self):
+        scene, pl, session, _ = self._console_ff()
+        _tick(session, pl, 0.1 + transport._HOLD_LEASE_S + 0.1)
+        seeks = len(scene.seeks)
+        _tick(session, pl, 30.0)
+        self.assertEqual(len(scene.seeks), seeks)
+
+    def test_a_kept_alive_console_hold_keeps_ramping(self):
+        scene, pl, session, bridge = self._console_ff()
+        t = 0.1
+        while t < 10.0:
+            t += 0.5
+            bridge.transport(None, "ff", pressed=True)
+            _tick(session, pl, t)
+        self.assertGreater(len(scene.seeks), 15)
+        late = scene.seeks[-1] - scene.seeks[-2]
+        self.assertGreater(late, 0.5 * 10.0)
+
+    def test_the_console_keep_alive_fits_inside_the_lease(self):
+        src = (
+            Path(__file__).resolve().parents[1] / "web" / "src" / "lib" / "transportBarLogic.ts"
+        ).read_text(encoding="utf-8")
+        found = re.search(r"HOLD_KEEPALIVE_MS = (\d+);", src)
+        assert found is not None
+        self.assertLessEqual(3 * int(found.group(1)) / 1000.0, transport._HOLD_LEASE_S)
+
+    def test_a_midi_press_over_a_console_hold_takes_the_lease_away(self):
+        scene, pl, session, _ = self._console_ff()
+        session.enqueue(TransportEvent(action="ff", pressed=True))
+        _tick(session, pl, 0.2)
+        _tick(session, pl, 0.2 + transport._HOLD_LEASE_S + 0.1)
+        seeks = len(scene.seeks)
+        _tick(session, pl, 30.0)
+        self.assertGreater(len(scene.seeks), seeks)
+
+    def test_a_midi_hold_has_no_lease(self):
+        scene = _StubScene(position=10_000.0, duration=None)
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        _tick(session, pl, 0.0)
+        session.enqueue(TransportEvent(action="ff", pressed=True))
+        _tick(session, pl, 0.1)
+        _tick(session, pl, 30.0)
+        self.assertEqual(len(scene.seeks), 2)
 
 
 class ScrubSettleTests(unittest.TestCase):

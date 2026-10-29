@@ -1,6 +1,7 @@
 /** Pure logic behind `TransportBar.svelte`'s time display, loop-button label,
  *  loop-slot enablement and keyboard-tap gesture. */
 
+import type { Holds } from "./pointerHold";
 import type { LoopState } from "./types";
 
 /** `M:SS`, floor-clamped at zero and rounded to the nearest second. */
@@ -33,4 +34,41 @@ export interface HoldEvent {
 export function keyNudgeEvents(detail: number): HoldEvent[] | null {
   if (detail !== 0) return null;
   return [{ pressed: true }, { pressed: false }];
+}
+
+/** How often a held rw/ff press is re-sent. The server drops a console hold
+ *  `_HOLD_LEASE_S` (c64cast/control/transport.py) after the last press it
+ *  heard, so a closed tab cannot leave a scrub running. */
+export const HOLD_KEEPALIVE_MS = 500;
+
+/** Press-and-hold for rw/ff: sends the press, repeats it every
+ *  `HOLD_KEEPALIVE_MS` while held, and sends the release once. */
+export class HoldKeepAlive implements Holds<string> {
+  readonly #send: (verb: string, pressed: boolean) => void;
+  readonly #timers = new Map<string, ReturnType<typeof setInterval>>();
+
+  constructor(send: (verb: string, pressed: boolean) => void) {
+    this.#send = send;
+  }
+
+  press(verb: string): void {
+    if (this.#timers.has(verb)) return;
+    this.#send(verb, true);
+    this.#timers.set(
+      verb,
+      setInterval(() => this.#send(verb, true), HOLD_KEEPALIVE_MS),
+    );
+  }
+
+  release(verb: string): void {
+    const timer = this.#timers.get(verb);
+    if (timer === undefined) return;
+    clearInterval(timer);
+    this.#timers.delete(verb);
+    this.#send(verb, false);
+  }
+
+  releaseAll(): void {
+    for (const verb of [...this.#timers.keys()]) this.release(verb);
+  }
 }

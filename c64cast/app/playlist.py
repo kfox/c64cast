@@ -1359,7 +1359,9 @@ class Playlist:
         analyzer, bpm == 0) freezes the grid — no phantom tempo on a non-audio
         scene. Called every frame on the playlist thread; cheap in-memory work."""
         feats = scene.features()
-        self.tempo.audio_drive(feats.bpm if feats is not None else 0.0, now)
+        # Not `now`: that is the frame's wall clock, and the grid's taps and
+        # MIDI bytes are stamped on the monotonic clock audio_drive defaults to.
+        self.tempo.audio_drive(feats.bpm if feats is not None else 0.0)
         # Lock/loss transitions at INFO, the live BPM at DEBUG every ~2 s while
         # locked, so -v shows the grid tracking the beat.
         locked = self.tempo.running
