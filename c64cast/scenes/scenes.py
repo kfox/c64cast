@@ -1181,7 +1181,9 @@ class SlideshowScene(MediaFileMixin, Scene):
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error("slideshow: file spec %r failed to resolve at advance: %s", self.file_spec, e)
+            self.report_setup_failure(
+                log, "slideshow: file spec %r failed to resolve at advance: %s", self.file_spec, e
+            )
             self.is_done = True
             return
         undecodable: set[str] = set()
@@ -1189,6 +1191,12 @@ class SlideshowScene(MediaFileMixin, Scene):
             if not self._shuffle_bag:
                 self._shuffle_bag = [p for p in candidates if p not in undecodable]
                 if not self._shuffle_bag:
+                    self.report_setup_failure(
+                        log,
+                        "slideshow: none of the %d picture(s) for %r could be decoded",
+                        len(candidates),
+                        self.file_spec,
+                    )
                     self.is_done = True
                     return
                 random.shuffle(self._shuffle_bag)
