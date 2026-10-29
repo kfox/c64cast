@@ -197,6 +197,17 @@ class AsidSceneTest(unittest.TestCase):
         self.assertEqual(api.regions[0x0400], bytes([gray << 4]) * 280)
         self.assertFalse(scene._window_sounding[0][0])
 
+    def test_the_scene_ends_at_duration_s(self):
+        scene, _ = self._make()
+        scene.duration_s = 40.0
+        with _stub_port(scene), quiet_logging():
+            scene.setup()
+            try:
+                self.assertTrue(scene.process_frame(scene.start_time + 39.0))
+                self.assertFalse(scene.process_frame(scene.start_time + 40.0))
+            finally:
+                scene.teardown()
+
     def test_validate_asid_returns_bitmap_mode(self):
         from c64cast.app.config import Config, SceneCfg
         from c64cast.app.scene_factory import _validate_asid

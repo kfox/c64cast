@@ -100,6 +100,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         name: str = "ASID",
     ):
         super().__init__(api, audio, None, name)
+        self.start_time = 0.0
         if not MIDI_AVAILABLE:
             raise RuntimeError(
                 "AsidScene requires mido + python-rtmidi (uv tool install --force 'c64cast[all]')"
@@ -680,6 +681,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
 
     def setup(self) -> None:
         super().setup()
+        self.start_time = time.time()
         # Teardown put the user's SID addressing back, so the multi-SID shape has
         # to come back to single-chip here rather than there: teardown's silence
         # loop still needs the mapped addresses. A stale `_max_chip_seen` leaves
@@ -720,6 +722,8 @@ class AsidScene(VoiceScopeRenderer, Scene):
                 self._emulators[chip].advance_envelopes(self._poll_dt)
 
     def process_frame(self, current_time: float) -> bool:
+        if (current_time - self.start_time) >= self.duration_s:
+            return False
         if self._max_chip_seen + 1 > self._active_chips:
             self._reconfigure_chips(self._max_chip_seen + 1)
         window_emus = self._scope_emulators()

@@ -32,7 +32,7 @@ Overlays are a separate path and already safe: `Playlist.safe_teardown` wraps **
 
 Each camera frame is pushed straight through, with no delay buffer.
 
-**Duration is context-dependent**, resolved in `scene_factory.build_scene`. Webcam and blank scenes with an unset `duration_s` default to `math.inf` ("leave the camera running") **only when they are the sole scene** in a single-scene playlist. In a multi-scene playlist they keep the base 30 s, because an infinite live scene never becomes `is_done` and would wedge the rotation.
+**Duration is context-dependent**, resolved in `scene_factory.build_scene`. Webcam, blank, midi and asid scenes with an unset `duration_s` default to `math.inf` ("leave the camera running") **only when they are the sole scene** in a single-scene playlist. In a multi-scene playlist they keep the base 30 s, because an infinite live scene never becomes `is_done` and would wedge the rotation.
 
 An explicit `duration_s = 0` is the universal "run forever" sentinel, mapped to `math.inf` for any non-video type. A negative value is rejected at load.
 

@@ -1189,8 +1189,8 @@ class SceneCfg:
         default=None,
         metadata={
             "help": "Seconds before auto-advance; 0 = run forever. Unset = "
-            "scene-type default (webcam/blank run forever when they're the "
-            "only scene, else 30s; waveform = song length or 180s; "
+            "scene-type default (webcam/blank/midi/asid run forever when "
+            "they're the only scene, else 30s; waveform = song length or 180s; "
             'generative with audio_source = "file" = the track\'s length, '
             "or 30s when the container reports none; everything else = 30s). "
             "Video scenes reject this (they run until the file ends). "

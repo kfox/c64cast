@@ -2771,6 +2771,8 @@ _BUILDERS: dict[str, Callable[[_SceneBuildContext], Scene]] = {
     "wled": _build_wled,
 }
 
+_LIVE_INPUT_TYPES = ("webcam", "blank", "midi", "asid")
+
 
 def build_scene(
     s: SceneCfg,
@@ -2830,7 +2832,7 @@ def build_scene(
     # `scene.duration_s = math.inf` means "run until stopped":
     #   * explicit duration_s == 0 -> that sentinel (any type);
     #   * explicit duration_s  > 0 -> honored verbatim;
-    #   * unset: webcam/blank go infinite in a SINGLE-scene playlist but keep the base
+    #   * unset: a live-input type goes infinite in a SINGLE-scene playlist but keeps the base
     #     30 s in a multi-scene one, since an infinite live scene never becomes
     #     is_done and would wedge the rotation. Every other type keeps the default
     #     already set above.
@@ -2843,7 +2845,7 @@ def build_scene(
         single_scene_playlist = sum(1 for x in cfg.scenes if not x.follower_only) <= 1
         if s.duration_s is not None:
             scene.duration_s = math.inf if s.duration_s == 0 else s.duration_s
-        elif s.type in ("webcam", "blank") and single_scene_playlist:
+        elif s.type in _LIVE_INPUT_TYPES and single_scene_playlist:
             scene.duration_s = math.inf
     if s.target_fps is not None:
         scene.target_fps = float(s.target_fps)
