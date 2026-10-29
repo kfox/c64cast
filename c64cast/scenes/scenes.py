@@ -61,6 +61,7 @@ from c64cast.video.video import (
 )
 
 from .bitmap_text import glyphs_to_mask, load_glyphs
+from .picture_header import picture_size
 from .setup_progress import SegmentedProgress, make_setup_bar
 from .video_transport import VideoTransportControls
 
@@ -1095,6 +1096,38 @@ class MediaFileMixin:
         self._prepared = self._pick_held
 
 
+# 8192 x 8192: 192 MB of BGR, against the ~3 GB OpenCV's own 2^30 limit allows.
+MAX_PICTURE_PIXELS = 1 << 26
+
+
+def _decode_picture(path: str) -> np.ndarray | None:
+    """The picture at `path` as BGR, or None, with a WARNING saying why, when
+    it cannot be sized from its header, is larger than `MAX_PICTURE_PIXELS`,
+    or does not decode."""
+    try:
+        size = picture_size(path)
+    except OSError as e:
+        log.warning("slideshow: cannot read %s (%s); skipping", path, e)
+        return None
+    if size is None:
+        log.warning("slideshow: %s has no PNG, JPEG, BMP or WebP header; skipping", path)
+        return None
+    width, height = size
+    if width * height > MAX_PICTURE_PIXELS:
+        log.warning(
+            "slideshow: %s is %dx%d, over the %d-pixel limit; skipping",
+            path,
+            width,
+            height,
+            MAX_PICTURE_PIXELS,
+        )
+        return None
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        log.warning("slideshow: failed to decode %s; skipping", path)
+    return img
+
+
 class SlideshowScene(MediaFileMixin, Scene):
     """Cycle through still images for the scene's duration.
 
@@ -1222,9 +1255,8 @@ class SlideshowScene(MediaFileMixin, Scene):
                         self._shuffle_bag[0],
                     )
             path = self._shuffle_bag.pop(0)
-            img = cv2.imread(path, cv2.IMREAD_COLOR)
+            img = _decode_picture(path)
             if img is None:
-                log.warning("slideshow: failed to decode %s; skipping", path)
                 undecodable.add(path)
                 self._shuffle_bag = [p for p in self._shuffle_bag if p != path]
                 continue
