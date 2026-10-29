@@ -23,7 +23,12 @@ _JPEG_SOI = b"\xff\xd8"
 _JPEG_SOF_MARKERS = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
 # Markers with no length field after them.
 _JPEG_STANDALONE_MARKERS = frozenset(range(0xD0, 0xD8)) | {0x01}
-_JPEG_END_MARKERS = frozenset({0xD9, 0xDA})
+# The length-prefixed segments libjpeg reads past on its way to the frame
+# header: DHT, DAC, DQT, DNL, DRI, APP0-APP15 and COM. libjpeg takes FF 00
+# for stray data and rescans byte by byte, so walking it as a segment could
+# land on a decoy frame header libjpeg never reads.
+_JPEG_APP_MARKERS = frozenset(range(0xE0, 0xF0))
+_JPEG_SKIPPED_MARKERS = frozenset({0xC4, 0xCC, 0xDB, 0xDC, 0xDD, 0xFE}) | _JPEG_APP_MARKERS
 # Bounds on a header walk over untrusted bytes: real files carry a few dozen
 # segments and a handful of fill bytes, while an upload of up to
 # media_store.MAX_UPLOAD_BYTES of empty segments or of 0xFF would be walked
@@ -69,10 +74,10 @@ def _jpeg_size(f: BinaryIO) -> tuple[int, int] | None:
         if len(marker) < 2 or marker[0] != 0xFF:
             return None
         code = marker[1]
-        if code in _JPEG_END_MARKERS or code == 0xFF:
-            return None
         if code in _JPEG_STANDALONE_MARKERS:
             continue
+        if code not in _JPEG_SOF_MARKERS and code not in _JPEG_SKIPPED_MARKERS:
+            return None
         (length,) = struct.unpack(">H", f.read(2))
         if code in _JPEG_SOF_MARKERS:
             _precision, height, width = struct.unpack(">BHH", f.read(5))

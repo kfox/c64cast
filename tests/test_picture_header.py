@@ -67,6 +67,16 @@ class PictureSizeTest(unittest.TestCase):
         data = _SOI + app1 + b"\xff\xff\xff" + _sof(4032, 3024)
         self.assertEqual(self._size_of(data), (4032, 3024))
 
+    def test_a_jpeg_frame_header_libjpeg_never_reads_does_not_count(self):
+        # libjpeg reads FF 00 as stray data and rescans byte by byte, so it
+        # finds the COM segment and skips the decoy SOF inside it; a walker
+        # that took FF 00 for a segment would jump straight onto the decoy.
+        decoy = b"\x00\x00" + _sof(1, 1)
+        comment = b"\xff\xfe" + struct.pack(">H", len(decoy) + 2) + decoy
+        jpeg = _encoded(".jpg", 37, 21)
+        data = jpeg[:2] + b"\xff\x00\x00\x08" + comment + jpeg[2:]
+        self.assertIsNone(self._size_of(data))
+
     def test_anything_else_has_no_size(self):
         cases = {
             "gif": b"GIF89a" + bytes(30),
