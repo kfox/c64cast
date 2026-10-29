@@ -760,8 +760,9 @@ class DisplayModeColorRegistersTest(unittest.TestCase):
 
 
 class ReadProgramFileTest(unittest.TestCase):
-    """`read_program_file` refuses a program no Ultimate could load before
-    either backend sends it."""
+    """`read_program_file` refuses a PRG the firmware would cut off at $FFFF,
+    or a CRT no Ultimate's cartridge ROM can hold, before either backend
+    sends it."""
 
     def _write(self, name: str, data: bytes) -> str:
         import os
