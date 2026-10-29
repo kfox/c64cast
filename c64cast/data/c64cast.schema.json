@@ -2194,7 +2194,7 @@
                       },
                       "messages": {
                         "type": "array",
-                        "description": "List of message strings to cycle through."
+                        "description": "List of message strings (or {text, color, style, ...} tables) to cycle through."
                       },
                       "row": {
                         "type": "integer",
