@@ -1182,6 +1182,29 @@ class MachineSettingsTest(unittest.TestCase):
             with self.assertRaises(cfgmod.ConfigError):
                 cfgmod.load_machine_settings()
 
+    def _write_latin1(self, name: str) -> str:
+        path = os.path.join(self._tmp.name, name)
+        with open(path, "wb") as f:
+            f.write('[video]\ndevice = "Caméra"\n'.encode("latin-1"))
+        return path
+
+    def test_a_non_utf8_settings_file_names_itself(self):
+        # #758: tomllib raised a bare UnicodeDecodeError naming only the codec.
+        self._write_latin1("settings.toml")
+        with self._env():
+            with self.assertRaises(cfgmod.ConfigError) as ctx:
+                cfgmod.load_machine_settings()
+        self.assertIn(self._path, str(ctx.exception))
+        self.assertIn("UTF-8", str(ctx.exception))
+
+    def test_a_non_utf8_config_file_names_itself(self):
+        path = self._write_latin1("show.toml")
+        for loader in (cfgmod.load, cfgmod.load_master):
+            with self._env():
+                with self.assertRaises(cfgmod.ConfigError, msg=loader.__name__) as ctx:
+                    loader(path)
+            self.assertIn(path, str(ctx.exception), loader.__name__)
+
     def test_unknown_key_warns_but_loads(self):
         self._write_settings('[ultimate64]\nurl = "http://m.lan"\nbogus_key = 1\n')
         with self._env():
