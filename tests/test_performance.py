@@ -88,6 +88,9 @@ class _FakePlaylist:
         self.swaps.append(new_scene.name)
         return True
 
+    def setup_failed(self, scene: _FakeScene) -> bool:
+        return False
+
 
 def _pump(session: PerformanceSession, pl: Any, *, times: int = 5) -> bool:
     """Call service() a few times (letting the background build thread finish),

@@ -866,7 +866,7 @@ class Playlist:
         rejected, and playing on against a machine that lost the follower's
         setup was the defect. The follower never held the ensemble audio
         slot (nothing claims one for it), so it does not wait to claim it.
-        True when it did. Raises what the new setup raises."""
+        True when it did."""
         if not self.restart_watch.after_frame(self._frame_landed, counted=True):
             return False
         self._set_up_again_after_restart(claim_audio=False)
@@ -1505,7 +1505,6 @@ class Playlist:
                         )
                         self._restore_after_teardown = True
                     else:
-                        # Ends the run as a setup failing in `_advance` does.
                         try:
                             self._set_up_again_after_restart()
                         except Exception:

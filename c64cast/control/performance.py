@@ -644,7 +644,8 @@ class PerformanceSession:
         # waveform restarts the SID); one-shot = restore the interrupted program.
         if not active.scene.is_done:
             return
-        if active.loop:
+        # Setting it up again would fail again, on every frame.
+        if active.loop and not pl.setup_failed(active.scene):
             pl.perf_swap_scene(active.scene)
         else:
             self._end_active(pl)
