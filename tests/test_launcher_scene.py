@@ -158,19 +158,14 @@ class HeldJoystickIsInputTest(unittest.TestCase):
 
 
 class FailedLaunchTest(unittest.TestCase):
-    """The playlist sets is_done from process_frame's return, so a setup that
-    could not launch the program has to end the scene there."""
-
-    def test_a_launch_that_raised_ends_the_scene_on_its_first_frame(self):
+    def test_a_launch_that_raised_reaches_the_playlist(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, api = _make_scene(tmp, input_source="none", reset_before_launch=False)
             api.profile.supports_rest_input = False
             api.launch_program.side_effect = RuntimeError("upload refused")
-            scene.duration_s = 60.0
-            with self.assertLogs("c64cast.scenes.scenes", "ERROR"):
-                scene.setup()
             self.addCleanup(scene.teardown)
-            self.assertFalse(scene.process_frame(time.time()))
+            with self.assertRaisesRegex(RuntimeError, "upload refused"):
+                scene.setup()
 
 
 class AudioLockTest(unittest.TestCase):

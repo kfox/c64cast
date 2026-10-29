@@ -21,7 +21,12 @@ import threading
 import time
 import unittest
 from collections.abc import Callable
+from unittest import mock
 
+from _fakes import FakeAPI
+
+from c64cast import _midi
+from c64cast._midi import MIDI_AVAILABLE
 from c64cast.app import playlist_support
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import OsdState
@@ -464,26 +469,40 @@ class PlaylistTest(unittest.TestCase):
         self.assertGreater(bad_td.setup_count, 0)
         self.assertGreater(ok.setup_count, 0, "next scene must still start after teardown raises")
 
-    def test_setup_exception_is_caught_in_advance(self):
-        # If a scene's setup raises, the playlist logs it and the loop exits
-        # cleanly (we don't try to recover from an unstartable scene).
+    def test_a_scene_whose_setup_raises_is_ended_and_the_playlist_plays_on(self):
+        bad = FakeScene("X", raise_on_setup=True)
+        good = FakeScene("GOOD", frames_until_done=2)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+            self._run_until([bad, good], lambda: good.setup_count >= 1)
+        self.assertTrue(
+            any("setup of 'X' raised; ending the scene" in line for line in cap.output),
+            f"expected the setup failure, got: {cap.output!r}",
+        )
+        self.assertEqual(bad.frame_count, 0, "a scene that never set up must not render")
+        self.assertGreater(bad.teardown_count, 0, "a scene whose setup raised is still torn down")
+
+    def test_a_lone_scene_whose_setup_raises_stops_the_run_after_its_teardown(self):
         bad_setup = FakeScene("X", raise_on_setup=True)
         api = FakeApi()
         factory, _ = _transition_factory()
+        stop = threading.Event()
         pl = Playlist(
-            [bad_setup, FakeScene("Y")],
+            [bad_setup],
             api,
             target_fps=10000.0,
             heartbeat_interval=0.0,
+            stop_event=stop,
             interstitial_factory=factory,
         )
-        # Should not hang -- _advance catches and breaks.
-        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+        arm_deadline(self, 5.0, stop.set)
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertTrue(
-            any("playlist advance failed; aborting" in line for line in cap.output),
-            f"expected advance-failure log, got: {cap.output!r}",
+            any("scene 'X' could not set up — stopping" in line for line in cap.output),
+            f"expected the stop, got: {cap.output!r}",
         )
+        self.assertEqual(bad_setup.teardown_count, 1)
+        self.assertEqual(bad_setup.frame_count, 0)
 
     def test_stop_event_halts_the_loop_between_frames(self):
         # What this has to assert is that the run loop re-reads stop_event
@@ -2187,6 +2206,52 @@ class SingleSceneThatFailsToStartTest(unittest.TestCase):
             pl._advance()
         self.assertFalse(pl.failed_to_start)
         self.assertFalse([r for r in cap.records if r.levelno >= logging.ERROR])
+
+
+class _PlaylistFakeAPI(FakeAPI):
+    """The scene-facing fake, plus what the run loop itself reads."""
+
+    def __init__(self):
+        super().__init__()
+        self.stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
+
+    def format_write_latency(self):
+        return None
+
+    def link_answers(self):
+        return True
+
+
+@unittest.skipUnless(MIDI_AVAILABLE, "mido not installed (midi extra)")
+class SetupFailureOfARealSceneTest(unittest.TestCase):
+    def test_a_midi_scene_whose_port_is_gone_is_torn_down_and_skipped(self):
+        from c64cast.sid.midi_scene import MidiScene
+
+        api = _PlaylistFakeAPI()
+        midi = MidiScene(api, None, port="Keystation")
+        good = FakeScene("GOOD", frames_until_done=2)
+        stop = threading.Event()
+        pl = Playlist(
+            [midi, good],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            loop=False,
+        )
+        arm_deadline(self, 5.0, stop.set)
+        with (
+            mock.patch.object(_midi.mido, "get_input_names", return_value=["IAC Driver Bus 1"]),
+            self.assertLogs("c64cast.app.playlist", level="ERROR") as cap,
+        ):
+            pl.run()
+        self.assertTrue(
+            any("setup of 'MIDI' raised; ending the scene" in line for line in cap.output),
+            f"expected the setup failure, got: {cap.output!r}",
+        )
+        self.assertEqual(good.setup_count, 1, "the scene after it must still play")
+        self.assertIn("SILENCE", api.regs, "the SID its setup programmed must be silenced")
 
 
 if __name__ == "__main__":

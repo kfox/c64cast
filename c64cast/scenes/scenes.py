@@ -896,43 +896,18 @@ class SourceScene(Scene):
         self.start_time = time.time()
         self._frame_count = 0
         self.source.setup()
-        # The playlist does not wrap setup() in try/except, so a raise from a
-        # source that rejects its content would crash the run loop. Self-abort
-        # instead and let the playlist advance.
-        try:
-            self.audio_source.setup()
-        except Exception as e:
-            self.report_setup_failure(
-                log,
-                "scene %r: audio source %s failed to start (%s) — aborting scene",
-                self.name,
-                type(self.audio_source).__name__,
-                e,
-                exc_info=True,
-            )
-            self.is_done = True
-        if not self.is_done:
-            self.sync_duration_to_audio()
+        self.audio_source.setup()
+        self.sync_duration_to_audio()
         # A SID audio source kicks its player through run_prg, which re-inits
         # the machine to text mode and clobbers the VIC registers super().setup()
         # just wrote; re-assert the display after it, against invalidated cache.
-        if (
-            not self.is_done
-            and self.display_mode is not None
-            and getattr(self.audio_source, "resets_display", False)
-        ):
+        if self.display_mode is not None and getattr(self.audio_source, "resets_display", False):
             self.api.invalidate_cache()
             self.display_mode.setup(self.api)
         # After any display re-assert above, so it installs onto the settled mode.
-        if not self.is_done:
-            self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
+        self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
 
     def process_frame(self, current_time: float) -> bool:
-        # A generative FrameSource is never `finished`, so an is_done set by a
-        # failed setup() has to end the scene here or it plays silent for the
-        # full duration.
-        if self.is_done:
-            return False
         if self.source.finished or self.audio_source.finished:
             return False
         if (current_time - self.start_time) >= self.duration_s:
@@ -1820,8 +1795,8 @@ class VideoScene(MediaFileMixin, Scene):
         try:
             audio_4bit = self._preencode_audio_for_reu()
         except Exception as e:
-            # The container open is guarded the same way: a setup() raise ends
-            # the whole show, not the scene.
+            # Not left to raise, which would end the scene: the picture plays
+            # without the soundtrack.
             log.error(
                 "video: cannot decode the soundtrack of %s (%s); playing it silent",
                 self.filepath,
@@ -2462,12 +2437,7 @@ class LauncherScene(MediaFileMixin, Scene):
         # A `.crt` in particular expects a reset to take effect.
         if self.reset_before_launch:
             self.api.reset()
-        try:
-            self.api.launch_program(self.filepath)
-        except Exception as e:
-            self.report_setup_failure(log, "launcher: failed to launch %s (%s)", self.filepath, e)
-            self.is_done = True
-            return
+        self.api.launch_program(self.filepath)
         if self.input_source != "none":
             self._poll.start()
         if self.api.profile.supports_rest_input:

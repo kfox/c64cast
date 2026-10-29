@@ -321,9 +321,9 @@ class AudioSourceTeardownTests(unittest.TestCase):
     def test_a_scene_whose_audio_source_cannot_start_still_stops_the_pump(self):
         """The reachability half, driven rather than argued.
 
-        `SourceScene.setup` catches an audio source that fails to start, logs,
-        and flips `is_done` so the playlist advances and tears the scene down —
-        which is the only way a half-set-up file source is ever torn down. The
+        An audio source that fails to start raises out of `SourceScene.setup`,
+        and the playlist ends the scene and tears it down — which is the only
+        way a half-set-up file source is ever torn down. The
         DAC ordering is the one that matters: `start_for_external_source()` runs
         before the decode thread, so the pump is live by the time the start
         fails, and stopping it is the scene's promise to whatever plays next.
@@ -334,9 +334,8 @@ class AudioSourceTeardownTests(unittest.TestCase):
         with patch.object(
             threading.Thread, "start", side_effect=RuntimeError("can't start new thread")
         ):
-            with self.assertLogs(_SCENES_LOG, level="ERROR"):
+            with self.assertRaises(RuntimeError):
                 scene.setup()
-        self.assertTrue(scene.is_done, "the playlist never advances, so teardown never runs")
         self.assertTrue(audio.start_for_external_source.called, "no pump was ever started")
         audio.stop.reset_mock()
         scene.teardown()

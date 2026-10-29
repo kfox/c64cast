@@ -201,6 +201,8 @@ class Playlist:
         # teardown failed to unhook may still be on $0314: `safe_setup` runs
         # `_release_leaked_irq` before the next scene that is not the card.
         self._irq_release_owed = False
+        # The scene whose last setup raised, so that it renders nothing and ends.
+        self._failed_setup: Scene | None = None
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -637,8 +639,13 @@ class Playlist:
             )
             self._set_up_single_scene(scene)
         elif self.current.is_done:
-            if not self.loop:
-                self.log.info("scene %r finished and loop=False — stopping", self.current.name)
+            setup_failed = self.setup_failed(self.current)
+            if not self.loop or setup_failed:
+                self.log.info(
+                    "scene %r %s — stopping",
+                    self.current.name,
+                    "could not set up" if setup_failed else "finished and loop=False",
+                )
                 self.fades.fade_out(self.current)
                 self.safe_teardown(self.current)
                 self.current = None
@@ -847,6 +854,10 @@ class Playlist:
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
 
+    def setup_failed(self, scene: Scene) -> bool:
+        """Whether `scene`'s last setup raised, leaving it not set up."""
+        return scene is self._failed_setup
+
     def follower_frame_rendered(self) -> bool:
         """Called after each frame of a broadcast follower scene, which the
         run loop does not drive. A machine restart under it puts the run's
@@ -937,11 +948,13 @@ class Playlist:
 
     def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
         """Set `scene` up, and again once the link answers when the link
-        cost the setup a write. False when `stop_event` fired while waiting:
-        a stop while waiting for the link leaves the scene as its last setup
-        left it, and a stop while waiting to claim the ensemble audio slot
-        back leaves it already torn down. Either way the caller's teardown
-        still runs on it.
+        cost the setup a write. False when the scene is not set up: its
+        setup raised anything but a `LinkError`, which ends the scene
+        (`_failed_setup`) and leaves the rest of the playlist to play, or
+        `stop_event` fired while waiting. A stop while waiting for the link
+        leaves the scene as its last setup left it, and a stop while waiting
+        to claim the ensemble audio slot back leaves it already torn down.
+        Either way the caller's teardown still runs on it.
 
         A setup lost a write when it raised a `LinkError`, when by the end
         of a `flush()` after it the backend's `write_loss_mark()` for this
@@ -965,6 +978,7 @@ class Playlist:
         keeps the file the scene picked (`keep_pick_for_resetup`), which
         the "UP NEXT" card has already named."""
         where = f"setup of {scene.name!r}"
+        self._failed_setup = None
         lossy_tries = 0
         while True:
             claimant: Scene | None = None
@@ -994,6 +1008,11 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
+            except Exception:
+                self.log.exception("%s raised; ending the scene", where)
+                self._failed_setup = scene
+                self.fades.ended_via_skip = True
+                return False
             # A release still owed lost a write ahead of the mark, and keeping
             # this setup could leave the leaked handler hooked, the bank on 2 or
             # the keyboard dead through the scene.
@@ -1192,7 +1211,14 @@ class Playlist:
         path can drive a follower scene through the same render +
         overlay + heartbeat + frame-drop machinery without duplicating
         any of it. Skip/cycle events are honored against this scene
-        (consistent with `self.current` being the active scene)."""
+        (consistent with `self.current` being the active scene).
+
+        A scene whose setup raised renders nothing: it ends here, after one
+        frame's wait, so the playlist moves on at the usual pace."""
+        if self.setup_failed(scene):
+            scene.is_done = True
+            self._frame_landed = False
+            return self._idle_pace(scene, next_deadline)
         frame_time = self.frame_time_for(scene)
         with self.profiler.frame(scene.name):
             t0 = time.time()
