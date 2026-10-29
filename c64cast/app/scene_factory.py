@@ -1607,14 +1607,16 @@ def validate_cell_strategy_cfg(cfg: Config) -> None:
 
 
 def flicker_tolerance_cfg_error(label: str, color: ColorCfg) -> str | None:
-    """Check one resolved [color] section's flicker_tolerance choice; returns
-    the ConfigError message, or None if `color` is fine. See
+    """Check one resolved [color] section's flicker_tolerance choice and its
+    luma cap; returns the ConfigError message, or None if `color` is fine. See
     `dither_cfg_error` for why this is split from `validate_flicker_cfg`."""
     if color.flicker_tolerance not in FLICKER_TOLERANCES:
         return (
             f"{label}.flicker_tolerance must be one of {tuple(FLICKER_TOLERANCES)}, "
             f"got {color.flicker_tolerance!r}"
         )
+    if math.isnan(color.flicker_max_luma_delta):
+        return f"{label}.flicker_max_luma_delta must be a number, got nan"
     return None
 
 
