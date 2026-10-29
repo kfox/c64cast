@@ -471,6 +471,16 @@ class ClockTest(unittest.TestCase):
         steps = {(int(b) - int(a)) % 60 for a, b in zip(shown, shown[1:], strict=False)}
         self.assertEqual(steps, {1}, f"the displayed second jumped: {shown}")
 
+    def test_zero_refresh_recomputes_every_frame(self):
+        from c64cast.scenes.overlays.clock import ClockOverlay
+
+        ov = ClockOverlay(format="%S", refresh_s=0)
+        with patch("c64cast.scenes.overlays.clock.datetime") as dt_mock:
+            dt_mock.now.return_value.strftime.side_effect = ["01", "02"]
+            ov.compose(_make_buffers(), scene=MagicMock(), t=10.0)
+            ov.compose(_make_buffers(), scene=MagicMock(), t=10.03)
+        self.assertEqual(ov._last_strings, ["02"])
+
 
 class WeatherTest(unittest.TestCase):
     def test_uses_cache_when_fetch_fails(self):
@@ -586,6 +596,7 @@ class CountdownTest(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+@unittest.skipUnless(hasattr(time, "tzset"), "time.tzset is Unix-only")
 class CountdownWallClockTest(unittest.TestCase):
     """`now` is pinned to one instant; `TZ` picks the local zone."""
 
