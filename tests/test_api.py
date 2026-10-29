@@ -939,6 +939,14 @@ class LaunchProgramTest(unittest.TestCase):
                 self.api.launch_program(self._write(tmp, "disk.d64"))
         self.post.assert_not_called()
 
+    def test_prg_loading_past_ffff_is_refused_before_anything_is_sent(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "loads past"):
+                self.api.launch_program(self._write(tmp, "game.prg", b"\x00\xc0" + bytes(0x4001)))
+        self.post.assert_not_called()
+
     def test_post_failure_reraises(self):
         import tempfile
 

@@ -1433,6 +1433,24 @@ class BackendTest(unittest.TestCase):
         b = TeensyROMBackend(t, profile=replace(TEENSYROM_PROFILE), storage="sd")
         return b, t
 
+    def test_launch_program_refuses_an_oversized_crt_before_uploading(self):
+        import os
+        import tempfile
+
+        from c64cast.hw.backend import CRT_MAX_BYTES
+
+        b, _ = self._backend()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "big.crt")
+            with open(path, "wb") as fh:
+                fh.write(bytes(CRT_MAX_BYTES + 1))
+            with (
+                mock.patch.object(b, "_upload") as upload,
+                self.assertRaisesRegex(ValueError, "larger than"),
+            ):
+                b.launch_program(path)
+        upload.assert_not_called()
+
     def test_emit_chunks_large_writes(self):
         b, t = self._backend()
         # A payload over MAX_SEGMENT_BYTES splits into acked segments — one ack each.

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import sys
 import threading
 import weakref
@@ -51,6 +52,37 @@ def printable_device_text(text: str) -> str:
     device from forging ANSI escapes or embedded newlines into
     ``--log-file`` output or a rendered error message."""
     return "".join(c for c in text if c.isprintable())
+
+
+PRG_LOAD_LIMIT = 0x10000
+# The largest cartridge ROM region in the Ultimate firmware is the U64's 4 MiB
+# (__cart_rom_limit - __cart_rom_start in its linker.x); the margin covers the
+# CRT header and one CHIP header per 8 KiB bank.
+CRT_MAX_BYTES = (4 << 20) + (64 << 10)
+
+
+def read_program_file(path: str) -> tuple[str, bytes]:
+    """Read a `.prg` or `.crt` for `launch_program`, returning its lowercased
+    extension and its bytes. Raises ValueError for any other extension, a CRT
+    larger than `CRT_MAX_BYTES`, or a PRG without a load address or whose body
+    runs past $FFFF, without reading more of the file than that limit."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".prg", ".crt"):
+        raise ValueError(
+            f"launch_program: unsupported extension {ext!r} for {path!r} (expected .prg or .crt)"
+        )
+    limit = PRG_LOAD_LIMIT + 2 if ext == ".prg" else CRT_MAX_BYTES
+    with open(path, "rb") as fh:
+        data = fh.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"launch_program: {path!r} is larger than {limit} bytes")
+    if ext == ".prg":
+        if len(data) < 2:
+            raise ValueError(f"launch_program: {path!r} has no load address")
+        end = int.from_bytes(data[:2], "little") + len(data) - 2
+        if end > PRG_LOAD_LIMIT:
+            raise ValueError(f"launch_program: {path!r} loads past $FFFF (ends at ${end:X})")
+    return ext, data
 
 
 # Callback signature for write listeners (preview / recording / framebuffer

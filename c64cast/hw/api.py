@@ -54,6 +54,7 @@ from .backend import (
     BufferedWriteBackend,
     HardwareProfile,
     printable_device_text,
+    read_program_file,
 )
 from .c64 import (
     CIA1,
@@ -2177,20 +2178,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         future firmware names the cart attachment differently this is the
         one spot to adjust.
         """
-        ext = os.path.splitext(path)[1].lower()
-        if ext == ".crt":
-            endpoint = U64_API.RUN_CRT
-        elif ext == ".prg":
-            endpoint = U64_API.RUN_PRG
-        else:
-            raise ValueError(
-                f"launch_program: unsupported extension {ext!r} for {path!r} "
-                f"(expected .prg or .crt)"
-            )
-
+        ext, payload = read_program_file(path)
+        endpoint = U64_API.RUN_CRT if ext == ".crt" else U64_API.RUN_PRG
         mark = self.write_loss_mark()
-        with open(path, "rb") as fh:
-            payload = fh.read()
 
         self._flush_or_raise("launch_program", mark)
         self.invalidate_cache()

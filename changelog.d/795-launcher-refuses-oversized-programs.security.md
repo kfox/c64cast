@@ -1,0 +1,1 @@
+- The launcher refuses a `.prg` that loads past `$FFFF` or a `.crt` larger than the Ultimate's 4 MiB cartridge ROM, instead of sending the whole file to the machine. A full-role console user could otherwise upload a file of up to 512 MiB and have it posted to the U64 or written over a TeensyROM's serial link.
