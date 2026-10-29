@@ -82,6 +82,13 @@ class PositionContentTest(unittest.TestCase):
         self.assertEqual(torn, [0])
         self.assertEqual(self.tool.seam_kind(self._states(picture)), "two-apart")
 
+    def test_a_ragged_seam_between_frames_two_apart_reads_as_two_apart(self) -> None:
+        # What a write caught by the beam leaves: rows lighting both bands.
+        picture = self.tool.position_state(1).copy()
+        picture[:96] = self.tool.position_state(3)[:96]
+        picture[96:120] |= self.tool.position_state(3)[96:120]
+        self.assertEqual(self.tool.seam_kind(self._states(picture)), "two-apart")
+
     def test_consecutive_frames_in_one_picture_read_as_adjacent(self) -> None:
         picture = self.tool.position_state(1).copy()
         picture[:96] = self.tool.position_state(2)[:96]

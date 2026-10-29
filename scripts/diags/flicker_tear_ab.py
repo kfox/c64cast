@@ -368,14 +368,15 @@ def seam_kind(states: list[str]) -> str:
 
     "adjacent" is two consecutive frames (a late swap: the top still shows the
     bank being left). "two-apart" is frames N-1 and N+1 at once, the signature
-    of a push writing into the bank on screen. "partial" is a run lighting no
-    band or two, a write caught between clearing one band and setting the
-    next."""
+    of a push writing into the bank on screen; the rows where that write met
+    the beam light both bands, so they do not outvote it. "partial" is any
+    other frame with a run lighting no band or two."""
     runs = [r[0] for r in _runs(states) if r[0] != "blank" and r[2] - r[1] + 1 >= MIN_RUN]
-    if any(not (len(s) == 1 and s.isdigit()) for s in runs):
-        return "partial"
-    gaps = {(int(b) - int(a)) % BANDS for a, b in zip(runs, runs[1:], strict=False) if a != b}
-    return "two-apart" if 2 in gaps else "adjacent"
+    single = [int(s) for s in runs if len(s) == 1 and s.isdigit()]
+    gaps = {(b - a) % BANDS for a, b in zip(single, single[1:], strict=False) if a != b}
+    if 2 in gaps:
+        return "two-apart"
+    return "partial" if len(single) < len(runs) else "adjacent"
 
 
 def _runs(states: list[str]) -> list[tuple[str, int, int]]:
