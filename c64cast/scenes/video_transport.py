@@ -225,7 +225,7 @@ class VideoTransportControls:
             and sc.audio is not None
             and sc.source is not None
             and sc.source.a_stream is not None
-            and not getattr(sc.audio, "use_reu_pump", False)
+            and not sc.preloads_to_reu
         )
         if resync:
             assert sc.audio is not None

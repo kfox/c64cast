@@ -196,6 +196,11 @@ _HTTP_RECONNECT_OPTIONS = {
 # and it sits well above the reconnect backoff cap so a reconnect completes.
 _REMOTE_OPEN_TIMEOUT_S = 20.0
 _REMOTE_READ_TIMEOUT_S = 30.0
+# The audio peak scan reads its input to the end before playback starts, and
+# a live stream, which keeps answering, has none: on a network input that
+# reports no length it stops this long after the open and keeps the peak read
+# so far. One that reports a length is read to its end however slowly.
+_REMOTE_PEAK_SCAN_S = 10.0
 
 
 def _protocol_options(path: str) -> dict[str, str]:
@@ -316,13 +321,15 @@ class RemoteSeekStalled(RuntimeError):
 
 
 class _ContainerCloser:
-    """Closes a container once its owner has released it and no `_seek`
-    worker is inside it, whichever comes last.
+    """Closes a container once its owner has released it and no thread that
+    entered it (a `_seek` worker, the demux thread) is still inside it,
+    whichever comes last.
 
-    An owner whose close can run while a seek is in flight on another thread
-    (`AVFileSource.close` against the demux thread's transport seek) releases
-    through this rather than closing directly, because that seek can outlive
-    any join the owner is willing to wait for."""
+    An owner whose close can run while another thread reads the container
+    (`AVFileSource.close` against the demux thread's read or transport seek)
+    releases through this rather than closing directly, because a read from a
+    network input that stops sending outlives any join the owner is willing
+    to wait for, and closing under it frees the context it reads through."""
 
     def __init__(self, container: Any) -> None:
         self._container = container
@@ -513,6 +520,47 @@ def _plan_decode_size(
     return dw, dh
 
 
+def _trim_to_crop(img: np.ndarray) -> np.ndarray:
+    """``img`` cut down to what the scene's center-crop to `_CROP_ASPECT`
+    keeps, plus one pixel each side of the cropped axis, as a copy.
+
+    `_plan_decode_size` cannot shrink the kept axis below its headroom, so a
+    frame of extreme aspect (16000x250) reached the video buffer whole. The
+    margin is what keeps the scene's crop (scenes._crop_to_aspect) on the
+    same pixels: it rounds the kept length down, which on the exact cut can
+    tip the frame to the other side of the aspect and trim the other axis."""
+    h, w = img.shape[:2]
+    if w / h > _CROP_ASPECT:
+        keep = int(h * _CROP_ASPECT)
+        x0 = (w - keep) // 2
+        return img[:, x0 - 1 : x0 + keep + 1].copy() if x0 > 0 else img
+    if w / h < _CROP_ASPECT:
+        keep = int(w / _CROP_ASPECT)
+        y0 = (h - keep) // 2
+        return img[y0 - 1 : y0 + keep + 1].copy() if y0 > 0 else img
+    return img
+
+
+class _DecodePlan:
+    """`_plan_decode_size` for each frame, re-planned whenever the frame size
+    changes: a stream can open small and switch resolution mid-way, and a
+    plan kept from its first frame converted every later one at full size."""
+
+    def __init__(self, target: tuple[int, int] | None) -> None:
+        self.target = target
+        self.size: tuple[int, int] | None = None
+        self._source: tuple[int, int] | None = None
+
+    def update(self, frame: Any) -> bool:
+        """Plan for ``frame``'s size; True when that changed the plan's source."""
+        source = (frame.width, frame.height)
+        if source == self._source:
+            return False
+        self._source = source
+        self.size = None if self.target is None else _plan_decode_size(*source, *self.target)
+        return True
+
+
 # PyAV is imported lazily on first AVFileSource construction. On macOS the av
 # wheel bundles a different libavdevice major version than the cv2 wheel, so as
 # av's libavdevice loads on top of cv2's the Obj-C runtime prints a one-time
@@ -686,6 +734,12 @@ def decode_audio_full(
                 if arr.size:
                     chunks.append(arr.astype(np.int16, copy=False))
                     room -= arr.size
+        if picture_s is not None and origin_s is not None and v_stream is not None:
+            end_s = picture_s - origin_s + 1.0 / _nominal_fps(v_stream)
+            short = math.ceil(end_s * target_sample_rate) - sum(c.size for c in chunks)
+            short = min(short, room)
+            if short > 0:
+                chunks.append(np.zeros(short, dtype=np.int16))
     finally:
         container.close()
     if not chunks:
@@ -693,9 +747,15 @@ def decode_audio_full(
     return np.concatenate(chunks)
 
 
-def _frame_to_scan_bgr(frame: Any, decode_size: tuple[int, int] | None) -> np.ndarray:
-    """Convert one decoded frame to a BGR ndarray for the accumulators,
-    downscaling DURING the yuv→bgr swscale pass when a decode size is planned."""
+def _nominal_fps(v_stream: Any) -> float:
+    return float(v_stream.average_rate) if v_stream.average_rate else 30.0
+
+
+def _frame_to_scan_bgr(frame: Any, plan: _DecodePlan) -> np.ndarray:
+    """Convert one decoded frame to a BGR ndarray, downscaling DURING the
+    yuv→bgr swscale pass when ``plan`` has a decode size for its size."""
+    plan.update(frame)
+    decode_size = plan.size
     if decode_size is not None:
         return frame.reformat(
             width=decode_size[0], height=decode_size[1], format="bgr24"
@@ -703,8 +763,32 @@ def _frame_to_scan_bgr(frame: Any, decode_size: tuple[int, int] | None) -> np.nd
     return frame.to_ndarray(format="bgr24")
 
 
+class RemoteScanStalled(RuntimeError):
+    """A network input went `_REMOTE_READ_TIMEOUT_S` without a picture
+    during the color pre-scan."""
+
+
+def _video_frames(container: Any, path: str, v_stream: Any) -> Iterator[Any]:
+    """``container.decode(v_stream)``, raising `RemoteScanStalled` on a
+    network input once reading goes `_REMOTE_READ_TIMEOUT_S` without a
+    picture. ``decode(v_stream)`` reads the other streams' packets inside
+    PyAV's generator, so a live stream whose picture never comes kept it
+    reading for good while every read answered within PyAV's own bound."""
+    bounded = not _is_local_file(path)
+    since = time.monotonic()
+    for packet in container.demux():
+        if bounded and time.monotonic() - since > _REMOTE_READ_TIMEOUT_S:
+            raise RemoteScanStalled(
+                f"the media server sent no picture within {_REMOTE_READ_TIMEOUT_S:g} s"
+            )
+        if packet.stream is v_stream:
+            for frame in packet.decode():
+                yield frame
+                since = time.monotonic()
+
+
 def _source_duration_s(container: Any, v_stream: Any) -> float | None:
-    """Playback duration of ``v_stream`` in seconds, or None when unknown.
+    """Playback duration of ``v_stream`` (any stream) in seconds, or None when unknown.
 
     Prefers the stream's own duration (stream time_base units); falls back to
     the container duration (AV_TIME_BASE microseconds). None on a live/unbounded
@@ -740,8 +824,7 @@ def _seek_sample_frames(
     if not time_base:
         return 0
     start_time = v_stream.start_time or 0
-    decode_size: tuple[int, int] | None = None
-    planned = False
+    plan = _DecodePlan(decode_target_size)
     taken = 0
     for n in range(max_samples):
         # Interval midpoints, so the last target is not at/after EOF, where it
@@ -749,14 +832,10 @@ def _seek_sample_frames(
         target_s = (n + 0.5) / max_samples * duration_s
         ts = start_time + int(target_s / time_base)
         _seek(container, path, ts, stream=v_stream)  # backward=True (default) → keyframe ≤ ts
-        frame = next(container.decode(v_stream), None)
+        frame = next(_video_frames(container, path, v_stream), None)
         if frame is None:
             continue
-        if not planned:
-            planned = True
-            if decode_target_size is not None:
-                decode_size = _plan_decode_size(frame.width, frame.height, *decode_target_size)
-        img = _frame_to_scan_bgr(frame, decode_size)
+        img = _frame_to_scan_bgr(frame, plan)
         for acc in accumulators:
             acc.add(img)
         taken += 1
@@ -765,6 +844,7 @@ def _seek_sample_frames(
 
 def _decode_sample_frames(
     container: Any,
+    path: str,
     v_stream: Any,
     accumulators: list[Any],
     max_samples: int,
@@ -777,16 +857,11 @@ def _decode_sample_frames(
     total = v_stream.frames or 0
     stride = max(1, total // max_samples) if total else 5
     taken = 0
-    decode_size: tuple[int, int] | None = None
-    planned = False
-    for i, frame in enumerate(container.decode(v_stream)):
+    plan = _DecodePlan(decode_target_size)
+    for i, frame in enumerate(_video_frames(container, path, v_stream)):
         if i % stride:
             continue
-        if not planned:
-            planned = True
-            if decode_target_size is not None:
-                decode_size = _plan_decode_size(frame.width, frame.height, *decode_target_size)
-        img = _frame_to_scan_bgr(frame, decode_size)
+        img = _frame_to_scan_bgr(frame, plan)
         for acc in accumulators:
             acc.add(img)
         taken += 1
@@ -868,6 +943,8 @@ def scan_video_samples(
                     # The abandoned seek owns the container now.
                     container = None
                     raise
+                except RemoteScanStalled:
+                    raise
                 except Exception as e:
                     # Non-seekable source: fall through to sequential decode.
                     log.debug(
@@ -882,7 +959,7 @@ def scan_video_samples(
                 v_stream = container.streams.video[0]
                 v_stream.thread_type = "AUTO"
                 _decode_sample_frames(
-                    container, v_stream, accumulators, max_samples, decode_target_size
+                    container, path, v_stream, accumulators, max_samples, decode_target_size
                 )
         finally:
             if container is not None:
@@ -1060,10 +1137,8 @@ class AVFileSource:
         # The display mode's frame_target_size (or None). When set, the demux
         # loop downscales each frame to a headroom multiple of it during the
         # yuv→bgr swscale pass instead of converting the full source frame; the
-        # size is planned once from the first frame (_plan_decode_size).
-        self._decode_target = decode_target_size
-        self._decode_size: tuple[int, int] | None = None
-        self._decode_planned = False
+        # size is planned from each frame size the stream decodes to (_DecodePlan).
+        self._decode_plan = _DecodePlan(decode_target_size)
         # PTS (rebased, seconds) of the frame current_frame() last returned —
         # the A/V-lag telemetry in VideoScene reads it as displayed_frame_pts.
         self.last_frame_pts: float = 0.0
@@ -1093,7 +1168,7 @@ class AVFileSource:
         self.v_stream = self.container.streams.video[0]
         self.a_stream = self.container.streams.audio[0] if self.container.streams.audio else None
 
-        self.video_fps = float(self.v_stream.average_rate) if self.v_stream.average_rate else 30.0
+        self.video_fps = _nominal_fps(self.v_stream)
         self.video_time_base = float(self.v_stream.time_base or 0)
         # Source duration in seconds, for absolute-jog mapping and seek/loop
         # clamping. None when the container does not report one.
@@ -1246,7 +1321,28 @@ class AVFileSource:
                         container = None
                         raise
                 resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
-                for packet in container.demux(a_stream):
+                bounded = not _is_local_file(self.path)
+                live = _source_duration_s(container, a_stream) is None
+                opened = last_sound = time.monotonic()
+                # Every stream, not just the audio: PyAV reads the packets of
+                # the others inside its generator, where no bound is checked,
+                # and a stream can carry no audio at all.
+                for packet in container.demux():
+                    if bounded:
+                        now = time.monotonic()
+                        if packet.stream is a_stream:
+                            last_sound = now
+                        stop = self._peak_scan_stop(now - opened, now - last_sound, live)
+                        if stop is not None:
+                            log.warning(
+                                "av %s: audio peak scan stopped %s; the gain is set from the "
+                                "part read",
+                                os.path.basename(self.path),
+                                stop,
+                            )
+                            break
+                    if packet.stream is not a_stream:
+                        continue
                     for frame in packet.decode():
                         for resampled in resampler.resample(frame):
                             arr = resampled.to_ndarray().reshape(-1)
@@ -1264,6 +1360,17 @@ class AVFileSource:
             log.exception("av %s: audio peak scan failed; using unity gain", self.path)
             return 0
         return peak
+
+    @staticmethod
+    def _peak_scan_stop(elapsed_s: float, silent_s: float, live: bool) -> str | None:
+        """Why the peak scan of a network input stops here, or None to read on:
+        a live stream (no length) after `_REMOTE_PEAK_SCAN_S`, and any input
+        once `_REMOTE_READ_TIMEOUT_S` passes without a packet of sound."""
+        if live and elapsed_s > _REMOTE_PEAK_SCAN_S:
+            return f"after {_REMOTE_PEAK_SCAN_S:g} s of a stream with no length"
+        if silent_s > _REMOTE_READ_TIMEOUT_S:
+            return f"after {_REMOTE_READ_TIMEOUT_S:g} s with no sound"
+        return None
 
     def start(
         self,
@@ -1466,39 +1573,28 @@ class AVFileSource:
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 
-    def _plan_decode(self, frame: Any) -> None:
-        """Plan the decode downscale once, from the first frame's real
-        dimensions. _decode_size None = source already small enough (or no
-        target) → plain full-res convert."""
-        self._decode_planned = True
-        if self._decode_target is None:
-            return
-        self._decode_size = _plan_decode_size(frame.width, frame.height, *self._decode_target)
-        if self._decode_size is not None:
-            log.info(
-                "av %s: decoding %dx%d→%dx%d (display target %dx%d)",
-                os.path.basename(self.path),
-                frame.width,
-                frame.height,
-                self._decode_size[0],
-                self._decode_size[1],
-                self._decode_target[0],
-                self._decode_target[1],
-            )
+    @property
+    def _decode_size(self) -> tuple[int, int] | None:
+        """The decode size for the current frame size; None = source already
+        small enough (or no target) → plain full-res convert."""
+        return self._decode_plan.size
 
     def _frame_to_bgr(self, frame: Any) -> np.ndarray:
         """Decoded frame → BGR ndarray, at the planned decode size when one
         applies (yuv→bgr + downscale in one swscale pass — cheap, vs a
         full-res bgr buffer + a separate cv2.resize)."""
-        if not self._decode_planned:
-            self._plan_decode(frame)
-        if self._decode_size is not None:
-            return frame.reformat(
-                width=self._decode_size[0],
-                height=self._decode_size[1],
-                format="bgr24",
-            ).to_ndarray()
-        return frame.to_ndarray(format="bgr24")
+        plan = self._decode_plan
+        if plan.update(frame) and plan.size is not None and plan.target is not None:
+            log.info(
+                "av %s: decoding %dx%d→%dx%d (display target %dx%d)",
+                os.path.basename(self.path),
+                frame.width,
+                frame.height,
+                *plan.size,
+                *plan.target,
+            )
+        img = _frame_to_scan_bgr(frame, plan)
+        return img if plan.target is None else _trim_to_crop(img)
 
     def _rebase_pts(self, frame: Any) -> float:
         """Stamp a frame on the playback clock: its content time (`_content_time`,
@@ -1989,10 +2085,12 @@ class AVFileSource:
         lost with nothing left to apply it."""
         # "Container hit EOF" is expected and logs debug; a mid-stream decode
         # failure logs a full traceback and ends the thread.
+        self._closer.enter()
         try:
             while (end := self._demux_pass()) != "closed":
                 if end == "eof":
                     self._flush_resampler()
+                    self._fill_to_last_picture()
                     self._flush_atempo()
                     self._end_audio_input()
                     log.debug("demux %s: EOF", self.path)
@@ -2001,7 +2099,11 @@ class AVFileSource:
                 self._apply_pending_seek()
         except RemoteSeekStalled as e:
             log.error("demux %s: %s; ending playback", self.path, e)
-        except Exception:
+        except Exception as e:
+            if self._closed:
+                # A read the close outlived, ended by the read bound or a dropped connection.
+                log.debug("demux %s: read after close ended (%s)", self.path, type(e).__name__)
+                return
             log.exception("demux %s crashed", self.path)
             # The crash is this input's end too: a clip that pushed less than
             # the sink's prebuffer before it would otherwise never be played.
@@ -2010,6 +2112,27 @@ class AVFileSource:
             with self._lock:
                 self._eof = True
                 self._demux_exited = True
+            self._closer.leave()
+
+    def _fill_to_last_picture(self) -> None:
+        """At EOF, feed silence up to the end of the newest picture still
+        buffered. The sink's clock is the sound played, so a soundtrack that
+        ends before its picture stopped the clock short of the last pictures,
+        and the source never finished. Exact, not within
+        `AUDIO_ALIGN_TOLERANCE_S`: a frame interval is shorter than it above
+        33 fps."""
+        if not self._dry_fill_applies() or self._closed:
+            return
+        with self._lock:
+            if not self._video_buf:
+                return
+            newest = max(pts for pts, _ in self._video_buf)
+        end = self._clock_to_content(newest) + 1.0 / self.video_fps
+        fed = self._audio_fed_s if self._audio_fed_s is not None else self._pts_anchor_target
+        silence = math.ceil((end - fed) * self.target_sr)
+        if silence > 0:
+            self._audio_fed_s = fed + silence / self.target_sr
+            self._feed_silence(silence)
 
     def _end_audio_input(self) -> None:
         """Tell the sink this pass pushed its last sample (see `start`). Not
@@ -2042,8 +2165,7 @@ class AVFileSource:
         its last read (see `_seek`). The packet in flight when the seek
         arrived was read from the old position and is dropped."""
         if self._closed:
-            # close() may have landed during the seek that ended the last
-            # pass, and that seek's worker has since closed the container.
+            # close() may have landed during the seek that ended the last pass.
             return "closed"
         packets = self.container.demux()
         try:

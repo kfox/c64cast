@@ -408,6 +408,7 @@ class ResamplerTailTest(unittest.TestCase):
         src._audio_jump_warned = False
         src._dry_stall_level, src._dry_window = 0, None
         src._frames_taken, src._clock_read = 0, None
+        src._video_buf = []
         src._pts_offset = None
         src._pts_anchor_target = 0.0
         src._tempo_scale = 1.0
@@ -422,6 +423,7 @@ class ResamplerTailTest(unittest.TestCase):
         container = av.open(self._wav())
         self.addCleanup(container.close)
         src.container = container
+        src._closer = _ContainerCloser(container)
         src.path = "t.wav"
         _arm_locks(src)
         src._eof = False
@@ -716,9 +718,7 @@ def _make_demux_source_stub(
     src._audio_jump_warned = False
     src._dry_stall_level, src._dry_window = 0, None
     src._frames_taken, src._clock_read = 0, None
-    src._decode_target = decode_target
-    src._decode_size = None
-    src._decode_planned = False
+    src._decode_plan = video_mod._DecodePlan(decode_target)
     src._tempo_scale = 1.0
     src._atempo_graph = None
     src.last_frame_pts = 0.0
@@ -2066,6 +2066,14 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertFalse(scene.transport.resync)
         self.assertEqual(source.muted_calls, [True])
 
+    def test_a_network_input_resyncs_its_streamed_sound_under_the_reu_pump_setting(self):
+        # Its sound streams rather than going to the pump, so the transport
+        # follows it as it would with the pump off.
+        scene, _, audio = self._resync_scene(position=7.0)
+        audio.use_reu_pump = True
+        scene.transport.touch()
+        self.assertTrue(scene.transport.resync)
+
     def test_on_without_audio_falls_back_to_mute(self):
         scene = _make_video_scene_stub(_StubSource(duration=100.0))  # audio=None
         scene.transport.loop_audio = "on"
@@ -3048,9 +3056,10 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         w, h, fmt = frame.reformat_calls[0]
         self.assertEqual((w, h), src._decode_size)
         self.assertEqual(fmt, "bgr24")
-        # Buffered frame carries the downscaled dimensions, not the 4K source.
+        # Buffered frame carries the downscaled height, not the 4K source, cut
+        # to the width the scene's crop keeps.
         _, img = src._video_buf[0]
-        self.assertEqual(img.shape[:2], (h, w))
+        self.assertEqual(img.shape[:2], (h, int(h * 1.6) + 2))
 
     def test_no_target_uses_full_res_convert(self):
         src, frame = self._run(decode_target=None)
@@ -3064,6 +3073,49 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         src, frame = self._run(decode_target=(320, 200), src_w=320, src_h=200)
         self.assertIsNone(src._decode_size)
         self.assertEqual(frame.reformat_calls, [])
+
+    def test_a_resolution_change_mid_stream_is_planned_again(self):
+        # A stream can open small and switch to 4K: planned from the first
+        # frame alone, every later one was converted at full size and the
+        # buffer held up to 240 of them.
+        small = _FakeFrame(0, width=64, height=40)
+        large = _FakeFrame(1, width=3840, height=2160)
+        src = _make_demux_source_stub([_FakePacket([small, large])], decode_target=(320, 200))
+        _demux_until_parked(src)
+        planned = _plan_decode_size(3840, 2160, 320, 200)
+        assert planned is not None
+        self.assertEqual(
+            [img.shape[0] for _, img in src._video_buf], [40, planned[1]], src._video_buf
+        )
+        self.assertLessEqual(src._video_buf[1][1].shape[1], planned[0])
+
+    def test_an_extreme_aspect_frame_is_buffered_at_the_part_the_scene_keeps(self):
+        # The scene center-crops every frame to 1.6:1, and the plan cannot
+        # shrink the axis that crop keeps below the headroom: a 16000x250
+        # frame was buffered whole, 12 MB, against 0.85 MB for a 4K one.
+        for (w, h), kept in (((16000, 250), (402, 250)), ((250, 16000), (250, 158))):
+            with self.subTest(size=(w, h)):
+                src, _ = self._run(decode_target=(320, 200), src_w=w, src_h=h)
+                self.assertEqual(src._video_buf[0][1].shape[1::-1], kept)
+                self.assertTrue(src._video_buf[0][1].flags.owndata)
+
+    def test_the_scene_crop_keeps_the_same_pixels_after_the_trim(self):
+        rng = np.random.default_rng(7)
+        for w, h in (
+            (641, 401),
+            (401, 641),
+            (1920, 1080),
+            (712, 400),
+            (64, 40),
+            (3, 997),
+            (997, 3),
+        ):
+            with self.subTest(size=(w, h)):
+                img = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
+                np.testing.assert_array_equal(
+                    scenes._crop_to_aspect(video_mod._trim_to_crop(img)),
+                    scenes._crop_to_aspect(img),
+                )
 
 
 class CurrentFrameTelemetryTest(unittest.TestCase):
@@ -3218,6 +3270,48 @@ class ScanVideoSamplesTest(unittest.TestCase):
 
     def test_empty_accumulators_short_circuit(self):
         self.assertFalse(scan_video_samples(self._make(), []))
+
+    def test_a_resolution_change_mid_stream_is_planned_again(self):
+        frames = [_FakeFrame(0, width=64, height=40), _FakeFrame(1, width=3840, height=2160)]
+        stream = SimpleNamespace(frames=len(frames))
+        packets = [SimpleNamespace(stream=stream, decode=lambda f=f: [f]) for f in frames]
+        container = SimpleNamespace(demux=lambda: iter(packets))
+        shapes: list[tuple[int, int]] = []
+        acc = SimpleNamespace(add=lambda img: shapes.append(img.shape[1::-1]))
+        video_mod._decode_sample_frames(container, "clip.mp4", stream, [acc], 2, (320, 200))
+        self.assertEqual(shapes, [(64, 40), _plan_decode_size(3840, 2160, 320, 200)])
+
+    def test_the_picture_bound_is_on_the_gap_between_pictures(self):
+        # A remote file served slowly takes longer than the bound to read in
+        # full, and only a gap with no picture in it may end the read.
+        now = [0.0]
+        stream = SimpleNamespace()
+
+        def packets(gap_s: float):
+            for i in range(4):
+                now[0] += gap_s
+                yield SimpleNamespace(stream=stream, decode=lambda i=i: [i])
+
+        self.enterContext(
+            mock.patch.object(video_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        )
+        bound = video_mod._REMOTE_READ_TIMEOUT_S
+        url = "http://127.0.0.1/clip.mp4"
+        slow = SimpleNamespace(demux=lambda: packets(bound * 0.75))
+        self.assertEqual(list(video_mod._video_frames(slow, url, stream)), [0, 1, 2, 3])
+        stalled = SimpleNamespace(demux=lambda: packets(bound * 1.5))
+        with self.assertRaises(video_mod.RemoteScanStalled):
+            list(video_mod._video_frames(stalled, url, stream))
+
+    def test_a_seek_sample_with_no_picture_skips_the_sequential_fallback(self):
+        # The fallback would read the same server for another whole bound.
+        stalled = video_mod.RemoteScanStalled("the media server sent no picture")
+        self.enterContext(mock.patch.object(video_mod, "_seek_sample_frames", side_effect=stalled))
+        sequential = self.enterContext(mock.patch.object(video_mod, "_decode_sample_frames"))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            self.assertFalse(scan_video_samples(self._make(), [_RecordingAcc()]))
+        sequential.assert_not_called()
+        self.assertTrue(any("no picture" in m for m in logs.output), logs.output)
 
     def test_falls_back_to_sequential_when_seek_fails(self):
         # A non-seekable source (seek raises) must still get sampled via the
@@ -3501,10 +3595,195 @@ class _RangeHttpServer:
         self._srv.close()
 
 
-def _write_av_mkv(path: str, *, seconds: int = 6, fps: int = 30, rate: int = 8000) -> None:
+class _EndlessHttpServer:
+    """A loopback HTTP server that answers every request with `head` and
+    then `chunk` over and over, as fast as the client reads: the shape of a
+    live stream. `close()` releases every socket and joins its threads."""
+
+    def __init__(self, name: str, head: bytes, chunk: bytes):
+        import socket
+
+        self._head = b"HTTP/1.0 200 OK\r\n\r\n" + head
+        self._chunk = chunk
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(4)
+        self._srv.settimeout(0.05)
+        self.url = f"http://127.0.0.1:{self._srv.getsockname()[1]}/{name}"
+        self._held: list = []
+        self._senders: list[threading.Thread] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                continue
+            self._held.append(conn)
+            sender = threading.Thread(target=self._send, args=(conn,), daemon=True)
+            self._senders.append(sender)
+            sender.start()
+
+    def _send(self, conn) -> None:
+        with suppress(OSError):
+            conn.settimeout(2.0)
+            conn.recv(4096)
+            conn.settimeout(None)
+            conn.sendall(self._head)
+            while not self._stop.is_set():
+                conn.sendall(self._chunk)
+
+    def close(self):
+        import socket
+
+        self._stop.set()
+        self._thread.join(2.0)
+        for conn in self._held:
+            with suppress(OSError):
+                conn.shutdown(socket.SHUT_RDWR)
+            conn.close()
+        for sender in self._senders:
+            sender.join(2.0)
+        self._srv.close()
+
+
+def _endless_wav(sample: int) -> tuple[bytes, bytes]:
+    """A WAV header claiming the largest length, and a chunk of ``sample``."""
+    import struct
+
+    rate = 8000
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+    head = b"RIFF\xff\xff\xff\xffWAVEfmt " + fmt + b"data\xff\xff\xff\xff"
+    return head, struct.pack("<h", sample) * 4096
+
+
+def _ts_with_a_silent_audio_track() -> bytes:
+    """An MPEG-TS whose program lists an audio stream that carries no packet."""
+    import io
+
+    import av
+
+    buf = io.BytesIO()
+    container = av.open(buf, "w", format="mpegts")
+    video = container.add_stream("mpeg2video", rate=30)
+    video.width, video.height, video.pix_fmt = 64, 40, "yuv420p"
+    audio = container.add_stream("mp2", rate=48000)
+    audio.layout = "stereo"
+    for _ in range(30):
+        frame = av.VideoFrame.from_ndarray(np.zeros((40, 64, 3), np.uint8), format="rgb24")
+        for packet in video.encode(frame):
+            container.mux(packet)
+    for packet in video.encode():
+        container.mux(packet)
+    container.close()
+    return buf.getvalue()
+
+
+def _ts_with_a_silent_video_track() -> bytes:
+    """An MPEG-TS whose program lists a video stream that carries no packet."""
+    import io
+
+    import av
+
+    buf = io.BytesIO()
+    container = av.open(buf, "w", format="mpegts")
+    video = container.add_stream("mpeg2video", rate=30)
+    video.width, video.height, video.pix_fmt = 64, 40, "yuv420p"
+    audio = container.add_stream("mp2", rate=48000)
+    audio.layout = "stereo"
+    for i in range(20):
+        frame = av.AudioFrame.from_ndarray(
+            np.zeros((1, 2 * 1152), np.int16), format="s16", layout="stereo"
+        )
+        frame.sample_rate, frame.pts = 48000, i * 1152
+        for packet in audio.encode(frame):
+            container.mux(packet)
+    for packet in audio.encode():
+        container.mux(packet)
+    container.close()
+    return buf.getvalue()
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemotePeakScanBoundTest(unittest.TestCase):
+    """The peak scan reads its input to the end before playback starts, and
+    a live stream has none: the scene's setup, on the playlist's thread,
+    never returned."""
+
+    def _scan(self, server: _EndlessHttpServer) -> tuple[int, list[str]]:
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(path)
+        src = AVFileSource(path, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        box: list = []
+        worker = threading.Thread(target=lambda: box.append(src._scan_audio_peak()), daemon=True)
+        # After the server's close, which is what releases a scan still reading.
+        self.addCleanup(lambda: worker.is_alive() and worker.join(5.0))
+        self.addCleanup(server.close)
+        src.path = server.url
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_PEAK_SCAN_S", 0.5))
+        # The reconnect backoff would keep a scan redialing the closed server
+        # for seconds, past the thread sandbox's grace.
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            worker.start()
+            worker.join(10.0)
+            self.assertFalse(worker.is_alive(), "the peak scan never ended")
+        return box[0], logs.output
+
+    def test_a_live_stream_ends_the_scan_at_its_budget(self):
+        peak, logs = self._scan(_EndlessHttpServer("live.wav", *_endless_wav(1000)))
+        # The part read still sets the gain.
+        self.assertEqual(peak, 1000)
+        self.assertTrue(any("peak scan stopped" in m for m in logs), logs)
+
+    def test_a_live_stream_whose_video_track_is_silent_ends_the_color_prescan(self):
+        # PyAV's decode(v_stream) reads the audio packets inside its
+        # generator, so a stream whose picture never comes held the color
+        # pre-scan, and the scene's setup with it, for good.
+        server = _EndlessHttpServer("live.ts", b"", _ts_with_a_silent_video_track())
+        self.addCleanup(server.close)
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 0.5))
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        box: list = []
+        worker = threading.Thread(
+            target=lambda: box.append(scan_video_samples(server.url, [_RecordingAcc()])),
+            daemon=True,
+        )
+        self.addCleanup(lambda: worker.is_alive() and worker.join(5.0))
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            worker.start()
+            worker.join(10.0)
+            self.assertFalse(worker.is_alive(), "the color pre-scan never ended")
+        self.assertEqual(box, [False])
+        self.assertTrue(any("no picture" in m for m in logs.output), logs.output)
+
+    def test_a_live_stream_whose_audio_track_is_silent_ends_the_scan(self):
+        # Packets of a stream the scan does not decode are read inside
+        # PyAV's demux generator, where no check between packets runs.
+        chunk = _ts_with_a_silent_audio_track()
+        peak, logs = self._scan(_EndlessHttpServer("live.ts", b"", chunk))
+        self.assertEqual(peak, 0)
+        self.assertTrue(any("peak scan stopped" in m for m in logs), logs)
+
+
+def _write_av_mkv(
+    path: str,
+    *,
+    seconds: int = 6,
+    fps: int = 30,
+    rate: int = 8000,
+    audio_seconds: float | None = None,
+) -> None:
     """A Matroska clip with noise video (so it is too large to arrive in one
-    read) and a tone on a PCM audio stream. Matroska keeps its seek index at
-    the end of the file, so every seek in it opens a new range request."""
+    read) and a tone on a PCM audio stream, ``audio_seconds`` long (the
+    picture's length by default). Matroska keeps its seek index at the end of
+    the file, so every seek in it opens a new range request."""
     import av
 
     rng = np.random.default_rng(0)
@@ -3521,7 +3800,7 @@ def _write_av_mkv(path: str, *, seconds: int = 6, fps: int = 30, rate: int = 800
             img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
             for packet in video.encode(av.VideoFrame.from_ndarray(img, "rgb24")):
                 container.mux(packet)
-        t = np.arange(seconds * rate) / rate
+        t = np.arange(int((seconds if audio_seconds is None else audio_seconds) * rate)) / rate
         pcm = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16).reshape(1, -1)
         frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
         frame.sample_rate = rate
@@ -3535,7 +3814,188 @@ def _write_av_mkv(path: str, *, seconds: int = 6, fps: int = 30, rate: int = 800
         container.close()
 
 
+def _wav_quiet_then_loud(seconds: float = 30.0, rate: int = 8000) -> bytes:
+    """A WAV at 100 for all but its last half second, which is at 20000."""
+    import struct
+
+    loud = int(0.5 * rate)
+    samples = np.full(int(seconds * rate), 100, dtype="<i2")
+    samples[-loud:] = 20000
+    data = samples.tobytes()
+    fmt = struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + fmt
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
+    )
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemotePeakScanFitTest(unittest.TestCase):
+    """The peak scan's bound on a network input fits the input: a file that
+    says how long it is is read to its end however slowly it arrives, and a
+    live stream, which has no length, stops after `_REMOTE_PEAK_SCAN_S`.
+    Each read of the module's clock here is a second later than the last."""
+
+    def _scan(self, url: str, *, slow_open_s: float = 0.0) -> int:
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(path)
+        src = AVFileSource(path, target_sample_rate=8000, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        src.path = url
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        clock = FrozenClock(0.0, "monotonic", 1.0)
+        real_open = video_mod.av_open
+
+        def open_slowly(target: str):
+            clock.advance(slow_open_s)
+            return real_open(target)
+
+        self.enterContext(mock.patch.object(video_mod, "time", clock))
+        self.enterContext(mock.patch.object(video_mod, "av_open", open_slowly))
+        return src._scan_audio_peak()
+
+    def test_a_slow_file_of_known_length_is_scanned_to_its_end(self):
+        server = _RangeHttpServer(_wav_quiet_then_loud())
+        self.addCleanup(server.close)
+        with self.assertNoLogs("c64cast.video.video", level="WARNING"):
+            # The loud close sets the gain: a scan stopped short of it set the
+            # gain from the quiet part, and the close clipped.
+            self.assertEqual(self._scan(server.url), 20000)
+
+    def test_a_live_stream_stops_ten_seconds_after_it_opens(self):
+        # The open itself is not the stream's: timed from before it, a slow
+        # open spent the budget and the scan read nothing.
+        server = _EndlessHttpServer("live.wav", *_endless_wav(1000))
+        self.addCleanup(server.close)
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            self.assertEqual(self._scan(server.url, slow_open_s=60.0), 1000)
+        self.assertTrue(any("peak scan stopped" in m for m in logs.output), logs.output)
+
+    def test_a_file_of_known_length_whose_sound_stops_ends_the_scan(self):
+        # The picture runs on past the sound; past the read bound without a
+        # packet of it, the rest of the file is not waited for.
+        self.enterContext(mock.patch("c64cast.video.video._REMOTE_READ_TIMEOUT_S", 3.0))
+        fd, clip = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, clip)
+        _write_av_mkv(clip, audio_seconds=0.5)
+        server = _RangeHttpServer(Path(clip).read_bytes())
+        self.addCleanup(server.close)
+        with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
+            self.assertEqual(self._scan(server.url), 12000)
+        self.assertTrue(any("no sound" in m for m in logs.output), logs.output)
+
+
 @unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class SoundtrackShorterThanPictureTest(unittest.TestCase):
+    """A file whose audio ends before its picture: the clock is the sound
+    played, so the pictures past the end of the sound were never reached,
+    `finished` never flipped, and the scene held its frame for good."""
+
+    SECONDS, AUDIO_SECONDS, FPS, RATE = 2, 0.5, 30, 8000
+
+    def setUp(self):
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(
+            path,
+            seconds=self.SECONDS,
+            fps=self.FPS,
+            rate=self.RATE,
+            audio_seconds=self.AUDIO_SECONDS,
+        )
+        self.path = path
+
+    def test_the_demuxer_feeds_silence_to_the_last_picture_at_eof(self):
+        src = AVFileSource(self.path, self.RATE, scan_audio_peak=False)
+        self.addCleanup(src.close)
+        pushed = [0]
+        lock = threading.Lock()
+
+        def push(arr, epoch=None):
+            with lock:
+                pushed[0] += arr.size
+
+        src.start(push)
+
+        def played_to_the_end() -> bool:
+            with lock:
+                clock = pushed[0] / self.RATE
+            src.current_frame(clock)
+            return src.finished
+
+        self.assertTrue(_wait_until(played_to_the_end, limit_s=10.0))
+        # The last picture is shown for its whole interval, not cut at its stamp.
+        self.assertAlmostEqual(pushed[0] / self.RATE, self.SECONDS, delta=0.005)
+
+    def test_the_preload_runs_to_the_end_of_the_last_picture(self):
+        from c64cast.video.video import decode_audio_full
+
+        # Matroska stamps in milliseconds, so the last picture ends a hair off.
+        played = decode_audio_full(self.path, self.RATE).size / self.RATE
+        self.assertAlmostEqual(played, self.SECONDS, delta=0.001)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
+class CloseDuringAStalledReadTest(unittest.TestCase):
+    """A network input that stops sending mid-stream holds the demux thread
+    inside FFmpeg's read for up to the read bound, past close()'s 1 s join.
+    Closing the container then freed the context that read was using, and
+    the process died of a segfault when the read returned. The server's close
+    is what returns the read here, so no step races the read bound."""
+
+    def test_the_container_is_closed_by_the_demux_thread_once_its_read_returns(self):
+        self.enterContext(mock.patch("c64cast.video.video._HTTP_RECONNECT_OPTIONS", {}))
+        fd, path = tempfile.mkstemp(suffix=".mkv")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        _write_av_mkv(path)
+        body = Path(path).read_bytes()
+        head = b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n"
+        server = _StallingHttpServer(head + body[: len(body) // 2])
+        self.addCleanup(server.close)
+        src = AVFileSource(
+            f"http://127.0.0.1:{server.port}/clip.mkv",
+            target_sample_rate=8000,
+            scan_audio_peak=False,
+        )
+        real = src.container
+        # Closed here only once the demux thread is gone, so a regression
+        # fails the assertions below instead of crashing the run.
+        self.addCleanup(real.close)
+        self.addCleanup(lambda: _wait_until(lambda: src._demux_exited, limit_s=10.0))
+        closed_by: list[str] = []
+        src._closer._container = mock.Mock(
+            close=lambda: closed_by.append(threading.current_thread().name)
+        )
+        src.max_video_buffer = 100_000
+        with self.assertLogs("c64cast", level="WARNING") as logs:
+            src.start(audio_push=None)
+            self.assertTrue(_wait_until(lambda: src.video_buffer_depth > 0))
+            depth = -1
+            while src.video_buffer_depth != depth:
+                depth = src.video_buffer_depth
+                time.sleep(0.5)
+            src.close()
+            self.assertEqual(closed_by, [], "close() freed the container under a live read")
+            server.close()
+            self.assertTrue(_wait_until(lambda: closed_by, limit_s=10.0))
+        self.assertEqual(closed_by, ["av-demux"])
+        self.assertTrue(any("did not stop" in m for m in logs.output), logs.output)
+        # The read the close outlived ends in the dropped connection's error,
+        # which follows the close and is not a crash.
+        self.assertFalse(any("crashed" in m for m in logs.output), logs.output)
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class RemoteSeekBoundTest(unittest.TestCase):
     """A seek on a remote input opens a new range request, which PyAV bounds
     only while a `demux()` generator is live, and then against the clock of
@@ -3672,9 +4132,10 @@ class RemoteSeekBoundTest(unittest.TestCase):
             src.close()
             self.assertEqual(closed_by, [], "close() freed the container under a live seek")
             server.close()
-            self.assertTrue(_wait_until(lambda: closed_by), "the seek never closed the container")
+            self.assertTrue(_wait_until(lambda: closed_by), "the container was never closed")
             self.assertTrue(_wait_until(lambda: src._demux_exited))
-        self.assertEqual(closed_by, ["av-seek"])
+        # By the last thread out of it: the demux thread waits on its seek.
+        self.assertEqual(closed_by, ["av-demux"])
         self.assertTrue(any("did not stop" in m for m in logs.output))
 
     def test_a_seek_after_a_long_pause_reaches_a_healthy_server(self):
@@ -4445,7 +4906,15 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
     """The sound at clip time 0 starts with its picture: setup() brings the
     sink up with its clock held, and the first shown frame releases it."""
 
+    def _local_clip(self) -> str:
+        """An existing local path: a network input never takes the REU preload."""
+        fd, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        return path
+
     def _setup(self, audio: Any, *, start_s: float = 0.0) -> VideoScene:
+        clip = self._local_clip()
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource"),
@@ -4456,7 +4925,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
                 api=mock.MagicMock(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
-                file=STUB_VIDEO_URL,
+                file=clip,
                 setup_progress=False,
                 start_s=start_s,
             )
@@ -4487,6 +4956,36 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         audio.release_hold.assert_not_called()
         self.assertTrue(scene._audio_held)
 
+    def test_a_network_input_streams_its_sound_instead_of_preloading_it(self):
+        # A stream has no end for the preload to reach: a live one held setup
+        # for as long as the REU's worth of sound took to arrive, and one whose
+        # sound track sends nothing held it for good.
+        audio = mock.create_autospec(AudioStreamer, instance=True)
+        audio.use_reu_pump = True
+        audio.effective_rate = 8000.0
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+            mock.patch("c64cast.scenes.scenes.decode_audio_full") as preload,
+        ):
+            scene = VideoScene(
+                api=mock.MagicMock(),
+                audio=audio,
+                display_mode=mock.MagicMock(),
+                file=STUB_VIDEO_URL,
+                setup_progress=False,
+            )
+            self.addCleanup(scene.teardown)
+            scene.setup()
+        preload.assert_not_called()
+        audio.start_for_reu_staged.assert_not_called()
+        audio.start_for_external_source.assert_called_once_with(hold=True)
+        # Streamed sound is normalized by the source's own peak scan.
+        self.assertIs(source_cls.call_args.kwargs["scan_audio_peak"], True)
+        self.assertEqual(
+            source_cls.return_value.start.call_args.kwargs["audio_push"], audio.push_samples
+        )
+
     def test_a_failed_reu_install_holds_nothing(self):
         audio = mock.create_autospec(AudioStreamer, instance=True)
         audio.use_reu_pump = True
@@ -4501,6 +5000,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         # PyAV's InvalidDataError is a ValueError; the plain base keeps the
         # test runnable without the optional `video` extra.
         bad = ValueError("Invalid data found when processing input")
+        clip = self._local_clip()
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
             mock.patch("c64cast.scenes.scenes.AVFileSource"),
@@ -4511,7 +5011,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
                 api=mock.MagicMock(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
-                file=STUB_VIDEO_URL,
+                file=clip,
                 setup_progress=False,
             )
             self.addCleanup(scene.teardown)

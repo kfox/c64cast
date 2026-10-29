@@ -6,6 +6,23 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from typing import Any
+
+from _fakes import FakeAPI
+
+
+def _replay(api, fb):
+    """Feed a FakeAPI's recorded writes to a Framebuffer, as the backend's
+    write listener would have."""
+    for op, addr, *rest in api.ops:
+        if op == "write_memory":
+            fb.on_write(int(addr, 16), bytes.fromhex(rest[0]))
+        elif op == "write_memory_file":
+            fb.on_write(int(addr, 16), rest[0])
+        elif op == "write_regs":
+            fb.on_write(int(addr, 16), bytes(v & 0xFF for v in rest[0]))
+        elif op == "write_region":
+            fb.on_write(addr, rest[0])
 
 
 class FramebufferTest(unittest.TestCase):
@@ -139,6 +156,38 @@ class FramebufferTest(unittest.TestCase):
         fb.on_write(0xD800, b"\x05")  # color RAM (0,0) = green
         img = fb.render()
         self.assertTrue((img[0:8, 0:8] == C64_PALETTE_BGR[5]).all())
+
+    def test_render_mcm_reads_the_charset_d018_selects(self):
+        """MCMDisplayMode points $D018 at the block charset it uploads to
+        $3000; the preview drawing ROM glyphs there showed a different
+        picture from the one on the C64."""
+        from c64cast.hw.c64 import SCREEN
+        from c64cast.video.framebuffer import Framebuffer
+        from c64cast.video.modes import MCMDisplayMode
+        from c64cast.video.palette import C64_PALETTE_BGR
+
+        api: Any = FakeAPI()
+        MCMDisplayMode().setup(api)
+        fb = Framebuffer()
+        _replay(api, fb)
+        fb.on_write(0xD022, b"\x02")  # bg1 = red
+        fb.on_write(SCREEN.RAM, b"\x55")  # every quadrant '01' -> bg1
+        fb.on_write(SCREEN.COLOR_RAM, b"\x08")
+        img = fb.render()
+        self.assertTrue((img[0:8, 0:8] == C64_PALETTE_BGR[2]).all())
+
+    def test_render_text_reads_the_screen_matrix_d018_selects(self):
+        from c64cast.hw.c64 import SCREEN
+        from c64cast.video.framebuffer import Framebuffer
+        from c64cast.video.palette import C64_PALETTE_BGR
+
+        fb = Framebuffer()
+        fb.on_write(0xD021, b"\x00")
+        fb.on_write(0xD018, b"\x34")  # matrix at $0C00, ROM charset
+        fb.on_write(0x0C00, bytes([SCREEN.SC_FULL_BLOCK]))
+        fb.on_write(SCREEN.COLOR_RAM, b"\x01")
+        img = fb.render()
+        self.assertTrue((img[0:8, 0:8] == C64_PALETTE_BGR[1]).all())
 
     def test_charset_path_loaded(self):
         # char_rom.verify() only accepts a real charset, not 2 KB of

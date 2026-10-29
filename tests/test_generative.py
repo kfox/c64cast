@@ -1442,6 +1442,33 @@ class _NoWriter:
 
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class AudioFileSourceStopTest(unittest.TestCase):
+    """A stop reaches the decode thread however its input behaves."""
+
+    def test_a_stream_whose_sound_track_sends_nothing_still_stops(self):
+        # demux(a_stream) reads the other streams' packets inside PyAV's
+        # generator, so `_stop` was never checked: teardown's join gave up and
+        # the thread read the stream for as long as the server sent it.
+        from test_video import _EndlessHttpServer, _ts_with_a_silent_audio_track
+
+        from c64cast.audio.audio_source import AudioFileSource
+        from c64cast.video import video
+
+        self.enterContext(mock.patch.object(video, "_HTTP_RECONNECT_OPTIONS", {}))
+        server = _EndlessHttpServer("live.ts", b"", _ts_with_a_silent_audio_track())
+        src = AudioFileSource(cast(AudioStreamer, _FileSink()), server.url, reactive=False)
+        worker = threading.Thread(target=src._decode_loop, daemon=True)
+        # After the server's close, which is what releases a read still going.
+        self.addCleanup(lambda: worker.is_alive() and worker.join(5.0))
+        self.addCleanup(server.close)
+        worker.start()
+        time.sleep(0.5)
+        src._stop.set()
+        worker.join(5.0)
+        self.assertFalse(worker.is_alive(), "the decode thread never saw the stop")
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AudioFileSourceEndTest(unittest.TestCase):
     """The scene ends when the audio does. The container header's duration is
     a claim the file makes about itself: a truncated download or a doctored
@@ -2557,6 +2584,10 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         starts = [loud[0], *loud[np.flatnonzero(np.diff(loud) > self.RATE // 10) + 1]]
         return [int(s) / self.RATE for s in starts]
 
+    def _last_sound_s(self, pcm: np.ndarray) -> float:
+        """Where the last sound ends, in seconds."""
+        return int(np.flatnonzero(np.abs(pcm) > 1000)[-1] + 1) / self.RATE
+
     def test_a_sound_back_after_a_gap_keeps_the_gap(self):
         from c64cast.video.video import decode_audio_full
 
@@ -2658,7 +2689,12 @@ class ReuPreloadOnThePicturesTimelineTest(unittest.TestCase):
         with self.assertLogs("c64cast.video.video", level="WARNING") as logs:
             pcm = decode_audio_full(clip, self.RATE, origin_s=0.0)
         self.assertEqual(len(logs.records), 1)
-        self.assertAlmostEqual(pcm.size / self.RATE, 0.8, delta=0.03)
+        starts = self._sound(pcm)
+        self.assertEqual(len(starts), 1)
+        self.assertAlmostEqual(starts[0], 0.0, delta=0.03)
+        self.assertAlmostEqual(self._last_sound_s(pcm), 0.8, delta=0.03)
+        # The rest is the silence up to the end of the 4 s picture.
+        self.assertAlmostEqual(pcm.size / self.RATE, 4.0, delta=0.03)
 
     def test_a_soundtrack_running_past_its_picture_is_no_jump(self):
         # The picture ends at 4 s and the sound goes on to 40, with no gap.
