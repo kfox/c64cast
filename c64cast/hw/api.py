@@ -1921,7 +1921,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         ]
         if versions:
             parts.append(f"({', '.join(versions)})")
-        return " ".join(parts)
+        return printable_device_text(" ".join(parts))
 
     def get_config_categories(self, *, timeout: float = 3.0) -> list[str]:
         """The config category *names* this device's firmware exposes

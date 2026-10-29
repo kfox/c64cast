@@ -1,0 +1,1 @@
+- An Ultimate's refusal of a keyboard or joystick input batch, and the device identity it reports at connect, are filtered to printable characters before they are logged. A line break or terminal escape sequence in either could otherwise write extra lines into `--log-file` output.

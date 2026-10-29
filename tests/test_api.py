@@ -1450,6 +1450,15 @@ class ReadSideTest(unittest.TestCase):
             "Ultimate 64-II (firmware 3.15a, FPGA 125, core 1.50)",
         )
 
+    def test_describe_device_cannot_forge_a_log_line(self):
+        self.get.return_value.json.return_value = {
+            "product": "Ultimate 64\r\nERROR:c64cast:forged\x1b[2J",
+            "firmware_version": "3.15a\n",
+        }
+        self.assertEqual(
+            self.api.describe_device(), "Ultimate 64ERROR:c64cast:forged[2J (firmware 3.15a)"
+        )
+
     def test_describe_device_omits_fields_the_device_did_not_report(self):
         self.get.return_value.json.return_value = {"product": "C64 Ultimate"}
         self.assertEqual(self.api.describe_device(), "C64 Ultimate")
