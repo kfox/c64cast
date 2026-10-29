@@ -5,11 +5,7 @@ Config:
             No UTC offset means local time; "+01:00" or "Z" pins the zone.
   format  — "auto" (default): picks the largest unit needed (D:HH:MM:SS).
             Anything else: strftime-style with placeholders {d}{h}{m}{s}.
-  done_text — what to show after the target time. Default "DONE".
-
-The base CornerTextOverlay change-detects on the rendered string, so
-when only the seconds field updates the delta cache only sends the
-seconds cell(s)."""
+  done_text — what to show after the target time. Default "DONE"."""
 
 from __future__ import annotations
 

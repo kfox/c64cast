@@ -329,15 +329,15 @@ The built-in overlays:
 | `rss`              | text modes                | Marquee fed by a background RSS/Atom fetch (stdlib `ElementTree`).             |
 | `spectrum_petscii` | petscii / blank           | A strip of cells (bottom / center / split mode), 8 bands × 5 cols.             |
 | `spectrum_bitmap`  | mhires only               | The same 8 bands as pixel-height bars folded into the multicolor bitmap.       |
-| `clock`            | text modes                | Time/date in a corner; only updates when the formatted string changes.         |
+| `clock`            | text modes                | Time/date in a corner; recomputed every `refresh_s`, on wall-clock boundaries. |
 | `weather`          | text modes                | Temp + conditions in a corner; background thread polls every N minutes.        |
-| `callsign`         | text modes                | Static text in a corner. Single paint, then change-detect zero traffic.        |
+| `callsign`         | text modes                | Static text in a corner.                                                       |
 | `countdown`        | text modes                | Time-until-target in a corner; auto-format or `{d}{h}{m}{s}` template.         |
 | `network`          | text modes                | IP / hostname / U64 ping latency in a corner; background socket poll.          |
 | `logo`             | text modes                | Multi-line PETSCII art from a `.txt` file at `corner` or explicit `row`+`col` (wide art clips on mhires). |
 | `big_text`         | blank / mcm only          | Demo-scene 8×-scaled scrolling text (each source PETSCII char → 8×8 cells).    |
 
-Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `network`) share `overlays/corner_text.py` — subclass `CornerTextOverlay` and just implement `compute_strings(t) → Optional[list[str]]`. The base handles change-detection, blanking-on-shrink, and teardown cleanup.
+Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `network`) share `overlays/corner_text.py` — subclass `CornerTextOverlay` and just implement `compute_strings(t) → Optional[list[str]]`. The base handles corner placement, throttles `compute_strings` to `refresh_s` boundaries, and paints the last result into the scene's buffers every frame, so the scene's own per-frame repaint erases text that shrank. The base has no teardown of its own.
 
 `marquee` and `rss` share `overlays/marquee.py:MarqueeBase` — subclass and implement `_current_text()`.
 

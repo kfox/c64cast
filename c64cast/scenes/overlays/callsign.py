@@ -21,8 +21,6 @@ class CallsignOverlay(CornerTextOverlay):
     ):
         if not text:
             raise ValueError("callsign: text must be non-empty")
-        # The text is static, so a long interval plus the base's change-detect
-        # means no traffic at all after the first paint.
         super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color, refresh_s=86400.0)
         self.text = str(text)
 
