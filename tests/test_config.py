@@ -1588,6 +1588,13 @@ class FieldTypingTest(unittest.TestCase):
             self._load('[[scenes]]\ntype = "blank"\ncolor = false\n')
         self.assertIn("scenes.color must be a table", str(ctx.exception))
 
+    def test_an_overlay_type_that_is_not_a_string_is_refused_at_load(self):
+        # The overlay registry looks it up as a dict key, where a list raised a
+        # bare TypeError out of --doctor.
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[[scenes]]\ntype = "blank"\n[[scenes.overlays]]\ntype = ["clock"]\n')
+        self.assertIn("scenes.overlays entry type must be a string", str(ctx.exception))
+
     def test_an_ensemble_master_section_is_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
             master = os.path.join(tmp, "master.toml")
