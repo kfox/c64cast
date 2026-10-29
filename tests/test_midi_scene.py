@@ -465,6 +465,39 @@ class PitchWheelTests(_MidiTestCase):
         # Voice 0 is released → no frequency re-emit.
         self.assertNotIn("D400", api.regs)
 
+    def test_a_note_pressed_under_a_held_bend_sounds_bent(self):
+        scene, api = _make_scene()
+        scene._pitchwheel(8191)
+        scene._note_on(60, 100)
+        bent = _note_to_sid_freq(60 + 8191 / 8192.0 * 2.0, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (bent & 0xFF, bent >> 8))
+
+    def test_a_resurrected_note_keeps_the_held_bend(self):
+        scene, api = _make_scene()
+        for note in (60, 62, 64, 65):  # 65 steals voice 2, suspending 64
+            scene._note_on(note, 100)
+        scene._pitchwheel(-8192)
+        scene._note_off(65)  # 64 resurrects on voice 2
+        bent = _note_to_sid_freq(64 - 2.0, "NTSC")
+        self.assertEqual(api.regs["D40E"][:2], (bent & 0xFF, bent >> 8))
+
+    def test_multitimbral_bend_moves_only_its_channels_voice(self):
+        scene, api = _make_scene(voice_mode="multitimbral")
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=0))
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=1))
+        scene._handle_msg(mido.Message("pitchwheel", pitch=8191, channel=1))
+        unbent = _note_to_sid_freq(60, "NTSC")
+        bent = _note_to_sid_freq(60 + 8191 / 8192.0 * 2.0, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
+        self.assertEqual(api.regs["D407"][:2], (bent & 0xFF, bent >> 8))
+
+    def test_multitimbral_bend_on_an_unmapped_channel_is_ignored(self):
+        scene, api = _make_scene(voice_mode="multitimbral")
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=0))
+        scene._handle_msg(mido.Message("pitchwheel", pitch=8191, channel=9))
+        unbent = _note_to_sid_freq(60, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
+
 
 class HandleMsgDispatchTests(_MidiTestCase):
     def test_note_on_then_off_via_messages(self):
@@ -677,7 +710,7 @@ class PaintTests(_MidiTestCase):
         for cell_row in (0, 7, 14):
             self.assertIn(_BITMAP_BASE + cell_row * 320, api.regions)
         # Both info rows painted: bitmap glyphs + screen-RAM FG nibble.
-        self.assertIn(_TITLE_BITMAP, api.regions)
+        self.assertIn(_TITLE_BITMAP, set(api.regions))
         self.assertIn(_TITLE_SCREEN, api.regions)
         self.assertIn(_META_BITMAP, api.regions)
         # Title = per-voice waveform tags + master volume; controller row = live
@@ -720,6 +753,22 @@ class PaintTests(_MidiTestCase):
         ctl = scene._build_meta_line()
         self.assertIn(f"RES {scene.filter_resonance:2d}", ctl)
         self.assertEqual(len(ctl), 40)  # _paint_text_row needs exactly 40
+
+    def test_a_change_landing_mid_paint_is_painted_next_frame(self):
+        scene, api = _make_scene()
+        _bring_up_display(scene)
+        build_title = scene._build_title_line
+
+        def reader_changes_volume_mid_paint():
+            line = build_title()
+            scene._control_change(midi_scene._CC_VOLUME, 0)
+            return line
+
+        with mock.patch.object(scene, "_build_title_line", reader_changes_volume_mid_paint):
+            scene.process_frame(0.0)
+        api.regions.clear()
+        scene.process_frame(1.0)
+        self.assertIn(_TITLE_BITMAP, set(api.regions))
 
     def test_rows_painted_on_change_are_resent_after_a_lost_write(self):
         # c64cast#531: the info rows and strip colors are painted only when
@@ -900,12 +949,67 @@ class ReaderCoalescingTests(_MidiTestCase):
         stop = threading.Event()
         t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
         t.start()
-        time.sleep(0.1)
+
+        def voice_writes():
+            return [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline and len(voice_writes()) < 16:
+            time.sleep(0.005)
         stop.set()
         t.join(timeout=1.0)
-        voice_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
         # Each on/off reprograms voice 0 → ~16 writes, not collapsed to one.
-        self.assertGreaterEqual(len(voice_writes), 16)
+        self.assertGreaterEqual(len(voice_writes()), 16)
+
+    def test_coalescing_keeps_each_channels_bend(self):
+        scene, api = _make_scene(voice_mode="multitimbral")
+        batch = [
+            mido.Message("note_on", note=60, velocity=100, channel=0),
+            mido.Message("note_on", note=60, velocity=100, channel=1),
+            mido.Message("pitchwheel", pitch=8191, channel=0),
+            mido.Message("pitchwheel", pitch=-8192, channel=1),
+        ]
+        scene._midi_port = _ScriptedPort(batch)
+        stop = threading.Event()
+        t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
+        t.start()
+        up = _note_to_sid_freq(60 + 8191 / 8192.0 * 2.0, "NTSC")
+        down = _note_to_sid_freq(60 - 2.0, "NTSC")
+        deadline = time.time() + 5.0
+        while time.time() < deadline and api.regs.get("D407", (None,) * 2)[:2] != (
+            down & 0xFF,
+            down >> 8,
+        ):
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=1.0)
+        self.assertEqual(api.regs["D400"][:2], (up & 0xFF, up >> 8))
+        self.assertEqual(api.regs["D407"][:2], (down & 0xFF, down >> 8))
+
+    def test_shared_mode_coalescing_applies_the_last_bend_from_any_channel(self):
+        scene, api = _make_scene()
+        batch = [
+            mido.Message("note_on", note=60, velocity=100, channel=0),
+            mido.Message("pitchwheel", pitch=8191, channel=0),
+            mido.Message("pitchwheel", pitch=-8192, channel=1),
+            mido.Message("pitchwheel", pitch=0, channel=0),
+        ]
+        scene._midi_port = _ScriptedPort(batch)
+        stop = threading.Event()
+        t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
+        t.start()
+        unbent = _note_to_sid_freq(60, "NTSC")
+        deadline = time.time() + 5.0
+        # A pass that runs past its drain budget splits the bends across two
+        # flushes, so the wait is for the final value, not a write count.
+        while time.time() < deadline and (
+            sum(op[0] == "write_regs" and op[1] == "D400" for op in api.ops) < 2
+            or api.regs["D400"][:2] != (unbent & 0xFF, unbent >> 8)
+        ):
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=1.0)
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
 
 
 class _CostlyAPI(FakeAPI):
@@ -1092,6 +1196,71 @@ class LifecycleTests(_MidiTestCase):
         finally:
             scene.teardown()
         self.assertFalse(scene._reader_poll.is_running())
+
+    def test_setup_drains_every_envelope_before_raising_the_volume(self):
+        # A blank scene's $D418 DAC leaves the voices at sustain 15 / release 15
+        # (a 24 s tail) under a muted $D418; raising the volume first plays it.
+        scene, api = _make_scene(adsr=(0, 8, 12, 8), master_volume=15)
+        with (
+            mock.patch.object(
+                midi_scene.time, "sleep", side_effect=lambda s: api.ops.append(("sleep", s))
+            ),
+            mock.patch.object(
+                scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", _FakePort())
+            ),
+        ):
+            scene.setup()
+        self.addCleanup(scene.teardown)
+
+        volume_at = next(i for i, op in enumerate(api.ops) if op[:2] == ("write_memory", "D418"))
+        before = api.ops[:volume_at]
+        sleeps = [i for i, op in enumerate(before) if op[0] == "sleep"]
+        self.assertTrue(sleeps, "no envelope drain before $D418")
+        self.assertGreaterEqual(before[sleeps[-1]][1], 0.04)
+        for base in ("D402", "D409", "D410"):
+            drained = [
+                i
+                for i, op in enumerate(before)
+                if op[:2] == ("write_regs", base)
+                and not op[2][2] & SID.GATE
+                and op[2][4] & 0x0F == 0
+            ]
+            self.assertTrue(drained and drained[0] < sleeps[-1], base)
+
+    def _lap(self, scene) -> None:
+        with mock.patch.object(
+            scene,
+            "_open_port",
+            side_effect=lambda: setattr(scene, "_midi_port", _FakePort()),
+        ):
+            scene.setup()
+        self.addCleanup(scene.teardown)
+
+    def test_a_relapped_scene_does_not_resurrect_notes_held_at_its_last_teardown(self):
+        # A looping playlist tears a scene down and sets the same instance up
+        # again; note-offs sent between the two never reach a reader.
+        scene, _ = _make_scene()
+        self._lap(scene)
+        for note in (60, 62, 64):
+            scene._note_on(note, 100)
+        scene.teardown()
+        self._lap(scene)
+        scene._note_on(67, 100)
+        scene._note_off(67)
+        self.assertEqual([v.on for v in scene.voices], [False, False, False])
+        for idx in range(SID.N_VOICES):
+            ctrl = scene._sid_shadow[idx * SID.BYTES_PER_VOICE + SID.OFF_CONTROL]
+            self.assertFalse(ctrl & SID.GATE, idx)
+
+    def test_a_relapped_scene_starts_unbent(self):
+        scene, api = _make_scene()
+        self._lap(scene)
+        scene._pitchwheel(8191)
+        scene.teardown()
+        self._lap(scene)
+        scene._note_on(60, 100)
+        unbent = _note_to_sid_freq(60, "NTSC")
+        self.assertEqual(api.regs["D400"][:2], (unbent & 0xFF, unbent >> 8))
 
 
 if __name__ == "__main__":

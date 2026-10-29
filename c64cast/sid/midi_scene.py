@@ -117,6 +117,11 @@ _WRITES_PER_NOTE = 2
 # reader's 1 ms poll sleep apiece — an audible arpeggio.
 _NOTES_PER_DRAIN = SID.N_VOICES
 
+# How long a gated-off voice takes to reach silence at release rate 0: lowering
+# the rate can first wait out the ADSR rate counter's 15-bit wrap (32768 cycles,
+# ~33 ms), then the release itself takes ~7 ms.
+_ENVELOPE_DRAIN_S = 0.05
+
 
 def _drain_budget_s(profile: HardwareProfile) -> float:
     """Work budget for one `_reader` drain pass on `profile`'s link.
@@ -352,6 +357,17 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._voice_sounding: list[bool] = [False, False, False]
         self._last_voice_wave: list[int] = [-1, -1, -1]
 
+        self._reset_performance()
+        self._allocation_lock = threading.Lock()
+        # Monotonic assignment counter feeding `_VoiceState.seq`.
+        self._assign_seq = 0
+        self._midi_port = None
+        self._reader_poll = PollThread(
+            self._reader, name="midi-reader", manual=True, join_timeout=1.0
+        )
+        self._dirty = True  # force first text-row paint
+
+    def _reset_performance(self) -> None:
         self.voices: list[_VoiceState] = [_VoiceState() for _ in range(SID.N_VOICES)]
         # Shared mode: stack of all currently-held MIDI notes (most-recent last)
         # + their press velocities; the top SID.N_VOICES sound.
@@ -362,14 +378,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # own voice. Unused in shared mode.
         self._mt_held: list[list[int]] = [[] for _ in range(SID.N_VOICES)]
         self._mt_held_vel: list[dict[int, int]] = [{} for _ in range(SID.N_VOICES)]
-        self._allocation_lock = threading.Lock()
-        # Monotonic assignment counter feeding `_VoiceState.seq`.
-        self._assign_seq = 0
-        self._midi_port = None
-        self._reader_poll = PollThread(
-            self._reader, name="midi-reader", manual=True, join_timeout=1.0
-        )
-        self._dirty = True  # force first text-row paint
+        self._voice_bend: list[float] = [0.0] * SID.N_VOICES
 
     def _open_port(self):
         self._midi_port, _ = open_input_port(self.port_name, label="MidiScene")
@@ -389,28 +398,30 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # outrunning `_handle_msg`'s DMA writes would never reach the flush below
         # or the `stop` check teardown's bounded join needs.
         budget_s = _drain_budget_s(self.api.profile)
-        pending_pitch: int | None = None
+        pending_pitch: dict[int, int] = {}
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
             while not stop.is_set():
                 for msg in poll_pending(port, stop, budget_s=budget_s):
                     if msg.type == "pitchwheel":
-                        pending_pitch = msg.pitch
+                        # Shared mode bends every voice from any channel, so
+                        # one slot keeps the newest bend rather than the
+                        # newest per channel replayed in first-seen order.
+                        bend_key = msg.channel if self.voice_mode == "multitimbral" else 0
+                        pending_pitch[bend_key] = msg.pitch
                     elif msg.type == "control_change":
                         pending_cc[msg.control] = msg.value
                     else:
                         self._handle_msg(msg)
                 now = time.time()
-                if (
-                    pending_pitch is not None or pending_cc
-                ) and now - last_flush >= _CONTROL_FLUSH_INTERVAL_S:
+                if (pending_pitch or pending_cc) and now - last_flush >= _CONTROL_FLUSH_INTERVAL_S:
                     for ctrl, val in pending_cc.items():
                         self._control_change(ctrl, val)
                     pending_cc = {}
-                    if pending_pitch is not None:
-                        self._pitchwheel(pending_pitch)
-                        pending_pitch = None
+                    for channel, pitch in pending_pitch.items():
+                        self._pitchwheel(pitch, channel)
+                    pending_pitch = {}
                     last_flush = now
                 time.sleep(0.001)  # 1 ms poll — keeps note latency tight
         except Exception:
@@ -435,7 +446,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
             if self.program_change_enabled:
                 self._program_change(msg.program, channel)
         elif msg.type == "pitchwheel":
-            self._pitchwheel(msg.pitch)
+            self._pitchwheel(msg.pitch, channel)
 
     def _voice_for_note(self, midi_note: int) -> int | None:
         for i, v in enumerate(self.voices):
@@ -559,11 +570,17 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._feed_emulator()  # keep the host emulator's trace in sync
         self._dirty = True  # controller row reflects the new value
 
-    def _pitchwheel(self, pitch: int) -> None:
-        # Re-emit frequency for every gated voice with a +/- 2 semitone bend.
+    def _pitchwheel(self, pitch: int, channel: int = 0) -> None:
+        if self.voice_mode == "multitimbral":
+            routed = self._chan_to_voice.get(channel)
+            targets = [] if routed is None else [routed]
+        else:
+            targets = list(range(SID.N_VOICES))
         bend_semitones = (pitch / 8192.0) * 2.0
         touched = False
-        for idx, v in enumerate(self.voices):
+        for idx in targets:
+            v = self.voices[idx]
+            self._voice_bend[idx] = bend_semitones
             if v.on and v.note is not None:
                 freq = _note_to_sid_freq(v.note + bend_semitones, self.system)
                 base = SID.voice_base(idx)
@@ -651,7 +668,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self, voice_idx: int, midi_note: int, gate: bool, velocity: int | None = None
     ) -> None:
         base = SID.voice_base(voice_idx)
-        freq = _note_to_sid_freq(midi_note, self.system)
+        freq = _note_to_sid_freq(midi_note + self._voice_bend[voice_idx], self.system)
         # freq + pulse-width + control + ADSR are 7 contiguous bytes: one PUT.
         wave_bits = self.voice_wave_bits[voice_idx]
         ctrl = wave_bits | (SID.GATE if gate else 0)
@@ -696,11 +713,21 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._write_filter()
         self._write_mode_vol()
 
-    def _preprogram_voices(self) -> None:
+    def _drain_envelopes(self) -> None:
+        """Release every voice at the fastest rate and wait for it to reach
+        zero, so raising $D418 cannot play a tail the previous scene left
+        decaying under a muted volume."""
+        self._preprogram_voices(release=0)
+        self.api.flush()
+        time.sleep(_ENVELOPE_DRAIN_S)
+
+    def _preprogram_voices(self, release: int | None = None) -> None:
         """Seed each voice's pulse width + waveform + ADSR (gate off) on the
         SID and in the shadow so a note_on only changes freq + gate and the
         emulator starts from the configured (silent) state."""
         a, d, s, r = self.adsr
+        if release is not None:
+            r = release
         for vidx in range(SID.N_VOICES):
             base = SID.voice_base(vidx)
             wave_bits = self.voice_wave_bits[vidx]
@@ -810,8 +837,12 @@ class MidiScene(VoiceScopeRenderer, Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
-        self._program_global_sid()
+        # A looping playlist sets this instance up again, and the note-offs
+        # sent while it was torn down never reached a reader.
+        self._reset_performance()
+        self._drain_envelopes()
         self._preprogram_voices()
+        self._program_global_sid()
         # invalidate_cache first, so the delta cache gets a clean baseline: the
         # previous scene may have used $0400/$2000 for char-mode content.
         self.api.invalidate_cache()
@@ -855,8 +886,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
                 self._last_voice_wave[i] = wave
         # Text rows repaint only on note/CC changes (keeps DMA low).
         if self._dirty:
-            self._paint_info_rows()
             self._dirty = False
+            self._paint_info_rows()
         self._render_hires()
         return True
 

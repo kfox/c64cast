@@ -752,8 +752,8 @@ class AsidScene(VoiceScopeRenderer, Scene):
             if strip_changed:
                 self._paint_strip_color_row(v_idx, window_colors)
         if self._dirty:
-            self._paint_info_rows()
             self._dirty = False
+            self._paint_info_rows()
         self._render_hires()
         return True
 
