@@ -923,8 +923,6 @@ def _provision_stack(
     release_on_failure("framebuffer detach", lambda: _detach_framebuffer(api, framebuffer))
     if recorder is not None:
         release_on_failure("recording stop", recorder.stop)
-    if preview_window is not None:
-        release_on_failure("preview shutdown", preview_window.close)
 
     playlist = Playlist(
         playlist_scenes,
@@ -1009,13 +1007,11 @@ def teardown_stack(stack: SystemStack, interrupts: ReleaseInterrupts | None = No
     handled the way :class:`ReleaseInterrupts` describes; pass the caller's
     when this is one stack of several. Order matters:
     stop audio before the final reset so the NMI timer isn't firing into
-    a buffer we're about to clear; preview/recording come down first so
-    they don't try to render after the API is closed."""
+    a buffer we're about to clear; recording comes down first so it doesn't
+    try to render after the API is closed. The preview window is not closed
+    here: its main-thread pump owns it, and under ``--serve`` this runs on a
+    supervisor worker, where HighGUI rejects the call."""
     steps: tuple[tuple[str, Callable[[], object]], ...] = (
-        (
-            "preview shutdown",
-            lambda: stack.preview_window.close() if stack.preview_window else None,
-        ),
         ("recording stop", lambda: stack.recorder.stop() if stack.recorder else None),
         # Both consumers are down, so every remaining DMA write would otherwise
         # still pay to shadow into a buffer nothing reads.
@@ -1142,10 +1138,10 @@ def _pump_previews_until_done(
     threads: Sequence[threading.Thread], previews: Sequence[PreviewWindow]
 ) -> None:
     """Drive the preview window(s) from the main thread until every playlist
-    thread has finished.
+    thread has finished, then close them here too.
 
-    The windows can only live here: HighGUI must create and service a window
-    on the main thread (a hard requirement on macOS), and with every playlist
+    The windows can only live here: HighGUI must create, service and destroy a
+    window on the main thread (a hard requirement on macOS), and with every playlist
     on a worker thread the main thread is otherwise just parked in `join()`.
     `pump()` blocks ~1 ms in `waitKey` servicing events, which paces this loop
     without a busy-spin.
@@ -1163,11 +1159,15 @@ def _pump_previews_until_done(
     """
     for p in previews:
         p.open()
-    while any(t.is_alive() for t in threads):
+    try:
+        while any(t.is_alive() for t in threads):
+            for p in previews:
+                p.pump()
+            if not any(p.is_open for p in previews):
+                break
+    finally:
         for p in previews:
-            p.pump()
-        if not any(p.is_open for p in previews):
-            break
+            p.close()
     for t in threads:
         join_bounded(t, math.inf)
 

@@ -219,7 +219,8 @@ class TeardownStackOrderTest(unittest.TestCase):
         return st, order
 
     def test_teardown_order(self):
-        # Preview/recording first (avoid rendering after API close);
+        # Recording first (avoid rendering after API close); the preview
+        # window is its main-thread pump's to close, never teardown's;
         # audio before reset (NMI timer can't fire into a cleared buffer);
         # api.reset → the screen stream off, last while the link is still up
         # → api.close; camera release last.
@@ -227,7 +228,7 @@ class TeardownStackOrderTest(unittest.TestCase):
         teardown_stack(st)
         self.assertEqual(
             order,
-            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+            ["recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
 
     def test_the_screen_stream_is_stopped_immediately_before_the_link_closes(self):
@@ -261,9 +262,7 @@ class TeardownStackOrderTest(unittest.TestCase):
         with self.assertLogs("c64cast", level="ERROR"):
             teardown_stack(st)
         # The failing step is skipped; everything after it still runs.
-        self.assertEqual(
-            order, ["preview", "recorder", "reset", "stream_off", "api_close", "source"]
-        )
+        self.assertEqual(order, ["recorder", "reset", "stream_off", "api_close", "source"])
 
     def test_a_ctrl_c_in_one_step_still_runs_the_steps_under_it(self):
         # ReleaseInterrupts.step swallows Exception only; a Ctrl+C mid-step
@@ -279,7 +278,7 @@ class TeardownStackOrderTest(unittest.TestCase):
             teardown_stack(st)
         self.assertEqual(
             order,
-            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+            ["recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
         self.assertIn("interrupt again to stop at once", logs.output[0])
 
@@ -299,7 +298,7 @@ class TeardownStackOrderTest(unittest.TestCase):
             teardown_stack(st)
         self.assertEqual(
             order,
-            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+            ["recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
         self.assertIn("interrupt again to stop at once", logs.output[0])
 
@@ -341,7 +340,7 @@ class TeardownStackOrderTest(unittest.TestCase):
             self.assertRaises(KeyboardInterrupt) as raised,
         ):
             teardown_stack(st)
-        self.assertEqual(order, ["preview", "recorder", "audio", "reset"])
+        self.assertEqual(order, ["recorder", "audio", "reset"])
         self.assertIs(raised.exception, hard_stop)
         self.assertIn("stopping now", logs.output[-1])
 
@@ -361,16 +360,88 @@ class RunSessionStopHandlerGapTest(unittest.TestCase):
     def test_a_ctrl_c_before_the_stop_handler_is_installed_still_tears_down(self):
         from c64cast.app import cli
 
+        def interrupted_once_built(_signum, handler):
+            if handler is not cli.signal.default_int_handler:
+                raise KeyboardInterrupt
+
         sess = MagicMock(name="sess")
         with (
             unittest.mock.patch.object(session, "validate_configs"),
             unittest.mock.patch.object(session, "build_session", return_value=sess),
-            unittest.mock.patch.object(cli.signal, "signal", side_effect=KeyboardInterrupt),
+            unittest.mock.patch.object(cli.signal, "signal", side_effect=interrupted_once_built),
             unittest.mock.patch.object(session, "teardown_session") as teardown,
             self.assertRaises(KeyboardInterrupt),
         ):
             cli._run_session(argparse.Namespace(), MagicMock(name="loaded"), [])
         teardown.assert_called_once_with(sess)
+
+    def test_a_sigterm_during_the_build_unwinds_it_like_a_ctrl_c(self):
+        """Until the stop handler goes in, SIGTERM's default disposition ends
+        the process on the spot, so a `kill` or a service manager's stop during
+        the build skipped build_session's unwind and left the machine
+        provisioned and never reset. It has to arrive the way a Ctrl+C does."""
+        import signal
+
+        from c64cast.app import cli
+
+        handlers: dict[int, object] = {}
+        sigterm_during_build: list[object] = []
+
+        def build(*_a, **_k):
+            sigterm_during_build.append(handlers.get(signal.SIGTERM))
+            raise session.StackBuildError(4)
+
+        with (
+            unittest.mock.patch.object(session, "validate_configs"),
+            unittest.mock.patch.object(session, "build_session", side_effect=build),
+            unittest.mock.patch.object(
+                cli.signal, "signal", side_effect=lambda s, h: handlers.__setitem__(s, h)
+            ),
+        ):
+            rc = cli._run_session(argparse.Namespace(), MagicMock(name="loaded"), [])
+        self.assertEqual(rc, 4)
+        handler = sigterm_during_build[0]
+        assert callable(handler)
+        with self.assertRaises(KeyboardInterrupt):
+            handler(signal.SIGTERM, None)
+
+
+class HardwareCommandSigtermTest(unittest.TestCase):
+    """--dump-char-rom and --calibrate-dac reset or restore the machine in a
+    `finally`. SIGTERM's default disposition ends the process without running
+    it, leaving the dump stub parked or the calibration's raised mixer volume
+    and swapped SID models on the machine."""
+
+    def _handler_during(self, flag: str, command: str) -> object:
+        import signal
+
+        from _fakes import quiet_logging
+
+        from c64cast.app import cli
+
+        seen: list[object] = []
+
+        def run(*_a, **_k):
+            seen.append(signal.getsignal(signal.SIGTERM))
+            return 0
+
+        before = signal.getsignal(signal.SIGTERM)
+        with unittest.mock.patch.object(cli, command, side_effect=run), quiet_logging():
+            self.assertEqual(cli.main([flag, "-u", "u64://198.51.100.1"]), 0)
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+        return seen[0]
+
+    def test_a_sigterm_during_a_char_rom_dump_unwinds_it(self):
+        import signal
+
+        handler = self._handler_during("--dump-char-rom", "run_dump_char_rom")
+        self.assertIs(handler, signal.default_int_handler)
+
+    def test_a_sigterm_during_a_dac_calibration_unwinds_it(self):
+        import signal
+
+        handler = self._handler_during("--calibrate-dac", "run_calibrate_dac")
+        self.assertIs(handler, signal.default_int_handler)
 
 
 class RunSessionExitStatusTest(unittest.TestCase):

@@ -15,13 +15,14 @@ The names this module re-exports below are that module's, kept importable from
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import signal
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import NoReturn
 
 from c64cast import UNINSTALLED_VERSION, __version__
@@ -687,6 +688,18 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
     return loaded, cfgs
 
 
+@contextlib.contextmanager
+def _sigterm_unwinds() -> Iterator[None]:
+    """Turn SIGTERM into a KeyboardInterrupt for a one-shot hardware command,
+    whose `finally` resets or restores the machine; the default disposition
+    ends the process without running it."""
+    previous = signal.signal(signal.SIGTERM, signal.default_int_handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def _run_session(
     args: argparse.Namespace, loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]
 ) -> int:
@@ -703,6 +716,10 @@ def _run_session(
     except session.SessionConfigError as e:
         return e.exit_code
 
+    # Until the stop handler below replaces it, SIGTERM's default disposition
+    # ends the process with no unwind, leaving the machine provisioned and
+    # never reset; as a KeyboardInterrupt it unwinds the build as Ctrl+C does.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         sess = session.build_session(args, loaded, cfgs)
     except StackBuildError as e:
@@ -810,7 +827,8 @@ def main(argv=None) -> int:
                 "--dump-char-rom operates on one system; dumping from the first (%s)",
                 loaded.names[0],
             )
-        return run_dump_char_rom(cfgs[0])
+        with _sigterm_unwinds():
+            return run_dump_char_rom(cfgs[0])
 
     if args.calibrate_dac:
         if len(cfgs) > 1:
@@ -818,7 +836,8 @@ def main(argv=None) -> int:
                 "--calibrate-dac operates on one system; calibrating the first (%s)",
                 loaded.names[0],
             )
-        return run_calibrate_dac(cfgs[0], args)
+        with _sigterm_unwinds():
+            return run_calibrate_dac(cfgs[0], args)
 
     if args.doctor:
         return run_doctor(loaded, cfgs)
