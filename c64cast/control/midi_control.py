@@ -102,8 +102,8 @@ _OSD_DOUBLE_TAP_S = 0.4
 
 # Actions where a note release (note_off / note_on velocity==0) carries meaning;
 # a release for anything else is dropped in _dispatch. Covers the transport hold
-# actions (a held rw/ff ramp, a Record/Stop hold for the loop_slot pad chords)
-# plus clip_launch (a gate clip plays while held).
+# actions (a held rw/ff ramp, a Record/Stop hold for the loop_slot pad chords),
+# clip_launch (a gate clip plays while held) and joystick (a held direction).
 _RELEASE_AWARE_ACTIONS = (
     "transport.rw",
     "transport.ff",

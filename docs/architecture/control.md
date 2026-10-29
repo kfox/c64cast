@@ -467,7 +467,7 @@ Phase 2, extended in Phase 3.
 **Two `_dispatch` wrinkles:**
 
 * A `msg.type == "sysex"` branch parses an **MMC** (MIDI Machine Control) transport SysEx, `F0 7F <dev> 06 <cmd> F7`. mido strips the F0/F7 framing, so `msg.data == (0x7F, dev, 0x06, cmd)`. `_parse_mmc_sysex` wildcards the device byte and recognizes only `_MMC_COMMANDS = {0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x06 record, 0x09 pause}`, looked up as `("mmc", cmd)`.
-* Note-release routing (`note_off`, or `note_on` with velocity 0) reaches `_dispatch` rather than being discarded at the door, but is dropped there unless the mapped action is in `_RELEASE_AWARE_ACTIONS` — `("transport.rw", "transport.ff", "transport.record", "transport.stop")` and `clip_launch`. Those are the actions whose pad chords need a real release to key off; everything else would only see spurious repeats.
+* Note-release routing (`note_off`, or `note_on` with velocity 0) reaches `_dispatch` rather than being discarded at the door, but is dropped there unless the mapped action is in `_RELEASE_AWARE_ACTIONS` — `("transport.rw", "transport.ff", "transport.record", "transport.stop")`, `clip_launch` and `joystick`. Those are the actions whose holds, gates, pad chords and held directions need a real release to key off; everything else would only see spurious repeats.
 
 > **MMC has no release concept at all.** A SysEx frame always dispatches `pressed=True, value=127`, since `_dispatch`'s sysex branch has no note-off equivalent. So an MMC-mapped Record or Stop still fires its one-shot action correctly, but cannot reliably drive the pad chords — those need a `note` mapping. `TransportSession`'s `_CHORD_HOLD_WINDOW_S` auto-expiry keeps this from wedging future presses; it just can't make MMC-sourced holds meaningful.
 
