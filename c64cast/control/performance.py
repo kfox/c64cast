@@ -645,10 +645,13 @@ class PerformanceSession:
         if not active.scene.is_done:
             return
         # Setting it up again would fail again, on every frame.
-        if active.loop and not pl.setup_failed(active.scene):
-            pl.perf_swap_scene(active.scene)
-        else:
-            self._end_active(pl)
+        if (
+            active.loop
+            and not pl.setup_failed(active.scene)
+            and (not pl.perf_swap_scene(active.scene) or not active.scene.is_done)
+        ):
+            return
+        self._end_active(pl)
 
     def _end_active(self, pl: Playlist) -> None:
         """Tear down the active clip and restore the program it interrupted."""

@@ -4,4 +4,5 @@
   "playlist advance failed; aborting". It is now logged, torn down and skipped,
   and the playlist moves on to the next scene. A playlist with only that one
   scene still stops with an error and exit status 1, and so does a playlist
-  none of whose scenes can start.
+  none of whose scenes can start. A looping clip that cannot start goes back
+  to the program it interrupted instead of being set up again on every frame.

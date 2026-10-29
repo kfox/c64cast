@@ -533,6 +533,42 @@ class PlaylistTest(unittest.TestCase):
         self.assertTrue(driven["ok"], "the playlist never came back to its own scene")
         self.assertEqual(clip.teardown_count, 1, "a clip that cannot set up was set up again")
 
+    def test_a_looping_clip_whose_setup_ends_it_returns_to_the_playlist(self):
+        from c64cast.control.performance import ClipEvent, PerformanceSession
+
+        class EndsInSetup(FakeScene):
+            def setup(self):
+                super().setup()
+                self.is_done = True
+
+        base = FakeScene("BASE", frames_until_done=10**9)
+        clip = EndsInSetup("CLIP")
+        stop = threading.Event()
+        pl = Playlist(
+            [base],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.performance = PerformanceSession([{"slot": 1, "type": "generative", "quantize": "off"}])
+        pl.build_performance_scene = lambda _clip: clip
+        driven = _drive(
+            stop,
+            lambda: base.frame_count >= 1,
+            lambda: pl.performance.enqueue(ClipEvent(slot=1, pressed=True)),
+            lambda: clip.setup_count >= 1,
+            lambda: base.setup_count >= 2,
+            timeout=2.0,
+        )
+        pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "the playlist never came back to its own scene")
+        self.assertLessEqual(
+            clip.setup_count, 2, "a clip that ends in setup was set up every frame"
+        )
+
     def test_stop_event_halts_the_loop_between_frames(self):
         # What this has to assert is that the run loop re-reads stop_event
         # between frames instead of running the scene to completion. It used

@@ -84,6 +84,7 @@ class _FakePlaylist:
         if self.current is not None:
             self.current.teardown()
         new_scene.setups += 1
+        new_scene.is_done = False
         self.current = new_scene
         self.swaps.append(new_scene.name)
         return True
