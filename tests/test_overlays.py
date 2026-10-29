@@ -726,7 +726,7 @@ class RssTitleExtractionTest(unittest.TestCase):
     def test_extracts_rss20_titles(self):
         from c64cast.scenes.overlays.rss import _extract_titles
 
-        xml = """<?xml version="1.0"?><rss><channel>
+        xml = b"""<?xml version="1.0"?><rss><channel>
         <item><title>First</title></item>
         <item><title>Second</title></item>
         <item><title>Third</title></item>
@@ -737,7 +737,7 @@ class RssTitleExtractionTest(unittest.TestCase):
     def test_extracts_atom_titles(self):
         from c64cast.scenes.overlays.rss import _extract_titles
 
-        xml = """<?xml version="1.0"?>
+        xml = b"""<?xml version="1.0"?>
         <feed xmlns="http://www.w3.org/2005/Atom">
         <entry><title>Atom-1</title></entry>
         <entry><title>Atom-2</title></entry>
@@ -813,6 +813,24 @@ class RssFetchTest(_RemotePeerTest):
         ov = RssOverlay(url=self.route("/feed", answer))
         ov._fetch_once()
         self.assertEqual(ov._titles, ["It’s"])
+
+    def test_feed_declaring_a_multibyte_encoding_is_parsed(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        for encoding in ("shift_jis", "gb2312", "euc-kr", "big5"):
+            with self.subTest(encoding=encoding):
+                body = (
+                    f'<?xml version="1.0" encoding="{encoding}"?>'
+                    "<rss><channel><item><title>iPhone 17</title></item></channel></rss>"
+                ).encode(encoding)
+
+                def answer(handler, body=body):
+                    _send_head(handler, "text/xml", len(body))
+                    handler.wfile.write(body)
+
+                ov = RssOverlay(url=self.route("/feed", answer))
+                ov._fetch_once()
+                self.assertEqual(ov._titles, ["iPhone 17"])
 
     def test_oversized_feed_is_refused_without_reading_it_all(self):
         from c64cast.scenes.overlays import _fetch

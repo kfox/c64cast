@@ -31,8 +31,23 @@ def _local(tag: str) -> str:
     return _NS_STRIP.sub("", tag)
 
 
-def _extract_titles(xml_text: str | bytes, limit: int) -> list[str]:
-    root = ET.fromstring(xml_text)
+_XML_DECLARED_ENCODING = re.compile(rb"""<\?xml[^>]*?\sencoding\s*=\s*["']([A-Za-z][\w.-]*)["']""")
+
+
+def _parse_feed(xml: bytes) -> ET.Element:
+    try:
+        return ET.fromstring(xml)
+    except ValueError:
+        # expat decodes only UTF-8, UTF-16 and single-byte encodings, and
+        # refuses a declared multi-byte one (Shift_JIS, GB2312, Big5) this way.
+        declared = _XML_DECLARED_ENCODING.match(xml)
+        if declared is None:
+            raise
+        return ET.fromstring(xml.decode(declared[1].decode("ascii"), errors="replace"))
+
+
+def _extract_titles(xml_text: bytes, limit: int) -> list[str]:
+    root = _parse_feed(xml_text)
     titles = []
     # 'item' is RSS, 'entry' is Atom.
     for el in root.iter():
