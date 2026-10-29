@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI, FrozenClock, quiet_logging  # noqa: E402
 
+from c64cast import _midi  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.sid import asid  # noqa: E402
 from c64cast.sid.asid_player import frame_cycle_cost  # noqa: E402
@@ -1123,6 +1125,102 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         wants, reasons = wants_reu(cfg)
         self.assertTrue(wants)
         self.assertTrue(any("asid" in r for r in reasons))
+
+
+@unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
+class AsidUnpluggedHostTest(unittest.TestCase):
+    """rtmidi reports an unplugged ASID host only by dropping its port from the
+    input list, so the last frame's gated voices go on sounding."""
+
+    PORT = "ASID Interface"
+    # Voices 1 and 3 gated with a pulse wave, voice 2 a released triangle.
+    FRAME = {25: 0x41, 26: 0x10, 27: 0x41}
+    CONTROLS = (0x04, 0x0B, 0x12)
+
+    def _make(self, buffered_player: str):
+        from c64cast.sid.asid_scene import AsidScene
+
+        api = FakeAPI()
+        scene = AsidScene(api, None, buffered_player=buffered_player)
+        scene._opened_port_name = self.PORT
+        return scene, api
+
+    def _lose_port(self, scene) -> None:
+        with (
+            mock.patch.object(_midi, "mido") as fake,
+            self.assertLogs("c64cast.sid.asid_scene", level="WARNING") as logs,
+        ):
+            fake.get_input_names.return_value = []
+            scene._port_watch.check()
+        self.assertIn(self.PORT, logs.output[0])
+
+    def test_the_coalesced_path_gates_off_every_voice(self):
+        scene, api = self._make("off")
+        scene._handle_sysex(_reg_msg(self.FRAME))
+        scene._flush_to_sid()
+        self._lose_port(scene)
+        scene._gate_off_all_voices()
+        scene._flush_to_sid()
+        block = api.regs[f"{SID.BASE:04X}"]
+        self.assertEqual([block[c] for c in self.CONTROLS], [0x40, 0x10, 0x40])
+
+    def test_every_active_chip_is_gated_off(self):
+        scene, api = self._make("off")
+        scene._active_chips = 2
+        scene._chip_addresses = [SID.BASE, 0xD420]
+        scene._sid_shadows[1][self.CONTROLS[0]] = 0x41
+        scene._gate_off_all_voices()
+        scene._flush_to_sid()
+        self.assertEqual(api.regs["D420"][self.CONTROLS[0]], 0x40)
+
+    def test_the_buffered_path_pushes_a_gate_off_frame(self):
+        scene, _ = self._make("auto")
+        player = scene._player
+        assert player is not None
+        pushed: list[bytes] = []
+        player.push_frame = pushed.append  # type: ignore[method-assign]
+        scene._handle_sysex(_reg_msg(self.FRAME))
+        scene._handle_sysex(_reg_msg({0: 0x40}))
+        self.assertEqual(len(pushed), 1)
+        self._lose_port(scene)
+        scene._gate_off_all_voices()
+        self.assertEqual(len(pushed), 2)
+        slot = pushed[1]
+        ops = [(slot[1 + 4 * i], slot[3 + 4 * i]) for i in range(slot[0])]
+        self.assertEqual([op for op in ops if op[0] in self.CONTROLS], [(0x04, 0x40), (0x12, 0x40)])
+        self.assertFalse(scene._frame_has_data)
+
+    def test_the_running_reader_gates_off_on_its_own(self):
+        scene, api = self._make("off")
+        port = mock.MagicMock()
+        port.poll.side_effect = [mido.Message("sysex", data=_reg_msg(self.FRAME))] + [None] * 10**6
+        names = [self.PORT]
+        with (
+            mock.patch.object(_midi, "mido") as fake,
+            mock.patch.object(_midi, "PORT_WATCH_INTERVAL_S", 0.01),
+            mock.patch.object(
+                scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", port)
+            ),
+            quiet_logging(),
+        ):
+            fake.get_input_names.side_effect = lambda: list(names)
+            scene.setup()
+            try:
+                voice_1 = f"{SID.BASE:04X}"
+                self.assertTrue(_wait_for(lambda: api.regs.get(voice_1, b"\0" * 5)[4] & SID.GATE))
+                names.clear()
+                self.assertTrue(_wait_for(lambda: not api.regs[voice_1][4] & SID.GATE))
+            finally:
+                scene.teardown()
+
+
+def _wait_for(condition, timeout_s: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.005)
+    return True
 
 
 if __name__ == "__main__":
