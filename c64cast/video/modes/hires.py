@@ -391,21 +391,27 @@ class HiresDisplayMode(BitmapDisplayMode):
                 screen_ram = np.full(1000, (fg_const << 4) | bg, dtype=np.uint8)
             else:
                 screen_ram = _pack_screen(sample_fg, bg)
-            plain: BitmapComposeBuffers = {
-                "bitmap": bitmap_ram,
-                "screen": screen_ram,
-                "bg": bg,
-                "text": HiresTextSurface(bitmap_ram, screen_ram),
-            }
-            return plain
-
-        # Split each entry into the index its field shows. Both pages share the
-        # bitmap, so a solid entry writes the same byte to each and never
-        # alternates.
-        fg_a, fg_b = table.field_pages(sample_fg)
-        bg_a, bg_b = (int(v) for v in table.pairs[bg])
-        screen_ram = _pack_screen(fg_a, bg_a)
-        screen_b = _pack_screen(fg_b, bg_b)
+            if table is None:
+                plain: BitmapComposeBuffers = {
+                    "bitmap": bitmap_ram,
+                    "screen": screen_ram,
+                    "bg": bg,
+                    "text": HiresTextSurface(bitmap_ram, screen_ram),
+                }
+                return plain
+            # The handler alternates whatever the two pages hold, so a frame
+            # that does not blend (an edges style cycled onto an armed scene)
+            # still owes push() a real copy in page B.
+            screen_b = screen_ram
+            bg_a = bg
+        else:
+            # Split each entry into the index its field shows. Both pages share
+            # the bitmap, so a solid entry writes the same byte to each and
+            # never alternates.
+            fg_a, fg_b = table.field_pages(sample_fg)
+            bg_a, bg_b = (int(v) for v in table.pairs[bg])
+            screen_ram = _pack_screen(fg_a, bg_a)
+            screen_b = _pack_screen(fg_b, bg_b)
         flicker: FlickerComposeBuffers = {
             "bitmap": bitmap_ram,
             "screen": screen_ram,

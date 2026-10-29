@@ -160,6 +160,7 @@ class MCMDisplayMode(CharDisplayMode):
             charset[i * 8 : i * 8 + 4] = [row_top] * 4
             charset[i * 8 + 4 : i * 8 + 8] = [row_bot] * 4
         api.write_memory_file("3000", bytes(charset))
+        self._smoothed_counts = None
         # Clear-then-reveal: screen code 0x00 selects bg slot 0 for every
         # sub-pixel, so $D020-$D023 are pinned black too and $D011 flips last.
         clear_char_screen(api, screen_code=0x00)

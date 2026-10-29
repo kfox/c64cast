@@ -653,6 +653,21 @@ class FlickerPushTest(unittest.TestCase):
         self.assertIn(RegionID.SCREEN_ALT_BANK2, ids)
         self.assertEqual(len(ids), len(set(ids)), "a region id was reused within one push")
 
+    def test_cycling_to_an_edges_style_keeps_both_pages_in_step(self):
+        """The handler alternates whatever the two pages hold, so an armed
+        scene cycled onto a 2-color style owes push() a real copy in page B."""
+        api = FakeAPI()
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
+        mode.setup(api)
+        for style in ("edges", "edges_inverted"):
+            with self.subTest(style=style):
+                mode.cycle_style(api)
+                self.assertEqual(mode.style, style)
+                buffers = mode.compose(gradient())
+                mode.push(api, buffers)
+                page_b = cast(FlickerComposeBuffers, buffers)["screen_b"]
+                np.testing.assert_array_equal(page_b, buffers["screen"])
+
     def test_teardown_restores_d018(self):
         """Nothing else re-asserts it, so a following char scene would read its
         matrix from the $0C00 offset."""
@@ -843,6 +858,18 @@ class MHiresFlickerPushTest(unittest.TestCase):
         written = set(api.regions)
         for addr in (VIC_BANK_2.SCREEN, VIC_BANK_2.SCREEN_ALT, VIC_BANK_2.BITMAP, 0xD800):
             self.assertIn(addr, written)
+
+    def test_a_forced_palette_arriving_mid_scene_keeps_composing(self):
+        """A live scene's rolling force_palette bakes its first map seconds in,
+        which swaps the widened entry space for the 16 colors between frames."""
+        mode = MultiHiresDisplayMode(force_palette=True, flicker_tolerance=ALL_TIERS)
+        blended = cast(MHiresFlickerComposeBuffers, mode.compose(gradient()))
+        self.assertFalse(np.array_equal(blended["screen"], blended["screen_b"]))
+        mode.set_color_map(palette.build_fixed_color_map([0, 2, 6, 7, 1]))
+        forced = cast(MHiresFlickerComposeBuffers, mode.compose(gradient()))
+        np.testing.assert_array_equal(forced["screen"], forced["screen_b"])
+        mode.set_color_map(None)
+        mode.compose(gradient())
 
     def test_teardown_restores_d018(self):
         api = FakeAPI()
