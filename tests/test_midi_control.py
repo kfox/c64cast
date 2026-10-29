@@ -614,6 +614,18 @@ class ChannelTargetingTests(_MidiControlTestCase):
         for pl in pls.values():
             self.assertFalse(pl.skip_event.is_set())
 
+    def test_mmc_sysex_targets_every_system(self):
+        pls = {f"sys{i}": _fake_playlist(f"sys{i}") for i in range(3)}
+        listener = MidiControlListener(
+            pls, [{"type": "mmc", "number": 0x02, "action": "transport.play_pause"}]
+        )
+        listener._dispatch(mido.Message("sysex", data=(0x7F, 0x7F, 0x06, 0x02)))
+        for name, pl in pls.items():
+            with self.subTest(system=name):
+                pl.transport.enqueue.assert_called_once_with(
+                    TransportEvent(action="play_pause", pressed=True, value=127, mode="rel")
+                )
+
 
 class CrashGuardTests(_MidiControlTestCase):
     def test_one_target_raising_does_not_block_others(self):

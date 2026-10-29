@@ -1142,4 +1142,6 @@ individual systems its own way:
 
 The MIDI convention is the one worth internalizing: a performer retargets by
 changing their controller's transmit channel, with no round trip through a menu
-or a network call. In a single-system run the channel is ignored entirely.
+or a network call. An MMC transport command has no channel, so it reaches every
+system, as the MIDI clock does. In a single-system run the channel is ignored
+entirely.

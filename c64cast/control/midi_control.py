@@ -853,11 +853,12 @@ class MidiControlListener:
         (0-based) -> the Nth playlist in ensemble order if in range, else no
         target (logged once at debug, not per-message — a performer's
         controller idly sending on unrelated channels shouldn't spam logs).
-        Single-playlist mode ignores channel entirely."""
+        A message with no channel (an MMC SysEx) goes to every playlist, as the
+        clock does. Single-playlist mode ignores channel entirely."""
         if len(self._all) <= 1:
             return self._all
-        channel = getattr(msg, "channel", 0)
-        if channel == self.broadcast_channel - 1:
+        channel = getattr(msg, "channel", None)
+        if channel is None or channel == self.broadcast_channel - 1:
             return self._all
         if 0 <= channel < len(self._all):
             return [self._all[channel]]
