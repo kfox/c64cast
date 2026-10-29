@@ -133,6 +133,77 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
         )
 
 
+# Rows of the uppercase character ROM for the glyphs the ramps below use;
+# a code with bit 7 set draws the inverse of the code 0x80 below it.
+_ROM_ROWS = {
+    0x20: "0000000000000000",
+    0x40: "000000FFFF000000",
+    0x4D: "C0E070381C0E0703",
+    0x4E: "03070E1C3870E0C0",
+    0x51: "003C7E7E7E7E3C00",
+    0x56: "C3E77E3C3C7EE7C3",
+    0x57: "003C7E66667E3C00",
+    0x58: "1818666618183C00",
+    0x5F: "FF7F3F1F0F070301",
+    0x60: "0000000000000000",
+    0x61: "F0F0F0F0F0F0F0F0",
+    0x62: "00000000FFFFFFFF",
+    0x64: "00000000000000FF",
+    0x69: "FFFEFCF8F0E0C080",
+    0x6A: "0303030303030303",
+    0x6C: "000000000F0F0F0F",
+    0x6F: "000000000000FFFF",
+    0x70: "0000001F1F181818",
+    0x71: "181818FFFF000000",
+    0x72: "000000FFFF181818",
+    0x73: "181818F8F8181818",
+    0x77: "FFFF000000000000",
+    0x7E: "F0F0F0F000000000",
+}
+
+
+def _glyph(screen_code: int) -> bytes:
+    rows = bytes.fromhex(_ROM_ROWS[screen_code & 0x7F])
+    return bytes(b ^ 0xFF for b in rows) if screen_code & 0x80 else rows
+
+
+def _ink(screen_code: int) -> int:
+    return sum(bin(b).count("1") for b in _glyph(screen_code))
+
+
+def _uppercase_char(screen_code: int) -> str:
+    """The character an uppercase-ROM screen code draws; codes from 0x40 up
+    are graphics glyphs, shown as `?`."""
+    if screen_code >= 0x40:
+        return "?"
+    return chr(screen_code + 0x40) if screen_code < 0x20 else chr(screen_code)
+
+
+class GlyphRampTest(unittest.TestCase):
+    """A ramp's screen codes draw the glyphs it means, in the order it means.
+
+    Screen codes are not PETSCII: `@` is PETSCII 0x40 but screen code 0x00,
+    and screen code 0x40 draws a horizontal bar."""
+
+    def test_default_ramp_is_the_ascii_density_ramp_then_a_full_block(self):
+        chars = "".join(_uppercase_char(int(c)) for c in ps.DefaultStyle.CHARS[:-1])
+        self.assertEqual(chars, " .:-=+*#%@")
+        self.assertEqual(int(ps.DefaultStyle.CHARS[-1]), 0xA0)
+
+    def test_halftone_coverage_rises_by_a_quarter_per_step(self):
+        self.assertEqual([_ink(int(c)) for c in ps.HalftoneStyle.CHARS], [0, 16, 32, 48, 64])
+
+    def test_hatch_ends_on_the_cross_before_the_full_block(self):
+        inks = [_ink(int(c)) for c in ps.HatchStyle.CHARS]
+        self.assertEqual(inks, sorted(inks))
+        self.assertEqual(int(ps.HatchStyle.CHARS[3]), 0x56)
+
+    def test_random_glyphs_are_distinct_and_never_blank(self):
+        glyphs = [_glyph(int(c)) for c in ps.RandomGlyphStyle.GLYPHS]
+        self.assertNotIn(bytes(8), glyphs)
+        self.assertEqual(len(set(glyphs)), len(glyphs))
+
+
 class CyclingTest(unittest.TestCase):
     """SHIFT-driven cycling rotates through STYLE_NAMES in declared order."""
 
