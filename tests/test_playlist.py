@@ -475,7 +475,7 @@ class PlaylistTest(unittest.TestCase):
         with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             self._run_until([bad, good], lambda: good.setup_count >= 1)
         self.assertTrue(
-            any("setup of 'X' raised; ending the scene" in line for line in cap.output),
+            any("scene 'X' could not start (RuntimeError" in line for line in cap.output),
             f"expected the setup failure, got: {cap.output!r}",
         )
         self.assertEqual(bad.frame_count, 0, "a scene that never set up must not render")
@@ -498,7 +498,7 @@ class PlaylistTest(unittest.TestCase):
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertTrue(
-            any("scene 'X' could not set up — stopping" in line for line in cap.output),
+            any("'X' is the only scene; stopping" in line for line in cap.output),
             f"expected the stop, got: {cap.output!r}",
         )
         self.assertEqual(bad_setup.teardown_count, 1)
@@ -2276,11 +2276,117 @@ class SetupFailureOfARealSceneTest(unittest.TestCase):
         ):
             pl.run()
         self.assertTrue(
-            any("setup of 'MIDI' raised; ending the scene" in line for line in cap.output),
+            any("scene 'MIDI' could not start (RuntimeError" in line for line in cap.output),
             f"expected the setup failure, got: {cap.output!r}",
         )
         self.assertEqual(good.setup_count, 1, "the scene after it must still play")
         self.assertIn("SILENCE", api.regs, "the SID its setup programmed must be silenced")
+
+
+class LoneSceneWhoseOwnGuardIsGoneTest(unittest.TestCase):
+    """A raise that a scene used to catch in its own setup reaches the
+    playlist, which names the scene and the cause."""
+
+    def test_a_lone_launcher_whose_launch_raises_fails_to_start(self):
+        from c64cast.scenes.scenes import LauncherScene
+
+        tmp = tempfile.mkdtemp()
+        prg = os.path.join(tmp, "demo.prg")
+        with open(prg, "wb") as f:
+            f.write(b"\x01\x08")
+        api = _PlaylistFakeAPI()
+        api.launch_program = mock.Mock(side_effect=RuntimeError("upload refused"))
+        api.reset = mock.Mock()
+        scene = LauncherScene(api, prg, input_source="none", reset_before_launch=False)
+        pl = Playlist([scene], api, target_fps=10000.0, heartbeat_interval=0.0)
+        arm_deadline(self, 5.0, pl.stop_event.set)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+            pl.run()
+        errors = [r.getMessage() for r in cap.records]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(repr(scene.name), errors[0])
+        self.assertIn("upload refused", errors[0])
+        self.assertTrue(pl.failed_to_start)
+
+
+class _EndsAtSetup(FakeScene):
+    """A scene whose setup records why it cannot start and ends it, as a
+    missing file does."""
+
+    setup_failure = "its file is missing"
+
+    def setup(self):
+        super().setup()
+        self.is_done = True
+
+
+class PlaylistWithNoSceneThatStartsTest(unittest.TestCase):
+    """A multi-scene playlist skips a scene that cannot start, but one where
+    no scene can start has nothing to play."""
+
+    def _playlist(self, scenes, loop):
+        stop = threading.Event()
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            loop=loop,
+        )
+        arm_deadline(self, 5.0, stop.set)
+        return pl
+
+    def test_a_pass_in_which_no_scene_starts_stops_the_run(self):
+        for loop in (True, False):
+            with self.subTest(loop=loop):
+                raising = FakeScene("X", raise_on_setup=True)
+                ending = _EndsAtSetup("Y")
+                pl = self._playlist([raising, ending], loop)
+                with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
+                    pl.run()
+                errors = [r.getMessage() for r in cap.records if r.levelno == logging.ERROR]
+                self.assertTrue(pl.failed_to_start)
+                self.assertEqual(ending.setup_count, 1, "a second pass was started")
+                self.assertTrue(any("none of the 2 scenes" in e for e in errors), errors)
+                self.assertTrue(any("setup blew up in X" in e for e in errors), errors)
+
+    def test_failures_spread_over_passes_with_starts_between_are_skipped(self):
+        first_fails = FakeScene("X", frames_until_done=2)
+        later_fail = FakeScene("Y", frames_until_done=2)
+        attempts = {"X": 0, "Y": 0}
+
+        def failing_when(scene, fails):
+            setup = scene.setup
+
+            def attempt():
+                attempts[scene.name] += 1
+                scene.raise_on_setup = fails(attempts[scene.name])
+                setup()
+
+            scene.setup = attempt
+
+        failing_when(first_fails, lambda n: n == 1)
+        failing_when(later_fail, lambda n: n >= 2)
+        pl = self._playlist([first_fails, later_fail], loop=True)
+        driven = _drive(pl.stop_event, lambda: first_fails.setup_count >= 3)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR"):
+            pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "the playlist stopped playing X")
+        self.assertFalse(pl.failed_to_start)
+
+    def test_a_failure_before_a_reload_does_not_count_against_the_new_list(self):
+        pl = self._playlist([FakeScene("OLD", raise_on_setup=True), FakeScene("OLD2")], loop=True)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR"):
+            pl._set_up_listed_scene(pl.scenes[0])
+        new = [FakeScene("NEW", raise_on_setup=True), FakeScene("NEW2")]
+        pl.request_reload(new)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+            pl._set_up_listed_scene(new[0])
+        self.assertFalse(pl.failed_to_start)
 
 
 if __name__ == "__main__":

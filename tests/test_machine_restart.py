@@ -1347,10 +1347,9 @@ class SetupFailureAfterRestartTest(unittest.TestCase):
         pl.on_machine_restart = restore
         with self.assertLogs("c64cast.app.playlist", level="ERROR") as logs:
             pl.run()
-        self.assertTrue(
-            any("raised; ending the scene" in line for line in logs.output), logs.output
-        )
+        self.assertTrue(any("could not start" in line for line in logs.output), logs.output)
         self.assertTrue(stop.is_set(), "a lone scene that cannot set up must stop the run")
+        self.assertTrue(pl.failed_to_start)
         self.assertEqual(scene.teardown_count, 2, "the scene the setup left was not torn down")
 
 

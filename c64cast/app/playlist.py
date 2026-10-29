@@ -203,6 +203,8 @@ class Playlist:
         self._irq_release_owed = False
         # The scene whose last setup raised, so that it renders nothing and ends.
         self._failed_setup: Scene | None = None
+        # ids of the listed scenes that failed to start since one last started.
+        self._unstartable: set[int] = set()
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -528,6 +530,7 @@ class Playlist:
         self.drop_current()
         with self._jump_lock:
             self._jump_target = None
+            self._unstartable.clear()
             self.scenes = new_scenes
             self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
@@ -617,7 +620,7 @@ class Playlist:
                 return
             self.current = upcoming
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
-            self.safe_setup(self.current)
+            self._set_up_listed_scene(self.current)
             self.transitioning = False
         elif not self.on_card and self.current.is_done:
             self._advance_after_scene()
@@ -639,13 +642,11 @@ class Playlist:
             )
             self._set_up_single_scene(scene)
         elif self.current.is_done:
-            setup_failed = self.setup_failed(self.current)
-            if not self.loop or setup_failed:
-                self.log.info(
-                    "scene %r %s — stopping",
-                    self.current.name,
-                    "could not set up" if setup_failed else "finished and loop=False",
-                )
+            if self.setup_failed(self.current):
+                self._stop_on_failed_start(self.current)
+                return
+            if not self.loop:
+                self.log.info("scene %r finished and loop=False — stopping", self.current.name)
                 self.fades.fade_out(self.current)
                 self.safe_teardown(self.current)
                 self.current = None
@@ -661,25 +662,44 @@ class Playlist:
                 scene.is_done = False
 
     def _set_up_single_scene(self, scene: Scene) -> bool:
-        """Set up the one scene. A setup that raises, or that leaves the
-        scene already done, failed to start it, and there is no other scene
-        to play: stop the run. False when it did."""
-        try:
-            self.safe_setup(scene)
-        except Exception as e:
-            self._stop_on_failed_start(scene, f"{type(e).__name__}: {e}", exc_info=True)
-            return False
+        """Set up the one scene. A setup that leaves the scene already done
+        failed to start it, and there is no other scene to play: stop the
+        run. False when it did. One that raises renders nothing and ends,
+        and `_advance_single_scene` stops the run then."""
+        self.safe_setup(scene)
         if not scene.is_done or self.stop_event.is_set():
             return True
-        self._stop_on_failed_start(
-            scene, getattr(scene, "setup_failure", None) or "its setup ended it"
-        )
+        self._log_failed_start(scene)
+        self._stop_on_failed_start(scene)
         return False
 
-    def _stop_on_failed_start(self, scene: Scene, cause: str, *, exc_info: bool = False) -> None:
-        self.log.error(
-            "scene %r could not start (%s); stopping", scene.name, cause, exc_info=exc_info
+    def _set_up_listed_scene(self, scene: Scene) -> None:
+        """Set up a scene of a multi-scene playlist. One that fails to start
+        is skipped, unless every scene has failed since one last started:
+        then there is nothing to play, and the run stops."""
+        self.safe_setup(scene)
+        if self.stop_event.is_set():
+            return
+        if not (self.setup_failed(scene) or scene.is_done):
+            self._unstartable.clear()
+            return
+        self._unstartable.add(id(scene))
+        if len(self._unstartable) < len(self.scenes):
+            return
+        self.log.error("none of the %d scenes could start; stopping", len(self.scenes))
+        self.failed_to_start = True
+        self.stop_event.set()
+
+    def _log_failed_start(self, scene: Scene, exc: Exception | None = None) -> None:
+        cause = (
+            f"{type(exc).__name__}: {exc}"
+            if exc is not None
+            else getattr(scene, "setup_failure", None) or "its setup ended it"
         )
+        self.log.error("scene %r could not start (%s)", scene.name, cause, exc_info=exc)
+
+    def _stop_on_failed_start(self, scene: Scene) -> None:
+        self.log.info("%r is the only scene; stopping", scene.name)
         self.failed_to_start = True
         self.stop_event.set()
 
@@ -726,7 +746,7 @@ class Playlist:
             return
         self.log.info("scene %d/%d → %r (jump)", target + 1, len(self.scenes), scene.name)
         self.current = scene
-        self.safe_setup(scene)
+        self._set_up_listed_scene(scene)
         self.transitioning = False
 
     def _resolve_and_announce(self) -> None:
@@ -1008,8 +1028,8 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
-            except Exception:
-                self.log.exception("%s raised; ending the scene", where)
+            except Exception as e:
+                self._log_failed_start(scene, e)
                 self._failed_setup = scene
                 self.fades.ended_via_skip = True
                 return False
