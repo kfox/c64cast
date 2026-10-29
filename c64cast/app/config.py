@@ -233,6 +233,9 @@ SCENE_TYPES = (
     "wled",
 )
 
+# The display mode a scene type paints whatever its `display` field says.
+FIXED_DISPLAYS: dict[str, str] = {"waveform": "hires", "midi": "hires", "asid": "hires"}
+
 # Scene types that render a numpy frame (and so support a per-scene `effect`).
 # Excludes blank (no frame), waveform/midi (self-rendered bitmap, bypass the
 # frame→display helper), and launcher (the program owns the VIC).
