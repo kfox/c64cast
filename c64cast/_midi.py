@@ -16,7 +16,10 @@ pass by binding `tests._fakes.FrozenClock` over `c64cast._midi.time`.
 
 from __future__ import annotations
 
+import ctypes
+import functools
 import logging
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -27,13 +30,98 @@ from c64cast._pollthread import PollThread
 log = logging.getLogger(__name__)
 
 try:
-    import mido as _mido
+    import mido as _mido_module
 
-    mido: Any = _mido
+    _mido: Any = _mido_module
     MIDI_AVAILABLE = True
 except ImportError:
-    mido = None
+    _mido = None
     MIDI_AVAILABLE = False
+
+
+# CoreMIDI refreshes the port list only on the run loop of the thread that
+# created the process's first MIDI client, which rtmidi keeps for the life of
+# the process, and rtmidi services only the calling thread's run loop when it
+# lists ports. Listed from any other thread, the ports never change. ALSA and
+# WinMM ask the system afresh on every call.
+_COREFOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+_RUN_LOOP_FINISHED = 1
+_RUN_LOOP_SLICE_S = 60.0
+_REACHES_COREMIDI = frozenset(
+    {
+        "get_input_names",
+        "get_output_names",
+        "get_ioport_names",
+        "open_input",
+        "open_output",
+        "open_ioport",
+    }
+)
+
+
+@functools.cache
+def _corefoundation() -> tuple[Any, ctypes.c_void_p]:
+    cf = ctypes.CDLL(_COREFOUNDATION)
+    cf.CFRunLoopRunInMode.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_bool]
+    cf.CFRunLoopRunInMode.restype = ctypes.c_int32
+    return cf.CFRunLoopRunInMode, ctypes.c_void_p.in_dll(cf, "kCFRunLoopDefaultMode")
+
+
+def _run_loop_slice() -> bool:
+    """Service this thread's run loop for up to `_RUN_LOOP_SLICE_S`; False once
+    it has nothing left to service."""
+    run_in_mode, default_mode = _corefoundation()
+    return run_in_mode(default_mode, _RUN_LOOP_SLICE_S, False) != _RUN_LOOP_FINISHED
+
+
+def _serve_port_list_updates(listed: threading.Event) -> None:
+    try:
+        _mido.get_input_names()
+    finally:
+        listed.set()
+    while _run_loop_slice():
+        pass
+    log.warning(
+        "MIDI: something opened MIDI before c64cast's port-list thread, "
+        "so an unplugged controller will not be noticed"
+    )
+
+
+_port_list_lock = threading.Lock()
+_port_list_thread: threading.Thread | None = None
+
+
+def _keep_port_list_current() -> None:
+    global _port_list_thread
+    with _port_list_lock:
+        if _port_list_thread is not None:
+            return
+        listed = threading.Event()
+        _port_list_thread = threading.Thread(
+            target=_serve_port_list_updates, args=(listed,), name="midi-port-list", daemon=True
+        )
+        _port_list_thread.start()
+        listed.wait()
+
+
+class _MidoWithCurrentPortList:
+    """`mido`, except that the first call reaching CoreMIDI starts the
+    `midi-port-list` thread before it, so that thread owns the process's
+    first MIDI client."""
+
+    def __getattr__(self, name: str) -> Any:
+        if name in _REACHES_COREMIDI:
+            _keep_port_list_current()
+        return getattr(_mido, name)
+
+
+def _mido_for(platform: str) -> Any:
+    if platform == "darwin" and _mido is not None:
+        return _MidoWithCurrentPortList()
+    return _mido
+
+
+mido: Any = _mido_for(sys.platform)
 
 
 def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:

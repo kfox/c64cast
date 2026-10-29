@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -298,6 +299,88 @@ class DrainWorkBoundTest(unittest.TestCase):
         with mock.patch.object(midi_scene, "MAX_DRAIN_WORK_S", 1.0):
             self.assertEqual(midi_scene._drain_budget_s(ULTIMATE_PROFILE), 1.0)
             self.assertEqual(midi_scene._drain_budget_s(TEENSYROM_PROFILE), 1.0)
+
+
+class PortListOnMacOSTest(unittest.TestCase):
+    """macOS refreshes the port list only on the run loop of the thread that
+    made the process's first MIDI client, so `PortWatch`'s thread saw an
+    unplugged controller stay listed. The first CoreMIDI call through
+    `_midi.mido` now hands that first client to a thread that services its run
+    loop."""
+
+    def setUp(self):
+        self.listings: list[str] = []
+        self.fake_mido = mock.MagicMock()
+        self.fake_mido.get_input_names.side_effect = self._list
+
+        self.slices: list[bool] = []
+        for patcher in (
+            mock.patch.object(_midi, "_mido", self.fake_mido),
+            mock.patch.object(_midi, "_port_list_thread", None),
+            mock.patch.object(_midi, "_run_loop_slice", lambda: self.slices.pop(0)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _list(self) -> list[str]:
+        name = threading.current_thread().name
+        if name == "midi-port-list":
+            # Slow enough that a caller not waiting for this listing overtakes it.
+            time.sleep(0.05)
+        self.listings.append(name)
+        return ["Pads"]
+
+    def _list_ports_until_the_run_loop_empties(self, calls: int, slices: list[bool]) -> None:
+        self.slices[:] = slices
+        with self.assertLogs("c64cast._midi", level="WARNING") as logs:
+            wrapped = _midi._mido_for("darwin")
+            for _ in range(calls):
+                wrapped.get_input_names()
+            assert _midi._port_list_thread is not None
+            _midi._port_list_thread.join(5.0)
+        self.assertIn("will not be noticed", logs.output[0])
+
+    def test_the_port_list_thread_makes_the_first_listing(self):
+        self._list_ports_until_the_run_loop_empties(1, [False])
+        self.assertEqual(self.listings, ["midi-port-list", threading.current_thread().name])
+
+    def test_only_the_first_call_starts_the_thread(self):
+        self._list_ports_until_the_run_loop_empties(3, [False])
+        self.assertEqual(self.listings.count("midi-port-list"), 1)
+
+    def test_the_thread_services_its_run_loop_until_it_has_nothing_to_serve(self):
+        self._list_ports_until_the_run_loop_empties(1, [True, True, False])
+        self.assertEqual(self.slices, [])
+
+    def test_building_a_message_starts_no_thread(self):
+        _ = _midi._mido_for("darwin").Message
+        self.assertIsNone(_midi._port_list_thread)
+
+    def test_other_platforms_get_mido_itself(self):
+        for platform in ("linux", "win32"):
+            with self.subTest(platform=platform):
+                self.assertIs(_midi._mido_for(platform), self.fake_mido)
+
+
+class RunLoopSliceTest(unittest.TestCase):
+    def _slice_answering(self, result: int) -> tuple[bool, list[tuple]]:
+        calls: list[tuple] = []
+
+        def run_in_mode(*args):
+            calls.append(args)
+            return result
+
+        with mock.patch.object(_midi, "_corefoundation", lambda: (run_in_mode, "default-mode")):
+            return _midi._run_loop_slice(), calls
+
+    def test_a_run_loop_with_no_sources_ends_the_service(self):
+        serving, _calls = self._slice_answering(1)  # kCFRunLoopRunFinished
+        self.assertFalse(serving)
+
+    def test_a_timed_out_slice_keeps_serving(self):
+        serving, calls = self._slice_answering(3)  # kCFRunLoopRunTimedOut
+        self.assertTrue(serving)
+        self.assertEqual(calls, [("default-mode", _midi._RUN_LOOP_SLICE_S, False)])
 
 
 if __name__ == "__main__":

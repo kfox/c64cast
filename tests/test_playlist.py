@@ -2307,9 +2307,10 @@ class SetupFailureOfARealSceneTest(unittest.TestCase):
         )
         arm_deadline(self, 5.0, stop.set)
         with (
-            mock.patch.object(_midi.mido, "get_input_names", return_value=["IAC Driver Bus 1"]),
+            mock.patch.object(_midi, "mido") as fake_mido,
             self.assertLogs("c64cast.app.playlist", level="ERROR") as cap,
         ):
+            fake_mido.get_input_names.return_value = ["IAC Driver Bus 1"]
             pl.run()
         self.assertTrue(
             any("scene 'MIDI' could not start (RuntimeError" in line for line in cap.output),

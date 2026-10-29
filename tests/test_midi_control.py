@@ -1152,8 +1152,15 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
                     setattr(lis, "_opened_port_name", "Launchpad"),
                 ),
             ),
-            mock.patch.object(midi_control.mido, "get_output_names", return_value=["Launchpad"]),
-            mock.patch.object(midi_control.mido, "open_output", return_value=out),
+            mock.patch.object(
+                midi_control,
+                "mido",
+                SimpleNamespace(
+                    Message=mido.Message,
+                    get_output_names=lambda: ["Launchpad"],
+                    open_output=lambda _name: out,
+                ),
+            ),
         ):
             lis.start()
         try:
@@ -1181,7 +1188,9 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
                 "_open_port",
                 side_effect=lambda: setattr(lis, "_midi_port", _FakePort()),
             ),
-            mock.patch.object(midi_control.mido, "get_output_names", return_value=[]),
+            mock.patch.object(
+                midi_control, "mido", SimpleNamespace(Message=mido.Message, get_output_names=list)
+            ),
             self.assertLogs("c64cast.control.midi_control", level="WARNING"),
         ):
             lis.start()
