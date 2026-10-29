@@ -137,23 +137,38 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
 # a code with bit 7 set draws the inverse of the code 0x80 below it.
 _ROM_ROWS = {
     0x20: "0000000000000000",
+    0x40: "000000FFFF000000",
     0x4D: "C0E070381C0E0703",
     0x4E: "03070E1C3870E0C0",
+    0x51: "003C7E7E7E7E3C00",
     0x56: "C3E77E3C3C7EE7C3",
+    0x57: "003C7E66667E3C00",
     0x58: "1818666618183C00",
+    0x5F: "FF7F3F1F0F070301",
+    0x60: "0000000000000000",
     0x61: "F0F0F0F0F0F0F0F0",
     0x62: "00000000FFFFFFFF",
     0x64: "00000000000000FF",
+    0x69: "FFFEFCF8F0E0C080",
+    0x6A: "0303030303030303",
     0x6C: "000000000F0F0F0F",
     0x6F: "000000000000FFFF",
+    0x70: "0000001F1F181818",
+    0x71: "181818FFFF000000",
+    0x72: "000000FFFF181818",
+    0x73: "181818F8F8181818",
+    0x77: "FFFF000000000000",
     0x7E: "F0F0F0F000000000",
 }
 
 
-def _ink(screen_code: int) -> int:
+def _glyph(screen_code: int) -> bytes:
     rows = bytes.fromhex(_ROM_ROWS[screen_code & 0x7F])
-    lit = sum(bin(b).count("1") for b in rows)
-    return 64 - lit if screen_code & 0x80 else lit
+    return bytes(b ^ 0xFF for b in rows) if screen_code & 0x80 else rows
+
+
+def _ink(screen_code: int) -> int:
+    return sum(bin(b).count("1") for b in _glyph(screen_code))
 
 
 def _uppercase_char(screen_code: int) -> str:
@@ -182,6 +197,11 @@ class GlyphRampTest(unittest.TestCase):
         inks = [_ink(int(c)) for c in ps.HatchStyle.CHARS]
         self.assertEqual(inks, sorted(inks))
         self.assertEqual(int(ps.HatchStyle.CHARS[3]), 0x56)
+
+    def test_random_glyphs_are_distinct_and_never_blank(self):
+        glyphs = [_glyph(int(c)) for c in ps.RandomGlyphStyle.GLYPHS]
+        self.assertNotIn(bytes(8), glyphs)
+        self.assertEqual(len(set(glyphs)), len(glyphs))
 
 
 class CyclingTest(unittest.TestCase):

@@ -183,7 +183,7 @@ class RandomGlyphStyle(PetsciiStyle):
     but color RAM still tracks the video. Reads as "alien text" — the
     grid feels alive but content is purely abstract.
 
-    Curated source set: bullets, arrows, lines, partial blocks, geometric
+    Curated source set: bullets, lines, partial blocks, geometric
     chars. Skip ASCII letters/digits (would read as garbled text)."""
 
     name = "random_glyph"
@@ -198,11 +198,11 @@ class RandomGlyphStyle(PetsciiStyle):
             0x71,
             0x73,
             0x77,
-            0x60,
+            0x40,
             0x62,
             0x64,
             0xA0,  # full block
-            0xE0,
+            0xC0,
             0xE1,
             0xE2,
             0xF0,
