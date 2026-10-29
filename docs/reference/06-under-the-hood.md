@@ -23,7 +23,10 @@ sustained. The connection opens when the run starts, so a machine with the
 service switched off fails immediately with an actionable message rather than
 halfway through the first scene.
 
-**Reads, resets, program launches and the startup probe go over REST.** They
+Starting a `.prg`, the SID player included, rides the same connection: the
+program goes over as one command and the machine resets into it.
+
+**Reads, resets, cartridge launches and the startup probe go over REST.** They
 are low-rate and one-shot, so the HTTP path's throughput does not matter — and
 they have no DMA equivalent.
 
