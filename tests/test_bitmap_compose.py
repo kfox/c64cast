@@ -350,6 +350,16 @@ class PercellBg0HysteresisTest(unittest.TestCase):
         for _ in range(15):
             self.assertEqual(self._bg0(mode, slight), 0)
 
+    def test_a_revisited_scene_starts_from_its_own_first_frame(self):
+        """A looping playlist sets the same mode up again; the last lap's
+        dominant color must not hold $D021 over the new lap's opening frames."""
+        mode = MultiHiresDisplayMode("percell")
+        mode.setup(FakeAPI())
+        for _ in range(10):
+            self._bg0(mode, np.zeros(32000, dtype=np.int64))
+        mode.setup(FakeAPI())
+        self.assertEqual(self._bg0(mode, np.full(32000, 6, dtype=np.int64)), 6)
+
     def test_sustained_dominant_change_flips_bg0(self):
         mode = MultiHiresDisplayMode("percell")
         self.assertEqual(self._bg0(mode, np.zeros(32000, dtype=np.int64)), 0)

@@ -405,6 +405,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             bg0=0x00,
             clear=single_buffer,
         )
+        self._smoothed_counts = None
         self._smoothed_cell_counts = None
         self._last_cand = None
         self._last_codes = None
