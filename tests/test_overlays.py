@@ -3,8 +3,11 @@
 # pyright: reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import contextlib
+import http.server
 import os
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import contextmanager
@@ -740,6 +743,76 @@ class RssTitleExtractionTest(unittest.TestCase):
         <entry><title>Atom-2</title></entry>
         </feed>"""
         self.assertEqual(_extract_titles(xml, 5), ["Atom-1", "Atom-2"])
+
+
+class _RemotePeer(http.server.BaseHTTPRequestHandler):
+    """A feed or weather service on loopback; `server.routes` maps a path to
+    the function that answers it."""
+
+    def do_GET(self):
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            self.server.routes[self.path.split("?")[0]](self)  # type: ignore[attr-defined]
+
+    def log_message(self, format, *args):
+        pass
+
+
+def _send_head(handler, content_type: str, length: int) -> None:
+    handler.send_response(200)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(length))
+    handler.end_headers()
+
+
+class _RemotePeerTest(unittest.TestCase):
+    def setUp(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RemotePeer)
+        server.daemon_threads = False
+        server.routes = {}  # type: ignore[attr-defined]
+        self.peer_stop = threading.Event()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(self.peer_stop.set)
+        self.server = server
+        self.base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def route(self, path, answer):
+        self.server.routes[path] = answer  # type: ignore[attr-defined]
+        return self.base + path
+
+    def drip(self, handler):
+        """Headers, then one byte per tick until the test ends: every socket
+        read succeeds well inside any per-read timeout."""
+        _send_head(handler, "application/rss+xml", 1 << 30)
+        while not self.peer_stop.wait(0.05):
+            handler.wfile.write(b" ")
+            handler.wfile.flush()
+
+    def finishes_within(self, target, seconds):
+        worker = threading.Thread(target=target, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(self.peer_stop.set)
+        worker.join(seconds)
+        return not worker.is_alive()
+
+
+class RssFetchTest(_RemotePeerTest):
+    def test_utf8_feed_without_a_charset_header_keeps_its_characters(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        body = '<?xml version="1.0" encoding="utf-8"?><rss><channel><item><title>It’s</title></item></channel></rss>'.encode()
+
+        def answer(handler):
+            _send_head(handler, "text/xml", len(body))
+            handler.wfile.write(body)
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        ov._fetch_once()
+        self.assertEqual(ov._titles, ["It’s"])
 
 
 class LogoTest(unittest.TestCase):

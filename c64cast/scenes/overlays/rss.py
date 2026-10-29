@@ -31,7 +31,7 @@ def _local(tag: str) -> str:
     return _NS_STRIP.sub("", tag)
 
 
-def _extract_titles(xml_text: str, limit: int) -> list[str]:
+def _extract_titles(xml_text: str | bytes, limit: int) -> list[str]:
     root = ET.fromstring(xml_text)
     titles = []
     # 'item' is RSS, 'entry' is Atom.
@@ -94,7 +94,7 @@ class RssOverlay(MarqueeBase):
         try:
             r = requests.get(self.url, timeout=5.0, headers={"User-Agent": "c64cast/1.0"})
             r.raise_for_status()
-            titles = _extract_titles(r.text, self.max_items)
+            titles = _extract_titles(r.content, self.max_items)
             if titles:
                 with self._lock:
                     self._titles = titles
