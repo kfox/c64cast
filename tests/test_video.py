@@ -2904,6 +2904,43 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         scene = _make_video_scene_stub(source)
         self.assertFalse(scene.process_frame(current_time=0.0))
 
+    def test_a_loop_closed_before_its_a_mark_plays_between_the_marks(self):
+        # With B before A, the clock sat past B the moment the wrap landed on
+        # A, so every tick re-seeked A and none rendered.
+        source = _StubSource(duration=100.0)
+        scene = _make_video_scene_stub(source)
+        with _freeze_time(10.0):
+            scene.transport_seek(60.0)
+            scene.transport_loop_toggle()
+        with _freeze_time(11.0):
+            scene.transport_seek(10.0)
+            scene.transport_loop_toggle()
+        self.assertEqual((scene.transport.loop_a, scene.transport.loop_b), (10.0, 60.0))
+        seeks = list(source.seeks)
+        with _freeze_time(12.0), mock.patch.object(scenes, "_render_with_overlays") as render:
+            scene.process_frame(current_time=12.0)
+        self.assertEqual(source.seeks, seeks)
+        render.assert_called_once()
+
+    def test_a_loop_closed_where_it_was_opened_stays_armed(self):
+        # A zero-length loop wrapped on every tick for the same reason; a
+        # paused performer pressing Record then Stop is one way to make one.
+        source = _StubSource(duration=100.0)
+        scene = _make_video_scene_stub(source)
+        with _freeze_time(5.0):
+            scene.transport_pause()
+            scene.transport_record()
+        with _freeze_time(6.0):
+            self.assertFalse(scene.transport_stop())
+            scene.transport_loop_toggle()
+        self.assertEqual(scene.transport.loop_state, "armed")
+        self.assertIsNone(scene.transport.loop_b)
+        self.assertTrue(scene.transport.record_border_active)
+        seeks = list(source.seeks)
+        with _freeze_time(7.0), mock.patch.object(scenes, "_render_with_overlays"):
+            scene.process_frame(current_time=7.0)
+        self.assertEqual(source.seeks, seeks)
+
     def test_finished_with_armed_but_not_active_loop_ends_scene(self):
         # "armed" (only A marked) must not suppress the EOF check — only
         # "active" (both A and B marked) does.

@@ -383,16 +383,25 @@ class VideoTransportControls:
             self.set_record_border(True)
             sc.osd.post(f"LOOP A {timecode(pos)}")
         elif self.loop_state == "armed":
-            self.loop_b = pos
-            self.loop_state = "active"
-            self.set_record_border(False)
-            assert self.loop_a is not None
-            sc.osd.post(f"LOOP {timecode(self.loop_a)}-{timecode(pos)}")
+            self._close_loop(pos)
         else:
             self.loop_a = None
             self.loop_b = None
             self.loop_state = "none"
             sc.osd.post("LOOP OFF")
+
+    def _close_loop(self, pos: float) -> None:
+        """Close an armed loop between A and ``pos``, whichever comes first.
+        The wrap fires once the clock reaches the later mark and lands on the
+        earlier one, so a closing mark at A would wrap on every tick; it leaves
+        the loop armed."""
+        assert self.loop_a is not None
+        if pos == self.loop_a:
+            return
+        self.loop_a, self.loop_b = sorted((self.loop_a, pos))
+        self.loop_state = "active"
+        self.set_record_border(False)
+        self._scene.osd.post(f"LOOP {timecode(self.loop_a)}-{timecode(self.loop_b)}")
 
     def set_record_border(self, active: bool) -> None:
         """Red border while a loop is armed.
@@ -427,7 +436,7 @@ class VideoTransportControls:
     def stop(self) -> bool:
         """Stop button: context-sensitive 3-way action.
 
-        - Recording (loop armed): close B, start looping.
+        - Recording (loop armed): close B, start looping (see `_close_loop`).
         - Playing (not paused, looping or not): pause in place.
         - Already paused: request a full app exit — returns True, and the
           caller (TransportSession._dispatch) sets Playlist.stop_event.
@@ -438,12 +447,7 @@ class VideoTransportControls:
         longer to reach the pad."""
         self.touch()
         if self.loop_state == "armed":
-            assert self.loop_a is not None
-            pos = self.position()
-            self.loop_b = pos
-            self.loop_state = "active"
-            self.set_record_border(False)
-            self._scene.osd.post(f"LOOP {timecode(self.loop_a)}-{timecode(pos)}")
+            self._close_loop(self.position())
             return False
         if not self.paused:
             self.pause()
