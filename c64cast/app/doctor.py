@@ -187,7 +187,7 @@ def validate_load_result(
         out.extend(_probe_environment())
         out.extend(_probe_machine_settings())
         out.extend(_probe_data_dirs())
-        out.extend(_probe_char_rom())
+        out.extend(_probe_char_rom(loaded))
     if probe_updates:
         out.extend(_probe_updates())
     out.extend(_validate_unknown_keys(loaded))
@@ -543,8 +543,9 @@ def _probe_data_dirs() -> list[Diagnostic]:
     ]
 
 
-def _probe_char_rom() -> list[Diagnostic]:
-    """Report the resolved character ROM and its verdict, or its absence.
+def _probe_char_rom(loaded: LoadResult) -> list[Diagnostic]:
+    """Report the resolved character ROM and its verdict, or its absence, then
+    each configured ``charset_path`` and the verdict on the file it names.
 
     Absence is a *warning*, not an error: c64cast still runs, it just draws C64
     text in a cv2-rendered ASCII font instead of the real thing — which is
@@ -552,46 +553,79 @@ def _probe_char_rom() -> list[Diagnostic]:
     answer, and it is invisible unless someone says so out loud."""
     from c64cast.hw import char_rom
 
-    path = char_rom.resolve()
-    if path is None:
-        return [
+    redump = "Re-dump it with `c64cast --dump-char-rom`"
+    installed = char_rom.resolve()
+    configured = _configured_charsets(loaded)
+    out: list[Diagnostic] = []
+    if installed is None:
+        whose = "text with no charset_path of its own" if configured else "C64 text"
+        out.append(
             Diagnostic(
                 "warn",
                 "environment",
                 "character ROM",
-                f"not installed ({char_rom.installed_path()}) — C64 text renders "
+                f"not installed ({char_rom.installed_path()}) — {whose} renders "
                 "in a built-in ASCII font, not the C64 one",
                 hint=(
                     "Connect your C64 and run `c64cast --dump-char-rom` (a plain "
                     "run does it automatically), or `c64cast --install-char-rom PATH`."
                 ),
             )
-        ]
+        )
+    else:
+        out.append(_char_rom_verdict("character ROM", installed, redump))
+    for spec, users in configured.items():
+        subject = f"character ROM ({', '.join(users)})"
+        path = Path(expand_user(spec))
+        if path.is_file():
+            out.append(
+                _char_rom_verdict(subject, path, "Point charset_path at a character ROM dump")
+            )
+            continue
+        fallback = installed or "the built-in ASCII font"
+        out.append(
+            Diagnostic(
+                "warn",
+                "environment",
+                subject,
+                f"configured charset_path {spec} does not exist — falls back to {fallback}",
+                hint="Fix the path, or remove it to use the installed character ROM.",
+            )
+        )
+    return out
+
+
+def _configured_charsets(loaded: LoadResult) -> dict[str, list[str]]:
+    """Each distinct configured ``charset_path``, with where it is set."""
+    out: dict[str, list[str]] = {}
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        if cfg.preview.charset_path:
+            out.setdefault(cfg.preview.charset_path, []).append(f"{name} [preview]")
+        for idx, s in enumerate(cfg.scenes):
+            for ov in s.overlays:
+                spec = ov.get("charset_path")
+                if isinstance(spec, str) and spec:
+                    label = s.name or f"{s.type}#{idx}"
+                    out.setdefault(spec, []).append(f"{name}/{label} {ov.get('type')}")
+    return out
+
+
+def _char_rom_verdict(subject: str, path: Path, fix: str) -> Diagnostic:
+    from c64cast.hw import char_rom
+
     try:
         result = char_rom.verify(path.read_bytes())
     except OSError as e:
-        return [
-            Diagnostic(
-                "error",
-                "environment",
-                "character ROM",
-                f"could not read {path}: {e}",
-                hint="Re-dump it with `c64cast --dump-char-rom`.",
-            )
-        ]
-    return [
-        Diagnostic(
-            "ok" if result.ok else "error",
-            "environment",
-            "character ROM",
-            f"{path} — {result.describe()}",
-            hint=(
-                None
-                if result.ok
-                else "Re-dump it with `c64cast --dump-char-rom` — this file is not a charset."
-            ),
+        return Diagnostic(
+            "error", "environment", subject, f"could not read {path}: {e}", hint=f"{fix}."
         )
-    ]
+    return Diagnostic(
+        "ok" if result.ok else "error",
+        "environment",
+        subject,
+        f"{path} — {result.describe()}",
+        hint=None if result.ok else f"{fix} — this file is not a charset.",
+    )
 
 
 def _validate_unknown_keys(loaded: LoadResult) -> list[Diagnostic]:
