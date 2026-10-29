@@ -373,7 +373,7 @@ def seam_kind(states: list[str]) -> str:
     other frame with a run lighting no band or two."""
     runs = [r[0] for r in _runs(states) if r[0] != "blank" and r[2] - r[1] + 1 >= MIN_RUN]
     single = [int(s) for s in runs if len(s) == 1 and s.isdigit()]
-    gaps = {(b - a) % BANDS for a, b in zip(single, single[1:], strict=False) if a != b}
+    gaps = {(b - a) % BANDS for a, b in zip(single, single[1:], strict=False)}
     if 2 in gaps:
         return "two-apart"
     return "partial" if len(single) < len(runs) else "adjacent"

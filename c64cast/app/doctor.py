@@ -1118,7 +1118,7 @@ def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
                 Diagnostic(
                     level="error",
                     category="color",
-                    subject=f"{name}/flicker_tolerance",
+                    subject=f"{name}/{err.split(' ', 1)[0].removeprefix('[color].')}",
                     message=err,
                     hint="See --describe section:color.",
                 )

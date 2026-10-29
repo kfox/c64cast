@@ -2277,6 +2277,16 @@ class ClipColorDiagnosticTest(unittest.TestCase):
             [d.subject for d in diags if d.level == "error"], ["system/flicker_tolerance"]
         )
 
+    def test_a_nan_global_luma_cap_is_reported_against_its_own_field(self):
+        loaded = _load(
+            "[color]\nflicker_max_luma_delta = nan\n\n"
+            + self._CLIP.format(key="dither_strength", value="1.0")
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"], ["system/flicker_max_luma_delta"]
+        )
+
     def test_a_bad_global_flicker_tolerance_a_scene_reports_is_not_repeated(self):
         loaded = _load(
             '[color]\nflicker_tolerance = "bogus"\n\n[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
