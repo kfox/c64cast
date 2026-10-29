@@ -653,6 +653,21 @@ class FlickerPushTest(unittest.TestCase):
         self.assertIn(RegionID.SCREEN_ALT_BANK2, ids)
         self.assertEqual(len(ids), len(set(ids)), "a region id was reused within one push")
 
+    def test_cycling_to_an_edges_style_keeps_both_pages_in_step(self):
+        """The handler alternates whatever the two pages hold, so an armed
+        scene cycled onto a 2-color style owes push() a real copy in page B."""
+        api = FakeAPI()
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
+        mode.setup(api)
+        for style in ("edges", "edges_inverted"):
+            with self.subTest(style=style):
+                mode.cycle_style(api)
+                self.assertEqual(mode.style, style)
+                buffers = mode.compose(gradient())
+                mode.push(api, buffers)
+                page_b = cast(FlickerComposeBuffers, buffers)["screen_b"]
+                np.testing.assert_array_equal(page_b, buffers["screen"])
+
     def test_teardown_restores_d018(self):
         """Nothing else re-asserts it, so a following char scene would read its
         matrix from the $0C00 offset."""
