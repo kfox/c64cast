@@ -151,7 +151,7 @@ class DefaultStyle(PetsciiStyle):
 
     name = "default"
     CHARS = np.array(
-        [0x20, 0x2E, 0x3A, 0x2D, 0x3D, 0x2B, 0x2A, 0x23, 0x25, 0x40, 0xA0],
+        [0x20, 0x2E, 0x3A, 0x2D, 0x3D, 0x2B, 0x2A, 0x23, 0x25, 0x00, 0xA0],
         dtype=np.uint8,
     )
 
@@ -165,9 +165,9 @@ class HalftoneStyle(PetsciiStyle):
     """5-level block-coverage ramp. Chunky, high-contrast geometric look."""
 
     name = "halftone"
-    # blank → bottom-quarter → bottom-half → right-half → full.
+    # blank → lower quarter → lower half → three quarters → full.
     CHARS = np.array(
-        [0x20, 0x6C, 0x64, 0x61, 0xA0],
+        [0x20, 0x6F, 0x62, 0xFE, 0xA0],
         dtype=np.uint8,
     )
 
@@ -189,10 +189,10 @@ class RandomGlyphStyle(PetsciiStyle):
     name = "random_glyph"
     GLYPHS = np.array(
         [
-            0x51,  # bullet (Q in upper case)
+            0x51,  # filled circle
             0x57,
-            0x58,  # W X
-            0x5F,  # back-arrow
+            0x58,  # hollow circle, club
+            0x5F,  # upper-right triangle
             0x69,
             0x6A,  # graphics chars
             0x71,
@@ -297,7 +297,7 @@ class HatchStyle(PetsciiStyle):
     name = "hatch"
     # blank → "/" → "\" → "X" → full.
     CHARS = np.array(
-        [0x20, 0x4E, 0x4D, 0x58, 0xA0],
+        [0x20, 0x4E, 0x4D, 0x56, 0xA0],
         dtype=np.uint8,
     )
 
