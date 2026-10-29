@@ -2176,7 +2176,7 @@ def _joystick_inputs(event: machine_input.Event) -> set[tuple[int, str]]:
 class LauncherScene(MediaFileMixin, Scene):
     """Launch a native C64 program and hand the machine over to it.
 
-    Resets the U64, then uploads + runs a `.prg` (firmware run_prg) or `.crt`
+    Resets the U64, then uploads + runs a `.prg` (DMARUN) or `.crt`
     cartridge (run_crt), chosen by file extension. Once launched the program
     owns the VIC, SID, and CIAs — c64cast stops painting; this scene only
     polls for player input and times out.

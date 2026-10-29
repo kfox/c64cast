@@ -25,7 +25,9 @@ from c64cast.app import config as cfgmod
 from c64cast.hw.backend import (
     BACKENDS,
     BASE_PROFILES,
+    CRT_MAX_BYTES,
     DELTA_CHUNK_BYTES,
+    PRG_LOAD_LIMIT,
     SID_CONFIG_CATEGORIES,
     TEENSYROM_PROFILE,
     ULTIMATE_PROFILE,
@@ -33,6 +35,7 @@ from c64cast.hw.backend import (
     BufferedWriteBackend,
     C64Backend,
     make_backend,
+    read_program_file,
     resolve_host_sid_chips,
     resolve_host_sid_model,
 )
@@ -754,6 +757,56 @@ class DisplayModeColorRegistersTest(unittest.TestCase):
 
     def test_blank(self):
         self._check(BlankDisplayMode(border=2, background=6), 0xD020)
+
+
+class ReadProgramFileTest(unittest.TestCase):
+    """`read_program_file` refuses a PRG the firmware would cut off at $FFFF,
+    or a CRT no Ultimate's cartridge ROM can hold, before either backend
+    sends it."""
+
+    def _write(self, name: str, data: bytes) -> str:
+        import os
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def test_prg_ending_at_ffff_is_read_whole(self):
+        data = b"\x00\x08" + bytes(0x10000 - 0x0800)
+        self.assertEqual(read_program_file(self._write("a.PRG", data)), (".prg", data))
+
+    def test_prg_one_byte_past_ffff_is_refused(self):
+        data = b"\x00\x08" + bytes(0x10000 - 0x0800 + 1)
+        with self.assertRaisesRegex(ValueError, r"loads past \$FFFF \(ends at \$10001\)"):
+            read_program_file(self._write("a.prg", data))
+
+    def test_prg_without_a_load_address_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "no load address"):
+            read_program_file(self._write("a.prg", b"\x01"))
+
+    def test_oversized_prg_is_refused_without_reading_it_whole(self):
+        path = self._write("a.prg", bytes(PRG_LOAD_LIMIT + 3))
+        with (
+            mock.patch("builtins.open", mock.mock_open(read_data=bytes(PRG_LOAD_LIMIT + 3))) as m,
+            self.assertRaisesRegex(ValueError, "larger than 65538 bytes"),
+        ):
+            read_program_file(path)
+        m.return_value.read.assert_called_once_with(PRG_LOAD_LIMIT + 3)
+
+    def test_crt_at_the_cap_is_read_and_one_byte_more_is_refused(self):
+        self.assertEqual(
+            len(read_program_file(self._write("c.crt", bytes(CRT_MAX_BYTES)))[1]), CRT_MAX_BYTES
+        )
+        with self.assertRaisesRegex(ValueError, "larger than"):
+            read_program_file(self._write("c.crt", bytes(CRT_MAX_BYTES + 1)))
+
+    def test_other_extension_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "unsupported extension '.d64'"):
+            read_program_file(self._write("d.d64", b"\x00\x08"))
 
 
 if __name__ == "__main__":

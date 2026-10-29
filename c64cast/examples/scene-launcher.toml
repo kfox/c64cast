@@ -2,7 +2,7 @@
 # Single-scene demo: launch a native C64 program (game or demo) on the U64
 # and hand the machine over to it.
 #
-# The launcher loads + runs a `.prg` (firmware run_prg) or a `.crt`
+# The launcher loads + runs a `.prg` (DMARUN) or a `.crt`
 # cartridge (run_crt), chosen by file extension. Once launched, the program
 # owns the VIC/SID/CIAs — c64cast stops painting and only watches for
 # player input.
