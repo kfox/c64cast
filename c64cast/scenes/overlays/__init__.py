@@ -208,7 +208,12 @@ def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
     kwargs = {k: v for k, v in cfg.items() if k != "type"}
     # A WANTS_AUDIO overlay gets the kwarg too, possibly None; it copes.
     if cls.REQUIRES_AUDIO or cls.WANTS_AUDIO:
-        kwargs.setdefault("audio", audio)
+        if "audio" in kwargs:
+            raise ValueError(
+                f"overlay {type_name!r}: 'audio' is not a config key — the overlay "
+                f"is handed the [audio] streamer. cfg={cfg!r}"
+            )
+        kwargs["audio"] = audio
     try:
         return cls(**kwargs)
     except TypeError as e:

@@ -4117,6 +4117,10 @@ def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
         for ov_raw in raw_overlays:
             if not isinstance(ov_raw, dict):
                 raise ValueError(f"scenes.overlays entry must be a table, got {ov_raw!r}")
+            if not isinstance(ov_raw.get("type", ""), str):
+                raise ValueError(
+                    f"scenes.overlays entry type must be a string, got {ov_raw['type']!r}"
+                )
             sc.overlays.append(dict(ov_raw))
         if not isinstance(raw_color, dict):
             raise ValueError(f"scenes.color must be a table, got {raw_color!r}")

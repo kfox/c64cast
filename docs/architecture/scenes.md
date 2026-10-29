@@ -70,7 +70,7 @@ From then on `_clock_s()` free-runs from the anchor as `anchor.clock + (time.tim
 
 **`transport_seek(target_s)`** clamps to `[0, duration_s or target_s]`, re-anchors the clock to `content_to_clock(target_s)` (`target_s` itself without a tempo scale), and calls `source.request_seek(target_s)`. There is no separate offset bookkeeping: the clock **is** the file position, in the source's stamp domain, once touched.
 
-**`transport_loop_toggle()`** is a minimal 3-state cycle — mark A, mark B and start looping, clear — read by `process_frame`. Two things change there:
+**`transport_loop_toggle()`** is a minimal 3-state cycle — mark A, mark B and start looping, clear — read by `process_frame`. The loop runs between the two marks whichever was set first, and a B mark at A leaves the loop armed: the wrap fires once the clock reaches the later mark, so a B before A or at it wrapped on every tick and rendered nothing. Two things change in `process_frame`:
 
 * The EOF check becomes `source.finished and (loop_state != "active" or not source.accepts_seeks)`, since an active loop is never "done" while the demux thread can still apply its wrap.
 * After computing `clock_s`, a loop-active scene checks `clock_s >= loop_b or source.finished` and seeks back to `loop_a` instead of rendering that tick.
@@ -139,7 +139,7 @@ All three drive the **same** `_loop_a`/`_loop_b`/`_loop_state` machine that `tra
 
 | Condition | Action | Returns |
 | --- | --- | --- |
-| `_loop_state == "armed"` | Mark B (`"active"`), clear the border | `False` |
+| `_loop_state == "armed"` | Mark B (`"active"`), clear the border; a B at A stays armed | `False` |
 | not paused | Pause | `False` |
 | already paused | — | **`True`** |
 

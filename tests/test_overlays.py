@@ -173,6 +173,14 @@ class RegistryTest(unittest.TestCase):
         ov = build_overlay({"type": "spectrum_petscii"}, audio=audio)
         self.assertIs(ov.audio, audio)
 
+    def test_an_audio_key_in_the_config_is_refused_where_the_streamer_is_injected(self):
+        # Kept by the injection, a TOML `audio = "x"` replaced the streamer and
+        # the overlay failed on its first frame instead of at load.
+        audio = FakeAudio(np.zeros(2048, dtype=np.float32))
+        with self.assertRaises(ValueError) as cm:
+            build_overlay({"type": "spectrum_petscii", "audio": "x"}, audio=audio)
+        self.assertIn("'audio'", str(cm.exception))
+
     def test_validate_for_scene_accepts_bitmap_text_overlay(self):
         # Text overlays (clock/marquee/…) fold glyphs into the bitmap, so they
         # attach to a bitmap-text-compatible mode (hires/mhires).

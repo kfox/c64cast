@@ -848,7 +848,13 @@ class LoopPresetStore(JsonSlotStore):
             return None
         if b is not None and not isinstance(b, (int, float)):
             return None
-        return {"a": float(a), "b": float(b) if b is not None else None}
+        if b is None:
+            return {"a": float(a), "b": None}
+        # Versions before VideoTransportControls._close_loop saved the marks
+        # in the order they were set, and a loop whose B is at or before A
+        # wraps on every tick.
+        a, b = sorted((float(a), float(b)))
+        return {"a": a, "b": b if b > a else None}
 
 
 def make_loop_preset_store(filepath: str) -> LoopPresetStore:

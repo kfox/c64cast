@@ -2632,6 +2632,22 @@ class VideoSceneLoopSlotTest(unittest.TestCase):
         self.assertEqual(scene.transport.loop_state, "active")
         self.assertEqual(scene.source.seeks, [12.0])  # type: ignore[union-attr]
 
+    def test_a_preset_saved_with_b_at_or_before_a_plays_when_recalled(self):
+        # Earlier versions saved whatever order the marks were set in, so a
+        # preset file on disk can hold B before A, or B at A.
+        scene, store = self._scene()
+        store.save(1, 60.0, 10.0)
+        store.save(2, 30.0, 30.0)
+        for slot, marks in ((1, (10.0, 60.0)), (2, (30.0, None))):
+            with self.subTest(slot=slot), _freeze_time(5.0):
+                scene.transport_loop_slot(slot, save=False, clear=False)
+                self.assertEqual((scene.transport.loop_a, scene.transport.loop_b), marks)
+                seeks = list(scene.source.seeks)  # type: ignore[union-attr]
+                with mock.patch.object(scenes, "_render_with_overlays") as render:
+                    scene.process_frame(current_time=5.0)
+                self.assertEqual(scene.source.seeks, seeks)  # type: ignore[union-attr]
+                render.assert_called_once()
+
     def test_plain_press_on_empty_slot_loops_whole_file(self):
         scene, _store = self._scene()
         scene.transport_loop_slot(9, save=False, clear=False)
@@ -2696,12 +2712,15 @@ class TransportOsdBoundaryTest(unittest.TestCase):
 
     def test_arming_and_looping_still_post_state(self):
         scene, _store = self._scene()
-        scene.transport_loop_toggle()
+        with _freeze_time(5.0):
+            scene.transport_loop_toggle()
         self.assertIsNotNone(scene.osd.current())
         self.assertTrue((scene.osd.current() or "").startswith("LOOP A"))
-        scene.transport_loop_toggle()
+        with _freeze_time(8.0):
+            scene.transport_loop_toggle()
         self.assertTrue((scene.osd.current() or "").startswith("LOOP "))
-        scene.transport_loop_toggle()
+        with _freeze_time(9.0):
+            scene.transport_loop_toggle()
         self.assertEqual(scene.osd.current(), "LOOP OFF")
 
 
@@ -2903,6 +2922,43 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         source.finished = True
         scene = _make_video_scene_stub(source)
         self.assertFalse(scene.process_frame(current_time=0.0))
+
+    def test_a_loop_closed_before_its_a_mark_plays_between_the_marks(self):
+        # With B before A, the clock sat past B the moment the wrap landed on
+        # A, so every tick re-seeked A and none rendered.
+        source = _StubSource(duration=100.0)
+        scene = _make_video_scene_stub(source)
+        with _freeze_time(10.0):
+            scene.transport_seek(60.0)
+            scene.transport_loop_toggle()
+        with _freeze_time(11.0):
+            scene.transport_seek(10.0)
+            scene.transport_loop_toggle()
+        self.assertEqual((scene.transport.loop_a, scene.transport.loop_b), (10.0, 60.0))
+        seeks = list(source.seeks)
+        with _freeze_time(12.0), mock.patch.object(scenes, "_render_with_overlays") as render:
+            scene.process_frame(current_time=12.0)
+        self.assertEqual(source.seeks, seeks)
+        render.assert_called_once()
+
+    def test_a_loop_closed_where_it_was_opened_stays_armed(self):
+        # A zero-length loop wrapped on every tick for the same reason; a
+        # paused performer pressing Record then Stop is one way to make one.
+        source = _StubSource(duration=100.0)
+        scene = _make_video_scene_stub(source)
+        with _freeze_time(5.0):
+            scene.transport_pause()
+            scene.transport_record()
+        with _freeze_time(6.0):
+            self.assertFalse(scene.transport_stop())
+            scene.transport_loop_toggle()
+        self.assertEqual(scene.transport.loop_state, "armed")
+        self.assertIsNone(scene.transport.loop_b)
+        self.assertTrue(scene.transport.record_border_active)
+        seeks = list(source.seeks)
+        with _freeze_time(7.0), mock.patch.object(scenes, "_render_with_overlays"):
+            scene.process_frame(current_time=7.0)
+        self.assertEqual(source.seeks, seeks)
 
     def test_finished_with_armed_but_not_active_loop_ends_scene(self):
         # "armed" (only A marked) must not suppress the EOF check — only
