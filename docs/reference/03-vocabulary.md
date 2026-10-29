@@ -262,10 +262,10 @@ painting and only watches for input.
 
 > [!WARNING]
 > This scene hands the machine away, and the reset before launch discards
-> whatever was in memory. The modifier keys are read out of the kernal's
-> scratch bytes, which a program that installs its own interrupt stops
-> updating — so pause and skip may not answer for as long as the program
-> holds the machine. `max_duration_s` is the ceiling that always fires.
+> whatever was in memory. The program owns the keyboard too: C=, CTRL and SHIFT
+> neither pause, skip nor cycle for as long as it holds the machine. The idle
+> timeout, `max_duration_s`, MIDI and the web console still end the scene, and
+> `max_duration_s` is the ceiling that always fires.
 
 `duration_s` here is an **idle timeout**, not a runtime. It counts down from
 launch and resets on every sign of a player, so a game in use stays up while

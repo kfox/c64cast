@@ -118,7 +118,8 @@ MIDI is not the only way in.
 
 **The Commodore's own keyboard works.** With no extra configuration, the
 Commodore key pauses and resumes, <kbd>CTRL</kbd> skips to the next scene,
-and <kbd>SHIFT</kbd> cycles the current scene's style. Pressing
+and <kbd>SHIFT</kbd> cycles the current scene's style — except under a
+`launcher` scene, where the keyboard belongs to the game. Pressing
 <kbd>SPACE</kbd> opens a menu on the Commodore itself for adjusting the
 running scene, which is a pleasing thing to demonstrate.
 

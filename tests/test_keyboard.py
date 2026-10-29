@@ -10,7 +10,10 @@ from typing import cast
 from unittest import mock
 
 from _fakes import FrozenClock
+from test_playlist import FakeApi as PlaylistApi
+from test_playlist import FakeScene
 
+from c64cast.app.playlist import Playlist
 from c64cast.control import keyboard as keyboard_mod
 from c64cast.control.keyboard import (
     ADDR_KB_BUFFER,
@@ -20,6 +23,7 @@ from c64cast.control.keyboard import (
 )
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import KEYBUF
+from c64cast.scenes.scenes import Scene
 
 
 class FakeApi:
@@ -62,6 +66,8 @@ def _drive_ticks(
     menu_active=None,
     menu_eligible=None,
     nav_queue=None,
+    program_owns_keyboard=None,
+    state=None,
 ):
     """Drive the poller's state machine synchronously: one scripted read per
     tick on a virtual clock, no poll thread. The threaded version of the
@@ -77,7 +83,9 @@ def _drive_ticks(
     poller._menu_active = menu_active
     poller._menu_eligible = menu_eligible
     poller._nav_queue = nav_queue
-    state = keyboard_mod._KeyPollState()
+    poller._program_owns_keyboard = program_owns_keyboard
+    if state is None:
+        state = keyboard_mod._KeyPollState()
     clock = FrozenClock(0.0, "monotonic")
     with mock.patch.object(keyboard_mod, "time", clock):
         for _ in range(ticks):
@@ -478,6 +486,117 @@ class MenuInputTest(unittest.TestCase):
         poller.stop()
         self.assertGreaterEqual(api.cleared, 1, "buffer must be consumed via a $00C6=0 write")
         self.assertEqual(list(nav), [KEYBUF.CRSR_DOWN], "exactly one nav event, not repeated")
+
+
+class LaunchedProgramOwnsTheKeyboardTest(unittest.TestCase):
+    """While a launcher scene runs, the program it started owns $028D: its
+    bytes there mean nothing to the kernal's C=/CTRL/SHIFT bits (#829)."""
+
+    def _poller(self, api):
+        return CommodoreKeyPoller(
+            cast(Ultimate64API, api), poll_interval_s=0.01, hold_threshold_s=0.05
+        )
+
+    def test_modifier_bytes_under_a_launched_program_neither_pause_skip_nor_cycle(self):
+        api = FakeApi()
+        api.set_script([b"\x00", b"\x02", b"\x00", b"\x04", b"\x00", b"\x01", b"\x00"])
+        pause, resume, skip, cycle = (threading.Event() for _ in range(4))
+        owned = threading.Event()
+        owned.set()
+        _drive_ticks(
+            self._poller(api),
+            7,
+            pause,
+            resume,
+            skip=skip,
+            cycle=cycle,
+            program_owns_keyboard=owned,
+        )
+        self.assertFalse(pause.is_set(), "a launched program's C= bit paused the playlist")
+        self.assertFalse(skip.is_set(), "a launched program's CTRL bit skipped the scene")
+        self.assertFalse(cycle.is_set(), "a launched program's SHIFT bit cycled the style")
+
+    def test_no_modifier_read_while_a_launched_program_runs(self):
+        api = FakeApi()
+        owned = threading.Event()
+        owned.set()
+        _drive_ticks(
+            self._poller(api),
+            5,
+            threading.Event(),
+            threading.Event(),
+            program_owns_keyboard=owned,
+        )
+        self.assertEqual(api._idx, 0)
+
+    def test_a_modifier_held_as_the_program_lets_go_is_no_press(self):
+        api = FakeApi()
+        api.set_script([b"\x00", b"\x02", b"\x02", b"\x00", b"\x02"])
+        poller = self._poller(api)
+        pause, resume = threading.Event(), threading.Event()
+        owned = threading.Event()
+        state = _drive_ticks(poller, 1, pause, resume, program_owns_keyboard=owned)
+        owned.set()
+        _drive_ticks(poller, 3, pause, resume, program_owns_keyboard=owned, state=state)
+        owned.clear()
+        _drive_ticks(poller, 2, pause, resume, program_owns_keyboard=owned, state=state)
+        self.assertFalse(pause.is_set(), "a C= bit already set when the gate lifted paused")
+        _drive_ticks(poller, 2, pause, resume, program_owns_keyboard=owned, state=state)
+        self.assertTrue(pause.is_set(), "a C= press after the gate lifted was ignored")
+
+    def test_hold_to_resume_still_works_when_paused_under_a_launcher(self):
+        api = FakeApi()
+        api.set_script([b"\x02"])
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        owned = threading.Event()
+        owned.set()
+        _drive_ticks(self._poller(api), 10, pause, resume, program_owns_keyboard=owned)
+        self.assertTrue(resume.is_set())
+
+
+class _GateWitness(FakeScene):
+    def __init__(self, name, *, hands_over_machine):
+        super().__init__(name)
+        self.HANDS_OVER_MACHINE = hands_over_machine
+        self.gate: threading.Event | None = None
+        self.gate_at_setup: bool | None = None
+
+    def setup(self):
+        super().setup()
+        assert self.gate is not None
+        self.gate_at_setup = self.gate.is_set()
+
+
+class PlaylistHandsTheKeyboardToALaunchedProgramTest(unittest.TestCase):
+    def test_the_gate_is_up_before_a_launcher_sets_up_and_down_before_the_next_scene(self):
+        launcher = _GateWitness("launcher", hands_over_machine=True)
+        video = _GateWitness("video", hands_over_machine=False)
+        scenes = cast(list[Scene], [launcher, video])
+        pl = Playlist(scenes, cast(Ultimate64API, PlaylistApi()), target_fps=30.0)
+        launcher.gate = video.gate = pl.program_owns_keyboard
+        pl.safe_setup(scenes[0])
+        self.assertTrue(
+            launcher.gate_at_setup, "the program ran before the keyboard was handed over"
+        )
+        pl.safe_setup(scenes[1])
+        self.assertFalse(video.gate_at_setup)
+
+    def test_run_hands_the_gate_to_the_key_poller(self):
+        poller = mock.MagicMock(name="keyboard")
+        stop = threading.Event()
+        stop.set()
+        pl = Playlist(
+            cast(list[Scene], [FakeScene("a")]),
+            cast(Ultimate64API, PlaylistApi()),
+            target_fps=30.0,
+            stop_event=stop,
+            key_poller=poller,
+        )
+        pl.run()
+        self.assertIs(
+            poller.start.call_args.kwargs["program_owns_keyboard"], pl.program_owns_keyboard
+        )
 
 
 if __name__ == "__main__":

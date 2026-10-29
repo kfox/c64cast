@@ -250,6 +250,9 @@ class Playlist:
         # launcher's own watch.
         self.menu_eligible = threading.Event()
         self.nav_queue: deque[int] = deque(maxlen=8)
+        # Set from before a HANDS_OVER_MACHINE scene sets up until the next
+        # scene does: the program it launches writes $028D for its own ends.
+        self.program_owns_keyboard = threading.Event()
         self.menu_cfg = menu_cfg
         self.config = config
         self.config_path = config_path
@@ -831,6 +834,10 @@ class Playlist:
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
+        if getattr(scene, "HANDS_OVER_MACHINE", False):
+            self.program_owns_keyboard.set()
+        else:
+            self.program_owns_keyboard.clear()
         if not self._setup_through_outage(scene, announcing):
             return
         if getattr(scene, "HANDS_OVER_MACHINE", False):
@@ -1462,6 +1469,7 @@ class Playlist:
                     menu_active=self.menu_active if menu_enabled else None,
                     menu_eligible=self.menu_eligible if menu_enabled else None,
                     nav_queue=self.nav_queue if menu_enabled else None,
+                    program_owns_keyboard=self.program_owns_keyboard,
                 )
         # Deadline-based pacing: each frame advances the deadline by one
         # `frame_time`, and a wall clock far behind it snaps the deadline forward,
