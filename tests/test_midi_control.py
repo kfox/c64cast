@@ -369,6 +369,98 @@ class JoystickDispatchTests(_MidiControlTestCase):
                 _parse_cc_map([entry])
 
 
+class UnpluggedControllerTests(_MidiControlTestCase):
+    """rtmidi reports an unplugged controller only by dropping its port from
+    the input list: `poll()` reads a queue nothing fills any more, so it goes
+    quiet rather than raising, and a held joystick pad never sends its
+    release."""
+
+    PORT = "Pads MIDI 1"
+    FIRE = {"type": "note", "number": 50, "action": "joystick", "input": "fire"}
+
+    def _listener(self, entry=None) -> tuple[MidiControlListener, Any]:
+        pl = _fake_playlist("system")
+        listener = MidiControlListener({"system": pl}, [entry or self.FIRE])
+        listener._opened_port_name = self.PORT
+        return listener, pl
+
+    def _watch(self, listener, names) -> None:
+        with mock.patch.object(midi_control, "mido") as fake:
+            fake.get_input_names.return_value = names
+            listener._watch_port()
+
+    def test_a_held_direction_is_released_when_the_port_disappears(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING") as logs:
+            self._watch(listener, ["IAC Driver Bus 1"])
+        self.assertEqual(
+            pl.current.inject_joystick.call_args_list,
+            [mock.call(2, "fire", True), mock.call(2, "fire", False)],
+        )
+        self.assertIn(self.PORT, logs.output[0])
+
+    def test_a_held_cc_direction_is_released_too(self):
+        listener, pl = self._listener(
+            {"type": "cc", "number": 20, "action": "joystick", "input": "up", "port": 1}
+        )
+        listener._dispatch(mido.Message("control_change", control=20, value=127))
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING"):
+            self._watch(listener, [])
+        pl.current.inject_joystick.assert_called_with(1, "up", False)
+
+    def test_a_present_port_releases_nothing(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        self._watch(listener, [self.PORT])
+        pl.current.inject_joystick.assert_called_once_with(2, "fire", True)
+
+    def test_a_direction_already_let_go_is_not_released_again(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        listener._dispatch(mido.Message("note_off", note=50))
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING"):
+            self._watch(listener, [])
+        self.assertEqual(pl.current.inject_joystick.call_count, 2)
+
+    def test_a_scene_that_has_since_changed_is_left_alone(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        torn_down = pl.current
+        pl.current = mock.MagicMock()
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING"):
+            self._watch(listener, [])
+        torn_down.inject_joystick.assert_called_once_with(2, "fire", True)
+        pl.current.inject_joystick.assert_not_called()
+
+    def test_the_loss_is_reported_once(self):
+        listener, _pl = self._listener()
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING") as logs:
+            self._watch(listener, [])
+            self._watch(listener, [])
+        self.assertEqual(len(logs.output), 1)
+
+    def test_the_running_listener_releases_on_its_own(self):
+        names = [self.PORT]
+        released = threading.Event()
+        with (
+            mock.patch.object(midi_control, "mido") as fake,
+            mock.patch.object(midi_control, "_PORT_WATCH_INTERVAL_S", 0.01),
+            self.assertLogs("c64cast.control.midi_control", level="WARNING"),
+        ):
+            fake.get_input_names.side_effect = lambda: list(names)
+            listener, pl = self._listener()
+            pl.current.inject_joystick.side_effect = lambda _port, _inp, pressed: (
+                None if pressed else released.set()
+            )
+            listener._open_port = lambda: setattr(listener, "_midi_port", _FakePort())
+            listener.start()
+            self.addCleanup(listener.stop)
+            listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+            names.clear()
+            self.assertTrue(released.wait(2.0))
+
+
 class TransportDispatchTests(_MidiControlTestCase):
     """transport.* actions enqueue a TransportEvent on pl.transport instead
     of mutating scene state directly on the MIDI reader thread — see

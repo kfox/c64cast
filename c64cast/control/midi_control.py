@@ -126,6 +126,11 @@ _MMC_COMMANDS = frozenset({0x01, 0x02, 0x04, 0x05, 0x06, 0x09})
 # write, so there's no burst risk to throttle against.
 _POLL_INTERVAL_S = 0.001
 
+# rtmidi never reports an unplugged controller: `poll()` reads a queue nothing
+# fills any more. The port dropping out of the input list is the only sign, and
+# listing the ports costs a few ms, so it is checked on its own thread.
+_PORT_WATCH_INTERVAL_S = 1.0
+
 
 @dataclass(frozen=True)
 class _CCMapping:
@@ -520,6 +525,16 @@ class MidiControlListener:
         self._feedback_poll = PollThread(
             self._feedback_reader, name="midi-led-feedback", manual=True, join_timeout=1.0
         )
+        self._port_watch = PollThread(
+            self._watch_port,
+            name="midi-port-watch",
+            period=_PORT_WATCH_INTERVAL_S,
+            run_first=False,
+        )
+        self._port_present = True
+        # (id(playlist), port, direction) -> (playlist, the scene it was pressed on)
+        self._held_joystick: dict[tuple[int, int, str], tuple[Playlist, Any]] = {}
+        self._held_joystick_lock = threading.Lock()
         self._warned_channels: set[int] = set()
         # A dispatch/clock-feed failure is per *message*, and the message comes
         # off the wire: a controller sending something this build mishandles
@@ -592,6 +607,7 @@ class MidiControlListener:
         if self._feedback_enabled:
             self._setup_feedback()
         self._reader_poll.start()
+        self._port_watch.start()
         if self._clock_port is not None:
             self._clock_poll.start()
         if self._out_port is not None:
@@ -799,9 +815,9 @@ class MidiControlListener:
         self._led_state.clear()
 
     def stop(self) -> None:
-        # Signal all three loops before joining any, so they wind down in
+        # Signal every loop before joining any, so they wind down in
         # parallel (matching the old shared stop event) rather than serially.
-        polls = (self._reader_poll, self._clock_poll, self._feedback_poll)
+        polls = (self._reader_poll, self._clock_poll, self._feedback_poll, self._port_watch)
         for poll in polls:
             poll.stop_event.set()
         for poll in polls:
@@ -849,6 +865,42 @@ class MidiControlListener:
                 time.sleep(_POLL_INTERVAL_S)
         except Exception:
             log.exception("midi_control clock reader crashed")
+
+    def _note_joystick(self, pl: Playlist, port: int, direction: str, pressed: bool) -> None:
+        key = (id(pl), port, direction)
+        with self._held_joystick_lock:
+            if pressed:
+                self._held_joystick[key] = (pl, pl.current)
+            else:
+                self._held_joystick.pop(key, None)
+
+    def _watch_port(self) -> None:
+        assert mido is not None
+        present = self._opened_port_name in mido.get_input_names()
+        if present == self._port_present:
+            return
+        self._port_present = present
+        if present:
+            log.info(
+                "midi_control: MIDI port %r is listed again; restart c64cast if its "
+                "pads do nothing",
+                self._opened_port_name,
+            )
+            return
+        log.warning(
+            "midi_control: MIDI port %r is gone (controller unplugged?); releasing "
+            "held joystick directions — restart c64cast to reconnect",
+            self._opened_port_name,
+        )
+        self._release_held_joysticks()
+
+    def _release_held_joysticks(self) -> None:
+        with self._held_joystick_lock:
+            held = self._held_joystick
+            self._held_joystick = {}
+        for (_pl_id, port, direction), (pl, scene) in held.items():
+            if pl.current is scene:
+                scene.inject_joystick(port, direction, False)
 
     def _targets(self, msg: Any) -> list[Playlist]:
         """channel == broadcast_channel-1 -> every playlist; other channel N
@@ -966,7 +1018,9 @@ class MidiControlListener:
             if mapping.kind == "cc":
                 pressed = value >= 64
             if inject is not None and mapping.input is not None:
-                inject(mapping.port or 2, mapping.input, pressed)
+                joystick_port = mapping.port or 2
+                inject(joystick_port, mapping.input, pressed)
+                self._note_joystick(pl, joystick_port, mapping.input, pressed)
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(
