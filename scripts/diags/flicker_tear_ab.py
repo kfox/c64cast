@@ -55,8 +55,15 @@ is not a false seam. The reported seam position — where the picture flips, as 
 fraction of height — is the real payload: the halt hypothesis predicts where the
 swap lands, not merely that it is late.
 
+The color content cannot see a push that writes into the bank on screen: frames
+N-1 and N+1 share their colors. `--content position` lights one white band per
+frame, stepping across four slots, so frames two apart differ in bitmap; each
+torn frame is then named adjacent (a late swap), two-apart (frames N-1 and N+1
+at once: a push into the displayed bank) or partial (a band caught mid-write).
+
     scripts/diags/flicker_tear_ab.py
     scripts/diags/flicker_tear_ab.py --seconds 10
+    scripts/diags/flicker_tear_ab.py --content position
 
 Outputs land under scripts/diags/out/flickertear/. Resets the U64 on exit —
 note that rest_reset needs an http:// URL; on a u64:// URL it does nothing.
@@ -86,7 +93,7 @@ def _palette() -> dict[str, tuple[int, int, int]]:
     from c64cast.video.palette import HOST_PALETTES
 
     table = HOST_PALETTES[HOST_PALETTE]
-    idx = {"black": 0, "red": 2, "green": 5, "blue": 6, "yellow": 7}
+    idx = {"black": 0, "white": 1, "red": 2, "green": 5, "blue": 6, "yellow": 7}
     return {k: tuple(int(x) for x in table[i]) for k, i in idx.items()}
 
 
@@ -95,8 +102,34 @@ PAL = _palette()
 # Frames in the test cycle. Must not be 2 — see build_test_video.
 CYCLE = 8
 
+# --content position: one lit band per frame, stepping across BANDS slots, so
+# frames two apart differ in their bitmap. Two always-lit marker columns at the
+# picture's edges give the classifier the picture's extent, since the border
+# takes the same black as the background.
+BANDS = 4
+_BAND_CELLS = 8
+_MARKER_CELLS = (0, 39)
 
-def build_test_video(path: Path, *, fps: int = 30, seconds: int = 25) -> None:
+
+def _band_first_cell(band: int) -> int:
+    return 2 + (_BAND_CELLS + 1) * band
+
+
+def position_state(i: int) -> np.ndarray:
+    """Frame `i` of the position content: white markers and band `i % BANDS`
+    on black, every edge on a character-cell boundary so no cell holds a third
+    color."""
+    img = np.zeros((200, 320, 3), np.uint8)
+    for cell in _MARKER_CELLS:
+        img[:, cell * 8 : (cell + 1) * 8] = PAL["white"]
+    first = _band_first_cell(i % BANDS)
+    img[:, first * 8 : (first + _BAND_CELLS) * 8] = PAL["white"]
+    return img
+
+
+def build_test_video(
+    path: Path, *, fps: int = 30, seconds: int = 25, content: str = "color"
+) -> None:
     """Eight states in a cycle, at 320x200 (one C64 screen).
 
     Colors alternate every frame (A: top red / bottom blue, B: top green /
@@ -139,7 +172,8 @@ def build_test_video(path: Path, *, fps: int = 30, seconds: int = 25) -> None:
     tmp.mkdir(exist_ok=True)
     for i in range(CYCLE):
         top, bottom = ("red", "blue") if i % 2 == 0 else ("green", "yellow")
-        cv2.imwrite(str(tmp / f"{i:05d}.png"), field(top, bottom, i))
+        img = position_state(i) if content == "position" else field(top, bottom, i)
+        cv2.imwrite(str(tmp / f"{i:05d}.png"), img)
     pair = tmp / "pair.mkv"
     subprocess.run(
         [
@@ -296,6 +330,54 @@ def _row_states(frame: np.ndarray) -> list[str]:
     return ["blank" if mag[y] < BLANK_SUM else _STATE_OF[names[best[y]]] for y in range(h)]
 
 
+LIT_LEVEL = 128.0  # mean B,G,R above this is the white of the position content
+
+
+def _position_row_states(frame: np.ndarray) -> list[str]:
+    """Classify every row of the position content by which bands it lights:
+    "2" for band 2 alone, "02" for two at once, "-" for none, "blank" outside
+    the picture or with no signal."""
+    h, _w, _ = frame.shape
+    lit = frame.astype(float).mean(axis=2) > LIT_LEVEL
+    full_cols = np.flatnonzero(lit.mean(axis=0) > 0.5)
+    if full_cols.size == 0:
+        return ["blank"] * h
+    x0, x1 = int(full_cols[0]), int(full_cols[-1])
+    cell = (x1 - x0 + 1) / 40.0
+    marker = lit[:, x0 : x0 + max(1, int(cell / 2))].mean(axis=1) > 0.5
+
+    def centre(band: int) -> slice:
+        first = _band_first_cell(band)
+        lo = x0 + int((first + _BAND_CELLS * 0.25) * cell)
+        hi = x0 + int((first + _BAND_CELLS * 0.75) * cell)
+        return slice(lo, max(lo + 1, hi))
+
+    band_lit = np.stack([lit[:, centre(b)].mean(axis=1) > 0.5 for b in range(BANDS)], axis=1)
+    out: list[str] = []
+    for y in range(h):
+        if not marker[y]:
+            out.append("blank")
+            continue
+        on = "".join(str(b) for b in range(BANDS) if band_lit[y, b])
+        out.append(on or "-")
+    return out
+
+
+def seam_kind(states: list[str]) -> str:
+    """Name what a torn position frame shows, from its long runs top to bottom.
+
+    "adjacent" is two consecutive frames (a late swap: the top still shows the
+    bank being left). "two-apart" is frames N-1 and N+1 at once, the signature
+    of a push writing into the bank on screen. "partial" is a run lighting no
+    band or two, a write caught between clearing one band and setting the
+    next."""
+    runs = [r[0] for r in _runs(states) if r[0] != "blank" and r[2] - r[1] + 1 >= MIN_RUN]
+    if any(not (len(s) == 1 and s.isdigit()) for s in runs):
+        return "partial"
+    gaps = {(int(b) - int(a)) % BANDS for a, b in zip(runs, runs[1:], strict=False) if a != b}
+    return "two-apart" if 2 in gaps else "adjacent"
+
+
 def _runs(states: list[str]) -> list[tuple[str, int, int]]:
     out: list[tuple[str, int, int]] = []
     for i, st in enumerate(states):
@@ -306,7 +388,7 @@ def _runs(states: list[str]) -> list[tuple[str, int, int]]:
     return out
 
 
-def score(frames) -> tuple[float, list[int], int, list[float]]:
+def score(frames, row_states=_row_states) -> tuple[float, list[int], int, list[float]]:
     """Percent torn, their indices, the blank count, and the seam positions.
 
     A frame is torn when it holds a run of state-A rows and a run of state-B
@@ -319,7 +401,7 @@ def score(frames) -> tuple[float, list[int], int, list[float]]:
     seams: list[float] = []
     blank = 0
     for i, f in enumerate(frames):
-        runs = [r for r in _runs(_row_states(f)) if r[2] - r[1] + 1 >= MIN_RUN]
+        runs = [r for r in _runs(row_states(f)) if r[2] - r[1] + 1 >= MIN_RUN]
         live = [r for r in runs if r[0] != "blank"]
         if not live:
             blank += 1
@@ -349,6 +431,13 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=10.0, help="capture window per phase")
     d.add_capture_device_arg(ap)
     ap.add_argument("--no-reset", action="store_true")
+    ap.add_argument(
+        "--content",
+        choices=("color", "position"),
+        default="color",
+        help="color: the raster-gate test above; position: frames two apart "
+        "differ in bitmap, so a push into the bank on screen shows as a two-apart seam",
+    )
     args = ap.parse_args()
     d.resolve_capture(args.device)  # fail before c64cast touches the machine
 
@@ -356,7 +445,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     video = out / "ab_every_frame.mkv"
     print(f"[build] test video -> {video}")
-    build_test_video(video)
+    build_test_video(video, content=args.content)
 
     cfg_flicker = out / "flicker.toml"
     cfg_plain = out / "plain.toml"
@@ -387,7 +476,8 @@ def main() -> int:
     print("\n=== torn frames (picture holds both states at once) ===")
     for label, _cfg in phases:
         frames = results.get(label, [])
-        pct, idx, blank, seams = score(frames)
+        row_states = _position_row_states if args.content == "position" else _row_states
+        pct, idx, blank, seams = score(frames, row_states)
         note = f"  [{blank} blank frames excluded]" if blank else ""
         print(f"  {label:9s} {pct:5.1f}%  ({len(idx)} of {len(frames) - blank} scored){note}")
         if seams:
@@ -396,6 +486,9 @@ def main() -> int:
                 f"             seam at {q[0]:.0%} / {q[1]:.0%} / {q[2]:.0%} of "
                 f"picture height (p10/median/p90)"
             )
+        if args.content == "position" and idx:
+            kinds = [seam_kind(row_states(frames[i])) for i in idx]
+            print("             " + ", ".join(f"{k}={kinds.count(k)}" for k in sorted(set(kinds))))
         for n, i in enumerate(idx[:3]):
             cv2.imwrite(str(out / f"{label}_torn_{n:02d}.png"), frames[i])
         clean = [i for i in range(len(frames)) if i not in set(idx)]

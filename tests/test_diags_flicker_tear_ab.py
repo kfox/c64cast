@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import cv2
+import numpy as np
 from _fakes import MachineSettingsIsolation
 from test_diags_nmi_latch import _load
 
@@ -43,6 +45,54 @@ class PhaseConfigTest(unittest.TestCase):
 
     def test_the_plain_phase_leaves_it_off(self) -> None:
         self.assertEqual(self._resolved_tolerance(flicker=False), "off")
+
+
+def _captured(picture: np.ndarray) -> np.ndarray:
+    """A C64 picture as the capture device returns it: scaled up inside a
+    black border."""
+    frame = np.zeros((720, 1280, 3), np.uint8)
+    frame[60:660, 160:1120] = cv2.resize(picture, (960, 600), interpolation=cv2.INTER_NEAREST)
+    return frame
+
+
+class PositionContentTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = _load("flicker_tear_ab")
+
+    def _states(self, picture: np.ndarray) -> list[str]:
+        return self.tool._position_row_states(_captured(picture))
+
+    def test_frames_two_apart_differ(self) -> None:
+        a, b = self.tool.position_state(1), self.tool.position_state(3)
+        self.assertFalse(np.array_equal(a, b))
+
+    def test_a_whole_frame_is_not_torn(self) -> None:
+        frames = [_captured(self.tool.position_state(i)) for i in range(4)]
+        pct, torn, blank, _ = self.tool.score(frames, self.tool._position_row_states)
+        self.assertEqual((pct, torn, blank), (0.0, [], 0))
+        self.assertEqual(
+            {s for s in self._states(self.tool.position_state(2)) if s != "blank"}, {"2"}
+        )
+
+    def test_frames_two_apart_in_one_picture_read_as_two_apart(self) -> None:
+        picture = self.tool.position_state(1).copy()
+        picture[:96] = self.tool.position_state(3)[:96]
+        frames = [_captured(picture)]
+        _, torn, _, _ = self.tool.score(frames, self.tool._position_row_states)
+        self.assertEqual(torn, [0])
+        self.assertEqual(self.tool.seam_kind(self._states(picture)), "two-apart")
+
+    def test_consecutive_frames_in_one_picture_read_as_adjacent(self) -> None:
+        picture = self.tool.position_state(1).copy()
+        picture[:96] = self.tool.position_state(2)[:96]
+        self.assertEqual(self.tool.seam_kind(self._states(picture)), "adjacent")
+
+    def test_a_cleared_band_reads_as_partial(self) -> None:
+        picture = self.tool.position_state(1).copy()
+        picture[:96] = self.tool.position_state(1)[:96] * 0
+        picture[:96, :8] = self.tool.position_state(1)[:96, :8]
+        picture[:96, -8:] = self.tool.position_state(1)[:96, -8:]
+        self.assertEqual(self.tool.seam_kind(self._states(picture)), "partial")
 
 
 if __name__ == "__main__":
