@@ -2303,6 +2303,20 @@ def _joystick_inputs(event: machine_input.Event) -> set[tuple[int, str]]:
     return {(event["port"], name) for name in event["inputs"]}
 
 
+class _InputSnapshot(NamedTuple):
+    """One poll of the launcher's input registers: the CIA joystick bits
+    (masked to `CIA1.JOY_MASK`) and the kernal keyboard bytes ($C5/$C6),
+    each empty when `input_source` leaves it out."""
+
+    joystick: bytes
+    keyboard: bytes
+
+    @property
+    def joystick_held(self) -> bool:
+        # The CIA port lines are active-low: a pressed switch reads 0.
+        return any(port != CIA1.JOY_MASK for port in self.joystick)
+
+
 class LauncherScene(MediaFileMixin, Scene):
     """Launch a native C64 program and hand the machine over to it.
 
@@ -2392,7 +2406,7 @@ class LauncherScene(MediaFileMixin, Scene):
         # Written by the poll thread, read by process_frame; hence the lock.
         self._last_input_t = 0.0
         self._input_lock = threading.Lock()
-        self._last_snapshot: bytes | None = None
+        self._last_snapshot: _InputSnapshot | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
         # Each event with the monotonic time it was queued.
         self._injected: queue.SimpleQueue[tuple[float, machine_input.Event]] = queue.SimpleQueue()
@@ -2672,11 +2686,11 @@ class LauncherScene(MediaFileMixin, Scene):
             ],
         )
 
-    def _read_snapshot(self) -> bytes | None:
+    def _read_snapshot(self) -> _InputSnapshot | None:
         """Read the configured input registers. Returns None on a failed
         read (caller ignores it — don't reset the idle clock on a glitch).
         Never reads $028D, so the app's modifier keys are excluded."""
-        parts: list[bytes] = []
+        joystick = keyboard = b""
         if self.input_source in ("cia", "auto"):
             with quiet_transport():
                 cia = self.api.read_memory(self._CIA_BASE, 2)
@@ -2684,21 +2698,18 @@ class LauncherScene(MediaFileMixin, Scene):
                 return None
             # The upper bits carry keyboard-scan / serial state that churns
             # independently of player input.
-            parts.append(bytes(b & CIA1.JOY_MASK for b in cia))
+            joystick = bytes(b & CIA1.JOY_MASK for b in cia)
         if self.input_source in ("kernal", "auto"):
             with quiet_transport():
                 kern = self.api.read_memory(self._KERNAL_BASE, 2)
             if kern is None:
                 return None
-            parts.append(kern)
-        return b"".join(parts)
+            keyboard = kern
+        return _InputSnapshot(joystick, keyboard)
 
     def _input_loop(self, stop: threading.Event) -> None:
-        """Manual poll loop. After a grace window (so the program's INIT
-        churn doesn't count as input), reset the idle clock whenever a read
-        differs from the one before it. A state that holds — a key or
-        direction held down, a keyboard buffer the program never drains — is
-        one input, not a player at the controls."""
+        """Manual poll loop, started after a grace window so the program's
+        INIT churn doesn't count as input."""
         if stop.wait(self.launch_grace_s):
             return
         self._last_snapshot = self._read_snapshot()
@@ -2707,6 +2718,9 @@ class LauncherScene(MediaFileMixin, Scene):
             if snap is None:
                 continue
             previous, self._last_snapshot = self._last_snapshot, snap
-            if previous is not None and snap != previous:
+            # A program that never drains the keyboard buffer leaves $C6 full
+            # for good, so only a change there is a player at the keys.
+            keys_changed = previous is not None and snap.keyboard != previous.keyboard
+            if snap.joystick_held or keys_changed:
                 with self._input_lock:
                     self._last_input_t = time.time()
