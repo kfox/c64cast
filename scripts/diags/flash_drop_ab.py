@@ -76,8 +76,9 @@ loop = true
 [[scenes]]
 type = "video"
 display = "mhires"
-file = "{video_path}"
-{teensyrom}"""
+file = {d.toml_string(video_path)}
+{teensyrom}""",
+        encoding="utf-8",
     )
 
 

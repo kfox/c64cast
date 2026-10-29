@@ -24,6 +24,7 @@ working values, confirmed as of 2026-06-10. Point the env vars at yours.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -38,6 +39,15 @@ OUT_DIR = REPO_ROOT / "scripts" / "diags" / "out"
 # Make `import c64cast` work regardless of cwd / how the tool was launched.
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+
+def toml_string(value: object) -> str:
+    """`str(value)` as a quoted TOML basic string, for a path or other free
+    text spliced into a generated config. A Windows path's backslashes
+    would otherwise read as escapes. JSON's `\\uXXXX` is TOML's only where
+    it is not half of a surrogate pair, so non-ASCII stays literal; TOML
+    also wants DEL escaped, which JSON leaves literal."""
+    return json.dumps(str(value), ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def out_dir() -> Path:

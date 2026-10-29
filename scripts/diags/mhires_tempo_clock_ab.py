@@ -65,11 +65,11 @@ interleave_videos = false
 
 [[scenes]]
 type = "video"
-file = "{abs_clip}"
+file = {d.toml_string(abs_clip)}
 display = "{display}"
 {teensyrom}"""
     p = out / f"tempo_ab_{label}.toml"
-    p.write_text(toml)
+    p.write_text(toml, encoding="utf-8")
     return p
 
 

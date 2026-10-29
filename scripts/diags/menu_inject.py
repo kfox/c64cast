@@ -58,7 +58,7 @@ interleave_videos = false
 [[scenes]]
 type = "generative"
 name = "Menu inject"
-source = "{source}"
+source = {source}
 display = "{display}"
 audio_source = "none"
 duration_s = 600.0
@@ -96,7 +96,10 @@ def main() -> int:
 
     out = d.out_dir()
     tmp = out / "menu_inject.toml"
-    tmp.write_text(TEMPLATE.format(url=args.url, source=args.source, display=args.display))
+    tmp.write_text(
+        TEMPLATE.format(url=args.url, source=d.toml_string(args.source), display=args.display),
+        encoding="utf-8",
+    )
     bak = tmp.with_name(tmp.name + ".bak")
     if bak.exists():
         bak.unlink()

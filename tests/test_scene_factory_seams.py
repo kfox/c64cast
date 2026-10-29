@@ -652,6 +652,21 @@ class FlickerToleranceValidatorTest(unittest.TestCase):
     def test_a_good_value_passes(self):
         scene_factory.validate_flicker_cfg(Config())
 
+    def test_a_nan_luma_cap_is_a_config_error(self):
+        # TOML spells it `nan`. Every `delta > cap` test is False against it,
+        # so the cap admitted every scored pair and both photosensitivity
+        # warnings stayed silent.
+        cfg = Config()
+        cfg.color.flicker_max_luma_delta = float("nan")
+        with self.assertRaises(cfgmod.ConfigError) as cm:
+            scene_factory.validate_flicker_cfg(cfg)
+        self.assertIn("[color].flicker_max_luma_delta", str(cm.exception))
+        cfg = Config()
+        cfg.scenes = [SceneCfg(type="webcam", color={"flicker_max_luma_delta": float("nan")})]
+        with self.assertRaises(cfgmod.ConfigError) as cm:
+            scene_factory.validate_flicker_cfg(cfg)
+        self.assertIn("[[scenes]][0].color.flicker_max_luma_delta", str(cm.exception))
+
 
 class WledSinkAllowTest(unittest.TestCase):
     """`wled_sink._bind` is AF_INET only, so the peer address the allowlist is

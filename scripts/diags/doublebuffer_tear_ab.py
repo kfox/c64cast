@@ -118,7 +118,7 @@ loop = true
 [[scenes]]
 type = "video"
 display = "mhires"
-file = "{video_path}"
+file = {d.toml_string(video_path)}
 
   [[scenes.overlays]]
   type = "marquee"
@@ -126,7 +126,8 @@ file = "{video_path}"
   row = 24
   speed_cells_per_s = 4.0
   fg_color = "white"
-{teensyrom}"""
+{teensyrom}""",
+        encoding="utf-8",
     )
 
 
