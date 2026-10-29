@@ -21,6 +21,6 @@ fg_color = "white"
   for graphics characters (`\xa0` solid block, `\xae` top-left arc, etc.).
 - Trailing whitespace is treated as transparent.
 
-The overlay uses the helper `overlays/__init__.py:ascii_to_screen()` to
+The overlay uses the helper `overlays/__init__.py:art_to_screen()` to
 translate ASCII bytes to screen codes, then writes the result via the
 delta-cache so static logos generate ~0 traffic after the initial paint.

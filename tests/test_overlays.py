@@ -3,6 +3,8 @@
 # pyright: reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import os
+import tempfile
 import time
 import unittest
 from contextlib import contextmanager
@@ -214,6 +216,27 @@ class ScreenCodeTest(unittest.TestCase):
 
     def test_space(self):
         self.assertEqual(ascii_to_screen(" "), bytes([0x20]))
+
+    def test_typographic_punctuation_draws_as_its_ascii_lookalike(self):
+        self.assertEqual(ascii_to_screen("It’s"), ascii_to_screen("It's"))
+        self.assertEqual(ascii_to_screen("“A” – B—C"), ascii_to_screen('"A" - B-C'))
+        self.assertEqual(ascii_to_screen("WAIT…"), ascii_to_screen("WAIT."))
+
+    def test_accented_letter_draws_as_its_base_letter(self):
+        self.assertEqual(ascii_to_screen("Café Jürgen"), ascii_to_screen("CAFE JURGEN"))
+
+    def test_whitespace_controls_draw_as_spaces(self):
+        self.assertEqual(ascii_to_screen("A\tB\nC\rD"), ascii_to_screen("A B C D"))
+
+    def test_unrepresentable_characters_draw_as_one_placeholder(self):
+        placeholder = ascii_to_screen("?")
+        for ch in ("ß", "€", "日", "\U0001f600", "\x07", "°", "©"):
+            with self.subTest(ch=ch):
+                self.assertEqual(ascii_to_screen(ch), placeholder)
+
+    def test_output_has_one_screen_code_per_input_character(self):
+        text = "Straße ’ \U0001f600"
+        self.assertEqual(len(ascii_to_screen(text)), len(text))
 
 
 class ScrollingTextTest(unittest.TestCase):
@@ -738,6 +761,18 @@ class LogoTest(unittest.TestCase):
             self.assertEqual(bytes(buffers["screen"][40:42]), bytes([0x03, 0x04]))  # CD
         finally:
             os.unlink(path)
+
+    def test_latin1_characters_are_raw_screen_codes(self):
+        from c64cast.scenes.overlays.logo import LogoOverlay
+
+        art = tempfile.mkdtemp()
+        path = os.path.join(art, "art.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(" ®A’\n")
+        ov = LogoOverlay(file=path, corner="top-left")
+        buffers = _make_buffers()
+        ov.compose(buffers, scene=MagicMock(), t=0.0)
+        self.assertEqual(bytes(buffers["screen"][0:4]), bytes([0xA0, 0xAE, 0x01, 0x27]))
 
     def test_missing_file_uses_placeholder(self):
         # Documented behavior: missing file → placeholder render so the

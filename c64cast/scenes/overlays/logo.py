@@ -21,7 +21,7 @@ from c64cast.hw.c64 import SCREEN
 from c64cast.scenes.text_surface import corner_origin as _surface_corner_origin
 from c64cast.video.palette import C64_COLORS, resolve_color
 
-from . import Overlay, ascii_to_screen, register
+from . import Overlay, art_to_screen, register
 from .corner_text import VALID_CORNERS, corner_origin
 
 log = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ class LogoOverlay(Overlay):
             raise ValueError(
                 f"logo: cols {self._col}..{self._col + self._w - 1} don't fit in 0..{SCREEN_W - 1}"
             )
-        self._encoded = [ascii_to_screen(ln) for ln in self.lines]
+        self._encoded = [art_to_screen(ln) for ln in self.lines]
 
     def compose(self, buffers: dict, scene, t: float) -> None:
         surface = buffers["text"]
