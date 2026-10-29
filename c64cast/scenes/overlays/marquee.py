@@ -74,14 +74,7 @@ class MarqueeBase(Overlay):
         elapsed = t - self.start_time
         # Pixel-stable integer offset: each cell takes 1/speed seconds.
         offset = int(elapsed * self.speed) % n
-        if offset + width <= n:
-            row = encoded[offset : offset + width]
-        else:
-            tail = n - offset
-            row = np.concatenate([encoded[offset:], encoded[: width - tail]])
-        if row.size < width:
-            pad = np.full(width - row.size, SC_SPACE, dtype=np.uint8)
-            row = np.concatenate([row, pad])
+        row = encoded[(offset + np.arange(width)) % n]
         # Per-cell FG is the text color on glyphs and bg on the gaps, so the
         # ticker reads as a band; bg also fills the "off" pixels on bitmap.
         colors = np.where(row != SC_SPACE, self.fg, self.bg).astype(np.int64)

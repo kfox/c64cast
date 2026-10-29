@@ -648,6 +648,17 @@ class MarqueeTest(unittest.TestCase):
         # 'A'=0x01, 'B'=0x02, 'C'=0x03 should appear at the start.
         self.assertEqual(row[:3], bytes([0x01, 0x02, 0x03]))
 
+    def test_text_shorter_than_the_row_repeats_across_it(self):
+        from c64cast.scenes.overlays.marquee import MarqueeOverlay
+
+        ov = MarqueeOverlay(text="AB", row=0, speed_cells_per_s=1.0)
+        ov.start_time = 100.0
+        buffers = _make_buffers()
+        ov.compose(buffers, scene=MagicMock(), t=103.0)
+        loop = ascii_to_screen("AB" + ov.SEPARATOR)
+        expected = bytes(loop[(3 + col) % len(loop)] for col in range(40))
+        self.assertEqual(bytes(buffers["screen"][0:40]), expected)
+
     def test_empty_text_raises(self):
         from c64cast.scenes.overlays.marquee import MarqueeOverlay
 
