@@ -276,6 +276,7 @@ class Playlist:
 
         self.index = 0
         self.current: Scene | None = None
+        self.failed_to_start = False
         # The WLED `bri` slider, 0 < user_dim <= 1.0. Owned here rather than on
         # the display mode, whose instance is per-scene, so it survives an
         # auto-advance: `safe_setup` re-stamps it onto each fresh scene.
@@ -486,26 +487,25 @@ class Playlist:
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         """Cut to scenes[index] at the next clean frame boundary (reuses
-        skip_event to force the current scene done — see _advance's
-        end-of-scene branch, which consumes _jump_target in place of the
-        usual index+1). No-op in single-scene mode (nowhere to jump to).
+        skip_event to force the current scene or "UP NEXT" card done — see
+        _advance's end-of-scene and end-of-card branches, which consume
+        _jump_target in place of the usual next scene). No-op in
+        single-scene mode (nowhere to jump to).
 
         skip_interstitial=True (the default, and what a live-performance
         control surface should always pass) bypasses the "UP NEXT" card
         entirely for a hard cut, still gated on the ensemble audio claim
         for the target scene like single-scene looping is. False routes
         through the normal transitioning/interstitial path instead, for
-        callers that still want the card.
-
-        Known limitation: a jump requested while self.current is None
-        (the brief startup / finished-without-loop window) is dropped —
-        re-send once the playlist has a current scene."""
-        if self.single_scene:
-            self.log.debug("jump to %d ignored — single-scene mode", index)
-            return
-        if not 0 <= index < len(self.scenes):
-            raise ValueError(f"jump index {index} out of range (0..{len(self.scenes) - 1})")
+        callers that still want the card."""
+        # Checked under the lock `_apply_reload` swaps the scene list under, so
+        # a reload cannot land between the bounds check and the write.
         with self._jump_lock:
+            if self.single_scene:
+                self.log.debug("jump to %d ignored — single-scene mode", index)
+                return
+            if not 0 <= index < len(self.scenes):
+                raise ValueError(f"jump index {index} out of range (0..{len(self.scenes) - 1})")
             self._jump_target = index
             self._jump_skip_interstitial = skip_interstitial
         self.skip_event.set()
@@ -524,8 +524,10 @@ class Playlist:
             return
         self.log.info("playlist: reloading (%d → %d scenes)", len(self.scenes), len(new_scenes))
         self.drop_current()
-        self.scenes = new_scenes
-        self.single_scene = len(new_scenes) == 1
+        with self._jump_lock:
+            self._jump_target = None
+            self.scenes = new_scenes
+            self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
             self.interstitial_factory = new_interstitial
         self.index = 0
@@ -591,6 +593,11 @@ class Playlist:
         if self.current is None:
             self._resolve_and_announce()
         elif self.on_card and self.current.is_done:
+            jump = self._take_jump()
+            if jump is not None:
+                self.drop_current()
+                self._jump_to(*jump)
+                return
             self.fades.fade_out(self.current)
             self.safe_teardown(self.current)
             upcoming = self.scenes[self.index]
@@ -628,7 +635,7 @@ class Playlist:
                 self.current.name,
                 "looping" if self.loop else "once-through",
             )
-            self.safe_setup(self.current)
+            self._set_up_single_scene(scene)
         elif self.current.is_done:
             if not self.loop:
                 self.log.info("scene %r finished and loop=False — stopping", self.current.name)
@@ -643,8 +650,31 @@ class Playlist:
             if not self.ensemble_coord.wait_for_audio_claim(scene):
                 self.current = None
                 return
+            if self._set_up_single_scene(scene):
+                scene.is_done = False
+
+    def _set_up_single_scene(self, scene: Scene) -> bool:
+        """Set up the one scene. A setup that raises, or that leaves the
+        scene already done, failed to start it, and there is no other scene
+        to play: stop the run. False when it did."""
+        try:
             self.safe_setup(scene)
-            scene.is_done = False
+        except Exception as e:
+            self._stop_on_failed_start(scene, f"{type(e).__name__}: {e}", exc_info=True)
+            return False
+        if not scene.is_done or self.stop_event.is_set():
+            return True
+        self._stop_on_failed_start(
+            scene, getattr(scene, "setup_failure", None) or "its setup ended it"
+        )
+        return False
+
+    def _stop_on_failed_start(self, scene: Scene, cause: str, *, exc_info: bool = False) -> None:
+        self.log.error(
+            "scene %r could not start (%s); stopping", scene.name, cause, exc_info=exc_info
+        )
+        self.failed_to_start = True
+        self.stop_event.set()
 
     def _advance_after_scene(self) -> None:
         """A non-transition scene finished: fade + tear it down, then honor a
@@ -653,25 +683,9 @@ class Playlist:
         assert self.current is not None
         self.fades.fade_out(self.current)
         self.safe_teardown(self.current)
-        with self._jump_lock:
-            jump_target = self._jump_target
-            jump_skip_interstitial = self._jump_skip_interstitial
-            self._jump_target = None
-        if jump_target is not None:
-            self.index = jump_target
-            if jump_skip_interstitial:
-                scene = self.scenes[self.index]
-                if not self.ensemble_coord.wait_for_audio_claim(scene):
-                    self.current = None
-                    return
-                self.log.info(
-                    "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
-                )
-                self.current = scene
-                self.safe_setup(self.current)
-                self.transitioning = False
-                return
-            self._resolve_and_announce()
+        jump = self._take_jump()
+        if jump is not None:
+            self._jump_to(*jump)
             return
         next_index = self.index + 1
         if next_index >= len(self.scenes):
@@ -683,6 +697,30 @@ class Playlist:
             next_index = 0
         self.index = next_index
         self._resolve_and_announce()
+
+    def _take_jump(self) -> tuple[int, bool] | None:
+        """Consume the pending `request_jump`: its target and whether it
+        skips the card, or None."""
+        with self._jump_lock:
+            target = self._jump_target
+            self._jump_target = None
+            return None if target is None else (target, self._jump_skip_interstitial)
+
+    def _jump_to(self, target: int, skip_interstitial: bool) -> None:
+        """With no scene current, cut to `scenes[target]`, or announce it
+        through the card."""
+        self.index = target
+        if not skip_interstitial:
+            self._resolve_and_announce()
+            return
+        scene = self.scenes[target]
+        if not self.ensemble_coord.wait_for_audio_claim(scene):
+            self.current = None
+            return
+        self.log.info("scene %d/%d → %r (jump)", target + 1, len(self.scenes), scene.name)
+        self.current = scene
+        self.safe_setup(scene)
+        self.transitioning = False
 
     def _resolve_and_announce(self) -> None:
         """Resolve the scene to play from `self.index` and show its "UP

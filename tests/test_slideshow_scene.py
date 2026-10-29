@@ -46,6 +46,13 @@ class UndecodablePictureTest(unittest.TestCase):
             self.scene._advance_image()
         self.assertTrue(self.scene.is_done)
 
+    def test_a_pool_with_nothing_decodable_records_why_it_ended(self):
+        os.remove(self.good)
+        with self.assertLogs("c64cast.scenes.scenes", "WARNING"):
+            self.scene.setup()
+        self.assertTrue(self.scene.is_done)
+        self.assertIn("decode", self.scene.setup_failure or "")
+
 
 class LargePictureTest(unittest.TestCase):
     """A phone photo held at its decoded size made the display mode resize
