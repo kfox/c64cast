@@ -327,6 +327,12 @@ class ClipConfigTest(unittest.TestCase):
         # A looping continuous scene is pinned to run-forever.
         self.assertEqual(sc.duration_s, 0.0)
 
+    def test_looping_midi_and_asid_clips_hold_until_the_next_launch(self):
+        for scene_type in ("midi", "asid"):
+            with self.subTest(scene_type=scene_type):
+                sc = cfgmod.clip_scene_cfg({"slot": 1, "type": scene_type, "loop": True})
+                self.assertEqual(sc.duration_s, 0.0)
+
     def test_video_clip_keeps_unset_duration(self):
         sc = cfgmod.clip_scene_cfg({"slot": 1, "type": "video", "file": "x.mp4", "loop": True})
         self.assertIsNone(sc.duration_s)  # video rejects duration_s; engine re-setups to loop
