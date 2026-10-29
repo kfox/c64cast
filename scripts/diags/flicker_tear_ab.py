@@ -61,9 +61,14 @@ frame, stepping across four slots, so frames two apart differ in bitmap; each
 torn frame is then named adjacent (a late swap), two-apart (frames N-1 and N+1
 at once: a push into the displayed bank) or partial (a band caught mid-write).
 
+The test video carries a steady tone and audio plays as it does for a user,
+so the audio writes share the DMA link with the bitmap pushes. `--no-audio`
+mutes it, which is the condition the numbers above were measured under.
+
     scripts/diags/flicker_tear_ab.py
     scripts/diags/flicker_tear_ab.py --seconds 10
     scripts/diags/flicker_tear_ab.py --content position
+    scripts/diags/flicker_tear_ab.py --phases flicker --seconds 40
 
 Outputs land under scripts/diags/out/flickertear/. Resets the U64 on exit —
 note that rest_reset needs an http:// URL; on a u64:// URL it does nothing.
@@ -102,6 +107,8 @@ PAL = _palette()
 # Frames in the test cycle. Must not be 2 — see build_test_video.
 CYCLE = 8
 
+TONE_HZ = 440
+
 # --content position: one lit band per frame, stepping across BANDS slots, so
 # frames two apart differ in their bitmap. Two always-lit marker columns at the
 # picture's edges give the classifier the picture's extent, since the border
@@ -128,7 +135,7 @@ def position_state(i: int) -> np.ndarray:
 
 
 def build_test_video(
-    path: Path, *, fps: int = 30, seconds: int = 25, content: str = "color"
+    path: Path, *, fps: int = 30, seconds: int = 25, content: str = "color", audio: bool = True
 ) -> None:
     """Eight states in a cycle, at 320x200 (one C64 screen).
 
@@ -175,6 +182,7 @@ def build_test_video(
         img = position_state(i) if content == "position" else field(top, bottom, i)
         cv2.imwrite(str(tmp / f"{i:05d}.png"), img)
     pair = tmp / "pair.mkv"
+    looped = tmp / "looped.mkv" if audio else path
     subprocess.run(
         [
             "ffmpeg",
@@ -205,17 +213,27 @@ def build_test_video(
             str(pair),
             "-c",
             "copy",
-            str(path),
+            str(looped),
         ],
         check=True,
     )
+    if audio:
+        # A file with no audio stream starts no audio, so nothing else shares
+        # the link with the pushes.
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y",
+             "-i", str(looped),
+             "-f", "lavfi", "-i", f"sine=frequency={TONE_HZ}:duration={seconds}",
+             "-c:v", "copy", "-c:a", "aac", "-shortest", str(path)],
+            check=True,
+        )  # fmt: skip
 
 
-def write_config(cfg_path: Path, video_path: Path, *, flicker: bool) -> None:
+def write_config(cfg_path: Path, video_path: Path, *, flicker: bool, audio: bool = True) -> None:
     cfg_path.write_text(
         f"""
 [audio]
-enabled = false
+enabled = {"true" if audio else "false"}
 
 [hardware]
 host_palette = "{HOST_PALETTE}"
@@ -440,6 +458,12 @@ def main() -> int:
         help="color: the raster-gate test above; position: frames two apart "
         "differ in bitmap, so a push into the bank on screen shows as a two-apart seam",
     )
+    ap.add_argument("--no-audio", action="store_true", help="mute, isolating the video path")
+    ap.add_argument(
+        "--phases",
+        default="flicker,plain",
+        help="comma-separated subset of flicker,plain, run in that order",
+    )
     args = ap.parse_args()
     d.resolve_capture(args.device)  # fail before c64cast touches the machine
 
@@ -447,17 +471,16 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     video = out / "ab_every_frame.mkv"
     print(f"[build] test video -> {video}")
-    build_test_video(video, content=args.content)
+    audio = not args.no_audio
+    build_test_video(video, content=args.content, audio=audio)
 
-    cfg_flicker = out / "flicker.toml"
-    cfg_plain = out / "plain.toml"
-    write_config(cfg_flicker, video, flicker=True)
-    write_config(cfg_plain, video, flicker=False)
-
-    phases = [
-        ("flicker", cfg_flicker),
-        ("plain", cfg_plain),
-    ]
+    phases = []
+    for label in args.phases.split(","):
+        if label not in ("flicker", "plain"):
+            ap.error(f"unknown phase {label!r}: choose from flicker, plain")
+        cfg = out / f"{label}.toml"
+        write_config(cfg, video, flicker=label == "flicker", audio=audio)
+        phases.append((label, cfg))
     results: dict[str, list[np.ndarray]] = {}
     logs: dict[str, str] = {}
     try:
