@@ -1570,6 +1570,15 @@ class RefineCapabilitiesTest(unittest.TestCase):
         with self.assertLogs("c64cast.hw.api", level="WARNING"):
             self.api.run_basic_clear_loop()  # best-effort — must not raise
 
+    def test_run_basic_clear_loop_swallows_a_load_that_never_answers(self):
+        patch.object(self.api, "flush").start()
+        patch.object(self.api, "invalidate_cache").start()
+        patch.object(
+            self.api.socket_dma, "dmarun", side_effect=TimeoutError("timed out waiting for 1 bytes")
+        ).start()
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.run_basic_clear_loop()
+
     def test_reset_puts_even_when_pre_blank_fails(self):
         patch.object(self.api, "blank_display", side_effect=OSError("dead socket")).start()
         put = patch.object(self.api.session, "put").start()

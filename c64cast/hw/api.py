@@ -794,7 +794,7 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
         )
     # The BASIC stub at $0801 occupies 17 bytes ($0801-$0811 — the tokenized
     # `10 SYS 49920` plus the 2-byte load-address header), and
-    # /v1/runners:run_prg would clobber a payload starting inside it. The
+    # the DMARUN kick would clobber a payload starting inside it. The
     # threshold is rounded up to $0820.
     if load_addr < 0x0820:
         raise ValueError(
@@ -2382,8 +2382,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     def _post_crt(self, filename: str, payload: bytes, *, timeout: float) -> None:
         """POST a cartridge image to the REST `run_crt` runner, translating
         a 404 (older firmware without the runner) into a clear RuntimeError
-        instead of an opaque HTTPError. The DMA socket has no cartridge
-        command, so this one kick stays on REST."""
+        instead of an opaque HTTPError. The DMA socket's RUN_CRT would save
+        the image to `/Temp` just the same and answer no error, so this one
+        kick stays on REST."""
         url = f"{self.base_url}{U64_API.RUN_CRT}"
         try:
             r = self.session.post(url, files={"file": (filename, payload)}, timeout=timeout)

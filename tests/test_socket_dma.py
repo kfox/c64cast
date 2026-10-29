@@ -311,6 +311,22 @@ class DmarunTest(unittest.TestCase):
         c._sock = SlowReplySocket([_IDENT_REPLY])  # type: ignore[assignment]
         c.dmarun(b"\x01\x08", timeout=2.0)
 
+    def test_the_load_wait_stays_out_of_the_latency_summary(self):
+        clock = [0.0]
+
+        class BootingSocket(FakeSocket):
+            def recv(self, n, flags=0):
+                if not flags & socket.MSG_PEEK:
+                    clock[0] += 1.7
+                return super().recv(n, flags)
+
+        c = _client_with(FakeSocket([_IDENT_REPLY]))
+        c._latencies.clear()
+        c._sock = BootingSocket([_IDENT_REPLY])  # type: ignore[assignment]
+        with patch("c64cast.hw.socket_dma.time.perf_counter", lambda: clock[0]):
+            c.dmarun(b"\x01\x08", timeout=5.0)
+        self.assertEqual(c.latency_summary()[3], 0.0)
+
     def test_an_unanswered_load_raises(self):
         fake = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake)

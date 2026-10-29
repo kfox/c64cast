@@ -1760,7 +1760,7 @@ palette_mode = "grayscale"
 # # noise = "yellow"
 
 # --- Launcher: run a native C64 program -----------------------------------
-# Launches a .prg (firmware run_prg) or .crt cartridge (run_crt) — chosen by
+# Launches a .prg (DMARUN) or .crt cartridge (run_crt) — chosen by
 # extension — and hands the whole machine to it. Once launched the program
 # owns the VIC/SID/CIAs; c64cast stops painting and only polls for player
 # input. Drop programs into assets/programs/ (see assets/programs/README.md).

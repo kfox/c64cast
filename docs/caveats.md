@@ -174,8 +174,8 @@ documented way to suppress the UI.
 
 Instead, `api.run_sid_player()` DMAs the SID payload to its declared
 load address + a small hand-encoded 6502 player (plus a SHIFT-driven
-re-INIT stub), then POSTs a matching `10 SYS <player_base>` BASIC stub
-via `runners:run_prg`. The player and stub are **relocated per-tune**
+re-INIT stub), then runs a matching `10 SYS <player_base>` BASIC stub
+over the DMA socket's DMARUN. The player and stub are **relocated per-tune**
 by `_choose_player_layout` — the default location is `$C300` (so the
 BASIC stub is `SYS 49920`), and it is taken whenever the bundle clears
 every `_layout_fits` check. In the order the code applies them, per

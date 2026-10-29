@@ -793,7 +793,10 @@ class SocketDMAClient:
             # would read it as its own, permanently one reply behind.
             self._abandon_locked("flush IDENTIFY went unanswered")
             raise
-        self._latencies.append(time.perf_counter() - t0)
+        if reply_timeout is None:
+            # Only dmarun() waits past io_timeout, and what it waits on is the
+            # C64 resetting into a program, not the link.
+            self._latencies.append(time.perf_counter() - t0)
         self._note_answered_locked()
         pending = self._pending_loss()
         if pending is not None:
