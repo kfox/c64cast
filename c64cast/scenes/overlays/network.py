@@ -109,8 +109,7 @@ class NetworkOverlay(CornerTextOverlay):
                 elif item == "hostname":
                     out.append(socket.gethostname().upper()[:14])
                 elif item == "ping":
-                    ms = _tcp_ping_ms(self._target_host or "", self._target_port)
-                    out.append(f"PING {ms:>3.0f}MS")
+                    out.append(self._ping_line())
             except Exception as e:
                 log.debug("network %s failed: %s", item, e)
                 # Preserve the last good value rather than clobbering with "?".
@@ -120,6 +119,12 @@ class NetworkOverlay(CornerTextOverlay):
                     )
                 out.append(prev)
         return out
+
+    def _ping_line(self) -> str:
+        if self._target_host is None:
+            return "PING -"
+        ms = _tcp_ping_ms(self._target_host, self._target_port)
+        return f"PING {ms:>3.0f}MS"
 
     def compute_strings(self, t: float):
         with self._lock:

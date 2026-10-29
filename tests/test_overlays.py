@@ -798,6 +798,16 @@ class NetworkCollectTest(unittest.TestCase):
         self.assertEqual(lines[1], "MYHOST")
         self.assertEqual(lines[2], "PING  12MS")
 
+    def test_ping_without_a_target_reads_as_a_dash(self):
+        import c64cast.scenes.overlays.network as net
+
+        ov = self._ov(["ping"])
+        ov._target_host = None
+        with patch.object(net, "_tcp_ping_ms", return_value=0.2) as ping:
+            lines = ov._collect()
+        ping.assert_not_called()
+        self.assertEqual(lines, ["PING -"])
+
     def test_collect_preserves_previous_value_on_failure(self):
         import c64cast.scenes.overlays.network as net
 
