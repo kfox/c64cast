@@ -665,6 +665,7 @@ class SlideshowPushTest(unittest.TestCase):
         self.assertTrue(self.scene.pushes_hardware_palette)
         self.scene.prepare_next()
         self.scene.setup()
+        self.addCleanup(self.scene.teardown)
         self.assertEqual(self.control.show.call_count, 1)
         self.scene._image_start -= self.scene.image_duration_s
         with mock.patch("c64cast.scenes.scenes._render_with_overlays"):
@@ -691,6 +692,7 @@ class SlideshowPushTest(unittest.TestCase):
         fake_time.time.side_effect = lambda: clock[0]
         with mock.patch("c64cast.scenes.scenes.time", fake_time):
             self.scene.setup()
+            self.addCleanup(self.scene.teardown)
             self.assertEqual(self.scene._image_start, clock[0])
             clock[0] += self.scene.image_duration_s
             with mock.patch("c64cast.scenes.scenes._render_with_overlays"):

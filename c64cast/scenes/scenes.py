@@ -14,6 +14,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
@@ -1100,10 +1101,31 @@ class MediaFileMixin:
 MAX_PICTURE_PIXELS = 1 << 26
 
 
-def _decode_picture(path: str) -> np.ndarray | None:
-    """The picture at `path` as BGR, or None, with a WARNING saying why, when
-    it cannot be sized from its header, is larger than `MAX_PICTURE_PIXELS`,
-    or does not decode."""
+_REDUCED_DECODES = (
+    (8, cv2.IMREAD_REDUCED_COLOR_8),
+    (4, cv2.IMREAD_REDUCED_COLOR_4),
+    (2, cv2.IMREAD_REDUCED_COLOR_2),
+)
+
+
+def _decode_flag(width: int, height: int, target: tuple[int, int] | None) -> int:
+    """The coarsest `cv2.imread` reduction that still leaves at least the
+    pixels `_plan_decode_size` asks for. A JPEG decodes at that scale inside
+    libjpeg; other formats decode in full and are shrunk after."""
+    planned = _plan_decode_size(width, height, *target) if target else None
+    if planned is None:
+        return cv2.IMREAD_COLOR
+    for factor, flag in _REDUCED_DECODES:
+        if width // factor >= planned[0] and height // factor >= planned[1]:
+            return flag
+    return cv2.IMREAD_COLOR
+
+
+def _decode_picture(path: str, target: tuple[int, int] | None = None) -> np.ndarray | None:
+    """The picture at `path` as BGR, reduced toward `target` (a display
+    mode's `frame_target_size`) where that loses nothing the mode keeps, or
+    None, with a WARNING saying why, when it cannot be sized from its header,
+    is larger than `MAX_PICTURE_PIXELS`, or does not decode."""
     try:
         size = picture_size(path)
     except OSError as e:
@@ -1122,7 +1144,7 @@ def _decode_picture(path: str) -> np.ndarray | None:
             MAX_PICTURE_PIXELS,
         )
         return None
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    img = cv2.imread(path, _decode_flag(width, height, target))
     if img is None:
         log.warning("slideshow: failed to decode %s; skipping", path)
     return img
@@ -1182,6 +1204,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._display_wiring = wiring if wiring is not None else DisplayWiring(color=self._color)
         candidates = self._resolve_candidates()
         super().__init__(api, None, display_mode, self._initial_scene_name(candidates))
+        self._candidates = candidates
         self._shuffle_bag: list[str] = []
         self._current_path: str | None = None
         self._current_img: np.ndarray | None = None
@@ -1189,6 +1212,8 @@ class SlideshowScene(MediaFileMixin, Scene):
         self.start_time: float = 0.0
         self._prepared = False
         self._hw_palette: HardwarePalette | None = None
+        self._decoder: ThreadPoolExecutor | None = None
+        self._upcoming: tuple[str, Future[np.ndarray | None]] | None = None
 
     def _maybe_rebuild_display_mode(self) -> None:
         """When display_spec is "random", pick a fresh concrete mode and
@@ -1225,66 +1250,101 @@ class SlideshowScene(MediaFileMixin, Scene):
         log.info("slideshow: display = random → %s", new_name)
 
     def _advance_image(self) -> None:
-        """Pop the next image from the shuffle bag; reshuffle when empty."""
-        try:
-            candidates = self._resolve_candidates()
-        except ValueError as e:
-            self.report_setup_failure(
-                log, "slideshow: file spec %r failed to resolve at advance: %s", self.file_spec, e
-            )
-            self.is_done = True
-            return
+        """Show the next slide: the one `_queue_next_slide` decoded ahead when
+        there is one, else the next from the shuffle bag, decoded here."""
         undecodable: set[str] = set()
+        upcoming, self._upcoming = self._upcoming, None
         while True:
-            if not self._shuffle_bag:
-                self._shuffle_bag = [p for p in candidates if p not in undecodable]
-                if not self._shuffle_bag:
+            if upcoming is not None:
+                path, img = upcoming[0], upcoming[1].result()
+                upcoming = None
+            else:
+                next_path = self._pop_next_path(undecodable)
+                if next_path is None:
                     self.report_setup_failure(
                         log,
                         "slideshow: none of the %d picture(s) for %r could be decoded",
-                        len(candidates),
+                        len(self._candidates),
                         self.file_spec,
                     )
                     self.is_done = True
                     return
-                random.shuffle(self._shuffle_bag)
-                # No-immediate-repeat across reshuffle boundaries.
-                if len(self._shuffle_bag) > 1 and self._shuffle_bag[0] == self._current_path:
-                    self._shuffle_bag[0], self._shuffle_bag[1] = (
-                        self._shuffle_bag[1],
-                        self._shuffle_bag[0],
-                    )
-            path = self._shuffle_bag.pop(0)
-            img = _decode_picture(path)
+                path, img = next_path, self._load_slide(next_path)
             if img is None:
                 undecodable.add(path)
                 self._shuffle_bag = [p for p in self._shuffle_bag if p != path]
                 continue
-            self._current_path = path
-            self._current_img = _apply_aspect(self._shrink_for_display(img), self._aspect_mode)
-            if self.display_mode is not None:
-                c = self._color
-                if c.auto_fit:
-                    # Full strength: the display mode lerps it by
-                    # [color].auto_fit_strength at apply time.
-                    fit_acc = ColorFitAccumulator(strength=1.0)
-                    fit_acc.add(self._current_img)
-                    self.display_mode.set_color_fit(fit_acc.result())
-                if c.force_palette:
-                    from c64cast.app.config import resolved_force_palette
-
-                    n_colors, indices = resolved_force_palette(c)
-                    map_acc = ColorMapAccumulator(n_colors=n_colors, indices=indices)
-                    map_acc.add(self._current_img)
-                    self.display_mode.set_color_map(map_acc.result())
-            self.name = f"Slideshow: {_display_name(path)}"
-            self._image_start = time.time()
-            log.info(
-                "slideshow: showing %s (%d remaining in bag)",
-                os.path.basename(path),
-                len(self._shuffle_bag),
-            )
+            self._show_slide(path, img)
             return
+
+    def _pop_next_path(self, undecodable: set[str]) -> str | None:
+        """Pop the next path from the shuffle bag, reshuffling the pool when
+        it is empty. None when nothing in the pool is left to try."""
+        if not self._shuffle_bag:
+            self._shuffle_bag = [p for p in self._candidates if p not in undecodable]
+            if not self._shuffle_bag:
+                return None
+            random.shuffle(self._shuffle_bag)
+            # No-immediate-repeat across reshuffle boundaries.
+            if len(self._shuffle_bag) > 1 and self._shuffle_bag[0] == self._current_path:
+                self._shuffle_bag[0], self._shuffle_bag[1] = (
+                    self._shuffle_bag[1],
+                    self._shuffle_bag[0],
+                )
+        return self._shuffle_bag.pop(0)
+
+    def _load_slide(self, path: str) -> np.ndarray | None:
+        target = getattr(self.display_mode, "frame_target_size", None)
+        img = _decode_picture(path, target)
+        if img is None:
+            return None
+        return _apply_aspect(self._shrink_for_display(img), self._aspect_mode)
+
+    def _queue_next_slide(self) -> None:
+        """Start decoding the slide after the one on screen, off the render
+        thread, so the advance only has to install it."""
+        if self._upcoming is not None or self.is_done:
+            return
+        path = self._pop_next_path(set())
+        if path is None:
+            return
+        if self._decoder is None:
+            self._decoder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="slideshow-decode")
+        self._upcoming = (path, self._decoder.submit(self._load_slide, path))
+
+    def _stop_decoder(self) -> None:
+        decoder, self._decoder = self._decoder, None
+        upcoming, self._upcoming = self._upcoming, None
+        if upcoming is not None:
+            self._shuffle_bag.insert(0, upcoming[0])
+        if decoder is not None:
+            decoder.shutdown(wait=True, cancel_futures=True)
+
+    def _show_slide(self, path: str, img: np.ndarray) -> None:
+        self._current_path = path
+        self._current_img = img
+        if self.display_mode is not None:
+            c = self._color
+            if c.auto_fit:
+                # Full strength: the display mode lerps it by
+                # [color].auto_fit_strength at apply time.
+                fit_acc = ColorFitAccumulator(strength=1.0)
+                fit_acc.add(img)
+                self.display_mode.set_color_fit(fit_acc.result())
+            if c.force_palette:
+                from c64cast.app.config import resolved_force_palette
+
+                n_colors, indices = resolved_force_palette(c)
+                map_acc = ColorMapAccumulator(n_colors=n_colors, indices=indices)
+                map_acc.add(img)
+                self.display_mode.set_color_map(map_acc.result())
+        self.name = f"Slideshow: {_display_name(path)}"
+        self._image_start = time.time()
+        log.info(
+            "slideshow: showing %s (%d remaining in bag)",
+            os.path.basename(path),
+            len(self._shuffle_bag),
+        )
 
     def _shrink_for_display(self, img: np.ndarray) -> np.ndarray:
         """`img` at the size VideoScene decodes to, once per slide: the mode
@@ -1300,12 +1360,13 @@ class SlideshowScene(MediaFileMixin, Scene):
         self.name to it, extension stripped). Returns False if the file
         spec no longer resolves to anything."""
         self._pick_held = False
+        self._stop_decoder()
         self._maybe_rebuild_display_mode()
         self._shuffle_bag = []
         self._current_path = None
         self._current_img = None
         try:
-            self._resolve_candidates()
+            self._candidates = self._resolve_candidates()
         except ValueError as e:
             self.report_setup_failure(
                 log, "slideshow: file spec %r failed to resolve at setup: %s", self.file_spec, e
@@ -1342,6 +1403,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         # while the "UP NEXT" card is on screen.
         self._hw_palette = _scene_hardware_palette(self.api, self._color, self.display_mode)
         self._push_slide_palette()
+        self._queue_next_slide()
 
     def _push_slide_palette(self) -> None:
         if self._hw_palette is not None and self._current_img is not None:
@@ -1356,7 +1418,10 @@ class SlideshowScene(MediaFileMixin, Scene):
 
     def teardown(self) -> None:
         control, self._hw_palette = self._hw_palette, None
-        steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("slide decoder stop", self._stop_decoder),
+            ("base teardown", super().teardown),
+        ]
         if control is not None:
             steps.append(("hardware palette release", control.release))
         run_teardown_steps(log, type(self).__name__, steps)
@@ -1371,6 +1436,7 @@ class SlideshowScene(MediaFileMixin, Scene):
             if self.is_done or self._current_img is None:
                 return False
             self._push_slide_palette()
+            self._queue_next_slide()
         img = self._current_img
         if self.show_frame_numbers:
             label = (

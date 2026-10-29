@@ -655,6 +655,7 @@ class SetupRetryKeepsThePickTest(unittest.TestCase):
         mode.default_target_fps = None
         mode.frame_target_size = (160, 200)
         scene = SlideshowScene(MagicMock(), mode, self.tmp.name)
+        self.addCleanup(scene.teardown)
         random.seed(609)
         scene.prepare_next()
         card = scene._current_path
