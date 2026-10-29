@@ -9,7 +9,7 @@ Two file types, selected automatically by extension:
 
 | Extension | Firmware runner            | Notes                                        |
 |-----------|----------------------------|----------------------------------------------|
-| `.prg`    | `POST /v1/runners:run_prg` | Loads to its load address and RUNs it.       |
+| `.prg`    | DMA socket DMARUN          | Loads to its load address and RUNs it.       |
 | `.crt`    | `POST /v1/runners:run_crt` | Resets the machine with the cartridge active.|
 
 ## Idle timeout vs. player input

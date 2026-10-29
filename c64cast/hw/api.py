@@ -4,11 +4,12 @@ Two transports, used for orthogonal sets of operations:
 
   * **Socket DMA** ([socket_dma.py](socket_dma.py)) on TCP port 64 carries
     every memory write — `write_memory`, `write_memory_file`, `write_regs`,
-    `write_region`.
+    `write_region` — and every PRG kick (`run_basic_clear_loop`,
+    `run_sid_player`, `.prg` launches) via DMARUN.
   * **REST** (`requests.Session`) on port 80 carries everything DMA can't:
-    `read_memory` (GET), `reset` (PUT), `run_basic_clear_loop` and
-    `run_sid_player` (POST /v1/runners:run_prg), and the startup `probe`
-    (GET / and GET /v1/version).
+    `read_memory` (GET), `reset` (PUT), `.crt` launches (POST
+    /v1/runners:run_crt), and the startup `probe` (GET / and GET
+    /v1/version).
 
 The two transports run independently and share one thing: the device's
 network password, which the firmware checks on both. DMA presents it in
@@ -21,7 +22,7 @@ reply lands only after every prior DMAWRITE has executed.
 
 `run_sid_player` avoids `/v1/runners:sidplay` because that endpoint takes over
 HDMI with the firmware's own SID-player UI. Instead the payload + a small 6502
-player are DMA'd into C64 RAM and a BASIC SYS stub is POSTed via `run_prg`.
+player are DMA'd into C64 RAM and a BASIC SYS stub is run via DMARUN.
 
 See docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient.
 """
@@ -793,7 +794,7 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
         )
     # The BASIC stub at $0801 occupies 17 bytes ($0801-$0811 — the tokenized
     # `10 SYS 49920` plus the 2-byte load-address header), and
-    # /v1/runners:run_prg would clobber a payload starting inside it. The
+    # the DMARUN kick would clobber a payload starting inside it. The
     # threshold is rounded up to $0820.
     if load_addr < 0x0820:
         raise ValueError(
@@ -865,9 +866,8 @@ class _SidPlayerMixin(BufferedWriteBackend):
     `read_memory`. The one backend-specific step is `_launch_sid_player`, the
     kick that hands the CPU to the uploaded player MC:
 
-      * Ultimate — POST a `10 SYS <player_base>` PRG to the REST `run_prg`
-        runner (a soft reset that preserves RAM, then RUN), which starts audio
-        synchronously.
+      * Ultimate — DMARUN a `10 SYS <player_base>` PRG (a soft reset that
+        preserves RAM, then RUN), which starts audio synchronously.
       * TeensyROM — swap `$0314` to the re-INIT stub so the next kernal IRQ
         runs INIT and installs the PLAY handler; no reset, no boot, and the
         start is deferrable (see teensyrom_api.TeensyROMBackend).
@@ -1346,7 +1346,7 @@ class _SidPlayerMixin(BufferedWriteBackend):
 #
 # The last byte of the blob is uploaded as $00 and set to $FF by the stub as
 # its final act: polling that byte is the only signal the ~45 ms copy has
-# finished, since run_prg's POST returns once BASIC has *started* the program.
+# finished, since the DMARUN kick returns once BASIC has *started* the program.
 #
 # See docs/architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine.
 CHAR_ROM_DUMP_STUB_ADDR = 0x8100
@@ -2146,40 +2146,25 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         """
         self.flush()
         self.invalidate_cache()
-        url = f"{self.base_url}{U64_API.RUN_PRG}"
         try:
-            r = self.session.post(
-                url,
-                files={"file": ("c64cast.prg", BASIC_CLEAR_LOOP_PRG)},
-                timeout=timeout,
-            )
-            r.raise_for_status()
-        except requests.RequestException as e:
-            log.warning("run_prg (clear loop) failed: %s", e)
-        else:
-            self._notify_reset()
+            self._run_prg(BASIC_CLEAR_LOOP_PRG, timeout=timeout)
+        except RuntimeError as e:
+            log.warning("%s (clear loop)", e)
 
     def launch_program(self, path: str, timeout: float = 10.0) -> None:
         """Upload and run a C64 program on the real machine.
 
-        Picks the firmware runner by file extension: `.prg` → run_prg
-        (loads + RUNs the program), `.crt` → run_crt (resets with the
+        Picks the firmware runner by file extension: `.prg` → DMARUN
+        (loads + RUNs the program), `.crt` → REST run_crt (resets with the
         cartridge active). The program then owns the machine — c64cast
         stops painting and `LauncherScene` only polls for player input.
 
         Unlike `run_basic_clear_loop`, failures re-raise: the caller
         (LauncherScene.setup) needs to know the launch never happened so
-        it can advance instead of idling on a black screen. The multipart
-        field name (`file`) and `.crt` endpoint shape mirror run_prg; if a
-        future firmware names the cart attachment differently this is the
-        one spot to adjust.
+        it can advance instead of idling on a black screen.
         """
         ext = os.path.splitext(path)[1].lower()
-        if ext == ".crt":
-            endpoint = U64_API.RUN_CRT
-        elif ext == ".prg":
-            endpoint = U64_API.RUN_PRG
-        else:
+        if ext not in (".crt", ".prg"):
             raise ValueError(
                 f"launch_program: unsupported extension {ext!r} for {path!r} "
                 f"(expected .prg or .crt)"
@@ -2191,13 +2176,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
 
         self._flush_or_raise("launch_program", mark)
         self.invalidate_cache()
-        self._post_prg(
-            endpoint,
-            os.path.basename(path),
-            payload,
-            timeout=timeout,
-            what=f"the {ext} runner is required to launch this program (check firmware version).",
-        )
+        if ext == ".prg":
+            self._run_prg(payload, timeout=timeout)
+            return
+        self._post_crt(os.path.basename(path), payload, timeout=timeout)
 
     def reset(self) -> None:
         """Hard machine reset. Invalidates the delta cache since the C64 side
@@ -2229,8 +2211,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
 
     def _launch_sid_player(self, launch: _SidLaunch) -> bool:
         """Ultimate kick: DMA the SID payload + player MC + re-INIT stub, flush
-        so all three land, then POST a `10 SYS <player_base>` PRG to the REST
-        run_prg runner. run_prg soft-resets the C64 (RAM preserved — the player
+        so all three land, then DMARUN a `10 SYS <player_base>` PRG. The
+        kick soft-resets the C64 (RAM preserved — the player
         MC at $C300 survives) and RUNs the stub; BASIC's SYS jumps to the player
         MC, which installs the IRQ and spins forever (never re-entering BASIC).
 
@@ -2252,19 +2234,12 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         self.blank_display()
         self._write_sid_blobs(launch)
         self._flush_or_raise("run_sid_player", mark)
-        basic_stub = _build_basic_sys_stub(launch.layout.player_base)
-        self._post_prg(
-            U64_API.RUN_PRG,
-            "sidplayer.prg",
-            basic_stub,
-            timeout=launch.timeout,
-            what="run_prg is required for the SID player path.",
-        )
+        self._run_prg(_build_basic_sys_stub(launch.layout.player_base), timeout=launch.timeout)
         return True
 
     def _kick_char_rom_dump(self, stub_addr: int, timeout: float, mark: int) -> None:
-        """Ultimate kick: POST a `10 SYS <stub_addr>` PRG to the REST run_prg
-        runner, exactly like the SID player's. run_prg soft-resets the C64
+        """Ultimate kick: DMARUN a `10 SYS <stub_addr>` PRG, exactly like the
+        SID player's. The kick soft-resets the C64
         (RAM preserved — RAMTAS restores every byte its memory-size scan
         probes, which is why the stub at $8100 and the landing zone at $C000
         both survive) and RUNs the stub, whose `SYS` calls into our copy.
@@ -2276,13 +2251,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         gets the machine back in the idle state it handed over."""
         self.blank_display()
         self._flush_or_raise("dump_char_rom", mark)
-        self._post_prg(
-            U64_API.RUN_PRG,
-            "chargen.prg",
-            _build_basic_sys_stub(stub_addr),
-            timeout=timeout,
-            what="run_prg is required for the character-ROM dump.",
-        )
+        self._run_prg(_build_basic_sys_stub(stub_addr), timeout=timeout)
 
     def dump_char_rom(self, timeout: float = 10.0) -> bytes:
         """Dump the character ROM, then put the machine back in the BASIC
@@ -2336,9 +2305,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
 
         Implementation: trailing IDENTIFY round-trip on the DMA socket; by
         the per-connection FIFO guarantee, the reply arrives only after
-        every prior DMAWRITE has executed. Call before any REST runner
-        (reset / run_sid_player / run_basic_clear_loop) so the runner doesn't
-        race ahead of in-flight scene writes."""
+        every prior DMAWRITE has executed. Call before a REST reset or
+        runner so it doesn't race ahead of in-flight scene writes."""
         self._flush_failure()
 
     def _flush_failure(self) -> Exception | None:
@@ -2376,9 +2344,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         `write_loss_mark()`, taken before those writes) may not have reached
         the machine.
 
-        For call sites that flush right before firing an irreversible REST
-        runner (run_prg soft-resets the C64): proceeding on a failed flush
-        risks the runner racing ahead of writes it depends on having landed
+        For call sites that flush right before an irreversible kick (DMARUN
+        or REST `run_crt`, both of which reset the C64): proceeding on a
+        failed flush risks starting a program without writes it depends on
         (the SID payload, the re-INIT stub, ...), so those call sites abort
         the launch instead. Only this thread's writes count: another
         thread's lost write is its own to repeat, and a flush it already
@@ -2394,22 +2362,38 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         if failure is not None or self.writes_lost_since(mark):
             raise RuntimeError(f"{action}: dma flush failed — refusing to launch")
 
-    def _post_prg(
-        self, endpoint: str, filename: str, payload: bytes, *, timeout: float, what: str
-    ) -> None:
-        """POST a PRG/CRT payload to a REST runner endpoint, translating a
-        404 (older firmware, wrong endpoint) into a clear RuntimeError
-        instead of letting an opaque HTTPError surface. Shared by every
-        `run_prg`-style kick — `launch_program`, `_launch_sid_player`,
-        `_kick_char_rom_dump` — which otherwise duplicated this exact
-        try/except."""
-        url = f"{self.base_url}{endpoint}"
+    def _run_prg(self, prg: bytes, *, timeout: float) -> None:
+        """Load and RUN `prg` over the DMA socket's DMARUN, returning once the
+        firmware has started it. The REST `run_prg` runner would do the same
+        load, but from an uploaded copy in the device's `/Temp`, which it
+        never deletes and suffixes `_1`, `_2`, ... on every later upload of
+        the same name — the name the C64 prints while loading.
+
+        A link failure is raised as RuntimeError, as a failed pre-kick flush
+        is: `--dump-char-rom` reports OSError and RuntimeError, and a
+        `SocketDMAError` is neither."""
+        try:
+            self.socket_dma.dmarun(prg, timeout=timeout)
+        except (OSError, SocketDMAError) as e:
+            raise RuntimeError(f"DMARUN failed: {e}") from e
+        self._notify_reset()
+
+    def _post_crt(self, filename: str, payload: bytes, *, timeout: float) -> None:
+        """POST a cartridge image to the REST `run_crt` runner, translating
+        a 404 (older firmware without the runner) into a clear RuntimeError
+        instead of an opaque HTTPError. The DMA socket's RUN_CRT would save
+        the image to `/Temp` just the same and answer no error, so this one
+        kick stays on REST."""
+        url = f"{self.base_url}{U64_API.RUN_CRT}"
         try:
             r = self.session.post(url, files={"file": (filename, payload)}, timeout=timeout)
             r.raise_for_status()
         except requests.HTTPError as e:
             if e.response is not None and e.response.status_code == 404:
-                raise RuntimeError(f"U64 endpoint {url} returned 404 — {what}") from e
+                raise RuntimeError(
+                    f"U64 endpoint {url} returned 404 — the .crt runner is required "
+                    "to launch this program (check firmware version)."
+                ) from e
             raise
         self._notify_reset()
 

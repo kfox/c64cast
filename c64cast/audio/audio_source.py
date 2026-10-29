@@ -219,7 +219,7 @@ class AudioSource(Protocol):
     snapshot for reactive visuals (None when the source has no feature stream).
 
     `resets_display` is True when `setup()` disturbs the VIC display state — a
-    SID source kicks its player via the firmware's run_prg, which re-inits the
+    SID source kicks its player over DMARUN, which re-inits the
     machine back to text mode. SourceScene re-asserts the display mode AFTER
     such a source starts so a bitmap display isn't left rendering text.
 
