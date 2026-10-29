@@ -118,7 +118,7 @@ loop = true
 [[scenes]]
 type = "video"
 display = "mhires"
-file = "{video_path}"
+file = {d.toml_string(video_path)}
 
   [[scenes.overlays]]
   type = "marquee"

@@ -46,6 +46,14 @@ class PhaseConfigTest(unittest.TestCase):
     def test_the_plain_phase_leaves_it_off(self) -> None:
         self.assertEqual(self._resolved_tolerance(flicker=False), "off")
 
+    def test_a_windows_clip_path_is_written_as_itself(self) -> None:
+        tool = _load("flicker_tear_ab")
+        cfg_path = Path(tempfile.mkdtemp()) / "phase.toml"
+        clip = r"C:\Users\runner\AppData\Local\Temp\ab.mkv"
+        tool.write_config(cfg_path, clip, flicker=True)
+        (scene,) = cfgmod.load(str(cfg_path)).scenes
+        self.assertEqual(scene.file, clip)
+
 
 def _captured(picture: np.ndarray) -> np.ndarray:
     """A C64 picture as the capture device returns it: scaled up inside a

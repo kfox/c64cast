@@ -240,7 +240,7 @@ loop = true
 [[scenes]]
 type = "video"
 display = "hires"
-file = "{video_path}"
+file = {d.toml_string(video_path)}
 """,
         encoding="utf-8",
     )

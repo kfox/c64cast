@@ -179,7 +179,7 @@ interleave_videos = false
 
 [[scenes]]
 type = "video"
-file = "{clip}"
+file = {d.toml_string(clip)}
 display = "mhires"
 """
     p = out / "capfid.toml"

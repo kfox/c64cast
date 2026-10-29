@@ -68,7 +68,7 @@ interleave_videos = false
 
 [[scenes]]
 type = "video"
-file = "{abs_clip}"
+file = {d.toml_string(abs_clip)}
 display = "{display}"
 """
     p = out / f"rate_ab_{rate}_{display}.toml"

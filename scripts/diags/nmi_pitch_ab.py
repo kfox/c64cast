@@ -203,7 +203,7 @@ interleave_videos = false
 
 [[scenes]]
 type = "video"
-file = "{abs_clip}"
+file = {d.toml_string(abs_clip)}
 display = "mhires"
 """
     p = out / f"pitch_ab_{label}.toml"

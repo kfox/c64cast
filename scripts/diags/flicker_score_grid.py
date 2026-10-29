@@ -402,7 +402,7 @@ loop = true
 [[scenes]]
 type = "slideshow"
 display = "hires"
-file = "{image}"
+file = {d.toml_string(image)}
 duration_s = 0
 aspect_mode = "stretch"
 """,
