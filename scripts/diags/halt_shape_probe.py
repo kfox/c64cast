@@ -230,6 +230,11 @@ def analyze_store_log(log: bytes, period: int) -> dict:
 
 
 def store_timing(be, args) -> int:
+    # A locked slice waits on the handler's $D418 store, which the twin never
+    # makes, so its writes would silently fall back to WriteC64Mem.
+    if getattr(be, "_lock_capable", False) is True:
+        print("--store-timing cannot time locked slicing; pass --tr-slicing on or off")
+        return 2
     latch = nmi_latch_for_rate(args.nmi_rate, args.system)
     period = latch + 1
     fill_secs = LOG_ENTRIES * period / (1e6 * {"NTSC": 1.022727, "PAL": 0.985248}[args.system])

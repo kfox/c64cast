@@ -44,5 +44,24 @@ class StoreTimingNotesConsumerTest(unittest.TestCase):
         self.assertIs(be.note_nmi_consumer.call_args_list[-1].args[0], False)
 
 
+class StoreTimingRefusesLockedSlicingTest(unittest.TestCase):
+    def test_a_lock_capable_backend_is_refused_before_any_trial(self) -> None:
+        probe = _load("halt_shape_probe")
+        be = MagicMock(_lock_capable=True)
+        args = argparse.Namespace(
+            nmi_rate=12000, system="NTSC", hold_payload=128, write_rate_timing=30.0, trials=2
+        )
+        buf = io.StringIO()
+        with (
+            patch.object(probe, "setup") as setup,
+            patch.object(probe, "store_timing_trial") as trial,
+            redirect_stdout(buf),
+        ):
+            self.assertEqual(probe.store_timing(be, args), 2)
+        self.assertIn("cannot time locked slicing", buf.getvalue())
+        setup.assert_not_called()
+        trial.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
