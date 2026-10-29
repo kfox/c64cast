@@ -3520,10 +3520,10 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
     so a clip inherits every scene knob for free. Called by the launch engine's
     build factory (see session.build_stack / performance.PerformanceSession).
 
-    `loop` and `duration_s` interact: a looping non-video clip is forced to
-    ``duration_s = 0`` (run forever) so it holds until another clip fires; the
-    launch engine re-runs a finished video clip instead (video rejects
-    duration_s). A one-shot clip keeps its scene-type default duration."""
+    `loop` and `duration_s` interact: a looping clip of a continuous type
+    (`_CLIP_CONTINUOUS_TYPES`) is forced to ``duration_s = 0`` (run forever) so
+    it holds until another clip fires; the launch engine re-runs any other
+    finished clip instead (video rejects duration_s). A one-shot clip keeps its scene-type default duration."""
     scene_keys = {k: v for k, v in clip.items() if k not in _CLIP_LAUNCH_KEYS}
     sc = SceneCfg()
     _apply_section(sc, scene_keys, "performance.clips")
@@ -3532,7 +3532,7 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
         and sc.type in _CLIP_CONTINUOUS_TYPES
         and sc.duration_s is None
     ):
-        # Loop forever: hold the continuous-frame scene on screen until the next
+        # Loop forever: hold the continuous scene on screen until the next
         # clip launch, rather than auto-advancing at the scene-type default
         # (e.g. 30 s). Audio-bearing/video clips instead re-setup on is_done (the
         # launch engine's loop path), so their timing/song-length logic is kept.
