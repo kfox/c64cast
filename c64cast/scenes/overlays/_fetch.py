@@ -70,9 +70,14 @@ def _refuse_redirect(r: requests.Response, **_kwargs) -> None:
     # requests reads a redirect's whole body, past both limits, even with
     # allow_redirects=False (Session.send builds Response.next from it); the
     # response hook is the last point before that read.
-    if r.is_redirect:
+    # get_redirect_target re-decodes a raw UTF-8 Location that http.client
+    # read as Latin-1.
+    if location := _REDIRECTS.get_redirect_target(r):
         r.close()
-        raise _Redirect(r.headers["Location"])
+        raise _Redirect(location)
+
+
+_REDIRECTS = requests.sessions.SessionRedirectMixin()
 
 
 def _read_capped(raw: urllib3.BaseHTTPResponse, url: str, deadline: float) -> bytes:

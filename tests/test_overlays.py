@@ -931,6 +931,22 @@ class FetchTransportErrorTest(_RemotePeerTest):
             ov._fetch_once()
         self.assertEqual([r.levelname for r in logs.records], ["INFO"])
 
+    def test_a_redirect_to_a_raw_utf8_location_reaches_that_path(self):
+        from c64cast.scenes.overlays import _fetch
+
+        def moved(handler):
+            handler.send_response_only(302)
+            handler.flush_headers()
+            handler.wfile.write(b"Location: /caf\xc3\xa9\r\nContent-Length: 0\r\n\r\n")
+
+        def answer(handler):
+            path = handler.path.encode()
+            _send_head(handler, "text/plain", len(path))
+            handler.wfile.write(path)
+
+        self.route("/caf%C3%A9", answer)
+        self.assertEqual(_fetch.get_body(self.route("/old", moved), timeout=2.0), b"/caf%C3%A9")
+
     def test_a_weather_reply_that_is_not_utf8_is_a_fetch_failure(self):
         from c64cast.scenes.overlays import weather
 
