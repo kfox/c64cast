@@ -470,6 +470,9 @@ class ConnectivityProbeTest(unittest.TestCase):
                 assert conn[0].hint is not None
                 self.assertIn("web/remote-control service", conn[0].hint)
 
+    def test_a_launcher_with_no_file_may_start_a_cartridge(self):
+        self.assertTrue(doctor._may_name_a_cartridge(None))
+
     def test_rest_probe_failure_is_warn_for_scenes_that_kick_over_dma(self):
         """The SID player and a .prg launch start over DMARUN, so they keep
         working without REST."""
@@ -477,6 +480,7 @@ class ConnectivityProbeTest(unittest.TestCase):
             'type = "waveform"\nfile = "assets/sids/x.sid"',
             'type = "generative"\naudio_source = "sid"\nfile = "assets/sids/x.sid"',
             'type = "launcher"\nfile = "assets/prg/x.prg, assets/prg/Y.PRG"',
+            'type = "launcher"\nfile = "assets/prg/x.prg,"',
         ):
             with self.subTest(scene=scene):
                 conn = self._probe_with_dead_rest(

@@ -65,6 +65,7 @@ from .scene_factory import (
     resolve_scene_display,
     resolve_wled_broadcast,
     resolve_wled_listen,
+    split_file_spec,
     validate_control_cfg,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
@@ -2090,7 +2091,7 @@ def _wants_rest_runner(cfg: Config) -> tuple[bool, list[str]]:
 
 
 def _may_name_a_cartridge(spec: str | None) -> bool:
-    return not all(item.strip().lower().endswith(".prg") for item in (spec or "").split(","))
+    return not spec or not all(item.lower().endswith(".prg") for item in split_file_spec(spec))
 
 
 def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:

@@ -5,4 +5,5 @@
   under a new numbered name, and the C64 printed that name while loading. The
   BASIC clear loop, the SID player and `.prg` launches now load straight
   from the DMA connection, and nothing is written to `/Temp`. A `.crt`
-  cartridge still goes through the REST runner.
+  cartridge still goes through the REST runner, so `--doctor` now reports a
+  dead REST link as an error only for a launcher that may start one.
