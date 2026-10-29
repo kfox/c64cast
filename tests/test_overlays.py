@@ -567,6 +567,56 @@ class CountdownTest(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+class CountdownWallClockTest(unittest.TestCase):
+    """`now` is pinned to one instant; `TZ` picks the local zone."""
+
+    NOW_UTC = "2026-10-31T16:00:00+00:00"
+
+    def setUp(self):
+        import os
+        import time as time_mod
+        from datetime import datetime
+
+        old_tz = os.environ.get("TZ")
+
+        def restore():
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time_mod.tzset()
+
+        self.addCleanup(restore)
+        os.environ["TZ"] = "America/New_York"
+        time_mod.tzset()
+
+        instant = datetime.fromisoformat(self.NOW_UTC)
+
+        class _Pinned(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return instant.astimezone(tz) if tz else instant.astimezone().replace(tzinfo=None)
+
+        patcher = patch("c64cast.scenes.overlays.countdown.datetime", _Pinned)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _shown(self, target):
+        from c64cast.scenes.overlays.countdown import CountdownOverlay
+
+        return CountdownOverlay(target=target).compute_strings(t=0.0)
+
+    def test_counts_the_hour_daylight_saving_gives_back(self):
+        # 12:00 EDT Oct 31 to 12:00 EST Nov 1 is 25 elapsed hours.
+        self.assertEqual(self._shown("2026-11-01T12:00:00"), ["1D 01:00:00"])
+
+    def test_target_with_a_utc_offset_counts_down(self):
+        self.assertEqual(self._shown("2026-10-31T17:30:00+00:00"), ["01:30:00"])
+
+    def test_target_with_a_z_suffix_counts_down(self):
+        self.assertEqual(self._shown("2026-10-31T16:00:05Z"), ["00:00:05"])
+
+
 class NetworkTest(unittest.TestCase):
     def test_bad_items_raises(self):
         from c64cast.scenes.overlays.network import NetworkOverlay
