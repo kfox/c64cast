@@ -2632,6 +2632,22 @@ class VideoSceneLoopSlotTest(unittest.TestCase):
         self.assertEqual(scene.transport.loop_state, "active")
         self.assertEqual(scene.source.seeks, [12.0])  # type: ignore[union-attr]
 
+    def test_a_preset_saved_with_b_at_or_before_a_plays_when_recalled(self):
+        # Earlier versions saved whatever order the marks were set in, so a
+        # preset file on disk can hold B before A, or B at A.
+        scene, store = self._scene()
+        store.save(1, 60.0, 10.0)
+        store.save(2, 30.0, 30.0)
+        for slot, marks in ((1, (10.0, 60.0)), (2, (30.0, None))):
+            with self.subTest(slot=slot), _freeze_time(5.0):
+                scene.transport_loop_slot(slot, save=False, clear=False)
+                self.assertEqual((scene.transport.loop_a, scene.transport.loop_b), marks)
+                seeks = list(scene.source.seeks)  # type: ignore[union-attr]
+                with mock.patch.object(scenes, "_render_with_overlays") as render:
+                    scene.process_frame(current_time=5.0)
+                self.assertEqual(scene.source.seeks, seeks)  # type: ignore[union-attr]
+                render.assert_called_once()
+
     def test_plain_press_on_empty_slot_loops_whole_file(self):
         scene, _store = self._scene()
         scene.transport_loop_slot(9, save=False, clear=False)
