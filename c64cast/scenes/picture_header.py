@@ -56,6 +56,12 @@ def picture_size(path: str) -> tuple[int, int] | None:
     return None
 
 
+def is_jpeg(path: str) -> bool:
+    """Whether the file at `path` starts with a JPEG signature."""
+    with open(path, "rb") as f:
+        return f.read(2) == _JPEG_SOI
+
+
 def _png_size(head: bytes) -> tuple[int, int] | None:
     if head[12:16] != b"IHDR":
         return None

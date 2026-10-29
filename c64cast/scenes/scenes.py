@@ -62,7 +62,7 @@ from c64cast.video.video import (
 )
 
 from .bitmap_text import glyphs_to_mask, load_glyphs
-from .picture_header import picture_size
+from .picture_header import is_jpeg, picture_size
 from .setup_progress import SegmentedProgress, make_setup_bar
 from .video_transport import VideoTransportControls
 
@@ -1109,9 +1109,9 @@ _REDUCED_DECODES = (
 
 
 def _decode_flag(width: int, height: int, target: tuple[int, int] | None) -> int:
-    """The coarsest `cv2.imread` reduction that still leaves at least the
-    pixels `_plan_decode_size` asks for. A JPEG decodes at that scale inside
-    libjpeg; other formats decode in full and are shrunk after."""
+    """The coarsest `cv2.imread` reduction of a JPEG that still leaves at
+    least the pixels `_plan_decode_size` asks for, decoded at that scale
+    inside libjpeg."""
     planned = _plan_decode_size(width, height, *target) if target else None
     if planned is None:
         return cv2.IMREAD_COLOR
@@ -1128,6 +1128,7 @@ def _decode_picture(path: str, target: tuple[int, int] | None = None) -> np.ndar
     is larger than `MAX_PICTURE_PIXELS`, or does not decode."""
     try:
         size = picture_size(path)
+        jpeg = is_jpeg(path)
     except OSError as e:
         log.warning("slideshow: cannot read %s (%s); skipping", path, e)
         return None
@@ -1144,7 +1145,11 @@ def _decode_picture(path: str, target: tuple[int, int] | None = None) -> np.ndar
             MAX_PICTURE_PIXELS,
         )
         return None
-    img = cv2.imread(path, _decode_flag(width, height, target))
+    # OpenCV reduces every other format with a bilinear resize after a full
+    # decode, which samples a few source pixels per output pixel and drops
+    # the rest; _shrink_for_display's INTER_AREA averages them all.
+    flag = _decode_flag(width, height, target) if jpeg else cv2.IMREAD_COLOR
+    img = cv2.imread(path, flag)
     if img is None:
         log.warning("slideshow: failed to decode %s; skipping", path)
     return img
@@ -1360,7 +1365,6 @@ class SlideshowScene(MediaFileMixin, Scene):
         self.name to it, extension stripped). Returns False if the file
         spec no longer resolves to anything."""
         self._pick_held = False
-        self._stop_decoder()
         self._maybe_rebuild_display_mode()
         self._shuffle_bag = []
         self._current_path = None

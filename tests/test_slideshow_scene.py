@@ -175,6 +175,21 @@ class SlideOffTheFramePathTest(unittest.TestCase):
         self.assertEqual(self.scene._current_img.shape, (400, 640, 3))
 
 
+class ReducedDecodeTest(unittest.TestCase):
+    def test_a_large_png_is_averaged_down_not_sampled(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        stripes = np.zeros((2560, 4096, 3), dtype=np.uint8)
+        stripes[:, 3::8] = 255
+        stripes[:, 4::8] = 255
+        path = os.path.join(tmp.name, "stripes.png")
+        cv2.imwrite(path, stripes)
+        scene = SlideshowScene(MagicMock(), MagicMock(frame_target_size=(160, 200)), tmp.name)
+        img = scene._load_slide(path)
+        assert img is not None
+        self.assertAlmostEqual(float(img.mean()), 255 * 2 / 8, delta=1.0)
+
+
 class LargePictureTest(unittest.TestCase):
     """A phone photo held at its decoded size made the display mode resize
     the same 12-megapixel still on every frame."""
