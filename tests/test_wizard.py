@@ -295,6 +295,45 @@ class _FakeQ:
         return _Resp(self._answer(label, choices))
 
 
+class FixedDisplayOverlayTest(unittest.TestCase):
+    """A scene type with no `display` choice still paints a mode, and the
+    overlays offered are the ones the loader accepts on that mode (#751)."""
+
+    def _offered(self, scene_type: str, extra_routes: dict | None = None) -> set[str]:
+        offered: list[str] = []
+
+        def capture(choices):
+            offered.extend(c.split("  —  ")[0] for c in choices)
+            return []
+
+        routes = {
+            "Scene type": lambda choices: next(c for c in choices if c.startswith(scene_type)),
+            "Scene name": "",
+            "advanced": False,
+            "Add overlays": True,
+            "Select overlays": capture,
+            **(extra_routes or {}),
+        }
+        result = wizard._prompt_one_scene(_FakeQ(routes, ""), audio_enabled=False, ask_audio=False)
+        self.assertIsNotNone(result)
+        return set(offered)
+
+    _TYPED_FILE = {
+        "Pick a file": lambda choices: next(c for c in choices if "Type a path" in c),
+        "file spec": "media.bin",
+    }
+
+    def test_scope_scenes_are_offered_what_hires_accepts(self):
+        hires = {o.name for o in wizard.compatible_overlays("hires", audio_enabled=False)}
+        for scene_type in ("waveform", "midi", "asid"):
+            with tmp_cwd():
+                self.assertEqual(self._offered(scene_type, self._TYPED_FILE), hires, scene_type)
+
+    def test_a_launcher_is_offered_no_overlays(self):
+        with tmp_cwd():
+            self.assertEqual(self._offered("launcher", self._TYPED_FILE), set())
+
+
 class RunInitShellTest(unittest.TestCase):
     def test_headless_webcam_build_writes_valid_config(self):
         import contextlib

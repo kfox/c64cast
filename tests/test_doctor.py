@@ -2460,6 +2460,74 @@ class SchemaDirectiveDiagnosticTest(unittest.TestCase):
         self.assertTrue(any("#:schema" in d.message for d in diags))
 
 
+class CharRomProbeTest(unittest.TestCase):
+    """A run reads a configured `charset_path` before the installed ROM, so
+    the report has to judge that file too (#756)."""
+
+    def setUp(self):
+        from c64cast.hw import char_rom
+
+        self._tmp = tempfile.mkdtemp()
+        for patch in (
+            mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp}),
+            mock.patch.object(char_rom, "LEGACY_CHARGEN_PATH", "/nonexistent/chargen.bin"),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _file(self, name: str, data: bytes) -> str:
+        path = os.path.join(self._tmp, name)
+        Path(path).write_bytes(data)
+        return path
+
+    def _rows(self, toml: str) -> dict[str, doctor.Diagnostic]:
+        return {d.subject: d for d in doctor._probe_char_rom(_load(toml))}
+
+    def test_a_configured_preview_charset_is_judged(self):
+        from test_char_rom import _synth_charset
+
+        path = self._file("mine.bin", _synth_charset())
+        rows = self._rows(f"[preview]\ncharset_path = {path!r}\n")
+        row = rows["character ROM (system [preview])"]
+        self.assertEqual(row.level, "ok")
+        self.assertIn(path, row.message)
+        self.assertIn("no charset_path of its own", rows["character ROM"].message)
+
+    def test_a_big_text_charset_that_is_not_one_is_an_error(self):
+        path = self._file("garbage.bin", bytes(2048))
+        rows = self._rows(
+            f"""
+            [[scenes]]
+            type = "blank"
+            name = "Title"
+            [[scenes.overlays]]
+            type = "big_text"
+            messages = ["HI"]
+            charset_path = {path!r}
+            """
+        )
+        self.assertEqual(rows["character ROM (system/Title big_text)"].level, "error")
+
+    def test_a_missing_configured_charset_names_the_fallback(self):
+        rows = self._rows('[preview]\ncharset_path = "/nonexistent/mine.bin"\n')
+        row = rows["character ROM (system [preview])"]
+        self.assertEqual(row.level, "warn")
+        self.assertIn("/nonexistent/mine.bin", row.message)
+        self.assertIn("built-in ASCII font", row.message)
+
+    def test_a_missing_configured_charset_falls_back_to_the_installed_rom(self):
+        from test_char_rom import _synth_charset
+
+        from c64cast.hw import char_rom
+
+        installed = char_rom.install_data(_synth_charset())
+        rows = self._rows('[preview]\ncharset_path = "/nonexistent/mine.bin"\n')
+        self.assertEqual(rows["character ROM"].level, "ok")
+        row = rows["character ROM (system [preview])"]
+        self.assertEqual(row.level, "warn")
+        self.assertIn(f"falls back to {installed}", row.message)
+
+
 class PrintReportCategoryTest(unittest.TestCase):
     def test_unlisted_category_still_prints(self):
         # The renderer used to iterate a fixed category list, so a probe

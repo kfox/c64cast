@@ -3337,6 +3337,22 @@ class ScanVideoSamplesTest(unittest.TestCase):
         video_mod._decode_sample_frames(container, "clip.mp4", stream, [acc], 2, (320, 200))
         self.assertEqual(shapes, [(64, 40), _plan_decode_size(3840, 2160, 320, 200)])
 
+    def test_sequential_sampling_spans_the_whole_clip(self):
+        # 239 frames over a 120-sample budget: a stride of 1 spends the whole
+        # budget on the first half.
+        stream = SimpleNamespace(frames=239)
+        packets = [
+            SimpleNamespace(stream=stream, decode=lambda i=i: [_FakeFrame(i, 64, 40)])
+            for i in range(239)
+        ]
+        container = SimpleNamespace(demux=lambda: iter(packets))
+        sampled: list[int] = []
+        acc = SimpleNamespace(add=sampled.append)
+        with mock.patch.object(video_mod, "_frame_to_scan_bgr", lambda frame, _plan: frame.pts):
+            video_mod._decode_sample_frames(container, "clip.mp4", stream, [acc], 120, None)
+        self.assertLessEqual(len(sampled), 120)
+        self.assertGreaterEqual(max(sampled), 237)
+
     def test_the_picture_bound_is_on_the_gap_between_pictures(self):
         # A remote file served slowly takes longer than the bound to read in
         # full, and only a gap with no picture in it may end the read.

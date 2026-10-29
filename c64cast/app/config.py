@@ -233,6 +233,9 @@ SCENE_TYPES = (
     "wled",
 )
 
+# The display mode a scene type paints whatever its `display` field says.
+FIXED_DISPLAYS: dict[str, str] = {"waveform": "hires", "midi": "hires", "asid": "hires"}
+
 # Scene types that render a numpy frame (and so support a per-scene `effect`).
 # Excludes blank (no frame), waveform/midi (self-rendered bitmap, bypass the
 # frame→display helper), and launcher (the program owns the VIC).
@@ -3044,6 +3047,25 @@ class ConfigError(Exception):
 _TOML_POS_RE = re.compile(r"^(?P<msg>.*) \(at line (?P<line>\d+), column (?P<col>\d+)\)$")
 
 
+def _read_toml(path: str | os.PathLike[str], what: str) -> dict[str, Any]:
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError as e:
+        raise ConfigError(f"{what.capitalize()} not found: {path}") from e
+    except PermissionError as e:
+        raise ConfigError(f"Could not read {what} {path}: {e}") from e
+    except UnicodeDecodeError as e:
+        # Not chained: the decoder's message quotes the byte, and a logged
+        # traceback (serve._looks_provisioned) would carry it with the cause.
+        raise ConfigError(
+            f"Could not read {what} {path}: it is not UTF-8 text ({e.reason} at byte "
+            f"{e.start}). TOML files have to be saved as UTF-8."
+        ) from None
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(_format_toml_error(str(path), e)) from e
+
+
 def _format_toml_error(path: str, err: tomllib.TOMLDecodeError) -> str:
     """Build a friendly multi-line error showing the offending line and a
     caret under the column. Python 3.14+ exposes .lineno/.colno/.msg/.doc
@@ -3972,21 +3994,15 @@ def load_machine_settings() -> dict[str, Any]:
     raw dict (the machine layer that applies to *every* run type — see
     :func:`apply_machine_settings`).
 
-    A missing file returns ``{}`` (machine settings are optional). A parse or
-    permission error raises :class:`ConfigError` naming the path. ``[[scenes]]``
+    A missing file returns ``{}`` (machine settings are optional). A parse,
+    permission or encoding error raises :class:`ConfigError` naming the path. ``[[scenes]]``
     and ``[ensemble]`` are rejected with a warning and dropped: machine settings
     hold cross-run defaults (connection, capture device, SID model, …), not
     playlists or ensemble topology."""
     path = paths.settings_path()
     if not path.is_file():
         return {}
-    try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-    except PermissionError as e:
-        raise ConfigError(f"Could not read machine settings {path}: {e}") from e
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(_format_toml_error(str(path), e)) from e
+    data = _read_toml(path, "machine settings")
 
     for banned in ("scenes", "ensemble"):
         if banned not in data:
@@ -4093,15 +4109,7 @@ def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
     else:
         log.info("loading config %s", path)
 
-    try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-    except FileNotFoundError as e:
-        raise ConfigError(f"Config file not found: {path}") from e
-    except PermissionError as e:
-        raise ConfigError(f"Could not read config file {path}: {e}") from e
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(_format_toml_error(path, e)) from e
+    data = _read_toml(path, "config file")
 
     _apply_toml_sections(cfg, data, source=path, unknown=unknown)
 
@@ -4472,15 +4480,7 @@ def load_master(path: str | None) -> LoadResult:
             )
         path = DEFAULT_CONFIG_PATH
 
-    try:
-        with open(path, "rb") as f:
-            raw = tomllib.load(f)
-    except FileNotFoundError as e:
-        raise ConfigError(f"Config file not found: {path}") from e
-    except PermissionError as e:
-        raise ConfigError(f"Could not read config file {path}: {e}") from e
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(_format_toml_error(path, e)) from e
+    raw = _read_toml(path, "config file")
 
     unknown: list[UnknownKey] = []
 

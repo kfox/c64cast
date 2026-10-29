@@ -353,8 +353,8 @@ window of recent frames.
 Rolling has an obvious failure mode, which is popping, and three mechanisms
 against it: each re-derivation starts from the previous one's clusters, the
 cluster-to-color assignment is kept unless a new one is clearly better, and a
-new map is installed only when the set of colors has actually changed — or
-when a shot cut is detected, in which case the window is cleared deliberately
+new map is installed only once it would repaint more than 15% of the picture
+a different color than the map on screen — or when a shot cut is detected, in which case the window is cleared deliberately
 and the change hides behind the cut.
 
 Choosing a good set by hand is guesswork, so there is a command for it:

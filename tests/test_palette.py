@@ -593,6 +593,24 @@ class ColorMapTest(unittest.TestCase):
         self.assertIsNotNone(acc.result())
 
 
+class PerFrameSampleBudgetTest(unittest.TestCase):
+    """Both accumulators keep at most _FORCE_PALETTE_PER_FRAME samples a frame."""
+
+    # 160 × 24 = 3840 pixels: just under twice the budget, where a floored
+    # stride of 1 would keep every one of them.
+    _FRAME = np.zeros((24, palette_mod._FORCE_PALETTE_SCAN_WIDTH, 3), dtype=np.uint8)
+
+    def test_one_shot_accumulator_keeps_at_most_the_budget(self):
+        acc = ColorMapAccumulator(n_colors=2)
+        acc.add(self._FRAME)
+        self.assertLessEqual(acc.lab_samples().shape[0], palette_mod._FORCE_PALETTE_PER_FRAME)
+
+    def test_rolling_accumulator_keeps_at_most_the_budget(self):
+        acc = RollingColorMapAccumulator(n_colors=2)
+        acc.add(self._FRAME)
+        self.assertLessEqual(acc._blocks[-1].shape[0], palette_mod._FORCE_PALETTE_PER_FRAME)
+
+
 class RollingColorMapAccumulatorTest(unittest.TestCase):
     """Sliding-window live force_palette: window bounds, warm-start, hysteresis."""
 

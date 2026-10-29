@@ -922,8 +922,8 @@ auto_fit_strength = 1.0
 # (optimal min-error bijection) so all N colors get used and the assignment is
 # consistent (no flicker). Pre-scanned for video + slideshow; for LIVE sources
 # that can't pre-scan (webcam, wled sink, generative) it adapts on a rolling
-# ~30 s window (warm-start + hysteresis so it re-composes only when the color set
-# really changes — no popping). mcm/mhires only. Also reachable at runtime via
+# ~30 s window (warm-start + hysteresis so it re-composes only once the new map
+# would repaint more than 15% of the picture — no popping). mcm/mhires only. Also reachable at runtime via
 # the SHIFT cycle's "percell+forced" stop once enabled.
 force_palette = false
 # force_palette_colors: either an int count of distinct C64 colors to spread the

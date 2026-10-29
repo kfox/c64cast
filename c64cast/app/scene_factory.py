@@ -106,6 +106,7 @@ from .config import (
     _MIDI_VOICE_MODE_CHOICES,
     _MIDI_WAVEFORM_CHOICES,
     _MOD_SOURCE_CHOICES,
+    FIXED_DISPLAYS,
     LOOPBACK_HOSTS,
     SCENE_TYPES,
     ColorCfg,
@@ -1051,9 +1052,7 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
         recurse_sid_dir=True,
     )
     _validate_scope_knobs(s, "waveform")
-    # WaveformScene is bitmap-only and ignores `display`; synthesize hires so overlay
-    # compatibility checks fire against what the scene actually paints.
-    return _build_display_mode("hires")
+    return _build_display_mode(FIXED_DISPLAYS["waveform"])
 
 
 def _validate_midi(s: SceneCfg, cfg: Config) -> DisplayMode:
@@ -1093,15 +1092,13 @@ def _validate_midi(s: SceneCfg, cfg: Config) -> DisplayMode:
                 f"midi scene midi_voice_channels must be unique, got {s.midi_voice_channels!r}"
             )
     _validate_scope_knobs(s, "midi")
-    # MidiScene is bitmap-only and ignores `display`; synthesize hires so overlay
-    # compatibility checks fire against what the scene actually paints.
-    return _build_display_mode("hires")
+    return _build_display_mode(FIXED_DISPLAYS["midi"])
 
 
 def _validate_asid(s: SceneCfg, cfg: Config) -> DisplayMode:
     """ASID-over-MIDI client scene. `cfg` is unused — see `_validate_midi`."""
     # AsidScene carries the SID state in the stream, so it has no synth knobs to
-    # validate. Bitmap-only like MidiScene; synthesize hires for overlay compat.
+    # validate.
     _validate_scope_knobs(s, "asid")
     if not (1 <= s.asid_max_sids <= 8):
         raise ValueError(f"asid: asid_max_sids must be in 1..8, got {s.asid_max_sids!r}")
@@ -1109,7 +1106,7 @@ def _validate_asid(s: SceneCfg, cfg: Config) -> DisplayMode:
         raise ValueError(
             f"asid: asid_buffered_player must be auto|on|off, got {s.asid_buffered_player!r}"
         )
-    return _build_display_mode("hires")
+    return _build_display_mode(FIXED_DISPLAYS["asid"])
 
 
 def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:

@@ -497,7 +497,7 @@ def _prompt_one_scene(
         scene_fields["file"] = f
 
     displays = supported_displays(scene_type)
-    display_for_overlays = "petscii"  # default assumption for fixed-mode types
+    display_for_overlays = cfgmod.FIXED_DISPLAYS.get(scene_type)
     if displays:
         chosen = q.select("Display mode", choices=list(displays), default=displays[0]).ask()
         if chosen is None:
@@ -538,7 +538,11 @@ def _prompt_one_scene(
         scene_fields.update(adv)
 
     overlays: list[dict[str, object]] = []
-    candidates = compatible_overlays(display_for_overlays, audio_enabled=audio_for_overlays)
+    candidates = (
+        compatible_overlays(display_for_overlays, audio_enabled=audio_for_overlays)
+        if display_for_overlays
+        else []
+    )
     if candidates and q.confirm("Add overlays?", default=False).ask():
         labels = {f"{ov.name}  —  {ov.help}": ov for ov in candidates}
         picked = q.checkbox("Select overlays (space to toggle)", choices=list(labels)).ask()

@@ -989,6 +989,9 @@ def resolve_tokens(cfg: cfgmod.WebCfg) -> HostCredentials:
             token = path.read_text(encoding="utf-8").strip()
         except OSError as e:
             raise RuntimeError(f"could not read [web] token_file {path}: {e}") from e
+        except UnicodeDecodeError as e:
+            # The decoder's own message quotes the offending byte, and this file is a secret.
+            raise RuntimeError(f"[web] token_file {path} is not UTF-8 text") from e
         if not token:
             raise RuntimeError(f"[web] token_file {path} is empty")
     if not token:
