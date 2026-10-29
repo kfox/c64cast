@@ -817,11 +817,16 @@ class RssFetchTest(_RemotePeerTest):
     def test_feed_declaring_a_multibyte_encoding_is_parsed(self):
         from c64cast.scenes.overlays.rss import RssOverlay
 
-        for encoding in ("shift_jis", "gb2312", "euc-kr", "big5"):
+        for encoding, title in (
+            ("shift_jis", "日本語ニュース"),
+            ("gb2312", "中文新闻"),
+            ("euc-kr", "한국어 뉴스"),
+            ("big5", "中文新聞"),
+        ):
             with self.subTest(encoding=encoding):
                 body = (
                     f'<?xml version="1.0" encoding="{encoding}"?>'
-                    "<rss><channel><item><title>iPhone 17</title></item></channel></rss>"
+                    f"<rss><channel><item><title>{title}</title></item></channel></rss>"
                 ).encode(encoding)
 
                 def answer(handler, body=body):
@@ -830,7 +835,7 @@ class RssFetchTest(_RemotePeerTest):
 
                 ov = RssOverlay(url=self.route("/feed", answer))
                 ov._fetch_once()
-                self.assertEqual(ov._titles, ["iPhone 17"])
+                self.assertEqual(ov._titles, [title])
 
     def test_oversized_feed_is_refused_without_reading_it_all(self):
         from c64cast.scenes.overlays import _fetch
