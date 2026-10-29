@@ -94,7 +94,7 @@ class LogoOverlay(Overlay):
         fg_color: str = "white",
         bg_color: str = "black",
     ):
-        self._placeholder = not os.path.exists(file)
+        self._placeholder = not os.path.exists(paths.expand_user(file))
         if self._placeholder:
             log.warning("logo: file %r not found — using placeholder", file)
         if corner is None and (row is None or col is None):

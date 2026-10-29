@@ -746,6 +746,20 @@ class LogoTest(unittest.TestCase):
         joined = " ".join(ov.lines).upper()
         self.assertIn("PLACEHOLDER", joined)
 
+    def test_home_relative_path_loads_the_file(self):
+        import os
+        import tempfile
+
+        from c64cast.scenes.overlays.logo import LogoOverlay
+
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "art.txt"), "w") as f:
+            f.write("AB\n")
+        with patch.dict(os.environ, {"HOME": home}):
+            ov = LogoOverlay(file="~/art.txt", corner="top-left")
+        self.assertFalse(ov._placeholder)
+        self.assertEqual(ov.lines, ["AB"])
+
     def test_must_specify_position(self):
         import os
         import tempfile
