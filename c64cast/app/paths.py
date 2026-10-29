@@ -129,6 +129,12 @@ def loop_presets_dir() -> Path:
     return presets_dir() / "loops"
 
 
+def recordings_dir() -> Path:
+    """Directory a show started from the web console records into
+    (``<data root>/recordings``), unless ``[web].recording_dir`` names one."""
+    return data_root() / "recordings"
+
+
 def roms_dir() -> Path:
     """Directory holding ROM images dumped off the user's own machine
     (``<data root>/roms``; today just ``chargen.bin``, the character ROM

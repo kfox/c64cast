@@ -207,6 +207,8 @@ class BigTextOverlay(Overlay):
         for m in messages:
             if isinstance(m, BigTextMessage):
                 msg = m
+            elif isinstance(m, str):
+                msg = BigTextMessage(text=m)
             elif isinstance(m, dict):
                 unknown = set(m) - _VALID_MSG_KEYS
                 if unknown:

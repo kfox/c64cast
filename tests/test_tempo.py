@@ -127,6 +127,42 @@ class TransportTest(unittest.TestCase):
             c.clock_pulse(5.0 + (k + 1) * dt)
         self.assertAlmostEqual(c.beat_phase_at(5.0 + 25 * dt), 2.0 + 1.0, places=9)
 
+    def test_clock_after_stop_holds_until_continue(self):
+        c = TempoClock(bpm=120.0, source="midi", now=0.0)
+        dt = _pulse_dt(120.0)
+        c.start(0.0)
+        for k in range(25):
+            c.clock_pulse((k + 1) * dt)
+        c.stop(25 * dt)
+        frozen = c.beat_phase_at(25 * dt)
+        for k in range(26, 74):
+            c.clock_pulse(k * dt)
+        self.assertFalse(c.running)
+        self.assertAlmostEqual(c.beat_phase_at(73 * dt), frozen, places=9)
+        c.continue_(73 * dt)
+        for k in range(74, 99):
+            c.clock_pulse(k * dt)
+        self.assertTrue(c.running)
+        self.assertAlmostEqual(c.beat_phase_at(98 * dt), frozen + 1.0, places=9)
+
+    def test_idle_clock_after_stop_leaves_a_tapped_grid_alone(self):
+        c = TempoClock(bpm=120.0, source="midi", now=0.0)
+        dt = _pulse_dt(120.0)
+        c.start(0.0)
+        for k in range(1, 49):
+            c.clock_pulse(k * dt)
+        c.stop(48 * dt)
+        for k in range(49, 97):
+            c.clock_pulse(k * dt)
+        for i in range(4):
+            c.tap(3.0 + i * 0.6)
+        t = 3.0 + 3 * 0.6
+        before = c.beat_phase_at(t)
+        for k in range(1, 49):
+            c.clock_pulse(t + k * dt)
+        self.assertAlmostEqual(c.bpm, 100.0, places=6)
+        self.assertAlmostEqual(c.beat_phase_at(t + 1.0) - before, 100.0 / 60.0, places=9)
+
 
 class SongPositionTest(unittest.TestCase):
     def test_spp_sets_beat_phase_in_quarters(self):
@@ -176,6 +212,12 @@ class TapTempoTest(unittest.TestCase):
         c.tap(10.0)  # 6 BPM, below the floor + past the reset window -> no change
         self.assertAlmostEqual(c.bpm, 100.0, places=6)
 
+    def test_a_bounced_tap_does_not_skew_the_tempo(self):
+        c = TempoClock(bpm=60.0, source="internal", now=0.0)
+        for t in (0.0, 0.5, 1.0, 1.01, 1.5):
+            c.tap(t)
+        self.assertAlmostEqual(c.bpm, 120.0, places=6)
+
 
 class AudioDriveTest(unittest.TestCase):
     def test_audio_source_idles_until_a_tempo_locks(self):
@@ -217,6 +259,39 @@ class AudioDriveTest(unittest.TestCase):
         c = TempoClock(bpm=120.0, source="audio", now=0.0)
         c.audio_drive(10_000.0, now=0.0)
         self.assertLessEqual(c.bpm, 400.0)
+
+
+class SourceAfterTapTest(unittest.TestCase):
+    def _tapped(self) -> TempoClock:
+        c = TempoClock(bpm=120.0, source="midi", now=0.0)
+        c.tap(1.0)
+        c.tap(1.5)
+        self.assertEqual(c.source, "internal")
+        return c
+
+    def test_start_hands_the_grid_back_to_midi(self):
+        c = self._tapped()
+        c.start(2.0)
+        self.assertEqual(c.source, "midi")
+
+    def test_continue_hands_the_grid_back_to_midi(self):
+        c = self._tapped()
+        c.continue_(2.0)
+        self.assertEqual(c.source, "midi")
+
+    def test_a_running_clock_takes_the_grid_back_from_a_tap(self):
+        c = self._tapped()
+        dt = _pulse_dt(120.0)
+        for k in range(1, 4):
+            c.clock_pulse(2.0 + k * dt)
+        self.assertEqual(c.source, "midi")
+
+    def test_midi_bytes_leave_the_audio_source_alone(self):
+        c = TempoClock(bpm=120.0, source="audio", now=0.0)
+        c.audio_drive(128.0, now=1.0)
+        c.start(1.5)
+        c.clock_pulse(1.6)
+        self.assertEqual(c.source, "audio")
 
 
 class FeedMessageTest(unittest.TestCase):

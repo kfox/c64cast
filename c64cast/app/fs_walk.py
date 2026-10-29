@@ -77,3 +77,22 @@ def disambiguate(
         candidate = f"{base}-{n}{suffix}"
         n += 1
     return candidate, n > 2
+
+
+def claim_new_file(path: Path, max_attempts: int) -> Path:
+    """Create `path`, or the first free `stem-2.ext`, `stem-3.ext`, … beside
+    it, as an empty file of its own, and return it.
+
+    `O_EXCL` makes the claim atomic, so a writer that opens the result
+    afterward can only ever truncate the empty file made here. A symlink is
+    taken whatever it points at: Windows' `O_EXCL` follows a dangling one."""
+
+    def taken(candidate: str) -> bool:
+        target = path.parent / candidate
+        if os.path.lexists(target):
+            return True
+        os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        return False
+
+    name, _ = disambiguate(path.stem, path.suffix, taken, max_attempts)
+    return path.parent / name

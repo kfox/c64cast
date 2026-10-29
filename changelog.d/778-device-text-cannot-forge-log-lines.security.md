@@ -1,0 +1,1 @@
+- An Ultimate's refusal of a keyboard or joystick input batch, the device identity it reports at connect, and a TeensyROM+'s USB serial number are filtered to printable characters before they are logged. A line break or terminal escape sequence in any of them could otherwise write extra lines into `--log-file` output.

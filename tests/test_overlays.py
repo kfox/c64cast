@@ -248,6 +248,12 @@ class ScrollingTextTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ScrollingTextOverlay(messages=[])
 
+    def test_plain_string_message_is_text_in_the_default_color(self):
+        from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
+
+        ov = ScrollingTextOverlay(messages=["HI"])
+        self.assertEqual([(m.text, m.color) for m in ov.messages], [("HI", "white")])
+
     def test_bad_row_raises(self):
         from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
 

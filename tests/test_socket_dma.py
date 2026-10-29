@@ -23,6 +23,7 @@ from unittest.mock import patch
 from c64cast.hw.backend import LinkError
 from c64cast.hw.socket_dma import (
     CMD_AUTHENTICATE,
+    CMD_DMARUN,
     CMD_DMAWRITE,
     CMD_IDENTIFY,
     CMD_KEYB,
@@ -279,6 +280,61 @@ class FlushTest(unittest.TestCase):
         self.assertIsNone(c._sock)
 
 
+class DmarunTest(unittest.TestCase):
+    def test_sends_the_prg_then_waits_on_an_identify(self):
+        fake = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        c = _client_with(fake)
+        before = len(fake.sent)
+        c.dmarun(b"\x01\x08\xaa", timeout=5.0)
+        self.assertEqual(
+            bytes(fake.sent[before:]),
+            struct.pack("<HH", CMD_DMARUN, 3)
+            + b"\x01\x08\xaa"
+            + struct.pack("<HH", CMD_IDENTIFY, 0),
+        )
+        self.assertEqual(fake._replies, deque())
+
+    def test_waits_past_io_timeout_for_the_load_to_finish(self):
+        # The firmware answers the IDENTIFY only once the load has run, which
+        # takes longer than an ordinary round trip.
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        c.io_timeout = 0.05
+
+        class SlowReplySocket(FakeSocket):
+            def recv(self, n, flags=0):
+                if not flags & socket.MSG_PEEK:
+                    time.sleep(0.01)
+                    n = 1
+                return super().recv(n, flags)
+
+        c._sock = SlowReplySocket([_IDENT_REPLY])  # type: ignore[assignment]
+        c.dmarun(b"\x01\x08", timeout=2.0)
+
+    def test_the_load_wait_stays_out_of_the_latency_summary(self):
+        clock = [0.0]
+
+        class BootingSocket(FakeSocket):
+            def recv(self, n, flags=0):
+                if not flags & socket.MSG_PEEK:
+                    clock[0] += 1.7
+                return super().recv(n, flags)
+
+        c = _client_with(FakeSocket([_IDENT_REPLY]))
+        c._latencies.clear()
+        c._sock = BootingSocket([_IDENT_REPLY])  # type: ignore[assignment]
+        with patch("c64cast.hw.socket_dma.time.perf_counter", lambda: clock[0]):
+            c.dmarun(b"\x01\x08", timeout=5.0)
+        self.assertEqual(c.latency_summary()[3], 0.0)
+
+    def test_an_unanswered_load_raises(self):
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        with self.assertRaises(ConnectionError):
+            c.dmarun(b"\x01\x08", timeout=0.05)
+        self.assertIsNone(c._sock)
+
+
 class VicstreamOnValidationTest(unittest.TestCase):
     """vicstream_on's watchdog encoding: 0 is the documented 'unbounded'
     sentinel, so rounding must never land there by accident."""
@@ -365,13 +421,11 @@ class WireBoundsTest(unittest.TestCase):
 
 class IdentifySanitizationTest(unittest.TestCase):
     def test_control_bytes_are_stripped_and_length_is_capped(self):
-        dirty = "X" * 80 + "\n\r\x1b[31mFAKE ERROR"
+        dirty = "U64\n\r\x1b[31mFAKE ERROR" + "X" * 80
         reply = dirty.encode("utf-8")
         fake = FakeSocket([bytes([len(reply)]) + reply])
         c = _client_with(fake)
-        self.assertNotIn("\n", c.product)
-        self.assertNotIn("\r", c.product)
-        self.assertLessEqual(len(c.product), 64)
+        self.assertEqual(c.product, ("U64[31mFAKE ERROR" + "X" * 80)[:64])
 
 
 class CumulativeReadDeadlineTest(unittest.TestCase):

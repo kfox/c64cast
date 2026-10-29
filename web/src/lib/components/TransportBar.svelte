@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { formatTime, keyNudgeEvents, loopButtonLabel, slotEnabled } from "$lib/transportBarLogic";
+  import { onDestroy } from "svelte";
+
+  import { pointerHold } from "$lib/pointerHold";
+  import {
+    formatTime,
+    HoldKeepAlive,
+    keyNudgeEvents,
+    loopButtonLabel,
+    slotEnabled,
+  } from "$lib/transportBarLogic";
   import type { TransportState } from "$lib/types";
 
   interface Props {
@@ -34,10 +43,20 @@
 
   // Press-and-hold rw/ff: the engine's ramp is hold-driven (it accelerates the
   // longer the button stays down), so press and release are sent separately.
-  function hold(action: "rw" | "ff", pressed: boolean, event: Event): void {
+  const holds = new HoldKeepAlive((verb, pressed) => onverb(verb, { pressed }));
+  onDestroy(() => holds.releaseAll());
+  // A disabled button never sees its pointerup, so a hold the bar went
+  // read-only under would otherwise keep re-sending its press.
+  $effect(() => {
+    if (readOnly) holds.releaseAll();
+  });
+
+  function hold(
+    action: "rw" | "ff",
+    event: PointerEvent & { currentTarget: EventTarget & HTMLButtonElement },
+  ): void {
     event.preventDefault();
-    if (readOnly) return;
-    onverb(action, { pressed });
+    pointerHold(holds, action, event, readOnly);
   }
 
   // A keyboard-synthesized click (Enter/Space on a focused button) reports
@@ -101,9 +120,10 @@
     <button
       type="button"
       disabled={readOnly}
-      onpointerdown={(e) => hold("rw", true, e)}
-      onpointerup={(e) => hold("rw", false, e)}
-      onpointercancel={(e) => hold("rw", false, e)}
+      onpointerdown={(e) => hold("rw", e)}
+      onpointerup={(e) => hold("rw", e)}
+      onpointercancel={(e) => hold("rw", e)}
+      onlostpointercapture={(e) => hold("rw", e)}
       onclick={(e) => keyNudge("rw", e)}
       class="min-h-9 touch-none rounded-lg border border-[var(--edge)] px-3 font-mono text-xs
              text-[var(--ink)] transition enabled:active:brightness-125 disabled:cursor-not-allowed
@@ -115,9 +135,10 @@
     <button
       type="button"
       disabled={readOnly}
-      onpointerdown={(e) => hold("ff", true, e)}
-      onpointerup={(e) => hold("ff", false, e)}
-      onpointercancel={(e) => hold("ff", false, e)}
+      onpointerdown={(e) => hold("ff", e)}
+      onpointerup={(e) => hold("ff", e)}
+      onpointercancel={(e) => hold("ff", e)}
+      onlostpointercapture={(e) => hold("ff", e)}
       onclick={(e) => keyNudge("ff", e)}
       class="min-h-9 touch-none rounded-lg border border-[var(--edge)] px-3 font-mono text-xs
              text-[var(--ink)] transition enabled:active:brightness-125 disabled:cursor-not-allowed

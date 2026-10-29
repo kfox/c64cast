@@ -14,6 +14,7 @@ The DMA service uses opcodes from c64cast/hw/socket_dma.py:
   0xFF0E IDENTIFY   →  responds 1-byte length + ASCII product string
   0xFF1F AUTHENTICATE → responds 1 byte (always 0x01 = accepted)
   0xFF06 DMAWRITE  →  no response; recorded to the writes log
+  0xFF02 DMARUN    →  no response (BASIC clear loop, SID player kick)
   0xFF04 RESET     →  no response
   0xFF03 KEYB      →  no response
 
@@ -21,7 +22,7 @@ The HTTP shim covers:
   GET  /                          → 200  (used by Ultimate64API.probe)
   GET  /v1/machine:readmem        → zeros (keyboard poller reads $028D)
   PUT  /v1/machine:reset          → 200
-  POST /v1/runners:run_prg        → 200  (BASIC clear loop)
+  POST /v1/runners:run_crt        → 200  (.crt launcher)
   POST /v1/runners:sidplay        → 200
 """
 
@@ -46,6 +47,7 @@ log = logging.getLogger("fake_u64")
 
 # Mirror of c64cast/hw/socket_dma.py opcodes, duplicated so the stub imports
 # no c64cast and can run on a different machine.
+CMD_DMARUN = 0xFF02
 CMD_KEYB = 0xFF03
 CMD_RESET = 0xFF04
 CMD_DMAWRITE = 0xFF06
@@ -145,6 +147,8 @@ class DMAHandler(socketserver.BaseRequestHandler):
             sock.sendall(bytes([len(product)]) + product)
         elif opcode == CMD_AUTHENTICATE:
             sock.sendall(b"\x01")
+        elif opcode == CMD_DMARUN:
+            log.info("DMA: client requested DMARUN of %d bytes (ignored)", len(payload))
         elif opcode == CMD_RESET:
             log.info("DMA: client requested RESET (ignored)")
         elif opcode == CMD_KEYB:
@@ -205,8 +209,8 @@ class HTTPHandler(BaseHTTPRequestHandler):
         if length:
             self.rfile.read(length)
         parts = urlsplit(self.path)
-        if parts.path == "/v1/runners:run_prg":
-            log.info("HTTP: POST run_prg (BASIC clear loop, ignored)")
+        if parts.path == "/v1/runners:run_crt":
+            log.info("HTTP: POST run_crt (ignored)")
             self._ok(b"")
             return
         if parts.path == "/v1/runners:sidplay":

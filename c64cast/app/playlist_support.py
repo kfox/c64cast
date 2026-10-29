@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 from c64cast.hw.backend import C64Backend, LinkError
 from c64cast.hw.delivery import write_confirmed
 
+from .orchestrator import OrchestratorError
+
 if TYPE_CHECKING:
     from c64cast.control.keyboard import CommodoreKeyPoller
     from c64cast.scenes.scenes import Scene
@@ -354,6 +356,8 @@ class EnsembleCoordinator:
                     )
                     first_wait = False
                 pl.stop_event.wait(timeout=poll_interval)
+                if self._serve_broadcast_while_waiting():
+                    pl.ensemble.join_audio_queue(pl.name)
             return False
         finally:
             pl.ensemble.leave_audio_queue(pl.name)
@@ -406,9 +410,31 @@ class EnsembleCoordinator:
                     first_full_wait = False
                 pl.ensemble.join_audio_queue(pl.name)
                 pl.stop_event.wait(timeout=poll_interval)
+                self._serve_broadcast_while_waiting()
             return None
         finally:
             pl.ensemble.leave_audio_queue(pl.name)
+
+    def _serve_broadcast_while_waiting(self) -> bool:
+        """Run a broadcast interlude that arrived while this playlist waits
+        for the audio slot, and say whether one ran. The wait's place in
+        line is given up for it, so a slot that frees meanwhile goes to the
+        next system rather than being held for a playlist that is not
+        polling. The waiting caller has already torn its scene down, so the
+        interlude must not drop it again, and gets it back as it left it."""
+        pl = self._pl
+        if pl.ensemble is None or pl.broadcast_interrupt is None:
+            return False
+        if not pl.broadcast_interrupt.is_set() or pl.stop_event.is_set():
+            return False
+        pl.ensemble.leave_audio_queue(pl.name)
+        waiting = pl.current
+        pl.current = None
+        try:
+            self.handle_broadcast_interrupt()
+        finally:
+            pl.current = waiting
+        return True
 
     def maybe_install_conductor(self, scene: Scene) -> None:
         """If this scene's SceneCfg has `orchestrate = true` AND we're
@@ -524,6 +550,13 @@ class EnsembleCoordinator:
             )
             return
         orch = pl.ensemble.active_orchestrator
+        # The conductor ends the broadcast on its own thread before its
+        # teardown clears `active_orchestrator`. Looked up before the drop, so
+        # an end that lands during it still leaves a follower to run out.
+        try:
+            follower_cfg = orch.follower_scene_cfg_for(pl.name)
+        except OrchestratorError:
+            return
 
         # A broadcast overrides a pause, and leaves the system un-paused after:
         # clearing pause_event and setting resume_event lets any concurrent
@@ -538,7 +571,6 @@ class EnsembleCoordinator:
         saved_idx = pl.index
         pl.drop_current()
 
-        follower_cfg = orch.follower_scene_cfg_for(pl.name)
         try:
             follower_scene = pl.build_follower_scene(follower_cfg)
         except Exception:
@@ -568,6 +600,12 @@ class EnsembleCoordinator:
                 )
                 break
             if pl.current is None:
+                break
+            if pl.setup_failed(follower_scene):
+                pl.log.error(
+                    "broadcast: follower %r could not be set up; ending the interlude",
+                    follower_scene.name,
+                )
                 break
         pl.broadcast_resume.clear()
 

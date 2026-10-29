@@ -15,7 +15,9 @@ end up in a public video description:
   `[teensyrom].host`/`serial_port`). Only the backend kind + NTSC/PAL +
   sid_model are surfaced from that area. The device's own identity from
   ``GET /v1/info`` (`unique_id`, `hostname`, and the `ethernet_mac`/`wifi_mac`
-  that firmware 3.15a added) is per-unit too and never appears.
+  that firmware 3.15a added) is per-unit too and never appears, and neither
+  do the per-scene fields of the same kind: a `wled` scene's `sink_allow`
+  addresses and a `midi`/`asid` scene's port name.
 - Any live hardware read. Everything here comes from the already-resolved
   `Config`/`SceneCfg`/scene instance state — no extra U64 traffic, which
   matters mid-recording.
@@ -81,6 +83,12 @@ _SCENE_CFG_SKIP_FIELDS = frozenset(
         "effect",
         "effects",
         "overlays",
+        # Machine-identifying, like the connection target: the hosts the WLED
+        # sink trusts (which also tells a LAN peer what source address to
+        # forge) and MIDI port names, which carry a device's or owner's name.
+        "sink_allow",
+        "midi_port",
+        "asid_port",
     }
 )
 
@@ -162,21 +170,26 @@ def _local_file_copyright(scene: Scene) -> str:
 def _video_source(scene: Scene) -> dict[str, Any]:
     scene_cfg = getattr(scene, "_cfg", None)
     raw_spec = getattr(scene_cfg, "file", None) if scene_cfg is not None else None
-    filepath = getattr(scene, "filepath", None)
+    filepath = getattr(scene, "filepath", None) or ""
     spec = raw_spec if isinstance(raw_spec, str) else None
-    is_url = spec is not None and scene_factory.is_media_url(spec)
+    is_url = scene_factory.is_media_url(filepath)
+    # A one-URL spec is resolved before playback, so `filepath` is then the
+    # CDN stream URL, which never goes in the blob; the spec is the link as given.
+    link = spec if spec is not None and len(scene_factory.split_file_spec(spec)) == 1 else filepath
     out: dict[str, Any] = {
         # Redacted: scripts/scene_config_to_description.py renders this as
         # "Source video: <url>" in a *published* description, and a private asset
         # is legitimately reached with a `user:token@` URL.
-        "url": scene_factory.redact_media_spec(spec) if spec is not None and is_url else None,
+        "url": scene_factory.redact_media_spec(link) if is_url else None,
         "local_file": None if is_url or not filepath else os.path.basename(filepath),
         "title": getattr(scene, "name", None),
     }
     if is_url:
         resolved = getattr(scene, "source_info", None)
         out["uploader"] = getattr(resolved, "uploader", None)
-        out["webpage_url"] = getattr(resolved, "webpage_url", None)
+        webpage_url = getattr(resolved, "webpage_url", None)
+        # yt-dlp's generic extractor echoes the URL it was given, userinfo included.
+        out["webpage_url"] = scene_factory.redact_media_spec(webpage_url) if webpage_url else None
         out["copyright"] = _url_copyright(resolved)
     else:
         out["copyright"] = _local_file_copyright(scene)
@@ -201,10 +214,19 @@ def _generative_source(scene: Scene) -> dict[str, Any]:
     return out
 
 
+def _published_entry(entry: str) -> str:
+    if scene_factory.is_media_url(entry):
+        return scene_factory.redact_media_spec(entry)
+    return os.path.basename(os.path.normpath(entry))
+
+
 def _generic_source(scene: Scene) -> dict[str, Any]:
     scene_cfg = getattr(scene, "_cfg", None)
     file_spec = getattr(scene_cfg, "file", None) if scene_cfg is not None else None
-    return {"file_spec": file_spec} if file_spec else {}
+    if not file_spec:
+        return {}
+    entries = scene_factory.split_file_spec(file_spec)
+    return {"file_spec": ", ".join(_published_entry(entry) for entry in entries)}
 
 
 _SOURCE_BUILDERS = {
@@ -222,8 +244,9 @@ def _scene_source(scene: Scene, scene_type: str | None) -> dict[str, Any]:
 def build_scene_recording_metadata(scene: Scene, cfg: Config, system_name: str) -> dict[str, Any]:
     """Assemble one scene-start snapshot: coalesced config + scene metadata.
 
-    Safe to call repeatedly (every scene activation) — pure read of already-
-    resolved state, no I/O."""
+    Safe to call repeatedly (every scene activation) — a read of already-
+    resolved state with no device or network I/O; its only filesystem access
+    is the existence check `split_file_spec` makes on a spec with a comma."""
     scene_cfg = getattr(scene, "_cfg", None)
     scene_type = getattr(scene_cfg, "type", None)
     display_mode = getattr(scene, "display_mode", None)

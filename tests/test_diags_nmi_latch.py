@@ -70,5 +70,17 @@ class ProbeLatchTest(unittest.TestCase):
         self._assert_paces_like_the_streamer("audio_fm_probe")
 
 
+class RateSweepDefaultsTest(unittest.TestCase):
+    def test_every_default_rate_loads_on_ntsc(self) -> None:
+        # The sweep plays each rate through `python -m c64cast --config`, and
+        # load refuses a rate past the NMI floor: that run plays nothing.
+        from c64cast.hw.c64 import nmi_rate_safety
+
+        sweep = _load("nmi_rate_sweep_ab")
+        for rate in sweep.DEFAULT_RATES:
+            with self.subTest(rate=rate):
+                self.assertEqual(nmi_rate_safety("NTSC", rate)[0], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

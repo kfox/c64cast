@@ -81,5 +81,41 @@ class DisambiguateTest(unittest.TestCase):
             fs_walk.disambiguate("clip", ".mp4", lambda c: True, max_attempts=2)
 
 
+class ClaimNewFileTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def test_a_free_name_is_created_empty(self):
+        target = fs_walk.claim_new_file(self.dir / "clip.mp4", 10)
+        self.assertEqual(target, self.dir / "clip.mp4")
+        self.assertEqual(target.read_bytes(), b"")
+
+    def test_an_existing_file_is_left_alone_and_the_name_numbered(self):
+        (self.dir / "clip.mp4").write_bytes(b"keep")
+        target = fs_walk.claim_new_file(self.dir / "clip.mp4", 10)
+        self.assertEqual(target, self.dir / "clip-2.mp4")
+        self.assertEqual((self.dir / "clip.mp4").read_bytes(), b"keep")
+
+    def test_a_dangling_symlink_counts_as_taken(self):
+        # Opening it would create the file it points at, wherever that is.
+        victim = self.dir / "elsewhere" / "victim.mp4"
+        victim.parent.mkdir()
+        try:
+            (self.dir / "clip.mp4").symlink_to(victim)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        target = fs_walk.claim_new_file(self.dir / "clip.mp4", 10)
+        self.assertEqual(target, self.dir / "clip-2.mp4")
+        self.assertFalse(victim.exists())
+
+    def test_max_attempts_bounds_the_search(self):
+        for name in ("clip.mp4", "clip-2.mp4"):
+            (self.dir / name).write_bytes(b"")
+        with self.assertRaises(LookupError):
+            fs_walk.claim_new_file(self.dir / "clip.mp4", 2)
+
+
 if __name__ == "__main__":
     unittest.main()

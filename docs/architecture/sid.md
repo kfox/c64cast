@@ -56,7 +56,7 @@ The PAL/NTSC speed flag is **read**, per subtune, and drives the CIA #1 Timer A 
 
 Parse, layout, build, divider-tune, and subtune-reinit all live in `_SidPlayerMixin` — a SID-only tenant each concrete backend mixes in alongside `_StubRunnerBackend` (which carries the character-ROM dump), so the two features share the shape of the split and none of the state. Only the *kick* differs, via the abstract `_launch_sid_player`.
 
-**Ultimate** — POSTs the `SYS` stub to `run_prg`.
+**Ultimate** — runs the `SYS` stub over DMARUN ([hardware-io.md](hardware-io.md#prg-kicks-go-over-dmarun-not-run_prg)).
 
 **TeensyROM** — uses a pure-DMA `$0314` **vector swap** instead, the same primitive as `cue_song_reinit`. Over the running IRQ-enabled clear-loop it DMAs the blobs, then swaps `$0314` to the re-INIT stub, which the next kernal IRQ runs to `JSR init` and install the PLAY handler. No LaunchFile, reset, or boot — therefore no async-boot race.
 
@@ -159,7 +159,7 @@ Hence the defaults: the tempo fix is on, the pitch fix is opt-in.
 
 ### Why the latch is written *after* INIT
 
-On the Ultimate the player is kicked via `run_prg`, which soft-resets the C64 —
+On the Ultimate the player is kicked via DMARUN, which soft-resets the C64 —
 and the KERNAL's reset path reloads Timer A. A latch written before the kick is
 gone before the first PLAY. So `_apply_play_rate` runs from
 `_tune_play_divider`, ~200 ms in, reusing the latch sample that function already
@@ -224,7 +224,7 @@ c64cast makes here is live + volatile, so a power-cycle clears it regardless.
 
 ## `waveform.py` + `sidemu.py` + `sid_host_emu.py` — SID oscilloscope scene
 
-`WaveformScene` (inherits `VoiceScopeRenderer`) plays a SID file on the U64 via `api.run_sid_player(...)` (DMA SID payload + 73-byte 6502 player relocated per-tune by `_choose_player_layout` — default $C300, bumped past the SID payload on overlap — then POST a matching `10 SYS <player_base>` BASIC stub via `runners:run_prg`) and visualizes the three SID voices' waveforms across the full screen. Display is bitmap-only (320×200 hires). Voices stack vertically — voice 1 top, voice 3 bottom.
+`WaveformScene` (inherits `VoiceScopeRenderer`) plays a SID file on the U64 via `api.run_sid_player(...)` (DMA SID payload + 73-byte 6502 player relocated per-tune by `_choose_player_layout` — default $C300, bumped past the SID payload on overlap — then run a matching `10 SYS <player_base>` BASIC stub over DMARUN) and visualizes the three SID voices' waveforms across the full screen. Display is bitmap-only (320×200 hires). Voices stack vertically — voice 1 top, voice 3 bottom.
 
 The bottom two text rows carry the tune metadata: the **title row** (`_build_title_line`) is the song title left-justified + composer right-justified, fixed across subtunes; the **metadata row** (`_build_metadata_line`) is `SONG xx/yy` (zero-padded to `num_songs`' width) + copyright left-justified, and the SID's composed-for clock + chip right-justified (e.g. `PAL 8580`). When the SID targets one definite standard that differs from the current playback system (`[ultimate64].system`), the clock reads `native→system` (e.g. `PAL→NTSC 8580`) so the mismatch is visible; the `→` is a right-arrow synthesized by horizontally mirroring the ROM left-arrow glyph (`voice_scope._mirror_glyph_h`, blitted via `_paint_text_row`'s `glyph_overrides` — the C64 charset has no native `→` cell). Ambiguous (`PAL+NTSC`), unknown, or matching standards show the native value alone. Only the metadata row's song number changes on a SHIFT subtune switch, so `cycle_style` repaints just that row (the title row is untouched).
 
@@ -246,7 +246,7 @@ Coloring modes:
 
 Teardown order matters: `api.restore_kernal_irq_vector()` puts `$0314` back to `$EA31` first (so our IRQ handler is unhooked and PLAY stops being called), then `api.flush()`, then `api.silence_sid()` writes 0 to `$D418` and clears each voice's gate. If silence ran first, the IRQ could fire between the volume-clear and the gate-clears and PLAY would rewrite both. No reset, so the next scene paints over the waveform without the BASIC banner flashing.
 
-The scene runs for `duration_s` — `runners:run_prg` doesn't surface a "finished" signal for the BASIC GOTO loop. Use SongLengths data via `[playlist].songlengths_file` if you have it; otherwise pick a duration that matches the tune, or accept `WaveformScene.FALLBACK_DURATION_S` (180 s), which is what `_resolve_duration_for_current_sid` returns with no explicit `duration_s` and no DB hit. A `duration_s` set from the live menu's DURATION counts as explicit from then on: `Scene._duration_set_live` notices it differs from the last length the scene derived, and `_adopt_live_duration` makes it `_explicit_duration_s` before the next pool pick or SHIFT cycle looks a length up — the same rule `SourceScene.sync_duration_to_audio` applies to an audio-file scene.
+The scene runs for `duration_s` — the DMARUN kick doesn't surface a "finished" signal for the BASIC GOTO loop. Use SongLengths data via `[playlist].songlengths_file` if you have it; otherwise pick a duration that matches the tune, or accept `WaveformScene.FALLBACK_DURATION_S` (180 s), which is what `_resolve_duration_for_current_sid` returns with no explicit `duration_s` and no DB hit. A `duration_s` set from the live menu's DURATION counts as explicit from then on: `Scene._duration_set_live` notices it differs from the last length the scene derived, and `_adopt_live_duration` makes it `_explicit_duration_s` before the next pool pick or SHIFT cycle looks a length up — the same rule `SourceScene.sync_duration_to_audio` applies to an audio-file scene.
 
 **It can also end early.** `_check_end_of_tune` ends the scene once every voice has been silent (below `sidemu.ENV_SILENCE_EPS`, the same floor `is_audible` measures a decay tail against) for `END_SILENCE_S` = 6 s *after* the tune has sounded at least once. That only ever shortens playback, and it is why a short subtune under a generous `duration_s` advances the playlist sooner than the number suggests. The window is deliberately generous so a musical rest doesn't trip it.
 

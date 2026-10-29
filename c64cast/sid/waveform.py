@@ -799,7 +799,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         try:
             self._pick_and_load_sid()
         except ValueError as e:
-            log.error("waveform: %s", e)
+            self.report_setup_failure(log, "waveform: %s", e)
             return False
         self._pick_held = True
         self._set_derived_duration(float(self._resolve_duration_for_current_sid()))
@@ -925,7 +925,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     _choose_display_layout(payload_lo, payload_hi, display_footprint)
                 )
         except ValueError as e:
-            log.error("waveform: %s — scene aborting.", e)
+            self.report_setup_failure(log, "waveform: %s — scene aborting.", e)
             self.is_done = True
             return
         if self._dd00 != CIA2.PORT_A_BANK_0:
@@ -981,7 +981,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 play_rate=self._sid_play_rate,
             )
         except Exception as e:
-            log.error(
+            self.report_setup_failure(
+                log,
                 "waveform: SID playback failed to start (%s) — "
                 "scene aborting. PSID-only; RSIDs, SIDs that load "
                 "below $0820, and SIDs under KERNAL ROM "

@@ -147,6 +147,21 @@ class VideoSourceTest(unittest.TestCase):
         self.assertEqual(source["local_file"], "clip.mp4")
         self.assertEqual(source["copyright"], _UNKNOWN_COPYRIGHT)
 
+    def test_multi_entry_spec_reports_the_picked_url_redacted(self):
+        picked = "https://cdn.example/private/clip.mp4?token=SECRET"
+        scene = _FakeVideoScene("Video: clip", f"assets/videos, {picked}", picked)
+        source = build_scene_recording_metadata(scene, Config(), "system")["source"]
+        self.assertEqual(source["url"], "https://cdn.example/private/clip.mp4?token=REDACTED")
+        self.assertIsNone(source["local_file"])
+        self.assertNotIn("SECRET", json.dumps(source))
+
+    def test_multi_entry_spec_reports_a_picked_local_file_as_local(self):
+        spec = "https://cdn.example/private/clip.mp4, assets/videos/local.mp4"
+        scene = _FakeVideoScene("Video: local", spec, "assets/videos/local.mp4")
+        source = build_scene_recording_metadata(scene, Config(), "system")["source"]
+        self.assertIsNone(source["url"])
+        self.assertEqual(source["local_file"], "local.mp4")
+
     def test_video_scene_records_the_tempo_the_backend_resolved(self):
         # The config fields stay unset by default, so only the scene knows
         # which compensation the connected hardware chose.
@@ -214,6 +229,71 @@ class RedactionTest(unittest.TestCase):
         self.assertNotIn("s3cr3t", blob)
         self.assertNotIn("192.168.2.99", blob)
         self.assertEqual(set(payload["hardware"].keys()), {"backend", "system", "sid_model"})
+
+    def test_page_url_yt_dlp_echoes_keeps_no_credential(self):
+        # yt-dlp's generic extractor sets `webpage_url` to the URL it was
+        # given, userinfo and all.
+        page = "https://alice:hunter2@media.example/private/page"
+        scene = _FakeVideoScene(
+            "Private",
+            page,
+            "https://cdn.example.com/stream.mp4",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4", kind="video", webpage_url=page
+            ),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        self.assertNotIn("hunter2", json.dumps(payload))
+        self.assertEqual(payload["source"]["webpage_url"], payload["source"]["url"])
+        self.assertNotIn("Original page", render_description(payload))
+
+
+class _FakeGenericScene:
+    def __init__(self, scene_cfg):
+        self._cfg = scene_cfg
+        self.name = scene_cfg.name
+        self.display_mode = None
+        self.target_fps = None
+        self.duration_s = 30.0
+        self.audio = None
+        self.overlays = []
+
+
+class LocalIdentityTest(unittest.TestCase):
+    def test_slideshow_and_launcher_specs_publish_names_not_paths(self):
+        for scene_type, spec, expected in (
+            ("slideshow", "/home/alice/Pictures/holiday", "holiday"),
+            ("slideshow", "/home/alice/Pictures/holiday/", "holiday"),
+            ("slideshow", "~/Pictures/a.png, /home/alice/b.png", "a.png, b.png"),
+            ("slideshow", "/home/alice/Pictures/*.png", "*.png"),
+            ("launcher", "/home/alice/games/Elite.crt", "Elite.crt"),
+            (
+                "slideshow",
+                "https://alice:hunter2@img.example/pics/a.png",
+                "https://REDACTED@img.example/pics/a.png",
+            ),
+        ):
+            with self.subTest(spec=spec):
+                scene = _FakeGenericScene(SceneCfg(type=scene_type, file=spec, name="Show"))
+                payload = build_scene_recording_metadata(scene, Config(), "system")
+                blob = json.dumps(payload)
+                self.assertNotIn("alice", blob.replace("REDACTED", ""))
+                self.assertEqual(payload["source"], {"file_spec": expected})
+
+    def test_network_addresses_and_device_names_stay_out(self):
+        for scene_cfg in (
+            SceneCfg(type="wled", name="Lights", sink_allow=["203.0.113.7", "192.168.7.0/24"]),
+            SceneCfg(type="midi", name="Keys", midi_port="Alice's iPad Bluetooth"),
+            SceneCfg(type="asid", name="Tracker", asid_port="Alice's MacBook Network Session"),
+        ):
+            with self.subTest(scene_type=scene_cfg.type):
+                payload = build_scene_recording_metadata(
+                    _FakeGenericScene(scene_cfg), Config(), "system"
+                )
+                blob = json.dumps(payload)
+                self.assertNotIn("203.0.113.7", blob)
+                self.assertNotIn("192.168.7.0", blob)
+                self.assertNotIn("Alice", blob)
 
 
 class LogAndParseRoundTripTest(unittest.TestCase):

@@ -8,8 +8,11 @@ import tempfile
 import threading
 import time
 import unittest
+from typing import cast
 from unittest import mock
 from unittest.mock import MagicMock
+
+from _fakes import FrozenClock
 
 from c64cast.hw import machine_input
 from c64cast.hw.c64 import CIA1
@@ -63,20 +66,106 @@ class IdleTimeoutTest(unittest.TestCase):
             self.assertFalse(scene.process_frame(21.0))
 
 
-class FailedLaunchTest(unittest.TestCase):
-    """The playlist sets is_done from process_frame's return, so a setup that
-    could not launch the program has to end the scene there."""
+class _Polls:
+    """A stop event for `_input_loop` that lets `polls` reads through."""
 
-    def test_a_launch_that_raised_ends_the_scene_on_its_first_frame(self):
+    def __init__(self, polls: int):
+        self._left = polls + 1
+
+    def wait(self, _timeout: float) -> bool:
+        self._left -= 1
+        return self._left < 0
+
+
+def _poll_through(scene, api, reads: list[bytes], reads_per_poll: int = 1) -> FrozenClock:
+    """Run `_input_loop` over `reads`, one second of clock per read."""
+    clock = FrozenClock(0.0)
+    api.read_memory.side_effect = lambda *_a: (clock.advance(1.0), reads.pop(0))[1]
+    polls = len(reads) // reads_per_poll - 1
+    with mock.patch.object(scenes, "time", clock):
+        scene._input_loop(cast(threading.Event, _Polls(polls)))
+    return clock
+
+
+class KeyboardInputMeansChangeTest(unittest.TestCase):
+    """A program that fills the keyboard buffer and never drains it leaves
+    $C6 at 10 for good; that is one key event, not a player at the keys."""
+
+    _EMPTY = bytes([0x40, 0x00])
+    _FULL = bytes([0x40, 0x0A])
+
+    def _last_input_after(self, reads: list[bytes]) -> float:
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = _make_scene(tmp, input_source="kernal")
+        _poll_through(scene, api, reads)
+        return scene._last_input_t
+
+    def test_a_keyboard_buffer_left_full_is_input_once(self):
+        self.assertEqual(
+            self._last_input_after([self._EMPTY, self._FULL, self._FULL, self._FULL]), 2.0
+        )
+
+    def test_a_buffer_that_drains_and_refills_is_input_each_time(self):
+        reads = [self._EMPTY, self._FULL, self._EMPTY, self._FULL]
+        self.assertEqual(self._last_input_after(reads), 4.0)
+
+    def test_a_buffer_left_full_lets_the_scene_time_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = _make_scene(tmp, input_source="kernal")
+        scene.duration_s = 3.0
+        scene.start_time = 0.0
+        clock = _poll_through(scene, api, [self._EMPTY] + [self._FULL] * 8)
+        self.assertFalse(scene.process_frame(clock.time()))
+
+
+class HeldJoystickIsInputTest(unittest.TestCase):
+    """A player holding a direction or fire is at the controls for as long
+    as it is held."""
+
+    _IDLE = bytes([CIA1.JOY_MASK, CIA1.JOY_MASK])
+    _UP_HELD = bytes([CIA1.JOY_MASK & ~CIA1.JOY_UP, CIA1.JOY_MASK])
+    _FIRE_HELD_PORT_1 = bytes([CIA1.JOY_MASK, CIA1.JOY_MASK & ~CIA1.JOY_FIRE])
+
+    def _scene_after(self, input_source: str, reads: list[bytes]):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = _make_scene(tmp, input_source=input_source)
+        scene.duration_s = 3.0
+        scene.start_time = 0.0
+        reads_per_poll = 2 if input_source == "auto" else 1
+        return scene, _poll_through(scene, api, reads, reads_per_poll)
+
+    def test_a_direction_held_past_duration_keeps_the_scene_up(self):
+        scene, clock = self._scene_after("cia", [self._IDLE] + [self._UP_HELD] * 8)
+        self.assertTrue(scene.process_frame(clock.time()))
+
+    def test_fire_held_from_the_first_poll_keeps_the_scene_up(self):
+        scene, clock = self._scene_after("cia", [self._FIRE_HELD_PORT_1] * 9)
+        self.assertTrue(scene.process_frame(clock.time()))
+
+    def test_an_idle_joystick_lets_the_scene_time_out(self):
+        scene, clock = self._scene_after("cia", [self._IDLE] * 9)
+        self.assertFalse(scene.process_frame(clock.time()))
+
+    def test_a_held_direction_outlasts_a_full_keyboard_buffer_on_auto(self):
+        full = bytes([0x40, 0x0A])
+        scene, clock = self._scene_after("auto", [self._IDLE, full] + [self._UP_HELD, full] * 8)
+        self.assertTrue(scene.process_frame(clock.time()))
+
+    def test_a_released_direction_lets_the_scene_time_out(self):
+        reads = [self._UP_HELD] * 2 + [self._IDLE] * 7
+        scene, clock = self._scene_after("cia", reads)
+        self.assertFalse(scene.process_frame(clock.time()))
+
+
+class FailedLaunchTest(unittest.TestCase):
+    def test_a_launch_that_raised_reaches_the_playlist(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, api = _make_scene(tmp, input_source="none", reset_before_launch=False)
             api.profile.supports_rest_input = False
             api.launch_program.side_effect = RuntimeError("upload refused")
-            scene.duration_s = 60.0
-            with self.assertLogs("c64cast.scenes.scenes", "ERROR"):
-                scene.setup()
             self.addCleanup(scene.teardown)
-            self.assertFalse(scene.process_frame(time.time()))
+            with self.assertRaisesRegex(RuntimeError, "upload refused"):
+                scene.setup()
 
 
 class AudioLockTest(unittest.TestCase):
@@ -98,7 +187,8 @@ class InputSnapshotTest(unittest.TestCase):
             # Upper bits set (keyboard-scan noise) must be masked away.
             api.read_memory.return_value = bytes([0xEF, 0xFF])
             snap = scene._read_snapshot()
-            self.assertEqual(snap, bytes([0xEF & CIA1.JOY_MASK, 0xFF & CIA1.JOY_MASK]))
+            assert snap is not None
+            self.assertEqual(snap.joystick, bytes([0xEF & CIA1.JOY_MASK, 0xFF & CIA1.JOY_MASK]))
             api.read_memory.assert_called_once_with(CIA1.PORT_A, 2)
 
     def test_kernal_snapshot_reads_scratch_bytes(self):
@@ -106,7 +196,8 @@ class InputSnapshotTest(unittest.TestCase):
             scene, api = _make_scene(tmp, input_source="kernal")
             api.read_memory.return_value = bytes([0x41, 0x01])
             snap = scene._read_snapshot()
-            self.assertEqual(snap, bytes([0x41, 0x01]))
+            assert snap is not None
+            self.assertEqual(snap.keyboard, bytes([0x41, 0x01]))
 
     def test_failed_read_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:

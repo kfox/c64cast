@@ -46,7 +46,14 @@ from .api import (
     _SidPlayerMixin,
     _StubRunnerBackend,
 )
-from .backend import BackendCapabilityError, DacPacing, HardwareProfile, NmiSampleStore
+from .backend import (
+    BackendCapabilityError,
+    DacPacing,
+    HardwareProfile,
+    NmiSampleStore,
+    printable_device_text,
+    read_program_file,
+)
 from .c64 import LOCKED_BITMAP_DAC_SAMPLE_RATE, SCREEN, VECTORS
 from .teensyrom_dma import (
     DRIVE_SD,
@@ -523,7 +530,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         transport = self.tr.transport
         parts = ["TeensyROM+"]
         if serial_number := transport.serial_number:
-            parts.append(serial_number)
+            parts.append(printable_device_text(serial_number))
         parts.append(f"({self.tr.firmware} firmware, {transport.description})")
         return " ".join(parts)
 
@@ -783,14 +790,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         there is nothing this method could read back and compare even if it
         wanted to. A corrupted or desynced upload (see the launcher-upload
         race above) is launched exactly as trustingly as a clean one."""
-        ext = os.path.splitext(path)[1].lower()
-        if ext not in (".prg", ".crt"):
-            raise ValueError(
-                f"launch_program: unsupported extension {ext!r} for {path!r} "
-                f"(expected .prg or .crt)"
-            )
-        with open(path, "rb") as fh:
-            data = fh.read()
+        _, data = read_program_file(path)
         self.invalidate_cache()
         dest = f"{_UPLOAD_DIR}/{os.path.basename(path)}"
         self._upload(data, dest)

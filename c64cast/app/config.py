@@ -675,17 +675,18 @@ class AudioCfg:
             "HW-verified clean on a real NTSC U64-II via a pitch A/B sweep (no NMI "
             "handler overrun) in both char and bitmap modes, and safe on PAL. Note the "
             "REAL streaming ceiling sits BELOW the isolated-handler ceiling "
-            "(max_safe_sample_rate ~13.6 kHz NTSC): the host-DMA audio ring writes "
+            "(max_safe_sample_rate ~12.8 kHz NTSC): the host-DMA audio ring writes "
             "themselves halt the 6510 and steal cycles from the NMI handler, so the "
             "overrun onset under the live pipeline was measured at ~12500 Hz (identical "
             "in char and bitmap — the audio feed, not the video, is the driver). 12000 "
             "keeps margin below that. A rate whose nearest CIA #2 latch gives an NMI "
-            "period under 75 cycles (the 68-cycle handler worst case plus entry "
-            "margin: above ~13.7 kHz NTSC / ~13.2 kHz PAL), or a latch past the "
+            "period under 80 cycles (the $D418 store lags its underflow by up to "
+            "78, and a nested NMI ahead of it plays a sample twice and skips the "
+            "next: above ~12.9 kHz NTSC / ~12.4 kHz PAL), or a latch past the "
             "16-bit timer (under 16 Hz), is rejected at load, and --doctor reports "
             'it. An unresolved [ultimate64].system = "auto" is checked as NTSC, so '
             "on a PAL machine a rate between the two ceilings loads and plays "
-            "clamped to ~13.1 kHz, with a warning. Sampler-backend playback uses "
+            "clamped to ~12.3 kHz, with a warning. Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
     )
@@ -1189,8 +1190,8 @@ class SceneCfg:
         default=None,
         metadata={
             "help": "Seconds before auto-advance; 0 = run forever. Unset = "
-            "scene-type default (webcam/blank run forever when they're the "
-            "only scene, else 30s; waveform = song length or 180s; "
+            "scene-type default (webcam/blank/midi/asid run forever when "
+            "they're the only scene, else 30s; waveform = song length or 180s; "
             'generative with audio_source = "file" = the track\'s length, '
             "or 30s when the container reports none; everything else = 30s). "
             "Video scenes reject this (they run until the file ends). "
@@ -1832,6 +1833,9 @@ class PreviewCfg:
     )
 
 
+RECORDING_EXTENSIONS: tuple[str, ...] = (".mp4", ".m4v", ".mov", ".mkv", ".avi", ".webm")
+
+
 @dataclass
 class RecordingCfg:
     """Capture the rendered display to a video file. Uses cv2.VideoWriter,
@@ -1844,10 +1848,13 @@ class RecordingCfg:
     path: str = field(
         default="recording.mp4",
         metadata={
-            "help": "Output video file path. Does not cascade from an ensemble "
-            "master: a system that leaves this alone records to "
-            "'recording-<system>.mp4' so the wall's systems don't overwrite "
-            "each other. Setting it explicitly uses that path verbatim."
+            "help": "Output video file path, ending in one of "
+            f"{', '.join(RECORDING_EXTENSIONS)}. Never overwrites: a name already "
+            "taken records to 'recording-2.mp4', 'recording-3.mp4', and so on. "
+            "Does not cascade from an ensemble master: a system that leaves this "
+            "alone records to 'recording-<system>.mp4'. A show started from the "
+            "web console (--serve) keeps only the file name and records into "
+            "[web].recording_dir."
         },
     )
     fps: int = field(default=30, metadata={"help": "Recording frame rate."})
@@ -2516,6 +2523,17 @@ class WebCfg:
             'e.g. ["~/Movies", "/mnt/hvsc"]. Empty adds nothing.'
         },
     )
+    # Read from the config the host was launched with, never from the show being
+    # started: a show that could name this directory could name any directory.
+    recording_dir: str = field(
+        default="",
+        metadata={
+            "help": "Directory every show started from the web console records "
+            "into. Only the file name of [recording].path is kept, so a config "
+            "saved through the console cannot write a recording anywhere else. "
+            "Empty = 'recordings' under the data dir."
+        },
+    )
 
 
 _MIDI_CC_TYPE_CHOICES = ("cc", "note", "pc", "mmc")
@@ -2848,8 +2866,8 @@ class PerformanceCfg:
             "no grid. Only `slot` is required; the keys a table omits default to "
             + ", ".join(f"{k} = {v!r}" for k, v in _CLIP_DEFAULTS.items())
             + ' — note that `quantize` defaults to the bar, not to "off", and '
-            "that a looping continuous-frame clip (webcam/blank/slideshow/"
-            "generative/wled) is pinned to duration_s = 0 so it holds until the "
+            "that a looping continuous clip (webcam/blank/slideshow/"
+            "generative/wled/midi/asid) is pinned to duration_s = 0 so it holds until the "
             "next launch."
         },
     )
@@ -3258,6 +3276,17 @@ def _validate_use_reu_staged(video: VideoCfg) -> None:
         raise ValueError(f'[video].use_reu_staged must be true, false, or "auto", got {v!r}')
 
 
+def _validate_recording_path(recording: RecordingCfg) -> None:
+    """A path a web-saved config sets is a write anywhere the host user can
+    write, so it is held to a video file name; anything else is a typo or an
+    attempt on a file that is not a recording."""
+    if not recording.path.lower().endswith(RECORDING_EXTENSIONS):
+        raise ValueError(
+            f"[recording].path must end in one of {', '.join(RECORDING_EXTENSIONS)}, "
+            f"got {recording.path!r}"
+        )
+
+
 def _validate_double_buffer(video: VideoCfg) -> None:
     """The tri-state [video].double_buffer accepts only a bool or the literal
     string "auto" — same shape as use_reu_staged. Catch a typo at load time."""
@@ -3492,10 +3521,10 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
     so a clip inherits every scene knob for free. Called by the launch engine's
     build factory (see session.build_stack / performance.PerformanceSession).
 
-    `loop` and `duration_s` interact: a looping non-video clip is forced to
-    ``duration_s = 0`` (run forever) so it holds until another clip fires; the
-    launch engine re-runs a finished video clip instead (video rejects
-    duration_s). A one-shot clip keeps its scene-type default duration."""
+    `loop` and `duration_s` interact: a looping clip of a continuous type
+    (`_CLIP_CONTINUOUS_TYPES`) is forced to ``duration_s = 0`` (run forever) so
+    it holds until another clip fires; the launch engine re-runs any other
+    finished clip instead (video rejects duration_s). A one-shot clip keeps its scene-type default duration."""
     scene_keys = {k: v for k, v in clip.items() if k not in _CLIP_LAUNCH_KEYS}
     sc = SceneCfg()
     _apply_section(sc, scene_keys, "performance.clips")
@@ -3504,7 +3533,7 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
         and sc.type in _CLIP_CONTINUOUS_TYPES
         and sc.duration_s is None
     ):
-        # Loop forever: hold the continuous-frame scene on screen until the next
+        # Loop forever: hold the continuous scene on screen until the next
         # clip launch, rather than auto-advancing at the scene-type default
         # (e.g. 30 s). Audio-bearing/video clips instead re-setup on is_done (the
         # launch engine's loop path), so their timing/song-length logic is kept.
@@ -3526,8 +3555,10 @@ def scene_and_clip_cfgs(cfg: Config) -> list[tuple[str, SceneCfg]]:
 
 
 # Clip scene types whose "loop" is a continuous hold (run-forever) rather than a
-# re-setup on end — the frame-based visual generators with no natural endpoint.
-_CLIP_CONTINUOUS_TYPES = frozenset({"webcam", "blank", "slideshow", "generative", "wled"})
+# re-setup on end — the generators and live inputs with no natural endpoint.
+_CLIP_CONTINUOUS_TYPES = frozenset(
+    {"webcam", "blank", "slideshow", "generative", "wled", "midi", "asid"}
+)
 
 
 def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
@@ -3850,6 +3881,7 @@ def validate_sections(cfg: Config) -> None:
     fail mid-show instead — the exact thing each of these validators' own
     docstring says it exists to prevent."""
     _validate_use_reu_staged(cfg.video)
+    _validate_recording_path(cfg.recording)
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
     _validate_audio_device(cfg.audio)
@@ -4272,10 +4304,10 @@ def resolve_recording_path(
 ) -> str:
     """Per-system output file for `[recording]`, unexpanded.
 
-    cv2.VideoWriter has no notion of sharing a file, so N systems opening one
-    path produce one truncated stream rather than N recordings. In an ensemble
-    a system that left `path` at the default gets the system name folded into
-    the stem — `recording.mp4` -> `recording-left.mp4` — which is the same
+    Each run claims its file exclusively, so N systems naming one path would
+    land in `-2`, `-3`, … in start order with nothing saying whose is whose.
+    In an ensemble a system that left `path` at the default gets the system
+    name folded into the stem — `recording.mp4` -> `recording-left.mp4` — which is the same
     disambiguation the preview window applies to its HighGUI title.
 
     An explicit per-system `path` is honored verbatim: the user naming the file

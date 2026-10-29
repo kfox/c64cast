@@ -884,7 +884,7 @@ class PerfBridge:
             pl.transport.enqueue(TransportEvent(action=verb))
             return True
         if verb in ("rw", "ff"):
-            pl.transport.enqueue(TransportEvent(action=verb, pressed=pressed))
+            pl.transport.enqueue(TransportEvent(action=verb, pressed=pressed, leased=True))
             return True
         if verb == "seek":
             if target is None:

@@ -269,11 +269,11 @@ separate switches with three unrelated failure modes:
 |---|---|
 | **Ultimate DMA Service**<br>Network Settings | Nothing works. Every pixel is a memory write over this socket, and the run fails at startup |
 | **Command Interface**<br>Memory Configuration | The socket opens and the run then hangs forever — the listener accepts, and no command is ever dispatched |
-| **Web Remote Control Service**<br>Network Settings | Pixels still paint. Reset, program launch, SID playback and every memory *read* — the keyboard poll, the on-C64 menu, the character-ROM dump — do not |
+| **Web Remote Control Service**<br>Network Settings | Pixels still paint, and tunes and `.prg` programs still start. Reset, a `.crt` launch and every memory *read* — the keyboard poll, the on-C64 menu, the character-ROM dump — do not |
 
 The first two are what the startup error names, in that order, when the DMA
 socket cannot be opened; the third is the answer to a run that paints happily
-and never starts a tune. Changing any of them needs a save, so that the change
+while the Commodore keyboard does nothing. Changing any of them needs a save, so that the change
 survives a power cycle. None of them needs a reboot to switch on: a network
 service switched on starts within about two seconds. Switching one of the two
 network services *off* is where firmware differs. Before Ultimate firmware 3.15a,
@@ -300,6 +300,8 @@ to 15. Names are matched loosely and case-insensitively, so `"light green"`,
 **Asset specs.** A scene's `file` is a comma-separated list whose members may
 be literal paths, directories, or glob patterns; their union forms a pool. A
 bare directory is scanned one level deep, and `**` walks a tree at any depth.
+A spec that as a whole names an existing file or directory is that one path,
+commas and all.
 
 ```toml
 file = "~/Music/hvsc/MUSICIANS/G"    # a directory
@@ -524,6 +526,14 @@ each time round — and the CTRL skip is ignored, there being nothing to skip
 to. Pause and the style cycle still work. `interleave_videos` is
 short-circuited, because inserting a video would make the playlist two scenes
 long and silently defeat the mode.
+
+A single scene that cannot start, because its file is missing or unreadable or
+its tune will not load, ends the run with an error that names the scene and
+the reason, and c64cast exits with status 1, looping or not.
+
+With more than one scene, a scene that cannot start is skipped and the
+playlist moves on. When none of its scenes can start, the run ends with an
+error and c64cast exits with status 1, rather than cycling the "UP NEXT" cards.
 
 Every packaged example is a single-scene configuration, which is why each one
 runs until you stop it.

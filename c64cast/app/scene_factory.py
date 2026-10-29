@@ -899,7 +899,15 @@ def split_file_spec(spec: str) -> list[str]:
     bare `http://h/a.mp4,b.mp4` is therefore one URL — write
     `http://h/a.mp4, b.mp4`, or put the local path first, for two entries.
     Nothing else changes: a spec whose entries are paths, dirs and globs
-    splits on every comma exactly as before."""
+    splits on every comma exactly as before.
+
+    A whole spec that names an existing file or directory is one entry, the
+    same way an existing path wins over glob interpretation in
+    :func:`resolve_file_spec`: download tools name a file after its title,
+    and titles carry commas."""
+    whole = spec.strip()
+    if "," in whole and os.path.exists(paths.expand_user(whole)):
+        return [whole]
     entries: list[str] = []
     for raw in spec.split(","):
         if (
@@ -1316,8 +1324,8 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
     """Guard [audio].sample_rate against the NMI handler's cycle budget.
 
     Raises ConfigError for a rate the $D418 DAC NMI timer will not arm on the
-    target system: one that overruns the handler or its entry-latency margin,
-    or is too slow for the 16-bit timer. Thin pass-through to
+    target system: one that overruns the handler or lets a nested NMI land
+    ahead of its $D418 store, or is too slow for the 16-bit timer. Thin pass-through to
     `c64.nmi_rate_safety` so the rule lives in one place (shared with --doctor).
     No-op when audio is disabled or the rate is unset (the backend's default).
 
@@ -2763,6 +2771,8 @@ _BUILDERS: dict[str, Callable[[_SceneBuildContext], Scene]] = {
     "wled": _build_wled,
 }
 
+_LIVE_INPUT_TYPES = ("webcam", "blank", "midi", "asid")
+
 
 def build_scene(
     s: SceneCfg,
@@ -2822,7 +2832,7 @@ def build_scene(
     # `scene.duration_s = math.inf` means "run until stopped":
     #   * explicit duration_s == 0 -> that sentinel (any type);
     #   * explicit duration_s  > 0 -> honored verbatim;
-    #   * unset: webcam/blank go infinite in a SINGLE-scene playlist but keep the base
+    #   * unset: a live-input type goes infinite in a SINGLE-scene playlist but keeps the base
     #     30 s in a multi-scene one, since an infinite live scene never becomes
     #     is_done and would wedge the rotation. Every other type keeps the default
     #     already set above.
@@ -2835,7 +2845,7 @@ def build_scene(
         single_scene_playlist = sum(1 for x in cfg.scenes if not x.follower_only) <= 1
         if s.duration_s is not None:
             scene.duration_s = math.inf if s.duration_s == 0 else s.duration_s
-        elif s.type in ("webcam", "blank") and single_scene_playlist:
+        elif s.type in _LIVE_INPUT_TYPES and single_scene_playlist:
             scene.duration_s = math.inf
     if s.target_fps is not None:
         scene.target_fps = float(s.target_fps)

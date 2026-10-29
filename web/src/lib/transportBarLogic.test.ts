@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { formatTime, keyNudgeEvents, loopButtonLabel, slotEnabled } from "./transportBarLogic";
+import {
+  formatTime,
+  HOLD_KEEPALIVE_MS,
+  HoldKeepAlive,
+  keyNudgeEvents,
+  loopButtonLabel,
+  slotEnabled,
+} from "./transportBarLogic";
 
 describe("formatTime", () => {
   it("formats whole minutes and seconds", () => {
@@ -57,5 +64,52 @@ describe("keyNudgeEvents", () => {
 
   it("a real pointer click (detail >= 1) yields nothing — the hold handlers cover it", () => {
     expect(keyNudgeEvents(1)).toBeNull();
+  });
+});
+
+describe("HoldKeepAlive", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function recorder(): { sent: [string, boolean][]; holds: HoldKeepAlive } {
+    const sent: [string, boolean][] = [];
+    return { sent, holds: new HoldKeepAlive((verb, pressed) => sent.push([verb, pressed])) };
+  }
+
+  it("re-sends a held press until it is released", () => {
+    const { sent, holds } = recorder();
+    holds.press("ff");
+    vi.advanceTimersByTime(HOLD_KEEPALIVE_MS * 3);
+    holds.release("ff");
+    vi.advanceTimersByTime(HOLD_KEEPALIVE_MS * 3);
+    expect(sent).toEqual([
+      ["ff", true],
+      ["ff", true],
+      ["ff", true],
+      ["ff", true],
+      ["ff", false],
+    ]);
+  });
+
+  it("ignores a second press and a release with no press", () => {
+    const { sent, holds } = recorder();
+    holds.release("rw");
+    holds.press("rw");
+    holds.press("rw");
+    expect(sent).toEqual([["rw", true]]);
+  });
+
+  it("lets go of every hold at once", () => {
+    const { sent, holds } = recorder();
+    holds.press("rw");
+    holds.press("ff");
+    holds.releaseAll();
+    vi.advanceTimersByTime(HOLD_KEEPALIVE_MS * 3);
+    expect(sent).toEqual([
+      ["rw", true],
+      ["ff", true],
+      ["rw", false],
+      ["ff", false],
+    ]);
   });
 });

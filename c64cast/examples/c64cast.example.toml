@@ -414,7 +414,7 @@ device = -1                         # int index (-1 = system default input), or 
                                     # scene while a TeensyROM+ locks its DMA slices (12000's
                                     # smaller slices cap bitmap video's frame rate). A set
                                     # value applies to every scene.
-                                    # 12000 keeps fricatives (>8000 Nyquist). Live-pipeline overrun onset ~12.5k NTSC (isolated-handler ceiling ~13.6k / ~13.1k PAL).
+                                    # 12000 keeps fricatives (>8000 Nyquist). Live-pipeline overrun onset ~12.5k NTSC (isolated-handler ceiling ~12.8k / ~12.3k PAL).
                                     # A REQUEST, not a guarantee: it picks a CIA timer latch whose period is a
                                     # whole number of cycles, so you land on the nearest achievable rate —
                                     # 12000 NTSC really runs at 12032.08 Hz (+0.27%), PAL at 12015.22 (+0.13%).
@@ -728,7 +728,8 @@ scale = 3                           # window pixels per C64 pixel
 
 [recording]
 enabled = false                     # cv2.VideoWriter; uses opencv-python
-path = "recording.mp4"
+path = "recording.mp4"              # .mp4/.m4v/.mov/.mkv/.avi/.webm; never
+                                    #   overwrites (recording-2.mp4, ...)
 fps = 30
 scale = 2
 fourcc = "mp4v"
@@ -1084,6 +1085,11 @@ config_roots = []
 media_read_write = {}
 # Additional directories the picker may browse but never write to.
 media_read_only = []
+# Where every show started from the console records: only the file name of
+# [recording].path is kept, so a config saved through the console cannot
+# write a recording anywhere else. Read from the config the host was
+# launched with, never from the show. Empty = "recordings" under the data dir.
+recording_dir = ""
 
 [midi_control]
 # Process-wide MIDI control surface for live performance: scene jumps,
@@ -1279,8 +1285,8 @@ profile_interval = 10.0             # seconds between profiler summary lines
 # then advances. Common fields:
 #   type        — "webcam" | "video" | "waveform" | "midi"
 #   duration_s  — seconds before advancing; 0 = run forever. Unset =
-#                 scene-type default (webcam/blank run forever when they're
-#                 the only scene, else 30s). Rejected on `video` scenes
+#                 scene-type default (webcam/blank/midi/asid run forever
+#                 when they're the only scene, else 30s). Rejected on `video` scenes
 #                 (they run until the video file ends).
 #   name        — display name (used by the interstitial). Optional.
 #   target_fps  — per-scene FPS cap. Default: system rate
@@ -1754,7 +1760,7 @@ palette_mode = "grayscale"
 # # noise = "yellow"
 
 # --- Launcher: run a native C64 program -----------------------------------
-# Launches a .prg (firmware run_prg) or .crt cartridge (run_crt) — chosen by
+# Launches a .prg (DMARUN) or .crt cartridge (run_crt) — chosen by
 # extension — and hands the whole machine to it. Once launched the program
 # owns the VIC/SID/CIAs; c64cast stops painting and only polls for player
 # input. Drop programs into assets/programs/ (see assets/programs/README.md).

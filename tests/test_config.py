@@ -15,6 +15,7 @@ from unittest import mock
 
 from _fakes import FakeAPI, MachineSettingsIsolation
 
+from c64cast._midi import MIDI_AVAILABLE
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
 from c64cast.hw.backend import C64Backend
@@ -1439,6 +1440,16 @@ class ChoiceEnforcementTest(unittest.TestCase):
             self._load("[audio]\npitch_mult_blank = 0.9\n").audio.pitch_mult_blank, 0.9
         )
 
+    def test_a_recording_path_without_a_video_extension_is_refused(self):
+        # A config saved through the web console sets it, and the recorder
+        # truncates what it names.
+        for value in ("~/.zshrc", "~/.ssh/authorized_keys", "out", "clip.mp4.bak"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self._load(f'[recording]\npath = "{value}"\n')
+        self.assertEqual(
+            self._load('[recording]\npath = "shows/Gig.MKV"\n').recording.path, "shows/Gig.MKV"
+        )
+
     def test_a_system_typo_is_still_refused(self):
         with self.assertRaises(ValueError):
             self._load('[ultimate64]\nsystem = "ntscc"\n')
@@ -2326,6 +2337,25 @@ class SceneDurationDefaultTest(unittest.TestCase):
         s = cfgmod.SceneCfg(type="blank")
         scene = self._build(self._cfg(s), s)
         self.assertTrue(math.isinf(scene.duration_s))
+
+    @unittest.skipUnless(MIDI_AVAILABLE, "mido not installed (midi extra)")
+    def test_single_scene_midi_and_asid_unset_are_infinite(self):
+        for scene_type in ("midi", "asid"):
+            with self.subTest(scene_type=scene_type):
+                s = cfgmod.SceneCfg(type=scene_type)
+                cfg = self._cfg(s)
+                cfg.ultimate64.system = "PAL"
+                scene = self._build(cfg, s)
+                self.assertTrue(math.isinf(scene.duration_s))
+
+    @unittest.skipUnless(MIDI_AVAILABLE, "mido not installed (midi extra)")
+    def test_multi_scene_midi_unset_stays_30s(self):
+        s = cfgmod.SceneCfg(type="midi")
+        other = cfgmod.SceneCfg(type="blank")
+        cfg = self._cfg(s, other)
+        cfg.ultimate64.system = "PAL"
+        scene = self._build(cfg, s)
+        self.assertEqual(scene.duration_s, 30.0)
 
     def test_multi_scene_webcam_unset_stays_30s(self):
         # Two scenes → rotation; an infinite live scene would wedge it, so

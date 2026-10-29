@@ -255,6 +255,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         name: str = "MIDI",
     ):
         super().__init__(api, audio, None, name)
+        self.start_time = 0.0
         if not MIDI_AVAILABLE:
             raise RuntimeError(
                 "MidiScene requires mido + python-rtmidi (uv tool install --force 'c64cast[all]')"
@@ -835,6 +836,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
 
     def setup(self) -> None:
         super().setup()
+        self.start_time = time.time()
         # A looping playlist sets this instance up again, and the note-offs
         # sent while it was torn down never reached a reader.
         self._reset_performance()
@@ -866,6 +868,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
             self.emulator.advance_envelopes(self._poll_dt)
 
     def process_frame(self, current_time: float) -> bool:
+        if (current_time - self.start_time) >= self.duration_s:
+            return False
         # A sounding voice (gated, or still decaying) draws in its color, an
         # idle one in gray. Change-detected, so the screen-RAM color write fires
         # only on a transition.

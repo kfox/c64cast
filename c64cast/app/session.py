@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from c64cast.audio import dac_curve_resolve
@@ -46,6 +47,7 @@ from c64cast.video.video import WebcamSource
 from . import config as cfgmod
 from . import paths, scene_factory
 from .ensemble import Ensemble, SystemStack
+from .fs_walk import claim_new_file
 from .orchestrator import OrchestratorError
 from .playlist import FollowerSceneFactory, Playlist
 from .profiler import FrameProfiler, NullProfiler, set_profiler
@@ -459,11 +461,37 @@ def _detach_framebuffer(api: C64Backend, framebuffer: Framebuffer | None) -> Non
         api.remove_write_listener(framebuffer.on_write)
 
 
+#: Bounds the `-2`, `-3`, … search, which costs a file creation per step.
+_MAX_RECORDING_NAME_ATTEMPTS = 1000
+
+
+def _claim_recording_path(spelled: str, recording_dir: Path | None) -> Path:
+    """The file this run records to, created empty so nothing else can claim
+    it: `spelled` as written, or only its name under `recording_dir`, and never
+    a file that already exists."""
+    path = Path(paths.expand_user(spelled))
+    if recording_dir is not None:
+        recording_dir.mkdir(parents=True, exist_ok=True)
+        path = recording_dir / path.name
+    target = claim_new_file(path, _MAX_RECORDING_NAME_ATTEMPTS)
+    if target.name != path.name:
+        log.info("recording: %s already exists; recording to %s", path, target)
+    return target
+
+
 def _build_preview_and_recording(
-    cfg: cfgmod.Config, api: C64Backend, name: str, *, is_ensemble: bool
+    cfg: cfgmod.Config,
+    api: C64Backend,
+    name: str,
+    *,
+    is_ensemble: bool,
+    recording_dir: Path | None = None,
 ) -> tuple[Framebuffer | None, PreviewWindow | None, StreamRecorder | None]:
     """Optional local preview window + stream recorder. Both share a
     Framebuffer that shadows U64 memory writes via api listeners.
+
+    ``recording_dir`` is the web console host's: a show it starts keeps only
+    the file name of its ``[recording].path``.
 
     A framebuffer with no surviving consumer is detached again before
     returning: the write listener costs a shadow-memory update on every DMA
@@ -491,20 +519,26 @@ def _build_preview_and_recording(
         )
     if cfg.recording.enabled:
         assert framebuffer is not None
+        target: Path | None = None
         try:
             from c64cast.video.preview import StreamRecorder as _SR
 
+            target = _claim_recording_path(
+                cfgmod.resolve_recording_path(cfg.recording, name, is_ensemble=is_ensemble),
+                recording_dir,
+            )
             recorder = _SR(
                 framebuffer,
-                paths.expand_user(
-                    cfgmod.resolve_recording_path(cfg.recording, name, is_ensemble=is_ensemble)
-                ),
+                str(target),
                 fps=cfg.recording.fps,
                 scale=cfg.recording.scale,
                 fourcc=cfg.recording.fourcc,
             )
             recorder.start()
-        except RuntimeError as e:
+        except (RuntimeError, OSError, LookupError) as e:
+            if target is not None:
+                target.unlink(missing_ok=True)
+            recorder = None
             log.error("recording disabled: %s", e)
     if preview_window is None and recorder is None:
         _detach_framebuffer(api, framebuffer)
@@ -772,6 +806,7 @@ def _provision_stack(
     profiler: FrameProfiler | NullProfiler,
     is_ensemble: bool,
     config_path: str | None,
+    recording_dir: Path | None = None,
 ) -> SystemStack:
     """Second half of a stack build: provision the machine, build the scenes
     and the playlist, and return the stack, registering what it sets up on
@@ -883,7 +918,7 @@ def _provision_stack(
         release_on_failure("vision controller stop", vision_controller.stop)
 
     framebuffer, preview_window, recorder = _build_preview_and_recording(
-        cfg, api, name, is_ensemble=is_ensemble
+        cfg, api, name, is_ensemble=is_ensemble, recording_dir=recording_dir
     )
     release_on_failure("framebuffer detach", lambda: _detach_framebuffer(api, framebuffer))
     if recorder is not None:
@@ -1367,6 +1402,7 @@ def build_session(
     *,
     interactive: bool = True,
     generation: int = 0,
+    recording_dir: Path | None = None,
 ) -> Session:
     """Open every system's hardware and build its stack, wired to the shared
     stop_event (and to the Ensemble, in multi-system mode).
@@ -1427,6 +1463,7 @@ def build_session(
                     profiler=profiler,
                     is_ensemble=loaded.is_ensemble,
                     config_path=sub_path,
+                    recording_dir=recording_dir,
                 )
                 provisioned.pop_all()
                 ladder.pop_all()

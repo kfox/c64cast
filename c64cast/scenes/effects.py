@@ -390,12 +390,5 @@ class PosterizeEffect(FrameEffect):
         levels = int(round(self.levels))
         if levels >= 256 or levels <= 1:
             return frame
-        # Each band expands back to the full range so the brightest reaches 255,
-        # where a plain floor would cap below white. The uint16 intermediate
-        # keeps the multiply from overflowing uint8.
-        step = 256 // levels
-        if step <= 1:
-            return frame
-        idx = frame // step  # 0..levels-1
-        span = 255 // (levels - 1)
-        return (idx.astype(np.uint16) * span).clip(0, 255).astype(np.uint8)
+        idx = frame.astype(np.uint16) * levels // 256
+        return (idx * 255 // (levels - 1)).astype(np.uint8)

@@ -30,7 +30,7 @@ Hard deps: `opencv-python`, `numpy`, `requests`, `py65`; optional extras are gro
 
 **Setup is `uv sync --all-extras` — never `uv pip` and never raw `pip`** (the mise/`UV_PYTHON` trap: ["Development setup"](CONTRIBUTING.md#development-setup)). The `make` targets route through `uv run`, so they hit the synced project env from any shell; `make doctor` is the fast offline self-check (environment-probe rationale on the probe docstrings in [c64cast/app/doctor.py](c64cast/app/doctor.py)); type-checking is `pyright` basic tree-wide + `mypy --strict` on the state-bearing modules — ["The pre-PR gate"](CONTRIBUTING.md#the-pre-pr-gate).
 
-Target hardware: an [Ultimate 64](https://ultimate64.com/) on the LAN. Writes go over the **Ultimate DMA Service** (TCP port 64, persistent socket); reads, reset, run_prg, and probe go over REST. SID playback DMAs the payload + a tiny 6502 player into C64 RAM and kicks a `SYS` stub through `run_prg` — the firmware's `runners:sidplay` endpoint is deliberately avoided because it hijacks HDMI. See [api.run_sid_player](c64cast/hw/api.py) and [docs/caveats.md](docs/caveats.md).
+Target hardware: an [Ultimate 64](https://ultimate64.com/) on the LAN. Writes and PRG kicks (DMARUN) go over the **Ultimate DMA Service** (TCP port 64, persistent socket); reads, reset, `.crt` launches, and probe go over REST. The REST `run_prg` runner is avoided because it leaves a numbered copy in the device's `/Temp` on every launch ([hardware-io.md](docs/architecture/hardware-io.md#prg-kicks-go-over-dmarun-not-run_prg)). SID playback DMAs the payload + a tiny 6502 player into C64 RAM and kicks a `SYS` stub through DMARUN — the firmware's `runners:sidplay` endpoint is deliberately avoided because it hijacks HDMI. See [api.run_sid_player](c64cast/hw/api.py) and [docs/caveats.md](docs/caveats.md).
 
 ## Configuration
 
@@ -115,11 +115,13 @@ a subagent says "follow CLAUDE.md → Findings" rather than paraphrasing them.
    on the current code proves it before the fix lands. Style, refactors and
    prose as writing are not findings.
 2. **Fix it — the default.** Grep for the pattern, predicate or shape you
-   changed and fix every sibling site in the same commit. A related defect
-   found on the way — in a file the change touches, or the same mechanism one
-   call away — is fixed in this change as its own commit with its own
-   failing-first test, not filed. "Small" is a reason to fix it, never to file
-   it; a two-line fix costs less than the issue describing it.
+   changed and fix every sibling site in the same commit. Another instance of
+   the class the change fixes — the same mechanism one call away — is fixed in
+   this change as its own commit with its own failing-first test, not filed.
+   "Small" is a reason to fix it, never to file it; a two-line fix costs less
+   than the issue describing it. A defect outside that class stays out of this
+   change's commits and PR, even when it sits in a file the change touches:
+   file it under rule 4 or decline it under rule 5.
 3. **A guard ships only with the input that reaches it.** A check, clamp,
    retry, fallback, `try`/`except`, `None` test or validation names the caller
    at `file:line`, the value, and the wrong result without it. That value comes
@@ -134,15 +136,20 @@ a subagent says "follow CLAUDE.md → Findings" rather than paraphrasing them.
 4. **File it** only when it cannot be fixed here *and* it names (1) the caller
    at `file:line`, (2) the input that reaches it — observed, from an external
    contract, or chosen across a trust boundary — and (3) the wrong result.
-   "Cannot be fixed here" means it needs a design decision that is Kelly's,
-   hardware nobody authorized, files another in-flight branch is changing, or
-   would make this change materially bigger or riskier. One labeled issue per
+   "Cannot be fixed here" means it is outside the class the change fixes, or
+   it needs a design decision that is Kelly's, hardware nobody authorized,
+   files another in-flight branch is changing, or would make this change
+   materially bigger or riskier. One labeled issue per
    item, linked to the PR — never a list in a PR description.
 5. **Drop it — everything else.** Suspicions no input reaches, latent traps
    ("would become real if…"), guards for failures never seen, design opinions,
    behavior that matches its docs, flake risks never seen failing. Each gets one
    line under "Declined" in the report that reaches the user; none is committed
    or filed. Don't manufacture work — there is plenty of real work queued.
+
+**A defect found in merged code is labeled `escaped-review`**: on its issue when
+it is filed, otherwise on the PR that fixes it. The `review-audit` skill counts
+those labels to tell whether review is missing things.
 
 **Reviews** run through the agents in [.claude/agents/](.claude/agents/):
 `reviewer` for every change, and the four lanes `/panel-review`
@@ -178,6 +185,9 @@ a site the list has not caught up to yet:
 
   This token is the same class of secret as the DMA password, and it gates the
   same kind of remote control of the host.
+- `.github/workflows/`: the jobs that decide whether a PR may merge, and the
+  ones holding publish rights (PyPI, the Pages site, GitHub releases). A change
+  here can turn a gate green without running it, or ship what nobody reviewed.
 
 **Hardware during a review or a ship run.** The suite fakes every backend, so
 prove a finding there first. When the caller's prompt says hardware use is

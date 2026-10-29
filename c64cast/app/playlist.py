@@ -201,6 +201,10 @@ class Playlist:
         # teardown failed to unhook may still be on $0314: `safe_setup` runs
         # `_release_leaked_irq` before the next scene that is not the card.
         self._irq_release_owed = False
+        # The scene whose last setup raised, so that it renders nothing and ends.
+        self._failed_setup: Scene | None = None
+        # ids of the listed scenes that failed to start since one last started.
+        self._unstartable: set[int] = set()
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
@@ -276,6 +280,7 @@ class Playlist:
 
         self.index = 0
         self.current: Scene | None = None
+        self.failed_to_start = False
         # The WLED `bri` slider, 0 < user_dim <= 1.0. Owned here rather than on
         # the display mode, whose instance is per-scene, so it survives an
         # auto-advance: `safe_setup` re-stamps it onto each fresh scene.
@@ -486,26 +491,25 @@ class Playlist:
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         """Cut to scenes[index] at the next clean frame boundary (reuses
-        skip_event to force the current scene done — see _advance's
-        end-of-scene branch, which consumes _jump_target in place of the
-        usual index+1). No-op in single-scene mode (nowhere to jump to).
+        skip_event to force the current scene or "UP NEXT" card done — see
+        _advance's end-of-scene and end-of-card branches, which consume
+        _jump_target in place of the usual next scene). No-op in
+        single-scene mode (nowhere to jump to).
 
         skip_interstitial=True (the default, and what a live-performance
         control surface should always pass) bypasses the "UP NEXT" card
         entirely for a hard cut, still gated on the ensemble audio claim
         for the target scene like single-scene looping is. False routes
         through the normal transitioning/interstitial path instead, for
-        callers that still want the card.
-
-        Known limitation: a jump requested while self.current is None
-        (the brief startup / finished-without-loop window) is dropped —
-        re-send once the playlist has a current scene."""
-        if self.single_scene:
-            self.log.debug("jump to %d ignored — single-scene mode", index)
-            return
-        if not 0 <= index < len(self.scenes):
-            raise ValueError(f"jump index {index} out of range (0..{len(self.scenes) - 1})")
+        callers that still want the card."""
+        # Checked under the lock `_apply_reload` swaps the scene list under, so
+        # a reload cannot land between the bounds check and the write.
         with self._jump_lock:
+            if self.single_scene:
+                self.log.debug("jump to %d ignored — single-scene mode", index)
+                return
+            if not 0 <= index < len(self.scenes):
+                raise ValueError(f"jump index {index} out of range (0..{len(self.scenes) - 1})")
             self._jump_target = index
             self._jump_skip_interstitial = skip_interstitial
         self.skip_event.set()
@@ -524,8 +528,11 @@ class Playlist:
             return
         self.log.info("playlist: reloading (%d → %d scenes)", len(self.scenes), len(new_scenes))
         self.drop_current()
-        self.scenes = new_scenes
-        self.single_scene = len(new_scenes) == 1
+        with self._jump_lock:
+            self._jump_target = None
+            self._unstartable.clear()
+            self.scenes = new_scenes
+            self.single_scene = len(new_scenes) == 1
         if new_interstitial is not None:
             self.interstitial_factory = new_interstitial
         self.index = 0
@@ -591,6 +598,11 @@ class Playlist:
         if self.current is None:
             self._resolve_and_announce()
         elif self.on_card and self.current.is_done:
+            jump = self._take_jump()
+            if jump is not None:
+                self.drop_current()
+                self._jump_to(*jump)
+                return
             self.fades.fade_out(self.current)
             self.safe_teardown(self.current)
             upcoming = self.scenes[self.index]
@@ -608,7 +620,7 @@ class Playlist:
                 return
             self.current = upcoming
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
-            self.safe_setup(self.current)
+            self._set_up_listed_scene(self.current)
             self.transitioning = False
         elif not self.on_card and self.current.is_done:
             self._advance_after_scene()
@@ -628,8 +640,11 @@ class Playlist:
                 self.current.name,
                 "looping" if self.loop else "once-through",
             )
-            self.safe_setup(self.current)
+            self._set_up_single_scene(scene)
         elif self.current.is_done:
+            if self.setup_failed(self.current):
+                self._stop_on_failed_start(self.current)
+                return
             if not self.loop:
                 self.log.info("scene %r finished and loop=False — stopping", self.current.name)
                 self.fades.fade_out(self.current)
@@ -643,8 +658,50 @@ class Playlist:
             if not self.ensemble_coord.wait_for_audio_claim(scene):
                 self.current = None
                 return
-            self.safe_setup(scene)
-            scene.is_done = False
+            if self._set_up_single_scene(scene):
+                scene.is_done = False
+
+    def _set_up_single_scene(self, scene: Scene) -> bool:
+        """Set up the one scene. A setup that leaves the scene already done
+        failed to start it, and there is no other scene to play: stop the
+        run. False when it did. One that raises renders nothing and ends,
+        and `_advance_single_scene` stops the run then."""
+        self.safe_setup(scene)
+        if not scene.is_done or self.stop_event.is_set():
+            return True
+        self._log_failed_start(scene)
+        self._stop_on_failed_start(scene)
+        return False
+
+    def _set_up_listed_scene(self, scene: Scene) -> None:
+        """Set up a scene of a multi-scene playlist. One that fails to start
+        is skipped, unless every scene has failed since one last started:
+        then there is nothing to play, and the run stops."""
+        self.safe_setup(scene)
+        if self.stop_event.is_set():
+            return
+        if not (self.setup_failed(scene) or scene.is_done):
+            self._unstartable.clear()
+            return
+        self._unstartable.add(id(scene))
+        if len(self._unstartable) < len(self.scenes):
+            return
+        self.log.error("none of the %d scenes could start; stopping", len(self.scenes))
+        self.failed_to_start = True
+        self.stop_event.set()
+
+    def _log_failed_start(self, scene: Scene, exc: Exception | None = None) -> None:
+        cause = (
+            f"{type(exc).__name__}: {exc}"
+            if exc is not None
+            else getattr(scene, "setup_failure", None) or "its setup ended it"
+        )
+        self.log.error("scene %r could not start (%s)", scene.name, cause, exc_info=exc)
+
+    def _stop_on_failed_start(self, scene: Scene) -> None:
+        self.log.info("%r is the only scene; stopping", scene.name)
+        self.failed_to_start = True
+        self.stop_event.set()
 
     def _advance_after_scene(self) -> None:
         """A non-transition scene finished: fade + tear it down, then honor a
@@ -653,25 +710,9 @@ class Playlist:
         assert self.current is not None
         self.fades.fade_out(self.current)
         self.safe_teardown(self.current)
-        with self._jump_lock:
-            jump_target = self._jump_target
-            jump_skip_interstitial = self._jump_skip_interstitial
-            self._jump_target = None
-        if jump_target is not None:
-            self.index = jump_target
-            if jump_skip_interstitial:
-                scene = self.scenes[self.index]
-                if not self.ensemble_coord.wait_for_audio_claim(scene):
-                    self.current = None
-                    return
-                self.log.info(
-                    "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
-                )
-                self.current = scene
-                self.safe_setup(self.current)
-                self.transitioning = False
-                return
-            self._resolve_and_announce()
+        jump = self._take_jump()
+        if jump is not None:
+            self._jump_to(*jump)
             return
         next_index = self.index + 1
         if next_index >= len(self.scenes):
@@ -683,6 +724,30 @@ class Playlist:
             next_index = 0
         self.index = next_index
         self._resolve_and_announce()
+
+    def _take_jump(self) -> tuple[int, bool] | None:
+        """Consume the pending `request_jump`: its target and whether it
+        skips the card, or None."""
+        with self._jump_lock:
+            target = self._jump_target
+            self._jump_target = None
+            return None if target is None else (target, self._jump_skip_interstitial)
+
+    def _jump_to(self, target: int, skip_interstitial: bool) -> None:
+        """With no scene current, cut to `scenes[target]`, or announce it
+        through the card."""
+        self.index = target
+        if not skip_interstitial:
+            self._resolve_and_announce()
+            return
+        scene = self.scenes[target]
+        if not self.ensemble_coord.wait_for_audio_claim(scene):
+            self.current = None
+            return
+        self.log.info("scene %d/%d → %r (jump)", target + 1, len(self.scenes), scene.name)
+        self.current = scene
+        self._set_up_listed_scene(scene)
+        self.transitioning = False
 
     def _resolve_and_announce(self) -> None:
         """Resolve the scene to play from `self.index` and show its "UP
@@ -809,6 +874,10 @@ class Playlist:
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
 
+    def setup_failed(self, scene: Scene) -> bool:
+        """Whether `scene`'s last setup raised, leaving it not set up."""
+        return scene is self._failed_setup
+
     def follower_frame_rendered(self) -> bool:
         """Called after each frame of a broadcast follower scene, which the
         run loop does not drive. A machine restart under it puts the run's
@@ -817,7 +886,7 @@ class Playlist:
         rejected, and playing on against a machine that lost the follower's
         setup was the defect. The follower never held the ensemble audio
         slot (nothing claims one for it), so it does not wait to claim it.
-        True when it did. Raises what the new setup raises."""
+        True when it did."""
         if not self.restart_watch.after_frame(self._frame_landed, counted=True):
             return False
         self._set_up_again_after_restart(claim_audio=False)
@@ -899,11 +968,13 @@ class Playlist:
 
     def _setup_through_outage(self, scene: Scene, announcing: Scene | None = None) -> bool:
         """Set `scene` up, and again once the link answers when the link
-        cost the setup a write. False when `stop_event` fired while waiting:
-        a stop while waiting for the link leaves the scene as its last setup
-        left it, and a stop while waiting to claim the ensemble audio slot
-        back leaves it already torn down. Either way the caller's teardown
-        still runs on it.
+        cost the setup a write. False when the scene is not set up: its
+        setup raised anything but a `LinkError`, which ends the scene
+        (`_failed_setup`) and leaves the rest of the playlist to play, or
+        `stop_event` fired while waiting. A stop while waiting for the link
+        leaves the scene as its last setup left it, and a stop while waiting
+        to claim the ensemble audio slot back leaves it already torn down.
+        Either way the caller's teardown still runs on it.
 
         A setup lost a write when it raised a `LinkError`, when by the end
         of a `flush()` after it the backend's `write_loss_mark()` for this
@@ -927,6 +998,7 @@ class Playlist:
         keeps the file the scene picked (`keep_pick_for_resetup`), which
         the "UP NEXT" card has already named."""
         where = f"setup of {scene.name!r}"
+        self._failed_setup = None
         lossy_tries = 0
         while True:
             claimant: Scene | None = None
@@ -956,6 +1028,11 @@ class Playlist:
                 self.api.flush()
             except LinkError as e:
                 error = e
+            except Exception as e:
+                self._log_failed_start(scene, e)
+                self._failed_setup = scene
+                self.fades.ended_via_skip = True
+                return False
             # A release still owed lost a write ahead of the mark, and keeping
             # this setup could leave the leaked handler hooked, the bank on 2 or
             # the keyboard dead through the scene.
@@ -1154,7 +1231,14 @@ class Playlist:
         path can drive a follower scene through the same render +
         overlay + heartbeat + frame-drop machinery without duplicating
         any of it. Skip/cycle events are honored against this scene
-        (consistent with `self.current` being the active scene)."""
+        (consistent with `self.current` being the active scene).
+
+        A scene whose setup raised renders nothing: it ends here, after one
+        frame's wait, so the playlist moves on at the usual pace."""
+        if self.setup_failed(scene):
+            scene.is_done = True
+            self._frame_landed = False
+            return self._idle_pace(scene, next_deadline)
         frame_time = self.frame_time_for(scene)
         with self.profiler.frame(scene.name):
             t0 = time.time()
@@ -1321,7 +1405,9 @@ class Playlist:
         analyzer, bpm == 0) freezes the grid — no phantom tempo on a non-audio
         scene. Called every frame on the playlist thread; cheap in-memory work."""
         feats = scene.features()
-        self.tempo.audio_drive(feats.bpm if feats is not None else 0.0, now)
+        # Not `now`: that is the frame's wall clock, and the grid's taps and
+        # MIDI bytes are stamped on the monotonic clock audio_drive defaults to.
+        self.tempo.audio_drive(feats.bpm if feats is not None else 0.0)
         # Lock/loss transitions at INFO, the live BPM at DEBUG every ~2 s while
         # locked, so -v shows the grid tracking the beat.
         locked = self.tempo.running
@@ -1439,7 +1525,6 @@ class Playlist:
                         )
                         self._restore_after_teardown = True
                     else:
-                        # Ends the run as a setup failing in `_advance` does.
                         try:
                             self._set_up_again_after_restart()
                         except Exception:

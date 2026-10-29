@@ -1208,6 +1208,43 @@ class RunDaemonBindFailureTest(RunDaemonTestCase):
         self.assertEqual(self.advertised, [])
 
 
+class RecordingDirTest(RunDaemonTestCase):
+    """A show the console starts may come from a config the console just
+    saved, so where it records is the host's to say, never the show's."""
+
+    def _built_with(self, build, show_recording_dir: str = "") -> Any:
+        cfg = cfgmod.Config()
+        cfg.web.recording_dir = show_recording_dir
+        req = serve.StartRequest(
+            args=argparse.Namespace(), loaded=mock.MagicMock(name="loaded"), cfgs=[cfg]
+        )
+        with (
+            mock.patch.object(serve, "build_session") as build_session,
+            mock.patch.object(serve, "start_services"),
+            mock.patch.object(serve, "start_playlists"),
+        ):
+            build(req, 1, lambda _sess: None)
+        return build_session.call_args.kwargs["recording_dir"]
+
+    def test_the_show_cannot_name_the_directory(self):
+        self.assertEqual(
+            self._built_with(serve.build_and_start, show_recording_dir=str(self.tmp / "evil")),
+            paths.recordings_dir(),
+        )
+
+    def test_the_host_config_names_the_directory(self):
+        builds: list[Any] = []
+        real_init = serve.SessionManager.__init__
+
+        def init(mgr, **kwargs):
+            builds.append(kwargs.get("build"))
+            real_init(mgr, **kwargs)
+
+        with mock.patch.object(serve.SessionManager, "__init__", init):
+            self.drive(cfgmod.WebCfg(autostart=False, recording_dir=str(self.tmp / "gigs")))
+        self.assertEqual(self._built_with(builds[0]), self.tmp / "gigs")
+
+
 class SetupPendingTest(RunDaemonTestCase):
     """What `_setup_pending` requires before it opens an unauthenticated form
     on the network. The absence of one file under the *data* root used to be

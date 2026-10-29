@@ -1159,6 +1159,21 @@ class LifecycleTests(_MidiTestCase):
         # the constant to it.
         self.assertEqual(api.memories.get("D018"), "14")
 
+    def test_the_scene_ends_at_duration_s(self):
+        scene, _ = _make_scene()
+        scene.duration_s = 40.0
+        with mock.patch.object(
+            scene,
+            "_open_port",
+            side_effect=lambda: setattr(scene, "_midi_port", _FakePort()),
+        ):
+            scene.setup()
+        try:
+            self.assertTrue(scene.process_frame(scene.start_time + 39.0))
+            self.assertFalse(scene.process_frame(scene.start_time + 40.0))
+        finally:
+            scene.teardown()
+
     def test_setup_programs_sid_and_starts_reader(self):
         scene, api = _make_scene(filter_mode="lowpass", master_volume=15)
         # Avoid touching real MIDI hardware: install a stub port.

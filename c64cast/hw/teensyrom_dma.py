@@ -55,6 +55,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .backend import printable_device_text
+
 log = logging.getLogger(__name__)
 
 DEFAULT_TCP_PORT = 2112
@@ -185,16 +187,6 @@ def span_touches_cart_io(addr: int, length: int) -> bool:
     """True when [addr, addr+length) overlaps $DE00-$DFFF, which WriteC64Spans
     refuses and WriteC64Mem has to carry instead."""
     return addr < SPANS_IO_END and addr + length > SPANS_IO_START
-
-
-def _sanitize_device_text(text: str) -> str:
-    """Strip non-printable characters from device-supplied text before it
-    reaches a log record or an exception message. The TR's status lines and
-    NAK reasons are free text from a LAN/USB peripheral with no framing of
-    their own; keeping only printable characters stops a hostile or
-    malfunctioning device from forging ANSI escapes or embedded newlines into
-    ``--log-file`` output or a rendered error message."""
-    return "".join(c for c in text if c.isprintable())
 
 
 def _encode_path(path: str) -> bytes:
@@ -461,7 +453,7 @@ class SerialTransport(TRTransport):
                     quiet_deadline = time.monotonic() + quiet_s
         finally:
             self._ser.timeout = prev_timeout  # type: ignore[attr-defined]
-        return _sanitize_device_text(buf.decode("ascii", errors="replace"))
+        return printable_device_text(buf.decode("ascii", errors="replace"))
 
     def close(self) -> None:
         if self._ser is not None:
@@ -551,7 +543,7 @@ class TcpTransport(TRTransport):
                 buf.extend(chunk)
         finally:
             self._sock.settimeout(prev)
-        return _sanitize_device_text(buf.decode("ascii", errors="replace"))
+        return printable_device_text(buf.decode("ascii", errors="replace"))
 
     def close(self) -> None:
         if self._sock is not None:

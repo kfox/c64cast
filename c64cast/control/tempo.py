@@ -41,6 +41,10 @@ _PULSE_EMA_ALPHA = 0.2
 # a fresh average.
 _TAP_RESET_S = 2.0
 
+# A tap sooner than one beat at _BPM_MAX after the last is a bounce (a pad
+# double-firing, a doubled console request), not a beat.
+_TAP_MIN_INTERVAL_S = 60.0 / _BPM_MAX
+
 
 class TempoClock:
     """A process-wide beat grid, GIL-atomically readable by every consumer.
@@ -83,6 +87,8 @@ class TempoClock:
         # Flips True once any external transport/clock byte arrives; gates the
         # per-pulse extrapolation cap (external is pulse-truthed, internal isn't).
         self._external = False
+        # Set by a 0xFC Stop, cleared by Start/Continue.
+        self._halted = False
         self._last_pulse_time: float | None = None
         self._pulse_bpm: float | None = None
         self._tap_times: deque[float] = deque(maxlen=8)
@@ -97,18 +103,27 @@ class TempoClock:
             advance = min(advance, 1.0 / self.PPQN)
         return self._phase_base + advance
 
+    def _claim_for_midi_locked(self) -> None:
+        # The audio drive re-claims the grid every frame, so a MIDI byte
+        # taking it from "audio" would only make the reported source flicker.
+        if self._source == "internal":
+            self._source = "midi"
+
     def clock_pulse(self, now: float) -> None:
         """A ``0xF8`` MIDI clock byte (24 per quarter note). Advances the grid by
         exactly 1/24 beat and refreshes the BPM estimate from the inter-pulse
         interval. A free-running clock with no preceding Start still starts the
-        grid on its first pulse."""
+        grid on its first pulse; after a Stop, pulses only track the BPM until a
+        Start or Continue, since a device keeps sending clock while stopped, and
+        are ignored once a tap or the audio drive has taken the held grid over."""
         with self._lock:
+            if self._halted and self._running:
+                return
             self._external = True
-            first = self._last_pulse_time is None
-            self._running = True
-            if not first:
-                self._phase_base += 1.0 / self.PPQN
-                dt = now - self._last_pulse_time  # type: ignore[operator]
+            if self._last_pulse_time is not None:
+                if not self._halted:
+                    self._phase_base += 1.0 / self.PPQN
+                dt = now - self._last_pulse_time
                 if dt > 1e-6:
                     inst = 60.0 / (self.PPQN * dt)
                     if _BPM_MIN <= inst <= _BPM_MAX:
@@ -119,14 +134,20 @@ class TempoClock:
                                 1.0 - _PULSE_EMA_ALPHA
                             ) * self._pulse_bpm + _PULSE_EMA_ALPHA * inst
                         self._bpm = self._pulse_bpm
-            self._base_time = now
             self._last_pulse_time = now
+            if self._halted:
+                return
+            self._running = True
+            self._base_time = now
+            self._claim_for_midi_locked()
 
     def start(self, now: float) -> None:
         """A ``0xFA`` Start: reset to the top of bar 1, beat 0, and run."""
         with self._lock:
             self._external = True
+            self._halted = False
             self._running = True
+            self._claim_for_midi_locked()
             self._phase_base = 0.0
             self._base_time = now
             self._last_pulse_time = None
@@ -136,7 +157,9 @@ class TempoClock:
         preceding ``0xF2`` song-position parked it)."""
         with self._lock:
             self._external = True
+            self._halted = False
             self._running = True
+            self._claim_for_midi_locked()
             self._base_time = now
             self._last_pulse_time = None
 
@@ -146,6 +169,7 @@ class TempoClock:
             self._phase_base = self._phase_at_locked(now)
             self._base_time = now
             self._running = False
+            self._halted = True
             self._last_pulse_time = None
 
     def song_position(self, sixteenths: int, now: float) -> None:
@@ -166,6 +190,8 @@ class TempoClock:
         downbeat to this tap. The first tap of a group (or after a >2 s gap) just
         seeds the timing; two or more set the tempo."""
         with self._lock:
+            if self._tap_times and (now - self._tap_times[-1]) < _TAP_MIN_INTERVAL_S:
+                return
             if self._tap_times and (now - self._tap_times[-1]) > _TAP_RESET_S:
                 self._tap_times.clear()
             self._tap_times.append(now)

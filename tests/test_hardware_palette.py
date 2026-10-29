@@ -19,6 +19,7 @@ from c64cast.app import scene_factory
 from c64cast.app.config import Config, SceneCfg
 from c64cast.hw import hardware_palette as hp
 from c64cast.hw.api import Ultimate64API
+from c64cast.hw.socket_dma import SocketDMAError
 from c64cast.video import palette
 
 # What the machine shows before the run: a custom .vpl, so a restore that
@@ -664,6 +665,7 @@ class SlideshowPushTest(unittest.TestCase):
         self.assertTrue(self.scene.pushes_hardware_palette)
         self.scene.prepare_next()
         self.scene.setup()
+        self.addCleanup(self.scene.teardown)
         self.assertEqual(self.control.show.call_count, 1)
         self.scene._image_start -= self.scene.image_duration_s
         with mock.patch("c64cast.scenes.scenes._render_with_overlays"):
@@ -690,6 +692,7 @@ class SlideshowPushTest(unittest.TestCase):
         fake_time.time.side_effect = lambda: clock[0]
         with mock.patch("c64cast.scenes.scenes.time", fake_time):
             self.scene.setup()
+            self.addCleanup(self.scene.teardown)
             self.assertEqual(self.scene._image_start, clock[0])
             clock[0] += self.scene.image_duration_s
             with mock.patch("c64cast.scenes.scenes._render_with_overlays"):
@@ -920,14 +923,25 @@ class ResetListenerTest(unittest.TestCase):
             self.api.reset()
         self.assertEqual(self.calls, 0)
 
-    def test_the_clear_loop_run_prg_runs_them(self):
-        with mock.patch.object(self.api.session, "post"):
+    def test_the_clear_loop_kick_runs_them(self):
+        with mock.patch.object(self.api.socket_dma, "dmarun"):
             self.api.run_basic_clear_loop()
         self.assertEqual(self.calls, 1)
 
-    def test_every_runner_kick_runs_them(self):
+    def test_every_prg_kick_runs_them(self):
+        with mock.patch.object(self.api.socket_dma, "dmarun"):
+            self.api._run_prg(b"\x01\x08", timeout=1)
+        self.assertEqual(self.calls, 1)
+
+    def test_a_failed_prg_kick_does_not(self):
+        with mock.patch.object(self.api.socket_dma, "dmarun", side_effect=SocketDMAError("down")):
+            with self.assertRaises(RuntimeError):
+                self.api._run_prg(b"\x01\x08", timeout=1)
+        self.assertEqual(self.calls, 0)
+
+    def test_the_cartridge_kick_runs_them(self):
         with mock.patch.object(self.api.session, "post"):
-            self.api._post_prg("/v1/runners:run_prg", "x.prg", b"\x01\x08", timeout=1, what="")
+            self.api._post_crt("x.crt", b"C64 CARTRIDGE", timeout=1)
         self.assertEqual(self.calls, 1)
 
     def test_a_removed_listener_is_not_run(self):

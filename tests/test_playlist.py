@@ -21,7 +21,12 @@ import threading
 import time
 import unittest
 from collections.abc import Callable
+from unittest import mock
 
+from _fakes import FakeAPI
+
+from c64cast import _midi
+from c64cast._midi import MIDI_AVAILABLE
 from c64cast.app import playlist_support
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import OsdState
@@ -464,25 +469,104 @@ class PlaylistTest(unittest.TestCase):
         self.assertGreater(bad_td.setup_count, 0)
         self.assertGreater(ok.setup_count, 0, "next scene must still start after teardown raises")
 
-    def test_setup_exception_is_caught_in_advance(self):
-        # If a scene's setup raises, the playlist logs it and the loop exits
-        # cleanly (we don't try to recover from an unstartable scene).
+    def test_a_scene_whose_setup_raises_is_ended_and_the_playlist_plays_on(self):
+        bad = FakeScene("X", raise_on_setup=True)
+        good = FakeScene("GOOD", frames_until_done=2)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+            self._run_until([bad, good], lambda: good.setup_count >= 1)
+        self.assertTrue(
+            any("scene 'X' could not start (RuntimeError" in line for line in cap.output),
+            f"expected the setup failure, got: {cap.output!r}",
+        )
+        self.assertEqual(bad.frame_count, 0, "a scene that never set up must not render")
+        self.assertGreater(bad.teardown_count, 0, "a scene whose setup raised is still torn down")
+
+    def test_a_lone_scene_whose_setup_raises_stops_the_run_after_its_teardown(self):
         bad_setup = FakeScene("X", raise_on_setup=True)
         api = FakeApi()
         factory, _ = _transition_factory()
+        stop = threading.Event()
         pl = Playlist(
             [bad_setup],
             api,
             target_fps=10000.0,
             heartbeat_interval=0.0,
+            stop_event=stop,
             interstitial_factory=factory,
         )
-        # Should not hang -- _advance catches and breaks.
-        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+        arm_deadline(self, 5.0, stop.set)
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertTrue(
-            any("playlist advance failed; aborting" in line for line in cap.output),
-            f"expected advance-failure log, got: {cap.output!r}",
+            any("'X' is the only scene; stopping" in line for line in cap.output),
+            f"expected the stop, got: {cap.output!r}",
+        )
+        self.assertEqual(bad_setup.teardown_count, 1)
+        self.assertEqual(bad_setup.frame_count, 0)
+
+    def test_a_looping_clip_whose_setup_raises_returns_to_the_playlist(self):
+        from c64cast.control.performance import ClipEvent, PerformanceSession
+
+        base = FakeScene("BASE", frames_until_done=10**9)
+        clip = FakeScene("CLIP", raise_on_setup=True)
+        stop = threading.Event()
+        pl = Playlist(
+            [base],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.performance = PerformanceSession([{"slot": 1, "type": "generative", "quantize": "off"}])
+        pl.build_performance_scene = lambda _clip: clip
+        driven = _drive(
+            stop,
+            lambda: base.frame_count >= 1,
+            lambda: pl.performance.enqueue(ClipEvent(slot=1, pressed=True)),
+            lambda: clip.teardown_count >= 1,
+            lambda: base.setup_count >= 2,
+        )
+        with self.assertLogs("c64cast.app.playlist", level="ERROR"):
+            pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "the playlist never came back to its own scene")
+        self.assertEqual(clip.teardown_count, 1, "a clip that cannot set up was set up again")
+
+    def test_a_looping_clip_whose_setup_ends_it_returns_to_the_playlist(self):
+        from c64cast.control.performance import ClipEvent, PerformanceSession
+
+        class EndsInSetup(FakeScene):
+            def setup(self):
+                super().setup()
+                self.is_done = True
+
+        base = FakeScene("BASE", frames_until_done=10**9)
+        clip = EndsInSetup("CLIP")
+        stop = threading.Event()
+        pl = Playlist(
+            [base],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.performance = PerformanceSession([{"slot": 1, "type": "generative", "quantize": "off"}])
+        pl.build_performance_scene = lambda _clip: clip
+        driven = _drive(
+            stop,
+            lambda: base.frame_count >= 1,
+            lambda: pl.performance.enqueue(ClipEvent(slot=1, pressed=True)),
+            lambda: clip.setup_count >= 1,
+            lambda: base.setup_count >= 2,
+            timeout=2.0,
+        )
+        pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "the playlist never came back to its own scene")
+        self.assertLessEqual(
+            clip.setup_count, 2, "a clip that ends in setup was set up every frame"
         )
 
     def test_stop_event_halts_the_loop_between_frames(self):
@@ -681,9 +765,6 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        # Wait past the playlist's own startup interstitial before firing: a
-        # jump landing while the first "UP NEXT" card is still transitioning
-        # is consumed as a plain skip into scene A.
         driven = _drive(
             stop,
             lambda: scenes[0].setup_count >= 1,
@@ -735,6 +816,114 @@ class PlaylistTest(unittest.TestCase):
         assert baseline is not None, "startup interstitial never completed"
         self.assertEqual(counter["n"], baseline, "a cut jump must never build an interstitial")
         self.assertGreaterEqual(scenes[1].setup_count, 1)
+
+    def _on_card_announcing_b(self) -> tuple[Playlist, list[FakeScene], Callable[[], int]]:
+        scenes = [FakeScene(n, frames_until_done=10_000_000) for n in "ABC"]
+        factory, counter = _transition_factory()
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=factory,
+        )
+        pl.current = scenes[0]
+        scenes[0].is_done = True
+        pl._advance()
+        self.assertTrue(pl.on_card)
+        self.assertEqual(pl.index, 1)
+        return pl, scenes, lambda: counter["n"]
+
+    def test_a_cut_requested_during_the_card_lands_on_its_target(self):
+        pl, scenes, _ = self._on_card_announcing_b()
+        card = pl.current
+        assert card is not None
+        pl.request_jump(2, skip_interstitial=True)
+        pl._apply_frame_events(card, still_active=True)
+        pl._advance()
+        self.assertIs(pl.current, scenes[2])
+        self.assertEqual(pl.index, 2)
+        self.assertEqual(scenes[1].setup_count, 0, "the announced scene must not play")
+        self.assertIsNone(pl._jump_target, "the jump must not wait for the next scene to end")
+
+    def test_a_carded_jump_requested_during_the_card_announces_its_target(self):
+        pl, scenes, cards_built = self._on_card_announcing_b()
+        card = pl.current
+        assert card is not None
+        before = cards_built()
+        pl.request_jump(2, skip_interstitial=False)
+        pl._apply_frame_events(card, still_active=True)
+        pl._advance()
+        self.assertTrue(pl.on_card)
+        self.assertEqual(pl.index, 2)
+        self.assertEqual(cards_built(), before + 1)
+        self.assertEqual(scenes[1].setup_count, 0)
+        self.assertIsNone(pl._jump_target)
+
+    def test_a_reload_cannot_land_between_a_jumps_bounds_check_and_its_write(self):
+        reloaded = [FakeScene("X"), FakeScene("Y")]
+        reload_done = threading.Event()
+        pl: Playlist
+
+        def apply_reload():
+            pl._apply_reload()
+            reload_done.set()
+
+        class ReloadOnFirstLen(list):
+            armed = False
+
+            def __len__(self):
+                if ReloadOnFirstLen.armed:
+                    ReloadOnFirstLen.armed = False
+                    reloader = threading.Thread(target=apply_reload)
+                    self_test.addCleanup(reloader.join)
+                    reloader.start()
+                    reload_done.wait(0.5)
+                return super().__len__()
+
+        self_test = self
+        scenes = ReloadOnFirstLen(FakeScene(n, frames_until_done=10_000_000) for n in "ABC")
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.current = scenes[0]
+        pl.request_reload(reloaded)
+        ReloadOnFirstLen.armed = True
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl.request_jump(2)
+            self.assertTrue(reload_done.wait(5.0))
+        self.assertEqual([s.name for s in pl.scenes], ["X", "Y"])
+        self.assertIsNone(pl._jump_target, "a jump checked against the old list must not survive")
+
+    def test_a_reload_drops_a_jump_aimed_at_the_old_scene_list(self):
+        scenes = [FakeScene(n, frames_until_done=10_000_000) for n in "ABC"]
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.current = scenes[0]
+        pl.request_jump(2)
+        reloaded = [FakeScene("X"), FakeScene("Y")]
+        pl.request_reload(reloaded)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+            pl._advance()
+            card = pl.current
+            assert card is not None and pl.on_card
+            card.is_done = True
+            pl._advance()
+            self.assertIs(pl.current, reloaded[0])
+            reloaded[0].is_done = True
+            pl._advance()
+        self.assertTrue(pl.on_card)
+        self.assertEqual(pl.index, 1, "the reloaded list walks on from X to Y")
 
     def _writes_seen_by_the_next_setup(self, cut: str) -> list[tuple[str, object]]:
         scenes = [FakeScene("A", frames_until_done=10_000_000), FakeScene("B")]
@@ -1721,6 +1910,14 @@ class PlaylistAudioTempoDriveTest(unittest.TestCase):
         pl._drive_tempo_from_audio(self._FeatureScene("B", None), now=1.0)
         self.assertFalse(pl.tempo.running)
 
+    def test_a_tap_between_frames_keeps_the_phase_on_the_grid(self):
+        pl = self._playlist("audio")
+        scene = self._FeatureScene("A", 120.0)
+        pl._drive_tempo_from_audio(scene, now=time.time())
+        pl.tempo.tap(time.monotonic())
+        pl._drive_tempo_from_audio(scene, now=time.time())
+        self.assertLess(pl.tempo.beat_phase, 4.0)
+
 
 class ScriptedStopEvent(threading.Event):
     """A stop event that runs the next step of `steps` in place of blocking and
@@ -1968,6 +2165,264 @@ class ConfigSaveBackupTest(unittest.TestCase):
             menu.save_config()
         self.assertIn("original preserved at", logs.output[0])
         self.assertIn("not overwritten", logs.output[1])
+
+
+class SingleSceneThatFailsToStartTest(unittest.TestCase):
+    """A one-scene playlist whose scene comes back from its setup already
+    done stops the run with an ERROR naming the scene and the cause, looping
+    or not."""
+
+    def _missing_video(self):
+        from unittest.mock import MagicMock
+
+        from c64cast.scenes.scenes import VideoScene
+
+        dm = MagicMock()
+        dm.default_target_fps = None
+        dm.supports_compose = False
+        missing = os.path.join(tempfile.mkdtemp(), "missing.mp4")
+        return VideoScene(MagicMock(), None, dm, missing), missing
+
+    def test_a_missing_video_stops_the_run_with_its_cause(self):
+        for loop in (True, False):
+            with self.subTest(loop=loop):
+                scene, missing = self._missing_video()
+                pl = Playlist(
+                    [scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=loop
+                )
+                setups: list[int] = []
+                setup = scene.setup
+
+                def counted_setup(setup=setup, setups=setups, pl=pl) -> None:
+                    setups.append(1)
+                    if len(setups) >= 3:
+                        pl.stop_event.set()
+                    setup()
+
+                scene.setup = counted_setup
+                with self.assertLogs("c64cast", level="INFO") as cap:
+                    pl.run()
+                errors = [
+                    r.getMessage()
+                    for r in cap.records
+                    if r.name.startswith("c64cast.app.playlist") and r.levelno == logging.ERROR
+                ]
+                self.assertEqual(len(setups), 1)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(repr(scene.name), errors[0])
+                self.assertIn(missing, errors[0])
+                self.assertTrue(pl.failed_to_start)
+                self.assertIsNone(pl.current)
+
+    def test_a_setup_that_raises_stops_the_run_with_its_exception(self):
+        for loop in (True, False):
+            with self.subTest(loop=loop):
+                scene = FakeScene("A", raise_on_setup=True)
+                pl = Playlist(
+                    [scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=loop
+                )
+                with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+                    pl.run()
+                errors = [r.getMessage() for r in cap.records]
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("'A'", errors[0])
+                self.assertIn("setup blew up in A", errors[0])
+                self.assertTrue(pl.failed_to_start)
+                self.assertIsNone(pl.current)
+
+    def test_a_lap_that_fails_to_start_stops_the_run(self):
+        scene = FakeScene("A", frames_until_done=10_000_000)
+        setup = scene.setup
+
+        def second_setup_fails() -> None:
+            setup()
+            scene.is_done = scene.setup_count >= 2
+
+        scene.setup = second_setup_fails
+        pl = Playlist([scene], FakeApi(), target_fps=30.0, heartbeat_interval=0.0, loop=True)
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
+            pl._advance()
+            self.assertFalse(pl.failed_to_start)
+            scene.is_done = True
+            pl._advance()
+        self.assertEqual(scene.setup_count, 2)
+        self.assertTrue(pl.failed_to_start)
+        self.assertTrue(pl.stop_event.is_set())
+        self.assertTrue(
+            [r for r in cap.records if r.levelno == logging.ERROR and "'A'" in r.getMessage()]
+        )
+
+    def test_a_stop_while_the_setup_waits_on_the_link_is_no_failure(self):
+        from c64cast.hw.backend import LinkError
+
+        scene = FakeScene("A", frames_until_done=10_000_000)
+
+        def setup_on_a_dead_link() -> None:
+            scene.setup_count += 1
+            scene.is_done = True
+            raise LinkError("link down")
+
+        scene.setup = setup_on_a_dead_link
+        api = FakeApi()
+        api.answers = False
+        pl = Playlist([scene], api, target_fps=30.0, heartbeat_interval=0.0, loop=True)
+        pl.stop_event.set()
+        with self.assertLogs("c64cast", level="INFO") as cap:
+            pl._advance()
+        self.assertFalse(pl.failed_to_start)
+        self.assertFalse([r for r in cap.records if r.levelno >= logging.ERROR])
+
+
+class _PlaylistFakeAPI(FakeAPI):
+    """The scene-facing fake, plus what the run loop itself reads."""
+
+    def __init__(self):
+        super().__init__()
+        self.stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
+
+    def format_write_latency(self):
+        return None
+
+    def link_answers(self):
+        return True
+
+
+@unittest.skipUnless(MIDI_AVAILABLE, "mido not installed (midi extra)")
+class SetupFailureOfARealSceneTest(unittest.TestCase):
+    def test_a_midi_scene_whose_port_is_gone_is_torn_down_and_skipped(self):
+        from c64cast.sid.midi_scene import MidiScene
+
+        api = _PlaylistFakeAPI()
+        midi = MidiScene(api, None, port="Keystation")
+        good = FakeScene("GOOD", frames_until_done=2)
+        stop = threading.Event()
+        pl = Playlist(
+            [midi, good],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            loop=False,
+        )
+        arm_deadline(self, 5.0, stop.set)
+        with (
+            mock.patch.object(_midi.mido, "get_input_names", return_value=["IAC Driver Bus 1"]),
+            self.assertLogs("c64cast.app.playlist", level="ERROR") as cap,
+        ):
+            pl.run()
+        self.assertTrue(
+            any("scene 'MIDI' could not start (RuntimeError" in line for line in cap.output),
+            f"expected the setup failure, got: {cap.output!r}",
+        )
+        self.assertEqual(good.setup_count, 1, "the scene after it must still play")
+        self.assertIn("SILENCE", api.regs, "the SID its setup programmed must be silenced")
+
+
+class LoneSceneWhoseOwnGuardIsGoneTest(unittest.TestCase):
+    """A raise that a scene used to catch in its own setup reaches the
+    playlist, which names the scene and the cause."""
+
+    def test_a_lone_launcher_whose_launch_raises_fails_to_start(self):
+        from c64cast.scenes.scenes import LauncherScene
+
+        tmp = tempfile.mkdtemp()
+        prg = os.path.join(tmp, "demo.prg")
+        with open(prg, "wb") as f:
+            f.write(b"\x01\x08")
+        api = _PlaylistFakeAPI()
+        api.launch_program = mock.Mock(side_effect=RuntimeError("upload refused"))
+        api.reset = mock.Mock()
+        scene = LauncherScene(api, prg, input_source="none", reset_before_launch=False)
+        pl = Playlist([scene], api, target_fps=10000.0, heartbeat_interval=0.0)
+        arm_deadline(self, 5.0, pl.stop_event.set)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
+            pl.run()
+        errors = [r.getMessage() for r in cap.records]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(repr(scene.name), errors[0])
+        self.assertIn("upload refused", errors[0])
+        self.assertTrue(pl.failed_to_start)
+
+
+class _EndsAtSetup(FakeScene):
+    """A scene whose setup records why it cannot start and ends it, as a
+    missing file does."""
+
+    setup_failure = "its file is missing"
+
+    def setup(self):
+        super().setup()
+        self.is_done = True
+
+
+class PlaylistWithNoSceneThatStartsTest(unittest.TestCase):
+    """A multi-scene playlist skips a scene that cannot start, but one where
+    no scene can start has nothing to play."""
+
+    def _playlist(self, scenes, loop):
+        stop = threading.Event()
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=_transition_factory()[0],
+            loop=loop,
+        )
+        arm_deadline(self, 5.0, stop.set)
+        return pl
+
+    def test_a_pass_in_which_no_scene_starts_stops_the_run(self):
+        for loop in (True, False):
+            with self.subTest(loop=loop):
+                raising = FakeScene("X", raise_on_setup=True)
+                ending = _EndsAtSetup("Y")
+                pl = self._playlist([raising, ending], loop)
+                with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
+                    pl.run()
+                errors = [r.getMessage() for r in cap.records if r.levelno == logging.ERROR]
+                self.assertTrue(pl.failed_to_start)
+                self.assertEqual(ending.setup_count, 1, "a second pass was started")
+                self.assertTrue(any("none of the 2 scenes" in e for e in errors), errors)
+                self.assertTrue(any("setup blew up in X" in e for e in errors), errors)
+
+    def test_failures_spread_over_passes_with_starts_between_are_skipped(self):
+        first_fails = FakeScene("X", frames_until_done=2)
+        later_fail = FakeScene("Y", frames_until_done=2)
+        attempts = {"X": 0, "Y": 0}
+
+        def failing_when(scene, fails):
+            setup = scene.setup
+
+            def attempt():
+                attempts[scene.name] += 1
+                scene.raise_on_setup = fails(attempts[scene.name])
+                setup()
+
+            scene.setup = attempt
+
+        failing_when(first_fails, lambda n: n == 1)
+        failing_when(later_fail, lambda n: n >= 2)
+        pl = self._playlist([first_fails, later_fail], loop=True)
+        driven = _drive(pl.stop_event, lambda: first_fails.setup_count >= 3)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR"):
+            pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "the playlist stopped playing X")
+        self.assertFalse(pl.failed_to_start)
+
+    def test_a_failure_before_a_reload_does_not_count_against_the_new_list(self):
+        pl = self._playlist([FakeScene("OLD", raise_on_setup=True), FakeScene("OLD2")], loop=True)
+        with self.assertLogs("c64cast.app.playlist", level="ERROR"):
+            pl._set_up_listed_scene(pl.scenes[0])
+        new = [FakeScene("NEW", raise_on_setup=True), FakeScene("NEW2")]
+        pl.request_reload(new)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            pl._apply_reload()
+            pl._set_up_listed_scene(new[0])
+        self.assertFalse(pl.failed_to_start)
 
 
 if __name__ == "__main__":

@@ -14,9 +14,11 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, cast
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -60,6 +62,7 @@ from c64cast.video.video import (
 )
 
 from .bitmap_text import glyphs_to_mask, load_glyphs
+from .picture_header import is_jpeg, picture_size
 from .setup_progress import SegmentedProgress, make_setup_bar
 from .video_transport import VideoTransportControls
 
@@ -190,9 +193,18 @@ def _apply_aspect(
     return _crop_to_aspect(img, target_ratio)
 
 
+def _media_basename(path: str) -> str:
+    """The last path segment of a local path or an http(s) URL. A URL's query
+    and fragment are left out: a private asset's access token rides there,
+    and the name is drawn on screen and published in SCENE_CONFIG_JSON."""
+    if path.lower().startswith(("http://", "https://")):
+        path = urlsplit(path).path
+    return os.path.basename(path.rstrip("/" + os.sep))
+
+
 def _display_name(path: str) -> str:
     """Basename without its file extension, for scene-name display."""
-    return os.path.splitext(os.path.basename(path))[0]
+    return os.path.splitext(_media_basename(path))[0]
 
 
 def _blit_c64_text(
@@ -338,6 +350,7 @@ class Scene:
     # waveform cycle's re-applied explicit one; None while it has set none.
     # A class attribute so a scene built without __init__ (tests) still has one.
     _derived_duration_s: float | None = None
+    setup_failure: str | None = None
 
     def __init__(
         self,
@@ -467,6 +480,15 @@ class Scene:
         setup() again (a setup the link failed), so the next setup() keeps
         the file this one picked rather than rolling a new one, which the
         "UP NEXT" card would not have named. Default: no-op."""
+
+    def report_setup_failure(
+        self, logger: logging.Logger, msg: str, *args: object, exc_info: bool = False
+    ) -> None:
+        """Log at ERROR why this scene cannot start, and keep the reason as
+        `setup_failure` for a playlist that has no other scene to play and
+        stops on it."""
+        self.setup_failure = msg % args
+        logger.error(msg, *args, exc_info=exc_info)
 
     def setup(self) -> None:
         self.is_done = False
@@ -656,6 +678,7 @@ class WebcamScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
+        self._frame_count = 0
         self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
         _start_scene_mic(self, self.audio_cfg)
 
@@ -871,41 +894,20 @@ class SourceScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
+        self._frame_count = 0
         self.source.setup()
-        # The playlist does not wrap setup() in try/except, so a raise from a
-        # source that rejects its content would crash the run loop. Self-abort
-        # instead and let the playlist advance.
-        try:
-            self.audio_source.setup()
-        except Exception:
-            log.exception(
-                "scene %r: audio source %s failed to start — aborting scene",
-                self.name,
-                type(self.audio_source).__name__,
-            )
-            self.is_done = True
-        if not self.is_done:
-            self.sync_duration_to_audio()
+        self.audio_source.setup()
+        self.sync_duration_to_audio()
         # A SID audio source kicks its player through run_prg, which re-inits
         # the machine to text mode and clobbers the VIC registers super().setup()
         # just wrote; re-assert the display after it, against invalidated cache.
-        if (
-            not self.is_done
-            and self.display_mode is not None
-            and getattr(self.audio_source, "resets_display", False)
-        ):
+        if self.display_mode is not None and getattr(self.audio_source, "resets_display", False):
             self.api.invalidate_cache()
             self.display_mode.setup(self.api)
         # After any display re-assert above, so it installs onto the settled mode.
-        if not self.is_done:
-            self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
+        self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
 
     def process_frame(self, current_time: float) -> bool:
-        # A generative FrameSource is never `finished`, so an is_done set by a
-        # failed setup() has to end the scene here or it plays silent for the
-        # full duration.
-        if self.is_done:
-            return False
         if self.source.finished or self.audio_source.finished:
             return False
         if (current_time - self.start_time) >= self.duration_s:
@@ -1004,6 +1006,7 @@ class MediaFileMixin:
     filepath: str
     name: str
     _prepared: bool
+    report_setup_failure: Callable[..., None]
 
     def _resolve_candidates(self) -> list[str]:
         from c64cast.app.scene_factory import resolve_file_spec
@@ -1019,11 +1022,14 @@ class MediaFileMixin:
 
     def _initial_scene_name(self, candidates: list[str]) -> str:
         """The build-time scene name: the file's basename for a single-entry
-        pool, the raw spec for a multi-entry one (the picked file's basename
-        gets prefixed at each setup)."""
+        pool, each spec entry's basename for a multi-entry one (the picked
+        file's basename gets prefixed at each setup)."""
+        from c64cast.app.scene_factory import split_file_spec
+
         if len(candidates) == 1:
             return f"{self.MEDIA_LABEL.title()}: {self._display_name_for(candidates[0])}"
-        return f"{self.MEDIA_LABEL.title()}: {self.file_spec}"
+        entries = ", ".join(_media_basename(e) for e in split_file_spec(self.file_spec))
+        return f"{self.MEDIA_LABEL.title()}: {entries}"
 
     def _pick_filepath(self) -> bool:
         """Re-resolve the spec (directories rescan between iterations so
@@ -1035,7 +1041,8 @@ class MediaFileMixin:
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error(
+            self.report_setup_failure(
+                log,
                 "%s: file spec %r failed to resolve at setup: %s",
                 self.MEDIA_LABEL,
                 self.file_spec,
@@ -1049,7 +1056,7 @@ class MediaFileMixin:
             log.info(
                 "%s: picked %s from %d candidates",
                 self.MEDIA_LABEL,
-                os.path.basename(self.filepath),
+                _media_basename(self.filepath),
                 len(candidates),
             )
         return True
@@ -1063,6 +1070,64 @@ class MediaFileMixin:
 
     def keep_pick_for_resetup(self) -> None:
         self._prepared = self._pick_held
+
+
+# 8192 x 8192: 192 MB of BGR, against the ~3 GB OpenCV's own 2^30 limit allows.
+MAX_PICTURE_PIXELS = 1 << 26
+
+
+_REDUCED_DECODES = (
+    (8, cv2.IMREAD_REDUCED_COLOR_8),
+    (4, cv2.IMREAD_REDUCED_COLOR_4),
+    (2, cv2.IMREAD_REDUCED_COLOR_2),
+)
+
+
+def _decode_flag(width: int, height: int, target: tuple[int, int] | None) -> int:
+    """The coarsest `cv2.imread` reduction of a JPEG that still leaves at
+    least the pixels `_plan_decode_size` asks for, decoded at that scale
+    inside libjpeg."""
+    planned = _plan_decode_size(width, height, *target) if target else None
+    if planned is None:
+        return cv2.IMREAD_COLOR
+    for factor, flag in _REDUCED_DECODES:
+        if width // factor >= planned[0] and height // factor >= planned[1]:
+            return flag
+    return cv2.IMREAD_COLOR
+
+
+def _decode_picture(path: str, target: tuple[int, int] | None = None) -> np.ndarray | None:
+    """The picture at `path` as BGR, reduced toward `target` (a display
+    mode's `frame_target_size`) where that loses nothing the mode keeps, or
+    None, with a WARNING saying why, when it cannot be sized from its header,
+    is larger than `MAX_PICTURE_PIXELS`, or does not decode."""
+    try:
+        size = picture_size(path)
+        jpeg = is_jpeg(path)
+    except OSError as e:
+        log.warning("slideshow: cannot read %s (%s); skipping", path, e)
+        return None
+    if size is None:
+        log.warning("slideshow: %s has no PNG, JPEG, BMP or WebP header; skipping", path)
+        return None
+    width, height = size
+    if width * height > MAX_PICTURE_PIXELS:
+        log.warning(
+            "slideshow: %s is %dx%d, over the %d-pixel limit; skipping",
+            path,
+            width,
+            height,
+            MAX_PICTURE_PIXELS,
+        )
+        return None
+    # OpenCV reduces every other format with a bilinear resize after a full
+    # decode, which samples a few source pixels per output pixel and drops
+    # the rest; _shrink_for_display's INTER_AREA averages them all.
+    flag = _decode_flag(width, height, target) if jpeg else cv2.IMREAD_COLOR
+    img = cv2.imread(path, flag)
+    if img is None:
+        log.warning("slideshow: failed to decode %s; skipping", path)
+    return img
 
 
 class SlideshowScene(MediaFileMixin, Scene):
@@ -1119,6 +1184,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._display_wiring = wiring if wiring is not None else DisplayWiring(color=self._color)
         candidates = self._resolve_candidates()
         super().__init__(api, None, display_mode, self._initial_scene_name(candidates))
+        self._candidates = candidates
         self._shuffle_bag: list[str] = []
         self._current_path: str | None = None
         self._current_img: np.ndarray | None = None
@@ -1126,6 +1192,8 @@ class SlideshowScene(MediaFileMixin, Scene):
         self.start_time: float = 0.0
         self._prepared = False
         self._hw_palette: HardwarePalette | None = None
+        self._decoder: ThreadPoolExecutor | None = None
+        self._upcoming: tuple[str, Future[np.ndarray | None]] | None = None
 
     def _maybe_rebuild_display_mode(self) -> None:
         """When display_spec is "random", pick a fresh concrete mode and
@@ -1162,59 +1230,101 @@ class SlideshowScene(MediaFileMixin, Scene):
         log.info("slideshow: display = random → %s", new_name)
 
     def _advance_image(self) -> None:
-        """Pop the next image from the shuffle bag; reshuffle when empty."""
-        try:
-            candidates = self._resolve_candidates()
-        except ValueError as e:
-            log.error("slideshow: file spec %r failed to resolve at advance: %s", self.file_spec, e)
-            self.is_done = True
-            return
+        """Show the next slide: the one `_queue_next_slide` decoded ahead when
+        there is one, else the next from the shuffle bag, decoded here."""
         undecodable: set[str] = set()
+        upcoming, self._upcoming = self._upcoming, None
         while True:
-            if not self._shuffle_bag:
-                self._shuffle_bag = [p for p in candidates if p not in undecodable]
-                if not self._shuffle_bag:
+            if upcoming is not None:
+                path, img = upcoming[0], upcoming[1].result()
+                upcoming = None
+            else:
+                next_path = self._pop_next_path(undecodable)
+                if next_path is None:
+                    self.report_setup_failure(
+                        log,
+                        "slideshow: none of the %d picture(s) for %r could be decoded",
+                        len(self._candidates),
+                        self.file_spec,
+                    )
                     self.is_done = True
                     return
-                random.shuffle(self._shuffle_bag)
-                # No-immediate-repeat across reshuffle boundaries.
-                if len(self._shuffle_bag) > 1 and self._shuffle_bag[0] == self._current_path:
-                    self._shuffle_bag[0], self._shuffle_bag[1] = (
-                        self._shuffle_bag[1],
-                        self._shuffle_bag[0],
-                    )
-            path = self._shuffle_bag.pop(0)
-            img = cv2.imread(path, cv2.IMREAD_COLOR)
+                path, img = next_path, self._load_slide(next_path)
             if img is None:
-                log.warning("slideshow: failed to decode %s; skipping", path)
                 undecodable.add(path)
                 self._shuffle_bag = [p for p in self._shuffle_bag if p != path]
                 continue
-            self._current_path = path
-            self._current_img = _apply_aspect(self._shrink_for_display(img), self._aspect_mode)
-            if self.display_mode is not None:
-                c = self._color
-                if c.auto_fit:
-                    # Full strength: the display mode lerps it by
-                    # [color].auto_fit_strength at apply time.
-                    fit_acc = ColorFitAccumulator(strength=1.0)
-                    fit_acc.add(self._current_img)
-                    self.display_mode.set_color_fit(fit_acc.result())
-                if c.force_palette:
-                    from c64cast.app.config import resolved_force_palette
-
-                    n_colors, indices = resolved_force_palette(c)
-                    map_acc = ColorMapAccumulator(n_colors=n_colors, indices=indices)
-                    map_acc.add(self._current_img)
-                    self.display_mode.set_color_map(map_acc.result())
-            self.name = f"Slideshow: {_display_name(path)}"
-            self._image_start = time.time()
-            log.info(
-                "slideshow: showing %s (%d remaining in bag)",
-                os.path.basename(path),
-                len(self._shuffle_bag),
-            )
+            self._show_slide(path, img)
             return
+
+    def _pop_next_path(self, undecodable: set[str]) -> str | None:
+        """Pop the next path from the shuffle bag, reshuffling the pool when
+        it is empty. None when nothing in the pool is left to try."""
+        if not self._shuffle_bag:
+            self._shuffle_bag = [p for p in self._candidates if p not in undecodable]
+            if not self._shuffle_bag:
+                return None
+            random.shuffle(self._shuffle_bag)
+            # No-immediate-repeat across reshuffle boundaries.
+            if len(self._shuffle_bag) > 1 and self._shuffle_bag[0] == self._current_path:
+                self._shuffle_bag[0], self._shuffle_bag[1] = (
+                    self._shuffle_bag[1],
+                    self._shuffle_bag[0],
+                )
+        return self._shuffle_bag.pop(0)
+
+    def _load_slide(self, path: str) -> np.ndarray | None:
+        target = getattr(self.display_mode, "frame_target_size", None)
+        img = _decode_picture(path, target)
+        if img is None:
+            return None
+        return _apply_aspect(self._shrink_for_display(img), self._aspect_mode)
+
+    def _queue_next_slide(self) -> None:
+        """Start decoding the slide after the one on screen, off the render
+        thread, so the advance only has to install it."""
+        if self._upcoming is not None or self.is_done:
+            return
+        path = self._pop_next_path(set())
+        if path is None:
+            return
+        if self._decoder is None:
+            self._decoder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="slideshow-decode")
+        self._upcoming = (path, self._decoder.submit(self._load_slide, path))
+
+    def _stop_decoder(self) -> None:
+        decoder, self._decoder = self._decoder, None
+        upcoming, self._upcoming = self._upcoming, None
+        if upcoming is not None:
+            self._shuffle_bag.insert(0, upcoming[0])
+        if decoder is not None:
+            decoder.shutdown(wait=True, cancel_futures=True)
+
+    def _show_slide(self, path: str, img: np.ndarray) -> None:
+        self._current_path = path
+        self._current_img = img
+        if self.display_mode is not None:
+            c = self._color
+            if c.auto_fit:
+                # Full strength: the display mode lerps it by
+                # [color].auto_fit_strength at apply time.
+                fit_acc = ColorFitAccumulator(strength=1.0)
+                fit_acc.add(img)
+                self.display_mode.set_color_fit(fit_acc.result())
+            if c.force_palette:
+                from c64cast.app.config import resolved_force_palette
+
+                n_colors, indices = resolved_force_palette(c)
+                map_acc = ColorMapAccumulator(n_colors=n_colors, indices=indices)
+                map_acc.add(img)
+                self.display_mode.set_color_map(map_acc.result())
+        self.name = f"Slideshow: {_display_name(path)}"
+        self._image_start = time.time()
+        log.info(
+            "slideshow: showing %s (%d remaining in bag)",
+            os.path.basename(path),
+            len(self._shuffle_bag),
+        )
 
     def _shrink_for_display(self, img: np.ndarray) -> np.ndarray:
         """`img` at the size VideoScene decodes to, once per slide: the mode
@@ -1235,9 +1345,11 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._current_path = None
         self._current_img = None
         try:
-            self._resolve_candidates()
+            self._candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error("slideshow: file spec %r failed to resolve at setup: %s", self.file_spec, e)
+            self.report_setup_failure(
+                log, "slideshow: file spec %r failed to resolve at setup: %s", self.file_spec, e
+            )
             return False
         self._advance_image()
         self._pick_held = self._current_img is not None
@@ -1270,6 +1382,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         # while the "UP NEXT" card is on screen.
         self._hw_palette = _scene_hardware_palette(self.api, self._color, self.display_mode)
         self._push_slide_palette()
+        self._queue_next_slide()
 
     def _push_slide_palette(self) -> None:
         if self._hw_palette is not None and self._current_img is not None:
@@ -1284,7 +1397,10 @@ class SlideshowScene(MediaFileMixin, Scene):
 
     def teardown(self) -> None:
         control, self._hw_palette = self._hw_palette, None
-        steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("slide decoder stop", self._stop_decoder),
+            ("base teardown", super().teardown),
+        ]
         if control is not None:
             steps.append(("hardware palette release", control.release))
         run_teardown_steps(log, type(self).__name__, steps)
@@ -1299,6 +1415,7 @@ class SlideshowScene(MediaFileMixin, Scene):
             if self.is_done or self._current_img is None:
                 return False
             self._push_slide_palette()
+            self._queue_next_slide()
         img = self._current_img
         if self.show_frame_numbers:
             label = (
@@ -1472,7 +1589,8 @@ class VideoScene(MediaFileMixin, Scene):
         self._audio_held = False
         self.transport.loop_store = make_loop_preset_store(self.filepath)
         if not ensure_pyav():
-            log.warning(
+            self.report_setup_failure(
+                log,
                 "PyAV unavailable; video scene cannot play %s "
                 "(install with `uv tool install --force 'c64cast[all]'`)",
                 self.filepath,
@@ -1481,7 +1599,8 @@ class VideoScene(MediaFileMixin, Scene):
             return
         is_url = self.filepath.lower().startswith(("http://", "https://"))
         if not is_url and not os.path.exists(self.filepath):
-            log.error(
+            self.report_setup_failure(
+                log,
                 "video: file not found: %s — check the path in "
                 "your config or the [playlist].videos_dir contents",
                 self.filepath,
@@ -1517,11 +1636,14 @@ class VideoScene(MediaFileMixin, Scene):
                 tempo_follow=self.tempo_follow,
             )
         except PermissionError as e:
-            log.error("video: permission denied opening %s (%s)", self.filepath, e)
+            self.report_setup_failure(
+                log, "video: permission denied opening %s (%s)", self.filepath, e
+            )
             self.is_done = True
             return
         except Exception as e:
-            log.error(
+            self.report_setup_failure(
+                log,
                 "video: failed to open %s (%s) — file may be corrupt or in an unsupported codec",
                 self.filepath,
                 e,
@@ -1673,8 +1795,8 @@ class VideoScene(MediaFileMixin, Scene):
         try:
             audio_4bit = self._preencode_audio_for_reu()
         except Exception as e:
-            # The container open is guarded the same way: a setup() raise ends
-            # the whole show, not the scene.
+            # Not left to raise, which would end the scene: the picture plays
+            # without the soundtrack.
             log.error(
                 "video: cannot decode the soundtrack of %s (%s); playing it silent",
                 self.filepath,
@@ -2160,10 +2282,24 @@ def _joystick_inputs(event: machine_input.Event) -> set[tuple[int, str]]:
     return {(event["port"], name) for name in event["inputs"]}
 
 
+class _InputSnapshot(NamedTuple):
+    """One poll of the launcher's input registers: the CIA joystick bits
+    (masked to `CIA1.JOY_MASK`) and the kernal keyboard bytes ($C5/$C6),
+    each empty when `input_source` leaves it out."""
+
+    joystick: bytes
+    keyboard: bytes
+
+    @property
+    def joystick_held(self) -> bool:
+        # The CIA port lines are active-low: a pressed switch reads 0.
+        return any(port != CIA1.JOY_MASK for port in self.joystick)
+
+
 class LauncherScene(MediaFileMixin, Scene):
     """Launch a native C64 program and hand the machine over to it.
 
-    Resets the U64, then uploads + runs a `.prg` (firmware run_prg) or `.crt`
+    Resets the U64, then uploads + runs a `.prg` (DMARUN) or `.crt`
     cartridge (run_crt), chosen by file extension. Once launched the program
     owns the VIC, SID, and CIAs — c64cast stops painting; this scene only
     polls for player input and times out.
@@ -2249,7 +2385,7 @@ class LauncherScene(MediaFileMixin, Scene):
         # Written by the poll thread, read by process_frame; hence the lock.
         self._last_input_t = 0.0
         self._input_lock = threading.Lock()
-        self._baseline: bytes | None = None
+        self._last_snapshot: _InputSnapshot | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
         # Each event with the monotonic time it was queued.
         self._injected: queue.SimpleQueue[tuple[float, machine_input.Event]] = queue.SimpleQueue()
@@ -2285,7 +2421,8 @@ class LauncherScene(MediaFileMixin, Scene):
             return
         super().setup()
         if not os.path.exists(self.filepath):
-            log.error(
+            self.report_setup_failure(
+                log,
                 "launcher: file not found: %s — check the path in your "
                 "config or the assets/programs/ contents",
                 self.filepath,
@@ -2296,16 +2433,11 @@ class LauncherScene(MediaFileMixin, Scene):
         self.start_time = now
         with self._input_lock:
             self._last_input_t = now
-        self._baseline = None
+        self._last_snapshot = None
         # A `.crt` in particular expects a reset to take effect.
         if self.reset_before_launch:
             self.api.reset()
-        try:
-            self.api.launch_program(self.filepath)
-        except Exception as e:
-            log.error("launcher: failed to launch %s (%s)", self.filepath, e)
-            self.is_done = True
-            return
+        self.api.launch_program(self.filepath)
         if self.input_source != "none":
             self._poll.start()
         if self.api.profile.supports_rest_input:
@@ -2528,11 +2660,11 @@ class LauncherScene(MediaFileMixin, Scene):
             ],
         )
 
-    def _read_snapshot(self) -> bytes | None:
+    def _read_snapshot(self) -> _InputSnapshot | None:
         """Read the configured input registers. Returns None on a failed
         read (caller ignores it — don't reset the idle clock on a glitch).
         Never reads $028D, so the app's modifier keys are excluded."""
-        parts: list[bytes] = []
+        joystick = keyboard = b""
         if self.input_source in ("cia", "auto"):
             with quiet_transport():
                 cia = self.api.read_memory(self._CIA_BASE, 2)
@@ -2540,29 +2672,29 @@ class LauncherScene(MediaFileMixin, Scene):
                 return None
             # The upper bits carry keyboard-scan / serial state that churns
             # independently of player input.
-            parts.append(bytes(b & CIA1.JOY_MASK for b in cia))
+            joystick = bytes(b & CIA1.JOY_MASK for b in cia)
         if self.input_source in ("kernal", "auto"):
             with quiet_transport():
                 kern = self.api.read_memory(self._KERNAL_BASE, 2)
             if kern is None:
                 return None
-            parts.append(kern)
-        return b"".join(parts)
+            keyboard = kern
+        return _InputSnapshot(joystick, keyboard)
 
     def _input_loop(self, stop: threading.Event) -> None:
-        """Manual poll loop. After a grace window (so the program's INIT
-        churn doesn't seed a bogus baseline), snapshot a baseline, then reset
-        the idle clock whenever a later read deviates from it."""
+        """Manual poll loop, started after a grace window so the program's
+        INIT churn doesn't count as input."""
         if stop.wait(self.launch_grace_s):
             return
-        self._baseline = self._read_snapshot()
+        self._last_snapshot = self._read_snapshot()
         while not stop.wait(self.poll_interval_s):
             snap = self._read_snapshot()
             if snap is None:
                 continue
-            if self._baseline is None:
-                self._baseline = snap
-                continue
-            if snap != self._baseline:
+            previous, self._last_snapshot = self._last_snapshot, snap
+            # A program that never drains the keyboard buffer leaves $C6 full
+            # for good, so only a change there is a player at the keys.
+            keys_changed = previous is not None and snap.keyboard != previous.keyboard
+            if snap.joystick_held or keys_changed:
                 with self._input_lock:
                     self._last_input_t = time.time()

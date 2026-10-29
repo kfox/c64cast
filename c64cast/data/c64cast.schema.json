@@ -286,7 +286,7 @@
             "integer",
             "null"
           ],
-          "description": "Audio sample rate in Hz fed to the SID DAC. Unset = 12000, except 10000 on a Hires/MultiHires scene while a TeensyROM+ locks its DMA slices to the sample store ([teensyrom].dma_slicing), where the smaller slices at 12000 hold bitmap video well under its frame rate. A set value applies to every scene. 12000 lifts the Nyquist to ~6.0 kHz so fricatives/sibilants survive (8000 lost them). HW-verified clean on a real NTSC U64-II via a pitch A/B sweep (no NMI handler overrun) in both char and bitmap modes, and safe on PAL. Note the REAL streaming ceiling sits BELOW the isolated-handler ceiling (max_safe_sample_rate ~13.6 kHz NTSC): the host-DMA audio ring writes themselves halt the 6510 and steal cycles from the NMI handler, so the overrun onset under the live pipeline was measured at ~12500 Hz (identical in char and bitmap \u2014 the audio feed, not the video, is the driver). 12000 keeps margin below that. A rate whose nearest CIA #2 latch gives an NMI period under 75 cycles (the 68-cycle handler worst case plus entry margin: above ~13.7 kHz NTSC / ~13.2 kHz PAL), or a latch past the 16-bit timer (under 16 Hz), is rejected at load, and --doctor reports it. An unresolved [ultimate64].system = \"auto\" is checked as NTSC, so on a PAL machine a rate between the two ceilings loads and plays clamped to ~13.1 kHz, with a warning. Sampler-backend playback uses [audio].sampler_sample_rate instead."
+          "description": "Audio sample rate in Hz fed to the SID DAC. Unset = 12000, except 10000 on a Hires/MultiHires scene while a TeensyROM+ locks its DMA slices to the sample store ([teensyrom].dma_slicing), where the smaller slices at 12000 hold bitmap video well under its frame rate. A set value applies to every scene. 12000 lifts the Nyquist to ~6.0 kHz so fricatives/sibilants survive (8000 lost them). HW-verified clean on a real NTSC U64-II via a pitch A/B sweep (no NMI handler overrun) in both char and bitmap modes, and safe on PAL. Note the REAL streaming ceiling sits BELOW the isolated-handler ceiling (max_safe_sample_rate ~12.8 kHz NTSC): the host-DMA audio ring writes themselves halt the 6510 and steal cycles from the NMI handler, so the overrun onset under the live pipeline was measured at ~12500 Hz (identical in char and bitmap \u2014 the audio feed, not the video, is the driver). 12000 keeps margin below that. A rate whose nearest CIA #2 latch gives an NMI period under 80 cycles (the $D418 store lags its underflow by up to 78, and a nested NMI ahead of it plays a sample twice and skips the next: above ~12.9 kHz NTSC / ~12.4 kHz PAL), or a latch past the 16-bit timer (under 16 Hz), is rejected at load, and --doctor reports it. An unresolved [ultimate64].system = \"auto\" is checked as NTSC, so on a PAL machine a rate between the two ceilings loads and plays clamped to ~12.3 kHz, with a warning. Sampler-backend playback uses [audio].sampler_sample_rate instead."
         },
         "backend": {
           "type": "string",
@@ -645,7 +645,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Output video file path. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4' so the wall's systems don't overwrite each other. Setting it explicitly uses that path verbatim.",
+          "description": "Output video file path, ending in one of .mp4, .m4v, .mov, .mkv, .avi, .webm. Never overwrites: a name already taken records to 'recording-2.mp4', 'recording-3.mp4', and so on. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4'. A show started from the web console (--serve) keeps only the file name and records into [web].recording_dir.",
           "default": "recording.mp4"
         },
         "fps": {
@@ -1066,6 +1066,11 @@
           "type": "array",
           "description": "Additional directories the media picker may browse but never write to \u2014 a library you want offered without exposing it to uploads, e.g. [\"~/Movies\", \"/mnt/hvsc\"]. Empty adds nothing.",
           "default": []
+        },
+        "recording_dir": {
+          "type": "string",
+          "description": "Directory every show started from the web console records into. Only the file name of [recording].path is kept, so a config saved through the console cannot write a recording anywhere else. Empty = 'recordings' under the data dir.",
+          "default": ""
         }
       }
     },
@@ -1415,7 +1420,7 @@
         },
         "clips": {
           "type": "array",
-          "description": "Clip-launch grid ([[performance.clips]], Live DJ/VJ Phase 2): each table is a scene spec (any [[scenes]] field \u2014 type, file, source, display, name, duration_s, effect \u2026) plus launch semantics: `slot` (1-based id, unique), `pad`/`pad_type` (the note/PC number that fires it, auto-mapped when [midi_control] is on), `launch` (\"trigger\"|\"gate\"|\"toggle\"), `quantize` (\"off\"|\"beat\"|\"bar\" \u2014 align the swap to the beat grid), and `loop` (repeat until another clip fires). Fired from a controller or the web console; the scene is built on a background thread during the count-in and swapped in on the grid boundary. Empty = no grid. Only `slot` is required; the keys a table omits default to type = 'webcam', launch = 'trigger', quantize = 'bar', pad_type = 'note', loop = True \u2014 note that `quantize` defaults to the bar, not to \"off\", and that a looping continuous-frame clip (webcam/blank/slideshow/generative/wled) is pinned to duration_s = 0 so it holds until the next launch.",
+          "description": "Clip-launch grid ([[performance.clips]], Live DJ/VJ Phase 2): each table is a scene spec (any [[scenes]] field \u2014 type, file, source, display, name, duration_s, effect \u2026) plus launch semantics: `slot` (1-based id, unique), `pad`/`pad_type` (the note/PC number that fires it, auto-mapped when [midi_control] is on), `launch` (\"trigger\"|\"gate\"|\"toggle\"), `quantize` (\"off\"|\"beat\"|\"bar\" \u2014 align the swap to the beat grid), and `loop` (repeat until another clip fires). Fired from a controller or the web console; the scene is built on a background thread during the count-in and swapped in on the grid boundary. Empty = no grid. Only `slot` is required; the keys a table omits default to type = 'webcam', launch = 'trigger', quantize = 'bar', pad_type = 'note', loop = True \u2014 note that `quantize` defaults to the bar, not to \"off\", and that a looping continuous clip (webcam/blank/slideshow/generative/wled/midi/asid) is pinned to duration_s = 0 so it holds until the next launch.",
           "default": []
         }
       }
@@ -1534,7 +1539,7 @@
               "number",
               "null"
             ],
-            "description": "Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 180s; generative with audio_source = \"file\" = the track's length, or 30s when the container reports none; everything else = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input)."
+            "description": "Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank/midi/asid run forever when they're the only scene, else 30s; waveform = song length or 180s; generative with audio_source = \"file\" = the track's length, or 30s when the container reports none; everything else = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input)."
           },
           "target_fps": {
             "type": [
@@ -2189,7 +2194,7 @@
                       },
                       "messages": {
                         "type": "array",
-                        "description": "List of message strings to cycle through."
+                        "description": "List of message strings (or {text, color, style, ...} tables) to cycle through."
                       },
                       "row": {
                         "type": "integer",

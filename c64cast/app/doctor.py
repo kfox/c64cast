@@ -65,6 +65,7 @@ from .scene_factory import (
     resolve_scene_display,
     resolve_wled_broadcast,
     resolve_wled_listen,
+    split_file_spec,
     validate_control_cfg,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
@@ -879,7 +880,7 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
         # fully cancel the video slowdown, acutely so on PAL's tighter clock.
         if cfg.audio.nmi_rate_adaptive:
             # Floored at zero: the load rule accepts a rate whose nearest latch is
-            # the ceiling itself (up to ~13.7 kHz NTSC), past max_safe_sample_rate.
+            # the ceiling itself (up to ~12.86 kHz NTSC), past max_safe_sample_rate.
             headroom = max(0.0, max_safe_sample_rate(system) / rate - 1.0)
             if headroom < 0.03:
                 out.append(
@@ -1719,8 +1720,9 @@ def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
 
     `resolve_recording_path` only disambiguates systems that left `path` at
     the default, so spelling out one shared path across two per-system TOMLs
-    still points two cv2.VideoWriters at one file — which produces a single
-    truncated stream, with no error from either writer.
+    still names one file twice. Neither recording is lost — the second claim
+    numbers itself `-2` — but which system's stream is in which file is then
+    down to which one started first.
 
     Two names for one file have to compare equal or the check misses exactly
     the case it exists for, so paths are normalized the way the filesystem
@@ -1746,7 +1748,8 @@ def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
             subject=display,
             message=(
                 f"{len(names)} systems record to this one file "
-                f"({', '.join(sorted(names))}); only one stream survives."
+                f"({', '.join(sorted(names))}); all but the first to start "
+                "record to a numbered name instead, so nothing says which is which."
             ),
             hint=(
                 "Give each system's [recording] its own `path`, or delete the "
@@ -1808,11 +1811,10 @@ _HINT_TR_CONNECT = (
     "host IP (transport = tcp)."
 )
 _HINT_REST_RUNNER = (
-    "The SID player and .prg/.crt launcher use the "
-    "Ultimate's REST run_prg endpoint. Enable the "
-    "Ultimate's web/remote-control service (F2 -> "
-    "Network Settings), or use only DMA-rendered scenes "
-    "(video/slideshow/webcam/blank)."
+    "A .crt launcher starts through the Ultimate's REST "
+    "run_crt endpoint. Enable the Ultimate's "
+    "web/remote-control service (F2 -> Network Settings), "
+    "or launch only .prg files."
 )
 _HINT_REST_OPTIONAL = (
     "REST powers reads (keyboard control), machine "
@@ -1935,10 +1937,10 @@ def _probe_tr_reachability(
 
 
 def _rest_down_diagnostic(name: str, cfg: Config, url: str) -> Diagnostic:
-    """DMA answered but REST didn't. SID playback + .prg/.crt launch start via
-    the REST run_prg endpoint, so a config that needs the runner turns this
-    into an error (those scenes cannot run at all); otherwise it's a warning
-    (writes still work via DMA, so DMA-rendered scenes play)."""
+    """DMA answered but REST didn't. A .crt launch starts via the REST run_crt
+    endpoint, so a config that needs the runner turns this into an error
+    (that scene cannot run at all); otherwise it's a warning (writes and PRG
+    kicks still work via DMA, so every other scene plays)."""
     wants_runner, runner_reasons = _wants_rest_runner(cfg)
     if wants_runner:
         return Diagnostic(
@@ -2069,30 +2071,27 @@ _SID_RIGHT_FIELD = emusid_mixer.ITEM_ENABLE["emusid2"]
 
 
 def _wants_rest_runner(cfg: Config) -> tuple[bool, list[str]]:
-    """Return (wants, reasons). True when the config has a scene that STARTS
-    via the Ultimate's REST `run_prg`/`run_crt` endpoint — SID playback
-    (`run_sid_player`) or a native .prg/.crt launcher (`launch_program`).
-    Those scenes cannot start at all when REST is down, so on the Ultimate a
-    failed REST probe with any of them present is an error, not a warning.
+    """Return (wants, reasons). True when the config has a launcher scene
+    that may start a .crt, which goes through the Ultimate's REST `run_crt`
+    endpoint and cannot start at all when REST is down, so on the Ultimate a
+    failed REST probe with one present is an error, not a warning. A launcher
+    counts unless every item of its `file` spec names a .prg, since a
+    directory or glob may resolve to a cartridge.
 
-    Video / slideshow / webcam / blank / midi / generative-without-SID scenes
-    paint entirely over DMA (writes) and keep working without REST, so they do
-    NOT escalate the probe failure. (`reset()` is also REST-only on the
-    Ultimate, but it is caught + non-fatal — the picture still paints — so it
-    is not on its own grounds for an error.) TR is handled on its own branch;
-    its SID player + launcher use pure-DMA vector-swap / LaunchFile, not REST.
+    Every other scene, the SID player included, paints and kicks over DMA and
+    keeps working without REST, so it does NOT escalate the probe failure.
+    (`reset()` is also REST-only on the Ultimate, but it is caught +
+    non-fatal — the picture still paints — so it is not on its own grounds
+    for an error.) TR is handled on its own branch; its launcher uses
+    LaunchFile, not REST.
     """
-    reasons: list[str] = []
-    types = {s.type for s in cfg.scenes}
-    if "waveform" in types:
-        reasons.append("waveform (SID player via run_prg) scene(s)")
-    if "launcher" in types:
-        reasons.append("launcher (.prg/.crt via run_prg) scene(s)")
-    # A generative SourceScene with audio_source = "sid" kicks run_sid_player
-    # the same way a waveform scene does (see scenes.py SourceScene.setup).
-    if any(s.type == "generative" and s.audio_source == "sid" for s in cfg.scenes):
-        reasons.append("generative scene with audio_source = 'sid' (run_prg)")
-    return bool(reasons), reasons
+    if any(s.type == "launcher" and _may_name_a_cartridge(s.file) for s in cfg.scenes):
+        return True, ["launcher (.crt via run_crt) scene(s)"]
+    return False, []
+
+
+def _may_name_a_cartridge(spec: str | None) -> bool:
+    return not spec or not all(item.lower().endswith(".prg") for item in split_file_spec(spec))
 
 
 def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:

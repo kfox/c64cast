@@ -55,6 +55,14 @@ class ConstructionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             _make_overlay(messages=[{"color": "white"}])
 
+    def test_plain_string_message_is_text_in_the_default_color(self):
+        ov = _make_overlay(messages=["HI"])
+        self.assertEqual([(m.text, m.color) for m in ov.messages], [("HI", "white")])
+
+    def test_non_text_message_raises(self):
+        with self.assertRaises(ValueError):
+            _make_overlay(messages=[42])
+
     def test_bad_row_raises(self):
         with self.assertRaises(ValueError):
             _make_overlay(row="diagonal")

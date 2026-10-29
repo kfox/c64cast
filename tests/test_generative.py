@@ -1265,10 +1265,7 @@ class SourceSceneTest(unittest.TestCase):
         scene.process_frame(0.0)
         self.assertIs(src.last_modulation, snap)
 
-    def test_audio_source_setup_failure_aborts_scene(self):
-        # A failing audio source must abort the scene: setup() flips is_done and
-        # process_frame() honors it. The generative source's `finished` is always
-        # False, so without the guard the playlist plays silent video for the duration.
+    def test_audio_source_setup_failure_reaches_the_playlist(self):
         class _BoomAudio:
             wants_audio_lock = True
 
@@ -1285,11 +1282,8 @@ class SourceSceneTest(unittest.TestCase):
                 return None
 
         scene, _mode, _src = self._scene(audio_source=_BoomAudio())
-        with self.assertLogs("c64cast.scenes.scenes", level="ERROR"):
+        with self.assertRaisesRegex(RuntimeError, "boom"):
             scene.setup()
-        self.assertTrue(scene.is_done)
-        scene.start_time = 0.0
-        self.assertFalse(scene.process_frame(0.0))
 
 
 class _RecordingEffect(FrameEffect):
@@ -3447,6 +3441,39 @@ class ConfigGenerativeTest(unittest.TestCase):
         s = SceneCfg(type="generative", source="plasma", display="mhires", effect="bogus")
         with self.assertRaises(ValueError):
             validate_scene_cfg(s, self.cfg, audio_enabled=False)
+
+
+class GeneratorLapTest(unittest.TestCase):
+    """A looping playlist re-enters the same SourceScene, and so the same
+    generator instance, on every lap."""
+
+    def _lap(self, scene: SourceScene, mode: _FakeMode) -> list[np.ndarray]:
+        mode.rendered.clear()
+        scene.setup()
+        scene.start_time = 0.0
+        for i in range(60):
+            scene.process_frame(i / 30.0)
+        scene.teardown()
+        return list(mode.rendered)
+
+    def test_every_lap_replays_the_first(self):
+        for name in generators.REGISTRY:
+            with self.subTest(generator=name):
+                mode = _FakeMode()
+                scene = SourceScene(
+                    cast(C64Backend, SimpleNamespace()),
+                    None,
+                    cast(DisplayMode, mode),
+                    build_generator(name),
+                    NullAudioSource(),
+                    name,
+                )
+                scene.duration_s = 10.0
+                first = self._lap(scene, mode)
+                second = self._lap(scene, mode)
+                self.assertEqual(len(first), len(second))
+                for a, b in zip(first, second, strict=True):
+                    np.testing.assert_array_equal(a, b)
 
 
 class StatefulGeneratorCatchUpTest(unittest.TestCase):

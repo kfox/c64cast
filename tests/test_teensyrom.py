@@ -1433,6 +1433,24 @@ class BackendTest(unittest.TestCase):
         b = TeensyROMBackend(t, profile=replace(TEENSYROM_PROFILE), storage="sd")
         return b, t
 
+    def test_launch_program_refuses_an_oversized_crt_before_uploading(self):
+        import os
+        import tempfile
+
+        from c64cast.hw.backend import CRT_MAX_BYTES
+
+        b, _ = self._backend()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "big.crt")
+            with open(path, "wb") as fh:
+                fh.write(bytes(CRT_MAX_BYTES + 1))
+            with (
+                mock.patch.object(b, "_upload") as upload,
+                self.assertRaisesRegex(ValueError, "larger than"),
+            ):
+                b.launch_program(path)
+        upload.assert_not_called()
+
     def test_emit_chunks_large_writes(self):
         b, t = self._backend()
         # A payload over MAX_SEGMENT_BYTES splits into acked segments — one ack each.
@@ -1767,6 +1785,18 @@ class BackendTest(unittest.TestCase):
         # ABC's default (None) applies -- same as a TCP-attached board.
         b, _t = self._backend()
         self.assertEqual(b.describe_device(), "TeensyROM+ (full firmware, loopback)")
+
+    def test_describe_device_cannot_forge_a_log_line_from_the_usb_serial_number(self):
+        b, t = self._backend()
+        with mock.patch.object(
+            type(t),
+            "serial_number",
+            new_callable=mock.PropertyMock,
+            return_value="AB\r\nERROR:x\x1b[2J",
+        ):
+            self.assertEqual(
+                b.describe_device(), "TeensyROM+ ABERROR:x[2J (full firmware, loopback)"
+            )
 
     def test_settle_after_launch_goes_through_the_client_lock(self):
         # _settle_after_launch runs after launch_file() released the lock, so it must

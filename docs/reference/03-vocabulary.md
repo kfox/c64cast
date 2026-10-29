@@ -43,7 +43,7 @@ generative scene with
 `audio_source = "file"` plays for the decoded track's length, which is what
 makes `c64cast tune.mp3` play the whole song (30 seconds if the container
 reports no duration); slideshow and every other generative scene default to
-30 seconds; webcam and blank scenes run forever *when they are the only scene*
+30 seconds; webcam, blank, midi and asid scenes run forever *when they are the only scene*
 and 30 seconds otherwise, because an infinite scene in a rotation would never
 hand over. An explicit `duration_s = 0` means "run forever" for every type
 except video. A negative value is rejected.

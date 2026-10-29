@@ -562,8 +562,8 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
 # the previous frame's colors in the top row. From the raster read to the end
 # of that chunk the handler spends about 165 cycles of its own; audio NMIs at
 # the fastest rate the streamer arms take over half the CPU on top of that,
-# and one audio-ring write's DMA halt can land in it. That comes to about 12
-# PAL lines, so a commit read on line 45 finished the chunk around line 57. The
+# and one audio-ring write's DMA halt can land in it. That comes to about 11
+# PAL lines, so a commit read at the end of line 45 finished the chunk on line 57. The
 # worst case is computed from these bytes in tests/test_commit_window.py.
 MHIRES_COMMIT_LAST_SAFE_LINE = 38
 
