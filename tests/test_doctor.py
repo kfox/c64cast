@@ -2505,6 +2505,18 @@ class CharRomProbeTest(unittest.TestCase):
         self.assertIn("/nonexistent/mine.bin", row.message)
         self.assertIn("built-in ASCII font", row.message)
 
+    def test_a_missing_configured_charset_falls_back_to_the_installed_rom(self):
+        from test_char_rom import _synth_charset
+
+        from c64cast.hw import char_rom
+
+        installed = char_rom.install_data(_synth_charset())
+        rows = self._rows('[preview]\ncharset_path = "/nonexistent/mine.bin"\n')
+        self.assertEqual(rows["character ROM"].level, "ok")
+        row = rows["character ROM (system [preview])"]
+        self.assertEqual(row.level, "warn")
+        self.assertIn(f"falls back to {installed}", row.message)
+
 
 class PrintReportCategoryTest(unittest.TestCase):
     def test_unlisted_category_still_prints(self):
