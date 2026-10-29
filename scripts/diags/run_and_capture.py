@@ -185,13 +185,13 @@ def main() -> int:
         print(f"[audio] recording {audio_len:g}s -> {wav}")
         time.sleep(1.5)  # let the avfoundation stream actually come up
 
-    app_argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+    app_argv = ["--config", str(cfg), "--url", args.url]
     app_argv += args.app_arg
     app_log = d.stamped(f"{args.label}_app", "log")
-    print(f"[run] {' '.join(app_argv[2:])}  (log -> {app_log})")
+    print(f"[run] c64cast {' '.join(app_argv)}  (log -> {app_log})")
     # Lifetime spans Popen → wait → close below, so a `with` doesn't fit.
     app_log_fh = open(app_log, "w")  # noqa: SIM115
-    app = subprocess.Popen(app_argv, stdout=app_log_fh, stderr=subprocess.STDOUT)
+    app = d.c64cast_popen(app_argv, stdout=app_log_fh, stderr=subprocess.STDOUT)
 
     # Grab frames spread across the active window (after boot).
     frame_times = []

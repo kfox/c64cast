@@ -139,9 +139,7 @@ def main() -> int:
     wav_path = d.stamped(f"audiocap_{args.label}", "wav")
 
     print(f"[run] python -m c64cast --config {cfg}")
-    app = subprocess.Popen(
-        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
-    )
+    app = d.c64cast_popen(["--config", str(cfg), "--url", args.url])
     rc = 0
     try:
         print(f"[boot] waiting {args.boot:g}s")

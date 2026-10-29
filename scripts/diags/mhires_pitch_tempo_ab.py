@@ -69,9 +69,9 @@ def run(url: str, clip: str, display: str, secs: float, avf: str) -> None:
          "-ac", "1", "-ar", str(CAP_SR), wav],
     )  # fmt: skip
     time.sleep(1.5)
-    argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-v"]
+    argv = ["--config", str(cfg), "--url", url, "-v"]
     with open(app_log, "w") as fh:
-        app = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT)
+        app = d.c64cast_popen(argv, stdout=fh, stderr=subprocess.STDOUT)
         try:
             time.sleep(secs + boot_margin)
         finally:

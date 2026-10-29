@@ -104,9 +104,7 @@ def main() -> int:
         if not cfg.exists():
             ap.error(f"config not found: {cfg}")
         print(f"[run] python -m c64cast --config {cfg}")
-        app = subprocess.Popen(
-            [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
-        )
+        app = d.c64cast_popen(["--config", str(cfg), "--url", args.url])
         print(f"[boot] waiting {args.boot:g}s for boot + first audio")
         time.sleep(args.boot)
 
