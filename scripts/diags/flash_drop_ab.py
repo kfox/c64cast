@@ -77,7 +77,8 @@ loop = true
 type = "video"
 display = "mhires"
 file = "{video_path}"
-{teensyrom}"""
+{teensyrom}""",
+        encoding="utf-8",
     )
 
 

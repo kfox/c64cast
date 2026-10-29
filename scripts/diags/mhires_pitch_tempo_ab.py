@@ -50,7 +50,7 @@ file = "{abs_clip}"
 display = "{display}"
 """
     p = out / f"pt_ab_{display}.toml"
-    p.write_text(toml)
+    p.write_text(toml, encoding="utf-8")
     return p
 
 

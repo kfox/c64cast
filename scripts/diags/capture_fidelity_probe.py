@@ -183,7 +183,7 @@ file = "{clip}"
 display = "mhires"
 """
     p = out / "capfid.toml"
-    p.write_text(toml)
+    p.write_text(toml, encoding="utf-8")
     return p
 
 

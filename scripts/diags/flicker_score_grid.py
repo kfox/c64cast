@@ -405,7 +405,8 @@ display = "hires"
 file = "{image}"
 duration_s = 0
 aspect_mode = "stretch"
-"""
+""",
+        encoding="utf-8",
     )
 
 

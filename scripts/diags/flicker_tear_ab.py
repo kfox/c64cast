@@ -241,7 +241,8 @@ loop = true
 type = "video"
 display = "hires"
 file = "{video_path}"
-"""
+""",
+        encoding="utf-8",
     )
 
 

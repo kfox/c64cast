@@ -126,7 +126,8 @@ file = "{video_path}"
   row = 24
   speed_cells_per_s = 4.0
   fg_color = "white"
-{teensyrom}"""
+{teensyrom}""",
+        encoding="utf-8",
     )
 
 
