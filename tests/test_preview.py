@@ -304,6 +304,59 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
             w.open.assert_called_once()
             self.assertEqual(w.pump.call_count, 1)
 
+    def test_closes_every_window_once_the_playlists_end(self):
+        from c64cast.app.cli import _pump_previews_until_done
+
+        wins = [MagicMock(), MagicMock()]
+        for w in wins:
+            w.is_open = True
+        _pump_previews_until_done([self._thread([True, False])], wins)
+        for w in wins:
+            w.close.assert_called_once()
+
+    def test_closes_every_window_when_interrupted_mid_pump(self):
+        from c64cast.app.cli import _pump_previews_until_done
+
+        win = MagicMock()
+        win.is_open = True
+        win.pump.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            _pump_previews_until_done([self._thread([True])], [win])
+        win.close.assert_called_once()
+
+
+class PreviewWindowThreadOwnershipTest(unittest.TestCase):
+    """Under `--serve` the session is torn down on a supervisor worker thread
+    while the main thread is still pumping the window, so teardown must leave
+    the window to its pump: HighGUI rejects every call made off the main
+    thread on macOS, and the suppressed failure there left the window on
+    screen with nothing left to destroy it."""
+
+    def test_teardown_on_a_worker_thread_makes_no_highgui_call(self):
+        import threading
+
+        from _fakes import fake_system_stack
+
+        callers: list[str] = []
+        cv2 = _fake_cv2()
+        for name in ("namedWindow", "imshow", "waitKey", "destroyWindow", "getWindowProperty"):
+            getattr(cv2, name).side_effect = lambda *a, **k: callers.append(
+                threading.current_thread().name
+            )
+        st = fake_system_stack("only")
+        with patch.object(preview_mod, "cv2", cv2):
+            st.preview_window = PreviewWindow(_fake_fb())
+            st.preview_window.open()
+            callers.clear()
+            worker = threading.Thread(
+                target=session.teardown_stack, args=(st,), name="session-teardown"
+            )
+            worker.start()
+            worker.join(timeout=10)
+        self.assertFalse(worker.is_alive())
+        self.assertNotIn("session-teardown", callers)
+        self.assertTrue(st.preview_window.is_open)
+
 
 if __name__ == "__main__":
     unittest.main()

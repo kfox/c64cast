@@ -219,7 +219,8 @@ class TeardownStackOrderTest(unittest.TestCase):
         return st, order
 
     def test_teardown_order(self):
-        # Preview/recording first (avoid rendering after API close);
+        # Recording first (avoid rendering after API close); the preview
+        # window is its main-thread pump's to close, never teardown's;
         # audio before reset (NMI timer can't fire into a cleared buffer);
         # api.reset → the screen stream off, last while the link is still up
         # → api.close; camera release last.
@@ -227,7 +228,7 @@ class TeardownStackOrderTest(unittest.TestCase):
         teardown_stack(st)
         self.assertEqual(
             order,
-            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+            ["recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
 
     def test_the_screen_stream_is_stopped_immediately_before_the_link_closes(self):
@@ -261,9 +262,7 @@ class TeardownStackOrderTest(unittest.TestCase):
         with self.assertLogs("c64cast", level="ERROR"):
             teardown_stack(st)
         # The failing step is skipped; everything after it still runs.
-        self.assertEqual(
-            order, ["preview", "recorder", "reset", "stream_off", "api_close", "source"]
-        )
+        self.assertEqual(order, ["recorder", "reset", "stream_off", "api_close", "source"])
 
     def test_a_ctrl_c_in_one_step_still_runs_the_steps_under_it(self):
         # ReleaseInterrupts.step swallows Exception only; a Ctrl+C mid-step
@@ -279,7 +278,7 @@ class TeardownStackOrderTest(unittest.TestCase):
             teardown_stack(st)
         self.assertEqual(
             order,
-            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+            ["recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
         self.assertIn("interrupt again to stop at once", logs.output[0])
 
@@ -299,7 +298,7 @@ class TeardownStackOrderTest(unittest.TestCase):
             teardown_stack(st)
         self.assertEqual(
             order,
-            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
+            ["recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
         self.assertIn("interrupt again to stop at once", logs.output[0])
 
@@ -341,7 +340,7 @@ class TeardownStackOrderTest(unittest.TestCase):
             self.assertRaises(KeyboardInterrupt) as raised,
         ):
             teardown_stack(st)
-        self.assertEqual(order, ["preview", "recorder", "audio", "reset"])
+        self.assertEqual(order, ["recorder", "audio", "reset"])
         self.assertIs(raised.exception, hard_stop)
         self.assertIn("stopping now", logs.output[-1])
 
