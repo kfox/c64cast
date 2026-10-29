@@ -429,6 +429,29 @@ class ClockTest(unittest.TestCase):
         # "12:34" → 0x31 0x32 0x3A 0x33 0x34 (digits + ':' pass through)
         self.assertEqual(bytes(buffers["screen"][35:40]), bytes([0x31, 0x32, 0x3A, 0x33, 0x34]))
 
+    def test_seconds_never_skip_at_a_frame_rate_that_does_not_divide_a_second(self):
+        from datetime import datetime
+
+        from c64cast.scenes.overlays.clock import ClockOverlay
+
+        frame_t = [1_000_000.01]
+
+        class _FrameClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.fromtimestamp(frame_t[0], tz)
+
+        ov = ClockOverlay(format="%S")
+        shown = []
+        with patch("c64cast.scenes.overlays.clock.datetime", _FrameClock):
+            for frame in range(4000):
+                frame_t[0] = 1_000_000.01 + frame * 0.03
+                ov.compose(_make_buffers(), scene=MagicMock(), t=frame_t[0])
+                if not shown or shown[-1] != ov._last_strings[0]:
+                    shown.append(ov._last_strings[0])
+        steps = {(int(b) - int(a)) % 60 for a, b in zip(shown, shown[1:], strict=False)}
+        self.assertEqual(steps, {1}, f"the displayed second jumped: {shown}")
+
 
 class WeatherTest(unittest.TestCase):
     def test_uses_cache_when_fetch_fails(self):
