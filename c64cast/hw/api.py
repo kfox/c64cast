@@ -2305,9 +2305,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
 
         Implementation: trailing IDENTIFY round-trip on the DMA socket; by
         the per-connection FIFO guarantee, the reply arrives only after
-        every prior DMAWRITE has executed. Call before any REST runner
-        (reset / run_sid_player / run_basic_clear_loop) so the runner doesn't
-        race ahead of in-flight scene writes."""
+        every prior DMAWRITE has executed. Call before a REST reset or
+        runner so it doesn't race ahead of in-flight scene writes."""
         self._flush_failure()
 
     def _flush_failure(self) -> Exception | None:
@@ -2345,9 +2344,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         `write_loss_mark()`, taken before those writes) may not have reached
         the machine.
 
-        For call sites that flush right before firing an irreversible REST
-        runner (run_prg soft-resets the C64): proceeding on a failed flush
-        risks the runner racing ahead of writes it depends on having landed
+        For call sites that flush right before an irreversible kick (DMARUN
+        or REST `run_crt`, both of which reset the C64): proceeding on a
+        failed flush risks starting a program without writes it depends on
         (the SID payload, the re-INIT stub, ...), so those call sites abort
         the launch instead. Only this thread's writes count: another
         thread's lost write is its own to repeat, and a flush it already

@@ -269,11 +269,11 @@ separate switches with three unrelated failure modes:
 |---|---|
 | **Ultimate DMA Service**<br>Network Settings | Nothing works. Every pixel is a memory write over this socket, and the run fails at startup |
 | **Command Interface**<br>Memory Configuration | The socket opens and the run then hangs forever — the listener accepts, and no command is ever dispatched |
-| **Web Remote Control Service**<br>Network Settings | Pixels still paint. Reset, program launch, SID playback and every memory *read* — the keyboard poll, the on-C64 menu, the character-ROM dump — do not |
+| **Web Remote Control Service**<br>Network Settings | Pixels still paint, and tunes and `.prg` programs still start. Reset, a `.crt` launch and every memory *read* — the keyboard poll, the on-C64 menu, the character-ROM dump — do not |
 
 The first two are what the startup error names, in that order, when the DMA
 socket cannot be opened; the third is the answer to a run that paints happily
-and never starts a tune. Changing any of them needs a save, so that the change
+while the Commodore keyboard does nothing. Changing any of them needs a save, so that the change
 survives a power cycle. None of them needs a reboot to switch on: a network
 service switched on starts within about two seconds. Switching one of the two
 network services *off* is where firmware differs. Before Ultimate firmware 3.15a,

@@ -265,7 +265,7 @@ The hint points at both `auto_reu` and the F2 menu path. `hw_provision.reu_is_en
 Because the DMA socket can be up while REST is down, `_probe_connectivity` grades that case by what the config actually needs from REST:
 
 * **error** — `_wants_rest_runner(cfg)` is true: a `launcher` scene whose `file` spec is not all `.prg` files, so it may start a `.crt`. A cartridge *starts* via the REST `run_crt` endpoint (`launch_program`) and cannot run at all without it; PRGs, the SID player's included, start over the DMA socket's DMARUN.
-* **warn** — everything else (video, slideshow, webcam, blank, midi, generative without SID). These paint entirely over DMA and merely degrade: no physical-keyboard reads, no machine reset.
+* **warn** — everything else, the SID scenes and a `.prg`-only launcher included. These paint and start entirely over DMA and merely degrade: no physical-keyboard reads, no machine reset.
 
 `reset()` is REST-only on the Ultimate but is caught and non-fatal — the picture still paints — so it never escalates on its own. The TR backend has no REST surface and is handled on its own probe branch; its SID player and launcher use pure-DMA vector-swap and LaunchFile.
 

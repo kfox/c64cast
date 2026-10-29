@@ -90,9 +90,9 @@ almost certainly why.
 
 **The Web Remote Control Service** is a separate service on a separate port,
 handling the things a raw memory write cannot do: resetting the machine,
-starting a native program, and launching SID tunes. Scenes that only paint
-pixels will work without it. Scenes that start something running on the
-Commodore will not.
+starting a cartridge (`.crt`), and reading the Commodore's memory, which the
+keyboard controls need. Scenes that paint pixels, play SID tunes or start a
+`.prg` will work without it. A `launcher` scene that starts a `.crt` will not.
 
 > [!NOTE]
 > On Ultimate 64 and Ultimate II+ firmware before 3.12 there is no

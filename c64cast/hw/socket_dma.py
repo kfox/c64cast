@@ -787,7 +787,7 @@ class SocketDMAClient:
             self._identify_roundtrip_locked(reply_timeout)
         except OSError:
             # No transparent retry: callers use flush() as a sync barrier
-            # before a REST runner and own the log message. Close, though —
+            # before a program kick and own the log message. Close, though —
             # an unconsumed IDENTIFY reply may still be in flight (a
             # TimeoutError is an OSError), and the next flush()/command
             # would read it as its own, permanently one reply behind.
