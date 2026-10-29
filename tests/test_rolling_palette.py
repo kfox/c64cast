@@ -5,10 +5,11 @@ from __future__ import annotations
 import time
 import unittest
 
+import cv2
 import numpy as np
 
 from c64cast.video.palette import C64_PALETTE_BGR, ColorMap
-from c64cast.video.rolling_palette import RollingForcePalette
+from c64cast.video.rolling_palette import RollingForcePalette, _remap_drift
 
 
 def _solid(idx: int, h: int = 64, w: int = 64) -> np.ndarray:
@@ -22,6 +23,42 @@ def _two_color(a: int, b: int) -> np.ndarray:
     img[:32] = C64_PALETTE_BGR[a].astype(np.uint8)
     img[32:] = C64_PALETTE_BGR[b].astype(np.uint8)
     return img
+
+
+def _hue_sweep(first_hue: int, last_hue: int) -> np.ndarray:
+    """A 64x36 picture sweeping hue left to right and brightness top to bottom."""
+    hsv = np.empty((36, 64, 3), dtype=np.uint8)
+    hsv[..., 0] = np.linspace(first_hue, last_hue, 64).astype(np.uint8)[None, :]
+    hsv[..., 1] = 200
+    hsv[..., 2] = np.linspace(40, 250, 36).astype(np.uint8)[:, None]
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+class _OneFramePerCycle:
+    """Stands in for the worker's stop event: each wait hands the worker the
+    next frame and collects what the cycle before it published. The frame
+    skips `submit_frame`, whose shot-cut check would read a few frames this
+    far apart as cuts."""
+
+    def __init__(self, fp: RollingForcePalette, frames: list[np.ndarray]):
+        self._fp, self._frames = fp, iter(frames)
+        self.installed: list[ColorMap] = []
+
+    def wait(self, _timeout: float) -> bool:
+        cmap = self._fp.poll_colormap()
+        if cmap is not None:
+            self.installed.append(cmap)
+        frame = next(self._frames, None)
+        if frame is None:
+            return True
+        self._fp._latest = frame
+        return False
+
+
+def _installs(fp: RollingForcePalette, frames: list[np.ndarray]) -> list[ColorMap]:
+    stop = _OneFramePerCycle(fp, frames)
+    fp._run(stop)  # type: ignore[arg-type]
+    return stop.installed
 
 
 class DetectCutTest(unittest.TestCase):
@@ -83,6 +120,41 @@ class DriverPublishTest(unittest.TestCase):
         fp.stop()
         fp.stop()
         self.assertFalse(fp._poll.is_running())
+
+
+class ReinstallPolicyTest(unittest.TestCase):
+    """A baked map replaces the installed one only once it would repaint a
+    meaningful share of the picture."""
+
+    WARM, COOL = _hue_sweep(0, 30), _hue_sweep(90, 130)
+
+    def _crossfade(self, cycles: int) -> list[np.ndarray]:
+        return [
+            cv2.addWeighted(self.WARM, 1 - t, self.COOL, t, 0) for t in np.linspace(0, 1, cycles)
+        ]
+
+    def test_a_gradual_change_reinstalls_when_every_candidate_is_in_use(self):
+        for kwargs in ({"n_colors": 16}, {"indices": [0, 1, 2, 5, 6, 7]}):
+            with self.subTest(**kwargs):
+                fp = RollingForcePalette(**kwargs)  # type: ignore[arg-type]
+                installs = _installs(fp, self._crossfade(30))
+                self.assertGreater(len(installs), 1)
+
+    def test_a_still_picture_installs_once(self):
+        for kwargs in ({"n_colors": 16}, {"n_colors": 4}, {"indices": [0, 1, 2, 5, 6, 7]}):
+            with self.subTest(**kwargs):
+                fp = RollingForcePalette(**kwargs)  # type: ignore[arg-type]
+                self.assertEqual(len(_installs(fp, [self.WARM] * 20)), 1)
+
+    def test_drift_is_the_share_of_pixels_repainted(self):
+        frame = _two_color(2, 6)
+        red = ColorMap(lut=np.full((32, 32, 32), 2, dtype=np.uint8), shift=3, indices=(2,))
+        lut = np.full((32, 32, 32), 2, dtype=np.uint8)
+        blue_bgr = C64_PALETTE_BGR[6].astype(np.uint8) >> 3
+        lut[blue_bgr[0], blue_bgr[1], blue_bgr[2]] = 6
+        split = ColorMap(lut=lut, shift=3, indices=(2, 6))
+        self.assertEqual(_remap_drift(red, red, frame), 0.0)
+        self.assertEqual(_remap_drift(red, split, frame), 0.5)
 
 
 class SceneGatingTest(unittest.TestCase):

@@ -28,10 +28,12 @@ _SAMPLE_INTERVAL_S = 1.0
 # Shot-cut detection: a downscaled HSV hue/sat histogram correlated against the
 # previous checked frame, below the threshold = a cut.
 _CUT_CHECK_EVERY = 5
-_CUT_HIST_WIDTH = 160
+_ANALYSIS_WIDTH = 160
 _CUT_H_BINS = 16
 _CUT_S_BINS = 8
 _CUT_CORREL_THRESHOLD = 0.5
+
+_REINSTALL_DRIFT = 0.15
 
 
 class RollingForcePalette:
@@ -82,13 +84,7 @@ class RollingForcePalette:
         """Cheap shot-cut test: HSV hue/sat histogram correlation of a downscaled
         frame vs the previous checked one. Render-thread only (no lock needed —
         `_prev_hist` is touched here alone)."""
-        h, w = img_bgr.shape[:2]
-        if w > _CUT_HIST_WIDTH:
-            new_h = max(1, h * _CUT_HIST_WIDTH // w)
-            small = cv2.resize(img_bgr, (_CUT_HIST_WIDTH, new_h), interpolation=cv2.INTER_AREA)
-        else:
-            small = img_bgr
-        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(_downscale(img_bgr), cv2.COLOR_BGR2HSV)
         hist = cv2.calcHist([hsv], [0, 1], None, [_CUT_H_BINS, _CUT_S_BINS], [0, 180, 0, 256])
         cv2.normalize(hist, hist)
         prev = self._prev_hist
@@ -99,7 +95,7 @@ class RollingForcePalette:
         return corr < _CUT_CORREL_THRESHOLD
 
     def _run(self, stop: threading.Event) -> None:
-        published: tuple[int, ...] | None = None
+        installed: ColorMap | None = None
         while not stop.wait(self._interval):
             with self._lock:
                 frame = self._latest
@@ -116,7 +112,23 @@ class RollingForcePalette:
                 continue
             if new is None:
                 continue
-            if published is None or cut or set(new.indices) != set(published):
+            if installed is None or cut or _remap_drift(installed, new, frame) > _REINSTALL_DRIFT:
                 with self._lock:
                     self._pending = new
-                published = new.indices
+                installed = new
+
+
+def _remap_drift(installed: ColorMap, new: ColorMap, frame_bgr: np.ndarray) -> float:
+    """The fraction of `frame_bgr`'s pixels that `new` paints a different C64
+    color than `installed` does."""
+    bins = _downscale(frame_bgr) >> installed.shift
+    b, g, r = bins[..., 0], bins[..., 1], bins[..., 2]
+    return float(np.mean(installed.lut[b, g, r] != new.lut[b, g, r]))
+
+
+def _downscale(img_bgr: np.ndarray) -> np.ndarray:
+    h, w = img_bgr.shape[:2]
+    if w <= _ANALYSIS_WIDTH:
+        return img_bgr
+    new_h = max(1, h * _ANALYSIS_WIDTH // w)
+    return cv2.resize(img_bgr, (_ANALYSIS_WIDTH, new_h), interpolation=cv2.INTER_AREA)
