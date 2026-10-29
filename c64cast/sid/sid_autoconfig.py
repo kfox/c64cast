@@ -80,6 +80,25 @@ def _current_addr_map(api: C64Backend) -> dict[int, str]:
     return current_source_map(api)
 
 
+def _silence_displaced_socket(
+    plan: dict[tuple[str, str], str],
+    current_source: str | None,
+    socket_models: tuple[str | None, str | None],
+) -> bool:
+    """Add the PUT that stops `current_source` answering the address another
+    source is taking over, when it is a socket; True when it was."""
+    if current_source == "socket2" and armsid.is_right_channel(socket_models[1]):
+        # Socket 2's enable does not reach an ARM2SID's right channel; turning
+        # the split off is what silences it.
+        plan[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)] = armsid.EXT_SPLIT_OFF
+        return True
+    enable_item = _SOCKET_ENABLE_ITEM.get(current_source or "")
+    if enable_item is None:
+        return False
+    plan[(CAT_SOCKETS, enable_item)] = "Disabled"
+    return True
+
+
 def plan_sid_model_config(
     chips: tuple[tuple[int, str | None], ...],
     current_addr_map: dict[int, str],
@@ -110,9 +129,10 @@ def plan_sid_model_config(
          pass) → remap that socket's address to this chip's address (same
          address-swap mechanism
          :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses` uses for
-         multi-SID routing), switching an ARMSID's model with it. An ARM2SID's
-         right channel never moves this way, and neither does socket 1 while
-         that right channel plays one of the tune's chips.
+         multi-SID routing), switching an ARMSID's model with it, and disable
+         the socket it displaces there. An ARM2SID's right channel never moves
+         this way, and neither does socket 1 while that right channel plays
+         one of the tune's chips.
       3. `ultisid_allowed` and a free UltiSID core remains → route this
          chip's address to that core, set its filter-curve item to the fixed
          representative curve for the required model (`"6581"` / `"8580 Lo"`
@@ -202,11 +222,13 @@ def plan_sid_model_config(
             if armsid.needs_model_change(socket_models[matched_idx], required):
                 plan[(armsid.CAT_SOCKET_MODEL, f"socket{matched_idx + 1}")] = required
             reserved.add(f"socket{matched_idx + 1}")
+            displaced = _silence_displaced_socket(plan, current_source, socket_models)
             log.info(
-                "sid autoconfig: chip at $%04X (%s) → socket %d (swap)",
+                "sid autoconfig: chip at $%04X (%s) → socket %d (swap)%s",
                 address,
                 required,
                 matched_idx + 1,
+                f" — displacing {current_source}" if displaced else "",
             )
             continue
 
@@ -231,13 +253,7 @@ def plan_sid_model_config(
                 # A core route the address is not taken away from is inaudible:
                 # a mirroring socket answers alongside it and wins.
                 plan[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
-                displaced = _SOCKET_ENABLE_ITEM.get(current_source or "")
-                if current_source == "socket2" and armsid.is_right_channel(socket_models[1]):
-                    # Socket 2's enable does not reach an ARM2SID's right
-                    # channel; turning the split off is what silences it.
-                    plan[(CAT_ADDRESSING, armsid.ITEM_EXT_SPLIT)] = armsid.EXT_SPLIT_OFF
-                elif displaced:
-                    plan[(CAT_SOCKETS, displaced)] = "Disabled"
+                displaced = _silence_displaced_socket(plan, current_source, socket_models)
                 reserved.add(core)
                 log.info(
                     "sid autoconfig: chip at $%04X (%s) → %s (filter curve %r, "
