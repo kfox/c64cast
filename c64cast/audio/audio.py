@@ -267,12 +267,13 @@ LANDING_PACE_WINDOW_S = 1.0
 LANDING_PACE_MIN_INTERVALS = 2
 LANDING_PACE_MAX_LANDINGS = 64
 
-# The longest ring write the NMI period alone may ask for: what the fastest
-# rate's write already is on either backend, after the link's write-rate floor.
-# The bank-swap commit window is budgeted for one write's halt
-# (tests/test_commit_window.py). Capping the period-derived size at the
-# fastest rate's instead split a 64-byte chunk at 8 kHz into a 55-byte and a
-# 9-byte write, and write count, not size, is what costs on the link.
+# The longest ring write the NMI period alone may ask for, and so the one
+# write's halt the bank-swap commit window is budgeted for
+# (tests/test_commit_window.py); the fastest rate's write, after the link's
+# write-rate floor, fits under it on either backend. Capping the period-derived
+# size at the fastest rate's halt quantum instead split a 64-byte chunk at
+# 8 kHz into a 55-byte and a 9-byte write, and write count, not size, is what
+# costs on the link.
 RING_WRITE_HALT_CAP_BYTES = 147
 
 

@@ -62,9 +62,9 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 #   $C03F: 40           RTI
 #
 # With a badline (40 stolen cycles) the handler can take 81 cycles: 4 cycles
-# short of the NTSC 12 kHz period, and 6 past the 75-cycle floor the timer may
-# still arm. That floor rests on the measured overrun
-# onset (c64.NMI_HANDLER_WORST_CYCLES), not on this worst-case sum. Its upload
+# short of the NTSC 12 kHz period, and 1 past the 80-cycle floor the timer may
+# still arm. That floor rests on the measured latest $D418 store
+# (c64.NMI_STORE_WORST_CYCLES), not on this worst-case sum. Its upload
 # and its execution are pinned by tests/test_reu_audio.py's NmiRoutineTest.
 NMI_ROUTINE = bytes(
     [

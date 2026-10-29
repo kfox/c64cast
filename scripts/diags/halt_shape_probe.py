@@ -235,7 +235,9 @@ def store_timing(be, args) -> int:
     if getattr(be, "_lock_capable", False) is True:
         print("--store-timing cannot time locked slicing; pass --tr-slicing on or off")
         return 2
-    latch = nmi_latch_for_rate(args.nmi_rate, args.system)
+    # ceiling=1: this mode measures where the safe floor lies, so it arms
+    # periods under the one production holds the timer to.
+    latch = nmi_latch_for_rate(args.nmi_rate, args.system, ceiling=1)
     period = latch + 1
     fill_secs = LOG_ENTRIES * period / (1e6 * {"NTSC": 1.022727, "PAL": 0.985248}[args.system])
     secs = fill_secs * 1.3 + 0.2

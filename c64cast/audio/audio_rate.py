@@ -196,10 +196,10 @@ class NmiTimer:
 
     def ceiling_latch(self) -> int:
         """Smallest (fastest) CIA #2 Timer A latch the adaptive loop may use: the
-        latch whose NMI period equals the safe handler budget
+        latch whose NMI period equals the safe minimum
         (c64.NMI_SAFE_MIN_PERIOD_CYCLES). period = latch+1, so latch = budget-1.
         Bounds how far the loop can speed the NMI to overcome bus-halt tick loss
-        without overrunning the handler. System-independent (a cycle count)."""
+        without a nested NMI landing ahead of the $D418 store. System-independent (a cycle count)."""
         return NMI_CEILING_LATCH
 
     def seed_latch_for_mode(self, mode: str | None) -> int:

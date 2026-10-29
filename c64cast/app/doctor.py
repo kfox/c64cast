@@ -879,7 +879,7 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
         # fully cancel the video slowdown, acutely so on PAL's tighter clock.
         if cfg.audio.nmi_rate_adaptive:
             # Floored at zero: the load rule accepts a rate whose nearest latch is
-            # the ceiling itself (up to ~13.7 kHz NTSC), past max_safe_sample_rate.
+            # the ceiling itself (up to ~12.86 kHz NTSC), past max_safe_sample_rate.
             headroom = max(0.0, max_safe_sample_rate(system) / rate - 1.0)
             if headroom < 0.03:
                 out.append(

@@ -2483,13 +2483,13 @@ class SampleRateHintTest(unittest.TestCase):
         self.assertIn("16 Hz", hint)
 
     def test_a_rate_on_the_ceiling_latch_reports_no_negative_headroom(self):
-        # 13700 Hz NTSC rounds onto the ceiling latch, so load accepts it, but it
+        # 12850 Hz NTSC rounds onto the ceiling latch, so load accepts it, but it
         # sits above max_safe_sample_rate; the adaptive loop has 0 % left, not -0.5 %.
         loaded = _load(
             """
             [audio]
             enabled = true
-            sample_rate = 13700
+            sample_rate = 12850
             nmi_rate_adaptive = true
             [ultimate64]
             system = "NTSC"

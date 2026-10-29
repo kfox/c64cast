@@ -1292,7 +1292,7 @@ class PitchCompensationLatchTest(unittest.TestCase):
 
     def test_no_multiplier_arms_past_the_handler_budget(self):
         # 1.2 at 12 kHz NTSC asked for latch 70 (a 71-cycle period), under the
-        # 75-cycle safe minimum the adaptive loop is already held to.
+        # 80-cycle safe minimum the adaptive loop is already held to.
         s = self._started(sample_rate=12000)
         with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
             s.set_nmi_latch_for_mode("mhires", {"mhires": 1.2})
@@ -2645,13 +2645,24 @@ class NmiRateSafetyTest(unittest.TestCase):
         from c64cast.hw.c64 import nmi_rate_safety
 
         # 14000 → period ~73 (NTSC) / ~70 (PAL): above the 68-cycle handler
-        # onset but inside the 75-cycle margin. That used to load with a
-        # warning, and the timer then armed the 75-cycle ceiling instead, so
-        # the request could only ever play at a rate nobody asked for.
+        # onset but under the 80-cycle floor. That used to load with a
+        # warning, and the timer then armed the ceiling instead, so the
+        # request could only ever play at a rate nobody asked for.
         for system in ("NTSC", "PAL"):
             level, msg = nmi_rate_safety(system, 14000)
             self.assertEqual(level, "error")
-            self.assertIn("margin", msg)
+            self.assertIn("twice", msg)
+
+    def test_a_period_the_store_can_overrun_is_refused(self):
+        from c64cast.hw.c64 import nmi_rate_safety
+
+        # Period 79 on both: a $D418 store lands up to 78 cycles after its
+        # underflow, and at 75 a nested NMI played ~1% of samples twice.
+        for system, rate in (("NTSC", 13000), ("PAL", 12500)):
+            with self.subTest(system=system):
+                level, msg = nmi_rate_safety(system, rate)
+                self.assertEqual(level, "error")
+                self.assertIn("NMI period 79 cycles", msg)
 
     def test_the_safety_rule_matches_the_latch_the_timer_arms(self):
         from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
@@ -2679,9 +2690,9 @@ class NmiRateSafetyTest(unittest.TestCase):
     def test_the_armed_latch_stays_inside_the_handler_budget_and_16_bits(self):
         # nominal_latch is what effective_rate, the REU pump latch and the
         # adaptive clamp all derive from, so holding it holds all of them.
-        # 14000 NTSC wants latch 72 (under the 74 ceiling); 15 Hz wants 68181,
+        # 14000 NTSC wants latch 72 (under the 79 ceiling); 15 Hz wants 68181,
         # which the two-register write used to truncate to 2645 (386 Hz).
-        for rate, want in ((14000, 74), (15, 0xFFFF)):
+        for rate, want in ((14000, 79), (15, 0xFFFF)):
             with self.subTest(rate=rate):
                 s = _make(sample_rate=rate)
                 self.assertEqual(s.nmi.nominal_latch(), want)
@@ -2743,11 +2754,11 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
 
     Drives the measured consumer rate toward target by stepping the CIA #2 latch.
     Rate/latch are inverse, so R too slow → SMALLER latch (faster). NTSC@10500:
-    nominal_latch=96 (period 97), ceiling_latch=74 (period 75, the measured
-    handler budget). See [[project-nmi-rate-intelligibility]] / [[project-hostdma-servo-pitch-compensation]]."""
+    nominal_latch=96 (period 97), ceiling_latch=79 (period 80, the measured
+    safe minimum). See [[project-nmi-rate-intelligibility]] / [[project-hostdma-servo-pitch-compensation]]."""
 
     NOMINAL = 96  # _nmi_latch_value() for NTSC @ 10500
-    CEILING = 74  # NMI_SAFE_MIN_PERIOD_CYCLES (75) - 1
+    CEILING = 79  # NMI_SAFE_MIN_PERIOD_CYCLES (80) - 1
     TARGET = 10500.0
 
     def _step(self, r_rate: float, latch: int) -> int:

@@ -413,17 +413,22 @@ def last_commit_line(handler: bytes, prime) -> int:
 
 
 class RingWriteCapTest(unittest.TestCase):
-    """RING_WRITE_HALT_CAP_BYTES is the write the fastest rate already gets
-    on each backend, so a slower rate's write never outgrows it."""
+    """RING_WRITE_HALT_CAP_BYTES is the longest write any rate sends, the halt
+    the commit budget below assumes, and the fastest rate's write fits it."""
 
-    def test_the_cap_is_the_fastest_rates_write(self):
+    def test_the_cap_is_the_longest_write(self):
+        from c64cast.audio.audio import RING_WRITE_HALT_CAP_BYTES
+
+        self.assertEqual(largest_ring_write(), RING_WRITE_HALT_CAP_BYTES)
+
+    def test_the_fastest_rates_write_fits_under_the_cap(self):
         from c64cast.audio.audio import RING_WRITE_HALT_CAP_BYTES
         from c64cast.hw.backend import BASE_PROFILES
 
         for name, profile in BASE_PROFILES.items():
             for system in ("PAL", "NTSC"):
                 with self.subTest(backend=name, system=system):
-                    self.assertEqual(
+                    self.assertLessEqual(
                         ring_write_size(profile, system, NMI_CEILING_LATCH),
                         RING_WRITE_HALT_CAP_BYTES,
                     )

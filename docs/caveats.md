@@ -15,7 +15,7 @@ while a TeensyROM+ locks its DMA slices). The classic path is
 plays back. You *can* raise `sample_rate`, but it isn't the quality lever:
 the C64-side NMI period is derived *from* it (it programs the CIA #2 Timer A
 latch), so the pitch stays correct, and there's little headroom — rates
-past ≈13.7 kHz NTSC (≈13.2 kHz PAL), where the nearest CIA latch drops under the handler's safe period, are rejected at load
+past ≈12.9 kHz NTSC (≈12.4 kHz PAL), where the nearest CIA latch drops under the handler's safe period, are rejected at load
 (`c64.nmi_rate_safety`). The real depth knob is `[audio] dac_curve`, whose
 `"auto"` default lifts the U64's (deterministic emulated) SID to the Mahoney
 ≈6-7-bit `$D418` technique; `--calibrate-dac` does the same for a physical

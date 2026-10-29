@@ -1324,8 +1324,8 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
     """Guard [audio].sample_rate against the NMI handler's cycle budget.
 
     Raises ConfigError for a rate the $D418 DAC NMI timer will not arm on the
-    target system: one that overruns the handler or its entry-latency margin,
-    or is too slow for the 16-bit timer. Thin pass-through to
+    target system: one that overruns the handler or lets a nested NMI land
+    ahead of its $D418 store, or is too slow for the 16-bit timer. Thin pass-through to
     `c64.nmi_rate_safety` so the rule lives in one place (shared with --doctor).
     No-op when audio is disabled or the rate is unset (the backend's default).
 

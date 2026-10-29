@@ -675,17 +675,18 @@ class AudioCfg:
             "HW-verified clean on a real NTSC U64-II via a pitch A/B sweep (no NMI "
             "handler overrun) in both char and bitmap modes, and safe on PAL. Note the "
             "REAL streaming ceiling sits BELOW the isolated-handler ceiling "
-            "(max_safe_sample_rate ~13.6 kHz NTSC): the host-DMA audio ring writes "
+            "(max_safe_sample_rate ~12.8 kHz NTSC): the host-DMA audio ring writes "
             "themselves halt the 6510 and steal cycles from the NMI handler, so the "
             "overrun onset under the live pipeline was measured at ~12500 Hz (identical "
             "in char and bitmap — the audio feed, not the video, is the driver). 12000 "
             "keeps margin below that. A rate whose nearest CIA #2 latch gives an NMI "
-            "period under 75 cycles (the 68-cycle handler worst case plus entry "
-            "margin: above ~13.7 kHz NTSC / ~13.2 kHz PAL), or a latch past the "
+            "period under 80 cycles (the $D418 store lags its underflow by up to "
+            "78, and a nested NMI ahead of it plays a sample twice and skips the "
+            "next: above ~12.9 kHz NTSC / ~12.4 kHz PAL), or a latch past the "
             "16-bit timer (under 16 Hz), is rejected at load, and --doctor reports "
             'it. An unresolved [ultimate64].system = "auto" is checked as NTSC, so '
             "on a PAL machine a rate between the two ceilings loads and plays "
-            "clamped to ~13.1 kHz, with a warning. Sampler-backend playback uses "
+            "clamped to ~12.3 kHz, with a warning. Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
     )

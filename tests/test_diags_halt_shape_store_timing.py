@@ -44,6 +44,24 @@ class StoreTimingNotesConsumerTest(unittest.TestCase):
         self.assertIs(be.note_nmi_consumer.call_args_list[-1].args[0], False)
 
 
+class StoreTimingArmsBelowTheFloorTest(unittest.TestCase):
+    def test_a_rate_past_the_safe_ceiling_arms_its_own_latch(self) -> None:
+        probe = _load("halt_shape_probe")
+        out_dir = Path(tempfile.mkdtemp())
+        args = argparse.Namespace(
+            nmi_rate=13636, system="NTSC", hold_payload=128, write_rate_timing=0.0, trials=1
+        )
+        with (
+            patch.object(probe, "setup"),
+            patch.object(probe, "store_timing_trial", return_value=None) as trial,
+            patch.object(probe.d, "stamped", return_value=out_dir / "st.json"),
+            redirect_stdout(io.StringIO()),
+        ):
+            probe.store_timing(MagicMock(), args)
+
+        self.assertEqual(trial.call_args.args[1], 74)
+
+
 class StoreTimingRefusesLockedSlicingTest(unittest.TestCase):
     def test_a_lock_capable_backend_is_refused_before_any_trial(self) -> None:
         probe = _load("halt_shape_probe")

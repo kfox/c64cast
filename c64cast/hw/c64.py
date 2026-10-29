@@ -508,8 +508,15 @@ def actual_rate_for_latch(latch: int, system: str) -> float:
 # the same onset in char and bitmap modes; see
 # docs/architecture/audio.md#audiopy--audiostreamer.
 NMI_HANDLER_WORST_CYCLES: Final = 68  # measured overrun onset
-NMI_ENTRY_LATENCY_CYCLES: Final = 7  # margin for entry latency + PAL/unit variation
-NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 75
+# The handler's STA $D418 lands up to 78 cycles after its Timer A underflow when
+# a badline stretches it (HW-measured 2026-10-29 on a U64 Elite II, firmware
+# 3.15a, NTSC and PAL, 10 x 7936 stores per period:
+# scripts/diags/halt_shape_probe.py --store-timing). A period at or under that
+# lets the next NMI nest ahead of the store, which plays one sample twice and
+# skips the next: 0.92% of samples NTSC and 0.83% PAL at 75 cycles, none from 79.
+NMI_STORE_WORST_CYCLES: Final = 78
+NMI_STORE_MARGIN_CYCLES: Final = 2
+NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_STORE_WORST_CYCLES + NMI_STORE_MARGIN_CYCLES
 NMI_CEILING_LATCH: Final = max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
 
 # The live-pipeline overrun onset is ~12.5 kHz (docs/architecture/audio.md).
@@ -570,8 +577,8 @@ def min_sample_rate(system: str) -> int:
 
 def max_safe_sample_rate(system: str) -> int:
     """Highest sample rate whose NMI period stays at/above the safe minimum
-    (measured handler worst case + margin) for `system`. ~13.6 kHz NTSC / ~13.1
-    kHz PAL (HW-measured 2026-07-02) — the comfortable default sits lower."""
+    (the measured latest $D418 store + margin) for `system`: 12784 Hz NTSC /
+    12315 Hz PAL — the comfortable default sits lower."""
     return int(cpu_clock(system) // NMI_SAFE_MIN_PERIOD_CYCLES)
 
 
@@ -583,9 +590,10 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "error
     The latch is :func:`nearest_latch`, the one ``NmiTimer.nominal_latch``
     clamps, and "error" is any rate whose latch falls outside what the
     timer will arm: a period under ``NMI_SAFE_MIN_PERIOD_CYCLES`` (NMIs queue
-    below the handler worst case, and the entry-latency margin above it is the
-    budget the timer clamps to) or a latch past the 16-bit timer. A rate the
-    timer would clamp would otherwise load and play at a rate nobody asked for.
+    below the handler worst case, and above it until the period clears the
+    latest $D418 store a nested NMI plays a sample twice and skips the next)
+    or a latch past the 16-bit timer. A rate the timer would clamp would
+    otherwise load and play at a rate nobody asked for.
     """
     if sample_rate <= 0:
         return ("error", f"sample_rate must be positive, got {sample_rate}")
@@ -610,14 +618,15 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "error
         return (
             "error",
             f"sample_rate {sample_rate} Hz → NMI period {latch + 1} cycles on "
-            f"{system}, inside the entry-latency margin of the "
-            f"{NMI_HANDLER_WORST_CYCLES}-cycle handler; the NMI timer arms no period "
-            f"under {NMI_SAFE_MIN_PERIOD_CYCLES}. Max safe on {system} ≈ {safe_max} Hz.",
+            f"{system}, too close to the {NMI_STORE_WORST_CYCLES} cycles the $D418 "
+            f"store can lag its underflow: a nested NMI plays a sample twice and "
+            f"skips the next, so the NMI timer arms no period under "
+            f"{NMI_SAFE_MIN_PERIOD_CYCLES}. Max safe on {system} ≈ {safe_max} Hz.",
         )
     return (
         "ok",
         f"sample_rate {sample_rate} Hz → NMI period {latch + 1} cycles on "
-        f"{system} (safe; handler ≤ {NMI_HANDLER_WORST_CYCLES}).",
+        f"{system} (safe; the $D418 store lags ≤ {NMI_STORE_WORST_CYCLES}).",
     )
 
 
