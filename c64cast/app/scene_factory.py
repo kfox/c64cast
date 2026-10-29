@@ -1754,8 +1754,13 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                 f"[midi_control].cc_map[{i}].action must be one of "
                 f"{', '.join(_MIDI_ACTION_CHOICES)}, got {action!r}"
             )
-        if action == "jump" and not isinstance(entry.get("scene"), int):
-            raise ConfigError(f"[midi_control].cc_map[{i}] action 'jump' needs an int 'scene'")
+        scene = entry.get("scene")
+        if action == "jump" and (
+            not isinstance(scene, int) or isinstance(scene, bool) or scene < 0
+        ):
+            raise ConfigError(
+                f"[midi_control].cc_map[{i}] action 'jump' needs an int 'scene' >= 0, got {scene!r}"
+            )
         if action == "param":
             target = entry.get("target")
             if (

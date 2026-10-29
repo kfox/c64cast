@@ -123,6 +123,11 @@ class ParseCCMapTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _parse_cc_map([{"type": "note", "number": 1, "action": "jump"}])
 
+    def test_jump_to_a_negative_or_bool_scene_rejected(self):
+        for scene in (-1, True, False):
+            with self.subTest(scene=scene), self.assertRaises(ValueError):
+                _parse_cc_map([{"type": "note", "number": 1, "action": "jump", "scene": scene}])
+
     def test_param_without_target_rejected(self):
         with self.assertRaises(ValueError):
             _parse_cc_map([{"type": "cc", "number": 1, "action": "param"}])

@@ -167,8 +167,10 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
         if action not in _ACTIONS:
             raise ValueError(f"cc_map[{i}].action must be one of {_ACTIONS}, got {action!r}")
         scene = entry.get("scene")
-        if action == "jump" and not isinstance(scene, int):
-            raise ValueError(f"cc_map[{i}] action 'jump' needs an int 'scene'")
+        if action == "jump" and (
+            not isinstance(scene, int) or isinstance(scene, bool) or scene < 0
+        ):
+            raise ValueError(f"cc_map[{i}] action 'jump' needs an int 'scene' >= 0, got {scene!r}")
         target = entry.get("target")
         if action == "param" and (not isinstance(target, str) or "." not in target):
             raise ValueError(

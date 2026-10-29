@@ -564,6 +564,25 @@ class MidiControlJoystickTest(unittest.TestCase):
                 self._check(entry)
 
 
+class MidiControlJumpTest(unittest.TestCase):
+    def _check(self, scene: object) -> None:
+        from dataclasses import replace
+
+        entry = {"type": "note", "number": 36, "action": "jump", "scene": scene}
+        cfg = replace(cfgmod.MidiControlCfg(), enabled=True, cc_map=[entry])
+        scene_factory.validate_midi_control_cfg(cfg)
+
+    def test_scene_zero_passes(self):
+        self._check(0)
+
+    def test_negative_or_bool_scene_raises(self):
+        for scene in (-1, True, False):
+            with self.subTest(scene=scene):
+                with self.assertRaises(cfgmod.ConfigError) as ctx:
+                    self._check(scene)
+                self.assertIn("'scene' >= 0", str(ctx.exception))
+
+
 class ConfigErrorTest(unittest.TestCase):
     def test_missing_file_raises_config_error(self):
         with self.assertRaises(cfgmod.ConfigError) as ctx:
