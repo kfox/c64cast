@@ -2712,12 +2712,15 @@ class TransportOsdBoundaryTest(unittest.TestCase):
 
     def test_arming_and_looping_still_post_state(self):
         scene, _store = self._scene()
-        scene.transport_loop_toggle()
+        with _freeze_time(5.0):
+            scene.transport_loop_toggle()
         self.assertIsNotNone(scene.osd.current())
         self.assertTrue((scene.osd.current() or "").startswith("LOOP A"))
-        scene.transport_loop_toggle()
+        with _freeze_time(8.0):
+            scene.transport_loop_toggle()
         self.assertTrue((scene.osd.current() or "").startswith("LOOP "))
-        scene.transport_loop_toggle()
+        with _freeze_time(9.0):
+            scene.transport_loop_toggle()
         self.assertEqual(scene.osd.current(), "LOOP OFF")
 
 
