@@ -391,6 +391,29 @@ class LearnFeedbackTests(unittest.TestCase):
         self.assertEqual(block["armed"], mc.FeedbackMap().armed)
         self.assertIn("not a number — keeping 13", out.getvalue())
 
+    def test_only_the_velocity_prompts_say_velocity(self):
+        q = mock.MagicMock()
+        q.confirm.return_value.ask.return_value = True
+        q.text.return_value.ask.return_value = None
+        out = io.StringIO()
+        with (
+            mock.patch.object(midi_setup, "_pick_output_port", return_value=None),
+            contextlib.redirect_stdout(out),
+        ):
+            midi_setup._learn_feedback(q, None)
+        self.assertIn("LED feedback lights your controller's pads", out.getvalue())
+        labels = [c.args[0].strip() for c in q.text.call_args_list]
+        self.assertEqual(
+            labels,
+            [
+                "loaded clip (dim) velocity",
+                "arming clip (blinks) velocity",
+                "live clip (bright) velocity",
+                "enabled effect layer velocity",
+                "LED MIDI channel (0-based)",
+            ],
+        )
+
 
 class LiveTargetsDriftTests(unittest.TestCase):
     """live_targets() must expose exactly the LIVE_PARAMS/LIVE_CHOICES declared

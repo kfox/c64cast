@@ -361,14 +361,14 @@ def _learn_feedback(q: Any, existing: dict[str, Any] | None) -> dict[str, Any] |
     ).ask():
         base = FeedbackMap().to_dict()
         prompts = {
-            "loaded": "loaded clip (dim)",
-            "armed": "arming clip (blinks)",
-            "active": "live clip (bright)",
-            "fx_on": "enabled effect layer",
+            "loaded": "loaded clip (dim) velocity",
+            "armed": "arming clip (blinks) velocity",
+            "active": "live clip (bright) velocity",
+            "fx_on": "enabled effect layer velocity",
             "channel": "LED MIDI channel (0-based)",
         }
         for key, label in prompts.items():
-            raw = q.text(f"  {label} velocity", default=str(base[key])).ask()
+            raw = q.text(f"  {label}", default=str(base[key])).ask()
             if raw is None:
                 continue
             try:
