@@ -76,7 +76,7 @@ import time
 import _diaglib as d
 
 # Bring-up is shared with ring_race_probe so both tools measure the same machine.
-from ring_race_probe import arm, disarm, effective_rate, read_r, setup
+from ring_race_probe import arm, disarm, read_r, setup
 
 from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
@@ -91,7 +91,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.audio_rate import nmi_sample_store
 from c64cast.hw.backend import make_backend
-from c64cast.hw.c64 import CIA2, nmi_latch_for_rate
+from c64cast.hw.c64 import CIA2, actual_rate_for_latch, nmi_latch_for_rate
 
 SCRATCH_ADDR = 0x6000  # clear of the ring ($4000-$5FFF) and the NMI handler ($C020)
 DEFAULT_PAYLOADS = (64, 128, 256, 512, 1024)
@@ -229,15 +229,21 @@ def analyze_store_log(log: bytes, period: int) -> dict:
     }
 
 
+def armed_latch(args) -> int:
+    # ceiling=1 for --store-timing: it measures where the safe floor lies, so
+    # it arms periods under the one production holds the timer to.
+    if args.store_timing:
+        return nmi_latch_for_rate(args.nmi_rate, args.system, ceiling=1)
+    return nmi_latch_for_rate(args.nmi_rate, args.system)
+
+
 def store_timing(be, args) -> int:
     # A locked slice waits on the handler's $D418 store, which the twin never
     # makes, so its writes would silently fall back to WriteC64Mem.
     if getattr(be, "_lock_capable", False) is True:
         print("--store-timing cannot time locked slicing; pass --tr-slicing on or off")
         return 2
-    # ceiling=1: this mode measures where the safe floor lies, so it arms
-    # periods under the one production holds the timer to.
-    latch = nmi_latch_for_rate(args.nmi_rate, args.system, ceiling=1)
+    latch = armed_latch(args)
     period = latch + 1
     fill_secs = LOG_ENTRIES * period / (1e6 * {"NTSC": 1.022727, "PAL": 0.985248}[args.system])
     secs = fill_secs * 1.3 + 0.2
@@ -535,8 +541,8 @@ def main() -> int:
     d.add_tr_slicing_args(ap)
     args = ap.parse_args()
 
-    eff = effective_rate(args.nmi_rate, args.system)
-    cycles_per_tick = nmi_latch_for_rate(args.nmi_rate, args.system) + 1
+    eff = actual_rate_for_latch(armed_latch(args), args.system)
+    cycles_per_tick = armed_latch(args) + 1
     store = nmi_sample_store(cycles_per_tick - 1, args.system)
     payloads = [int(p) for p in args.payloads.split(",") if p.strip()]
 
