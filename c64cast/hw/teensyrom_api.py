@@ -51,6 +51,7 @@ from .backend import (
     DacPacing,
     HardwareProfile,
     NmiSampleStore,
+    printable_device_text,
     read_program_file,
 )
 from .c64 import LOCKED_BITMAP_DAC_SAMPLE_RATE, SCREEN, VECTORS
@@ -529,7 +530,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         transport = self.tr.transport
         parts = ["TeensyROM+"]
         if serial_number := transport.serial_number:
-            parts.append(serial_number)
+            parts.append(printable_device_text(serial_number))
         parts.append(f"({self.tr.firmware} firmware, {transport.description})")
         return " ".join(parts)
 

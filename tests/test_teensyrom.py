@@ -1786,6 +1786,18 @@ class BackendTest(unittest.TestCase):
         b, _t = self._backend()
         self.assertEqual(b.describe_device(), "TeensyROM+ (full firmware, loopback)")
 
+    def test_describe_device_cannot_forge_a_log_line_from_the_usb_serial_number(self):
+        b, t = self._backend()
+        with mock.patch.object(
+            type(t),
+            "serial_number",
+            new_callable=mock.PropertyMock,
+            return_value="AB\r\nERROR:x\x1b[2J",
+        ):
+            self.assertEqual(
+                b.describe_device(), "TeensyROM+ ABERROR:x[2J (full firmware, loopback)"
+            )
+
     def test_settle_after_launch_goes_through_the_client_lock(self):
         # _settle_after_launch runs after launch_file() released the lock, so it must
         # reacquire via drain_after_command rather than touching self.tr.transport —
