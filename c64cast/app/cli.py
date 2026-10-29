@@ -703,6 +703,10 @@ def _run_session(
     except session.SessionConfigError as e:
         return e.exit_code
 
+    # Until the stop handler below replaces it, SIGTERM's default disposition
+    # ends the process with no unwind, leaving the machine provisioned and
+    # never reset; as a KeyboardInterrupt it unwinds the build as Ctrl+C does.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         sess = session.build_session(args, loaded, cfgs)
     except StackBuildError as e:

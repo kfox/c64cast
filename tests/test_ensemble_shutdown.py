@@ -360,16 +360,50 @@ class RunSessionStopHandlerGapTest(unittest.TestCase):
     def test_a_ctrl_c_before_the_stop_handler_is_installed_still_tears_down(self):
         from c64cast.app import cli
 
+        def interrupted_once_built(_signum, handler):
+            if handler is not cli.signal.default_int_handler:
+                raise KeyboardInterrupt
+
         sess = MagicMock(name="sess")
         with (
             unittest.mock.patch.object(session, "validate_configs"),
             unittest.mock.patch.object(session, "build_session", return_value=sess),
-            unittest.mock.patch.object(cli.signal, "signal", side_effect=KeyboardInterrupt),
+            unittest.mock.patch.object(cli.signal, "signal", side_effect=interrupted_once_built),
             unittest.mock.patch.object(session, "teardown_session") as teardown,
             self.assertRaises(KeyboardInterrupt),
         ):
             cli._run_session(argparse.Namespace(), MagicMock(name="loaded"), [])
         teardown.assert_called_once_with(sess)
+
+    def test_a_sigterm_during_the_build_unwinds_it_like_a_ctrl_c(self):
+        """Until the stop handler goes in, SIGTERM's default disposition ends
+        the process on the spot, so a `kill` or a service manager's stop during
+        the build skipped build_session's unwind and left the machine
+        provisioned and never reset. It has to arrive the way a Ctrl+C does."""
+        import signal
+
+        from c64cast.app import cli
+
+        handlers: dict[int, object] = {}
+        sigterm_during_build: list[object] = []
+
+        def build(*_a, **_k):
+            sigterm_during_build.append(handlers.get(signal.SIGTERM))
+            raise session.StackBuildError(4)
+
+        with (
+            unittest.mock.patch.object(session, "validate_configs"),
+            unittest.mock.patch.object(session, "build_session", side_effect=build),
+            unittest.mock.patch.object(
+                cli.signal, "signal", side_effect=lambda s, h: handlers.__setitem__(s, h)
+            ),
+        ):
+            rc = cli._run_session(argparse.Namespace(), MagicMock(name="loaded"), [])
+        self.assertEqual(rc, 4)
+        handler = sigterm_during_build[0]
+        assert callable(handler)
+        with self.assertRaises(KeyboardInterrupt):
+            handler(signal.SIGTERM, None)
 
 
 class RunSessionExitStatusTest(unittest.TestCase):
