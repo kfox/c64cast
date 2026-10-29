@@ -146,6 +146,31 @@ class ReinstallPolicyTest(unittest.TestCase):
                 fp = RollingForcePalette(**kwargs)  # type: ignore[arg-type]
                 self.assertEqual(len(_installs(fp, [self.WARM] * 20)), 1)
 
+    def test_small_steps_add_up_to_a_reinstall(self):
+        frame = np.zeros((1, 100, 3), dtype=np.uint8)
+        frame[0, :, 0] = (np.arange(100) % 32) << 3
+        frame[0, :, 1] = (np.arange(100) // 32) << 3
+
+        def tenths_repainted(k: int) -> ColorMap:
+            lut = np.zeros((32, 32, 32), dtype=np.uint8)
+            lut[frame[0, : 10 * k, 0] >> 3, frame[0, : 10 * k, 1] >> 3, 0] = 1
+            return ColorMap(lut=lut, shift=3, indices=(0, 1))
+
+        bakes = [tenths_repainted(k) for k in range(4)]
+
+        class _Bakes:
+            def add(self, _frame: np.ndarray) -> None:
+                pass
+
+            def result(self) -> ColorMap:
+                return bakes.pop(0)
+
+        fp = RollingForcePalette(n_colors=2)
+        fp._acc = _Bakes()  # type: ignore[assignment]
+        installs = _installs(fp, [frame] * 4)
+        self.assertEqual(len(installs), 2)
+        self.assertEqual(_remap_drift(installs[0], installs[1], frame), 0.2)
+
     def test_drift_is_the_share_of_pixels_repainted(self):
         frame = _two_color(2, 6)
         red = ColorMap(lut=np.full((32, 32, 32), 2, dtype=np.uint8), shift=3, indices=(2,))
