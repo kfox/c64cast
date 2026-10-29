@@ -450,35 +450,41 @@ class ConnectivityProbeTest(unittest.TestCase):
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         return [d for d in diags if d.category == "connectivity"]
 
-    def test_rest_probe_failure_is_error_for_sid_scene(self):
-        """A waveform scene starts via the REST run_prg endpoint, so a dead
-        REST link (DMA up, web server down) is an error, not a warning."""
-        conn = self._probe_with_dead_rest("""
-            [ultimate64]
-            url = "http://fake"
-            [[scenes]]
-            type = "waveform"
-            file = "assets/sids/x.sid"
-        """)
-        self.assertEqual(len(conn), 1)
-        self.assertEqual(conn[0].level, "error")
-        self.assertIn("REST probe failed", conn[0].message)
-        self.assertIn("cannot start", conn[0].message)
-        self.assertIn("waveform", conn[0].message)
-        assert conn[0].hint is not None
-        self.assertIn("web/remote-control service", conn[0].hint)
+    def test_rest_probe_failure_is_error_for_a_cartridge_launcher(self):
+        """A .crt starts via the REST run_crt endpoint, so a dead REST link
+        (DMA up, web server down) is an error, not a warning."""
+        for spec in ("assets/carts/x.crt", "assets/prg/x.prg, assets/carts/", "games/*"):
+            with self.subTest(spec=spec):
+                conn = self._probe_with_dead_rest(f"""
+                    [ultimate64]
+                    url = "http://fake"
+                    [[scenes]]
+                    type = "launcher"
+                    file = "{spec}"
+                """)
+                self.assertEqual(len(conn), 1)
+                self.assertEqual(conn[0].level, "error")
+                self.assertIn("REST probe failed", conn[0].message)
+                self.assertIn("cannot start", conn[0].message)
+                self.assertIn("launcher", conn[0].message)
+                assert conn[0].hint is not None
+                self.assertIn("web/remote-control service", conn[0].hint)
 
-    def test_rest_probe_failure_is_error_for_launcher_scene(self):
-        conn = self._probe_with_dead_rest("""
-            [ultimate64]
-            url = "http://fake"
-            [[scenes]]
-            type = "launcher"
-            file = "assets/prg/x.prg"
-        """)
-        self.assertEqual(len(conn), 1)
-        self.assertEqual(conn[0].level, "error")
-        self.assertIn("launcher", conn[0].message)
+    def test_rest_probe_failure_is_warn_for_scenes_that_kick_over_dma(self):
+        """The SID player and a .prg launch start over DMARUN, so they keep
+        working without REST."""
+        for scene in (
+            'type = "waveform"\nfile = "assets/sids/x.sid"',
+            'type = "generative"\naudio_source = "sid"\nfile = "assets/sids/x.sid"',
+            'type = "launcher"\nfile = "assets/prg/x.prg, assets/prg/Y.PRG"',
+        ):
+            with self.subTest(scene=scene):
+                conn = self._probe_with_dead_rest(
+                    f'[ultimate64]\nurl = "http://fake"\n[[scenes]]\n{scene}\n'
+                )
+                self.assertEqual(len(conn), 1)
+                self.assertEqual(conn[0].level, "warn")
+                self.assertNotIn("cannot start", conn[0].message)
 
     def test_rest_password_refusal_is_a_password_error(self):
         from c64cast.hw.api import RestAuthError
