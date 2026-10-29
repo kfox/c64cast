@@ -261,7 +261,7 @@ The batch the port catalog flagged as needing an architecture decision, since ge
 
 A call whose `t` doesn't advance, whether repeated or a backward jump, takes no step and re-returns the current cached frame. That keeps `render(t, None)` stable for a fixed, non-advancing `t`, which is what the shared determinism test actually checks. Note the honest limitation: unlike the pure generators, jumping directly to an arbitrary `t` on a fresh instance does **not** reproduce the same frame as advancing there gradually.
 
-`GenerativeSource` gained a no-op `reset()` hook, mirroring `FrameEffect.reset()`, for `soap`/`fireworks` to override. It is not currently called by `scenes.py` — a fresh generator instance is built per scene entry, so state already resets naturally — and exists for parity and defensiveness.
+`GenerativeSource.setup()` calls `reset()`, the way `Scene.setup()` resets every `FrameEffect`, and `soap`/`fireworks` override it to return to their constructed state, `fireworks` reseeding its spawn RNG too. The scene is built once and its generator with it, so a looping playlist re-enters the same instance every lap; without the reset, lap 2 opened on lap 1's last frame — `fireworks` faded in on sparks from a burst that went off minutes earlier, and `soap` skipped its seed pattern for lap 1's smear. With it, every lap renders the same frames as the first, as the pure generators always did.
 
 #### `effects.py` — the `FrameEffect` registry
 

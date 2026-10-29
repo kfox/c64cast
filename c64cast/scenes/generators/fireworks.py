@@ -47,6 +47,7 @@ class FireworksSource(GenerativeSource):
 
     LIVE_PARAMS = {"speed": (0.0, 3.0), "scale": (0.3, 3.0)}
 
+    _SEED = 0xF12E ^ 0x5040
     _STEP_S = 1.0 / 30.0
     _MAX_SHELLS = 6
     _MAX_PARTICLES = 260
@@ -76,7 +77,6 @@ class FireworksSource(GenerativeSource):
         super().__init__(width=width, height=height)
         self.speed = float(speed)
         self.scale = float(scale)
-        self._rng = np.random.default_rng(0xF12E ^ 0x5040)
         self._gravity = height * self._GRAVITY_FRAC
         self._launch_speed = height * self._LAUNCH_SPEED_FRAC
         self._particle_speed = height * self._PARTICLE_SPEED_FRAC
@@ -85,6 +85,7 @@ class FireworksSource(GenerativeSource):
         self._accum = 0.0
 
     def _init_state(self) -> None:
+        self._rng = np.random.default_rng(self._SEED)
         n_s = self._MAX_SHELLS
         self._shell_alive = np.zeros(n_s, dtype=bool)
         self._shell_x = np.zeros(n_s, dtype=np.float32)

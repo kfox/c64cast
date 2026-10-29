@@ -3449,6 +3449,39 @@ class ConfigGenerativeTest(unittest.TestCase):
             validate_scene_cfg(s, self.cfg, audio_enabled=False)
 
 
+class GeneratorLapTest(unittest.TestCase):
+    """A looping playlist re-enters the same SourceScene, and so the same
+    generator instance, on every lap."""
+
+    def _lap(self, scene: SourceScene, mode: _FakeMode) -> list[np.ndarray]:
+        mode.rendered.clear()
+        scene.setup()
+        scene.start_time = 0.0
+        for i in range(60):
+            scene.process_frame(i / 30.0)
+        scene.teardown()
+        return list(mode.rendered)
+
+    def test_every_lap_replays_the_first(self):
+        for name in generators.REGISTRY:
+            with self.subTest(generator=name):
+                mode = _FakeMode()
+                scene = SourceScene(
+                    cast(C64Backend, SimpleNamespace()),
+                    None,
+                    cast(DisplayMode, mode),
+                    build_generator(name),
+                    NullAudioSource(),
+                    name,
+                )
+                scene.duration_s = 10.0
+                first = self._lap(scene, mode)
+                second = self._lap(scene, mode)
+                self.assertEqual(len(first), len(second))
+                for a, b in zip(first, second, strict=True):
+                    np.testing.assert_array_equal(a, b)
+
+
 class StatefulGeneratorCatchUpTest(unittest.TestCase):
     """The playlist holds a scene's frame while the on-C64 menu is open and
     idle (`Playlist._idle_pace`), so the next `read` can arrive minutes of

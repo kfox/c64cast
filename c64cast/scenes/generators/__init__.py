@@ -10,7 +10,8 @@ Generators are registered by name, one module per source: add a
 import it in the ordered block at the bottom of this file, and it shows up
 in config discovery + the `_GENERATIVE_SOURCE_CHOICES` list. The math is pure
 numpy and deterministic in `t` (no hidden frame-to-frame state), so a given
-scene-time always renders the same frame.
+scene-time always renders the same frame — except `soap` and `fireworks`,
+whose state is reset on every scene entry instead.
 
 See docs/architecture/scenes.md#generators--the-generativesource-registry.
 """
@@ -110,11 +111,13 @@ class GenerativeSource(BaseFrameSource):
     def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
         raise NotImplementedError
 
+    def setup(self) -> None:
+        self.reset()
+
     def reset(self) -> None:
-        """Clear any inter-frame state. A no-op for the pure-in-`t` generators,
-        overridden by the few that carry real incremental state (`SoapSource`,
-        `FireworksSource`). Not called by `scenes.py` today: a fresh generator
-        instance is built per scene entry, so state already resets naturally."""
+        """Return to the state a fresh instance starts in. A no-op for the
+        pure-in-`t` generators, overridden by the few that carry real
+        incremental state (`SoapSource`, `FireworksSource`)."""
         return None
 
     @classmethod
