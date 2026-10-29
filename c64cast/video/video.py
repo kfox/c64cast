@@ -856,7 +856,7 @@ def _decode_sample_frames(
     has no known duration (live streams). Decode-bound, but the only option for
     a non-seekable source. Stride comes from the frame count when known."""
     total = v_stream.frames or 0
-    stride = max(1, total // max_samples) if total else 5
+    stride = -(-total // max_samples) if total else 5
     taken = 0
     plan = _DecodePlan(decode_target_size)
     for i, frame in enumerate(_video_frames(container, path, v_stream)):
