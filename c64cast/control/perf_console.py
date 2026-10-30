@@ -297,13 +297,15 @@ class ConsoleFeed:
             await websocket.close(code=code)
             return
         build_frame = self._frames_for(websocket.scope)
-        await websocket.accept()
+        # Counted before the accept, which yields to the loop: every handshake
+        # waiting there would otherwise pass the cap check above as well.
         self.clients.add(websocket)
         # The one gap the auth middleware can't cover: a socket is a single
         # `GET` handshake, so inbound command frames have to be dropped here.
         read_only = is_viewer(websocket.scope)
         reader = SocketReader(websocket, label=self.label)
         try:
+            await websocket.accept()
             # The polled receive lets a client command frame through without
             # blocking the push.
             while True:

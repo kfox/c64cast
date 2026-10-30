@@ -1429,6 +1429,35 @@ class ConsoleFeedTest(unittest.TestCase):
 
         self.assertLess(asyncio.run(stalled_for()), 0.5)
 
+    def _open(self, feed: ConsoleFeed, sockets: list[Any]) -> list[Any]:
+        """Open every socket at once, let the handshakes settle, then hang up
+        on all of them; the sockets back, each marked accepted or not."""
+
+        async def burst() -> None:
+            served = [asyncio.create_task(feed.run(socket)) for socket in sockets]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            for socket in sockets:
+                socket.hangup.set()
+            await asyncio.gather(*served)
+
+        asyncio.run(burst())
+        return sockets
+
+    def test_a_burst_of_handshakes_cannot_get_past_the_cap(self):
+        # Each handshake reached the cap check before any of them had been
+        # counted, because the count was taken after the accept yielded.
+        sockets = self._open(self._feed(limit=3), [self._Socket() for _ in range(10)])
+        self.assertEqual(sum(socket.accepted for socket in sockets), 3)
+        self.assertEqual(sum(socket.closed_with is not None for socket in sockets), 7)
+
+    def test_the_slots_come_back_when_the_sockets_go(self):
+        feed = self._feed(limit=2)
+        self._open(feed, [self._Socket() for _ in range(2)])
+        self.assertEqual(feed.clients, set())
+        sockets = self._open(feed, [self._Socket() for _ in range(2)])
+        self.assertTrue(all(socket.accepted for socket in sockets))
+
 
 if __name__ == "__main__":
     unittest.main()
