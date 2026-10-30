@@ -556,7 +556,30 @@ class ConnectionReapingTest(unittest.TestCase):
 
     def test_a_request_head_that_never_finishes_is_closed(self):
         port = self._serve()
+        self._assert_dripped_head_is_cut_off(self._connect(port))
+
+    def test_a_second_head_that_never_finishes_is_closed(self):
+        """Any byte cancels uvicorn's keep-alive timer, so after one served
+        request a dripped head is bounded by the request timer alone."""
+        port = self._serve()
         s = self._connect(port)
+        s.sendall(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+        reply = http.client.HTTPResponse(s)
+        reply.begin()
+        self.assertEqual(reply.read(), b"0")
+        self._assert_dripped_head_is_cut_off(s)
+
+    def test_an_idle_keep_alive_connection_outlives_the_request_timeout(self):
+        port = self._serve()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_CLOSE_WAIT_S)
+        self.addCleanup(conn.close)
+        conn.request("POST", "/", body=b"a")
+        self.assertEqual(conn.getresponse().read(), b"1")
+        time.sleep(4 * _TEST_REQUEST_TIMEOUT_S)
+        conn.request("POST", "/", body=b"bb")
+        self.assertEqual(conn.getresponse().read(), b"2")
+
+    def _assert_dripped_head_is_cut_off(self, s: socket.socket) -> None:
         s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n")
         s.settimeout(_TEST_REQUEST_TIMEOUT_S / 4)
         deadline = time.monotonic() + _CLOSE_WAIT_S
