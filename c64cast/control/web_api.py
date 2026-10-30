@@ -157,8 +157,9 @@ def _status_payload(
 ) -> dict[str, Any]:
     """The supervisor's state as a console reads it, with ``config_path``
     emptied for a viewer for the reason :func:`perf_console.with_role` empties
-    ``tuned.config_path``. ``config_ref`` stays: it names the file relative to
-    its root, which is what the config browser already shows a viewer."""
+    ``tuned.config_path``, and ``last_error`` read through :func:`_path_hider`.
+    ``config_ref`` stays: it names the file relative to its root, which is what
+    the config browser already shows a viewer."""
     out = status.as_dict()
     out["log_seq"] = log_buffer.seq if log_buffer is not None else 0
     # The browser's default selection: the config the host was launched with,
@@ -166,20 +167,19 @@ def _status_payload(
     # path isn't under a root this store knows (a quick-playback run, or one
     # started from outside any configured `config_roots`).
     out["config_ref"] = store.ref_for(Path(out["config_path"])) if out.get("config_path") else None
-    if out.get("config_path") and is_viewer(scope):
-        out["config_path"] = ""
+    if is_viewer(scope):
+        if out.get("config_path"):
+            out["config_path"] = ""
+        if out.get("last_error"):
+            out["last_error"] = _path_hider(store)(out["last_error"])
     return out
 
 
-def _log_for(
-    lines: list[dict[str, Any]], store: ConfigStore, scope: Mapping[str, Any]
-) -> list[dict[str, Any]]:
-    """``lines`` as ``scope`` may read them. A viewer reads each config root as
-    its label and the home directory as ``~``: ``config.load`` logs the absolute
-    path of every show it starts, and that is the path :func:`_status_payload`
-    empties."""
-    if not is_viewer(scope):
-        return lines
+def _path_hider(store: ConfigStore) -> Callable[[str], str]:
+    """Text as a viewer reads it: each config root as its label and the home
+    directory as ``~``. ``config.load`` logs the absolute path of every show it
+    starts, and a failed build's exception text quotes the file it could not
+    open."""
     swaps = [(str(r.path), r.label) for r in store.roots]
     swaps.append((os.path.join(Path.home(), ""), os.path.join("~", "")))
 
@@ -188,6 +188,15 @@ def _log_for(
             text = text.replace(path, label)
         return text
 
+    return hidden
+
+
+def _log_for(
+    lines: list[dict[str, Any]], store: ConfigStore, scope: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    if not is_viewer(scope):
+        return lines
+    hidden = _path_hider(store)
     return [{**line, "message": hidden(line["message"])} for line in lines]
 
 

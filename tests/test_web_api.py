@@ -35,7 +35,7 @@ from typing import Any
 from unittest import mock
 from urllib.parse import quote
 
-from _fakes import MachineSettingsIsolation, fake_system_stack
+from _fakes import MachineSettingsIsolation, fake_system_stack, quiet_logging
 
 try:
     with warnings.catch_warnings():
@@ -270,12 +270,15 @@ class _Build:
         self.gate: threading.Event | None = None
         self.entered = threading.Event()
         self.calls = 0
+        self.error: BaseException | None = None
 
     def __call__(self, req, generation, publish):
         self.calls += 1
         self.entered.set()
         if self.gate is not None:
             self.gate.wait(WAIT)
+        if self.error is not None:
+            raise self.error
         sess = _session(req)
         publish(sess)
         return sess
@@ -864,6 +867,24 @@ class ConfigBrowserTest(WebApiTestCase):
         shown = Path("~") / "Movies" / "clip.mp4"
         self.assertIn(f"could not open {shown}", [r["message"] for r in viewer])
         self.assertIn(f"could not open {clip}", [r["message"] for r in full])
+
+    def test_a_viewer_reads_a_failed_build_with_the_home_directory_as_a_tilde(self):
+        clip = Path.home() / "Movies" / "clip.mp4"
+        self.build.error = FileNotFoundError(f"No such file or directory: '{clip}'")
+        shown = Path("~") / "Movies" / "clip.mp4"
+        with quiet_logging(), self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.ERROR)
+            for headers, expected in ((VIEWER_AUTH, shown), (AUTH, clip)):
+                with self.subTest(viewer=headers is VIEWER_AUTH):
+                    polled = c.get("/api/session", headers=headers).json()
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["session"]
+                    for status in (polled, fed):
+                        self.assertEqual(
+                            status["last_error"],
+                            f"FileNotFoundError: No such file or directory: '{expected}'",
+                        )
 
     def test_a_read_carries_the_text_and_the_form(self):
         with self.client() as c:

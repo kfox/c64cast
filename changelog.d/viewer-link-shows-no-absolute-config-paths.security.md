@@ -2,4 +2,4 @@
   The session status, the config root list and the session log handed a viewer
   the full path of the running config and of each config root, which names the
   operator's home directory. A viewer now sees only the config's name under its
-  root, and the log shows the home directory as `~`.
+  root, and the log and a failed start's error show the home directory as `~`.
