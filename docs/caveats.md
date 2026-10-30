@@ -749,10 +749,10 @@ command and reopens the connection first, so the write is not lost
 (c64cast#520; details in
 [hardware-io.md](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient)).
 Sharing the API instance is safe because `SocketDMAClient` serializes
-every command on the wire via an internal lock. The combined rate is not
-far under the ≈200/sec DMA ceiling on a heavy scene, though. A 30 fps
+every command on the wire via an internal lock. The combined rate reaches
+the ≈200/sec DMA ceiling on a heavy scene, though. A 30 fps
 video in host-DMA `mhires` with `flicker_tolerance = "clean"` on an
-Ultimate 64 at 3.15a sent 170–260 commands a second: 85–135 render
+Ultimate 64 at 3.15a sent 170–262 commands a second: 83–137 render
 writes, 40–110 page-flip commit polls (`read_debug_register`) and 38
 sampler REU writes; with `[audio].backend = "dac"` the audio drip's 82–88
 writes replaced the sampler's and the total ran 185–225. The playlist
