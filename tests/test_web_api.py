@@ -224,6 +224,13 @@ class _FakePlaylist:
         self.config: Any = None
 
 
+def _home_as_tilde(path: Path) -> str:
+    """``path`` as a viewer reads it outside every media root. Windows keeps its
+    temp directory under home, so a temp path is shown from ``~`` there."""
+    home = Path.home()
+    return str(Path("~", path.relative_to(home))) if path.is_relative_to(home) else str(path)
+
+
 def _request(*names: str, config_path: str = "show.toml") -> serve.StartRequest:
     cfgs = [cfgmod.Config() for _ in names]
     for cfg in cfgs:
@@ -884,7 +891,7 @@ class ConfigBrowserTest(WebApiTestCase):
             logger.error("could not open %s", path)
         with self.client(media=media) as c:
             for headers, expected in (
-                (VIEWER_AUTH, ["clip.mp4", "b.mp4", str(neighbor)]),
+                (VIEWER_AUTH, ["clip.mp4", "b.mp4", _home_as_tilde(neighbor)]),
                 (AUTH, [str(p) for p in (*opened, neighbor)]),
             ):
                 with self.subTest(viewer=headers is VIEWER_AUTH):
