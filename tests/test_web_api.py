@@ -1712,6 +1712,25 @@ class LiveTuneSaveBackTest(WebApiTestCase):
         self.assertIn("dither_strength = 0.8", (self.root / "gig.toml").read_text(encoding="utf-8"))
         self.assertEqual([row["new"] for row in pl.live_tracker.pending()], [0.3])
 
+    def test_a_knob_turned_back_to_its_start_during_the_save_stays_on_offer(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            write_the_file = self.store.patch
+
+            def knob_returns_mid_write(ref, edits):
+                out = write_the_file(ref, edits)
+                pl.live_tracker.record("mode.dither_strength", 0.8, 0.5)
+                return out
+
+            with mock.patch.object(self.store, "patch", knob_returns_mid_write):
+                r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("dither_strength = 0.8", (self.root / "gig.toml").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [(row["old"], row["new"]) for row in pl.live_tracker.pending()], [(0.8, 0.5)]
+        )
+
     def test_the_rest_of_the_file_survives_the_save(self):
         # The write is a PATCH of the file on disk, not a dump of the config the
         # run was built from — so a field edited in the console since the show

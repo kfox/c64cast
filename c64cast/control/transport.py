@@ -395,15 +395,8 @@ class LiveTuneTracker:
 
     def forget(self, rows: Iterable[Mapping[str, Any]]) -> int:
         """Drop the changes :meth:`pending` handed out as `rows`, returning how
-        many were dropped.
-
-        What a surface that has *written* them somewhere calls, so a console
-        stops offering to save a change that is now in the file — and what a
-        "discard" is, handed every :meth:`pending` row.
-
-        A change whose value has moved since its row was taken is kept: the
-        caller acted on the row's ``new``, and a knob turned while a save's
-        write was on disk is a newer value the file never got."""
+        many were dropped — what a "discard" is, handed every :meth:`pending`
+        row. A change whose value has moved since its row was taken is kept."""
         with self._lock:
             dropped = 0
             for row in rows:
@@ -412,6 +405,24 @@ class LiveTuneTracker:
                     del self._changes[row["key"]]
                     dropped += 1
             return dropped
+
+    def saved(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        """Note that a config file now holds each row's ``new``, so a console
+        stops offering a change that is in the file.
+
+        The file's value becomes the change's starting point. A knob turned
+        while the write was on disk stays on offer, measured from what the file
+        now says — including one turned back to the row's ``old``, which
+        :meth:`record` dropped as "unchanged" against the start of the show."""
+        with self._lock:
+            for row in rows:
+                key = row["key"]
+                held = self._changes.get(key)
+                live = row["old"] if held is None else held.new
+                if _values_equal(live, row["new"]):
+                    self._changes.pop(key, None)
+                else:
+                    self._changes[key] = _Change(row["target"], row["scene"], row["new"], live)
 
     def _persistable(self) -> list[dict[str, Any]]:
         """The :meth:`pending` rows a config file can actually take."""

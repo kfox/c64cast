@@ -683,7 +683,7 @@ def register_web_routes(
             raise _store_error(e) from e
         # Only now: a refused patch leaves the record intact, so the console can
         # show the reason and the same Save button still means something.
-        pl.live_tracker.forget(savable)
+        pl.live_tracker.saved(savable)
         # And bring the run's own Config up to what the file now says. The C64's
         # menu save-back dumps *that* object wholesale, so leaving it stale would
         # let somebody at the machine quietly revert what was just saved from the
