@@ -602,7 +602,7 @@ def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tu
                 out.append((1, identity(0, ITEM_SOCKET1_TYPE)))
             if s2:
                 out.append((2, identity(1, ITEM_SOCKET2_TYPE)))
-    except Exception:  # noqa: BLE001 — best-effort; fall back to single measurement
+    except Exception:  # noqa: BLE001 — run_calibration refuses an empty result
         log_fn("[calib] SID socket detection failed")
     return out
 
