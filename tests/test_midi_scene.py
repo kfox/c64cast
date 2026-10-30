@@ -1242,6 +1242,22 @@ class ReplugTests(_MidiTestCase):
         scene.teardown()
         self.assertTrue(fresh.closed)
 
+    def test_teardown_closes_a_port_reopened_before_the_reader_stopped(self):
+        old, fresh = FakeMidiPort(self.before), FakeMidiPort(self.after)
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        scene, _seen = self._running_reader(devices, old)
+        stop_reader = scene._reader_poll.stop
+
+        def replug_then_stop_reader() -> None:
+            with self.assertLogs(self.LOG, level="INFO"):
+                self._replug(scene, devices)
+                self.assertTrue(wait_for(lambda: scene._midi_port is fresh))
+            stop_reader()
+
+        scene._reader_poll.stop = replug_then_stop_reader  # type: ignore[method-assign]
+        scene.teardown()
+        self.assertTrue(fresh.closed)
+
     def test_a_failed_reopen_is_retried_on_the_next_return(self):
         old, fresh = FakeMidiPort(self.before), FakeMidiPort(self.after)
         devices = FakeMidiDevices(self.PORT, [OSError("gone again"), fresh])
