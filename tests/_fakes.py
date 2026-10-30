@@ -1123,3 +1123,12 @@ class FakeMidiDevices:
     def replug(self, watch: Any) -> None:
         self.names[:] = [self.name]
         watch.check()
+
+
+def wait_for(condition: Callable[[], object], timeout_s: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.005)
+    return True

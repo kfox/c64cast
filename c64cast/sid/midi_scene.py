@@ -413,12 +413,15 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # outrunning `_handle_msg`'s DMA writes would never reach the flush below
         # or the `stop` check teardown's bounded join needs.
         budget_s = _drain_budget_s(self.api.profile)
+        reopen = self._port_watch.reopener()
         pending_pitch: dict[int, int] = {}
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop, budget_s=budget_s):
+                port = self._midi_port = reopen(port)
+                pending = poll_pending(port, stop, budget_s=budget_s) if port is not None else ()
+                for msg in pending:
                     if msg.type == "pitchwheel":
                         # Shared mode bends every voice from any channel, so
                         # one slot keeps the newest bend rather than the
@@ -920,16 +923,19 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._render_hires()
         return True
 
-    def teardown(self) -> None:
+    def _close_port(self) -> None:
         port, self._midi_port = self._midi_port, None
+        if port is not None:
+            port.close()
+
+    def teardown(self) -> None:
         poll, self._poll = self._poll, None
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
             ("reader poll stop", self._reader_poll.stop),
             ("MIDI port watch stop", self._port_watch.stop),
+            ("MIDI port close", self._close_port),
         ]
-        if port is not None:
-            steps.append(("MIDI port close", port.close))
         if poll is not None:
             steps.append(("input poll stop", poll.stop))
         steps += [

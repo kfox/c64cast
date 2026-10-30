@@ -35,7 +35,14 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, FakeTime, FrozenClock  # noqa: E402
+from _fakes import (  # noqa: E402
+    FakeAPI,
+    FakeMidiDevices,
+    FakeMidiPort,
+    FakeTime,
+    FrozenClock,
+    wait_for,
+)
 
 from c64cast import _midi  # noqa: E402
 from c64cast._midi import MAX_DRAIN_WORK_S  # noqa: E402
@@ -1189,6 +1196,68 @@ class UnpluggedControllerTests(_MidiTestCase):
                 released.clear()
                 names[:] = [self.PORT]
         self.assertEqual(len(logs.output), 2)
+
+
+class ReplugTests(_MidiTestCase):
+    """A keyboard unplugged and plugged back in mid-scene must not need a
+    restart, on any platform: the reader reopens its port when it comes back."""
+
+    PORT = "Keys MIDI 1"
+    LOG = "c64cast.sid.midi_scene"
+
+    def setUp(self):
+        self.before = mido.Message("note_on", note=60, velocity=100)
+        self.after = mido.Message("note_on", note=64, velocity=100)
+
+    def _running_reader(self, devices: FakeMidiDevices, old: FakeMidiPort):
+        scene, _api = _make_scene()
+        scene._opened_port_name = self.PORT
+        scene._midi_port = old
+        seen: list[Any] = []
+        scene._handle_msg = seen.append  # type: ignore[method-assign]
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        scene._reader_poll.start()
+        self.addCleanup(scene._reader_poll.stop)
+        self.assertTrue(wait_for(lambda: seen == [self.before]))
+        return scene, seen
+
+    def _replug(self, scene, devices: FakeMidiDevices) -> None:
+        with self.assertLogs(self.LOG, level="WARNING"):
+            devices.unplug(scene._port_watch)
+        devices.replug(scene._port_watch)
+
+    def test_the_reader_reads_the_reopened_port_and_teardown_closes_it(self):
+        old, fresh = FakeMidiPort(self.before), FakeMidiPort(self.after)
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.before, self.after]), seen)
+        self.assertIn("reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, [self.PORT])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        scene.teardown()
+        self.assertTrue(fresh.closed)
+
+    def test_a_failed_reopen_is_retried_on_the_next_return(self):
+        old, fresh = FakeMidiPort(self.before), FakeMidiPort(self.after)
+        devices = FakeMidiDevices(self.PORT, [OSError("gone again"), fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: len(logs.output) == 1))
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertTrue(old.closed)
+        self.assertIsNone(scene._midi_port)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.before, self.after]), seen)
+        self.assertEqual(devices.opened, [self.PORT, self.PORT])
+        self.assertIs(scene._midi_port, fresh)
 
 
 class LifecycleTests(_MidiTestCase):

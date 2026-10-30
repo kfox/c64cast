@@ -30,7 +30,13 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
-from _fakes import FakeMidiDevices, FakeMidiPort, frozen_throttles, logged_exception_type
+from _fakes import (
+    FakeMidiDevices,
+    FakeMidiPort,
+    frozen_throttles,
+    logged_exception_type,
+    wait_for,
+)
 
 from c64cast import _midi
 from c64cast.app import config as cfgmod
@@ -482,7 +488,7 @@ class ReplugTests(_MidiControlTestCase):
         self.addCleanup(patcher.stop)
         listener._reader_poll.start()
         self.addCleanup(listener.stop)
-        self.assertTrue(_wait_for(lambda: seen == [self.BEFORE]))
+        self.assertTrue(wait_for(lambda: seen == [self.BEFORE]))
         return listener, seen
 
     def _replug(self, listener, devices: FakeMidiDevices) -> None:
@@ -496,7 +502,7 @@ class ReplugTests(_MidiControlTestCase):
         listener, seen = self._running_reader(devices, old)
         with self.assertLogs(self.LOG, level="INFO") as logs:
             self._replug(listener, devices)
-            self.assertTrue(_wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
         self.assertIn("reconnected", logs.output[-1])
         self.assertEqual(devices.opened, [self.PORT])
         self.assertTrue(old.closed)
@@ -511,14 +517,14 @@ class ReplugTests(_MidiControlTestCase):
         listener, seen = self._running_reader(devices, old)
         with self.assertLogs(self.LOG, level="WARNING") as logs:
             self._replug(listener, devices)
-            self.assertTrue(_wait_for(lambda: len(logs.output) == 1))
+            self.assertTrue(wait_for(lambda: len(logs.output) == 1))
         self.assertIn("plug it in again to retry", logs.output[0])
         self.assertIsNone(listener._midi_port)
         self.assertTrue(old.closed)
 
         with self.assertLogs(self.LOG, level="INFO"):
             self._replug(listener, devices)
-            self.assertTrue(_wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
         self.assertEqual(devices.opened, [self.PORT, self.PORT])
         self.assertIs(listener._midi_port, fresh)
 
@@ -535,25 +541,16 @@ class ReplugTests(_MidiControlTestCase):
         self.addCleanup(patcher.stop)
         listener._feedback_poll.start()
         self.addCleanup(listener.stop)
-        self.assertTrue(_wait_for(lambda: len(old.sent) == 1))
+        self.assertTrue(wait_for(lambda: len(old.sent) == 1))
         with self.assertLogs(self.LOG, level="INFO") as logs:
             self._replug(listener, devices)
-            self.assertTrue(_wait_for(lambda: listener._out_port is fresh))
+            self.assertTrue(wait_for(lambda: listener._out_port is fresh))
         self.assertIn("MIDI output 'Pads Out' is back; reconnected", logs.output[-1])
         self.assertEqual(devices.opened, ["Pads Out"])
         self.assertTrue(old.closed)
         pl.performance.active_slot = None
-        self.assertTrue(_wait_for(lambda: len(fresh.sent) == 1))
+        self.assertTrue(wait_for(lambda: len(fresh.sent) == 1))
         self.assertEqual(len(old.sent), 1)
-
-
-def _wait_for(condition, timeout_s: float = 2.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while not condition():
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.005)
-    return True
 
 
 class TransportDispatchTests(_MidiControlTestCase):
