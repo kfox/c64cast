@@ -41,7 +41,7 @@ config name, implement three methods.
 """Blink the border color between two C64 colors at a configurable rate."""
 from __future__ import annotations
 
-from ..palette import C64_COLORS
+from ...video.palette import C64_COLORS
 from . import Overlay, register
 
 
@@ -336,8 +336,8 @@ The pattern in [cli.py](../c64cast/app/cli.py) is "argparse `default=None`,
 plus an entry in `CLI_TO_CFG`":
 
 ```python
-# cli.py — inside _parser()
-g_audio.add_argument(
+# cli.py — inside build_parser()
+a.add_argument(
     "--my-knob",
     type=float, default=None,
     help="What it does (must be 0.0-1.0).",
@@ -379,7 +379,7 @@ documented surface.
 
 ## Testing patterns
 
-The suite (`python -m unittest discover tests`) runs in CI with no
+The suite (`make test`) runs in CI with no
 hardware. To keep it that way:
 
 * **`FakeAPI`** records every `write_memory*` / `write_region` /
