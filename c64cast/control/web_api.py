@@ -200,23 +200,6 @@ def _log_for(
     return [{**line, "message": hidden(line["message"])} for line in lines]
 
 
-def _media_for_viewer(index: dict[str, Any]) -> dict[str, Any]:
-    """``MediaStore.index`` with each entry's spec relative to its root and
-    the roots emptied. Only a full token's spec has to resolve, because only a
-    full token can write one into a scene's ``file =``."""
-    bases = [spelling.rstrip("/") or "/" for spelling in index["roots"]]
-
-    def relative(spec: str) -> str:
-        base = max((b for b in bases if spec == b or spec.startswith(b.rstrip("/") + "/")), key=len)
-        return spec[len(base) :].lstrip("/") or "."
-
-    return {
-        **index,
-        "roots": ["" for _ in index["roots"]],
-        "entries": [{**e, "spec": relative(e["spec"])} for e in index["entries"]],
-    }
-
-
 def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
     """One :meth:`LiveTuneTracker.pending` row as a :meth:`ConfigStore.patch`
     edit. ``scene`` is the row's own answer to where the value lives: an index
@@ -803,12 +786,10 @@ def register_web_routes(
     # already names, and a viewer who can watch the screen can already see it.
     @app.get("/api/media")
     def api_media(request: Request, kind: str, q: str = "") -> dict[str, Any]:
-        viewer = is_viewer(request.scope)
         try:
-            index = media.index(kind, q, q_within_root=viewer)
+            return media.index(kind, q, within_root=is_viewer(request.scope))
         except MediaKindUnknown as e:
             raise HTTPException(400, str(e)) from e
-        return _media_for_viewer(index) if viewer else index
 
     # PUT, not POST: `name` names the resource being created, same shape as
     # `/api/configs/{ref:path}`'s save. Streamed straight through to

@@ -1063,6 +1063,30 @@ class MediaBrowserTest(WebApiTestCase):
             self.assertEqual(found(VIEWER_AUTH, "CLIP"), ["clip.mp4"])
             self.assertIn(f"{self.root}/clip.mp4", found(AUTH, str(self.root.parent)))
 
+    def test_a_viewer_is_not_handed_the_roots_own_directory_name(self):
+        # A root configured as `~` would name the operator's account here.
+        with self.client() as c:
+            viewer = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"}).json()
+        self.assertNotIn(self.root.name, json.dumps(viewer))
+
+    def test_a_viewer_reads_a_nested_roots_entry_relative_to_the_root_it_came_from(self):
+        (self.root / "set").mkdir()
+        (self.root / "set" / "b.mp4").write_bytes(b"")
+        media = media_store.MediaStore(
+            read_write={"video": str(self.root / "set"), "sid": "", "picture": "", "program": ""},
+            read_only=[str(self.root)],
+        )
+        with self.client(media=media) as c:
+            viewer = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"}).json()
+            searched = c.get(
+                "/api/media", headers=VIEWER_AUTH, params={"kind": "video", "q": "set/"}
+            ).json()
+        self.assertEqual(
+            sorted(e["spec"] for e in viewer["entries"]),
+            [".", ".", "b.mp4", "clip.mp4", "set", "set/b.mp4"],
+        )
+        self.assertEqual([e["spec"] for e in searched["entries"]], ["set/b.mp4"])
+
 
 class MediaUploadTest(WebApiTestCase):
     """`PUT /api/media/{name}` — the route's own mapping onto HTTP (status
