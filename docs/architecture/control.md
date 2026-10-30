@@ -694,7 +694,7 @@ Phase 1 of the MIDI live-tune feature shipped the pieces that don't need a trans
   | `mode` | Jog's `abs` / `rel` |
   | `slot` | The pad number for `loop_slot` |
 
-  `TransportSession.enqueue` runs on the MIDI thread and pushes onto a `queue.SimpleQueue`. `tick(pl, now)` runs on the playlist thread, called once per frame from `Playlist.run_one_frame` right after the fade-in step (`SceneFades.advance_fade_in`), drains the queue, and dispatches against `pl.current` via `getattr(..., None)`.
+  `TransportSession.enqueue` runs on the MIDI thread and pushes onto a `deque(maxlen=MAX_QUEUED_EVENTS)`, which drops the oldest because nothing drains it while the playlist is paused. `tick(pl, now)` runs on the playlist thread, called once per frame from `Playlist.run_one_frame` right after the fade-in step (`SceneFades.advance_fade_in`), drains the queue, and dispatches against `pl.current` via `getattr(..., None)`.
 
   That dispatch is **duck-typed**, so a scene without the `transport_*` surface is a silent no-op — the same shape as a `LIVE_PARAMS`/`LIVE_CHOICES` target that doesn't exist on the current holder.
 

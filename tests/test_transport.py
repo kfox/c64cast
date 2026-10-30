@@ -189,7 +189,20 @@ class DispatchTests(unittest.TestCase):
         _tick(session, pl, 0.0)  # must not raise
         # The event must be CONSUMED, not left queued — a survivor would
         # fire against whatever scene becomes current next frame.
-        self.assertTrue(session._queue.empty())
+        self.assertFalse(session._queue)
+
+    def test_events_held_while_paused_keep_only_the_newest(self):
+        # A paused playlist ticks nothing, while a web console can go on
+        # sending seeks; every one of them used to be held and then run on the
+        # first frame after the pause.
+        scene = _StubScene()
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        sent = [float(i) for i in range(transport.MAX_QUEUED_EVENTS + 500)]
+        for target in sent:
+            session.enqueue(TransportEvent(action="seek", target=target))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.seeks, sent[-transport.MAX_QUEUED_EVENTS :])
 
     def test_card_on_screen_is_noop(self):
         scene = _StubScene()
@@ -212,7 +225,7 @@ class DispatchTests(unittest.TestCase):
         session = TransportSession()
         session.enqueue(TransportEvent(action="play_pause"))
         _tick(session, pl, 0.0)  # must not raise
-        self.assertTrue(session._queue.empty(), "event must be consumed, not left queued")
+        self.assertFalse(session._queue, "event must be consumed, not left queued")
 
     def test_freeze_toggles_when_not_already_paused(self):
         scene = _StubScene()

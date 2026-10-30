@@ -36,10 +36,10 @@ import hashlib
 import json
 import logging
 import os
-import queue
 import re
 import tempfile
 import threading
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -540,6 +540,11 @@ _CHORD_HOLD_WINDOW_S = 5.0
 # room for a slow network; a closed tab lets go within it.
 _HOLD_LEASE_S = 2.0
 
+#: Transport events held for the playlist thread, which drains none while it
+#: is paused; past this many the oldest are dropped, so what survives is the
+#: newest stretch of presses and releases, in order.
+MAX_QUEUED_EVENTS = 64
+
 
 @dataclass(frozen=True)
 class TransportEvent:
@@ -607,7 +612,7 @@ class TransportSession:
     current holder."""
 
     def __init__(self) -> None:
-        self._queue: queue.SimpleQueue[TransportEvent] = queue.SimpleQueue()
+        self._queue: deque[TransportEvent] = deque(maxlen=MAX_QUEUED_EVENTS)
         # action name -> wall-time the hold started. Mutated only in tick()
         # (playlist thread) — enqueue() only ever pushes onto _queue.
         self._held: dict[str, float] = {}
@@ -624,7 +629,7 @@ class TransportSession:
         self._scrubbed: tuple[Any, float] | None = None
 
     def enqueue(self, event: TransportEvent) -> None:
-        self._queue.put(event)
+        self._queue.append(event)
 
     def _scrub(self, scene: Any, target: float, now: float) -> None:
         """One step of a scrub: an approximate seek where the scene has one,
@@ -658,12 +663,8 @@ class TransportSession:
         ``scene.process_frame``."""
         dt = now - self._last_tick if self._last_tick is not None else 0.0
         self._last_tick = now
-        while True:
-            try:
-                event = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            self._dispatch(pl, event, now)
+        while self._queue:
+            self._dispatch(pl, self._queue.popleft(), now)
         self._expire_leases(now)
         if pl.on_card or pl.current is None:
             self._scrubbed = None
