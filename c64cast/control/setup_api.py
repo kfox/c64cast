@@ -46,7 +46,14 @@ from c64cast.app.connect import (
     parse_connection_uri,
 )
 
-from .auth import BODY_TOO_LARGE_ERROR, LOGIN_PATH, MIN_TOKEN_LENGTH, BodyTooLarge, read_body
+from .auth import (
+    BODY_TOO_LARGE_ERROR,
+    LOGIN_PATH,
+    MIN_TOKEN_LENGTH,
+    BodyTooLarge,
+    read_body,
+    same_origin,
+)
 from .transport import atomic_write_text
 from .web_static import landing_path
 
@@ -169,6 +176,16 @@ def register_setup_routes(
 
     @app.post("/api/setup")
     async def post_setup(request: Request) -> Response:
+        # Neither gate in front of this route checks Origin, and a cross-site
+        # `<form enctype="text/plain">` is a CORS-simple POST with no preflight
+        # — the same hole `perf_console._command_body` closes the same way.
+        if not same_origin(request.headers):
+            return JSONResponse({"ok": False, "error": "cross-origin request"}, status_code=403)
+        if not request.headers.get("content-type", "").startswith("application/json"):
+            return JSONResponse(
+                {"ok": False, "error": "setup is submitted as application/json"},
+                status_code=415,
+            )
         try:
             body = json.loads(await read_body(request))
         except BodyTooLarge as e:

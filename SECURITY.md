@@ -91,6 +91,10 @@ the LAN configures the box, the same trust model a home router's first boot
 uses — this is a real widening of what an unauthenticated LAN peer can do
 (name where the console talks to next) for as long as the window is open, and
 is the reason it is off unless something has deliberately turned it on.
+"Reaches the form" means a caller on the LAN, not a web page an admin happens
+to visit: `POST /api/setup` refuses a request whose `Origin` names another
+host and any body that is not `application/json`, so a cross-site form cannot
+submit it. A DNS-rebound page is still same-origin by that test.
 `c64cast --reset-setup` reopens it; there is no HTTP equivalent, on purpose —
 anyone who can already run that command has shell access to the box, and a
 route that did the same thing over HTTP would hand that reopening power to
