@@ -232,6 +232,40 @@ class LifetimeTest(unittest.TestCase):
             self.assertEqual(self.api.stops, 1)
         self.assertEqual(feed._live, {})
 
+    def _swept_watcher_then_a_new_show(self) -> tuple[ScreenFeed, _FakeApi]:
+        """Tab A watches; its show ends and the sweep stops A's receiver while A
+        still holds the stream; a new show on the same system starts and tab B
+        opens a stream of its own. Neither tab has released yet."""
+        running: dict[str, _FakeApi] = {"c64cast": self.api}
+        feed = ScreenFeed(lambda: dict(running))
+        self.addCleanup(feed.close)
+        feed.acquire("c64cast")
+        running.clear()
+        feed.sweep()
+        second = _FakeApi()
+        running["c64cast"] = second
+        feed.acquire("c64cast")
+        return feed, second
+
+    def _expire_linger(self, feed: ScreenFeed) -> None:
+        feed._live["c64cast"].idle_since -= screen_mod.LINGER_S + 1
+        feed.sweep()
+
+    def test_a_swept_watcher_leaving_does_not_end_the_next_shows_stream(self):
+        feed, second = self._swept_watcher_then_a_new_show()
+        feed.release("c64cast")  # tab A's stream ends
+        self.assertEqual(feed._live["c64cast"].watchers, 1)
+        self._expire_linger(feed)
+        self.assertEqual(second.stops, 0, "tab B is still watching")
+
+    def test_the_stream_still_ends_whichever_tab_leaves_first(self):
+        feed, second = self._swept_watcher_then_a_new_show()
+        feed.release("c64cast")
+        feed.release("c64cast")
+        self.assertEqual(feed._live["c64cast"].watchers, 0)
+        self._expire_linger(feed)
+        self.assertEqual(second.stops, 1)
+
     def test_a_machine_that_refuses_to_open_leaves_nothing_behind(self):
         api = _FakeApi(opens=False)
         feed = ScreenFeed(lambda: {"c64cast": api})

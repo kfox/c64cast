@@ -100,6 +100,11 @@ class ScreenFeed:
 
     backends: Callable[[], Mapping[str, Any]]
     _live: dict[str, _Watched] = field(default_factory=dict)
+    # Watchers whose receiver `sweep()` retired while they still held it. Their
+    # releases arrive by system name like any other (the streaming route has
+    # only the name), so each is charged here rather than to whatever receiver
+    # a later show on that system has opened under the same name.
+    _orphaned: dict[str, int] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _sweeper: Any = None
     _closed: bool = False
@@ -217,7 +222,10 @@ class ScreenFeed:
             for name, watched in list(self._live.items()):
                 idle = watched.watchers == 0 and now - watched.idle_since >= LINGER_S
                 if idle or name not in running:
-                    expired.append((name, self._live.pop(name).receiver))
+                    del self._live[name]
+                    if watched.watchers:
+                        self._orphaned[name] = self._orphaned.get(name, 0) + watched.watchers
+                    expired.append((name, watched.receiver))
         for name, receiver in expired:
             _stop_quietly(name, receiver)
 
@@ -291,6 +299,13 @@ class ScreenFeed:
 
     def _release(self, system: str) -> None:
         with self._lock:
+            orphaned = self._orphaned.get(system, 0)
+            if orphaned:
+                if orphaned == 1:
+                    del self._orphaned[system]
+                else:
+                    self._orphaned[system] = orphaned - 1
+                return
             watched = self._live.get(system)
             if watched is None:
                 return
