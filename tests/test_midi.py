@@ -391,6 +391,22 @@ class PortListOnMacOSTest(unittest.TestCase):
         self._list_ports_until_the_run_loop_empties(1, [True, True, False])
         self.assertEqual(self.slices, [])
 
+    def test_a_first_listing_that_raises_does_not_hang_the_caller(self):
+        escaped: list[BaseException | None] = []
+        self.fake_mido.get_input_names.side_effect = OSError("no MIDI client")
+        with mock.patch.object(
+            threading, "excepthook", lambda args: escaped.append(args.exc_value)
+        ):
+            caller = threading.Thread(
+                target=_midi._mido_for("darwin").get_input_names, name="caller", daemon=True
+            )
+            caller.start()
+            caller.join(5.0)
+            self.assertFalse(caller.is_alive())
+            assert _midi._port_list_thread is not None
+            _midi._port_list_thread.join(5.0)
+        self.assertEqual([type(e) for e in escaped], [OSError, OSError])
+
     def test_building_a_message_starts_no_thread(self):
         _ = _midi._mido_for("darwin").Message
         self.assertIsNone(_midi._port_list_thread)
