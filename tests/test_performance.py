@@ -659,17 +659,18 @@ class LookSessionTest(unittest.TestCase):
             self.assertTrue(eff.enabled)
             self.assertEqual(pl.swaps, [])
 
-    def test_a_save_past_the_slot_range_is_not_logged_as_saved(self):
-        with tempfile.TemporaryDirectory() as d:
-            session = self._session(d)
-            pl: Any = _FakePlaylist()
-            pl.current = _FakeScene("live", effects=[_FakeEffect()])
-            session.enqueue_look(LookStore.SLOT_MAX + 1, save=True)
-            with self.assertLogs("c64cast.control.performance", "INFO") as cm:
-                session.service(pl)
-            self.assertEqual(session._look_store.load(), {})  # type: ignore[union-attr]
-            self.assertFalse(any("saved look" in line for line in cm.output), cm.output)
-            self.assertTrue(any("not saved" in line for line in cm.output), cm.output)
+    def test_a_save_outside_the_slot_range_is_not_logged_as_saved(self):
+        for slot in (LookStore.SLOT_MIN - 1, -1, LookStore.SLOT_MAX + 1):
+            with self.subTest(slot=slot), tempfile.TemporaryDirectory() as d:
+                session = self._session(d)
+                pl: Any = _FakePlaylist()
+                pl.current = _FakeScene("live", effects=[_FakeEffect()])
+                session.enqueue_look(slot, save=True)
+                with self.assertLogs("c64cast.control.performance", "INFO") as cm:
+                    session.service(pl)
+                self.assertEqual(session._look_store.load(), {})  # type: ignore[union-attr]
+                self.assertFalse(any("saved look" in line for line in cm.output), cm.output)
+                self.assertTrue(any("not saved" in line for line in cm.output), cm.output)
 
     def test_recall_relaunches_captured_clip_and_applies_effects(self):
         with tempfile.TemporaryDirectory() as d:
