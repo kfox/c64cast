@@ -162,7 +162,8 @@ PORT_WATCH_INTERVAL_S = 1.0
 class PortWatch(PollThread):
     """Calls ``on_lost`` once when the input port ``port_name()`` names drops
     out of ``mido.get_input_names()``, warning on ``logger`` as ``label`` that
-    it is releasing ``releases``."""
+    it is releasing ``releases``, and counts each time it comes back for the
+    `reopener`s that follow it."""
 
     def __init__(
         self,
@@ -181,10 +182,14 @@ class PortWatch(PollThread):
         self._log = logger
         self._port_name = port_name
         self._present = True
+        self.returns = 0
 
     def start(self) -> None:
         self._present = True
         super().start()
+
+    def reopener(self, name: str, *, output: bool = False) -> PortReopener:
+        return PortReopener(self, name, output=output)
 
     def check(self) -> None:
         name = self._port_name()
@@ -193,11 +198,7 @@ class PortWatch(PollThread):
             return
         self._present = present
         if present:
-            self._log.info(
-                "%s: MIDI port %r is back; if it stays silent, restart c64cast to reopen it",
-                self._label,
-                name,
-            )
+            self.returns += 1
             return
         self._log.warning(
             "%s: MIDI port %r is gone (controller unplugged?); releasing %s",
@@ -206,6 +207,44 @@ class PortWatch(PollThread):
             self._releases,
         )
         self._on_lost()
+
+
+class PortReopener:
+    """Called by the one thread that uses the port, with the port it holds:
+    after each return `watch` has counted, closes it and hands back the port
+    opened afresh as ``name`` (None if that open failed, until the next
+    return); otherwise hands back what it was given."""
+
+    def __init__(self, watch: PortWatch, name: str, *, output: bool) -> None:
+        self._watch = watch
+        self._name = name
+        self._output = output
+        self._kind = "MIDI output" if output else "MIDI port"
+        self._seen = watch.returns
+
+    def __call__(self, port: Any) -> Any:
+        if self._watch.returns == self._seen:
+            return port
+        self._seen = self._watch.returns
+        # A USB device replugged on macOS still feeds the old port, but a
+        # re-created virtual source and an ALSA or WinMM handle do not.
+        if port is not None:
+            port.close()
+        logger = self._watch._log
+        label = self._watch._label
+        try:
+            fresh = mido.open_output(self._name) if self._output else mido.open_input(self._name)
+        except Exception:
+            logger.warning(
+                "%s: %s %r is back but would not reopen; unplug it and plug it in again to retry",
+                label,
+                self._kind,
+                self._name,
+                exc_info=True,
+            )
+            return None
+        logger.info("%s: %s %r is back; reconnected", label, self._kind, self._name)
+        return fresh
 
 
 # How many already-queued messages a reader pass may retire — ~7x the busiest

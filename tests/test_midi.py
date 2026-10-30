@@ -331,13 +331,117 @@ class PortWatchReportTest(unittest.TestCase):
         self.assertIn("releasing every held pad", logs.output[0])
         self.assertNotIn("restart", logs.output[0])
 
-    def test_a_returning_port_is_reported_back_without_a_second_release(self):
-        with self.assertLogs("c64cast._midi", level="INFO") as logs:
+    def test_a_returning_port_is_counted_without_a_second_release(self):
+        with self.assertLogs("c64cast._midi", level="WARNING"):
             self._check([])
-            self._check([self.PORT])
+        self._check([self.PORT])
+        self._check([self.PORT])
         self.assertEqual(self.lost, [True])
-        self.assertTrue(logs.output[1].startswith("INFO:"), logs.output)
-        self.assertIn(f"{self.PORT!r} is back", logs.output[1])
+        self.assertEqual(self.watch.returns, 1)
+
+
+class PortReopenerTest(unittest.TestCase):
+    """A replugged controller must not need a restart: a re-created virtual
+    source, and off macOS any device, comes back as a new endpoint the port
+    opened before the unplug never hears."""
+
+    PORT = "Pads MIDI 1"
+
+    def setUp(self):
+        self.names: list[str] = [self.PORT]
+        self.opened: list[tuple[str, str]] = []
+        self.fresh: list[_FakePort] = []
+        self.failures: list[Exception] = []
+        self.watch = _midi.PortWatch(
+            lambda: self.PORT,
+            lambda: None,
+            label="test",
+            releases="every held pad",
+            logger=logging.getLogger("c64cast._midi"),
+            name="test-port-watch",
+        )
+
+    def _open(self, kind: str, name: str) -> _FakePort:
+        self.opened.append((kind, name))
+        if self.failures:
+            raise self.failures.pop(0)
+        port = _FakePort()
+        self.fresh.append(port)
+        return port
+
+    def _fake_mido(self):
+        fake = mock.MagicMock()
+        fake.get_input_names.side_effect = lambda: list(self.names)
+        fake.open_input.side_effect = lambda n: self._open("input", n)
+        fake.open_output.side_effect = lambda n: self._open("output", n)
+        return mock.patch.object(_midi, "mido", fake)
+
+    def _unplug_and_replug(self) -> None:
+        with self._fake_mido(), self.assertLogs("c64cast._midi", level="WARNING"):
+            self.names[:] = []
+            self.watch.check()
+        with self._fake_mido():
+            self.names[:] = [self.PORT]
+            self.watch.check()
+
+    def _call(self, reopen, port):
+        with self._fake_mido():
+            return reopen(port)
+
+    def test_a_port_that_never_left_is_handed_back_untouched(self):
+        reopen = self.watch.reopener(self.PORT)
+        old = _FakePort()
+        with self._fake_mido():
+            self.watch.check()
+        self.assertIs(self._call(reopen, old), old)
+        self.assertFalse(old.closed)
+        self.assertEqual(self.opened, [])
+
+    def test_a_returned_port_is_closed_and_opened_again_by_its_name(self):
+        reopen = self.watch.reopener(self.PORT)
+        old = _FakePort()
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO") as logs:
+            fresh = self._call(reopen, old)
+        self.assertTrue(old.closed)
+        self.assertEqual(self.opened, [("input", self.PORT)])
+        self.assertIs(fresh, self.fresh[0])
+        self.assertIn(f"{self.PORT!r} is back; reconnected", logs.output[0])
+        self.assertNotIn("restart", logs.output[0])
+        self.assertIs(self._call(reopen, fresh), fresh)
+        self.assertEqual(len(self.opened), 1)
+
+    def test_an_output_reopens_as_an_output(self):
+        reopen = self.watch.reopener("Pads Out", output=True)
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO"):
+            self._call(reopen, _FakePort())
+        self.assertEqual(self.opened, [("output", "Pads Out")])
+
+    def test_a_failed_reopen_warns_and_the_next_return_retries(self):
+        reopen = self.watch.reopener(self.PORT)
+        old = _FakePort()
+        self.failures.append(OSError("port vanished again"))
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="WARNING") as logs:
+            self.assertIsNone(self._call(reopen, old))
+        self.assertTrue(old.closed)
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertIsNone(self._call(reopen, None))
+
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO"):
+            fresh = self._call(reopen, None)
+        self.assertIs(fresh, self.fresh[0])
+        self.assertEqual(self.opened, [("input", self.PORT)] * 2)
+
+    def test_two_returns_before_a_call_reopen_once(self):
+        reopen = self.watch.reopener(self.PORT)
+        self._unplug_and_replug()
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO"):
+            self._call(reopen, _FakePort())
+        self.assertEqual(len(self.opened), 1)
 
 
 class PortListOnMacOSTest(unittest.TestCase):
