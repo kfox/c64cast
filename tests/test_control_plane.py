@@ -604,7 +604,7 @@ class ConnectionReapingTest(unittest.TestCase):
                     return
             except TimeoutError:
                 continue
-            except (BrokenPipeError, ConnectionResetError):
+            except ConnectionError:
                 return
         self.fail(f"a request still arriving after {_CLOSE_WAIT_S} s was never cut off")
 

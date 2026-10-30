@@ -759,7 +759,7 @@ class _RemotePeer(http.server.BaseHTTPRequestHandler):
     first segment to the function that answers it."""
 
     def do_GET(self):
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+        with contextlib.suppress(ConnectionError):
             self.server.routes["/" + self.path.split("?")[0].split("/")[1]](self)  # type: ignore[attr-defined]
 
     def log_message(self, format, *args):
