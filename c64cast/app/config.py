@@ -1915,7 +1915,7 @@ class ColorCfg:
         },
     )
     auto_fit_strength: float = field(
-        default=1.0,
+        default=0.9,
         metadata={
             "help": "Strength of the auto_fit transform, 0..1 (1 = full, 0 = off). "
             "Lerps the derived stretch toward identity."
@@ -1977,7 +1977,7 @@ class ColorCfg:
         },
     )
     dither_strength: float = field(
-        default=0.5,
+        default=0.1,
         metadata={
             "help": "Dither strength, roughly 0..2.0. For 'ordered'/'blue_noise' "
             "it scales the threshold spread (same scale for both, so switching "
@@ -2101,7 +2101,7 @@ class ColorCfg:
         },
     )
     motion_smoothing: float = field(
-        default=0.25,
+        default=0.1,
         metadata={
             "help": "Temporal smoothing for mhires percell mode, 0..1. The percell "
             "path smooths its per-cell color choices over time (an EMA over color "
@@ -2110,10 +2110,9 @@ class ColorCfg:
             "motion-tracking for stability, so on a hard shot cut an outline from "
             "the previous shot lingers as an after-image for a moment. 1.0 (full "
             "smoothing) is the most stable but ghostiest; 0.0 tracks the source "
-            "exactly (no after-image) but can flicker on grainy content. The "
-            "default 0.25 was picked by hardware A/B as the best ghost/flicker "
-            "balance. Lower it if after-images still bother you, raise it if "
-            "motion shimmers. No effect on other modes or palette_modes.",
+            "exactly (no after-image) but can flicker on grainy content. "
+            "Lower it if after-images still bother you, raise it if motion "
+            "shimmers. No effect on other modes or palette_modes.",
         },
     )
 

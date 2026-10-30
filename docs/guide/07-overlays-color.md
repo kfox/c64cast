@@ -55,9 +55,9 @@ part of it, below:
 [color]
 auto_fit = true
 dither = "auto"
-dither_strength = 0.5
+dither_strength = 0.1
 color_match = "auto"
-motion_smoothing = 0.25
+motion_smoothing = 0.1
 ```
 
 **`auto_fit`** stretches contrast and saturation to suit the source. Real
