@@ -80,7 +80,7 @@ from c64cast.app.config_store import (
 from c64cast.app.console_library import (
     ConsoleLibrary,
     FavoritesFull,
-    RefTooLong,
+    RefRejected,
     require_storable_ref,
 )
 from c64cast.app.media_store import (
@@ -477,7 +477,7 @@ def register_web_routes(
             return None
         try:
             require_storable_ref(str(ref))
-        except RefTooLong as e:
+        except RefRejected as e:
             raise HTTPException(400, str(e)) from e
         try:
             return str(store.resolve(str(ref)))
@@ -794,7 +794,7 @@ def register_web_routes(
             raise HTTPException(400, 'a favorite needs a "ref"')
         try:
             return {"favorites": library.set_favorite(ref, bool(body.get("on", True)))}
-        except RefTooLong as e:
+        except RefRejected as e:
             raise HTTPException(400, str(e)) from e
         except FavoritesFull as e:
             raise HTTPException(409, str(e)) from e
@@ -1019,7 +1019,7 @@ def register_web_routes(
             SessionConfigError,
             ConfigError,
             ConfigStoreError,
-            RefTooLong,
+            RefRejected,
         ) as e:
             # The socket has no status code; the refusal shows up as the state
             # simply not changing, so say why in the log the console renders.

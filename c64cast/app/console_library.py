@@ -53,7 +53,7 @@ MAX_FAVORITES = 100
 _MAX_REF_BYTES = 512
 
 
-class RefTooLong(ValueError):
+class RefRejected(ValueError):
     pass
 
 
@@ -62,8 +62,12 @@ class FavoritesFull(ValueError):
 
 
 def require_storable_ref(ref: str) -> None:
-    if len(ref.encode("utf-8")) > _MAX_REF_BYTES:
-        raise RefTooLong(f"a config ref may not exceed {_MAX_REF_BYTES} bytes")
+    try:
+        size = len(ref.encode("utf-8"))
+    except UnicodeEncodeError as e:
+        raise RefRejected("a config ref must be valid UTF-8") from e
+    if size > _MAX_REF_BYTES:
+        raise RefRejected(f"a config ref may not exceed {_MAX_REF_BYTES} bytes")
 
 
 class ConsoleLibrary:
@@ -120,9 +124,9 @@ class ConsoleLibrary:
         A falsy `ref` records nothing and returns the list unchanged — `_load`
         would drop it on the next read regardless, so enforcing the rule here
         too keeps the return value from ever disagreeing with what's actually
-        persisted. Raises `RefTooLong` for a `ref` over `_MAX_REF_BYTES`, or
-        `FavoritesFull` for adding past `MAX_FAVORITES` — un-favoriting is
-        never blocked."""
+        persisted. Raises `RefRejected` for a `ref` over `_MAX_REF_BYTES` or
+        not encodable as UTF-8, or `FavoritesFull` for adding past
+        `MAX_FAVORITES` — un-favoriting is never blocked."""
         if not ref:
             unchanged: list[str] = self._load()["favorites"]
             return unchanged
@@ -145,8 +149,8 @@ class ConsoleLibrary:
         from the browser.
 
         A falsy `ref` records nothing and returns the list unchanged, for the
-        same reason `set_favorite` does. Raises `RefTooLong` for a `ref` over
-        `_MAX_REF_BYTES`."""
+        same reason `set_favorite` does. Raises `RefRejected` for a `ref` over
+        `_MAX_REF_BYTES` or not encodable as UTF-8."""
         if not ref:
             unchanged: list[dict[str, Any]] = self._load()["recents"]
             return unchanged

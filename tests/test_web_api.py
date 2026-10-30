@@ -97,6 +97,11 @@ BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
 # real `gig.toml` while running past `console_library._MAX_REF_BYTES`.
 _OVERLONG_GIG_REF = "shows/" + "./" * 300 + "gig.toml"
 
+# JSON may escape a lone surrogate, which decodes to a `str` that UTF-8
+# cannot encode.
+_LONE_SURROGATE_REF = '{"ref": "shows/\\ud800.toml"}'
+_JSON_AUTH = {**AUTH, "content-type": "application/json"}
+
 # A config carrying exactly what `config_serialize.SECRET_FIELDS` names, which
 # `ConfigStore.read` hands back verbatim in `text` — the payload behind the
 # viewer-token escalation `api_config_read`'s `require_full` closes. CLAUDE.md
@@ -1282,6 +1287,18 @@ class LibraryRouteTest(WebApiTestCase):
             body = c.get("/api/library", headers=AUTH).json()
         self.assertEqual(r.status_code, 400)
         self.assertEqual(body["favorites"], [])
+
+    def test_a_favorite_ref_that_is_not_utf8_is_refused(self):
+        with self.client() as c:
+            r = c.post("/api/library/favorites", headers=_JSON_AUTH, content=_LONE_SURROGATE_REF)
+        self.assertEqual(r.status_code, 400)
+
+    def test_starting_a_ref_that_is_not_utf8_is_refused(self):
+        body = _LONE_SURROGATE_REF.replace('"ref"', '"config"')
+        with self.client() as c:
+            r = c.post("/api/session/start", headers=_JSON_AUTH, content=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.manager.state, SessionState.IDLE)
 
     def test_starting_an_overlong_ref_is_refused_before_the_show_starts(self):
         with self.client() as c:
