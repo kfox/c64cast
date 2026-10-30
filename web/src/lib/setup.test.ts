@@ -91,4 +91,17 @@ describe("waitForRestart", () => {
     ]);
     expect(await waitForRestart(instantly)).toBe(true);
   });
+
+  it("keeps waiting while the completed form's app is still the one answering", async () => {
+    // The first app answers `pending: false` from the moment setup completes,
+    // and still refuses every other route until the restart replaces it.
+    const answers = [
+      json({ pending: false, completed: true, token_settable: true }),
+      json({ detail: "authentication required" }, 401),
+    ];
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => answers[calls++]);
+    expect(await waitForRestart(instantly)).toBe(true);
+    expect(calls).toBe(2);
+  });
 });

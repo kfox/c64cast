@@ -85,8 +85,9 @@ what you configured.
 console's own static assets and `/api/setup` itself — nothing that starts
 hardware, reads a config, or browses media is reachable while it is pending,
 and it closes the moment the form is submitted with a valid connection
-target: the process rebuilds its app from scratch, without the exemption or
-the gate, before serving another request. Whoever reaches the form first on
+target: from then on `/api/setup` refuses another submission with `409` and
+reports setup as no longer pending, and the process rebuilds its app from
+scratch, without the exemption or the gate. Whoever reaches the form first on
 the LAN configures the box, the same trust model a home router's first boot
 uses — this is a real widening of what an unauthenticated LAN peer can do
 (name where the console talks to next) for as long as the window is open, and

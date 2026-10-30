@@ -346,6 +346,42 @@ class RouteTest(_TmpRootsTestCase):
         self.assertFalse(paths.setup_state_path().is_file())
         self.assertEqual(self.completed, [])
 
+    def test_a_second_post_after_completion_is_refused(self):
+        # The app keeps serving until the restart loop notices `on_complete`,
+        # and nothing authenticates this route while it does.
+        client = self._client()
+        admin = "a" * MIN_TOKEN_LENGTH
+        first = client.post("/api/setup", json={"connection": "u64://10.0.0.1", "token": admin})
+        self.assertEqual(first.status_code, 200)
+
+        second = client.post(
+            "/api/setup", json={"connection": "u64://10.6.6.6", "token": "b" * MIN_TOKEN_LENGTH}
+        )
+
+        self.assertEqual(second.status_code, 409)
+        self.assertNotIn("login_url", second.json())
+        self.assertEqual(paths.web_token_path().read_text().strip(), admin)
+        settings = paths.settings_path().read_text(encoding="utf-8")
+        self.assertIn("10.0.0.1", settings)
+        self.assertNotIn("10.6.6.6", settings)
+        self.assertEqual(self.completed, [True])
+
+    def test_get_stops_reporting_pending_once_setup_completes(self):
+        client = self._client()
+        client.post("/api/setup", json={"connection": "u64://192.168.2.64"})
+        self.assertFalse(client.get("/api/setup").json()["pending"])
+
+    def test_a_failed_write_can_be_retried(self):
+        client = self._client()
+        with mock.patch(
+            "c64cast.control.setup_api._write_connection", side_effect=OSError("no disk")
+        ):
+            with self.assertLogs("c64cast.control.setup_api", level="ERROR"):
+                client.post("/api/setup", json={"connection": "u64://192.168.2.64"})
+        self.assertTrue(client.get("/api/setup").json()["pending"])
+        resp = client.post("/api/setup", json={"connection": "u64://192.168.2.64"})
+        self.assertEqual(resp.status_code, 200)
+
     def test_the_connection_lands_before_the_token_is_replaced(self):
         # Reordered: the token used to be written first, so a failure writing
         # the connection left the host's credential already replaced by one

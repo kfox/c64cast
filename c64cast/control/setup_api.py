@@ -170,12 +170,17 @@ def register_setup_routes(
     from fastapi import Request
     from fastapi.responses import JSONResponse, Response
 
+    completed = False
+
     @app.get("/api/setup")
     def get_setup() -> Response:
-        return JSONResponse({"pending": True, "token_settable": token_settable})
+        return JSONResponse(
+            {"pending": not completed, "completed": completed, "token_settable": token_settable}
+        )
 
     @app.post("/api/setup")
     async def post_setup(request: Request) -> Response:
+        nonlocal completed
         # Neither gate in front of this route checks Origin, and a cross-site
         # `<form enctype="text/plain">` is a CORS-simple POST with no preflight
         # — the same hole `perf_console._command_body` closes the same way.
@@ -196,6 +201,14 @@ def register_setup_routes(
             return JSONResponse({"ok": False, "error": BODY_TOO_LARGE_ERROR}, status_code=413)
         except Exception:
             body = None
+        # Checked after the route's last `await`: from here to `completed =
+        # True` runs without yielding the event loop, so two POSTs cannot
+        # interleave their writes and no lock is needed.
+        if completed:
+            return JSONResponse(
+                {"ok": False, "error": "setup is already complete; the host is restarting"},
+                status_code=409,
+            )
         try:
             if not isinstance(body, dict):
                 raise SetupRefused("malformed request body")
@@ -250,6 +263,7 @@ def register_setup_routes(
                 },
                 status_code=500,
             )
+        completed = True
         log.info("web console: setup completed (%s)", spec.backend)
         on_complete()
         return JSONResponse({"ok": True, "login_url": login_url(chosen or token)})
