@@ -342,7 +342,7 @@ without `vision` and give up hand-gesture control:
 
 ```bash
 uv tool install --force \
-  'c64cast[video,mic,control,obs,midi,logging,tr,wizard,camera,yt,wled]'
+  'c64cast[video,mic,control,obs,midi,logging,tr,wizard,camera,yt,wled,web]'
 ```
 
 That is every extra except `vision` — `all` minus the one that brings the
@@ -406,12 +406,13 @@ playlist` in the logs).
 
 ## Scenes
 
-### "`video` scene type is rejected at load time"
+### "`video` scene ends without playing"
 
 You didn't install the `video` extra (`uv tool install --force
-'c64cast[all]'`). The loader emits "Found N video files
-but PyAV is not installed; skipping videos" and continues
-without videos.
+'c64cast[all]'`). The scene logs "PyAV unavailable; video scene cannot
+play <file>" and ends; `[playlist] interleave_videos` logs "Found N video
+files but PyAV is not installed; skipping videos" and continues without
+videos.
 
 ### "A streaming/YouTube video stops partway with `OSError: [Errno 5] Input/output error`"
 
@@ -630,7 +631,7 @@ seeing this on a wired LAN, profile with `make bench` and compare.
 
 ### "Frame rate is fine, but the heartbeat shows `skipped=N/s` growing"
 
-That's the delta cache doing its job — `skipped` counts frames where
+That's the delta cache doing its job — `skipped` counts region writes where
 *nothing* changed and the API correctly elided the upload. A high
 skip rate is good. (It's only suspicious when paired with visible
 movement on the U64, which would mean the cache is suppressing real
