@@ -93,6 +93,15 @@ PAIR_TOML_ONE_OVERRIDES_COLOR = (
 # audio check (which runs first) can't be what fails instead.
 BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
 
+# `ConfigStore.resolve` skips `.` segments, so this still names the fixture's
+# real `gig.toml` while running past `console_library._MAX_REF_BYTES`.
+_OVERLONG_GIG_REF = "shows/" + "./" * 300 + "gig.toml"
+
+# JSON may escape a lone surrogate, which decodes to a `str` that UTF-8
+# cannot encode.
+_LONE_SURROGATE_REF = '{"ref": "shows/\\ud800.toml"}'
+_JSON_AUTH = {**AUTH, "content-type": "application/json"}
+
 # A config carrying exactly what `config_serialize.SECRET_FIELDS` names, which
 # `ConfigStore.read` hands back verbatim in `text` — the payload behind the
 # viewer-token escalation `api_config_read`'s `require_full` closes. CLAUDE.md
@@ -1263,6 +1272,62 @@ class LibraryRouteTest(WebApiTestCase):
         with self.client() as c:
             r = c.post("/api/library/favorites", headers=AUTH, json={"on": True})
         self.assertEqual(r.status_code, 400)
+
+    def test_a_favorite_past_the_cap_is_a_conflict_not_a_server_error(self):
+        with mock.patch.object(console_library, "MAX_FAVORITES", 1), self.client() as c:
+            c.post("/api/library/favorites", headers=AUTH, json={"ref": "shows/a.toml"})
+            r = c.post("/api/library/favorites", headers=AUTH, json={"ref": "shows/b.toml"})
+            body = c.get("/api/library", headers=AUTH).json()
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(body["favorites"], ["shows/a.toml"])
+
+    def test_a_favorite_ref_over_the_byte_cap_is_refused(self):
+        with self.client() as c:
+            r = c.post("/api/library/favorites", headers=AUTH, json={"ref": _OVERLONG_GIG_REF})
+            body = c.get("/api/library", headers=AUTH).json()
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(body["favorites"], [])
+
+    def test_a_favorite_ref_that_is_not_utf8_is_refused(self):
+        with self.client() as c:
+            r = c.post("/api/library/favorites", headers=_JSON_AUTH, content=_LONE_SURROGATE_REF)
+        self.assertEqual(r.status_code, 400)
+
+    def test_starting_a_ref_that_is_not_utf8_is_refused(self):
+        body = _LONE_SURROGATE_REF.replace('"ref"', '"config"')
+        with self.client() as c:
+            r = c.post("/api/session/start", headers=_JSON_AUTH, content=body)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.manager.state, SessionState.IDLE)
+
+    def test_starting_an_overlong_ref_is_refused_before_the_show_starts(self):
+        with self.client() as c:
+            r = c.post("/api/session/start", headers=AUTH, json={"config": _OVERLONG_GIG_REF})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.manager.state, SessionState.IDLE)
+        self.assertEqual(self.factory.calls, 0)
+
+    def test_switching_to_an_overlong_ref_is_refused_before_the_switch(self):
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.RUNNING, generation=1)
+            r = c.post("/api/session/switch", headers=AUTH, json={"config": _OVERLONG_GIG_REF})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.manager.generation, 1)
+
+    def test_a_socket_start_of_an_overlong_ref_is_refused_before_the_show_starts(self):
+        with (
+            self.assertLogs("c64cast.control.web_api", logging.WARNING) as logs,
+            self.client() as c,
+            c.websocket_connect("/api/ws", headers=AUTH) as ws,
+        ):
+            ws.receive_json()
+            ws.send_json({"session": "start", "config": _OVERLONG_GIG_REF})
+            ws.receive_json()
+            ws.receive_json()
+        self.assertIn("start refused", "\n".join(logs.output))
+        self.assertEqual(self.manager.state, SessionState.IDLE)
+        self.assertEqual(self.factory.calls, 0)
 
     def test_starting_a_named_config_records_a_recent(self):
         with self.client() as c:
