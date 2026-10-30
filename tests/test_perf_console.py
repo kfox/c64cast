@@ -1040,6 +1040,12 @@ const scenarios = {
                       p.ctx.window.send('pointercancel', 7); return pad; },
   other_pointer: (p) => { const pad = p.pad(); pad.send('pointerdown', 7);
                           p.ctx.window.send('pointerup', 8); return pad; },
+  tab_switched_mid_hold: (p) => {
+    vm.runInContext("state = {systems: [{name: 'left'}, {name: 'right'}]}; sel = 0", p.ctx);
+    p.ctx.renderClips({...GATE, name: 'left'});
+    const pad = p.pad(); pad.send('pointerdown', 7);
+    vm.runInContext('sel = 1', p.ctx);
+    p.ctx.window.send('pointerup', 7); return pad; },
 };
 const out = {};
 for (const [name, play] of Object.entries(scenarios)) {
@@ -1094,6 +1100,12 @@ class PerfPageClipPadTest(unittest.TestCase):
 
     def test_another_pointer_lifting_does_not_release_the_held_pad(self):
         self.assertEqual(self.results["other_pointer"]["posts"], [self.PRESS])
+
+    def test_a_release_goes_to_the_system_that_was_pressed(self):
+        self.assertEqual(
+            self.results["tab_switched_mid_hold"]["posts"],
+            [{**self.PRESS, "system": "left"}, {**self.RELEASE, "system": "left"}],
+        )
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")

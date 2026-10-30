@@ -136,7 +136,7 @@ let clock = {bpm: 120, phase: 0, running: false, bpb: 4, at: 0};
 
 function post(cmd) {
   const sys = curSys();
-  if (sys) cmd.system = sys.name;
+  if (sys && cmd.system === undefined) cmd.system = sys.name;
   return fetch('/perf/command', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(cmd),
@@ -274,8 +274,8 @@ function renderClips(sys) {
     pad.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
       pad.setPointerCapture(ev.pointerId);
-      heldPads.set(ev.pointerId, c.slot);
-      post({action: 'launch', slot: c.slot, pressed: true});
+      heldPads.set(ev.pointerId, {slot: c.slot, system: sys.name});
+      post({action: 'launch', slot: c.slot, pressed: true, system: sys.name});
     });
     grid.appendChild(pad);
   });
@@ -284,14 +284,16 @@ function renderClips(sys) {
 // Keyed by pointer and released from the window, not from the pad: every
 // state push rebuilds the grid, so the pad that was pressed is usually gone,
 // and its capture with it, by the time the release arrives. That removal fires
-// lostpointercapture mid-hold, which is why it is not a release here.
+// lostpointercapture mid-hold, which is why it is not a release here. The
+// system is pinned at the press because a second finger can switch tabs
+// mid-hold.
 const heldPads = new Map();
 
 function releasePad(ev) {
-  if (!heldPads.has(ev.pointerId)) return;
-  const slot = heldPads.get(ev.pointerId);
+  const held = heldPads.get(ev.pointerId);
+  if (!held) return;
   heldPads.delete(ev.pointerId);
-  post({action: 'launch', slot: slot, pressed: false});
+  post({action: 'launch', slot: held.slot, pressed: false, system: held.system});
 }
 window.addEventListener('pointerup', releasePad);
 window.addEventListener('pointercancel', releasePad);
