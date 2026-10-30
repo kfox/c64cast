@@ -635,7 +635,22 @@ class WebcamSourceLossTest(unittest.TestCase):
         self.assertEqual(self.lookups, 0)
         [warning] = [r.getMessage() for r in logs.records]
         self.assertNotIn("reopening", warning)
-        self.assertIn("until c64cast restarts", warning)
+        self.assertIn("until it sends again", warning)
+
+    def test_a_camera_nobody_can_name_goes_live_when_its_open_handle_sends_again(self):
+        self.identity = None
+        src = self._source()
+        with self.assertLogs("c64cast.video.video", "WARNING"):
+            self._run(src, 20.0)
+        live = np.full((4, 4, 3), 9, dtype=np.uint8)
+        self.first.frames.extend([live] * 1000)
+        with self.assertLogs("c64cast.video.video", "INFO") as logs:
+            self._run(src, 1.0)
+        self.assertEqual(len(self.opened), 1)
+        frame = src.read_live()
+        assert frame is not None
+        np.testing.assert_array_equal(frame, live)
+        self.assertEqual([r.getMessage() for r in logs.records], ["camera 0 is back"])
 
     def test_a_camera_reopened_while_the_source_stops_is_closed_again(self):
         src = self._source()

@@ -1117,7 +1117,7 @@ class WebcamSource:
                 CAMERA_LOSS_GRACE_S,
                 "and reopening it when it comes back"
                 if self._identity is not None
-                else "until c64cast restarts: nothing names this camera, so it is not reopened",
+                else "until it sends again: nothing names this camera, so it is not reopened",
             )
         if now < self._reopen_at:
             stop.wait(0.05)
