@@ -30,7 +30,7 @@ An NMI-driven 4-bit SID DAC, writing the `$D418` volume nibble. This is the only
 
 The default is **12 kHz**, set by the 2026-07-02 hardware sweeps below (10 kHz for a bitmap scene on a TeensyROM+ that locks its slices; see below). That puts Nyquist at ≈6.0 kHz, so fricatives and sibilants survive and speech is clear.
 
-`c64.nmi_rate_safety` is the single source of truth for the safe ceiling. `scene_factory.validate_nmi_sample_rate` rejects overrunning rates at load, and `--doctor` reports them.
+`c64.nmi_rate_safety` is the single source of truth for the safe ceiling. `scene_factory.validate_nmi_sample_rate` rejects overrunning rates at load, and `--doctor` reports them. At load a `system = "auto"` is still unresolved and is checked as NTSC, whose ceiling is the higher one, so `session._open_backend` runs the same check again once `resolve_system` has read the machine, and a live `--doctor` checks the rate against the standard the machine reports (`_probe_system_mode`).
 
 There are **two different ceilings**, and the shipped default respects the lower one.
 

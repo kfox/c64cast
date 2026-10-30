@@ -322,7 +322,7 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
     """Connect the hardware backend and (unless --skip-probe) verify it is
     reachable. Raises StackBuildError with the exit code build_stack's caller
     expects. It releases only what it opened itself (the backend, when the
-    probe fails); everything build_stack had already acquired comes down
+    probe or the sample-rate check against the resolved system fails); everything build_stack had already acquired comes down
     through build_stack's own unwind ladder."""
     try:
         api = make_backend(cfg)
@@ -366,6 +366,13 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
         # --skip-probe they stay optimistic and per-call error handling absorbs it.
         api.refine_capabilities()
     hw_provision.resolve_system(cfg, api)
+    # The load-time check could only assume NTSC for "auto", and PAL's ceiling is lower.
+    try:
+        scene_factory.validate_nmi_sample_rate(cfg)
+    except cfgmod.ConfigError as e:
+        log.error("%s", e)
+        api.close()
+        raise StackBuildError(5) from e
     # Before anything renders: every color decision is a distance against these 16.
     hw_provision.resolve_palette(cfg, api)
     return api

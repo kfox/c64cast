@@ -1330,7 +1330,9 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
     `[ultimate64].system` may still be the unresolved "auto" — assume NTSC,
     matching that field's own documented fallback and `hw_provision.
     resolve_system`'s convention, rather than falling through to PAL the way
-    `c64.py`'s helpers used to for any non-"NTSC" string."""
+    `c64.py`'s helpers used to for any non-"NTSC" string. `session.
+    _open_backend` runs it again once the system has resolved, which is what
+    catches a rate only PAL refuses."""
     if not cfg.audio.enabled or cfg.audio.sample_rate is None:
         return
     system = "NTSC" if cfg.ultimate64.system.upper() == "AUTO" else cfg.ultimate64.system

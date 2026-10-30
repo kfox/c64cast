@@ -569,6 +569,45 @@ class OpenBackendIdentityTest(unittest.TestCase):
         self.assertTrue(self._detailed_at("DEBUG"))
 
 
+class OpenBackendResolvedRateTest(unittest.TestCase):
+    """A sample rate checked against NTSC while `system` was still "auto" is
+    checked again once the machine says which standard it runs."""
+
+    RATE_ABOVE_THE_PAL_CEILING = 12600
+
+    def _open(self, resolved: str) -> None:
+        cfg = cfgmod.Config()
+        cfg.audio.enabled = True
+        cfg.audio.sample_rate = self.RATE_ABOVE_THE_PAL_CEILING
+        self.api = mock.MagicMock()
+        self.api.probe.return_value = "HTTP 200"
+
+        def resolve(cfg: cfgmod.Config, _api: object) -> None:
+            cfg.ultimate64.system = resolved
+
+        with (
+            mock.patch.object(session, "make_backend", return_value=self.api),
+            mock.patch.object(session.hw_provision, "resolve_system", side_effect=resolve),
+            mock.patch.object(session.hw_provision, "resolve_palette"),
+            self.assertLogs("c64cast", level="INFO") as logs,
+        ):
+            try:
+                session._open_backend(cfg, "system")
+            finally:
+                self.logs = "\n".join(logs.output)
+
+    def test_a_rate_too_fast_for_the_resolved_pal_machine_stops_the_build(self):
+        with self.assertRaises(session.StackBuildError) as ctx:
+            self._open("PAL")
+        self.assertEqual(ctx.exception.exit_code, 5)
+        self.assertIn("[audio].sample_rate", self.logs)
+        self.api.close.assert_called_once()
+
+    def test_the_same_rate_on_an_ntsc_machine_opens(self):
+        self._open("NTSC")
+        self.api.close.assert_not_called()
+
+
 class BuildStackHardwarePaletteTest(unittest.TestCase):
     """build_stack provisions the run's palette pusher after the startup
     resets, and a build that fails later gives the machine its own palette
