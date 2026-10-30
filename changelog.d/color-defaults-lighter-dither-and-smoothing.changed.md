@@ -1,0 +1,1 @@
+- `[color]` defaults are lighter: `dither_strength` drops from 0.5 to 0.1 (less dither texture), `motion_smoothing` from 0.25 to 0.1 (shorter after-images on shot cuts), and `auto_fit_strength` from 1.0 to 0.9. A config that wants the old look sets those three values explicitly.

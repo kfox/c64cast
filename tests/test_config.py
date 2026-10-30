@@ -122,7 +122,10 @@ class ColorSectionTest(unittest.TestCase):
     def test_dither_defaults(self):
         c = cfgmod.Config().color
         self.assertEqual(c.dither, "auto")
-        self.assertEqual(c.dither_strength, 0.5)
+        self.assertEqual(c.dither_strength, 0.1)
+
+    def test_motion_smoothing_default(self):
+        self.assertEqual(cfgmod.Config().color.motion_smoothing, 0.1)
 
     def test_color_section_parses_dither(self):
         cfg = self._load('[color]\ndither = "ordered"\ndither_strength = 1.25\n')
@@ -135,7 +138,7 @@ class ColorSectionTest(unittest.TestCase):
 
     def test_auto_fit_defaults_on(self):
         self.assertTrue(cfgmod.Config().color.auto_fit)
-        self.assertEqual(cfgmod.Config().color.auto_fit_strength, 1.0)
+        self.assertEqual(cfgmod.Config().color.auto_fit_strength, 0.9)
 
     def test_color_section_parses_auto_fit(self):
         cfg = self._load("[color]\nauto_fit = false\nauto_fit_strength = 0.5\n")

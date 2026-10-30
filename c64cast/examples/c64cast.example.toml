@@ -754,7 +754,7 @@ dither = "auto"
 # spread (same scale for both), or how much of each pixel's quantization
 # error floyd-steinberg/atkinson diffuse to neighbors (1.0 = textbook kernel
 # weights).
-dither_strength = 0.5
+dither_strength = 0.1
 #
 # color_match: color space for the nearest-palette match on the quantizing
 # modes (mcm/mhires/hires/petscii). "perceptual" measures nearest-color in
@@ -893,10 +893,9 @@ flicker_score_pairs = []
 # smoothing trades motion-tracking for stability, so on a hard shot cut an
 # outline from the previous shot lingers as an after-image for a moment. 1.0 =
 # full smoothing (most stable, ghostiest); 0.0 = track the source exactly (no
-# after-image, but can flicker on grainy content). The default 0.25 was picked
-# by hardware A/B as the best ghost/flicker balance. Lower it if after-images
+# after-image, but can flicker on grainy content). Lower it if after-images
 # still bother you; raise it if motion shimmers.
-motion_smoothing = 0.25
+motion_smoothing = 0.1
 #
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video
@@ -907,7 +906,7 @@ motion_smoothing = 0.25
 # well-exposed sources are left ~unchanged. auto_fit_strength dials it 0..1
 # (1 = full, 0 = off). On by default.
 auto_fit = true
-auto_fit_strength = 1.0
+auto_fit_strength = 0.9
 #
 # force_palette: the EXTREME, deliberately FALSE-COLOR remap (off by default).
 # Everything above is faithful — pixels still map to their nearest C64 color, so
