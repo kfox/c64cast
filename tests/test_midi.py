@@ -502,7 +502,9 @@ class PortListOnMacOSTest(unittest.TestCase):
             threading, "excepthook", lambda args: escaped.append(args.exc_value)
         ):
             caller = threading.Thread(
-                target=_midi._mido_for("darwin").get_input_names, name="caller", daemon=True
+                target=lambda: _midi._mido_for("darwin").get_input_names(),
+                name="caller",
+                daemon=True,
             )
             caller.start()
             caller.join(5.0)
