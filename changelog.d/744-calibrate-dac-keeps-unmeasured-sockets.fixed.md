@@ -6,6 +6,6 @@
   Ultimate 64, playback uses the table of the socketed SID answering `$D400`,
   and the built-in curve when none does; `--calibrate-dac` there stops with an
   error, writing nothing, when no socketed SID answers `$D400`. A TeensyROM+
-  or an Ultimate II+ always plays the one table measured over it. A table an
+  or an Ultimate II+ plays the one table measured over it. A table an
   older run on an Ultimate 64 filed without a socket is no longer used; run
   `--calibrate-dac` again with the SID mapped to `$D400`.
