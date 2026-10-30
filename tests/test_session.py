@@ -547,7 +547,7 @@ class BuildStackCameraTest(unittest.TestCase):
 
     def test_a_clip_that_names_no_type_is_a_webcam_clip(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         cfg.performance.clips = [{"pad": 1}]
         self._camera_opens_for(cfg).assert_called_once()
 
