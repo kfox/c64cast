@@ -1112,9 +1112,12 @@ class WebcamSource:
             self._reopen_at = now
             log.warning(
                 "camera %r stopped sending frames; holding its last frame for %.0f s, "
-                "then black, and reopening it when it comes back",
+                "then black, %s",
                 self._device,
                 CAMERA_LOSS_GRACE_S,
+                "and reopening it when it comes back"
+                if self._identity is not None
+                else "until c64cast restarts: nothing names this camera, so it is not reopened",
             )
         if now < self._reopen_at:
             stop.wait(0.05)

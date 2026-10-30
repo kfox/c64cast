@@ -629,10 +629,13 @@ class WebcamSourceLossTest(unittest.TestCase):
         # Another camera, the built-in one say, may sit at that index by now.
         self.identity = None
         src = self._source()
-        with self.assertLogs("c64cast.video.video", "WARNING"):
+        with self.assertLogs("c64cast.video.video", "WARNING") as logs:
             self._run(src, 20.0)
         self.assertEqual(len(self.opened), 1)
         self.assertEqual(self.lookups, 0)
+        [warning] = [r.getMessage() for r in logs.records]
+        self.assertNotIn("reopening", warning)
+        self.assertIn("until c64cast restarts", warning)
 
     def test_a_camera_reopened_while_the_source_stops_is_closed_again(self):
         src = self._source()
