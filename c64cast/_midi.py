@@ -16,22 +16,112 @@ pass by binding `tests._fakes.FrozenClock` over `c64cast._midi.time`.
 
 from __future__ import annotations
 
+import ctypes
+import functools
 import logging
+import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
+
+from c64cast._pollthread import PollThread
 
 log = logging.getLogger(__name__)
 
 try:
-    import mido as _mido
+    import mido as _mido_module
 
-    mido: Any = _mido
+    _mido: Any = _mido_module
     MIDI_AVAILABLE = True
 except ImportError:
-    mido = None
+    _mido = None
     MIDI_AVAILABLE = False
+
+
+# CoreMIDI refreshes the port list only on the run loop of the thread that
+# created the process's first MIDI client, which rtmidi keeps for the life of
+# the process, and rtmidi services only the calling thread's run loop when it
+# lists ports. Listed from any other thread, the ports never change. ALSA and
+# WinMM ask the system afresh on every call.
+_COREFOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+_RUN_LOOP_FINISHED = 1
+_RUN_LOOP_SLICE_S = 60.0
+_REACHES_COREMIDI = frozenset(
+    {
+        "get_input_names",
+        "get_output_names",
+        "get_ioport_names",
+        "open_input",
+        "open_output",
+        "open_ioport",
+    }
+)
+
+
+@functools.cache
+def _corefoundation() -> tuple[Any, ctypes.c_void_p]:
+    cf = ctypes.CDLL(_COREFOUNDATION)
+    cf.CFRunLoopRunInMode.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_bool]
+    cf.CFRunLoopRunInMode.restype = ctypes.c_int32
+    return cf.CFRunLoopRunInMode, ctypes.c_void_p.in_dll(cf, "kCFRunLoopDefaultMode")
+
+
+def _run_loop_slice() -> bool:
+    """Service this thread's run loop for up to `_RUN_LOOP_SLICE_S`; False once
+    it has nothing left to service."""
+    run_in_mode, default_mode = _corefoundation()
+    return run_in_mode(default_mode, _RUN_LOOP_SLICE_S, False) != _RUN_LOOP_FINISHED
+
+
+def _serve_port_list_updates(listed: threading.Event) -> None:
+    try:
+        _mido.get_input_names()
+    finally:
+        listed.set()
+    while _run_loop_slice():
+        pass
+    log.warning(
+        "MIDI: something opened MIDI before c64cast's port-list thread, "
+        "so an unplugged controller will not be noticed"
+    )
+
+
+_port_list_lock = threading.Lock()
+_port_list_thread: threading.Thread | None = None
+
+
+def _keep_port_list_current() -> None:
+    global _port_list_thread
+    with _port_list_lock:
+        if _port_list_thread is not None:
+            return
+        listed = threading.Event()
+        _port_list_thread = threading.Thread(
+            target=_serve_port_list_updates, args=(listed,), name="midi-port-list", daemon=True
+        )
+        _port_list_thread.start()
+        listed.wait()
+
+
+class _MidoWithCurrentPortList:
+    """`mido`, except that the first call reaching CoreMIDI starts the
+    `midi-port-list` thread before it, so that thread owns the process's
+    first MIDI client."""
+
+    def __getattr__(self, name: str) -> Any:
+        if name in _REACHES_COREMIDI:
+            _keep_port_list_current()
+        return getattr(_mido, name)
+
+
+def _mido_for(platform: str) -> Any:
+    if platform == "darwin" and _mido is not None:
+        return _MidoWithCurrentPortList()
+    return _mido
+
+
+mido: Any = _mido_for(sys.platform)
 
 
 def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:
@@ -61,6 +151,102 @@ def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:
     port = mido.open_input(match)
     log.info("%s: opened MIDI port %r", label, match)
     return port, match
+
+
+# rtmidi never reports an unplugged controller: `poll()` reads a queue nothing
+# fills any more. The port dropping out of the input list is the only sign, and
+# listing the ports costs a few ms, so it is checked on its own thread.
+PORT_WATCH_INTERVAL_S = 1.0
+
+
+class PortWatch(PollThread):
+    """Calls ``on_lost`` once when the input port ``port_name()`` names drops
+    out of ``mido.get_input_names()``, warning on ``logger`` as ``label`` that
+    it is releasing ``releases``, and counts each time it comes back for the
+    `reopener`s that follow it."""
+
+    def __init__(
+        self,
+        port_name: Callable[[], str | None],
+        on_lost: Callable[[], None],
+        *,
+        label: str,
+        releases: str,
+        logger: logging.Logger,
+        name: str,
+    ) -> None:
+        super().__init__(self.check, name=name, period=PORT_WATCH_INTERVAL_S, run_first=False)
+        self._on_lost = on_lost
+        self._label = label
+        self._releases = releases
+        self._log = logger
+        self._port_name = port_name
+        self._present = True
+        self.returns = 0
+
+    def start(self) -> None:
+        self._present = True
+        super().start()
+
+    def reopener(self, *, output: str | None = None) -> PortReopener:
+        """Follows the watched input, or the output named ``output``."""
+        return PortReopener(self, output)
+
+    def check(self) -> None:
+        name = self._port_name()
+        present = name in mido.get_input_names()
+        if present == self._present:
+            return
+        self._present = present
+        if present:
+            self.returns += 1
+            return
+        self._log.warning(
+            "%s: MIDI port %r is gone (controller unplugged?); releasing %s",
+            self._label,
+            name,
+            self._releases,
+        )
+        self._on_lost()
+
+
+class PortReopener:
+    """Called by the one thread that uses the port, with the port it holds:
+    after each return `watch` has counted, closes it and hands back the port
+    opened afresh by the same name (None if that open failed, until the next
+    return); otherwise hands back what it was given. ``output`` names the
+    output port to reopen; without it, the watched input is reopened."""
+
+    def __init__(self, watch: PortWatch, output: str | None) -> None:
+        self._watch = watch
+        self._output = output
+        self._kind = "MIDI port" if output is None else "MIDI output"
+        self._seen = watch.returns
+
+    def __call__(self, port: Any) -> Any:
+        if self._watch.returns == self._seen:
+            return port
+        self._seen = self._watch.returns
+        # A USB device replugged on macOS still feeds the old port, but a
+        # re-created virtual source and an ALSA or WinMM handle do not.
+        if port is not None:
+            port.close()
+        logger = self._watch._log
+        label = self._watch._label
+        name = self._watch._port_name() if self._output is None else self._output
+        try:
+            fresh = mido.open_input(name) if self._output is None else mido.open_output(name)
+        except Exception:
+            logger.warning(
+                "%s: %s %r is back but would not reopen; unplug it and plug it in again to retry",
+                label,
+                self._kind,
+                name,
+                exc_info=True,
+            )
+            return None
+        logger.info("%s: %s %r is back; reconnected", label, self._kind, name)
+        return fresh
 
 
 # How many already-queued messages a reader pass may retire — ~7x the busiest

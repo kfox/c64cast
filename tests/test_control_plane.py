@@ -13,7 +13,7 @@ import threading
 import unittest
 import warnings
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 try:
     import fastapi  # noqa: F401
@@ -123,6 +123,24 @@ class BuildAppConstructionTest(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             build_app(playlists={}, config_loaders={}, interstitial_factories={})
         self.assertIn("at least one playlist", str(cm.exception))
+
+
+@unittest.skipUnless(HAVE_FASTAPI, "fastapi not installed (control extra)")
+class StartControlServerTest(unittest.TestCase):
+    def test_a_server_that_never_bound_is_raised_not_returned(self):
+        from c64cast.control.control_plane import start_control_server
+
+        with patch("c64cast.control.control_plane.ControlServer") as server_cls:
+            server_cls.return_value.start.return_value = False
+            with self.assertRaises(RuntimeError) as cm:
+                start_control_server(
+                    "127.0.0.1",
+                    8765,
+                    playlists={"a": _fake_playlist("a")},
+                    config_loaders={},
+                    interstitial_factories={},
+                )
+        self.assertIn("127.0.0.1:8765", str(cm.exception))
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")

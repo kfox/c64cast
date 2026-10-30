@@ -53,6 +53,7 @@ class _KeyPollState:
     last_ctrl_seen: bool = False
     last_shift_seen: bool = False
     last_space_toggle: float = 0.0  # monotonic time of the last SPACE menu toggle
+    baselines_stale: bool = False
 
     def set_baselines(self, cbm: bool, ctrl: bool, shift: bool) -> None:
         self.last_cbm_seen = cbm
@@ -84,6 +85,7 @@ class CommodoreKeyPoller:
         self._menu_event: threading.Event | None = None
         self._menu_active: threading.Event | None = None
         self._menu_eligible: threading.Event | None = None
+        self._program_owns_keyboard: threading.Event | None = None
         self._nav_queue: deque[int] | None = None
         # A range above $028D that each modifier read also covers, for a
         # reader on another thread (`watch_bytes`). Riding the read the poller
@@ -103,6 +105,7 @@ class CommodoreKeyPoller:
         menu_active: threading.Event | None = None,
         menu_eligible: threading.Event | None = None,
         nav_queue: deque[int] | None = None,
+        program_owns_keyboard: threading.Event | None = None,
     ):
         """Begin polling.
 
@@ -129,7 +132,15 @@ class CommodoreKeyPoller:
                       is set, so a kernal-input launcher's own $00C6 watch is
                       never disturbed.
         nav_queue     (optional) bounded deque the poller appends decoded
-                      PETSCII cursor/RETURN codes to while `menu_active`."""
+                      PETSCII cursor/RETURN codes to while `menu_active`.
+        program_owns_keyboard
+                      (optional) set by the Playlist while a scene that hands
+                      the machine to a program of its own (a launcher) is
+                      current. While set and not paused, $028D is not read and
+                      C=/CTRL/SHIFT do nothing: the program's bytes there are
+                      not the kernal's modifier bits. Hold-to-resume still
+                      works while paused, since the pause idles the machine at
+                      the kernal's READY screen."""
         self._pause_event = pause_event
         self._resume_event = resume_event
         self._skip_event = skip_event
@@ -138,6 +149,7 @@ class CommodoreKeyPoller:
         self._menu_active = menu_active
         self._menu_eligible = menu_eligible
         self._nav_queue = nav_queue
+        self._program_owns_keyboard = program_owns_keyboard
         self._poll.start()
 
     def stop(self):
@@ -216,16 +228,24 @@ class CommodoreKeyPoller:
             self._tick(state)
 
     def _tick(self, st: _KeyPollState) -> None:
-        """One poll tick: read $028D, drain the kernal key buffer when the
-        menu wants it, then dispatch to the menu-open / paused / running
-        handler. A failed read keeps prior state (try again next tick)."""
+        """One poll tick: unless a launched program owns the keyboard, read
+        $028D, drain the kernal key buffer when the menu wants it, then
+        dispatch to the menu-open / paused / running handler. A failed read
+        keeps prior state (try again next tick); the first read after the
+        program lets go only takes the baselines, so no edge fires on it."""
         assert self._pause_event is not None
+        if self._program_owns_keyboard_now():
+            st.baselines_stale = True
+            return
         mod = self._read_modifiers()
         if mod is None:
             return
         cbm = bool(mod & BIT_COMMODORE)
         ctrl = bool(mod & BIT_CONTROL)
         shift = bool(mod & BIT_SHIFT)
+        if st.baselines_stale:
+            st.set_baselines(cbm, ctrl, shift)
+            st.baselines_stale = False
 
         # Only when the menu is wired AND open or the scene is eligible: the
         # drain zeroes $00C6, which must not happen under a kernal-input
@@ -244,6 +264,11 @@ class CommodoreKeyPoller:
             self._tick_paused(st, cbm, ctrl, shift)
         else:
             self._tick_running(st, cbm, ctrl, shift)
+
+    def _program_owns_keyboard_now(self) -> bool:
+        assert self._pause_event is not None
+        owned = self._program_owns_keyboard
+        return owned is not None and owned.is_set() and not self._pause_event.is_set()
 
     def _tick_menu_open(
         self, st: _KeyPollState, keys: list[int], cbm: bool, ctrl: bool, shift: bool

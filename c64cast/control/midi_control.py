@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard
 
-from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port, poll_pending
+from c64cast._midi import MIDI_AVAILABLE, PortWatch, mido, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast._wire_log import LogThrottle
 from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
@@ -102,8 +102,8 @@ _OSD_DOUBLE_TAP_S = 0.4
 
 # Actions where a note release (note_off / note_on velocity==0) carries meaning;
 # a release for anything else is dropped in _dispatch. Covers the transport hold
-# actions (a held rw/ff ramp, a Record/Stop hold for the loop_slot pad chords)
-# plus clip_launch (a gate clip plays while held).
+# actions (a held rw/ff ramp, a Record/Stop hold for the loop_slot pad chords),
+# clip_launch (a gate clip plays while held) and joystick (a held direction).
 _RELEASE_AWARE_ACTIONS = (
     "transport.rw",
     "transport.ff",
@@ -167,8 +167,10 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
         if action not in _ACTIONS:
             raise ValueError(f"cc_map[{i}].action must be one of {_ACTIONS}, got {action!r}")
         scene = entry.get("scene")
-        if action == "jump" and not isinstance(scene, int):
-            raise ValueError(f"cc_map[{i}] action 'jump' needs an int 'scene'")
+        if action == "jump" and (
+            not isinstance(scene, int) or isinstance(scene, bool) or scene < 0
+        ):
+            raise ValueError(f"cc_map[{i}] action 'jump' needs an int 'scene' >= 0, got {scene!r}")
         target = entry.get("target")
         if action == "param" and (not isinstance(target, str) or "." not in target):
             raise ValueError(
@@ -507,6 +509,7 @@ class MidiControlListener:
         # the control port.
         self.clock_port_name = clock_port
         self._clock_port: Any = None
+        self._clock_port_match = ""
         # One PollThread per reader; the clock/feedback ones only start when
         # their port opens. Each loop watches its own stop event (manual mode).
         self._reader_poll = PollThread(
@@ -518,6 +521,25 @@ class MidiControlListener:
         self._feedback_poll = PollThread(
             self._feedback_reader, name="midi-led-feedback", manual=True, join_timeout=1.0
         )
+        self._port_watch = PortWatch(
+            lambda: self._opened_port_name,
+            self._release_held_joysticks,
+            label="midi_control",
+            releases="held joystick directions",
+            logger=log,
+            name="midi-port-watch",
+        )
+        self._clock_port_watch = PortWatch(
+            lambda: self._clock_port_match,
+            lambda: None,
+            label="midi_control",
+            releases="nothing; the beat grid holds until the clock resumes",
+            logger=log,
+            name="midi-clock-port-watch",
+        )
+        # (id(playlist), port, direction) -> (playlist, the scene it was pressed on)
+        self._held_joystick: dict[tuple[int, int, str], tuple[Playlist, Any]] = {}
+        self._held_joystick_lock = threading.Lock()
         self._warned_channels: set[int] = set()
         # A dispatch/clock-feed failure is per *message*, and the message comes
         # off the wire: a controller sending something this build mishandles
@@ -541,6 +563,7 @@ class MidiControlListener:
         self._feedback_port = feedback_port
         self._feedback_profile_port: str | None = None
         self._out_port: Any = None
+        self._out_port_name = ""
         self._fmap = FeedbackMap()
         # note -> last velocity sent (feedback thread only; the diff cache).
         self._led_state: dict[int, int] = {}
@@ -590,8 +613,10 @@ class MidiControlListener:
         if self._feedback_enabled:
             self._setup_feedback()
         self._reader_poll.start()
+        self._port_watch.start()
         if self._clock_port is not None:
             self._clock_poll.start()
+            self._clock_port_watch.start()
         if self._out_port is not None:
             self._feedback_poll.start()
         log.info(
@@ -654,6 +679,7 @@ class MidiControlListener:
                 exc_info=True,
             )
             return
+        self._clock_port_match = match
         log.info("midi_control: opened dedicated MIDI clock port %r", match)
 
     def _setup_feedback(self) -> None:
@@ -713,6 +739,7 @@ class MidiControlListener:
                 "midi_control: could not open MIDI output %r for LED feedback", match, exc_info=True
             )
             return
+        self._out_port_name = match
         log.info("midi_control: LED feedback on MIDI output %r", match)
 
     def _feedback_reader(self, stop: threading.Event) -> None:
@@ -722,8 +749,10 @@ class MidiControlListener:
         on exit so the controller doesn't strand lit pads after shutdown."""
         if self._out_port is None:
             return
+        reopen = self._port_watch.reopener(output=self._out_port_name)
         try:
             while not stop.is_set():
+                self._out_port = reopen(self._out_port)
                 blink_on = int(time.monotonic() / _LED_BLINK_HALF_PERIOD_S) % 2 == 0
                 self._emit_led_diff(self._compute_led_map(blink_on))
                 time.sleep(_LED_POLL_INTERVAL_S)
@@ -797,9 +826,15 @@ class MidiControlListener:
         self._led_state.clear()
 
     def stop(self) -> None:
-        # Signal all three loops before joining any, so they wind down in
+        # Signal every loop before joining any, so they wind down in
         # parallel (matching the old shared stop event) rather than serially.
-        polls = (self._reader_poll, self._clock_poll, self._feedback_poll)
+        polls = (
+            self._reader_poll,
+            self._clock_poll,
+            self._feedback_poll,
+            self._port_watch,
+            self._clock_port_watch,
+        )
         for poll in polls:
             poll.stop_event.set()
         for poll in polls:
@@ -817,9 +852,11 @@ class MidiControlListener:
         port = self._midi_port
         if port is None:
             return
+        reopen = self._port_watch.reopener()
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop):
+                port = self._midi_port = reopen(port)
+                for msg in poll_pending(port, stop) if port is not None else ():
                     try:
                         self._dispatch(msg)
                     except Exception:
@@ -835,9 +872,11 @@ class MidiControlListener:
         port = self._clock_port
         if port is None:
             return
+        reopen = self._clock_port_watch.reopener()
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop):
+                port = self._clock_port = reopen(port)
+                for msg in poll_pending(port, stop) if port is not None else ():
                     try:
                         self._feed_tempo(msg)
                     except Exception:
@@ -848,16 +887,33 @@ class MidiControlListener:
         except Exception:
             log.exception("midi_control clock reader crashed")
 
+    def _note_joystick(self, pl: Playlist, port: int, direction: str, pressed: bool) -> None:
+        key = (id(pl), port, direction)
+        with self._held_joystick_lock:
+            if pressed:
+                self._held_joystick[key] = (pl, pl.current)
+            else:
+                self._held_joystick.pop(key, None)
+
+    def _release_held_joysticks(self) -> None:
+        with self._held_joystick_lock:
+            held = self._held_joystick
+            self._held_joystick = {}
+        for (_pl_id, port, direction), (pl, scene) in held.items():
+            if pl.current is scene:
+                scene.inject_joystick(port, direction, False)
+
     def _targets(self, msg: Any) -> list[Playlist]:
         """channel == broadcast_channel-1 -> every playlist; other channel N
         (0-based) -> the Nth playlist in ensemble order if in range, else no
         target (logged once at debug, not per-message — a performer's
         controller idly sending on unrelated channels shouldn't spam logs).
-        Single-playlist mode ignores channel entirely."""
+        A message with no channel (an MMC SysEx) goes to every playlist, as the
+        clock does. Single-playlist mode ignores channel entirely."""
         if len(self._all) <= 1:
             return self._all
-        channel = getattr(msg, "channel", 0)
-        if channel == self.broadcast_channel - 1:
+        channel = getattr(msg, "channel", None)
+        if channel is None or channel == self.broadcast_channel - 1:
             return self._all
         if 0 <= channel < len(self._all):
             return [self._all[channel]]
@@ -963,7 +1019,9 @@ class MidiControlListener:
             if mapping.kind == "cc":
                 pressed = value >= 64
             if inject is not None and mapping.input is not None:
-                inject(mapping.port or 2, mapping.input, pressed)
+                joystick_port = mapping.port or 2
+                inject(joystick_port, mapping.input, pressed)
+                self._note_joystick(pl, joystick_port, mapping.input, pressed)
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(

@@ -320,7 +320,7 @@ Every name c64cast answers to — 463 of them — and the pages that discuss eac
 |---|---|
 | `mandelbrot` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `marquee` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`marquee` (C)](22-appendix-c-overlays.md#marquee), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
-| `max_duration_s` | [`launcher` (2)](03-vocabulary.md#launcher), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
+| `max_duration_s` | [`launcher` (2)](03-vocabulary.md#launcher), [The Machine's Own Keyboard (6)](07-inputs-and-outputs.md#the-machines-own-keyboard), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `max_items` | [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `mcm` | [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video) |
 | `media_read_only` | [Browsing And Uploading Media (6)](07-inputs-and-outputs.md#browsing-and-uploading-media), [`web` (A)](20-appendix-a-configuration.md#web) |
@@ -592,7 +592,7 @@ Every name c64cast answers to — 463 of them — and the pages that discuss eac
 | `waveform_colors` | [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi), [`waveform` (B)](21-appendix-b-scene-types.md#waveform) |
 | `weather` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`weather` (C)](22-appendix-c-overlays.md#weather), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `[web]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`web` (A)](20-appendix-a-configuration.md#web) |
-| web console | [Generators (3)](04-display-pipeline.md#generators), [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Web Console (G)](26-appendix-g-cli-flags.md#web-console) |
+| web console | [`launcher` (2)](03-vocabulary.md#launcher), [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Web Console (G)](26-appendix-g-cli-flags.md#web-console) |
 | `webcam` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [`webcam` (2)](03-vocabulary.md#webcam), [`webcam` (B)](21-appendix-b-scene-types.md#webcam) |
 | `[wled]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`wled` (2)](03-vocabulary.md#wled), [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `wled` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |

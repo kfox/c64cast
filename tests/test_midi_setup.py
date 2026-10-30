@@ -321,6 +321,55 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(reviewed, [midi_setup.build_jump_entry("note", 40, 0)])
         self.assertEqual(out.getvalue().count("Learned mappings:"), 2)
 
+    def test_a_negative_index_is_reported_and_removes_nothing(self):
+        q = mock.MagicMock()
+        q.select.return_value.ask.side_effect = ["Remove one", "Save these"]
+        q.text.return_value.ask.return_value = "-1"
+        mappings = [
+            midi_setup.build_jump_entry("note", 40, 0),
+            midi_setup.build_jump_entry("note", 41, 1),
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            reviewed = midi_setup._review(q, mappings)
+        self.assertEqual(
+            reviewed,
+            [
+                midi_setup.build_jump_entry("note", 40, 0),
+                midi_setup.build_jump_entry("note", 41, 1),
+            ],
+        )
+        self.assertIn("(bad index)", out.getvalue())
+
+    def test_an_index_past_the_end_or_not_a_number_removes_nothing(self):
+        for answer in ("1", "first"):
+            with self.subTest(answer=answer):
+                q = mock.MagicMock()
+                q.select.return_value.ask.side_effect = ["Remove one", "Save these"]
+                q.text.return_value.ask.return_value = answer
+                mappings = [midi_setup.build_jump_entry("note", 40, 0)]
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    reviewed = midi_setup._review(q, mappings)
+                self.assertEqual(reviewed, [midi_setup.build_jump_entry("note", 40, 0)])
+                self.assertIn("(bad index)", out.getvalue())
+
+
+class LearnSceneJumpsTests(unittest.TestCase):
+    def test_a_negative_scene_index_is_reported_and_not_learned(self):
+        q = mock.MagicMock()
+        q.confirm.return_value.ask.side_effect = [True, True, False]
+        q.text.return_value.ask.return_value = "-1"
+        out = io.StringIO()
+        with (
+            mock.patch.object(midi_setup, "_drain"),
+            mock.patch.object(midi_setup, "_read_burst", return_value=[("note", 40, 100, True)]),
+            contextlib.redirect_stdout(out),
+        ):
+            learned = midi_setup._learn_scene_jumps(q, mock.Mock())
+        self.assertEqual(learned, [])
+        self.assertIn("not a scene index — skipped", out.getvalue())
+
 
 class LearnFeedbackTests(unittest.TestCase):
     def test_an_out_of_range_channel_is_reported_and_not_saved(self):
@@ -354,6 +403,29 @@ class LearnFeedbackTests(unittest.TestCase):
         self.assertEqual(block["loaded"], 5)
         self.assertEqual(block["armed"], mc.FeedbackMap().armed)
         self.assertIn("not a number — keeping 13", out.getvalue())
+
+    def test_only_the_velocity_prompts_say_velocity(self):
+        q = mock.MagicMock()
+        q.confirm.return_value.ask.return_value = True
+        q.text.return_value.ask.return_value = None
+        out = io.StringIO()
+        with (
+            mock.patch.object(midi_setup, "_pick_output_port", return_value=None),
+            contextlib.redirect_stdout(out),
+        ):
+            midi_setup._learn_feedback(q, None)
+        self.assertIn("LED feedback lights your controller's pads", out.getvalue())
+        labels = [c.args[0].strip() for c in q.text.call_args_list]
+        self.assertEqual(
+            labels,
+            [
+                "loaded clip (dim) velocity",
+                "arming clip (blinks) velocity",
+                "live clip (bright) velocity",
+                "enabled effect layer velocity",
+                "LED MIDI channel (0-based)",
+            ],
+        )
 
 
 class LiveTargetsDriftTests(unittest.TestCase):

@@ -726,11 +726,11 @@ tightens parameter validation. If a previously-working setup starts
 the REST traffic (`-vv` logs a line per HTTP request).
 
 What you will *not* see there is the polling: the Commodore-key poll reads
-`$028D` ten times a second for the whole run, the launcher scene's idle
-detector reads at the same rate while it plays, and the host-DMA audio servo
-reads the ring pointer once per chunk (≈12/s). Those are held out of `-vv`
-because they are unconditional and say nothing about the request you are
-chasing; `-vvv` includes them, which is what to reach for when the poll
+`$028D` ten times a second for the whole run bar launcher scenes, the launcher
+scene's idle detector reads at the same rate while it plays, and the host-DMA
+audio servo reads the ring pointer once per chunk (≈12/s). Those are held out
+of `-vv` because they are unconditional and say nothing about the request you
+are chasing; `-vvv` includes them, which is what to reach for when the poll
 itself is the suspect.
 
 `AudioStreamer` **shares** the render path's `Ultimate64API` instance
@@ -1029,9 +1029,14 @@ active). Consequences worth knowing:
   a hard ceiling that advances regardless of input (unset = no cap, so a
   game played non-stop never advances on its own).
 
-* **Input detection deliberately excludes the modifier keys** c64cast
-  already scans (Commodore / SHIFT / CTRL at `$028D`) — those drive
-  pause/skip/style and must not count as "player active." `input_source`
+* **The modifier keys do nothing under a launcher.** From before the program
+  starts until the next scene sets up, c64cast neither reads `$028D` nor acts
+  on Commodore / CTRL / SHIFT: a launched program uses that byte for its own
+  ends, and a C= bit it set would pause the playlist, which stops the idle
+  timeout and `max_duration_s` for good. A pause from MIDI or the web
+  console still resumes on a 3 s C= hold, since the pause resets the machine
+  to the kernal. The modifiers do not count as "player active" either.
+  `input_source`
   picks what *does* count: `cia` ($DC00/$DC01 joystick bits, default),
   `kernal` ($00C5 last-key + $00C6 buffer length), `auto` (both), or `none`.
   A joystick direction or fire button counts on every poll while it is held,
@@ -1078,9 +1083,10 @@ active). Consequences worth knowing:
   instead of a bare token code. This is what makes the failure below diagnosable.
 
   > **Known issue — intermittent TR launcher upload corruption (under
-  > investigation).** On the TeensyROM the keyboard poller's
-  > `ReadC64Mem $028D` (and likely the launcher's own input poll) shares one
-  > serial/TCP link with the launcher's `reset()` + PostFile. A poll read that
+  > investigation).** On the TeensyROM the launcher's own input poll (and,
+  > before the keyboard poller went quiet under a launcher scene, its
+  > `ReadC64Mem $028D`) shares one serial/TCP link with the launcher's
+  > `reset()` + PostFile. A poll read that
   > lands in the post-reset menu chatter (or reads a running program's state)
   > can desync the stream and leave stray bytes that make the *next* PostFile
   > drop a byte — the uploaded `.prg` then loads one byte short (BASIC autostart
@@ -1090,8 +1096,9 @@ active). Consequences worth knowing:
   > poll), so reproducing it takes a TR+ under a live playlist —
   > nothing narrower will show it. Candidate fixes (not yet shipped):
   > make `read_segment` fully resync on any desync so no reader can poison a
-  > later command; suspend the poller across the launcher's reset+upload; a
-  > robust pre-upload drain. Needs a soak harness (hundreds of launch cycles) to
+  > later command; a robust pre-upload drain. The keyboard poller no longer
+  > reads across the launcher's reset+upload; whether that alone cures the race
+  > is not yet measured on a TR+. Needs a soak harness (hundreds of launch cycles) to
   > verify, since it can't be reproduced on demand.
 
 ## WLED pixel sink (`wled` scene) needs an external sender

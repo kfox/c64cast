@@ -35,7 +35,14 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, FakeTime, FrozenClock  # noqa: E402
+from _fakes import (  # noqa: E402
+    FakeAPI,
+    FakeMidiDevices,
+    FakeMidiPort,
+    FakeTime,
+    FrozenClock,
+    wait_for,
+)
 
 from c64cast import _midi  # noqa: E402
 from c64cast._midi import MAX_DRAIN_WORK_S  # noqa: E402
@@ -1101,6 +1108,172 @@ class ReaderWorkBudgetTests(_MidiTestCase):
         self.assertEqual(sum(per_pass), len(batch))
         self.assertGreaterEqual(max(per_pass), 5)
         self.assertLessEqual(max(per_pass), 9)
+
+
+class UnpluggedControllerTests(_MidiTestCase):
+    """rtmidi reports an unplugged controller only by dropping its port from
+    the input list, so a key held at that moment never sends its note-off and
+    its voice stays gated until something else lets go of it."""
+
+    PORT = "Keys MIDI 1"
+    VOICE_BASES = ("D400", "D407", "D40E")
+
+    def _scene(self, **kwargs) -> tuple[MidiScene, FakeAPI]:
+        scene, api = _make_scene(**kwargs)
+        scene._opened_port_name = self.PORT
+        return scene, api
+
+    def _check(self, scene, names) -> None:
+        with mock.patch.object(_midi, "mido") as fake:
+            fake.get_input_names.return_value = names
+            scene._port_watch.check()
+
+    def _gated(self, api, voice: int) -> bool:
+        return bool(api.regs[self.VOICE_BASES[voice]][_CTRL_IDX] & SID.GATE)
+
+    def test_every_sounding_voice_is_gated_off_when_the_port_disappears(self):
+        scene, api = self._scene()
+        for note in (60, 64, 67):
+            scene._handle_msg(mido.Message("note_on", note=note, velocity=100))
+        with self.assertLogs("c64cast.sid.midi_scene", level="WARNING") as logs:
+            self._check(scene, ["IAC Driver Bus 1"])
+        self.assertEqual([self._gated(api, v) for v in range(SID.N_VOICES)], [False] * 3)
+        self.assertFalse(any(v.on for v in scene.voices))
+        self.assertIn(self.PORT, logs.output[0])
+
+    def test_a_key_held_at_the_unplug_is_not_resurrected_by_a_later_release(self):
+        scene, _api = self._scene()
+        for note in (60, 64, 67):
+            scene._note_on(note, 100)
+        with self.assertLogs("c64cast.sid.midi_scene", level="WARNING"):
+            self._check(scene, [])
+        scene._note_on(72, 100)
+        scene._note_off(72)
+        self.assertFalse(any(v.on for v in scene.voices))
+
+    def test_a_multitimbral_voice_is_released_too(self):
+        scene, api = self._scene(voice_mode="multitimbral")
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=1))
+        with self.assertLogs("c64cast.sid.midi_scene", level="WARNING"):
+            self._check(scene, [])
+        self.assertFalse(self._gated(api, 1))
+        self.assertEqual(scene._mt_held, [[], [], []])
+
+    def test_a_present_port_releases_nothing(self):
+        scene, api = self._scene()
+        scene._note_on(60, 100)
+        self._check(scene, [self.PORT])
+        self.assertTrue(self._gated(api, 0))
+
+    def test_the_running_scene_releases_on_its_own_and_again_on_its_next_lap(self):
+        names = [self.PORT]
+        released = threading.Event()
+        with (
+            mock.patch.object(_midi, "mido") as fake,
+            mock.patch.object(_midi, "PORT_WATCH_INTERVAL_S", 0.01),
+            mock.patch.object(
+                MidiScene,
+                "_release_all_voices",
+                autospec=True,
+                side_effect=lambda _scene: released.set(),
+            ),
+            self.assertLogs("c64cast.sid.midi_scene", level="WARNING") as logs,
+        ):
+            fake.get_input_names.side_effect = lambda: list(names)
+            scene, _api = self._scene()
+            for _lap in range(2):
+                with mock.patch.object(
+                    scene,
+                    "_open_port",
+                    side_effect=lambda: setattr(scene, "_midi_port", _FakePort()),
+                ):
+                    scene.setup()
+                try:
+                    names[:] = []
+                    self.assertTrue(released.wait(2.0))
+                finally:
+                    scene.teardown()
+                released.clear()
+                names[:] = [self.PORT]
+        self.assertEqual(len(logs.output), 2)
+
+
+class ReplugTests(_MidiTestCase):
+    """A keyboard unplugged and plugged back in mid-scene must not need a
+    restart, on any platform: the reader reopens its port when it comes back."""
+
+    PORT = "Keys MIDI 1"
+    LOG = "c64cast.sid.midi_scene"
+
+    def setUp(self):
+        self.before = mido.Message("note_on", note=60, velocity=100)
+        self.after = mido.Message("note_on", note=64, velocity=100)
+
+    def _running_reader(self, devices: FakeMidiDevices, old: FakeMidiPort):
+        scene, _api = _make_scene()
+        scene._opened_port_name = self.PORT
+        scene._midi_port = old
+        seen: list[Any] = []
+        scene._handle_msg = seen.append  # type: ignore[method-assign]
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        scene._reader_poll.start()
+        self.addCleanup(scene._reader_poll.stop)
+        self.assertTrue(wait_for(lambda: seen == [self.before]))
+        return scene, seen
+
+    def _replug(self, scene, devices: FakeMidiDevices) -> None:
+        with self.assertLogs(self.LOG, level="WARNING"):
+            devices.unplug(scene._port_watch)
+        devices.replug(scene._port_watch)
+
+    def test_the_reader_reads_the_reopened_port_and_teardown_closes_it(self):
+        old, fresh = FakeMidiPort(self.before), FakeMidiPort(self.after)
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.before, self.after]), seen)
+        self.assertIn("reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, [self.PORT])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        scene.teardown()
+        self.assertTrue(fresh.closed)
+
+    def test_teardown_closes_a_port_reopened_before_the_reader_stopped(self):
+        old, fresh = FakeMidiPort(self.before), FakeMidiPort(self.after)
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        scene, _seen = self._running_reader(devices, old)
+        stop_reader = scene._reader_poll.stop
+
+        def replug_then_stop_reader() -> None:
+            with self.assertLogs(self.LOG, level="INFO"):
+                self._replug(scene, devices)
+                self.assertTrue(wait_for(lambda: scene._midi_port is fresh))
+            stop_reader()
+
+        scene._reader_poll.stop = replug_then_stop_reader  # type: ignore[method-assign]
+        scene.teardown()
+        self.assertTrue(fresh.closed)
+
+    def test_a_failed_reopen_is_retried_on_the_next_return(self):
+        old, fresh = FakeMidiPort(self.before), FakeMidiPort(self.after)
+        devices = FakeMidiDevices(self.PORT, [OSError("gone again"), fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: len(logs.output) == 1))
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertTrue(old.closed)
+        self.assertIsNone(scene._midi_port)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.before, self.after]), seen)
+        self.assertEqual(devices.opened, [self.PORT, self.PORT])
+        self.assertIs(scene._midi_port, fresh)
 
 
 class LifecycleTests(_MidiTestCase):

@@ -367,13 +367,16 @@ class VisionController:
         menu_active: threading.Event | None = None,
         menu_eligible: threading.Event | None = None,
         nav_queue: Any = None,
+        program_owns_keyboard: threading.Event | None = None,
     ):
         """Begin watching. Event semantics match `CommodoreKeyPoller.start`.
 
         menu_event/menu_active/menu_eligible/nav_queue are accepted for
         signature parity with the keyboard poller (the Playlist starts both
         controllers identically); gesture-driven menu open/nav is a later
-        phase, so they're unused here."""
+        phase, so they're unused here. So is program_owns_keyboard: a launched
+        program can write $028D but not the camera, so gestures stay live
+        under a launcher scene."""
         self._pause_event = pause_event
         self._resume_event = resume_event
         self._skip_event = skip_event

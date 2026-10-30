@@ -5,8 +5,10 @@ even the `midi` extra) is needed."""
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -298,6 +300,248 @@ class DrainWorkBoundTest(unittest.TestCase):
         with mock.patch.object(midi_scene, "MAX_DRAIN_WORK_S", 1.0):
             self.assertEqual(midi_scene._drain_budget_s(ULTIMATE_PROFILE), 1.0)
             self.assertEqual(midi_scene._drain_budget_s(TEENSYROM_PROFILE), 1.0)
+
+
+class PortWatchReportTest(unittest.TestCase):
+    """On macOS a replugged USB controller keeps feeding the port opened before the
+    unplug, so the loss warning no longer sends anyone to restart c64cast."""
+
+    PORT = "Pads MIDI 1"
+
+    def setUp(self):
+        self.lost: list[bool] = []
+        self.watch = _midi.PortWatch(
+            lambda: self.PORT,
+            lambda: self.lost.append(True),
+            label="test",
+            releases="every held pad",
+            logger=logging.getLogger("c64cast._midi"),
+            name="test-port-watch",
+        )
+
+    def _check(self, names: list[str]) -> None:
+        with mock.patch.object(_midi, "mido") as fake:
+            fake.get_input_names.return_value = names
+            self.watch.check()
+
+    def test_the_loss_names_what_it_releases_and_nothing_to_restart(self):
+        with self.assertLogs("c64cast._midi", level="WARNING") as logs:
+            self._check([])
+        self.assertEqual(self.lost, [True])
+        self.assertIn("releasing every held pad", logs.output[0])
+        self.assertNotIn("restart", logs.output[0])
+
+    def test_a_returning_port_is_counted_without_a_second_release(self):
+        with self.assertLogs("c64cast._midi", level="WARNING"):
+            self._check([])
+        self._check([self.PORT])
+        self._check([self.PORT])
+        self.assertEqual(self.lost, [True])
+        self.assertEqual(self.watch.returns, 1)
+
+
+class PortReopenerTest(unittest.TestCase):
+    """A replugged controller must not need a restart: a re-created virtual
+    source, and off macOS any device, comes back as a new endpoint the port
+    opened before the unplug never hears."""
+
+    PORT = "Pads MIDI 1"
+
+    def setUp(self):
+        self.names: list[str] = [self.PORT]
+        self.opened: list[tuple[str, str]] = []
+        self.fresh: list[_FakePort] = []
+        self.failures: list[Exception] = []
+        self.watch = _midi.PortWatch(
+            lambda: self.PORT,
+            lambda: None,
+            label="test",
+            releases="every held pad",
+            logger=logging.getLogger("c64cast._midi"),
+            name="test-port-watch",
+        )
+
+    def _open(self, kind: str, name: str) -> _FakePort:
+        self.opened.append((kind, name))
+        if self.failures:
+            raise self.failures.pop(0)
+        port = _FakePort()
+        self.fresh.append(port)
+        return port
+
+    def _fake_mido(self):
+        fake = mock.MagicMock()
+        fake.get_input_names.side_effect = lambda: list(self.names)
+        fake.open_input.side_effect = lambda n: self._open("input", n)
+        fake.open_output.side_effect = lambda n: self._open("output", n)
+        return mock.patch.object(_midi, "mido", fake)
+
+    def _unplug_and_replug(self) -> None:
+        with self._fake_mido(), self.assertLogs("c64cast._midi", level="WARNING"):
+            self.names[:] = []
+            self.watch.check()
+        with self._fake_mido():
+            self.names[:] = [self.PORT]
+            self.watch.check()
+
+    def _call(self, reopen, port):
+        with self._fake_mido():
+            return reopen(port)
+
+    def test_a_port_that_never_left_is_handed_back_untouched(self):
+        reopen = self.watch.reopener()
+        old = _FakePort()
+        with self._fake_mido():
+            self.watch.check()
+        self.assertIs(self._call(reopen, old), old)
+        self.assertFalse(old.closed)
+        self.assertEqual(self.opened, [])
+
+    def test_a_returned_port_is_closed_and_opened_again_by_its_name(self):
+        reopen = self.watch.reopener()
+        old = _FakePort()
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO") as logs:
+            fresh = self._call(reopen, old)
+        self.assertTrue(old.closed)
+        self.assertEqual(self.opened, [("input", self.PORT)])
+        self.assertIs(fresh, self.fresh[0])
+        self.assertIn(f"{self.PORT!r} is back; reconnected", logs.output[0])
+        self.assertNotIn("restart", logs.output[0])
+        self.assertIs(self._call(reopen, fresh), fresh)
+        self.assertEqual(len(self.opened), 1)
+
+    def test_an_output_reopens_as_an_output(self):
+        reopen = self.watch.reopener(output="Pads Out")
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO"):
+            self._call(reopen, _FakePort())
+        self.assertEqual(self.opened, [("output", "Pads Out")])
+
+    def test_a_failed_reopen_warns_and_the_next_return_retries(self):
+        reopen = self.watch.reopener()
+        old = _FakePort()
+        self.failures.append(OSError("port vanished again"))
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="WARNING") as logs:
+            self.assertIsNone(self._call(reopen, old))
+        self.assertTrue(old.closed)
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertIsNone(self._call(reopen, None))
+
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO"):
+            fresh = self._call(reopen, None)
+        self.assertIs(fresh, self.fresh[0])
+        self.assertEqual(self.opened, [("input", self.PORT)] * 2)
+
+    def test_two_returns_before_a_call_reopen_once(self):
+        reopen = self.watch.reopener()
+        self._unplug_and_replug()
+        self._unplug_and_replug()
+        with self.assertLogs("c64cast._midi", level="INFO"):
+            self._call(reopen, _FakePort())
+        self.assertEqual(len(self.opened), 1)
+
+
+class PortListOnMacOSTest(unittest.TestCase):
+    """macOS refreshes the port list only on the run loop of the thread that
+    made the process's first MIDI client, so `PortWatch`'s thread saw an
+    unplugged controller stay listed. The first CoreMIDI call through
+    `_midi.mido` now hands that first client to a thread that services its run
+    loop."""
+
+    def setUp(self):
+        self.listings: list[str] = []
+        self.fake_mido = mock.MagicMock()
+        self.fake_mido.get_input_names.side_effect = self._list
+
+        self.slices: list[bool] = []
+        for patcher in (
+            mock.patch.object(_midi, "_mido", self.fake_mido),
+            mock.patch.object(_midi, "_port_list_thread", None),
+            mock.patch.object(_midi, "_run_loop_slice", lambda: self.slices.pop(0)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _list(self) -> list[str]:
+        name = threading.current_thread().name
+        if name == "midi-port-list":
+            # Slow enough that a caller not waiting for this listing overtakes it.
+            time.sleep(0.05)
+        self.listings.append(name)
+        return ["Pads"]
+
+    def _list_ports_until_the_run_loop_empties(self, calls: int, slices: list[bool]) -> None:
+        self.slices[:] = slices
+        with self.assertLogs("c64cast._midi", level="WARNING") as logs:
+            wrapped = _midi._mido_for("darwin")
+            for _ in range(calls):
+                wrapped.get_input_names()
+            assert _midi._port_list_thread is not None
+            _midi._port_list_thread.join(5.0)
+        self.assertIn("will not be noticed", logs.output[0])
+
+    def test_the_port_list_thread_makes_the_first_listing(self):
+        self._list_ports_until_the_run_loop_empties(1, [False])
+        self.assertEqual(self.listings, ["midi-port-list", threading.current_thread().name])
+
+    def test_only_the_first_call_starts_the_thread(self):
+        self._list_ports_until_the_run_loop_empties(3, [False])
+        self.assertEqual(self.listings.count("midi-port-list"), 1)
+
+    def test_the_thread_services_its_run_loop_until_it_has_nothing_to_serve(self):
+        self._list_ports_until_the_run_loop_empties(1, [True, True, False])
+        self.assertEqual(self.slices, [])
+
+    def test_a_first_listing_that_raises_does_not_hang_the_caller(self):
+        escaped: list[BaseException | None] = []
+        self.fake_mido.get_input_names.side_effect = OSError("no MIDI client")
+        with mock.patch.object(
+            threading, "excepthook", lambda args: escaped.append(args.exc_value)
+        ):
+            caller = threading.Thread(
+                target=lambda: _midi._mido_for("darwin").get_input_names(),
+                name="caller",
+                daemon=True,
+            )
+            caller.start()
+            caller.join(5.0)
+            self.assertFalse(caller.is_alive())
+            assert _midi._port_list_thread is not None
+            _midi._port_list_thread.join(5.0)
+        self.assertEqual([type(e) for e in escaped], [OSError, OSError])
+
+    def test_building_a_message_starts_no_thread(self):
+        _ = _midi._mido_for("darwin").Message
+        self.assertIsNone(_midi._port_list_thread)
+
+    def test_other_platforms_get_mido_itself(self):
+        for platform in ("linux", "win32"):
+            with self.subTest(platform=platform):
+                self.assertIs(_midi._mido_for(platform), self.fake_mido)
+
+
+class RunLoopSliceTest(unittest.TestCase):
+    def _slice_answering(self, result: int) -> tuple[bool, list[tuple]]:
+        calls: list[tuple] = []
+
+        def run_in_mode(*args):
+            calls.append(args)
+            return result
+
+        with mock.patch.object(_midi, "_corefoundation", lambda: (run_in_mode, "default-mode")):
+            return _midi._run_loop_slice(), calls
+
+    def test_a_run_loop_with_no_sources_ends_the_service(self):
+        serving, _calls = self._slice_answering(1)  # kCFRunLoopRunFinished
+        self.assertFalse(serving)
+
+    def test_a_timed_out_slice_keeps_serving(self):
+        serving, calls = self._slice_answering(3)  # kCFRunLoopRunTimedOut
+        self.assertTrue(serving)
+        self.assertEqual(calls, [("default-mode", _midi._RUN_LOOP_SLICE_S, False)])
 
 
 if __name__ == "__main__":

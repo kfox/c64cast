@@ -36,6 +36,12 @@ thumb resting on shift while reaching for pause should not also change the look.
 A failed read is treated as "could not tell" rather than as "not pressed", so a
 dropped packet never phantom-resets a held-key timer.
 
+While a `launcher` scene runs, the three modifiers do nothing at all and the
+poll stops reading: the launched program owns the keyboard, and what it keeps in
+those scratch bytes is its own. The idle timeout, `max_duration_s`, MIDI and the
+web console still end or skip the scene, and a pause they start still resumes
+on a 3-second C= hold, because the pause hands the machine back to the kernal.
+
 What SHIFT cycles is each surface's own business, and each returns a label that
 lands in one log line: the PETSCII styles rotate, a waveform scene advances to
 the next subtune, a `big_text` overlay rotates its color. A surface that does
@@ -1136,4 +1142,6 @@ individual systems its own way:
 
 The MIDI convention is the one worth internalizing: a performer retargets by
 changing their controller's transmit channel, with no round trip through a menu
-or a network call. In a single-system run the channel is ignored entirely.
+or a network call. An MMC transport command has no channel, so it reaches every
+system, as the MIDI clock does. In a single-system run the channel is ignored
+entirely.

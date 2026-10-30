@@ -31,8 +31,16 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, FrozenClock, quiet_logging  # noqa: E402
+from _fakes import (  # noqa: E402
+    FakeAPI,
+    FakeMidiDevices,
+    FakeMidiPort,
+    FrozenClock,
+    quiet_logging,
+    wait_for,
+)
 
+from c64cast import _midi  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.sid import asid  # noqa: E402
 from c64cast.sid.asid_player import frame_cycle_cost  # noqa: E402
@@ -1123,6 +1131,179 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         wants, reasons = wants_reu(cfg)
         self.assertTrue(wants)
         self.assertTrue(any("asid" in r for r in reasons))
+
+
+@unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
+class AsidUnpluggedHostTest(unittest.TestCase):
+    """rtmidi reports an unplugged ASID host only by dropping its port from the
+    input list, so the last frame's gated voices go on sounding."""
+
+    PORT = "ASID Interface"
+    # Voices 1 and 3 gated with a pulse wave, voice 2 a released triangle.
+    FRAME = {25: 0x41, 26: 0x10, 27: 0x41}
+    CONTROLS = (0x04, 0x0B, 0x12)
+
+    def _make(self, buffered_player: str):
+        from c64cast.sid.asid_scene import AsidScene
+
+        api = FakeAPI()
+        scene = AsidScene(api, None, buffered_player=buffered_player)
+        scene._opened_port_name = self.PORT
+        return scene, api
+
+    def _lose_port(self, scene) -> None:
+        with (
+            mock.patch.object(_midi, "mido") as fake,
+            self.assertLogs("c64cast.sid.asid_scene", level="WARNING") as logs,
+        ):
+            fake.get_input_names.return_value = []
+            scene._port_watch.check()
+        self.assertIn(self.PORT, logs.output[0])
+
+    def test_the_coalesced_path_gates_off_every_voice(self):
+        scene, api = self._make("off")
+        scene._handle_sysex(_reg_msg(self.FRAME))
+        scene._flush_to_sid()
+        self._lose_port(scene)
+        scene._gate_off_all_voices()
+        scene._flush_to_sid()
+        block = api.regs[f"{SID.BASE:04X}"]
+        self.assertEqual([block[c] for c in self.CONTROLS], [0x40, 0x10, 0x40])
+
+    def test_every_active_chip_is_gated_off(self):
+        scene, api = self._make("off")
+        scene._active_chips = 2
+        scene._chip_addresses = [SID.BASE, 0xD420]
+        scene._sid_shadows[1][self.CONTROLS[0]] = 0x41
+        scene._gate_off_all_voices()
+        scene._flush_to_sid()
+        self.assertEqual(api.regs["D420"][self.CONTROLS[0]], 0x40)
+
+    def test_the_buffered_path_pushes_a_gate_off_frame(self):
+        scene, _ = self._make("auto")
+        player = scene._player
+        assert player is not None
+        pushed: list[bytes] = []
+        player.push_frame = pushed.append  # type: ignore[method-assign]
+        scene._handle_sysex(_reg_msg(self.FRAME))
+        scene._handle_sysex(_reg_msg({0: 0x40}))
+        self.assertEqual(len(pushed), 1)
+        self._lose_port(scene)
+        scene._gate_off_all_voices()
+        self.assertEqual(len(pushed), 2)
+        slot = pushed[1]
+        ops = [(slot[1 + 4 * i], slot[3 + 4 * i]) for i in range(slot[0])]
+        self.assertEqual([op for op in ops if op[0] in self.CONTROLS], [(0x04, 0x40), (0x12, 0x40)])
+        self.assertFalse(scene._frame_has_data)
+
+    def test_the_running_reader_gates_off_on_its_own(self):
+        scene, api = self._make("off")
+        port = mock.MagicMock()
+        port.poll.side_effect = [mido.Message("sysex", data=_reg_msg(self.FRAME))] + [None] * 10**6
+        names = [self.PORT]
+        with (
+            mock.patch.object(_midi, "mido") as fake,
+            mock.patch.object(_midi, "PORT_WATCH_INTERVAL_S", 0.01),
+            mock.patch.object(
+                scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", port)
+            ),
+            quiet_logging(),
+        ):
+            fake.get_input_names.side_effect = lambda: list(names)
+            scene.setup()
+            try:
+                voice_1 = f"{SID.BASE:04X}"
+                self.assertTrue(wait_for(lambda: api.regs.get(voice_1, b"\0" * 5)[4] & SID.GATE))
+                names.clear()
+                self.assertTrue(wait_for(lambda: not api.regs[voice_1][4] & SID.GATE))
+            finally:
+                scene.teardown()
+
+
+@unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
+class AsidReplugTest(unittest.TestCase):
+    """An ASID host unplugged and plugged back in, or restarted so that its
+    virtual port is a new one under the same name, must not need a restart:
+    the reader reopens its port when it comes back."""
+
+    PORT = "ASID Interface"
+    LOG = "c64cast.sid.asid_scene"
+    BEFORE = (0x2D, 0x4C, 0x00)
+    AFTER = (0x2D, 0x4C, 0x01)
+
+    def _running_reader(self, devices, old):
+        from c64cast.sid.asid_scene import AsidScene
+
+        scene = AsidScene(FakeAPI(), None, buffered_player="off")
+        scene._opened_port_name = self.PORT
+        scene._midi_port = old
+        seen: list[Any] = []
+        scene._handle_sysex = seen.append  # type: ignore[method-assign]
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        scene._reader_poll.start()
+        self.addCleanup(scene._reader_poll.stop)
+        self.assertTrue(wait_for(lambda: seen == [self.BEFORE]))
+        return scene, seen
+
+    def _replug(self, scene, devices) -> None:
+        with self.assertLogs(self.LOG, level="WARNING"):
+            devices.unplug(scene._port_watch)
+        devices.replug(scene._port_watch)
+
+    def _ports(self):
+        return (
+            FakeMidiPort(mido.Message("sysex", data=self.BEFORE)),
+            FakeMidiPort(mido.Message("sysex", data=self.AFTER)),
+        )
+
+    def test_the_reader_reads_the_reopened_port_and_teardown_closes_it(self):
+        old, fresh = self._ports()
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertIn("reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, [self.PORT])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        scene.teardown()
+        self.assertTrue(fresh.closed)
+
+    def test_teardown_closes_a_port_reopened_before_the_reader_stopped(self):
+        old, fresh = self._ports()
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        scene, _seen = self._running_reader(devices, old)
+        stop_reader = scene._reader_poll.stop
+
+        def replug_then_stop_reader() -> None:
+            with self.assertLogs(self.LOG, level="INFO"):
+                self._replug(scene, devices)
+                self.assertTrue(wait_for(lambda: scene._midi_port is fresh))
+            stop_reader()
+
+        scene._reader_poll.stop = replug_then_stop_reader  # type: ignore[method-assign]
+        scene.teardown()
+        self.assertTrue(fresh.closed)
+
+    def test_a_failed_reopen_is_retried_on_the_next_return(self):
+        old, fresh = self._ports()
+        devices = FakeMidiDevices(self.PORT, [OSError("gone again"), fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: len(logs.output) == 1))
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertTrue(old.closed)
+        self.assertIsNone(scene._midi_port)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertEqual(devices.opened, [self.PORT, self.PORT])
+        self.assertIs(scene._midi_port, fresh)
 
 
 if __name__ == "__main__":

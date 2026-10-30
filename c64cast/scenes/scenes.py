@@ -2332,9 +2332,10 @@ class LauncherScene(MediaFileMixin, Scene):
     (the scene can't advance before it elapses, even if idle); the optional
     `max_duration_s` is a hard ceiling (advance regardless of input).
 
-    Input detection deliberately excludes the modifier keys c64cast already
-    scans (Commodore / SHIFT / CTRL at $028D) — those drive pause/skip/cycle
-    and must not count as "player active". The detector polls one of:
+    Input detection leaves out the modifier keys (Commodore / SHIFT / CTRL at
+    $028D), which the Playlist hands to the program along with the rest of the
+    keyboard while this scene runs (`HANDS_OVER_MACHINE`). The detector polls
+    one of:
 
       * "cia"    — CIA1 $DC00/$DC01 joystick bits (up/down/left/right/fire,
                    active-low). Works regardless of whether the program keeps

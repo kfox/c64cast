@@ -185,14 +185,15 @@ def default_look_store(name: str) -> LookStore:
 
 
 # A "program" to return to when an overlaid clip ends: a declared playlist scene
-# (by index — its Scene object is reused, so restoring is a cheap re-setup) or a
-# prior clip (by config dict — rebuilt via the factory). One level only: a
-# restored clip returns to the playlist base, bounding the rebuild chain.
+# (by index) or a prior clip (by its built Scene). Either way the Scene object is
+# reused, so restoring is a re-setup on the playlist thread, never a build. One
+# level only: a restored clip returns to the playlist base.
 @dataclass
 class _Return:
     kind: str  # "playlist" | "clip"
     index: int = 0  # for "playlist"
     clip: dict[str, Any] | None = None  # for "clip"
+    scene: Scene | None = None  # for "clip"
 
 
 @dataclass
@@ -610,7 +611,7 @@ class PerformanceSession:
             self._base_index = pl.index
             self._return = _Return(kind="playlist", index=pl.index)
         else:
-            self._return = _Return(kind="clip", clip=self._active.clip)
+            self._return = _Return(kind="clip", clip=self._active.clip, scene=self._active.scene)
         if not pl.perf_swap_scene(armed.scene):
             # Swap aborted (stop fired / audio claim lost) — drop ownership.
             self._active = None
@@ -661,8 +662,13 @@ class PerformanceSession:
         self._return = None
         if active is None:
             return
-        if ret is not None and ret.kind == "clip" and ret.clip is not None:
-            self._restore_clip(pl, ret.clip)
+        if (
+            ret is not None
+            and ret.kind == "clip"
+            and ret.clip is not None
+            and ret.scene is not None
+        ):
+            self._restore_clip(pl, ret.clip, ret.scene)
             return
         index = ret.index if ret is not None else self._base_index
         self._restore_playlist(pl, index)
@@ -678,19 +684,10 @@ class PerformanceSession:
         pl.transitioning = False
         pl.perf_swap_scene(pl.scenes[index])
 
-    def _restore_clip(self, pl: Playlist, clip: dict[str, Any]) -> None:
-        """Return to a prior clip by rebuilding it (a brief gap — the deferred
-        pre-warmed-decks enhancement is what removes it). Its own return target
-        collapses to the playlist base, bounding the chain to one level."""
-        if pl.build_performance_scene is None:
-            self._restore_playlist(pl, self._base_index)
-            return
-        try:
-            scene = pl.build_performance_scene(clip)
-        except Exception:
-            log.exception("performance: prior-clip rebuild failed; returning to playlist")
-            self._restore_playlist(pl, self._base_index)
-            return
+    def _restore_clip(self, pl: Playlist, clip: dict[str, Any], scene: Scene) -> None:
+        """Return to a prior clip by setting its Scene up again, the way a loop
+        restarts. Its own return target collapses to the playlist base, bounding
+        the chain to one level."""
         if not pl.perf_swap_scene(scene):
             return
         self._active = _Active(

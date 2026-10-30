@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Sequence
 from functools import partial
 
-from c64cast._midi import MIDI_AVAILABLE, open_input_port, poll_pending
+from c64cast._midi import MIDI_AVAILABLE, PortWatch, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, D018_HIRES_PAGE_A, SID, VIC_BANK_0
@@ -216,8 +216,19 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._sid_volume = list(sid_volume or ())
 
         self._midi_port = None
+        self._opened_port_name: str | None = None
         self._reader_poll = PollThread(
             self._reader, name="asid-reader", manual=True, join_timeout=1.0
+        )
+        # Set by the watch thread, acted on by the reader, which owns the shadows.
+        self._port_lost = threading.Event()
+        self._port_watch = PortWatch(
+            lambda: self._opened_port_name,
+            self._port_lost.set,
+            label="AsidScene",
+            releases="every gated SID voice",
+            logger=log,
+            name="asid-port-watch",
         )
         self._dirty = True  # force first text-row paint
 
@@ -227,7 +238,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
             self._player = AsidRingPlayer(api, system=system, n_chips=1)
 
     def _open_port(self):
-        self._midi_port, _ = open_input_port(self.port_name, label="AsidScene")
+        self._midi_port, self._opened_port_name = open_input_port(self.port_name, label="AsidScene")
 
     def _reader(self, stop: threading.Event):
         port = self._midi_port
@@ -236,12 +247,17 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # `poll_pending`, not mido's `iter_pending`: the drain has to be bounded
         # and re-check `stop`, or a flood arriving faster than it is retired
         # starves the flush below and outlives `teardown`'s bounded join.
+        reopen = self._port_watch.reopener()
         last_flush = 0.0
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop):
+                port = self._midi_port = reopen(port)
+                for msg in poll_pending(port, stop) if port is not None else ():
                     if msg.type == "sysex":
                         self._handle_sysex(msg.data)
+                if self._port_lost.is_set():
+                    self._port_lost.clear()
+                    self._gate_off_all_voices()
                 now = time.time()
                 if self._pending_flush and now - last_flush >= _FLUSH_INTERVAL_S:
                     self._flush_to_sid()
@@ -252,6 +268,31 @@ class AsidScene(VoiceScopeRenderer, Scene):
                 time.sleep(0.001)
         except Exception:
             log.exception("AsidScene reader crashed")
+
+    def _close_port(self) -> None:
+        port, self._midi_port = self._midi_port, None
+        if port is not None:
+            port.close()
+
+    def _gate_off_all_voices(self) -> None:
+        for chip in range(self._active_chips):
+            shadow = self._sid_shadows[chip]
+            gate_offs: dict[int, int] = {}
+            for voice in range(SID.N_VOICES):
+                ctrl = voice * SID.BYTES_PER_VOICE + SID.OFF_CONTROL
+                if shadow[ctrl] & SID.GATE:
+                    shadow[ctrl] &= ~SID.GATE
+                    gate_offs[ctrl] = shadow[ctrl]
+            if not gate_offs:
+                continue
+            if self._use_buffered_player:
+                self._frame_regs.setdefault(chip, {}).update(gate_offs)
+                self._frame_has_data = True
+            else:
+                self._dirty_chips.add(chip)
+                self._pending_flush = True
+        if self._use_buffered_player and self._frame_has_data:
+            self._emit_buffered_frame()
 
     def _chip_for(self, chip_index: int) -> int:
         """Map an ASID chip index to the shadow/emulator slot we use.
@@ -708,6 +749,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._alloc_scope_buffers()
         self._open_port()
         self._reader_poll.start()
+        self._port_watch.start()
         # After the reader, so its prebuffer can draw from frames already
         # streaming in.
         if self._use_buffered_player and self._player is not None:
@@ -771,14 +813,13 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # bounded join, and an orphaned ASID handler rewrites the whole REU
         # control block ($DF02-$DF08 + a $91 fetch-exec) at up to 960 Hz, which
         # the next scene's audio pump reads back at $DF03 as its live write head.
-        port, self._midi_port = self._midi_port, None
         poll, self._poll = self._poll, None
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
             ("reader poll stop", self._reader_poll.stop),
+            ("MIDI port watch stop", self._port_watch.stop),
+            ("MIDI port close", self._close_port),
         ]
-        if port is not None:
-            steps.append(("MIDI port close", port.close))
         if poll is not None:
             steps.append(("input poll stop", poll.stop))
         if self._player is not None:

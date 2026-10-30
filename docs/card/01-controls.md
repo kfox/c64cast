@@ -13,7 +13,8 @@ request, a pad and a gesture are indistinguishable downstream.
 | <kbd>SPACE</kbd> | Open the on-C64 menu | — |
 
 Chords resolve rather than combine: C= plus CTRL is a pause, and SHIFT
-alongside either is ignored. The menu needs `[menu].enabled`, a backend that can
+alongside either is ignored. Under a `launcher` scene the program owns the
+keyboard, so C=, CTRL and SHIFT do nothing until it ends. The menu needs `[menu].enabled`, a backend that can
 read memory, and takes the cursor keys while it is open.
 
 ## Gestures

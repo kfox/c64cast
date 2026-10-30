@@ -20,9 +20,12 @@ import tempfile
 import threading
 import time
 import unittest
+from collections import deque
 from collections.abc import Callable, Iterator
+from typing import Any
 from unittest import mock
 
+from c64cast import _midi
 from c64cast._wire_log import LogThrottle
 from c64cast.hw import vdc
 from c64cast.hw.backend import DacPacing, HardwareProfile, NmiSampleStore
@@ -1060,3 +1063,72 @@ class SleepDrivenClock:
 #: overflow both. tests/test_json_body.py asserts the premise, so a stack that
 #: holds this fails there instead of passing the readers' tests vacuously.
 TOO_DEEP_JSON = b"[" * 10_000_000
+
+
+class FakeMidiPort:
+    """A mido port fed from the test. A poll after `close()` is recorded
+    rather than raised, because the readers under test swallow exceptions."""
+
+    def __init__(self, *messages: Any) -> None:
+        self._queue = deque(messages)
+        self.sent: list[Any] = []
+        self.closed = False
+        self.polled_after_close = False
+
+    def feed(self, message: Any) -> None:
+        self._queue.append(message)
+
+    def poll(self) -> Any:
+        if self.closed:
+            self.polled_after_close = True
+            return None
+        return self._queue.popleft() if self._queue else None
+
+    def send(self, message: Any) -> None:
+        self.sent.append(message)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeMidiDevices:
+    """Stands in for `c64cast._midi.mido` while `patch()` is active: lists
+    `name` until `unplug`, and each open hands out the next of `opens`,
+    raising it instead when it is an exception."""
+
+    def __init__(self, name: str, opens: list[Any]) -> None:
+        self.name = name
+        self.names = [name]
+        self.opens = list(opens)
+        self.opened: list[str] = []
+
+    def patch(self) -> Any:
+        fake = mock.MagicMock()
+        fake.get_input_names.side_effect = lambda: list(self.names)
+        fake.open_input.side_effect = self._open
+        fake.open_output.side_effect = self._open
+        return mock.patch.object(_midi, "mido", fake)
+
+    def _open(self, name: str) -> Any:
+        self.opened.append(name)
+        port = self.opens.pop(0)
+        if isinstance(port, BaseException):
+            raise port
+        return port
+
+    def unplug(self, watch: Any) -> None:
+        self.names.clear()
+        watch.check()
+
+    def replug(self, watch: Any) -> None:
+        self.names[:] = [self.name]
+        watch.check()
+
+
+def wait_for(condition: Callable[[], object], timeout_s: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.005)
+    return True

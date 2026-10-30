@@ -30,8 +30,15 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
-from _fakes import frozen_throttles, logged_exception_type
+from _fakes import (
+    FakeMidiDevices,
+    FakeMidiPort,
+    frozen_throttles,
+    logged_exception_type,
+    wait_for,
+)
 
+from c64cast import _midi
 from c64cast.app import config as cfgmod
 from c64cast.control import midi_control
 from c64cast.control.midi_control import (
@@ -122,6 +129,11 @@ class ParseCCMapTests(unittest.TestCase):
     def test_jump_without_scene_rejected(self):
         with self.assertRaises(ValueError):
             _parse_cc_map([{"type": "note", "number": 1, "action": "jump"}])
+
+    def test_jump_to_a_negative_or_bool_scene_rejected(self):
+        for scene in (-1, True, False):
+            with self.subTest(scene=scene), self.assertRaises(ValueError):
+                _parse_cc_map([{"type": "note", "number": 1, "action": "jump", "scene": scene}])
 
     def test_param_without_target_rejected(self):
         with self.assertRaises(ValueError):
@@ -362,6 +374,276 @@ class JoystickDispatchTests(_MidiControlTestCase):
         ):
             with self.subTest(entry=entry), self.assertRaises(ValueError):
                 _parse_cc_map([entry])
+
+
+class UnpluggedControllerTests(_MidiControlTestCase):
+    """rtmidi reports an unplugged controller only by dropping its port from
+    the input list: `poll()` reads a queue nothing fills any more, so it goes
+    quiet rather than raising, and a held joystick pad never sends its
+    release."""
+
+    PORT = "Pads MIDI 1"
+    FIRE = {"type": "note", "number": 50, "action": "joystick", "input": "fire"}
+
+    def _listener(self, entry=None) -> tuple[MidiControlListener, Any]:
+        pl = _fake_playlist("system")
+        listener = MidiControlListener({"system": pl}, [entry or self.FIRE])
+        listener._opened_port_name = self.PORT
+        return listener, pl
+
+    def _watch(self, listener, names) -> None:
+        with mock.patch.object(_midi, "mido") as fake:
+            fake.get_input_names.return_value = names
+            listener._port_watch.check()
+
+    def test_a_held_direction_is_released_when_the_port_disappears(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING") as logs:
+            self._watch(listener, ["IAC Driver Bus 1"])
+        self.assertEqual(
+            pl.current.inject_joystick.call_args_list,
+            [mock.call(2, "fire", True), mock.call(2, "fire", False)],
+        )
+        self.assertIn(self.PORT, logs.output[0])
+
+    def test_a_held_cc_direction_is_released_too(self):
+        listener, pl = self._listener(
+            {"type": "cc", "number": 20, "action": "joystick", "input": "up", "port": 1}
+        )
+        listener._dispatch(mido.Message("control_change", control=20, value=127))
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING"):
+            self._watch(listener, [])
+        pl.current.inject_joystick.assert_called_with(1, "up", False)
+
+    def test_a_present_port_releases_nothing(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        self._watch(listener, [self.PORT])
+        pl.current.inject_joystick.assert_called_once_with(2, "fire", True)
+
+    def test_a_direction_already_let_go_is_not_released_again(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        listener._dispatch(mido.Message("note_off", note=50))
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING"):
+            self._watch(listener, [])
+        self.assertEqual(pl.current.inject_joystick.call_count, 2)
+
+    def test_a_scene_that_has_since_changed_is_left_alone(self):
+        listener, pl = self._listener()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        torn_down = pl.current
+        pl.current = mock.MagicMock()
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING"):
+            self._watch(listener, [])
+        torn_down.inject_joystick.assert_called_once_with(2, "fire", True)
+        pl.current.inject_joystick.assert_not_called()
+
+    def test_the_loss_is_reported_once(self):
+        listener, _pl = self._listener()
+        with self.assertLogs("c64cast.control.midi_control", level="WARNING") as logs:
+            self._watch(listener, [])
+            self._watch(listener, [])
+        self.assertEqual(len(logs.output), 1)
+
+    def test_the_running_listener_releases_on_its_own(self):
+        names = [self.PORT]
+        released = threading.Event()
+        with (
+            mock.patch.object(_midi, "mido") as fake,
+            mock.patch.object(_midi, "PORT_WATCH_INTERVAL_S", 0.01),
+            self.assertLogs("c64cast.control.midi_control", level="WARNING"),
+        ):
+            fake.get_input_names.side_effect = lambda: list(names)
+            listener, pl = self._listener()
+            pl.current.inject_joystick.side_effect = lambda _port, _inp, pressed: (
+                None if pressed else released.set()
+            )
+            listener._open_port = lambda: setattr(listener, "_midi_port", _FakePort())
+            listener.start()
+            self.addCleanup(listener.stop)
+            listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+            names.clear()
+            self.assertTrue(released.wait(2.0))
+
+
+class ReplugTests(_MidiControlTestCase):
+    """A controller unplugged and plugged back in mid-performance must not need
+    a restart, on any platform: the reader reopens its port when it comes back."""
+
+    PORT = "Pads MIDI 1"
+    LOG = "c64cast.control.midi_control"
+    BEFORE = mido.Message("note_on", note=36, velocity=100) if HAVE_MIDI else None
+    AFTER = mido.Message("note_on", note=37, velocity=100) if HAVE_MIDI else None
+
+    def _running_reader(self, devices: FakeMidiDevices, old: FakeMidiPort):
+        listener = MidiControlListener({"system": _fake_playlist("system")}, [])
+        listener._opened_port_name = self.PORT
+        listener._midi_port = old
+        seen: list[Any] = []
+        listener._dispatch = seen.append  # type: ignore[method-assign]
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener._reader_poll.start()
+        self.addCleanup(listener.stop)
+        self.assertTrue(wait_for(lambda: seen == [self.BEFORE]))
+        return listener, seen
+
+    def _replug(self, listener, devices: FakeMidiDevices) -> None:
+        with self.assertLogs(self.LOG, level="WARNING"):
+            devices.unplug(listener._port_watch)
+        devices.replug(listener._port_watch)
+
+    def test_the_reader_reads_the_reopened_port_and_closes_the_old_one(self):
+        old, fresh = FakeMidiPort(self.BEFORE), FakeMidiPort(self.AFTER)
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        listener, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(listener, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertIn("reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, [self.PORT])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        self.assertIs(listener._midi_port, fresh)
+        listener.stop()
+        self.assertTrue(fresh.closed)
+
+    def test_a_failed_reopen_is_retried_on_the_next_return(self):
+        old, fresh = FakeMidiPort(self.BEFORE), FakeMidiPort(self.AFTER)
+        devices = FakeMidiDevices(self.PORT, [OSError("gone again"), fresh])
+        listener, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            self._replug(listener, devices)
+            self.assertTrue(wait_for(lambda: len(logs.output) == 1))
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertIsNone(listener._midi_port)
+        self.assertTrue(old.closed)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            self._replug(listener, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertEqual(devices.opened, [self.PORT, self.PORT])
+        self.assertIs(listener._midi_port, fresh)
+
+    def test_the_led_output_is_reopened_on_the_feedback_thread(self):
+        pl = _perf_playlist("a", clip_pads=[("note", 60, 1)], active=1)
+        listener = MidiControlListener({"a": pl}, [], feedback_enabled=True)
+        listener._opened_port_name = self.PORT
+        listener._build_led_pad_lists()
+        old, fresh = FakeMidiPort(), FakeMidiPort()
+        listener._out_port, listener._out_port_name = old, "Pads Out"
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener._feedback_poll.start()
+        self.addCleanup(listener.stop)
+        self.assertTrue(wait_for(lambda: len(old.sent) == 1))
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(listener, devices)
+            self.assertTrue(wait_for(lambda: listener._out_port is fresh))
+        self.assertIn("MIDI output 'Pads Out' is back; reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, ["Pads Out"])
+        self.assertTrue(old.closed)
+        pl.performance.active_slot = None
+        self.assertTrue(wait_for(lambda: len(fresh.sent) == 1))
+        self.assertEqual(len(old.sent), 1)
+
+    PULSE = mido.Message("clock") if HAVE_MIDI else None
+    START = mido.Message("start") if HAVE_MIDI else None
+
+    def _running_clock_reader(self, devices: FakeMidiDevices, old: FakeMidiPort):
+        listener = MidiControlListener({"system": _fake_playlist("system")}, [])
+        listener._opened_port_name = self.PORT
+        listener._clock_port, listener._clock_port_match = old, devices.name
+        fed: list[Any] = []
+        listener._feed_tempo = fed.append  # type: ignore[method-assign]
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener._clock_poll.start()
+        self.addCleanup(listener.stop)
+        self.assertTrue(wait_for(lambda: fed == [self.PULSE]))
+        return listener, fed
+
+    def test_the_clock_reader_reads_the_reopened_clock_port(self):
+        pulse, start = self.PULSE, self.START
+        old, fresh = FakeMidiPort(pulse), FakeMidiPort(start)
+        devices = FakeMidiDevices("DAW Clock", [fresh])
+        listener, fed = self._running_clock_reader(devices, old)
+        watch = listener._clock_port_watch
+        with self.assertLogs(self.LOG, level="WARNING") as gone:
+            devices.unplug(watch)
+        self.assertIn("MIDI port 'DAW Clock' is gone", gone.output[0])
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            devices.replug(watch)
+            self.assertTrue(wait_for(lambda: fed == [pulse, start]), fed)
+        self.assertIn("MIDI port 'DAW Clock' is back; reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, ["DAW Clock"])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        self.assertIs(listener._clock_port, fresh)
+        listener.stop()
+        self.assertTrue(fresh.closed)
+
+    def test_a_failed_clock_port_reopen_is_retried_on_the_next_return(self):
+        old, fresh = FakeMidiPort(self.PULSE), FakeMidiPort(self.START)
+        devices = FakeMidiDevices("DAW Clock", [OSError("gone again"), fresh])
+        listener, fed = self._running_clock_reader(devices, old)
+        watch = listener._clock_port_watch
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            devices.unplug(watch)
+            devices.replug(watch)
+            self.assertTrue(wait_for(lambda: len(logs.output) == 2))
+        self.assertIn("plug it in again to retry", logs.output[1])
+        self.assertIsNone(listener._clock_port)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            devices.unplug(watch)
+            devices.replug(watch)
+            self.assertTrue(wait_for(lambda: fed == [self.PULSE, self.START]), fed)
+        self.assertEqual(devices.opened, ["DAW Clock", "DAW Clock"])
+        self.assertIs(listener._clock_port, fresh)
+
+
+class ClockPortWatchTests(_MidiControlTestCase):
+    """The dedicated clock port is watched only when it is a port of its own."""
+
+    def _start(self, names: list[str], clock_port: str) -> tuple[MidiControlListener, list[str]]:
+        fake = self.fake = mock.MagicMock()
+        fake.get_input_names.return_value = names
+        opened: list[str] = []
+        fake.open_input.side_effect = lambda n: opened.append(n) or FakeMidiPort()
+        listener = MidiControlListener(
+            {"system": _fake_playlist("system")}, [], port=names[0], clock_port=clock_port
+        )
+        self.addCleanup(listener.stop)
+        with (
+            mock.patch.object(_midi, "mido", fake),
+            mock.patch.object(midi_control, "mido", fake),
+            self.assertLogs("c64cast.control.midi_control", level="INFO"),
+        ):
+            listener.start()
+        return listener, opened
+
+    def test_a_clock_port_of_its_own_gets_its_own_watch(self):
+        listener, opened = self._start(["Pads", "DAW Clock"], "clock")
+        self.assertEqual(opened, ["Pads", "DAW Clock"])
+        self.assertTrue(listener._clock_port_watch.is_running())
+        with (
+            mock.patch.object(_midi, "mido", self.fake),
+            self.assertNoLogs("c64cast.control.midi_control", level="WARNING"),
+        ):
+            listener._clock_port_watch.check()
+
+    def test_a_clock_port_that_is_the_control_port_is_neither_reopened_nor_watched(self):
+        listener, opened = self._start(["Pads"], "pads")
+        self.assertEqual(opened, ["Pads"])
+        self.assertIsNone(listener._clock_port)
+        self.assertFalse(listener._clock_port_watch.is_running())
 
 
 class TransportDispatchTests(_MidiControlTestCase):
@@ -613,6 +895,18 @@ class ChannelTargetingTests(_MidiControlTestCase):
         listener._dispatch(mido.Message("note_on", note=36, velocity=100, channel=10))
         for pl in pls.values():
             self.assertFalse(pl.skip_event.is_set())
+
+    def test_mmc_sysex_targets_every_system(self):
+        pls = {f"sys{i}": _fake_playlist(f"sys{i}") for i in range(3)}
+        listener = MidiControlListener(
+            pls, [{"type": "mmc", "number": 0x02, "action": "transport.play_pause"}]
+        )
+        listener._dispatch(mido.Message("sysex", data=(0x7F, 0x7F, 0x06, 0x02)))
+        for name, pl in pls.items():
+            with self.subTest(system=name):
+                pl.transport.enqueue.assert_called_once_with(
+                    TransportEvent(action="play_pause", pressed=True, value=127, mode="rel")
+                )
 
 
 class CrashGuardTests(_MidiControlTestCase):
@@ -1042,8 +1336,15 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
                     setattr(lis, "_opened_port_name", "Launchpad"),
                 ),
             ),
-            mock.patch.object(midi_control.mido, "get_output_names", return_value=["Launchpad"]),
-            mock.patch.object(midi_control.mido, "open_output", return_value=out),
+            mock.patch.object(
+                midi_control,
+                "mido",
+                SimpleNamespace(
+                    Message=mido.Message,
+                    get_output_names=lambda: ["Launchpad"],
+                    open_output=lambda _name: out,
+                ),
+            ),
         ):
             lis.start()
         try:
@@ -1071,7 +1372,9 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
                 "_open_port",
                 side_effect=lambda: setattr(lis, "_midi_port", _FakePort()),
             ),
-            mock.patch.object(midi_control.mido, "get_output_names", return_value=[]),
+            mock.patch.object(
+                midi_control, "mido", SimpleNamespace(Message=mido.Message, get_output_names=list)
+            ),
             self.assertLogs("c64cast.control.midi_control", level="WARNING"),
         ):
             lis.start()
