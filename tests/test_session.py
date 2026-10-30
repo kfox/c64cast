@@ -28,6 +28,7 @@ from c64cast.app import config as cfgmod
 from c64cast.app import profiler as profiler_mod
 from c64cast.app import scene_factory, session
 from c64cast.audio.audio import AudioStreamer
+from c64cast.scenes.scenes import WebcamScene
 
 
 def _loaded(names: list[str], *, is_ensemble: bool = False) -> cfgmod.LoadResult:
@@ -546,15 +547,60 @@ class BuildStackCameraTest(unittest.TestCase):
 
     def test_a_clip_that_names_no_type_is_a_webcam_clip(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         cfg.performance.clips = [{"pad": 1}]
         self._camera_opens_for(cfg).assert_called_once()
 
     def test_a_clip_of_another_type_leaves_the_camera_shut(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         cfg.performance.clips = [{"pad": 1, "type": "blank"}]
         self._camera_opens_for(cfg).assert_not_called()
+
+
+class EmptyScenesOpenTheCameraTest(unittest.TestCase):
+    """With no playable [[scenes]] the playlist falls back to a live-camera
+    scene, so a run with no config file has to open the camera for it."""
+
+    def _open(self, cfg: cfgmod.Config) -> session._OpenedStack:
+        with (
+            contextlib.ExitStack() as unwind,
+            mock.patch.object(session, "_open_backend", return_value=mock.MagicMock(name="api")),
+        ):
+            return session._open_stack(unwind, session.ReleaseInterrupts(), cfg, "a")
+
+    def _no_playable_scenes(self) -> cfgmod.Config:
+        cfg = cfgmod.Config()
+        cfg.audio.enabled = False
+        cfg.scenes = []
+        return cfg
+
+    def test_the_fallback_scene_runs_on_the_camera_the_stack_opened(self):
+        cfg = self._no_playable_scenes()
+        with mock.patch.object(session, "WebcamSource") as source_cls:
+            opened = self._open(cfg)
+        source_cls.assert_called_once_with(cfg.video.device)
+        [scene] = scene_factory.scenes_from_config(cfg, opened.api, None, opened.source)
+        self.assertIsInstance(scene, WebcamScene)
+        self.assertIs(scene.source, source_cls.return_value)
+
+    def test_follower_only_scenes_still_leave_the_fallback_to_run(self):
+        cfg = self._no_playable_scenes()
+        cfg.scenes = [cfgmod.SceneCfg(type="blank", name="f", follower_only=True)]
+        with mock.patch.object(session, "WebcamSource") as source_cls:
+            self._open(cfg)
+        source_cls.assert_called_once()
+
+    def test_a_camera_that_will_not_open_fails_the_run_with_its_own_error(self):
+        cfg = self._no_playable_scenes()
+        with (
+            mock.patch.object(session, "WebcamSource", side_effect=RuntimeError("no camera 'X'")),
+            self.assertLogs("c64cast", "ERROR") as logs,
+            self.assertRaises(session.StackBuildError) as raised,
+        ):
+            self._open(cfg)
+        self.assertEqual(raised.exception.exit_code, 1)
+        self.assertIn("no camera 'X'", logs.output[0])
 
 
 class MissingCameraTest(unittest.TestCase):
@@ -734,7 +780,7 @@ class BuildStackHardwarePaletteTest(unittest.TestCase):
 
     def test_it_provisions_after_the_startup_reset_for_this_run(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         provision = self._build(cfg, None)
         self.assertEqual(self.cleared_before_provision, [True])
         provision.assert_called_once()
@@ -743,7 +789,7 @@ class BuildStackHardwarePaletteTest(unittest.TestCase):
 
     def test_a_build_that_fails_afterwards_restores_the_machines_palette(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         control = mock.MagicMock(name="control")
         self._build(cfg, control)
         control.restore.assert_called_once()
@@ -781,7 +827,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
 
     def test_a_missing_calibration_is_a_stack_build_error(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         resolve = mock.MagicMock(side_effect=ValueError("no usable calibration"))
         with (
             self.assertLogs("c64cast", "ERROR") as cm,
@@ -795,7 +841,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
         # Master volume, the HDMI mode switch (a capture device re-locks on it)
         # and the reset would all happen only to be reverted by the unwind.
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         resolve = mock.MagicMock(side_effect=ValueError("no usable calibration"))
         with (
             self.assertLogs("c64cast", "ERROR"),
@@ -813,7 +859,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
         # A calibration recorded at $D400 is switched through the chip's own
         # registers, which a TeensyROM+ reaches as well as an Ultimate (#605).
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         curve = session.dac_curve_resolve.DacCurve(
             "calibrated:k", bytes(256), (None, "ARMSID 6581")
         )
@@ -829,7 +875,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
 
     def test_a_run_without_audio_resolves_no_curve(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         cfg.audio.enabled = False
         resolve = mock.MagicMock()
         with self.assertRaises(session.StackBuildError):
@@ -856,7 +902,7 @@ class BuildSessionOpensEverySystemFirstTest(unittest.TestCase):
         loaded = _loaded(["a", "b"], is_ensemble=True)
         for cfg in loaded.cfgs:
             cfg.audio.enabled = True
-            cfg.scenes = []
+            cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         self.events: list[str] = []
         self.apis: dict[str, mock.MagicMock] = {}
 
@@ -1069,7 +1115,7 @@ class BuildStackReleaseInterruptTest(unittest.TestCase):
         for restore, exc in restore_effects.items():
             getattr(hw, restore).side_effect = exc
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         cfg.audio.enabled = False
         with (
             mock.patch.object(session, "_open_backend", return_value=api),
