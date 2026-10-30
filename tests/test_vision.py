@@ -14,6 +14,7 @@ from unittest import mock
 import numpy as np
 from _fakes import FrozenClock
 
+from c64cast.app import config as cfgmod
 from c64cast.control import vision as vision_mod
 from c64cast.control.vision import (
     INDEX_PIP,
@@ -336,6 +337,47 @@ class VisionControllerTest(unittest.TestCase):
         self.assertIsNotNone(snap)
         assert snap is not None
         np.testing.assert_array_equal(snap.landmarks, target.landmarks)
+
+
+class VisionTimingConfigTest(unittest.TestCase):
+    """The controller divides by `poll_interval_s` and rounds the dwell into a
+    frame count, so a value it cannot run with has to stop the config load
+    rather than the stack build."""
+
+    def test_a_timing_the_controller_cannot_run_with_is_refused(self):
+        refused = {
+            "poll_interval_s": (0.0, -0.1, float("nan"), float("inf")),
+            "gesture_dwell_s": (float("nan"), float("inf")),
+            "gesture_cooldown_s": (float("nan"), float("inf")),
+            "hold_threshold_s": (float("nan"), float("inf")),
+        }
+        for name, values in refused.items():
+            for bad in values:
+                cfg = cfgmod.Config()
+                setattr(cfg.vision, name, bad)
+                with self.subTest(name=name, value=bad):
+                    with self.assertRaisesRegex(ValueError, rf"\[vision\]\.{name}"):
+                        cfgmod.validate_sections(cfg)
+
+    def test_the_defaults_and_zero_waits_load(self):
+        cfgmod.validate_sections(cfgmod.Config())
+        cfg = cfgmod.Config()
+        for name in ("gesture_dwell_s", "gesture_cooldown_s", "hold_threshold_s"):
+            setattr(cfg.vision, name, 0)
+        cfgmod.validate_sections(cfg)
+
+    def test_the_refused_values_are_the_ones_that_break_the_controller(self):
+        builds = {
+            "poll_interval_s=0": lambda: _controller([None], poll_interval_s=0.0),
+            "gesture_dwell_s=nan": lambda: _controller([None], gesture_dwell_s=float("nan")),
+            "gesture_dwell_s=inf": lambda: _controller([None], gesture_dwell_s=float("inf")),
+        }
+        for label, build in builds.items():
+            with (
+                self.subTest(label),
+                self.assertRaises((ZeroDivisionError, ValueError, OverflowError)),
+            ):
+                build()
 
 
 class _FakePerfSession:
