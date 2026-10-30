@@ -184,6 +184,18 @@ class WaitsForTheCommitTest(_PageFlipTest):
                 self._push_frames(make(), api)
                 self.assertEqual(api.into_shown_bank, [])
 
+    def test_a_scene_set_up_again_does_not_wait_for_its_last_activations_flip(self):
+        """A playlist loop sets the same mode up again after teardown, and
+        the flip its last push armed is gone with the tracker that held it."""
+        api = PageFlipC64(commits=False)
+        mode = HiresDisplayMode("normal", double_buffer=True)
+        mode.setup(api.backend)
+        mode.push(api.backend, mode.compose(_frame(0)))
+        mode.teardown(api.backend)
+        mode.setup(api.backend)
+        mode.push(api.backend, mode.compose(_frame(1)))
+        self.assertEqual(self.clock.now, 0.0, "the first push after setup waited")
+
     def test_a_link_failure_while_waiting_skips_the_frame_before_any_write(self):
         """The playlist skips a frame that raises a LinkError; the frame must
         not have written anything, and the next one still waits."""
