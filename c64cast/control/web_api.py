@@ -864,10 +864,14 @@ def register_web_routes(
         # session that ran it has stopped. Only a config the supervisor is
         # actually mid-show with — not startable again without a fresh
         # start — is the one this route needs to protect.
+        #
+        # Compared as resolved paths, not as refs: `store.delete` resolves
+        # `shows//gig.toml` and `shows\\gig.toml` to the same file as
+        # `shows/gig.toml`.
         active = status.state not in STARTABLE and status.config_path
-        if active and store.ref_for(Path(status.config_path)) == ref:
-            raise HTTPException(409, f"{ref} is the running config — stop it first")
         try:
+            if active and store.resolve(ref) == Path(status.config_path).resolve():
+                raise HTTPException(409, f"{ref} is the running config — stop it first")
             return store.delete(ref)
         except ConfigStoreError as e:
             raise _store_error(e) from e

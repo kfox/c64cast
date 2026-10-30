@@ -1118,6 +1118,18 @@ class ConfigCreateDeleteRouteTest(WebApiTestCase):
         self.assertEqual(r.status_code, 409)
         self.assertTrue((self.root / "gig.toml").exists())
 
+    def test_deleting_the_running_config_by_another_spelling_is_refused(self):
+        for spelling in ("shows//gig.toml", "shows%5Cgig.toml"):
+            with self.subTest(spelling=spelling), self.client() as c:
+                (self.root / "gig.toml").write_text(GIG_TOML, encoding="utf-8")
+                c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+                self.assertReaches(SessionState.RUNNING)
+                r = c.delete(f"/api/configs/{spelling}", headers=AUTH)
+                c.post("/api/session/stop", headers=AUTH)
+                self.assertReaches(SessionState.IDLE)
+                self.assertEqual(r.status_code, 409, r.text)
+                self.assertTrue((self.root / "gig.toml").exists())
+
     def test_deleting_a_stopped_configs_former_config_is_allowed(self):
         # status().config_path keeps naming the last-started config after a stop,
         # so the browser has something to preselect at idle; the delete route must
