@@ -1533,6 +1533,15 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self.assertTrue(self.api.profile.supports_emusid_mixer)
         self.assertIn("emulated stereo-SID", cm.records[0].getMessage())
 
+    def test_u2plus_category_list_revokes_the_video_stream(self):
+        with self.assertLogs("c64cast.hw.api", level="INFO"):
+            self._refine_with(_U2PLUS_CATEGORIES)
+        self.assertFalse(self.api.profile.supports_video_stream)
+
+    def test_u64_category_list_keeps_the_video_stream(self):
+        self._refine_with([SYSTEM_MODE_CATEGORY, *_U64_CATEGORIES])
+        self.assertTrue(self.api.profile.supports_video_stream)
+
     def test_no_surface_at_all_keeps_the_old_message(self):
         # Neither surface — no known hardware, but the probe must not imply a mixer.
         with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
