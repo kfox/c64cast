@@ -911,6 +911,12 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
             table = dcs.load_calibrated_table(cfg, be=be)
         self.assertEqual(table, bytes([7] * 256))
 
+    def test_a_table_measured_at_d400_applies_when_the_recorded_owner_has_none(self):
+        cfg, be = self._tr()
+        self.save(cfg, be=be, entries={"1": _result(1)}, d400=2)
+        self.save(cfg, be=be, entries={"default": _result(7)})
+        self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes([7] * 256))
+
     def test_a_file_holding_no_table_for_the_recorded_owner_applies_none(self):
         # Socket 2 answers $D400 but only socket 1 was tabled: the one entry
         # present is the *other* chip, so no table here is the right one.

@@ -220,13 +220,15 @@ def _select_sid_entry(
         # Ownership of $D400 is *unknown* (no SID config query on this link,
         # or the read failed), which is not the "an UltiSID owns it" answered
         # above. Collapsing the two discards a good multi-socket file.
-        if recorded_d400 is not None:
-            # The file names the chip reached at $D400; if it holds no table
-            # for that chip, no table in it is the right one. Falling through
-            # to "the only entry" would apply the other socket's ladder.
-            return str(recorded_d400) if str(recorded_d400) in sids else None
+        if recorded_d400 is not None and str(recorded_d400) in sids:
+            return str(recorded_d400)
         if "default" in sids:
             return "default"
+        if recorded_d400 is not None:
+            # The file names the chip reached at $D400 and holds no table for
+            # it. Falling through to "the only entry" would apply the other
+            # socket's ladder.
+            return None
         if len(sids) > 1 and "1" in sids:
             log.warning(
                 "audio: this calibration holds tables for %d SID sockets and the %s link "
