@@ -478,12 +478,21 @@ class PerformanceSession:
     def _snapshot_look(self, pl: Playlist, slot: int) -> None:
         """Capture the active clip + the on-screen scene's effect chain to a look
         slot. Runs on the playlist thread, so the scene reads are consistent."""
-        assert self._look_store is not None
+        store = self._look_store
+        assert store is not None
+        if not store.SLOT_MIN <= slot <= store.SLOT_MAX:
+            log.warning(
+                "performance: look %d is outside slots %d-%d, not saved",
+                slot,
+                store.SLOT_MIN,
+                store.SLOT_MAX,
+            )
+            return
         look = {
             "clip": self.active_slot,
             "effects": _snapshot_effects(pl.current),
         }
-        self._look_store.save(slot, look)
+        store.save(slot, look)
         log.info(
             "performance: saved look %d (clip %s, %d fx layer(s))",
             slot,

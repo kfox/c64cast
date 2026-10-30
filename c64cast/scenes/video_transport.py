@@ -472,8 +472,17 @@ class VideoTransportControls:
             if self.loop_a is None:
                 log.info("transport: loop slot %d save ignored — no loop marked", slot)
                 return
-            if self.loop_store is not None:
-                self.loop_store.save(slot, self.loop_a, self.loop_b)
+            store = self.loop_store
+            if store is not None:
+                if not store.SLOT_MIN <= slot <= store.SLOT_MAX:
+                    log.warning(
+                        "transport: loop slot %d is outside slots %d-%d, not saved",
+                        slot,
+                        store.SLOT_MIN,
+                        store.SLOT_MAX,
+                    )
+                    return
+                store.save(slot, self.loop_a, self.loop_b)
             log.info("transport: loop %s saved to slot %d", timecode(self.loop_a), slot)
             return
         entry = self.loop_store.load().get(str(slot)) if self.loop_store is not None else None

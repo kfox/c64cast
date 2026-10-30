@@ -2617,6 +2617,16 @@ class VideoSceneLoopSlotTest(unittest.TestCase):
         scene.transport_loop_slot(1, save=True, clear=False)
         self.assertEqual(store.load(), {})
 
+    def test_a_save_past_the_slot_range_is_not_logged_as_saved(self):
+        scene, store = self._scene()
+        scene.transport.loop_a = 10.0
+        scene.transport.loop_b = 20.0
+        with self.assertLogs("c64cast.scenes.video_transport", level="INFO") as cm:
+            scene.transport_loop_slot(store.SLOT_MAX + 1, save=True, clear=False)
+        self.assertEqual(store.load(), {})
+        self.assertFalse(any("saved to slot" in line for line in cm.output), cm.output)
+        self.assertTrue(any("not saved" in line for line in cm.output), cm.output)
+
     def test_clear_deletes_slot(self):
         scene, store = self._scene()
         store.save(2, 1.0, 2.0)
