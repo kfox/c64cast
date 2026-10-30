@@ -34,6 +34,7 @@ from c64cast.control.performance import (
     _apply_effects_state,
     _snapshot_effects,
 )
+from c64cast.control.tempo import TempoClock
 
 
 class _FakeTempo:
@@ -172,6 +173,21 @@ class LaunchSemanticsTest(unittest.TestCase):
         pl.tempo.running = False  # a bar boundary would never arrive
         s.enqueue(ClipEvent(slot=1, pressed=True))
         self.assertTrue(_pump(s, pl))
+        self.assertEqual(pl.swaps, ["S1"])
+
+    def test_a_clip_armed_after_the_midi_clock_vanished_still_launches(self):
+        s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "bar"}])
+        pl.tempo = TempoClock(bpm=120.0, source="midi", now=0.0)
+        pulse_s = 60.0 / (120.0 * TempoClock.PPQN)
+        for k in range(TempoClock.PPQN + 1):
+            pl.tempo.clock_pulse(k * pulse_s)
+        quiet_since = TempoClock.PPQN * pulse_s
+        with mock.patch("c64cast.control.tempo.time.monotonic") as now:
+            now.return_value = quiet_since + 0.5
+            s.enqueue(ClipEvent(slot=1, pressed=True))
+            self.assertFalse(_pump(s, pl))
+            now.return_value = quiet_since + 4.0
+            self.assertTrue(_pump(s, pl))
         self.assertEqual(pl.swaps, ["S1"])
 
     def test_gate_returns_to_playlist_on_release(self):
