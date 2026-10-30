@@ -192,9 +192,6 @@ class DispatchTests(unittest.TestCase):
         self.assertFalse(session._queue)
 
     def test_events_held_while_paused_keep_only_the_newest(self):
-        # A paused playlist ticks nothing, while a web console can go on
-        # sending seeks; every one of them used to be held and then run on the
-        # first frame after the pause.
         scene = _StubScene()
         pl = _FakePlaylist(scene)
         session = TransportSession()
