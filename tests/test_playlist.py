@@ -2082,7 +2082,7 @@ class PerformanceModeTest(unittest.TestCase):
 
 class ConfigSaveBackupTest(unittest.TestCase):
     """`PlaylistMenu.save_config`'s `.bak` preserves the hand-written original
-    once. It used to copy on every save, and `session.save_live_tune_changes`
+    once. It used to copy on every save, and `session._maybe_save_live_tune`
     calls save_config on every exit under `--overwrite` — so two runs of a
     tuned show left no pristine copy, while the log said "(backup .bak)"."""
 

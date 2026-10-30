@@ -60,8 +60,8 @@ unattended runs (the appliance, CI) legitimate, and those have no user at the
 console to notice a hang."""
 
 _INTERRUPT_GRACE_S = 20.0
-"""How long an install command gets to unwind after :func:`_interrupt` before
-it is killed outright."""
+"""How long an install command gets to unwind after :func:`_stop` interrupts
+it, before it is killed outright."""
 
 _PROBE_TIMEOUT_S = 10.0
 """Ceiling on the read-only `git status` probe, which mutates nothing and so

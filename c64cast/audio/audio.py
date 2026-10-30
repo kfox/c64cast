@@ -562,9 +562,8 @@ class AudioStreamer:
         self.api.write_memory_file(
             f"{RING_BUFFER_ADDR:04X}", bytes([self._neutral_byte] * RING_BUFFER_SIZE)
         )
-        # Disable CIA #2 IRQs + stop Timer A, then point the NMI vector at
-        # $C020. _arm_nmi_once re-lands it when the timer arms, so a dropped
-        # write here is recoverable.
+        # NmiTimer.arm_once re-lands the NMI vector when the timer arms, so a
+        # dropped write here is recoverable.
         self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         self.api.write_regs(
             f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF

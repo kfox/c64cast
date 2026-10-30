@@ -256,8 +256,6 @@ class WorkerBatchingTest(unittest.TestCase):
         s.running = True
         s.chunk_size = 64
         s.sample_rate = 8000  # → chunk_period = 8 ms
-        # FakeAPI accepts the regs writes; the NMI timer is not this test's subject.
-        s._start_nmi_timer = lambda: None  # type: ignore[method-assign]
         # 100 full chunks of real audio queued ahead — far more than the
         # worker can ship in the test window if it actually paces itself.
         for _ in range(100):
