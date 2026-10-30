@@ -65,7 +65,7 @@ Char and light scenes hold without underruns near the ceiling — petscii video 
 
 ### `sample_rate` is a request; `effective_rate` is what you get
 
-The NMI is driven by CIA #2 Timer A, which counts an **integer** number of PHI2 cycles — the period is `latch + 1`. So the achievable rates are the grid `PHI2 / (latch+1)`, and `_nmi_latch_value` picks the nearest point to what was asked for. You never get exactly `sample_rate`:
+The NMI is driven by CIA #2 Timer A, which counts an **integer** number of PHI2 cycles — the period is `latch + 1`. So the achievable rates are the grid `PHI2 / (latch+1)`, and `NmiTimer.nominal_latch` picks the nearest point to what was asked for. You never get exactly `sample_rate`:
 
 | Requested | System | Latch | Achieved | Error |
 | --- | --- | --- | --- | --- |
@@ -84,7 +84,7 @@ Deliberately excluded: the mic capture-device open rate (some devices reject an 
 
 `UltimateAudioSampler` likewise reports its divider's achieved rate rather than the request, and carries an `effective_rate` of its own, so a scene can read either sink the same way.
 
-**The same quantization limits `pitch_mult_*`.** `_compensated_latch` computes `period = round((nominal+1) / mult)`, so at 12 kHz NTSC (nominal period 85) **one step is ≈1.2 %** and requests snap to it: `1.005` → +0.00 % (a no-op), `1.010` and `1.015` → both +1.19 %, `1.020` → +2.41 %. This is why a requested trim and a measured one disagree: `pitch_mult_mhires = 1.015` measures **+1.36 %** high on hardware, tracking the quantized +1.19 % rather than the +1.5 % asked for. Sub-step pitch trim is not expressible through the latch; a finer correction has to come from the content side, the way `dac_bitmap_tempo_*` fixes tempo.
+**The same quantization limits `pitch_mult_*`.** `NmiTimer.compensated_latch` computes `period = round((nominal+1) / mult)`, so at 12 kHz NTSC (nominal period 85) **one step is ≈1.2 %** and requests snap to it: `1.005` → +0.00 % (a no-op), `1.010` and `1.015` → both +1.19 %, `1.020` → +2.41 %. This is why a requested trim and a measured one disagree: `pitch_mult_mhires = 1.015` measures **+1.36 %** high on hardware, tracking the quantized +1.19 % rather than the +1.5 % asked for. Sub-step pitch trim is not expressible through the latch; a finer correction has to come from the content side, the way `dac_bitmap_tempo_*` fixes tempo.
 
 ### Input modes
 
@@ -200,7 +200,7 @@ That health line is per-**window**, not cumulative, because the artifacts left o
 
 Three writes bring the consumer up, and all three are load-bearing: the `$0318` NMI vector, the Timer A latch, and the `$DD0D`/`$DD0E` enable+start. They ride the same transport as everything else, whose `_emit` contract is to **absorb** a failed write rather than raise — right for a lost border poke, wrong here. Any one of them going missing produces the identical symptom: the NMI never fires, the read pointer R (the self-modifying operand at `$C025`) sits at `RING_BUFFER_ADDR` forever, and the session is silent from the first frame to the last. It also runs *fast* — the host-DMA servo is correctly reacting to a reader that never consumes. A dropped vector write is not a milder case: the KERNAL NMI handler stays installed and writes `#$7F` to `$DD0D`, killing CIA #2 interrupts itself.
 
-So `_start_nmi_timer` verifies rather than assumes. It reads R, calls `_arm_nmi_once` (all three writes, plus a read of `$DD0D` — the only way to clear the latched ICR flags, so the next underflow is a clean 0→1 transition), waits `NMI_ARM_VERIFY_DELAY_S` (30 ms ≈ 360 bytes of R travel at the 12 kHz default, so a frozen R is unambiguous), and re-reads. Up to `NMI_ARM_MAX_ATTEMPTS` times; `_nmi_arm_attempts` records what it took. Retries are cheap and only happen on failure — five of them is ≈150 ms against the ≈512 ms prebuffer already in hand. This was found on a machine whose short-board DMA is marginal enough to drop one of the three intermittently; a retry lands it.
+So `NmiTimer.start` verifies rather than assumes. It reads R, calls `NmiTimer.arm_once` (all three writes, plus a read of `$DD0D` — the only way to clear the latched ICR flags, so the next underflow is a clean 0→1 transition), waits `NMI_ARM_VERIFY_DELAY_S` (30 ms ≈ 360 bytes of R travel at the 12 kHz default, so a frozen R is unambiguous), and re-reads. Up to `NMI_ARM_MAX_ATTEMPTS` times; `_nmi_arm_attempts` records what it took. Retries are cheap and only happen on failure — five of them is ≈150 ms against the ≈512 ms prebuffer already in hand. This was found on a machine whose short-board DMA is marginal enough to drop one of the three intermittently; a retry lands it.
 
 A backend that can't read R (`profile.supports_read` false, older TeensyROM firmware) arms exactly once, as before — there is nothing to verify against, and inventing a wait would only add latency.
 
@@ -250,7 +250,7 @@ On the video path, `start_for_reu_staged(..., on_progress=)` reports the whole-t
 
 Default `true`, so the REU paths that hard-require it work without the manual F2 enable step.
 
-*When it fires.* Only when the config **hard**-requires the REU: `[audio].use_reu_pump`, or an explicit `[video].use_reu_staged = true`. This is the same `hw_provision.wants_reu` condition the doctor's REU probe checks. The `"auto"` default is deliberately excluded, because it self-heals to the host-DMA double-buffer path, which is also tear-free.
+*When it fires.* Only when the config **hard**-requires the REU: `[audio].use_reu_pump`, an explicit `[video].use_reu_staged = true`, the sampler backend, or a buffered `asid` scene. This is the same `hw_provision.wants_reu` condition the doctor's REU probe checks. The `"auto"` default is deliberately excluded, because it self-heals to the host-DMA double-buffer path, which is also tear-free.
 
 *What it does.* `session.build_stack` calls `hw_provision.provision_reu(api, cfg)` after the probe and **before** `_resolve_reu_available`, so that probe sees the now-enabled REU. It enables `"RAM Expansion Unit"` and grows `"REU Size"` to `16 MB` via `api.put_config_item` (`PUT /v1/configs/<cat>/<item>?value=…`, verified live and no-reboot in the firmware's `effectuate_settings`). 16 MB covers every c64cast REU offset — the audio ring near 1 MB, the video staging region near 14 MB — and is both the maximum and FPGA-backed, so it costs nothing.
 
@@ -260,18 +260,18 @@ Default `true`, so the REU paths that hard-require it work without the manual F2
 
 ### `--doctor`: REU enable check
 
-When the config opts into a REU-staged path as a **hard** requirement (`[audio].use_reu_pump`, or `[video].use_reu_staged = true`; the `"auto"` default is excluded, as above), the connectivity probe also GETs `/v1/configs/C64 and Cartridge Settings` to confirm `"RAM Expansion Unit": "Enabled"`.
+When the config opts into a REU-staged path as a **hard** requirement (`[audio].use_reu_pump`, `[video].use_reu_staged = true`, the sampler backend, or a buffered `asid` scene; the `"auto"` default is excluded, as above), the connectivity probe also GETs `/v1/configs/C64 and Cartridge Settings` to confirm `"RAM Expansion Unit": "Enabled"`.
 
 If it is disabled the severity depends on `auto_reu`:
 
 * `auto_reu` on → **ok**, because the run will provision it live.
 * `auto_reu = false` → **error**. Without it the staged paths silently produce silent audio or unchanged video, with no host-side error at all: REUWRITE succeeds and the REU→main DMA simply reads zeroes.
 
-The hint points at both `auto_reu` and the F2 menu path. `hw_provision.reu_is_enabled(api)` and `read_reu_config(api)` are the shared REST queries, also feeding cli.py's `"auto"` resolution and the provisioner.
+The hint points at both `auto_reu` and the F2 menu path. `hw_provision.reu_is_enabled(api)` and `read_reu_config(api)` share one REST query (`fetch_config_section`), and feed session.py's `"auto"` resolution and the provisioner.
 
 ### `--doctor`: REST-probe severity
 
-`Ultimate64API.probe()` is a pure liveness check — `GET base_url + "/"` returns `HTTP <status>` for any response, and `None` only when `requests` raises. So `None` means the REST/web server itself is unreachable (port 80 refused or timed out), which is distinct from the DMA socket on port 64. They are separate firmware services; on the retail C64 Ultimate, REST is the **Web Remote Control Service** toggle, its own switch beside the DMA Service.
+`Ultimate64API.probe()` is a liveness check — `GET base_url + "/"` returns `HTTP <status>` for any response, and `None` only when `requests` raises; a 403 from its follow-up `GET /v1/version` raises `RestAuthError`. So `None` means the REST/web server itself is unreachable (port 80 refused or timed out), which is distinct from the DMA socket on port 64. They are separate firmware services; on the retail C64 Ultimate, REST is the **Web Remote Control Service** toggle, its own switch beside the DMA Service.
 
 Because the DMA socket can be up while REST is down, `_probe_connectivity` grades that case by what the config actually needs from REST:
 
@@ -348,7 +348,7 @@ Either way, matches that each sit in a different PortAudio host API count as one
 
 No device name, index or `VID:PID` is built into this choice. The input it replaced, a list of name hints (`"cam link"`, `"elgato"`, …) with the system default input behind it, recorded from a laptop's microphone whenever the hints missed (#568). A calibration taken from room noise fails in the expensive way (below), 50 s in.
 
-`cli`'s `run_calibrate_dac` calls `find_capture_device` once before it connects, so a rig whose input cannot be found exits 3 before anything is written to the machine. `_open_capture` calls it again after the HDMI settle and PortAudio re-initialization, because the indices can change when PortAudio re-enumerates. The scripts in `scripts/diags/` pick their audio input with the same `names_match`, `named_positions` and `one_device` and their capture camera with the same `pick_capture_camera`.
+`cli_commands.run_calibrate_dac` calls `find_capture_device` once before it connects, so a rig whose input cannot be found exits 3 before anything is written to the machine. `_open_capture` calls it again after the HDMI settle and PortAudio re-initialization, because the indices can change when PortAudio re-enumerates. The scripts in `scripts/diags/` pick their audio input with the same `names_match`, `named_positions` and `one_device` and their capture camera with the same `pick_capture_camera`.
 
 #### Resolving the capture format
 
@@ -509,7 +509,7 @@ It is there because a finished table is otherwise undiagnosable, and the failure
 
 Gap *position* is the point of that last pair. The same hole is crossover distortion at the zero crossing and nearly inaudible out at full scale — on the two measured sockets the worst gaps are almost the same size (4.4% vs 4.9% of span) but sit at −0.06 and +0.98 from silence respectively, which is the whole difference.
 
-`ladder_bits` is deliberately **scale-invariant** — a test asserts that a 10× louder capture yields an identical value. Any bit-count defined against the **capture noise floor** instead measures the recording rig rather than the DAC, and inverts the ranking it is meant to give: a quieter capture scores *more* bits, rating a chip degraded to roughly 4 bits above a working one, and an audibly hissing table best of all. On the scale-invariant figure the two sockets read 5.86 and 5.80 — comparable ladders, which is the honest answer. `capture_noise_floor` is recorded separately, under a name that says what it is. Don't compare `ladder_bits` against `effective_bits` in an older file; they measure different things.
+`ladder_bits` is deliberately **scale-invariant** — a test asserts that a 10× louder capture yields an identical value. Any bit-count defined against the **capture noise floor** instead measures the recording rig rather than the DAC, and inverts the ranking it is meant to give: a quieter capture scores *more* bits, rating a chip degraded to roughly 4 bits above a working one, and an audibly hissing table best of all. On the scale-invariant figure the two sockets read 5.86 and 5.80 — comparable ladders, which is the honest answer. Don't compare `ladder_bits` against `effective_bits` in an older file; they measure different things.
 
 At playback, `load_calibrated_table` picks the entry matching whichever socket is *currently* live-mapped to `$D400` — `d400_owner` does a live `SID Addressing` / `SID Sockets Configuration` read. That is what stops a calibrated physical-chip table from being misapplied when an UltiSID core actually owns `$D400`. With no live backend, or when the file has no socket-keyed entries, it falls back to the `"default"` entry, or to the lone entry if there is exactly one.
 
@@ -535,7 +535,7 @@ The gating is what keeps the report self-consistent. Run the offline resolution 
 
 #### Why the offline check hedges
 
-`_validate_dac_curve_resolution` cannot read a live device identity. On the Ultimate and on a serial TeensyROM — where `dac_calibration.offline_key_is_authoritative` is False, meaning no `dac_calibration_profile` override and no TCP TR — a miss against its host/path fallback key does **not** prove no calibration applies, because the live `unique_id` or USB-serial key may resolve to a different file.
+`_validate_dac_curve_resolution` cannot read a live device identity. On the Ultimate and on a serial TeensyROM — where `dac_calibration_store.offline_key_is_authoritative` is False, meaning no `dac_calibration_profile` override and no TCP TR — a miss against its host/path fallback key does **not** prove no calibration applies, because the live `unique_id` or USB-serial key may resolve to a different file.
 
 Rather than assert a false "resolves to `mahoney_ultisid`", or a hard `calibrated`-missing error, it consults `dac_calibration_store.list_calibration_files(backend)` for any file on disk recorded for this backend and downgrades accordingly:
 
@@ -585,7 +585,7 @@ Against that baseline, enabling either one only injects error:
 * Static `pitch_mult_mhires = 1.015` overcorrects to **+1.36 % high**.
 * The adaptive loop is worse. Its dR/dt estimator reads ≈12 % high — a torn DMA read-back of the `$C025/$C026` read pointer over REST — so it drives the latch the wrong way. One clip measured **−8.5 % slow**, and the error is content-dependent and non-deterministic.
 
-So the DAC path runs at the nominal latch, with the servo still centering the ring; a scene whose writes cost the NMI ticks plays its audio file through the drain follow instead. Raising the latch does recover a char mode (the adaptive loop parked at latch 79 with R ≈11.95 kHz on `mcm` and `petscii`) but not a bitmap mode, where R held ≈11.4 kHz at every latch from 84 down to the ceiling, 74. Both knobs are kept for platforms that may still lose ticks (PAL at 50 fps, the lower-latency TeensyROM+ backend) — but the adaptive estimator's bias would need fixing first.
+So the DAC path runs at the nominal latch, with the servo still centering the ring; a scene whose writes cost the NMI ticks plays its audio file through the drain follow instead. Raising the latch does recover a char mode (the adaptive loop parked at latch 79 with R ≈11.95 kHz on `mcm` and `petscii`) but not a bitmap mode, where R held ≈11.4 kHz at every latch from 84 down to 74. Both knobs are kept for platforms that may still lose ticks (PAL at 50 fps, the lower-latency TeensyROM+ backend) — but the adaptive estimator's bias would need fixing first.
 
 **The R-rate *observation* stays on regardless** (`RateServo.observe_r_rate`, split out of `update_rate_loop` for exactly this). Gating the measurement on the disabled controller left the one quantity that shows content-dependent tick loss reading zero in every log — a diagnostic hole, not a safety property; the guardrail is against *controlling* on R, not against looking at it. It costs nothing on top of the read the gap servo just did. The instantaneous per-chunk rate is kept alongside the EMA because the EMA says where the consumer sits while the spread between successive instantaneous values says how much it is *moving*, and a wandering R drags playback pitch with it through a gap servo that follows R faithfully by design.
 
@@ -629,7 +629,7 @@ Both the paired subtract and the queued-only subtract now live in one place each
 
 **No DAC ring stomp at seeks or loop wraps.** The servo-held ≈4096-byte ring gap (≈0.34 s) is constant output latency, so flush-only makes each splice a constant-latency crosscut: the not-yet-heard approach to the splice point finishes while fresh audio lands behind it. No silence hole, no mid-phrase chop. The video waits that latency out: `VideoTransportControls._splice` anchors on what `flush()` returns, the heard position of the target's first sample (the landed count plus the chunk in flight, above), so the clock sits one ring lead below the target until that sample plays. `position()`, which the transport surface reads, reports the target through that hold instead: a held FF/RW and a relative jog seek to `position() + delta` every step, and a position a ring lead short would scrub a held FF backward. The displayed frame is chosen by that target too (`target_clock_s()`), so a seek shows its target frame as a still through the hold: a held FF/RW re-seeks faster than a hold ends, and frames chosen by the held clock left the screen blank until release. A pause inside the hold freezes at the target for the same reason, so its resume splices back to the target rather than a ring lead short of it.
 
-**`silence_output=True` (pause only)** sets `_stomp_requested`. The *worker thread* — which owns `write_addr`, so no ring DMA races the servo — then NEUTRAL-fills the unplayed region `audio_handlers.stomp_spans(R+STOMP_GUARD_BYTES, W)` on its next iteration. The guard deliberately leaves ≈16 ms of stale tail un-stomped so the fill can never race the read head. The stomp is generation-fenced like the stall re-anchor's: a worker whose R read or first write parks past `stop()`'s join skips the rest, so a wrapped span's second write never lands at `RING_BUFFER_ADDR`, where the next session's prebuffer starts.
+**`silence_output=True` (pause only)** sets `_stomp_requested`. The *worker thread* — which owns `write_addr`, so no ring DMA races the servo — then NEUTRAL-fills the unplayed region `audio_handlers.stomp_spans(R+STOMP_GUARD_BYTES, W)` on its next iteration. The guard deliberately leaves ≈11 ms (128 B) of stale tail un-stomped so the fill can never race the read head. The stomp is generation-fenced like the stall re-anchor's: a worker whose R read or first write parks past `stop()`'s join skips the rest, so a wrapped span's second write never lands at `RING_BUFFER_ADDR`, where the next session's prebuffer starts.
 
 **`stop()` bumps the same epoch**, and for the same race. Its drain at the bottom is what leaves the queue clean for the next scene, but any producer that captured its epoch before that drain can still `put` after it — between the capture and the `put`, `_encode_and_enqueue` re-checks nothing but the epoch. `running` clearing releases one parked in the backpressure spin; DSP, encode or plain preemption stalls one that never parked. Either lands a blob behind the drain once its gap outlasts the rest of `stop()` — four teardown link writes, the mic close, and a bounded worker join — which is why the bump goes just ahead of `running` clearing rather than beside the drain (bumped just after it, a released producer that woke in between still found its epoch current), and why the bump and not the drain is what closes this. The next scene then opens on the tail of the previous track, and because `start_for_external_source` resets `_pushed_count` but not `_queued_samples`, `position_seconds()` reads 0 until it drains. `stop()` zeroes both counters outright instead of taking `flush()`'s paired subtract, because it is not preserving a position. `push_samples` is a no-op once stopped as well, which covers the producer that arrives *after* the bump rather than being released by it. It and `_mic_callback` capture the epoch *before* that `running` check and hand it to `_encode_and_enqueue`: captured inside it instead, a producer that passed the check just before `stop()` began would read the already-bumped epoch, find it current at the `put`, and queue its blob behind the drain.
 
@@ -736,7 +736,7 @@ Two halves.
 
 ### The streaming REU ring
 
-Channel 0 is programmed as an A↔B loop over `[ring_base, ring_base+ring_size)`. The base is `$200000` — above the mic ring at `$110000`, below video staging at `$E00000` — so it coexists with REU-staged bitmap video. Default size is 1 MiB.
+Channel 0 is programmed as an A↔B loop over `[ring_base, ring_base+ring_size)`. The base is `$200000` — above the mic ring at `$100000`–`$10FFFF`, below video staging at `$E00000` — so it coexists with REU-staged bitmap video. Default size is 1 MiB.
 
 **One sampler, many activations.** `scene_factory` builds a scene's sampler once, and a looping playlist (or `--loop`) runs `setup()` on the same scene again, so the object has to come back from `stop()`. `arm()` clears what an activation leaves behind: the stop latch, the EOF latch, the pushed and written totals, the pause mute, the telemetry and the tap. It also bumps the flush epoch, so a chunk still in flight from the last producer is dropped. Both callers (`VideoScene.setup`, `AudioFileSource.setup`) arm *before* starting their producer. The reset is deliberately not part of `stop()`, because both callers join their producer only after stopping the sampler (the stop is what releases a producer parked on a full queue). Clearing the latch there would let that producer's last chunks into the next activation's prebuffer. `start()` arms a stopped sampler on its own as a backstop, but pushes made before that are dropped.
 
@@ -1008,7 +1008,7 @@ The mic source's never could. `AudioFeatureStream.stop` is a `PollThread.stop`, 
 
 *Frame rate (the crash lesson).* A sampler video scene uncaps its bitmap frame-push to the system rate because `VideoScene` **dedups** — a 24 fps clip polled at 60 pushes only 24 genuinely-new frames/s. A **generative** source has no such redundancy: it renders a fresh frame every tick, so uncapping to 60 pushes 60 real `mhires` frames/s of REU bank-swap traffic, which *starves the sampler's own REU writes* (the ring's write-ahead lead collapsed to ~322 B → audible static) **and** overloads the bus (C64-side visual crash — HW 2026-07-24). So a sampler-routed file scene keeps the **muted-bitmap 30/25 cap** (`_frame_push_default_fps` with `has_digitized_audio=False`, *no* `off_bus_audio` uncap): the audio is off-bus, but the video frame push must stay bounded. At 30 fps the lead held ≈46 KB and the audio was clean. The DAC file path keeps its 20 fps bitmap cap.
 
-Quick playback: `quickcast` maps an audio extension (`AUDIO_EXTS`, shared with `config.py`) to a `generative` + `audio_source = "file"` scene (a `plasma` visual on an `mcm` char display). On a sampler-capable U64 that track plays through the off-bus 16-bit sampler; the `mcm` char display keeps the (small, 1 KB) frame pushes cheap regardless.
+Quick playback: `quickcast` maps an audio extension (`AUDIO_EXTS`, shared with `scene_factory.py`) to a `generative` + `audio_source = "file"` scene (a `plasma` visual on an `mcm` char display). On a sampler-capable U64 that track plays through the off-bus 16-bit sampler; the `mcm` char display keeps the (small, 1 KB) frame pushes cheap regardless.
 
 ## `audio_marker.py` — the capture-alignment marker
 

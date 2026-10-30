@@ -98,7 +98,7 @@ The brightness slider earns its place because `bri` is a **real screen dim** (`_
 **Serving and discovery.** `WledDeviceServer` runs the app on `control_plane.ControlServer` — the shared uvicorn-on-a-background-thread wrapper, which takes a `label` so its log line reads "WLED device …" rather than "control plane". It registers and unregisters a `ServiceInfo` for `_wled._tcp.local.`, advertising the real LAN IP via `_local_ip` (a UDP-connect trick) even when bound to `0.0.0.0`; the SRV record carries the actual port, so discovery works on a non-privileged bind. An mDNS registration failure is logged but never takes down the already-serving HTTP API.
 
 ### Lifecycle + config
-**Startup.** `cli.main` starts it after the control plane and before the run loop, when `scene_factory.resolve_wled_listen(cfgs[0])` reports on, spanning **all** systems (`systems=[(st.name, st.playlist) …]`). The first system's `[wled].listen` governs the cluster device. It is stopped in the `finally` alongside the control plane.
+**Startup.** `session.start_services` starts it after the control plane and before the run loop, when `scene_factory.resolve_wled_listen(cfgs[0])` reports on, spanning **all** systems (`systems=[(st.name, st.playlist) …]`). The first system's `[wled].listen` governs the cluster device. It is stopped in the `finally` alongside the control plane.
 
 `[wled].listen` uses the same combined-string grammar as `broadcast` (`enabled` → `0.0.0.0:8080`), and `[wled].name` is the advertised friendly name. A missing extra raises a graceful `RuntimeError` naming the missing piece, mirroring the control-plane pattern; `doctor._validate_wled` reports the resolved listen bind.
 
