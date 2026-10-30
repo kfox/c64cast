@@ -14,6 +14,7 @@ from unittest import mock
 import numpy as np
 from _fakes import FrozenClock
 
+from c64cast.app import config as cfgmod
 from c64cast.control import vision as vision_mod
 from c64cast.control.vision import (
     INDEX_PIP,
@@ -128,6 +129,9 @@ class FakeSource:
         self._frame = np.zeros((4, 4, 3), dtype=np.uint8)
 
     def read(self):
+        return self._frame
+
+    def read_live(self):
         return self._frame
 
 
@@ -284,6 +288,39 @@ class VisionControllerTest(unittest.TestCase):
         self.assertTrue(resume.wait(0.5), "sustained pinch while paused should resume")
         ctl.stop()
 
+    def test_a_pinch_held_through_its_resume_does_not_pause_again(self):
+        # Paused from another surface, so the controller has no pose of its own
+        # on record. The resume takes the playlist a reset and a clear loop, and
+        # the hand is still pinching when it comes back.
+        ctl = _controller([pinch()], hold_threshold_s=0.05)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        state = _drive_ticks(ctl, 15, pause, resume)
+        self.assertTrue(resume.is_set())
+        pause.clear()
+        clock = FrozenClock(1.0, "monotonic")
+        with mock.patch.object(vision_mod, "time", clock):
+            state.last_tick = 1.0
+            for _ in range(15):
+                clock.advance(ctl.poll_interval_s)
+                ctl._tick(state)
+        self.assertFalse(pause.is_set(), "the resume pinch must not pause the show again")
+
+    def test_a_new_pinch_after_a_resume_still_pauses(self):
+        ctl = _controller([pinch()], hold_threshold_s=0.05)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        state = _drive_ticks(ctl, 15, pause, resume)
+        pause.clear()
+        ctl.recognizer = cast(GestureRecognizer, FakeRecognizer([fist(), fist(), pinch()]))
+        clock = FrozenClock(1.0, "monotonic")
+        with mock.patch.object(vision_mod, "time", clock):
+            state.last_tick = 1.0
+            for _ in range(5):
+                clock.advance(ctl.poll_interval_s)
+                ctl._tick(state)
+        self.assertTrue(pause.is_set())
+
     def test_no_pause_while_paused_on_swipe(self):
         # Paused: only the pinch-hold resume gesture matters; a swipe is ignored.
         ctl = _controller([fist(0.1), fist(0.9)], swipe_velocity=1.0)
@@ -303,6 +340,47 @@ class VisionControllerTest(unittest.TestCase):
         self.assertIsNotNone(snap)
         assert snap is not None
         np.testing.assert_array_equal(snap.landmarks, target.landmarks)
+
+
+class VisionTimingConfigTest(unittest.TestCase):
+    """The controller divides by `poll_interval_s` and rounds the dwell into a
+    frame count, so a value it cannot run with has to stop the config load
+    rather than the stack build."""
+
+    def test_a_timing_the_controller_cannot_run_with_is_refused(self):
+        refused = {
+            "poll_interval_s": (0.0, -0.1, float("nan"), float("inf")),
+            "gesture_dwell_s": (float("nan"), float("inf")),
+            "gesture_cooldown_s": (float("nan"), float("inf")),
+            "hold_threshold_s": (float("nan"), float("inf")),
+        }
+        for name, values in refused.items():
+            for bad in values:
+                cfg = cfgmod.Config()
+                setattr(cfg.vision, name, bad)
+                with self.subTest(name=name, value=bad):
+                    with self.assertRaisesRegex(ValueError, rf"\[vision\]\.{name}"):
+                        cfgmod.validate_sections(cfg)
+
+    def test_the_defaults_and_zero_waits_load(self):
+        cfgmod.validate_sections(cfgmod.Config())
+        cfg = cfgmod.Config()
+        for name in ("gesture_dwell_s", "gesture_cooldown_s", "hold_threshold_s"):
+            setattr(cfg.vision, name, 0)
+        cfgmod.validate_sections(cfg)
+
+    def test_the_refused_values_are_the_ones_that_break_the_controller(self):
+        builds = {
+            "poll_interval_s=0": lambda: _controller([None], poll_interval_s=0.0),
+            "gesture_dwell_s=nan": lambda: _controller([None], gesture_dwell_s=float("nan")),
+            "gesture_dwell_s=inf": lambda: _controller([None], gesture_dwell_s=float("inf")),
+        }
+        for label, build in builds.items():
+            with (
+                self.subTest(label),
+                self.assertRaises((ZeroDivisionError, ValueError, OverflowError)),
+            ):
+                build()
 
 
 class _FakePerfSession:
@@ -422,6 +500,135 @@ class WebcamSourceBrokerTest(unittest.TestCase):
             finally:
                 src.release()
             cap.release.assert_called_once()
+
+
+class _ScriptedCap:
+    """A `cv2.VideoCapture` stand-in. `read()` answers from `frames`, then
+    ``(False, None)`` for good: OpenCV's answer for a device that is gone."""
+
+    def __init__(self, frames=(), *, opened=True):
+        self.frames = list(frames)
+        self.opened = opened
+        self.released = False
+
+    def isOpened(self):
+        return self.opened
+
+    def read(self):
+        if self.released or not self.frames:
+            return False, None
+        return True, self.frames.pop(0)
+
+    def release(self):
+        self.released = True
+
+
+class _ClockedStop:
+    """The grab loop's stop event, with every wait spent on the test's clock."""
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def is_set(self):
+        return False
+
+    def wait(self, seconds):
+        self.clock.advance(seconds)
+        return False
+
+
+class WebcamSourceLossTest(unittest.TestCase):
+    """A camera that stops sending: the last frame is held for the grace period
+    and then black, it goes live again if it sends again, and vision is never
+    handed the held frame."""
+
+    def setUp(self):
+        from c64cast.video import video
+
+        self.video = video
+        self.clock = FrozenClock(100.0, "monotonic")
+        self.frame = np.full((4, 4, 3), 7, dtype=np.uint8)
+        self.first = _ScriptedCap([self.frame])
+        for patcher in (
+            mock.patch.object(video, "time", self.clock),
+            mock.patch.object(video, "PollThread"),
+            mock.patch.object(video.cv2, "VideoCapture", return_value=self.first),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.stop = cast(threading.Event, _ClockedStop(self.clock))
+
+    def _source(self):
+        src = self.video.WebcamSource(0)
+        self.addCleanup(src.release)
+        return src
+
+    def _run(self, src, seconds):
+        until = self.clock.monotonic() + seconds
+        while self.clock.monotonic() < until:
+            src._grab_step(self.stop)
+            self.clock.advance(0.01)
+
+    def test_a_lost_camera_holds_its_last_frame_then_serves_black(self):
+        src = self._source()
+        with self.assertLogs("c64cast.video.video", "WARNING") as logs:
+            self._run(src, 1.0)
+        held = src.read()
+        assert held is not None
+        np.testing.assert_array_equal(held, self.frame)
+        self._run(src, self.video.CAMERA_LOSS_GRACE_S)
+        black = src.read()
+        assert black is not None
+        self.assertEqual(black.shape, self.frame.shape)
+        self.assertFalse(black.any())
+        [warning] = [r.getMessage() for r in logs.records]
+        self.assertIn("then black until it sends again", warning)
+
+    def test_vision_is_never_handed_the_held_frame(self):
+        src = self._source()
+        src._grab_step(self.stop)
+        self.assertIsNotNone(src.read_live())
+        with self.assertLogs("c64cast.video.video", "WARNING"):
+            self._run(src, self.video.FRAME_STALE_S + 0.1)
+        self.assertIsNotNone(src.read())
+        self.assertIsNone(src.read_live())
+
+    def test_a_camera_that_sends_again_goes_live(self):
+        src = self._source()
+        with self.assertLogs("c64cast.video.video", "WARNING"):
+            self._run(src, 20.0)
+        live = np.full((4, 4, 3), 9, dtype=np.uint8)
+        self.first.frames.extend([live] * 1000)
+        with self.assertLogs("c64cast.video.video", "INFO") as logs:
+            self._run(src, 1.0)
+        frame = src.read_live()
+        assert frame is not None
+        np.testing.assert_array_equal(frame, live)
+        self.assertEqual([r.getMessage() for r in logs.records], ["camera 0 is back"])
+
+
+class VisionStaleFrameTest(unittest.TestCase):
+    def test_a_hand_frozen_mid_pinch_does_not_resume_the_show(self):
+        class _HeldFrameSource:
+            def read(self):
+                return np.zeros((4, 4, 3), dtype=np.uint8)
+
+            def read_live(self):
+                return None
+
+        ctl = VisionController(
+            cast(WebcamSource, _HeldFrameSource()),
+            cast(GestureRecognizer, FakeRecognizer([pinch()])),
+            poll_interval_s=0.005,
+            hold_threshold_s=0.05,
+            gesture_cooldown_s=0.0,
+            gesture_dwell_s=0.0,
+            mirror=False,
+        )
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        _drive_ticks(ctl, 40, pause, resume)
+        self.assertFalse(resume.is_set())
 
 
 if __name__ == "__main__":

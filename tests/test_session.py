@@ -557,6 +557,49 @@ class BuildStackCameraTest(unittest.TestCase):
         self._camera_opens_for(cfg).assert_not_called()
 
 
+class MissingCameraTest(unittest.TestCase):
+    """A camera that cannot be opened ends the run only when a scene needs it.
+    One that is there only for [vision] turns gesture control off, the way a
+    missing mediapipe or model already does."""
+
+    def _build_with_no_camera(self, cfg: cfgmod.Config) -> session.StackBuildError:
+        with (
+            mock.patch.object(session, "WebcamSource", side_effect=RuntimeError("no camera")),
+            mock.patch.object(session, "_open_backend", side_effect=session.StackBuildError(4)),
+            self.assertRaises(session.StackBuildError) as cm,
+        ):
+            session.build_stack(
+                cfg, "a", stop_event=threading.Event(), profiler=mock.MagicMock(name="profiler")
+            )
+        return cm.exception
+
+    def test_a_camera_only_vision_wanted_turns_vision_off_and_the_run_goes_on(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
+        cfg.vision.enabled = True
+        with self.assertLogs("c64cast", "WARNING") as logs:
+            raised = self._build_with_no_camera(cfg)
+        self.assertEqual(raised.exit_code, 4, "the build went on to the backend")
+        self.assertIn("vision control disabled", "\n".join(logs.output))
+
+    def test_a_camera_a_scene_needs_still_ends_the_run(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = [cfgmod.SceneCfg(type="webcam")]
+        cfg.vision.enabled = True
+        with self.assertLogs("c64cast", "ERROR"):
+            raised = self._build_with_no_camera(cfg)
+        self.assertEqual(raised.exit_code, 1)
+
+    def test_vision_without_a_camera_builds_no_controller(self):
+        cfg = cfgmod.Config()
+        cfg.vision.enabled = True
+        api = mock.MagicMock(name="api")
+        with mock.patch.object(session, "MediaPipeHandRecognizer") as recognizer:
+            _, vision = session._build_input_controls(cfg, api, None, "a")
+        self.assertIsNone(vision)
+        recognizer.assert_not_called()
+
+
 class WarnIfMenuOpenTest(unittest.TestCase):
     """The post-bring-up menu check: one WARNING when the menu is open, and
     no read at all on firmware without the route."""

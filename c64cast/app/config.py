@@ -17,6 +17,7 @@ import copy
 import difflib
 import functools
 import logging
+import math
 import os
 import pathlib
 import re
@@ -3757,6 +3758,21 @@ def _validate_audio_features(af: AudioFeaturesCfg) -> None:
     check_layout(af.bands, af.fft_size)
 
 
+def _validate_vision_timing(vision: VisionCfg) -> None:
+    """The gesture controller divides the dwell by the poll interval and
+    rounds it into a frame count, so a zero interval or a non-finite dwell
+    raised out of the stack build, a negative or NaN interval polled flat out,
+    and a NaN cooldown or hold left a gesture that could never fire."""
+    for name in ("poll_interval_s", "gesture_dwell_s", "gesture_cooldown_s", "hold_threshold_s"):
+        value = getattr(vision, name)
+        if not math.isfinite(value):
+            raise ValueError(f"[vision].{name} = {value!r} — want a finite number of seconds")
+    if not vision.poll_interval_s > 0:
+        raise ValueError(
+            f"[vision].poll_interval_s = {vision.poll_interval_s!r} — want a positive number"
+        )
+
+
 def _validate_choice_fields(cfg: Config) -> None:
     """Reject a scalar-section string value that is outside its declared
     `choices`.
@@ -3915,6 +3931,7 @@ def validate_sections(cfg: Config) -> None:
     _validate_host_sid_tune_match(cfg.hardware)
     _validate_tr_dma_slicing(cfg.teensyrom)
     _validate_audio_features(cfg.audio_features)
+    _validate_vision_timing(cfg.vision)
     _validate_choice_fields(cfg)
     _validate_force_palette(cfg.color)
 

@@ -436,10 +436,10 @@ def _build_input_controls(
         )
 
     # Reads the shared camera rather than C64 memory, so it works on any backend.
-    # A missing mediapipe dep or model file degrades to "no gesture control".
+    # A camera build_stack could not open, or a missing mediapipe dep or model
+    # file, degrades to "no gesture control".
     vision_controller: VisionController | None = None
-    if cfg.vision.enabled:
-        assert source is not None  # needs_camera guaranteed it in build_stack
+    if cfg.vision.enabled and source is not None:
         try:
             recognizer = MediaPipeHandRecognizer(
                 cfg.vision.model_path,
@@ -785,9 +785,12 @@ def _open_stack(
         try:
             source = WebcamSource(cfg.video.device)
         except RuntimeError as e:
-            log.error("%s", e)
-            raise StackBuildError(1) from e
-        release_on_failure("camera release", source.release)
+            if needs_webcam:
+                log.error("%s", e)
+                raise StackBuildError(1) from e
+            log.warning("vision control disabled: %s", e)
+        else:
+            release_on_failure("camera release", source.release)
     else:
         log.debug("no webcam or vision scenes — skipping video device init")
 
