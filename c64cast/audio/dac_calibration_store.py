@@ -225,6 +225,8 @@ def _select_sid_entry(
             # for that chip, no table in it is the right one. Falling through
             # to "the only entry" would apply the other socket's ladder.
             return str(recorded_d400) if str(recorded_d400) in sids else None
+        if "default" in sids:
+            return "default"
         if len(sids) > 1 and "1" in sids:
             log.warning(
                 "audio: this calibration holds tables for %d SID sockets and the %s link "
