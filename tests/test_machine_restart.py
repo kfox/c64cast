@@ -1670,7 +1670,7 @@ class RestoreAfterMachineRestartTest(unittest.TestCase):
 class StackWiringTest(unittest.TestCase):
     def test_the_playlist_restores_with_the_runs_config_backend_and_dac_curve(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         api = MagicMock(name="api")
         api.profile.max_fps = None
         api.profile.default_fps = 50.0

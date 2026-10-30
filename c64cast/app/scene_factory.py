@@ -2905,6 +2905,12 @@ def _interleaved_video_cfg(path: str) -> SceneCfg:
     return SceneCfg(type="video", file=path, display=_INTERLEAVED_VIDEO_DISPLAY)
 
 
+def falls_back_to_webcam(cfg: Config) -> bool:
+    """Whether :func:`scenes_from_config` will build its live-camera fallback
+    scene, which the session has to open the camera for."""
+    return all(s.follower_only for s in cfg.scenes)
+
+
 def scenes_from_config(
     cfg: Config,
     api: C64Backend,
@@ -2961,7 +2967,7 @@ def scenes_from_config(
         scene.cfg_index = index
         base.append(scene)
 
-    if not base:
+    if falls_back_to_webcam(cfg):
         if source is None:
             raise ValueError(
                 "no scenes configured and no WebcamSource available — "

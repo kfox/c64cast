@@ -776,8 +776,10 @@ def _open_stack(
     # well: `type` defaults to "webcam" in [[performance.clips]], and the clip
     # factory below closes over `source`, so a None there makes that pad raise at
     # launch and die silently inside PerformanceSession's background build.
-    needs_webcam = any(s.type == "webcam" for s in cfg.scenes) or any(
-        cfgmod.clip_scene_type(c) == "webcam" for c in cfg.performance.clips
+    needs_webcam = (
+        scene_factory.falls_back_to_webcam(cfg)
+        or any(s.type == "webcam" for s in cfg.scenes)
+        or any(cfgmod.clip_scene_type(c) == "webcam" for c in cfg.performance.clips)
     )
     needs_camera = needs_webcam or cfg.vision.enabled
     source: WebcamSource | None = None
