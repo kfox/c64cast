@@ -139,7 +139,11 @@ def _reaping_protocol() -> type[asyncio.Protocol]:
                 if self.conn.our_state is not h11.DONE:
                     self._cancel_request_timer()
                     self._arm_request_timer()
-            elif state is h11.IDLE and self.conn.trailing_data[0]:
+            elif state is h11.IDLE and (
+                # A body finished after the response cancels uvicorn's
+                # keep-alive timer and never re-arms it.
+                self.conn.trailing_data[0] or self.timeout_keep_alive_task is None
+            ):
                 if self._request_timer is None:
                     self._arm_request_timer()
             else:

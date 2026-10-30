@@ -630,6 +630,19 @@ class ConnectionReapingTest(unittest.TestCase):
             b"x",
         )
 
+    def test_a_body_finished_after_an_early_response_then_idle_is_closed(self):
+        """uvicorn arms its keep-alive timer when the response completes, and
+        the late body's bytes cancel it again."""
+        port = self._serve()
+        s = self._connect(port)
+        s.sendall(b"PUT /early HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n")
+        reply = http.client.HTTPResponse(s)
+        reply.begin()
+        self.assertEqual(reply.status, 413)
+        reply.read()
+        s.sendall(b"12345")
+        self._assert_closed_by_server(s)
+
     def test_a_body_that_stops_arriving_is_closed(self):
         port = self._serve()
         s = self._connect(port)
