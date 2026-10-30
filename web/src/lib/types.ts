@@ -60,7 +60,9 @@ export interface ConfigIndex {
 
 /** One entry from `GET /api/media` (`media_store.py`) — a file or a directory
  *  that could go straight into a scene's `file =` field. `spec` is built from
- *  its root exactly as configured (a `~` stays a `~`), not a synthetic ref. */
+ *  its root exactly as configured (a `~` stays a `~`), not a synthetic ref.
+ *  A viewer reads it relative to its root instead, and `MediaIndex.roots`
+ *  empty. */
 export interface MediaEntry {
   spec: string;
   name: string;

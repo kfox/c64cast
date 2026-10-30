@@ -23,6 +23,7 @@ machine."""
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import tempfile
@@ -1033,6 +1034,23 @@ class MediaBrowserTest(WebApiTestCase):
         with self.client() as c:
             r = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"})
         self.assertEqual(r.status_code, 200)
+
+    def test_a_viewer_sees_each_entry_relative_to_its_root(self):
+        (self.root / "set").mkdir()
+        (self.root / "set" / "b.mp4").write_bytes(b"")
+        with self.client() as c:
+            viewer = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"}).json()
+            full = c.get("/api/media", headers=AUTH, params={"kind": "video"}).json()
+        self.assertEqual(
+            sorted(e["spec"] for e in viewer["entries"]), [".", "clip.mp4", "set", "set/b.mp4"]
+        )
+        self.assertEqual(viewer["roots"], [""])
+        self.assertNotIn(str(self.root), json.dumps(viewer))
+        self.assertEqual(full["roots"], [str(self.root)])
+        self.assertEqual(
+            sorted(e["spec"] for e in full["entries"]),
+            [str(self.root), f"{self.root}/clip.mp4", f"{self.root}/set", f"{self.root}/set/b.mp4"],
+        )
 
 
 class MediaUploadTest(WebApiTestCase):
