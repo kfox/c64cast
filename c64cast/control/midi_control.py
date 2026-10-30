@@ -554,6 +554,7 @@ class MidiControlListener:
         self._feedback_port = feedback_port
         self._feedback_profile_port: str | None = None
         self._out_port: Any = None
+        self._out_port_name = ""
         self._fmap = FeedbackMap()
         # note -> last velocity sent (feedback thread only; the diff cache).
         self._led_state: dict[int, int] = {}
@@ -727,6 +728,7 @@ class MidiControlListener:
                 "midi_control: could not open MIDI output %r for LED feedback", match, exc_info=True
             )
             return
+        self._out_port_name = match
         log.info("midi_control: LED feedback on MIDI output %r", match)
 
     def _feedback_reader(self, stop: threading.Event) -> None:
@@ -736,8 +738,10 @@ class MidiControlListener:
         on exit so the controller doesn't strand lit pads after shutdown."""
         if self._out_port is None:
             return
+        reopen = self._port_watch.reopener(output=self._out_port_name)
         try:
             while not stop.is_set():
+                self._out_port = reopen(self._out_port)
                 blink_on = int(time.monotonic() / _LED_BLINK_HALF_PERIOD_S) % 2 == 0
                 self._emit_led_diff(self._compute_led_map(blink_on))
                 time.sleep(_LED_POLL_INTERVAL_S)
@@ -831,9 +835,11 @@ class MidiControlListener:
         port = self._midi_port
         if port is None:
             return
+        reopen = self._port_watch.reopener()
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop):
+                port = self._midi_port = reopen(port)
+                for msg in poll_pending(port, stop) if port is not None else ():
                     try:
                         self._dispatch(msg)
                     except Exception:

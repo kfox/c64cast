@@ -30,7 +30,7 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
-from _fakes import frozen_throttles, logged_exception_type
+from _fakes import FakeMidiDevices, FakeMidiPort, frozen_throttles, logged_exception_type
 
 from c64cast import _midi
 from c64cast.app import config as cfgmod
@@ -460,6 +460,100 @@ class UnpluggedControllerTests(_MidiControlTestCase):
             listener._dispatch(mido.Message("note_on", note=50, velocity=100))
             names.clear()
             self.assertTrue(released.wait(2.0))
+
+
+class ReplugTests(_MidiControlTestCase):
+    """A controller unplugged and plugged back in mid-performance must not need
+    a restart, on any platform: the reader reopens its port when it comes back."""
+
+    PORT = "Pads MIDI 1"
+    LOG = "c64cast.control.midi_control"
+    BEFORE = mido.Message("note_on", note=36, velocity=100) if HAVE_MIDI else None
+    AFTER = mido.Message("note_on", note=37, velocity=100) if HAVE_MIDI else None
+
+    def _running_reader(self, devices: FakeMidiDevices, old: FakeMidiPort):
+        listener = MidiControlListener({"system": _fake_playlist("system")}, [])
+        listener._opened_port_name = self.PORT
+        listener._midi_port = old
+        seen: list[Any] = []
+        listener._dispatch = seen.append  # type: ignore[method-assign]
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener._reader_poll.start()
+        self.addCleanup(listener.stop)
+        self.assertTrue(_wait_for(lambda: seen == [self.BEFORE]))
+        return listener, seen
+
+    def _replug(self, listener, devices: FakeMidiDevices) -> None:
+        with self.assertLogs(self.LOG, level="WARNING"):
+            devices.unplug(listener._port_watch)
+        devices.replug(listener._port_watch)
+
+    def test_the_reader_reads_the_reopened_port_and_closes_the_old_one(self):
+        old, fresh = FakeMidiPort(self.BEFORE), FakeMidiPort(self.AFTER)
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        listener, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(listener, devices)
+            self.assertTrue(_wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertIn("reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, [self.PORT])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        self.assertIs(listener._midi_port, fresh)
+        listener.stop()
+        self.assertTrue(fresh.closed)
+
+    def test_a_failed_reopen_is_retried_on_the_next_return(self):
+        old, fresh = FakeMidiPort(self.BEFORE), FakeMidiPort(self.AFTER)
+        devices = FakeMidiDevices(self.PORT, [OSError("gone again"), fresh])
+        listener, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            self._replug(listener, devices)
+            self.assertTrue(_wait_for(lambda: len(logs.output) == 1))
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertIsNone(listener._midi_port)
+        self.assertTrue(old.closed)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            self._replug(listener, devices)
+            self.assertTrue(_wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertEqual(devices.opened, [self.PORT, self.PORT])
+        self.assertIs(listener._midi_port, fresh)
+
+    def test_the_led_output_is_reopened_on_the_feedback_thread(self):
+        pl = _perf_playlist("a", clip_pads=[("note", 60, 1)], active=1)
+        listener = MidiControlListener({"a": pl}, [], feedback_enabled=True)
+        listener._opened_port_name = self.PORT
+        listener._build_led_pad_lists()
+        old, fresh = FakeMidiPort(), FakeMidiPort()
+        listener._out_port, listener._out_port_name = old, "Pads Out"
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener._feedback_poll.start()
+        self.addCleanup(listener.stop)
+        self.assertTrue(_wait_for(lambda: len(old.sent) == 1))
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(listener, devices)
+            self.assertTrue(_wait_for(lambda: listener._out_port is fresh))
+        self.assertIn("MIDI output 'Pads Out' is back; reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, ["Pads Out"])
+        self.assertTrue(old.closed)
+        pl.performance.active_slot = None
+        self.assertTrue(_wait_for(lambda: len(fresh.sent) == 1))
+        self.assertEqual(len(old.sent), 1)
+
+
+def _wait_for(condition, timeout_s: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.005)
+    return True
 
 
 class TransportDispatchTests(_MidiControlTestCase):
