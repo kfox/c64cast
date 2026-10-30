@@ -417,8 +417,8 @@ class SocketDMAClient:
                 f"{_MAX_COMMAND_PAYLOAD}-byte wire length field"
             )
         header = struct.pack("<HH", opcode, len(payload))
-        # IDENTIFY and AUTHENTICATE leave C64 memory alone, so a cut one
-        # loses nothing.
+        # IDENTIFY, AUTHENTICATE and a bare debug register read leave C64
+        # memory alone, so a cut one loses nothing.
         changes_memory = opcode not in (CMD_IDENTIFY, CMD_AUTHENTICATE, CMD_DEBUG_REG)
         with self._whole_frame_locked(sending=changes_memory):
             self._sock.sendall(header + payload)

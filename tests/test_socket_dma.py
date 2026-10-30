@@ -300,6 +300,21 @@ class DebugRegisterTest(unittest.TestCase):
             c.read_debug_register()
         self.assertIsNone(c._sock)
 
+    def test_an_answered_read_confirms_the_writes_before_it(self):
+        """Otherwise a connection dropped after the read charges a loss for
+        writes the server had already run, and the dirty cache resends them."""
+        fake1 = FakeSocket([_IDENT_REPLY, b"\x95"])
+        c = _client_with(fake1)
+        c.dmawrite(0xD020, b"\x0e")
+        c.read_debug_register()
+        fake1.peer_reset = True
+        fake2 = FakeSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD021, b"\x00")
+        self.assertEqual(c.reconnect_count, 1)
+        self.assertEqual(c.possible_loss_count, 0)
+
 
 class DmarunTest(unittest.TestCase):
     def test_sends_the_prg_then_waits_on_an_identify(self):
@@ -1553,6 +1568,16 @@ class CutCommandTest(unittest.TestCase):
             c.flush()
         self._next_write_redials(fake1, c)
         # Nothing went out unconfirmed, so nothing counts as lost.
+        self.assertEqual(c.possible_loss_count, 0)
+
+    def test_a_debug_register_read_cut_mid_send_counts_no_loss(self):
+        """The read carries no payload, so a cut one wrote nothing."""
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            c.read_debug_register()
+        self._next_write_redials(fake1, c)
         self.assertEqual(c.possible_loss_count, 0)
 
     def test_a_handshake_cut_mid_reply_leaves_no_socket_behind(self):
