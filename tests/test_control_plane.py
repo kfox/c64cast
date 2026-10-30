@@ -461,7 +461,8 @@ except ImportError:
 async def _echo_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
     """Answers a request with the size of its body, and echoes WebSocket text.
     `/slow` waits before it starts reading the body, the way a media upload
-    waits on the disk."""
+    waits on the disk; `/early` refuses without reading it, the way the token
+    gate, a missing route or a size cap does."""
     if scope["type"] == "lifespan":
         while True:
             message = await receive()
@@ -480,6 +481,16 @@ async def _echo_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
             await send({"type": "websocket.send", "text": message.get("text", "")})
     if scope["path"] == "/slow":
         await asyncio.sleep(4 * _TEST_REQUEST_TIMEOUT_S)
+    if scope["path"] == "/early":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [(b"content-length", b"0")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+        return
     size = 0
     while True:
         message = await receive()
@@ -509,7 +520,7 @@ class ConnectionReapingTest(unittest.TestCase):
     hold each one forever, until the process ran out of file descriptors and
     its next outbound connect (the DMA redial) failed with `EMFILE`."""
 
-    def _serve(self, *, max_connections: int = 64) -> int:
+    def _serve(self, app: Any = _echo_app, *, max_connections: int = 64) -> int:
         from c64cast.control import control_plane
 
         for name, value in (
@@ -522,7 +533,7 @@ class ConnectionReapingTest(unittest.TestCase):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = int(probe.getsockname()[1])
-        server = control_plane.ControlServer("127.0.0.1", port, _echo_app, label="probe")
+        server = control_plane.ControlServer("127.0.0.1", port, app, label="probe")
         self.addCleanup(server.stop)
         with self.assertLogs("c64cast.control.control_plane", "INFO"):
             self.assertTrue(server.start())
@@ -580,19 +591,44 @@ class ConnectionReapingTest(unittest.TestCase):
         self.assertEqual(conn.getresponse().read(), b"2")
 
     def _assert_dripped_head_is_cut_off(self, s: socket.socket) -> None:
-        s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        self._assert_drip_is_cut_off(s, b"GET / HTTP/1.1\r\nHost: x\r\n", b"X-Drip: 1\r\n")
+
+    def _assert_drip_is_cut_off(self, s: socket.socket, opening: bytes, drip: bytes) -> None:
+        s.sendall(opening)
         s.settimeout(_TEST_REQUEST_TIMEOUT_S / 4)
         deadline = time.monotonic() + _CLOSE_WAIT_S
         while time.monotonic() < deadline:
             try:
-                s.sendall(b"X-Drip: 1\r\n")
+                s.sendall(drip)
                 if s.recv(1024) == b"":
                     return
             except TimeoutError:
                 continue
             except (BrokenPipeError, ConnectionResetError):
                 return
-        self.fail(f"a head still arriving after {_CLOSE_WAIT_S} s was never cut off")
+        self.fail(f"a request still arriving after {_CLOSE_WAIT_S} s was never cut off")
+
+    def test_a_body_dripped_after_a_401_is_closed(self):
+        """The token gate answers without reading the body, and uvicorn then
+        discards whatever body arrives, so a peer with no token could drip it
+        forever."""
+        from c64cast.control.control_plane import build_app_for_registry
+
+        app = build_app_for_registry(dict, dict, dict, token="t" * 32)
+        port = self._serve(app)
+        self._assert_drip_is_cut_off(
+            self._connect(port),
+            b"POST /pause HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000000\r\n\r\n",
+            b"x",
+        )
+
+    def test_a_body_dripped_after_any_early_response_is_closed(self):
+        port = self._serve()
+        self._assert_drip_is_cut_off(
+            self._connect(port),
+            b"PUT /early HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000000\r\n\r\n",
+            b"x",
+        )
 
     def test_a_body_that_stops_arriving_is_closed(self):
         port = self._serve()

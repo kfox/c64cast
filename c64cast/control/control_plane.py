@@ -74,8 +74,9 @@ TRANSPORT_PATHS = frozenset({"/pause", "/resume", "/skip", "/reload"})
 _BIND_TIMEOUT_S = 5.0
 _BIND_POLL_S = 0.02
 
-#: How long a peer may take to deliver a request head, and how long it may go
-#: silent partway through a body. uvicorn's `timeout_keep_alive` is armed only
+#: How long a peer may take to deliver a request head, how long it may go
+#: silent partway through a body, and how long it may go on sending a body
+#: once the app has already answered. uvicorn's `timeout_keep_alive` is armed only
 #: once a response has completed, so it never covers a connection that has not
 #: sent a whole request yet.
 REQUEST_TIMEOUT_S = 10.0
@@ -133,8 +134,11 @@ def _reaping_protocol() -> type[asyncio.Protocol]:
                 return
             state = self.conn.their_state
             if state is h11.SEND_BODY:
-                self._cancel_request_timer()
-                self._arm_request_timer()
+                # Body that arrives after the response is discarded by uvicorn,
+                # so it earns no more time.
+                if self.conn.our_state is not h11.DONE:
+                    self._cancel_request_timer()
+                    self._arm_request_timer()
             elif state is h11.IDLE and self.conn.trailing_data[0]:
                 if self._request_timer is None:
                     self._arm_request_timer()
