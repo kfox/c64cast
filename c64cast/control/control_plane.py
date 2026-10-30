@@ -21,6 +21,8 @@ See docs/architecture/control.md#control_planepy--http-control-plane-optional.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -72,6 +74,98 @@ TRANSPORT_PATHS = frozenset({"/pause", "/resume", "/skip", "/reload"})
 _BIND_TIMEOUT_S = 5.0
 _BIND_POLL_S = 0.02
 
+#: How long a peer may take to deliver a request head, and how long it may go
+#: silent partway through a body. uvicorn's `timeout_keep_alive` is armed only
+#: once a response has completed, so it never covers a connection that has not
+#: sent a whole request yet.
+REQUEST_TIMEOUT_S = 10.0
+
+#: Open connections, WebSockets included, past which a new one is closed at
+#: accept. uvicorn's `limit_concurrency` cannot stand in: it is consulted only
+#: once a complete request has arrived, and then answers `503`, so connections
+#: that send nothing are never counted against it.
+MAX_CONNECTIONS = 64
+
+_REFUSAL_WARNING_INTERVAL_S = 60.0
+_last_refusal_warning = -_REFUSAL_WARNING_INTERVAL_S
+
+
+def _warn_connection_refused() -> None:
+    global _last_refusal_warning
+    now = time.monotonic()
+    if now - _last_refusal_warning < _REFUSAL_WARNING_INTERVAL_S:
+        return
+    _last_refusal_warning = now
+    log.warning(
+        "control server: %d connections already open; refusing new ones until some close",
+        MAX_CONNECTIONS,
+    )
+
+
+@functools.cache
+def _reaping_protocol() -> type[asyncio.Protocol]:
+    """uvicorn's h11 protocol, with `REQUEST_TIMEOUT_S` and `MAX_CONNECTIONS`.
+
+    Pinned to h11 rather than uvicorn's `auto`, which prefers httptools when it
+    is installed, because the request state this reads is h11's."""
+    import h11
+    from uvicorn.protocols.http.h11_impl import H11Protocol
+
+    class ReapingH11Protocol(H11Protocol):
+        _request_timer: asyncio.TimerHandle | None = None
+        _upgraded = False
+
+        def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
+            super().connection_made(transport)
+            if len(self.connections) > MAX_CONNECTIONS:
+                _warn_connection_refused()
+                transport.close()
+                return
+            self._arm_request_timer()
+
+        def connection_lost(self, exc: Exception | None) -> None:
+            self._cancel_request_timer()
+            super().connection_lost(exc)
+
+        def handle_events(self) -> None:
+            super().handle_events()
+            if self._upgraded:
+                return
+            state = self.conn.their_state
+            if state is h11.SEND_BODY:
+                self._cancel_request_timer()
+                self._arm_request_timer()
+            elif state is h11.IDLE and self.conn.trailing_data[0]:
+                if self._request_timer is None:
+                    self._arm_request_timer()
+            else:
+                self._cancel_request_timer()
+
+        def handle_websocket_upgrade(self, event: h11.Request) -> None:
+            self._upgraded = True
+            self._cancel_request_timer()
+            super().handle_websocket_upgrade(event)
+
+        def _arm_request_timer(self) -> None:
+            self._request_timer = self.loop.call_later(REQUEST_TIMEOUT_S, self._request_timed_out)
+
+        def _cancel_request_timer(self) -> None:
+            if self._request_timer is not None:
+                self._request_timer.cancel()
+                self._request_timer = None
+
+        def _request_timed_out(self) -> None:
+            self._request_timer = None
+            # Reading is paused while the app works through body it already
+            # has; the wait is then on us, not on the peer.
+            if self.flow.read_paused:
+                self._arm_request_timer()
+                return
+            if not self.transport.is_closing():
+                self.transport.close()
+
+    return ReapingH11Protocol
+
 
 class ControlServer:
     """Starts a uvicorn server bound to (host, port) on a background thread.
@@ -102,6 +196,7 @@ class ControlServer:
             host=host,
             port=port,
             log_config=None,
+            http=_reaping_protocol(),
         )
         self._server = uvicorn.Server(self._cfg)
         # uvicorn has its own stop signal (should_exit, set in stop()), so the

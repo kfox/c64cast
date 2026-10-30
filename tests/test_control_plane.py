@@ -9,7 +9,11 @@ real FastAPI app via TestClient and skip when httpx isn't available
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations
 
+import asyncio
+import http.client
+import socket
 import threading
+import time
 import unittest
 import warnings
 from typing import Any
@@ -443,6 +447,207 @@ class MultiSystemTest(unittest.TestCase):
         # Single-system reload with no loader → all failed → 500
         self.assertEqual(r.status_code, 500)
         self.assertIn("no_path", r.json()["detail"])
+
+
+try:
+    import uvicorn  # noqa: F401
+    import websockets  # noqa: F401
+
+    HAVE_SERVER_STACK = True
+except ImportError:
+    HAVE_SERVER_STACK = False
+
+
+async def _echo_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+    """Answers a request with the size of its body, and echoes WebSocket text.
+    `/slow` waits before it starts reading the body, the way a media upload
+    waits on the disk."""
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+    if scope["type"] == "websocket":
+        await receive()
+        await send({"type": "websocket.accept"})
+        while True:
+            message = await receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            await send({"type": "websocket.send", "text": message.get("text", "")})
+    if scope["path"] == "/slow":
+        await asyncio.sleep(4 * _TEST_REQUEST_TIMEOUT_S)
+    size = 0
+    while True:
+        message = await receive()
+        size += len(message.get("body", b""))
+        if not message.get("more_body"):
+            break
+    body = str(size).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-length", str(len(body)).encode())],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+_TEST_REQUEST_TIMEOUT_S = 0.4
+_CLOSE_WAIT_S = 5.0
+
+
+@unittest.skipUnless(HAVE_SERVER_STACK, "uvicorn/websockets not installed")
+class ConnectionReapingTest(unittest.TestCase):
+    """A real `ControlServer` on loopback, held to a short request timeout.
+
+    An unauthenticated peer that opens connections and sends nothing used to
+    hold each one forever, until the process ran out of file descriptors and
+    its next outbound connect (the DMA redial) failed with `EMFILE`."""
+
+    def _serve(self, *, max_connections: int = 64) -> int:
+        from c64cast.control import control_plane
+
+        for name, value in (
+            ("REQUEST_TIMEOUT_S", _TEST_REQUEST_TIMEOUT_S),
+            ("MAX_CONNECTIONS", max_connections),
+        ):
+            p = patch.object(control_plane, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        server = control_plane.ControlServer("127.0.0.1", port, _echo_app, label="probe")
+        self.addCleanup(server.stop)
+        with self.assertLogs("c64cast.control.control_plane", "INFO"):
+            self.assertTrue(server.start())
+        return port
+
+    def _connect(self, port: int) -> socket.socket:
+        s = socket.create_connection(("127.0.0.1", port), timeout=_CLOSE_WAIT_S)
+        self.addCleanup(s.close)
+        return s
+
+    def _assert_closed_by_server(self, s: socket.socket) -> None:
+        try:
+            data = s.recv(1024)
+        except ConnectionResetError:
+            return
+        except TimeoutError:
+            self.fail(f"the server still held the connection after {_CLOSE_WAIT_S} s")
+        self.assertEqual(data, b"")
+
+    def _request(self, port: int, body: bytes = b"") -> bytes:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_CLOSE_WAIT_S)
+        try:
+            conn.request("POST", "/", body=body)
+            return conn.getresponse().read()
+        finally:
+            conn.close()
+
+    def test_a_connection_that_sends_nothing_is_closed(self):
+        port = self._serve()
+        self._assert_closed_by_server(self._connect(port))
+
+    def test_a_request_head_that_never_finishes_is_closed(self):
+        port = self._serve()
+        s = self._connect(port)
+        s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        s.settimeout(_TEST_REQUEST_TIMEOUT_S / 4)
+        deadline = time.monotonic() + _CLOSE_WAIT_S
+        while time.monotonic() < deadline:
+            try:
+                s.sendall(b"X-Drip: 1\r\n")
+                if s.recv(1024) == b"":
+                    return
+            except TimeoutError:
+                continue
+            except (BrokenPipeError, ConnectionResetError):
+                return
+        self.fail(f"a head still arriving after {_CLOSE_WAIT_S} s was never cut off")
+
+    def test_a_body_that_stops_arriving_is_closed(self):
+        port = self._serve()
+        s = self._connect(port)
+        s.sendall(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n0123456789")
+        self._assert_closed_by_server(s)
+
+    def test_a_body_that_keeps_arriving_is_not_cut_off(self):
+        """A media upload over a slow link takes as long as it takes; what is
+        bounded is the silence between its chunks."""
+        port = self._serve()
+        chunk = b"x" * 16
+        chunks = 12
+        s = self._connect(port)
+        s.sendall(
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % (len(chunk) * chunks)
+        )
+        for _ in range(chunks):
+            time.sleep(_TEST_REQUEST_TIMEOUT_S / 4)
+            s.sendall(chunk)
+        reply = http.client.HTTPResponse(s)
+        reply.begin()
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(reply.read(), str(len(chunk) * chunks).encode())
+
+    def test_a_body_the_app_is_slow_to_read_is_not_cut_off(self):
+        """Past uvicorn's buffer high-water mark it stops reading the socket
+        until the app catches up, so the peer goes quiet through no fault of
+        its own."""
+        port = self._serve()
+        body = b"x" * (1 << 20)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_CLOSE_WAIT_S)
+        self.addCleanup(conn.close)
+        conn.request("POST", "/slow", body=body)
+        self.assertEqual(conn.getresponse().read(), str(len(body)).encode())
+
+    def test_connections_past_the_cap_are_refused_and_the_slot_comes_back(self):
+        from c64cast.control import control_plane
+
+        port = self._serve(max_connections=3)
+        p = patch.object(control_plane, "_last_refusal_warning", float("-inf"))
+        p.start()
+        self.addCleanup(p.stop)
+        held = [self._connect(port) for _ in range(3)]
+        with self.assertLogs("c64cast.control.control_plane", "WARNING"):
+            refused = self._connect(port)
+            self._assert_closed_by_server(refused)
+        for s in held:
+            s.close()
+        # Each held socket's close reaches the server asynchronously.
+        deadline = time.monotonic() + _CLOSE_WAIT_S
+        while True:
+            try:
+                self.assertEqual(self._request(port, b"abc"), b"3")
+                return
+            except (ConnectionResetError, http.client.RemoteDisconnected):
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.05)
+
+    def test_an_idle_websocket_outlives_the_request_timeout(self):
+        """The performance console sits on its socket between pushes; once a
+        connection is a WebSocket, uvicorn's ping/pong is what reaps it."""
+        from websockets.sync.client import connect
+
+        port = self._serve()
+        with connect(f"ws://127.0.0.1:{port}/perf/ws", open_timeout=_CLOSE_WAIT_S) as ws:
+            time.sleep(4 * _TEST_REQUEST_TIMEOUT_S)
+            ws.send("still here")
+            self.assertEqual(ws.recv(timeout=_CLOSE_WAIT_S), "still here")
+
+    def test_a_keep_alive_connection_serves_a_second_request(self):
+        port = self._serve()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_CLOSE_WAIT_S)
+        self.addCleanup(conn.close)
+        for body in (b"a", b"bb"):
+            conn.request("POST", "/", body=body)
+            self.assertEqual(conn.getresponse().read(), str(len(body)).encode())
 
 
 if __name__ == "__main__":
