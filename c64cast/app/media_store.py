@@ -513,12 +513,14 @@ class MediaStore:
             ", renamed" if renamed else "",
         )
 
-    def index(self, kind: str, q: str = "") -> dict[str, Any]:
+    def index(self, kind: str, q: str = "", *, q_within_root: bool = False) -> dict[str, Any]:
         """Every entry of `kind` across every root, plus whichever of their
         containing directories directly hold one.
 
-        `q` is a case-insensitive substring match on the entry's spec, applied
-        during the walk — so a search reaches past `MAX_FILES` instead of
+        `q` is a case-insensitive substring match on the entry's spec, or with
+        `q_within_root` on its path under its root (`.` for the root itself),
+        so a caller that hides the roots cannot have them guessed back. It is
+        applied during the walk — so a search reaches past `MAX_FILES` instead of
         being limited to whatever the cap let through first. That means a
         query matching nothing would otherwise walk every root in full, so a
         scan past `_MAX_SCAN` candidates also sets `truncated`, independent
@@ -539,7 +541,8 @@ class MediaStore:
                 if visited > _MAX_SCAN:
                     truncated = True
                     break
-                if needle and needle not in spec.lower():
+                matched = path.relative_to(root.path).as_posix() if q_within_root else spec
+                if needle and needle not in matched.lower():
                     continue
                 if len(entries) >= MAX_FILES:
                     truncated = True

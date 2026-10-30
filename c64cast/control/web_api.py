@@ -803,11 +803,12 @@ def register_web_routes(
     # already names, and a viewer who can watch the screen can already see it.
     @app.get("/api/media")
     def api_media(request: Request, kind: str, q: str = "") -> dict[str, Any]:
+        viewer = is_viewer(request.scope)
         try:
-            index = media.index(kind, q)
+            index = media.index(kind, q, q_within_root=viewer)
         except MediaKindUnknown as e:
             raise HTTPException(400, str(e)) from e
-        return _media_for_viewer(index) if is_viewer(request.scope) else index
+        return _media_for_viewer(index) if viewer else index
 
     # PUT, not POST: `name` names the resource being created, same shape as
     # `/api/configs/{ref:path}`'s save. Streamed straight through to

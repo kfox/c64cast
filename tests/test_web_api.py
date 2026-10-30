@@ -1052,6 +1052,17 @@ class MediaBrowserTest(WebApiTestCase):
             [str(self.root), f"{self.root}/clip.mp4", f"{self.root}/set", f"{self.root}/set/b.mp4"],
         )
 
+    def test_a_viewers_search_cannot_probe_the_roots_host_path(self):
+        def found(headers: dict[str, str], q: str) -> list[str]:
+            params = {"kind": "video", "q": q}
+            body = c.get("/api/media", headers=headers, params=params).json()
+            return [e["spec"] for e in body["entries"]]
+
+        with self.client() as c:
+            self.assertEqual(found(VIEWER_AUTH, str(self.root.parent)), [])
+            self.assertEqual(found(VIEWER_AUTH, "CLIP"), ["clip.mp4"])
+            self.assertIn(f"{self.root}/clip.mp4", found(AUTH, str(self.root.parent)))
+
 
 class MediaUploadTest(WebApiTestCase):
     """`PUT /api/media/{name}` — the route's own mapping onto HTTP (status
