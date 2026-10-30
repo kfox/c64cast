@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +31,14 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, FrozenClock, quiet_logging  # noqa: E402
+from _fakes import (  # noqa: E402
+    FakeAPI,
+    FakeMidiDevices,
+    FakeMidiPort,
+    FrozenClock,
+    quiet_logging,
+    wait_for,
+)
 
 from c64cast import _midi  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
@@ -1207,20 +1213,81 @@ class AsidUnpluggedHostTest(unittest.TestCase):
             scene.setup()
             try:
                 voice_1 = f"{SID.BASE:04X}"
-                self.assertTrue(_wait_for(lambda: api.regs.get(voice_1, b"\0" * 5)[4] & SID.GATE))
+                self.assertTrue(wait_for(lambda: api.regs.get(voice_1, b"\0" * 5)[4] & SID.GATE))
                 names.clear()
-                self.assertTrue(_wait_for(lambda: not api.regs[voice_1][4] & SID.GATE))
+                self.assertTrue(wait_for(lambda: not api.regs[voice_1][4] & SID.GATE))
             finally:
                 scene.teardown()
 
 
-def _wait_for(condition, timeout_s: float = 2.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while not condition():
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.005)
-    return True
+@unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
+class AsidReplugTest(unittest.TestCase):
+    """An ASID host unplugged and plugged back in, or restarted so that its
+    virtual port is a new one under the same name, must not need a restart:
+    the reader reopens its port when it comes back."""
+
+    PORT = "ASID Interface"
+    LOG = "c64cast.sid.asid_scene"
+    BEFORE = (0x2D, 0x4C, 0x00)
+    AFTER = (0x2D, 0x4C, 0x01)
+
+    def _running_reader(self, devices, old):
+        from c64cast.sid.asid_scene import AsidScene
+
+        scene = AsidScene(FakeAPI(), None, buffered_player="off")
+        scene._opened_port_name = self.PORT
+        scene._midi_port = old
+        seen: list[Any] = []
+        scene._handle_sysex = seen.append  # type: ignore[method-assign]
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        scene._reader_poll.start()
+        self.addCleanup(scene._reader_poll.stop)
+        self.assertTrue(wait_for(lambda: seen == [self.BEFORE]))
+        return scene, seen
+
+    def _replug(self, scene, devices) -> None:
+        with self.assertLogs(self.LOG, level="WARNING"):
+            devices.unplug(scene._port_watch)
+        devices.replug(scene._port_watch)
+
+    def _ports(self):
+        return (
+            FakeMidiPort(mido.Message("sysex", data=self.BEFORE)),
+            FakeMidiPort(mido.Message("sysex", data=self.AFTER)),
+        )
+
+    def test_the_reader_reads_the_reopened_port_and_teardown_closes_it(self):
+        old, fresh = self._ports()
+        devices = FakeMidiDevices(self.PORT, [fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertIn("reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, [self.PORT])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        scene.teardown()
+        self.assertTrue(fresh.closed)
+
+    def test_a_failed_reopen_is_retried_on_the_next_return(self):
+        old, fresh = self._ports()
+        devices = FakeMidiDevices(self.PORT, [OSError("gone again"), fresh])
+        scene, seen = self._running_reader(devices, old)
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: len(logs.output) == 1))
+        self.assertIn("plug it in again to retry", logs.output[0])
+        self.assertTrue(old.closed)
+        self.assertIsNone(scene._midi_port)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            self._replug(scene, devices)
+            self.assertTrue(wait_for(lambda: seen == [self.BEFORE, self.AFTER]), seen)
+        self.assertEqual(devices.opened, [self.PORT, self.PORT])
+        self.assertIs(scene._midi_port, fresh)
 
 
 if __name__ == "__main__":

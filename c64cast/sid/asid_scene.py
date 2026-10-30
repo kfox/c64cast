@@ -247,10 +247,12 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # `poll_pending`, not mido's `iter_pending`: the drain has to be bounded
         # and re-check `stop`, or a flood arriving faster than it is retired
         # starves the flush below and outlives `teardown`'s bounded join.
+        reopen = self._port_watch.reopener()
         last_flush = 0.0
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop):
+                port = self._midi_port = reopen(port)
+                for msg in poll_pending(port, stop) if port is not None else ():
                     if msg.type == "sysex":
                         self._handle_sysex(msg.data)
                 if self._port_lost.is_set():
@@ -266,6 +268,11 @@ class AsidScene(VoiceScopeRenderer, Scene):
                 time.sleep(0.001)
         except Exception:
             log.exception("AsidScene reader crashed")
+
+    def _close_port(self) -> None:
+        port, self._midi_port = self._midi_port, None
+        if port is not None:
+            port.close()
 
     def _gate_off_all_voices(self) -> None:
         for chip in range(self._active_chips):
@@ -806,15 +813,13 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # bounded join, and an orphaned ASID handler rewrites the whole REU
         # control block ($DF02-$DF08 + a $91 fetch-exec) at up to 960 Hz, which
         # the next scene's audio pump reads back at $DF03 as its live write head.
-        port, self._midi_port = self._midi_port, None
         poll, self._poll = self._poll, None
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
             ("reader poll stop", self._reader_poll.stop),
             ("MIDI port watch stop", self._port_watch.stop),
+            ("MIDI port close", self._close_port),
         ]
-        if port is not None:
-            steps.append(("MIDI port close", port.close))
         if poll is not None:
             steps.append(("input poll stop", poll.stop))
         if self._player is not None:
