@@ -54,7 +54,8 @@ _PNG_LEVEL = 1
 #: *and* the receiver's early re-issue of the ON, which is the retry for a cold
 #: ARP table — see `vic_stream.PRIME_AFTER_S`. A still asked for before that has
 #: elapsed would report "not sending frames yet" about a stream that was one
-#: second from working.
+#: second from working. A stream that has had no frame for this long is not
+#: going to have one, which is when `multipart_frames` ends.
 _FIRST_FRAME_S = 4.0
 
 #: Re-send the current frame after this long with nothing new. Two reasons, and
@@ -352,14 +353,19 @@ def encode_png(frame: VicFrame, palette: np.ndarray | None = None) -> bytes:
 
 
 def multipart_frames(read: Callable[[], VicFrame | None], *, fps: float) -> Generator[bytes]:
-    """`multipart/x-mixed-replace` parts, one per frame, forever.
+    """`multipart/x-mixed-replace` parts, one per frame, until `read` has had
+    no frame for `_FIRST_FRAME_S`.
 
-    Ending is the caller's, and not by closing this: `_until_gone` abandons the
-    generator at a yield rather than closing it, so a `finally` here would run
-    when the collector reached it and not when the client left — nothing here
-    may hold a resource whose release has to be prompt. The machine's stream
-    belongs to the response's background task. Nothing here polls for a
-    departed client, because a plain generator has no way to ask.
+    A departed client is the caller's to notice, and not by closing this:
+    `_until_gone` abandons the generator at a yield rather than closing it, so a
+    `finally` here would run when the collector reached it and not when the
+    client left — nothing here may hold a resource whose release has to be
+    prompt. The machine's stream belongs to the response's background task.
+    Nothing here polls for a departed client, because a plain generator has no
+    way to ask, which is why it has to end on its own when there is nothing to
+    send: the caller only looks between parts, and a machine that never sends,
+    or a receiver stopped under its watcher, would otherwise hold the caller's
+    worker thread inside one `next()` for good.
 
     Only *new* frames are encoded. The receiver keeps the latest and nothing
     else, so an unchanged frame number means the machine has not painted
@@ -371,14 +377,19 @@ def multipart_frames(read: Callable[[], VicFrame | None], *, fps: float) -> Gene
     period = 1.0 / max(fps, 0.1)
     last: int | None = None
     sent_at = 0.0
+    framed_at = time.monotonic()
     while True:
         frame = read()
-        if frame is not None and (
-            frame.number != last or time.monotonic() - sent_at >= KEEPALIVE_S
-        ):
-            last = frame.number
-            sent_at = time.monotonic()
-            yield png_part(frame)
+        now = time.monotonic()
+        if frame is None:
+            if now - framed_at >= _FIRST_FRAME_S:
+                return
+        else:
+            framed_at = now
+            if frame.number != last or now - sent_at >= KEEPALIVE_S:
+                last = frame.number
+                sent_at = now
+                yield png_part(frame)
         time.sleep(period)
 
 

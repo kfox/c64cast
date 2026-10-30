@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 import numpy as np
+from _fakes import SleepDrivenClock
 
 from c64cast.control import screen as screen_mod
 from c64cast.control.screen import ScreenFeed, ScreenUnavailable
@@ -327,6 +328,42 @@ class MultipartTest(unittest.TestCase):
         # re-encoding it would be bytes for no picture.
         parts = self._parts([_frame(1), _frame(1), _frame(1), _frame(2)], 2)
         self.assertEqual(len(parts), 2)
+
+    @staticmethod
+    def _then_silence(frames: list[VicFrame]):
+        """A reader that hands out `frames` and then has nothing, failing the
+        test rather than spinning if the generator never gives up."""
+        it = iter(frames)
+        reads = 0
+
+        def read() -> VicFrame | None:
+            nonlocal reads
+            reads += 1
+            if reads > 10_000:
+                raise AssertionError("the generator never gave up on a silent machine")
+            return next(it, None)
+
+        return read
+
+    def test_a_machine_that_sends_nothing_ends_the_stream(self):
+        # `_until_gone` looks for a departed client only between parts, so a
+        # generator that never yields holds its worker thread for good.
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(self._then_silence([]), fps=10.0)
+            self.assertIsNone(next(gen, None))
+
+    def test_a_stream_whose_receiver_stops_ends(self):
+        # A stopped receiver's `latest()` is None from then on.
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(self._then_silence([_frame(1)]), fps=10.0)
+            self.assertIsNotNone(next(gen, None))
+            self.assertIsNone(next(gen, None))
+
+    def test_a_still_screen_keeps_its_stream(self):
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(lambda: _frame(1), fps=10.0)
+            parts = [next(gen) for _ in range(5)]
+        self.assertEqual(len(parts), 5)
 
     def test_the_generator_stops_when_it_is_closed(self):
         gen = screen_mod.multipart_frames(lambda: _frame(1), fps=1000.0)
