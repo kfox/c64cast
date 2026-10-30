@@ -1050,6 +1050,13 @@ def resolve_palette(cfg: Config, api: object) -> None:
     set_host_palette(table, name=name)
 
 
+def forget_resolved_palette() -> None:
+    """Let the next `resolve_palette` settle the palette afresh, as the first
+    system of a new session does."""
+    global _palette_resolved
+    _palette_resolved = False
+
+
 def _resolve_palette_table(cfg: Config, api: object) -> tuple[str, Sequence[Sequence[int]]]:
     """``(name, BGR table)`` for this machine — see `resolve_palette`."""
     from c64cast.video.palette import HOST_PALETTES, resolve_host_palette
@@ -1087,5 +1094,5 @@ def _resolve_palette_table(cfg: Config, api: object) -> tuple[str, Sequence[Sequ
     return "u64", HOST_PALETTES["u64"]
 
 
-# Whether resolve_palette has already set the process-wide palette this run.
+# Whether resolve_palette has already set the process-wide palette this session.
 _palette_resolved = False
