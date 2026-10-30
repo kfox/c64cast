@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 import numpy as np
+from _fakes import SleepDrivenClock
 
 from c64cast.control import screen as screen_mod
 from c64cast.control.screen import ScreenFeed, ScreenUnavailable
@@ -231,6 +232,56 @@ class LifetimeTest(unittest.TestCase):
             self.assertEqual(self.api.stops, 1)
         self.assertEqual(feed._live, {})
 
+    def _swept_watcher_then_a_new_show(self) -> tuple[ScreenFeed, _FakeApi]:
+        """Tab A watches; its show ends and the sweep stops A's receiver while A
+        still holds the stream; a new show on the same system starts and tab B
+        opens a stream of its own. Neither tab has released yet."""
+        running: dict[str, _FakeApi] = {"c64cast": self.api}
+        feed = ScreenFeed(lambda: dict(running))
+        self.addCleanup(feed.close)
+        feed.acquire("c64cast")
+        running.clear()
+        feed.sweep()
+        second = _FakeApi()
+        running["c64cast"] = second
+        feed.acquire("c64cast")
+        return feed, second
+
+    def _expire_linger(self, feed: ScreenFeed) -> None:
+        feed._live["c64cast"].idle_since -= screen_mod.LINGER_S + 1
+        feed.sweep()
+
+    def test_a_swept_watcher_leaving_does_not_end_the_next_shows_stream(self):
+        feed, second = self._swept_watcher_then_a_new_show()
+        feed.release("c64cast")  # tab A's stream ends
+        self.assertEqual(feed._live["c64cast"].watchers, 1)
+        self._expire_linger(feed)
+        self.assertEqual(second.stops, 0, "tab B is still watching")
+
+    def test_every_swept_watcher_leaving_spares_the_next_shows_stream(self):
+        running: dict[str, _FakeApi] = {"c64cast": self.api}
+        feed = ScreenFeed(lambda: dict(running))
+        self.addCleanup(feed.close)
+        feed.acquire("c64cast")
+        feed.acquire("c64cast")
+        running.clear()
+        feed.sweep()
+        running["c64cast"] = _FakeApi()
+        feed.acquire("c64cast")
+        feed.release("c64cast")
+        feed.release("c64cast")
+        self.assertEqual(feed._live["c64cast"].watchers, 1)
+        feed.release("c64cast")
+        self.assertEqual(feed._live["c64cast"].watchers, 0)
+
+    def test_the_stream_still_ends_whichever_tab_leaves_first(self):
+        feed, second = self._swept_watcher_then_a_new_show()
+        feed.release("c64cast")
+        feed.release("c64cast")
+        self.assertEqual(feed._live["c64cast"].watchers, 0)
+        self._expire_linger(feed)
+        self.assertEqual(second.stops, 1)
+
     def test_a_machine_that_refuses_to_open_leaves_nothing_behind(self):
         api = _FakeApi(opens=False)
         feed = ScreenFeed(lambda: {"c64cast": api})
@@ -327,6 +378,50 @@ class MultipartTest(unittest.TestCase):
         # re-encoding it would be bytes for no picture.
         parts = self._parts([_frame(1), _frame(1), _frame(1), _frame(2)], 2)
         self.assertEqual(len(parts), 2)
+
+    @staticmethod
+    def _then_silence(frames: list[VicFrame]):
+        """A reader that hands out `frames` and then has nothing, failing the
+        test rather than spinning if the generator never gives up."""
+        it = iter(frames)
+        reads = 0
+
+        def read() -> VicFrame | None:
+            nonlocal reads
+            reads += 1
+            if reads > 10_000:
+                raise AssertionError("the generator never gave up on a silent machine")
+            return next(it, None)
+
+        return read
+
+    def test_a_machine_that_sends_nothing_ends_the_stream(self):
+        # `_until_gone` looks for a departed client only between parts, so a
+        # generator that never yields holds its worker thread for good.
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(self._then_silence([]), fps=10.0)
+            self.assertIsNone(next(gen, None))
+
+    def test_a_stream_whose_receiver_stops_ends(self):
+        # A stopped receiver's `latest()` is None from then on.
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(self._then_silence([_frame(1)]), fps=10.0)
+            self.assertIsNotNone(next(gen, None))
+            self.assertIsNone(next(gen, None))
+
+    def test_each_frame_restarts_the_patience(self):
+        gap: list[VicFrame | None] = [None] * 30  # 3 s at 10 fps, under _FIRST_FRAME_S
+        it = iter([_frame(1), *gap, _frame(2), *gap, _frame(3)])
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(lambda: next(it, None), fps=10.0)
+            parts = list(gen)
+        self.assertEqual(len(parts), 3)
+
+    def test_a_still_screen_keeps_its_stream(self):
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(lambda: _frame(1), fps=10.0)
+            parts = [next(gen) for _ in range(5)]
+        self.assertEqual(len(parts), 5)
 
     def test_the_generator_stops_when_it_is_closed(self):
         gen = screen_mod.multipart_frames(lambda: _frame(1), fps=1000.0)

@@ -1017,6 +1017,15 @@ def prescan_color_fit(path: str, *, strength: float = 1.0) -> ColorFit | None:
     return fit
 
 
+#: How long a camera may go without a frame before it counts as gone. Many
+#: frame periods even at a low rate.
+FRAME_STALE_S = 0.5
+
+#: How long `WebcamSource.read` keeps serving a gone camera's last frame before
+#: it serves black, so a cable knocked out and pushed back costs no blank.
+CAMERA_LOSS_GRACE_S = 3.0
+
+
 class WebcamSource:
     """Always-on shared camera broker.
 
@@ -1046,6 +1055,7 @@ class WebcamSource:
         # single-arg CAP_ANY open.
         from c64cast.control import camera
 
+        self._device = device
         index, backend = camera.resolve_camera_index(device)
         self.cap: cv2.VideoCapture | None = (
             cv2.VideoCapture(index, backend) if backend is not None else cv2.VideoCapture(index)
@@ -1054,32 +1064,67 @@ class WebcamSource:
             raise RuntimeError(f"Could not open video device {device!r} (cv2 index {index})")
         self._lock = threading.Lock()
         self._latest: np.ndarray | None = None
+        self._latest_at = time.monotonic()
+        self._lost = False
         # manual=True: the grab loop blocks in cap.read() at the device frame
         # rate, so it paces itself.
         self._poll = PollThread(self._grab_loop, name="webcam-grab", manual=True, join_timeout=1.0)
         self._poll.start()
 
     def _grab_loop(self, stop: threading.Event) -> None:
-        while not stop.is_set():
-            cap = self.cap
-            if cap is None:
-                break
-            ok, img = cap.read()
-            if not ok:
-                # Transient device hiccup: keep the last good frame and back off
-                # rather than spinning.
-                stop.wait(0.01)
-                continue
+        while not stop.is_set() and self.cap is not None:
+            self._grab_step(stop)
+
+    def _grab_step(self, stop: threading.Event) -> None:
+        """One read, marking the camera lost once no frame has come for
+        `FRAME_STALE_S`. OpenCV's `VideoCapture.read()` answers
+        ``(False, None)`` for a device that is gone; AVFoundation can also sit
+        in `read()` for a while first, which is why loss is judged by the time
+        since the last good frame rather than by counting failed reads."""
+        cap = self.cap
+        if cap is None:
+            return
+        ok, img = cap.read()
+        now = time.monotonic()
+        if ok:
             with self._lock:
-                self._latest = img
+                self._latest, self._latest_at = img, now
+            if self._lost:
+                log.info("camera %r is back", self._device)
+                self._lost = False
+            return
+        if now - self._latest_at >= FRAME_STALE_S and not self._lost:
+            self._lost = True
+            log.warning(
+                "camera %r stopped sending frames; holding its last frame for %.0f s, "
+                "then black until it sends again",
+                self._device,
+                CAMERA_LOSS_GRACE_S,
+            )
+        stop.wait(0.01)
 
     def read(self) -> np.ndarray | None:
-        """Return an independent copy of the most recent grabbed frame.
+        """Return an independent copy of the most recent grabbed frame, or a
+        black one of the same size once the camera has sent nothing for
+        `CAMERA_LOSS_GRACE_S`.
 
         Copies so concurrent consumers can't race the grab thread's in-place
         overwrite or each other's downstream mutations (flip/crop/smoothing)."""
         with self._lock:
-            return None if self._latest is None else self._latest.copy()
+            if self._latest is None:
+                return None
+            if time.monotonic() - self._latest_at >= CAMERA_LOSS_GRACE_S:
+                return np.zeros_like(self._latest)
+            return self._latest.copy()
+
+    def read_live(self) -> np.ndarray | None:
+        """Like `read`, but None once the latest frame is older than
+        `FRAME_STALE_S`: for a consumer that would act on what the frame shows,
+        which a frame held over from a camera that went away no longer does."""
+        with self._lock:
+            if self._latest is None or time.monotonic() - self._latest_at >= FRAME_STALE_S:
+                return None
+            return self._latest.copy()
 
     def release(self) -> None:
         self._poll.stop()
