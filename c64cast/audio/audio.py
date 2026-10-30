@@ -306,8 +306,7 @@ class AudioStreamer:
     ):
         # Shares the render path's C64Backend: the U64 DMA service takes one
         # connection at a time, so a second socket would TCP-accept and then
-        # never see its IDENTIFY answered. SocketDMAClient is thread-safe and
-        # audio ~8/sec + render ~30-60/sec stays under the ~200/sec ceiling.
+        # never see its IDENTIFY answered. SocketDMAClient is thread-safe.
         self.api = api
         self._rate_follows_scene = sample_rate is None
         self.sample_rate = (

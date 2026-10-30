@@ -708,7 +708,10 @@ Two transports are in play:
   Configuration → Command Interface → Enabled. The second gates command
   dispatch even when the listening socket is open, so with it off the
   connection succeeds and the first IDENTIFY never comes back; the CLI
-  names both toggles in the error either way.
+  names both toggles in the error either way. The same unanswered IDENTIFY
+  is what a second client sees while another one holds the service (a
+  second c64cast, or a `--serve` daemon running a show), so the error names
+  that cause first.
 * **REST** carries the operations that have no DMA equivalent:
   * `GET /v1/machine:readmem` — keyboard poller, waveform scene,
     U64-ping overlay
@@ -742,9 +745,15 @@ command and reopens the connection first, so the write is not lost
 (c64cast#520; details in
 [hardware-io.md](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient)).
 Sharing the API instance is safe because `SocketDMAClient` serializes
-every command on the wire via an internal lock, and the combined write
-rate (audio ≈8/sec + render ≈30-60/sec) sits well under the ≈200/sec
-DMA ceiling.
+every command on the wire via an internal lock. The combined rate reaches
+the ≈200/sec DMA ceiling on a heavy scene, though. A 30 fps
+video in host-DMA `mhires` with `flicker_tolerance = "clean"` on an
+Ultimate 64 at 3.15a sent 170–262 commands a second: 83–137 render
+writes, 40–110 page-flip commit polls (`read_debug_register`) and 38
+sampler REU writes; with `[audio].backend = "dac"` the audio drip's 82–88
+writes replaced the sampler's and the total ran 185–225. The playlist
+heartbeat's `writes=` counts render and DAC writes only, not the REU
+writes or the polls.
 
 ## Writes go over Socket DMA, not REST
 

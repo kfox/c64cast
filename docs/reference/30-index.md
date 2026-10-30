@@ -393,7 +393,7 @@ Every name c64cast answers to — 463 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| page flip | [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear), [`video` (A)](20-appendix-a-configuration.md#video) |
+| page flip | [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself), [Getting Bytes In (5)](06-under-the-hood.md#getting-bytes-in), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
 | `palette_mode` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing) |
 | `palette_mode` (mode) | [Notation](01-introduction.md#notation), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `password` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |

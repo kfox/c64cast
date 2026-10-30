@@ -54,8 +54,9 @@ second. c64cast checks for that before every write and reopens the connection
 first, about 7 ms, so a pause in a slideshow costs a reconnect rather than a
 write. The `--profile` latency line counts those as `reconnects=`. The shared
 client serializes commands
-with a mutex, and the combined rate — audio about eight writes a second, render
-thirty to sixty — sits well under the ceiling.
+with a mutex. A heavy scene reaches the ceiling: a 30 fps video in
+flicker multicolor hires, with audio on, measured 170 to 262 commands a second
+between the picture, the audio and the page-flip checks.
 
 ### The TeensyROM Link
 

@@ -495,6 +495,22 @@ class OpenBackendPasswordTest(unittest.TestCase):
             self.assertEqual(caught.exception.exit_code, 4)
             self.assertIn(str(exc), "\n".join(logs.output))
 
+    def test_an_unanswered_dma_handshake_lists_another_client_first(self):
+        from c64cast.hw.socket_dma import SocketDMAError
+
+        with (
+            mock.patch.object(
+                session, "make_backend", side_effect=SocketDMAError("no reply to IDENTIFY")
+            ),
+            self.assertLogs("c64cast", "ERROR") as logs,
+            self.assertRaises(session.StackBuildError) as caught,
+        ):
+            session._open_backend(cfgmod.Config(), "system")
+        self.assertEqual(caught.exception.exit_code, 4)
+        steps = [line for line in logs.output if line.split(":", 2)[-1].startswith("  1. ")]
+        self.assertEqual(len(steps), 1)
+        self.assertIn("No other program is connected", steps[0])
+
     def test_an_unrelated_value_error_is_not_reported_as_a_connect_failure(self):
         with (
             mock.patch.object(session, "make_backend", side_effect=ValueError("a defect")),

@@ -18,10 +18,14 @@ usually right.
 
 ## Nothing Appears At All
 
-**c64cast connects, then hangs.** The Command Interface is switched off. It
-lives under **Memory Configuration**, a different menu from the DMA Service's
-**Network Settings**, so it is easy to miss; with it off the socket opens but
-no command is ever dispatched. Turn both on. See Chapter 1.
+**c64cast connects, then hangs.** Another program is already connected to
+the DMA Service, or the Command Interface is switched off. The service
+answers one connection at a time, so while a second c64cast or a `--serve`
+daemon running a show holds it, a new run's socket opens and is never
+answered; stop the other one first. The Command Interface lives under
+**Memory Configuration**, a different menu from the DMA Service's **Network
+Settings**, so it is easy to miss; with it off the socket opens but no
+command is ever dispatched. Turn both on. See Chapter 1.
 
 **c64cast cannot connect at all.** Either the DMA Service is off, or the
 address is wrong, or a firewall is in the way. Check that the address in
