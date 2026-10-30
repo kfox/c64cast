@@ -3765,11 +3765,7 @@ def _validate_vision_timing(vision: VisionCfg) -> None:
     and a NaN cooldown or hold left a gesture that could never fire."""
     for name in ("poll_interval_s", "gesture_dwell_s", "gesture_cooldown_s", "hold_threshold_s"):
         value = getattr(vision, name)
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-        ):
+        if not math.isfinite(value):
             raise ValueError(f"[vision].{name} = {value!r} — want a finite number of seconds")
     if not vision.poll_interval_s > 0:
         raise ValueError(
