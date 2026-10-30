@@ -95,8 +95,10 @@ from .auth import (
     SCOPE_ROLE_KEY,
     BodyTooLarge,
     ViewerCredential,
+    is_viewer,
     read_body,
     require_full,
+    viewer_limit,
 )
 from .screen import ScreenFeed, ScreenUnavailable, multipart_frames
 from .transport import COLOR_FIELD_NAMES, write_live_tune_row
@@ -115,6 +117,10 @@ _LOG_BACKLOG = 200
 #: watching one C64 is already an unusual show, and the refusal past it is a
 #: 503 a console can render.
 MAX_SCREEN_WATCHERS = 4
+
+#: Screen streams a viewer token may never take, so the operator can always
+#: watch. See :func:`auth.viewer_limit`.
+FULL_TOKEN_SCREEN_RESERVE = 1
 
 #: A request factory re-reads the config from disk and validates it, so a
 #: start picks up an edit made since the host launched. Its argument is the
@@ -223,21 +229,35 @@ class StreamSlots:
     all of it, with a healthy process and an empty log.
 
     :meth:`claim` refuses rather than queues: a queued stream would connect
-    and then show nothing."""
+    and then show nothing. A viewer claim is also refused once viewers hold
+    every slot but :data:`FULL_TOKEN_SCREEN_RESERVE`."""
 
     def __init__(self, limit: int) -> None:
         self.limit = limit
         self.pool = ThreadPoolExecutor(max_workers=limit, thread_name_prefix="c64cast-screen")
-        self._slots = threading.BoundedSemaphore(limit)
+        self._lock = threading.Lock()
+        self._held = 0
+        self._viewers = 0
 
-    def claim(self) -> bool:
-        """Take a slot, or ``False`` when every one is in use."""
-        return self._slots.acquire(blocking=False)
+    def claim(self, *, viewer: bool = False) -> bool:
+        """Take a slot, or ``False`` when none is free to this caller."""
+        with self._lock:
+            if self._held >= self.limit:
+                return False
+            if viewer and self._viewers >= viewer_limit(self.limit, FULL_TOKEN_SCREEN_RESERVE):
+                return False
+            self._held += 1
+            self._viewers += viewer
+            return True
 
-    def release(self) -> None:
+    def release(self, *, viewer: bool = False) -> None:
         """Give a claimed slot back — from the response's own background task,
         so it happens however the body ended."""
-        self._slots.release()
+        with self._lock:
+            if self._held == 0 or (viewer and self._viewers == 0):
+                raise ValueError("released a screen stream slot that was not claimed")
+            self._held -= 1
+            self._viewers -= viewer
 
 
 def _opt_index(value: Any, name: str) -> int | None:
@@ -529,7 +549,8 @@ def register_web_routes(
 
         # A viewer token reaches this route (it is a GET) and used to be able
         # to open as many streams as it liked. See `StreamSlots`.
-        if not streams.claim():
+        viewer = is_viewer(request.scope)
+        if not streams.claim(viewer=viewer):
             raise HTTPException(503, f"this host is already streaming to {streams.limit} watchers")
 
         # The watch is held by the *response*, not by the generator: acquired
@@ -539,15 +560,15 @@ def register_web_routes(
         # rides the same background task for the same reason.
         def _done() -> None:
             screen.release(name)
-            streams.release()
+            streams.release(viewer=viewer)
 
         try:
             read = screen.acquire(name)
         except ScreenUnavailable as e:
-            streams.release()
+            streams.release(viewer=viewer)
             raise HTTPException(501, str(e)) from e
         except BaseException:
-            streams.release()
+            streams.release(viewer=viewer)
             raise
         return StreamingResponse(
             _until_gone(multipart_frames(read, fps=screen_fps), request, streams.pool),

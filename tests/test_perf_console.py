@@ -29,7 +29,7 @@ from unittest.mock import patch
 from _fakes import TOO_DEEP_JSON
 
 from c64cast.control import perf_console
-from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY
+from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY, viewer_limit
 from c64cast.control.perf_console import (
     MAX_COMMAND_BYTES,
     MAX_TARGET_CHARS,
@@ -1450,6 +1450,22 @@ class ConsoleFeedTest(unittest.TestCase):
         sockets = self._open(self._feed(limit=3), [self._Socket() for _ in range(10)])
         self.assertEqual(sum(socket.accepted for socket in sockets), 3)
         self.assertEqual(sum(socket.closed_with is not None for socket in sockets), 7)
+
+    def test_viewers_take_every_socket_but_the_full_tokens_reserve(self):
+        reserve = perf_console.FULL_TOKEN_CONSOLE_RESERVE
+        limit = reserve + 3
+        guests = [self._Socket({SCOPE_ROLE_KEY: ROLE_VIEWER}) for _ in range(limit)]
+        operators = [self._Socket({SCOPE_ROLE_KEY: ROLE_FULL}) for _ in range(reserve)]
+        self._open(self._feed(limit=limit), guests + operators)
+        self.assertEqual([socket.accepted for socket in guests], [True] * 3 + [False] * reserve)
+        self.assertTrue(all(socket.accepted for socket in operators))
+
+    def test_a_pool_smaller_than_the_reserve_admits_no_viewer(self):
+        self.assertEqual(viewer_limit(1, perf_console.FULL_TOKEN_CONSOLE_RESERVE), 0)
+        guest = self._Socket({SCOPE_ROLE_KEY: ROLE_VIEWER})
+        operator = self._Socket({SCOPE_ROLE_KEY: ROLE_FULL})
+        self._open(self._feed(limit=1), [guest, operator])
+        self.assertEqual((guest.accepted, operator.accepted), (False, True))
 
     def test_the_slots_come_back_when_the_sockets_go(self):
         feed = self._feed(limit=2)

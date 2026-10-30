@@ -55,8 +55,8 @@ from c64cast.app import config_store, console_library, media_store, paths, serve
 from c64cast.app.serve import SessionState
 from c64cast.app.update_state import STALE_AFTER_DAYS, UpdateCheck, write_update_state
 from c64cast.app.upgrade import running_python
+from c64cast.control import perf_console, web_api
 from c64cast.control import screen as screen_mod
-from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
 
 TOKEN = "full-token-value"
@@ -743,6 +743,22 @@ class StateFeedTest(WebApiTestCase):
                 ws.receive_json()
                 ws.receive_json()
         self.assertEqual(self.manager.state, SessionState.RUNNING)
+
+    def test_viewers_cannot_take_the_operators_console(self):
+        # A handshake is a GET, which the viewer token passes, and the cap
+        # counted every socket alike.
+        one_guest = perf_console.FULL_TOKEN_CONSOLE_RESERVE + 1
+        with (
+            mock.patch.object(perf_console, "MAX_CONSOLE_SOCKETS", one_guest),
+            self.client() as c,
+        ):
+            with c.websocket_connect("/api/ws", headers=VIEWER_AUTH) as guest:
+                guest.receive_json()
+                with self.assertRaises(WebSocketDisconnect):
+                    with c.websocket_connect("/api/ws", headers=VIEWER_AUTH) as second:
+                        second.receive_json()
+                with c.websocket_connect("/api/ws", headers=AUTH) as operator:
+                    self.assertEqual(operator.receive_json()["role"], "full")
 
     def test_a_frame_that_is_not_json_does_not_take_the_feed_down(self):
         # The decode happens before the read-only check, so one stray frame — a
@@ -1624,6 +1640,35 @@ class ScreenRouteTest(WebApiTestCase):
             # than refused with the 503 a host at its limit answers.
             self.assertEqual(c.get("/api/screen/stream", headers=AUTH).status_code, 200)
 
+    def test_viewers_cannot_take_the_operators_last_stream(self):
+        def one_part(read, *, fps):
+            yield screen_mod.png_part(read())
+
+        real_slots = web_api.StreamSlots
+        made: list[web_api.StreamSlots] = []
+
+        def capture_slots(limit):
+            slots = real_slots(limit)
+            self.addCleanup(slots.pool.shutdown)
+            made.append(slots)
+            return slots
+
+        with (
+            mock.patch.object(
+                web_api, "MAX_SCREEN_WATCHERS", web_api.FULL_TOKEN_SCREEN_RESERVE + 1
+            ),
+            mock.patch.object(web_api, "StreamSlots", capture_slots),
+        ):
+            app = self.app()
+        with mock.patch.object(web_api, "multipart_frames", one_part), TestClient(app) as c:
+            self._running(c)
+            # A viewer's stream still open, which TestClient cannot hold.
+            self.assertTrue(made[0].claim(viewer=True))
+            viewer = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+            operator = c.get("/api/screen/stream", headers=AUTH)
+        self.assertEqual(viewer.status_code, 503)
+        self.assertEqual(operator.status_code, 200)
+
 
 class StreamSlotsTest(unittest.TestCase):
     """The screen stream's concurrency bound, driven directly.
@@ -1660,11 +1705,28 @@ class StreamSlotsTest(unittest.TestCase):
         self.assertTrue(slots.claim())
 
     def test_releasing_more_than_was_claimed_is_a_bug_that_shows(self):
-        # A `BoundedSemaphore`, so a double release from the response's
-        # background task raises here rather than silently widening the cap.
+        # A double release from the response's background task raises here
+        # rather than silently widening the cap.
         slots = self._slots(1)
         with self.assertRaises(ValueError):
             slots.release()
+        self.assertTrue(slots.claim())
+        with self.assertRaises(ValueError):
+            slots.release(viewer=True)
+
+    def test_viewers_take_every_stream_but_the_full_tokens_reserve(self):
+        reserve = web_api.FULL_TOKEN_SCREEN_RESERVE
+        slots = self._slots(reserve + 3)
+        self.assertEqual([slots.claim(viewer=True) for _ in range(4)], [True, True, True, False])
+        self.assertEqual([slots.claim() for _ in range(reserve)], [True] * reserve)
+        self.assertFalse(slots.claim())
+        slots.release(viewer=True)
+        self.assertTrue(slots.claim(viewer=True))
+
+    def test_a_pool_no_bigger_than_the_reserve_admits_no_viewer(self):
+        slots = self._slots(web_api.FULL_TOKEN_SCREEN_RESERVE)
+        self.assertFalse(slots.claim(viewer=True))
+        self.assertTrue(slots.claim())
 
 
 class ViewerLinkRouteTest(WebApiTestCase):

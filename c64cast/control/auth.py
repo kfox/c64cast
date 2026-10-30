@@ -233,6 +233,17 @@ def is_viewer(scope: Mapping[str, Any]) -> bool:
     return role_of(scope) == ROLE_VIEWER
 
 
+def viewer_limit(pool: int, reserve: int) -> int:
+    """How many of a ``pool`` of shared slots viewer-token callers may hold at
+    once: all of them but the ``reserve`` kept for a full token.
+
+    The console sockets and the screen streams are capped pools, and a socket
+    handshake and a stream are both GETs, which the viewer token passes. Counted
+    only in total, the read-only link handed to a guest could fill every slot
+    and lock the operator out of their own console."""
+    return max(0, pool - reserve)
+
+
 def same_origin(headers: Any) -> bool:
     """Whether a request's ``Origin`` agrees with the ``Host`` it reached.
 

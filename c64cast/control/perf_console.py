@@ -51,7 +51,15 @@ from c64cast._json import decode_json
 from c64cast.app.playlist import Playlist
 
 from . import live_tune, page_assets
-from .auth import BODY_TOO_LARGE_ERROR, BodyTooLarge, is_viewer, read_body, role_of, same_origin
+from .auth import (
+    BODY_TOO_LARGE_ERROR,
+    BodyTooLarge,
+    is_viewer,
+    read_body,
+    role_of,
+    same_origin,
+    viewer_limit,
+)
 from .performance import ClipEvent
 from .transport import JsonSlotStore, TransportEvent
 
@@ -102,6 +110,11 @@ _PUSH_INTERVAL_S = 0.35
 #: queued console connects and then shows nothing. Four browsers watching one
 #: show is already unusual; eight is generous for the two feeds together.
 MAX_CONSOLE_SOCKETS = 8
+
+#: Console sockets a viewer token may never take, so the operator's own
+#: console (and a second device of theirs) still connects while guests fill
+#: the rest. See :func:`auth.viewer_limit`.
+FULL_TOKEN_CONSOLE_RESERVE = 2
 
 #: Cap on a ``POST /perf/command`` body. A console command is a few hundred
 #: bytes, and this was the one POST in the package that skipped
@@ -343,6 +356,10 @@ class ConsoleFeed:
             return _WS_POLICY_VIOLATION, "cross-origin handshake"
         if len(self.clients) >= self._limit:
             return _WS_TRY_AGAIN_LATER, f"{self._limit} already open"
+        if is_viewer(websocket.scope):
+            viewers = sum(is_viewer(client.scope) for client in self.clients)
+            if viewers >= viewer_limit(self._limit, FULL_TOKEN_CONSOLE_RESERVE):
+                return _WS_TRY_AGAIN_LATER, f"viewers already hold {viewers}"
         return None
 
     async def _apply(self, msg: Mapping[str, Any]) -> None:
