@@ -923,17 +923,20 @@ def register_web_routes(
     # the dispatch guard and the socket cap all live there, once. Local to this
     # route are the payload (the supervisor's session state and the log tail)
     # and the dispatcher.
-    sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
+    def _console_frames(scope: Mapping[str, Any]) -> Callable[[], dict[str, Any]]:
+        sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
 
-    def _console_frame(scope: Mapping[str, Any]) -> dict[str, Any]:
-        nonlocal sent_seq
-        frame = with_role(bridge.state(), scope)
-        frame["session"] = _status_payload(manager.status(), log_buffer, store)
-        if log_buffer is not None:
-            lines = log_buffer.since(sent_seq)
-            if lines:
-                sent_seq = lines[-1]["seq"]
-            frame["log"] = lines
+        def frame() -> dict[str, Any]:
+            nonlocal sent_seq
+            out = with_role(bridge.state(), scope)
+            out["session"] = _status_payload(manager.status(), log_buffer, store)
+            if log_buffer is not None:
+                lines = log_buffer.since(sent_seq)
+                if lines:
+                    sent_seq = lines[-1]["seq"]
+                out["log"] = lines
+            return out
+
         return frame
 
     # Cheap, and the only regular tick this process has: it is what stops a
@@ -941,7 +944,7 @@ def register_web_routes(
     # its own would be a thread paid for at idle.
     console_feed = ConsoleFeed(
         "web console",
-        build_frame=_console_frame,
+        frames_for=_console_frames,
         dispatch=_apply_command,
         on_tick=screen.sweep,
     )

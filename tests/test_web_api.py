@@ -667,7 +667,7 @@ class StateFeedTest(WebApiTestCase):
         self.assertEqual(frame["role"], "full")
         self.assertEqual([s["name"] for s in frame["systems"]], ["a"])
 
-    def test_log_lines_arrive_once_rather_than_as_a_resent_tail(self):
+    def _capture_the_log(self) -> logging.Logger:
         self.log_buffer.install()
         self.addCleanup(self.log_buffer.uninstall)
         logger = logging.getLogger("c64cast")
@@ -677,6 +677,10 @@ class StateFeedTest(WebApiTestCase):
         self.addCleanup(
             lambda: (logger.setLevel(old_level), setattr(logger, "propagate", old_prop))
         )
+        return logger
+
+    def test_log_lines_arrive_once_rather_than_as_a_resent_tail(self):
+        logger = self._capture_the_log()
         with self.client() as c:
             with c.websocket_connect("/api/ws", headers=AUTH) as ws:
                 ws.receive_json()  # backlog, if any
@@ -686,6 +690,35 @@ class StateFeedTest(WebApiTestCase):
                     frame = ws.receive_json()
                     seen += [row["message"] for row in frame.get("log", [])]
         self.assertEqual(seen.count("a line the console should see once"), 1)
+
+    def test_every_console_sees_every_log_line(self):
+        # The cursor used to be one per route, not one per socket, so a line
+        # went to whichever console's push ran first and to no other.
+        logger = self._capture_the_log()
+        with self.client() as c:
+            with c.websocket_connect("/api/ws", headers=AUTH) as a:
+                a.receive_json()
+                with c.websocket_connect("/api/ws", headers=AUTH) as b:
+                    b.receive_json()
+                    logger.info("a line for everyone")
+                    seen_a: list[str] = []
+                    seen_b: list[str] = []
+                    for _ in range(3):
+                        seen_a += [row["message"] for row in a.receive_json().get("log", [])]
+                        seen_b += [row["message"] for row in b.receive_json().get("log", [])]
+        self.assertEqual(seen_a.count("a line for everyone"), 1, seen_a)
+        self.assertEqual(seen_b.count("a line for everyone"), 1, seen_b)
+
+    def test_a_reloaded_console_is_handed_the_backlog_again(self):
+        logger = self._capture_the_log()
+        with self.client() as c:
+            logger.info("logged before anyone connected")
+            with c.websocket_connect("/api/ws", headers=AUTH) as first:
+                before = [row["message"] for row in first.receive_json().get("log", [])]
+            with c.websocket_connect("/api/ws", headers=AUTH) as second:
+                after = [row["message"] for row in second.receive_json().get("log", [])]
+        self.assertIn("logged before anyone connected", before)
+        self.assertIn("logged before anyone connected", after)
 
     def test_a_command_frame_drives_the_supervisor(self):
         with self.client() as c:

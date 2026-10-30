@@ -227,9 +227,15 @@ class ConsoleFeed:
     raise out of the dispatch in its handler comment and the other didn't), and
     every guard below would otherwise have had to be written twice and kept in
     agreement forever. The routes differ only in what goes *into* a frame and
-    what a command frame dispatches to, which is what ``build_frame`` and
+    what a command frame dispatches to, which is what ``frames_for`` and
     ``dispatch`` are; ``on_tick`` is ``/api/ws``'s screen sweep, the one thing
     it does per cycle that isn't part of the frame.
+
+    ``frames_for`` is called once per accepted socket and returns that
+    socket's own frame builder, because a frame can depend on what *this*
+    console has already been sent: ``/api/ws`` follows the log by sequence
+    number, and one cursor shared by every socket handed each new line to
+    whichever console's push ran first and to none of the others.
 
     Three things the loop guarantees, so that neither caller has to remember
     them:
@@ -258,7 +264,7 @@ class ConsoleFeed:
         self,
         label: str,
         *,
-        build_frame: Callable[[Mapping[str, Any]], dict[str, Any]],
+        frames_for: Callable[[Mapping[str, Any]], Callable[[], dict[str, Any]]],
         dispatch: Callable[[Mapping[str, Any]], Any],
         on_tick: Callable[[], None] | None = None,
         limit: int | None = None,
@@ -266,7 +272,7 @@ class ConsoleFeed:
         self.label = label
         #: The sockets this feed is currently serving. Read as the cap.
         self.clients: set[Any] = set()
-        self._build_frame = build_frame
+        self._frames_for = frames_for
         self._dispatch = dispatch
         self._on_tick = on_tick
         # Read at construction rather than bound as a default, so a test can
@@ -288,6 +294,7 @@ class ConsoleFeed:
             log.debug("%s: refusing a state socket (%s)", self.label, why)
             await websocket.close(code=code)
             return
+        build_frame = self._frames_for(websocket.scope)
         await websocket.accept()
         self.clients.add(websocket)
         # The one gap the auth middleware can't cover: a socket is a single
@@ -305,7 +312,7 @@ class ConsoleFeed:
                 # connected console waiting forever for a push that will never
                 # come — a hang where an error belongs.
                 try:
-                    frame = await asyncio.to_thread(self._build_frame, websocket.scope)
+                    frame = await asyncio.to_thread(build_frame)
                 except Exception:
                     log.exception("%s: could not build a state frame", self.label)
                     break
@@ -1108,7 +1115,7 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
 
     feed = ConsoleFeed(
         "perf console",
-        build_frame=lambda scope: with_role(bridge.state(), scope),
+        frames_for=lambda scope: lambda: with_role(bridge.state(), scope),
         dispatch=bridge.apply,
     )
 
