@@ -3,5 +3,5 @@
   log handed a viewer the full path of the running config, of each config and
   media root, and of each media file, which names the operator's home
   directory. A viewer now sees a config's name under its root and each media
-  file's path under its root, and the log and a failed start's error show the
-  home directory as `~`.
+  file's path under its root. The log and a failed start's error show the same
+  names, and any other path under the home directory starts with `~`.

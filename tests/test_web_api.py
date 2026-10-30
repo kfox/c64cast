@@ -869,6 +869,36 @@ class ConfigBrowserTest(WebApiTestCase):
         self.assertIn(f"could not open {shown}", [r["message"] for r in viewer])
         self.assertIn(f"could not open {clip}", [r["message"] for r in full])
 
+    def test_a_viewer_reads_media_paths_relative_to_their_root(self):
+        base = Path(tempfile.mkdtemp()).resolve()
+        for d in ("media/set", "media2"):
+            (base / d).mkdir(parents=True)
+        media = media_store.MediaStore(
+            read_write={"video": str(base / "media"), "sid": "", "picture": "", "program": ""},
+            read_only=[str(base / "media" / "set")],
+        )
+        opened = [base / "media" / "clip.mp4", base / "media" / "set" / "b.mp4"]
+        neighbor = base / "media2" / "c.mp4"
+        logger = self._capture_log()
+        for path in (*opened, neighbor):
+            logger.error("could not open %s", path)
+        with self.client(media=media) as c:
+            for headers, expected in (
+                (VIEWER_AUTH, ["clip.mp4", "b.mp4", str(neighbor)]),
+                (AUTH, [str(p) for p in (*opened, neighbor)]),
+            ):
+                with self.subTest(viewer=headers is VIEWER_AUTH):
+                    tail = c.get("/api/session", headers=headers).json()["log"]
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["log"]
+                    for lines in (tail, fed):
+                        shown = [
+                            r["message"].removeprefix("could not open ")
+                            for r in lines
+                            if r["message"].startswith("could not open ")
+                        ]
+                        self.assertEqual(shown, expected)
+
     def test_a_viewer_reads_a_failed_build_with_the_home_directory_as_a_tilde(self):
         clip = Path.home() / "Movies" / "clip.mp4"
         self.build.error = FileNotFoundError(f"No such file or directory: '{clip}'")

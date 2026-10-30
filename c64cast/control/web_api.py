@@ -153,7 +153,11 @@ _MEDIA_STATUS: tuple[tuple[type[MediaStoreError], int], ...] = (
 
 
 def _status_payload(
-    status: SessionStatus, log_buffer: Any, store: ConfigStore, scope: Mapping[str, Any]
+    status: SessionStatus,
+    log_buffer: Any,
+    store: ConfigStore,
+    media: MediaStore,
+    scope: Mapping[str, Any],
 ) -> dict[str, Any]:
     """The supervisor's state as a console reads it, with ``config_path``
     emptied for a viewer for the reason :func:`perf_console.with_role` empties
@@ -171,16 +175,21 @@ def _status_payload(
         if out.get("config_path"):
             out["config_path"] = ""
         if out.get("last_error"):
-            out["last_error"] = _path_hider(store)(out["last_error"])
+            out["last_error"] = _path_hider(store, media)(out["last_error"])
     return out
 
 
-def _path_hider(store: ConfigStore) -> Callable[[str], str]:
-    """Text as a viewer reads it: each config root as its label and the home
-    directory as ``~``. ``config.load`` logs the absolute path of every show it
-    starts, and a failed build's exception text quotes the file it could not
-    open."""
-    swaps = [(str(r.path), r.label) for r in store.roots]
+def _path_hider(store: ConfigStore, media: MediaStore) -> Callable[[str], str]:
+    """Text as a viewer reads it: a path under a media root relative to that
+    root, the way ``/api/media`` lists it for a viewer, each config root as its
+    label, and the home directory as ``~``. ``config.load`` logs the absolute
+    path of every show it starts, and a failed build's exception text quotes
+    the file it could not open."""
+    labeled = [(str(r.path), r.label) for r in store.roots]
+    stripped = [(os.path.join(r.path, ""), "") for r in media.roots]
+    # A stable sort with `labeled` first: a directory that is both kinds of
+    # root names a config the way the config browser does.
+    swaps = sorted(labeled + stripped, key=lambda swap: len(swap[0].rstrip(os.sep)), reverse=True)
     swaps.append((os.path.join(Path.home(), ""), os.path.join("~", "")))
 
     def hidden(text: str) -> str:
@@ -192,11 +201,11 @@ def _path_hider(store: ConfigStore) -> Callable[[str], str]:
 
 
 def _log_for(
-    lines: list[dict[str, Any]], store: ConfigStore, scope: Mapping[str, Any]
+    lines: list[dict[str, Any]], store: ConfigStore, media: MediaStore, scope: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     if not is_viewer(scope):
         return lines
-    hidden = _path_hider(store)
+    hidden = _path_hider(store, media)
     return [{**line, "message": hidden(line["message"])} for line in lines]
 
 
@@ -487,7 +496,7 @@ def register_web_routes(
         return parsed
 
     def _session_state(scope: Mapping[str, Any]) -> dict[str, Any]:
-        state = _status_payload(manager.status(), log_buffer, store, scope)
+        state = _status_payload(manager.status(), log_buffer, store, media, scope)
         state["role"] = scope.get(SCOPE_ROLE_KEY)
         return state
 
@@ -641,7 +650,7 @@ def register_web_routes(
     def api_session(request: Request) -> dict[str, Any]:
         state = _session_state(request.scope)
         if log_buffer is not None:
-            state["log"] = _log_for(log_buffer.tail(_LOG_BACKLOG), store, request.scope)
+            state["log"] = _log_for(log_buffer.tail(_LOG_BACKLOG), store, media, request.scope)
         return state
 
     @app.post("/api/session/start", status_code=202)
@@ -1005,12 +1014,12 @@ def register_web_routes(
         def frame() -> dict[str, Any]:
             nonlocal sent_seq
             out = with_role(bridge.state(), scope)
-            out["session"] = _status_payload(manager.status(), log_buffer, store, scope)
+            out["session"] = _status_payload(manager.status(), log_buffer, store, media, scope)
             if log_buffer is not None:
                 lines = log_buffer.since(sent_seq)
                 if lines:
                     sent_seq = lines[-1]["seq"]
-                out["log"] = _log_for(lines, store, scope)
+                out["log"] = _log_for(lines, store, media, scope)
             return out
 
         return frame
