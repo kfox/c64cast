@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -196,6 +198,13 @@ class PlaneContentTest(unittest.TestCase):
         self.assertEqual(report["blank"], 0)
         for zone, offsets in report["offsets"].items():
             self.assertEqual(offsets, [0, 0, 0, 0], zone)
+        self.assertEqual(report["flips"], 3)
+
+    def test_a_frame_torn_near_the_top_is_placed_by_the_slot_most_rows_show(self) -> None:
+        shown, late = self.tool.plane_frame(2), self.tool.plane_frame(1)
+        report = self._report(_mhires_picture(shown, slice(0, 4), {"bitmap": late["bitmap"]}))
+        self.assertEqual(self._torn(report), {"bitmap": ["adjacent"]})
+        self.assertEqual(report["offsets"]["screen"], [0])
 
     def test_a_push_into_the_bank_on_screen_tears_bitmap_and_screen_two_apart(self) -> None:
         shown, pushed = self.tool.plane_frame(1), self.tool.plane_frame(3)
@@ -214,6 +223,59 @@ class PlaneContentTest(unittest.TestCase):
         self.assertEqual(self._torn(report), {})
         self.assertEqual(report["offsets"]["bg0"], [1])
         self.assertEqual(report["offsets"]["screen"], [0])
+
+
+class PlanesPushTest(unittest.TestCase):
+    """The launched c64cast's push, with `cli.run` standing in for playback."""
+
+    def setUp(self) -> None:
+        self.tool = _load("flicker_tear_ab")
+
+    def _run(self, buffers: dict, pushes: int) -> tuple[list[dict], str]:
+        from c64cast.video.modes.mhires import MultiHiresDisplayMode
+
+        def playback(_args: list[str]) -> int:
+            for _ in range(pushes):
+                MultiHiresDisplayMode.push(None, "api", buffers)  # type: ignore[arg-type]
+            return 0
+
+        composed = mock.Mock()
+        clock = mock.Mock(monotonic=mock.Mock(side_effect=[0.0, 5.0, 10.0]))
+        out = io.StringIO()
+        with (
+            mock.patch.object(MultiHiresDisplayMode, "push", composed),
+            mock.patch("c64cast.app.cli.run", playback),
+            mock.patch.object(self.tool, "time", clock),
+            redirect_stdout(out),
+        ):
+            self.tool.run_app_with_planes([])
+        return [c.args[2] for c in composed.call_args_list], out.getvalue()
+
+    def _composed(self) -> dict:
+        frame = self.tool.plane_frame(7)
+        return {**{k: np.ones_like(v) for k, v in frame.items() if k != "bg"}, "bg": 9}
+
+    def test_every_page_the_flicker_push_writes_carries_the_planes_frame(self) -> None:
+        composed = {**self._composed(), "screen_b": np.full(1000, 0xEE, np.uint8), "text": "t"}
+        (sent,) = self._run(composed, 1)[0]
+        frame = self.tool.plane_frame(0)
+        for key in ("bitmap", "screen", "color"):
+            np.testing.assert_array_equal(sent[key], frame[key], key)
+        np.testing.assert_array_equal(sent["screen_b"], frame["screen"])
+        self.assertEqual((sent["bg"], sent["text"]), (frame["bg"], "t"))
+
+    def test_the_plain_push_gets_no_second_page(self) -> None:
+        (sent,) = self._run(self._composed(), 1)[0]
+        self.assertNotIn("screen_b", sent)
+
+    def test_the_report_reads_the_push_rate_the_app_prints(self) -> None:
+        sent, log = self._run(self._composed(), 2 * self.tool._RATE_EVERY + 1)
+        self.assertEqual(len(sent), 2 * self.tool._RATE_EVERY + 1)
+        frames = [_captured(_mhires_picture(self.tool.plane_frame(n))) for n in range(2)]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.tool.print_planes_report("plain", frames, 1.0, log, Path(tempfile.mkdtemp()))
+        self.assertIn("1.0 page flips/s seen, 30.0 pushes/s sent", out.getvalue())
 
 
 if __name__ == "__main__":
