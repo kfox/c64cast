@@ -1,0 +1,1 @@
+- When c64cast cannot get an answer from the Ultimate's DMA service, the error now says first that another program connected to it (a second c64cast, or a `--serve` daemon running a show) has the same symptom, instead of pointing only at the two menu switches.

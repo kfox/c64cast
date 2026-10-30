@@ -372,15 +372,18 @@ class SocketDMAClient:
         try:
             payload = self._identify_roundtrip_locked()
         except TimeoutError as e:
-            # A TCP accept with no IDENTIFY reply is usually the U64's
-            # "Command Interface" toggle being OFF: it gates the DMA command
-            # dispatcher even while the listening socket stays open.
+            # A TCP accept with no IDENTIFY reply is the U64's "Command
+            # Interface" toggle being OFF (it gates the DMA command dispatcher
+            # even while the listening socket stays open), or the service
+            # serving another client: it answers one connection at a time.
             raise SocketDMAError(
                 "no reply to IDENTIFY from the U64 Socket DMA service. "
-                "Check that 'Ultimate DMA Service' (F2 → Network Settings) "
-                "AND 'Command Interface' (F2 → Memory Configuration) are "
-                "both enabled. If a network password is set on the U64, also "
-                "configure dma_password."
+                "It answers one connection at a time, so first check whether "
+                "another program is connected to it (another c64cast, a "
+                "--serve daemon running a show). Then check that 'Ultimate "
+                "DMA Service' (F2 → Network Settings) AND 'Command Interface' "
+                "(F2 → Memory Configuration) are both enabled. If a network "
+                "password is set on the U64, also configure dma_password."
             ) from e
         except OSError as e:
             raise SocketDMAError(

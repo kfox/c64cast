@@ -712,7 +712,10 @@ Two transports are in play:
   Configuration → Command Interface → Enabled. The second gates command
   dispatch even when the listening socket is open, so with it off the
   connection succeeds and the first IDENTIFY never comes back; the CLI
-  names both toggles in the error either way.
+  names both toggles in the error either way. The same unanswered IDENTIFY
+  is what a second client sees while another one holds the service (a
+  second c64cast, or a `--serve` daemon running a show), so the error names
+  that cause first.
 * **REST** carries the operations that have no DMA equivalent:
   * `GET /v1/machine:readmem` — keyboard poller, waveform scene,
     U64-ping overlay
