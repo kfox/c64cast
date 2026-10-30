@@ -859,6 +859,18 @@ class LiveTuneTrackerTests(unittest.TestCase):
         t.saved(rows)
         self.assertFalse(t.has_changes())
 
+    def test_saved_keeps_a_per_scene_change_on_its_scene(self):
+        t = LiveTuneTracker()
+        t.record("mode.palette_mode", "percell", "vivid", scene=2)
+        rows = t.pending()
+        t.record("mode.palette_mode", "vivid", "grayscale", scene=2)
+        t.saved(rows)
+        (row,) = t.pending()
+        self.assertEqual(
+            (row["key"], row["field"], row["scene"], row["old"], row["new"]),
+            ("mode.palette_mode@2", "palette_mode", 2, "vivid", "grayscale"),
+        )
+
     def test_a_per_scene_knob_is_recorded_against_the_scene_it_was_turned_on(self):
         t = LiveTuneTracker()
         t.record("mode.palette_mode", "percell", "vivid", scene=2)
