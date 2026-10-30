@@ -1084,7 +1084,8 @@ class LockedSlicingBackendTest(unittest.TestCase):
         self.assertEqual(st.sample_rate, LOCKED_BITMAP_DAC_SAMPLE_RATE)
         self.assertEqual(scene.tempo_scale, 1.0)
         self.assertEqual(source_cls.call_args.kwargs["tempo_scale"], 1.0)
-        self.assertFalse(scene.tempo_follow)
+        # The lock can still be lost mid-scene, and only following sees it.
+        self.assertTrue(scene.tempo_follow)
 
     def test_bitmap_rate_is_the_default_without_the_lock(self):
         for mode, lock in (("auto", False), ("on", True)):
