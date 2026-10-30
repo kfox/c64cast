@@ -1095,7 +1095,8 @@ class LogoTest(unittest.TestCase):
         home = tempfile.mkdtemp()
         with open(os.path.join(home, "art.txt"), "w") as f:
             f.write("AB\n")
-        with patch.dict(os.environ, {"HOME": home}):
+        # os.path.expanduser reads USERPROFILE on Windows and HOME elsewhere.
+        with patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
             ov = LogoOverlay(file="~/art.txt", corner="top-left")
         self.assertFalse(ov._placeholder)
         self.assertEqual(ov.lines, ["AB"])
