@@ -753,6 +753,15 @@ class VisionUnreadFrameTest(unittest.TestCase):
         _drive_ticks(ctl, 7, pause, resume, skip=skip)
         self.assertFalse(skip.is_set())
 
+    def test_a_hand_back_from_a_camera_gap_settles_before_it_can_swipe(self):
+        # The first two readings after the gap jump 0.4 apart: the entry
+        # transient SWIPE_SETTLE_FRAMES is there to ignore.
+        hands = [fist(0.1)] * 4 + [fist(0.6), fist(0.2)]
+        ctl = _gappy_controller(hands, gaps=set(range(5, 15)))
+        pause, resume, skip = threading.Event(), threading.Event(), threading.Event()
+        _drive_ticks(ctl, 16, pause, resume, skip=skip)
+        self.assertFalse(skip.is_set())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -474,12 +474,13 @@ class VisionController:
     @staticmethod
     def _skip_unread_tick(st: _GestureState, dt: float) -> None:
         """Carry every hold and fired pose over a tick that saw nothing. The
-        unseen time does not count toward a pinch hold, and the wrist is
-        forgotten: the next reading is more than one tick from the last one,
-        and its travel over one tick's dt would read as a swipe."""
+        unseen time does not count toward a pinch hold. The hand settles again
+        before it can swipe: it may have entered the frame unseen, and the
+        next reading's travel since the last one, measured over one tick's dt,
+        would read as a swipe."""
         if st.held_since is not None:
             st.held_since += dt
-        st.prev_wrist = None
+        st.hand_frames = 0
 
     @staticmethod
     def _wrist_motion(
