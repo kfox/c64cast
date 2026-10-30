@@ -188,8 +188,9 @@ class PortWatch(PollThread):
         self._present = True
         super().start()
 
-    def reopener(self, name: str, *, output: bool = False) -> PortReopener:
-        return PortReopener(self, name, output=output)
+    def reopener(self, *, output: str | None = None) -> PortReopener:
+        """Follows the watched input, or the output named ``output``."""
+        return PortReopener(self, output)
 
     def check(self) -> None:
         name = self._port_name()
@@ -212,14 +213,14 @@ class PortWatch(PollThread):
 class PortReopener:
     """Called by the one thread that uses the port, with the port it holds:
     after each return `watch` has counted, closes it and hands back the port
-    opened afresh as ``name`` (None if that open failed, until the next
-    return); otherwise hands back what it was given."""
+    opened afresh by the same name (None if that open failed, until the next
+    return); otherwise hands back what it was given. ``output`` names the
+    output port to reopen; without it, the watched input is reopened."""
 
-    def __init__(self, watch: PortWatch, name: str, *, output: bool) -> None:
+    def __init__(self, watch: PortWatch, output: str | None) -> None:
         self._watch = watch
-        self._name = name
         self._output = output
-        self._kind = "MIDI output" if output else "MIDI port"
+        self._kind = "MIDI port" if output is None else "MIDI output"
         self._seen = watch.returns
 
     def __call__(self, port: Any) -> Any:
@@ -232,18 +233,19 @@ class PortReopener:
             port.close()
         logger = self._watch._log
         label = self._watch._label
+        name = self._watch._port_name() if self._output is None else self._output
         try:
-            fresh = mido.open_output(self._name) if self._output else mido.open_input(self._name)
+            fresh = mido.open_input(name) if self._output is None else mido.open_output(name)
         except Exception:
             logger.warning(
                 "%s: %s %r is back but would not reopen; unplug it and plug it in again to retry",
                 label,
                 self._kind,
-                self._name,
+                name,
                 exc_info=True,
             )
             return None
-        logger.info("%s: %s %r is back; reconnected", label, self._kind, self._name)
+        logger.info("%s: %s %r is back; reconnected", label, self._kind, name)
         return fresh
 
 

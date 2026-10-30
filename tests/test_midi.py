@@ -389,7 +389,7 @@ class PortReopenerTest(unittest.TestCase):
             return reopen(port)
 
     def test_a_port_that_never_left_is_handed_back_untouched(self):
-        reopen = self.watch.reopener(self.PORT)
+        reopen = self.watch.reopener()
         old = _FakePort()
         with self._fake_mido():
             self.watch.check()
@@ -398,7 +398,7 @@ class PortReopenerTest(unittest.TestCase):
         self.assertEqual(self.opened, [])
 
     def test_a_returned_port_is_closed_and_opened_again_by_its_name(self):
-        reopen = self.watch.reopener(self.PORT)
+        reopen = self.watch.reopener()
         old = _FakePort()
         self._unplug_and_replug()
         with self.assertLogs("c64cast._midi", level="INFO") as logs:
@@ -412,14 +412,14 @@ class PortReopenerTest(unittest.TestCase):
         self.assertEqual(len(self.opened), 1)
 
     def test_an_output_reopens_as_an_output(self):
-        reopen = self.watch.reopener("Pads Out", output=True)
+        reopen = self.watch.reopener(output="Pads Out")
         self._unplug_and_replug()
         with self.assertLogs("c64cast._midi", level="INFO"):
             self._call(reopen, _FakePort())
         self.assertEqual(self.opened, [("output", "Pads Out")])
 
     def test_a_failed_reopen_warns_and_the_next_return_retries(self):
-        reopen = self.watch.reopener(self.PORT)
+        reopen = self.watch.reopener()
         old = _FakePort()
         self.failures.append(OSError("port vanished again"))
         self._unplug_and_replug()
@@ -436,7 +436,7 @@ class PortReopenerTest(unittest.TestCase):
         self.assertEqual(self.opened, [("input", self.PORT)] * 2)
 
     def test_two_returns_before_a_call_reopen_once(self):
-        reopen = self.watch.reopener(self.PORT)
+        reopen = self.watch.reopener()
         self._unplug_and_replug()
         self._unplug_and_replug()
         with self.assertLogs("c64cast._midi", level="INFO"):
