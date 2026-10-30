@@ -1458,6 +1458,37 @@ class ConsoleFeedTest(unittest.TestCase):
         sockets = self._open(feed, [self._Socket() for _ in range(2)])
         self.assertTrue(all(socket.accepted for socket in sockets))
 
+    def test_a_handshake_that_fails_its_accept_gives_its_slot_back(self):
+        # A client gone before the 101 makes Starlette's accept raise; the slot
+        # was taken before the accept, so it has to come back on that path too.
+        from starlette.websockets import WebSocketDisconnect
+
+        class _Gone(self._Socket):
+            async def accept(self) -> None:
+                await asyncio.sleep(0)
+                raise WebSocketDisconnect()
+
+        feed = self._feed(limit=1)
+        asyncio.run(feed.run(_Gone()))
+        self.assertEqual(feed.clients, set())
+
+    def test_a_handshake_cancelled_in_its_accept_gives_its_slot_back(self):
+        class _Stuck(self._Socket):
+            async def accept(self) -> None:
+                await asyncio.Event().wait()
+
+        feed = self._feed(limit=1)
+
+        async def cancelled() -> None:
+            served = asyncio.create_task(feed.run(_Stuck()))
+            await asyncio.sleep(0)
+            served.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await served
+
+        asyncio.run(cancelled())
+        self.assertEqual(feed.clients, set())
+
 
 if __name__ == "__main__":
     unittest.main()
