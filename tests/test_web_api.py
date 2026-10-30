@@ -1640,10 +1640,7 @@ class ScreenRouteTest(WebApiTestCase):
             # than refused with the 503 a host at its limit answers.
             self.assertEqual(c.get("/api/screen/stream", headers=AUTH).status_code, 200)
 
-    def test_viewers_cannot_take_the_operators_last_stream(self):
-        def one_part(read, *, fps):
-            yield screen_mod.png_part(read())
-
+    def _one_viewer_stream_app(self) -> tuple[Any, web_api.StreamSlots]:
         real_slots = web_api.StreamSlots
         made: list[web_api.StreamSlots] = []
 
@@ -1660,14 +1657,51 @@ class ScreenRouteTest(WebApiTestCase):
             mock.patch.object(web_api, "StreamSlots", capture_slots),
         ):
             app = self.app()
-        with mock.patch.object(web_api, "multipart_frames", one_part), TestClient(app) as c:
+        return app, made[0]
+
+    @staticmethod
+    def _one_part(read, *, fps):
+        yield screen_mod.png_part(read())
+
+    def test_viewers_cannot_take_the_operators_last_stream(self):
+        app, slots = self._one_viewer_stream_app()
+        with mock.patch.object(web_api, "multipart_frames", self._one_part), TestClient(app) as c:
             self._running(c)
             # A viewer's stream still open, which TestClient cannot hold.
-            self.assertTrue(made[0].claim(viewer=True))
+            self.assertTrue(slots.claim(viewer=True))
             viewer = c.get("/api/screen/stream", headers=VIEWER_AUTH)
             operator = c.get("/api/screen/stream", headers=AUTH)
         self.assertEqual(viewer.status_code, 503)
         self.assertEqual(operator.status_code, 200)
+
+    def test_a_finished_viewer_stream_gives_back_a_viewer_slot(self):
+        # Given back as a full slot, the viewer count never falls, and after
+        # `MAX_SCREEN_WATCHERS - FULL_TOKEN_SCREEN_RESERVE` streams no viewer
+        # can ever watch again.
+        app, _slots = self._one_viewer_stream_app()
+        with mock.patch.object(web_api, "multipart_frames", self._one_part), TestClient(app) as c:
+            self._running(c)
+            first = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+            second = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+
+    def test_a_viewer_stream_that_fails_to_open_gives_back_a_viewer_slot(self):
+        app, slots = self._one_viewer_stream_app()
+        with TestClient(app) as c:
+            self._running(c)
+            for failure in (screen_mod.ScreenUnavailable("no VIC"), RuntimeError("boom")):
+                with (
+                    self.subTest(failure=type(failure).__name__),
+                    mock.patch.object(screen_mod.ScreenFeed, "acquire", side_effect=failure),
+                ):
+                    if not isinstance(failure, screen_mod.ScreenUnavailable):
+                        with self.assertRaises(RuntimeError):
+                            c.get("/api/screen/stream", headers=VIEWER_AUTH)
+                    else:
+                        r = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+                        self.assertEqual(r.status_code, 501)
+                    self.assertTrue(slots.claim(viewer=True))
+                    slots.release(viewer=True)
 
 
 class StreamSlotsTest(unittest.TestCase):
