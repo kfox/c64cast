@@ -192,12 +192,26 @@ socket, and a machine with two socketed chips measures each one separately.
 An ARMSID or ARM2SID is switched to 6581 mode for the measurement and put
 back into its own model when the run ends. A run that plays through its
 table switches it to 6581 again for the length of the run.
+
+On an Ultimate 64 the table follows the socket. The Ultimate knows which
+socketed SID answers `$D400`, so a run measures each socketed chip and
+playback uses the table of whichever socket answers `$D400` at the time. When
+no socketed SID answers there (an UltiSID core does, or the sockets are empty
+or disabled), there is no real chip to measure: `--calibrate-dac` stops with
+an error and writes nothing, and playback uses the built-in curve. A
+TeensyROM+ or an Ultimate II+ has no socket to tell apart, so a run there
+measures whatever SID answers `$D400`, and playback over that link uses
+that one table. The probe that tells an Ultimate II+ from an Ultimate 64 is
+skipped under `--skip-probe`, so an Ultimate II+ run with that flag plays no
+calibration table.
+
 The file is keyed to the machine's own identity — the Ultimate's serial
 number, a TeensyROM's USB serial — so a changed address does not orphan it.
 `[audio].dac_calibration_profile` overrides that key with a name of your own,
 or — given a path — points a run at another machine's calibration file
-outright, which is how a table measured over the Ultimate replays the same
-chip over a TeensyROM+ in that machine's cartridge port.
+outright. Two links sharing one file still keep their tables apart: an
+Ultimate 64 plays its socket tables, and a TeensyROM+ in its cartridge port
+plays the table measured over the TeensyROM+.
 
 > [!WARNING]
 > A run replaces this machine's existing table outright. There is no prompt

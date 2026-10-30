@@ -891,50 +891,56 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
     An unresolved "auto" assumes NTSC here, matching `[ultimate64].system`'s
     own documented fallback and `hw_provision.resolve_system`'s convention —
     `c64.py`'s helpers reject "auto" outright rather than quietly picking PAL
-    for it the way they used to."""
+    for it the way they used to. `_probe_system_mode` checks the rate again
+    against the standard a live machine reports."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        if not cfg.audio.enabled:
-            continue
         system = "NTSC" if cfg.ultimate64.system.upper() == "AUTO" else cfg.ultimate64.system
-        rate = DEFAULT_DAC_SAMPLE_RATE if cfg.audio.sample_rate is None else cfg.audio.sample_rate
-        level, message = nmi_rate_safety(system, rate)
-        if level != "ok":
-            out.append(
+        out.extend(_nmi_rate_diagnostics(name, cfg, system))
+    return out
+
+
+def _nmi_rate_diagnostics(name: str, cfg: Config, system: str) -> list[Diagnostic]:
+    """The [audio].sample_rate rows for one system running on `system`."""
+    if not cfg.audio.enabled:
+        return []
+    rate = DEFAULT_DAC_SAMPLE_RATE if cfg.audio.sample_rate is None else cfg.audio.sample_rate
+    level, message = nmi_rate_safety(system, rate)
+    if level != "ok":
+        return [
+            Diagnostic(
+                level=level,
+                category="audio",
+                subject=f"{name}/sample_rate",
+                message=message,
+                hint=_sample_rate_hint(system, rate),
+            )
+        ]
+    # Adaptive compensation raises the NMI rate over bus-halt loss, so it
+    # needs latch headroom above the configured rate; too little and it cannot
+    # fully cancel the video slowdown, acutely so on PAL's tighter clock.
+    if cfg.audio.nmi_rate_adaptive:
+        # Floored at zero: the load rule accepts a rate whose nearest latch is
+        # the ceiling itself (up to ~12.86 kHz NTSC), past max_safe_sample_rate.
+        headroom = max(0.0, max_safe_sample_rate(system) / rate - 1.0)
+        if headroom < 0.03:
+            return [
                 Diagnostic(
-                    level=level,
+                    level="warn",
                     category="audio",
                     subject=f"{name}/sample_rate",
-                    message=message,
-                    hint=_sample_rate_hint(system, rate),
+                    message=(
+                        f"nmi_rate_adaptive has only {headroom * 100:.1f}% NMI "
+                        f"headroom at {rate} Hz on {system} — it can't fully "
+                        f"compensate heavy-video slowdown."
+                    ),
+                    hint=(
+                        f"Lower [audio].sample_rate (more headroom) — {system} "
+                        f"max safe is ~{max_safe_sample_rate(system)} Hz."
+                    ),
                 )
-            )
-            continue
-        # Adaptive compensation raises the NMI rate over bus-halt loss, so it
-        # needs latch headroom above the configured rate; too little and it cannot
-        # fully cancel the video slowdown, acutely so on PAL's tighter clock.
-        if cfg.audio.nmi_rate_adaptive:
-            # Floored at zero: the load rule accepts a rate whose nearest latch is
-            # the ceiling itself (up to ~12.86 kHz NTSC), past max_safe_sample_rate.
-            headroom = max(0.0, max_safe_sample_rate(system) / rate - 1.0)
-            if headroom < 0.03:
-                out.append(
-                    Diagnostic(
-                        level="warn",
-                        category="audio",
-                        subject=f"{name}/sample_rate",
-                        message=(
-                            f"nmi_rate_adaptive has only {headroom * 100:.1f}% NMI "
-                            f"headroom at {rate} Hz on {system} — it can't fully "
-                            f"compensate heavy-video slowdown."
-                        ),
-                        hint=(
-                            f"Lower [audio].sample_rate (more headroom) — {system} "
-                            f"max safe is ~{max_safe_sample_rate(system)} Hz."
-                        ),
-                    )
-                )
-    return out
+            ]
+    return []
 
 
 def _validate_dac_curve_cfg(loaded: LoadResult) -> list[Diagnostic]:
@@ -2233,14 +2239,15 @@ def _probe_system_mode(name: str, cfg: Config, api: object) -> list[Diagnostic]:
         return []
     configured = cfg.ultimate64.system
     if configured == "auto":
-        return [
-            Diagnostic(
-                level="ok",
-                category="connectivity",
-                subject=subject,
-                message=f"system = auto resolves to {live} on this machine (from its {source})",
-            )
-        ]
+        resolved = Diagnostic(
+            level="ok",
+            category="connectivity",
+            subject=subject,
+            message=f"system = auto resolves to {live} on this machine (from its {source})",
+        )
+        # The offline rate check assumed NTSC for "auto".
+        rate_rows = _nmi_rate_diagnostics(name, cfg, live) if live != "NTSC" else []
+        return [resolved, *rate_rows]
     if configured.upper() == live:
         return [
             Diagnostic(

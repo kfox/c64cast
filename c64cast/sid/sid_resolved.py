@@ -18,6 +18,7 @@ See docs/architecture/sid.md#sid_resolvedpy--the-resolved-audio-line.
 from __future__ import annotations
 
 import logging
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
@@ -52,12 +53,21 @@ _UNKNOWN_LEVEL = "level unknown"
 # covered, but no model verdict can be passed on it.
 _MODEL_UNDECLARED = "unknown"
 
-# Once-per-run latches. A playlist re-activates these scenes, and each of these
-# messages is identical every time it would fire: a property of the machine, or
-# of the machine and the tune, not of the activation.
-_assumed_model_logged = False
-_output_split_logged = False
-_unplaceable_logged = False
+# Once per backend: a playlist re-activates these scenes, and each of these
+# messages is identical every time it would fire, a property of the machine
+# rather than of the activation. Weak, so a daemon's next session, which opens
+# its own backend, hears them again.
+_assumed_model_warned: weakref.WeakSet[object] = weakref.WeakSet()
+_output_split_warned: weakref.WeakSet[object] = weakref.WeakSet()
+_unplaceable_warned: weakref.WeakSet[object] = weakref.WeakSet()
+
+
+def _first_time(warned: weakref.WeakSet[object], api: C64Backend) -> bool:
+    if api in warned:
+        return False
+    warned.add(api)
+    return True
+
 
 # A real SID decodes its address only partially and answers all of this range,
 # so a second chip addressed anywhere inside it lands on the first one.
@@ -294,7 +304,6 @@ def _declared_host_verdict(
     ``host_sid_model`` can't reach. Falling back to that model covers the
     ordinary one-SID machine, and warns once per run when the NTSC/PAL
     convention is what a verdict rests on."""
-    global _assumed_model_logged
     if chips := tuple(getattr(api.profile, "host_sid_chips", ())):
         return describe_declared_chips(chips, addresses, required_models)
     address = addresses[0]
@@ -303,8 +312,7 @@ def _declared_host_verdict(
     if host_model is None:
         return None
     assumed = bool(getattr(api.profile, "host_sid_model_assumed", False))
-    if assumed and not _assumed_model_logged:
-        _assumed_model_logged = True
+    if assumed and _first_time(_assumed_model_warned, api):
         log.warning(
             "sid hardware: this machine's SID model is undeclared and cannot be "
             "read over this link — assuming %s from the NTSC=6581 / PAL=8580 "
@@ -316,7 +324,7 @@ def _declared_host_verdict(
     return describe_declared_audio(host_model, assumed, address, required)
 
 
-def _warn_output_split(*, emu_clean: bool, host: ResolvedAudio) -> None:
+def _warn_output_split(api: C64Backend, *, emu_clean: bool, host: ResolvedAudio) -> None:
     """Say, once per run, what a *listener* should do when the two outputs
     disagree — the emulations play the tune as authored, the machine's own
     chip cannot.
@@ -331,10 +339,8 @@ def _warn_output_split(*, emu_clean: bool, host: ResolvedAudio) -> None:
 
     Not gated on a mismatch alone: if the emulations are *also* wrong, the
     problem is configuration and pointing at a cable would misdirect."""
-    global _output_split_logged
-    if _output_split_logged or host.clean or not emu_clean:
+    if host.clean or not emu_clean or not _first_time(_output_split_warned, api):
         return
-    _output_split_logged = True
     log.warning(
         "sid hardware: this tune plays as authored on the Ultimate's own audio "
         "output, and on the wrong chip model through the C64's AV output — the "
@@ -378,13 +384,11 @@ def _warn_unplaceable_chips(api: C64Backend, addresses: Sequence[int], *, emulat
 
     Returns True on the condition, not on having logged, so a caller can
     suppress a second which-cable message for the same tune on a later pass."""
-    global _unplaceable_logged
     extra = _unplaceable_chips(api, addresses)
     if not extra:
         return False
-    if _unplaceable_logged:
+    if not _first_time(_unplaceable_warned, api):
         return True
-    _unplaceable_logged = True
     chips = ", ".join(f"${address:04X}" for address in addresses)
     missing = ", ".join(f"${address:04X}" for address in extra)
     if any(address in _SID_DECODE_WINDOW for address in extra):
@@ -509,7 +513,7 @@ def log_resolved_audio(
             # blames the chip model — the wrong diagnosis for a chip that isn't
             # there, which the more specific unplaceable warning has just given.
             if not unplaceable:
-                _warn_output_split(emu_clean=resolved.clean, host=host)
+                _warn_output_split(api, emu_clean=resolved.clean, host=host)
             # The label precedes the host fragments as a group: trailed after
             # them it reads as if only the last chip were on that output.
             resolved = ResolvedAudio(

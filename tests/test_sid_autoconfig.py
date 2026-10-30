@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, quiet_logging
 
 from c64cast.app.config import Config
 from c64cast.hw.backend import HardwareProfile
@@ -30,6 +30,7 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID2_FILTER,
 )
 from c64cast.sid.sid_host_emu import SidHeader
+from c64cast.sid.sid_hw_config import current_source_map
 
 
 def _header(
@@ -74,6 +75,7 @@ class PlanSidModelConfigTest(unittest.TestCase):
             {
                 (CAT_ADDRESSING, ITEM_SOCKET2_ADDR): "$D400",
                 (CAT_SOCKETS, ITEM_SOCKET2_EN): "Enabled",
+                (CAT_SOCKETS, ITEM_SOCKET1_EN): "Disabled",
             },
         )
 
@@ -135,18 +137,17 @@ class PlanSidModelConfigTest(unittest.TestCase):
         self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET1_EN), plan)
         self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET2_EN), plan)
 
-    def test_socket_swap_leaves_mirroring_and_sockets_alone(self):
-        # A real chip at its own address needs no help from either knob, so a
-        # swap must not churn config the restore then has to put back.
+    def test_socket_swap_disables_the_socket_it_displaces_and_leaves_mirroring_alone(self):
         plan = sa.plan_sid_model_config(
             chips=((0xD400, "8580"),),
-            current_addr_map={0xD400: "socket1"},
-            socket_models=("6581", "8580"),
+            current_addr_map={0xD400: "socket2"},
+            socket_models=("8580", "6581"),
             ultisid_allowed=True,
         )
         assert plan is not None
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_SOCKET1_ADDR)], "$D400")
+        self.assertEqual(plan[(CAT_SOCKETS, ITEM_SOCKET2_EN)], "Disabled")
         self.assertNotIn((CAT_ADDRESSING, ITEM_AUTO_MIRROR), plan)
-        self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET1_EN), plan)
 
     def test_ultisid_fallback_uses_6581_curve_for_6581_request(self):
         plan = sa.plan_sid_model_config(
@@ -338,6 +339,7 @@ class PlanModelConfigForHeaderTest(unittest.TestCase):
             {
                 (CAT_ADDRESSING, ITEM_SOCKET2_ADDR): "$D400",
                 (CAT_SOCKETS, ITEM_SOCKET2_EN): "Enabled",
+                (CAT_SOCKETS, ITEM_SOCKET1_EN): "Disabled",
             },
         )
 
@@ -364,6 +366,7 @@ class PlanModelConfigForHeaderTest(unittest.TestCase):
             {
                 (CAT_ADDRESSING, ITEM_SOCKET2_ADDR): "$D400",
                 (CAT_SOCKETS, ITEM_SOCKET2_EN): "Enabled",
+                (CAT_SOCKETS, ITEM_SOCKET1_EN): "Disabled",
                 (CAT_ADDRESSING, ITEM_ULTISID1_ADDR): "$D420",
                 (CAT_ULTISID, ITEM_ULTISID1_FILTER): "8580 Lo",
                 (CAT_ADDRESSING, ITEM_AUTO_MIRROR): "Disabled",
@@ -443,6 +446,26 @@ class ApplySidAutoconfigTest(unittest.TestCase):
         self.assertEqual(api.config_store[CAT_SOCKETS][ITEM_SOCKET2_EN], "Enabled")
         # ...and the snapshot holds the PRE-change values so it can restore.
         self.assertEqual(saved[(CAT_SOCKETS, ITEM_SOCKET2_EN)], "Disabled")
+
+    def test_a_swap_leaves_the_matching_socket_as_what_answers_the_address(self):
+        # The mixer pass, panning and the resolved line all ask the live source
+        # map which source plays $D400; with both sockets left enabled there it
+        # names socket 2, the 6581 the swap was meant to replace.
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_SOCKETS] = {
+            ITEM_SOCKET1_EN: "Enabled",
+            ITEM_SOCKET1_TYPE: "8580",
+            ITEM_SOCKET2_EN: "Enabled",
+            ITEM_SOCKET2_TYPE: "6581",
+        }
+        api.config_store[CAT_ADDRESSING] = {
+            ITEM_SOCKET1_ADDR: "$D420",
+            ITEM_SOCKET2_ADDR: "$D400",
+        }
+        header = _header(sid_addresses=(0xD400,), sid_models=("8580",))
+        with quiet_logging():
+            sa.apply_sid_autoconfig(api, header, "auto")
+        self.assertEqual(current_source_map(api).get(0xD400), "socket1")
 
 
 if __name__ == "__main__":

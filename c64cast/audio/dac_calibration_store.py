@@ -49,6 +49,9 @@ D400_NO_SOCKET: Final = "no-socket"
 D400_UNKNOWN: Final = "unknown"
 D400Owner = int | Literal["no-socket", "unknown"]
 
+#: The ``sids`` key of a run over a machine with no socket to tell apart.
+DEFAULT_ENTRY: Final = "default"
+
 # Tables land under paths.calibration_dir(), resolved at use time so
 # $C64CAST_DATA_DIR (and the tests) can redirect it. Captured machine-specific
 # data, never committed.
@@ -72,7 +75,9 @@ def profile_path_override(cfg: Config) -> Path | None:
     directly is also the only way to point one machine's run at a calibration
     that was auto-keyed by a *different* backend — a TeensyROM+ driving the SID
     of a C64 whose own calibration is filed under the Ultimate's ``unique_id``
-    is exactly that case, and it can't be expressed as a key at all."""
+    is exactly that case, and it can't be expressed as a key at all. The two
+    links still play different entries of that file: the Ultimate its socket
+    tables, the TeensyROM+ the ``"default"`` entry its own run adds."""
     value = cfg.audio.dac_calibration_profile
     if not value:
         return None
@@ -196,60 +201,25 @@ def list_calibration_files(backend: str | None = None) -> list[Path]:
     return out
 
 
-def _select_sid_entry(
-    cfg: Config,
-    be: C64Backend | None,
-    sids: dict[str, Any],
-    recorded_d400: int | None = None,
-) -> str | None:
-    """Which entry in a loaded calibration's ``sids`` map applies right now.
-
-    ``recorded_d400`` is the socket the *calibrating* run saw answering $D400
-    before it isolated anything (the file's ``d400_socket``), which is the only
-    evidence available on a link that can't ask the machine itself."""
-    has_socket_entries = "1" in sids or "2" in sids
-    if has_socket_entries and be is not None:
-        owner = d400_owner(be) if cfg.hardware.backend == "ultimate" else D400_UNKNOWN
-        if owner == D400_NO_SOCKET:
-            # Something else (an UltiSID core) owns $D400, so no
-            # physical-chip table in this file applies.
-            return None
-        if isinstance(owner, int):
-            key = str(owner)
-            return key if key in sids else None
-        # Ownership of $D400 is *unknown* (no SID config query on this link,
-        # or the read failed), which is not the "an UltiSID owns it" answered
-        # above. Collapsing the two discards a good multi-socket file.
-        if recorded_d400 is not None:
-            # The file names the chip reached at $D400; if it holds no table
-            # for that chip, no table in it is the right one. Falling through
-            # to "the only entry" would apply the other socket's ladder.
-            return str(recorded_d400) if str(recorded_d400) in sids else None
-        if len(sids) > 1 and "1" in sids:
-            log.warning(
-                "audio: this calibration holds tables for %d SID sockets and the %s link "
-                "could not say which one answers $D400, so socket 1 (the default mapping) is "
-                "assumed. If this machine maps socket 2 there instead, the wrong chip's "
-                "ladder is being applied — re-run `--calibrate-dac` over a link with a SID "
-                "config query to record the mapping in the file.",
-                len(sids),
-                cfg.hardware.backend,
-            )
-            return "1"
-    if "default" in sids:
-        return "default"
-    if len(sids) == 1:
-        return next(iter(sids))
-    return None
+def has_sid_sockets(be: C64Backend) -> bool:
+    """Whether `be` is an Ultimate 64, whose SID config says which physical
+    socket answers $D400 — as against a TeensyROM+ or an Ultimate II+, where
+    the only SID a run can reach is whatever answers there."""
+    return bool(getattr(be.profile, "supports_sid_config", False))
 
 
-def active_socket_at_d400(be: C64Backend) -> int | None:
-    """Which physical SID socket (1 or 2) currently answers $D400, or None
-    when none does *or it cannot be told* — for a caller that records what it
-    saw and treats a miss as "not recorded". A decision about which table to
-    play through needs the difference: use :func:`d400_owner`."""
+def _select_sid_entry(be: C64Backend | None, sids: dict[str, Any]) -> str | None:
+    """Which entry in a loaded calibration's ``sids`` map applies right now:
+    on an Ultimate 64 the socket answering $D400, or none; on any other
+    machine its ``"default"`` entry."""
+    if be is None:
+        if DEFAULT_ENTRY in sids:
+            return DEFAULT_ENTRY
+        return next(iter(sids)) if len(sids) == 1 else None
+    if not has_sid_sockets(be):
+        return DEFAULT_ENTRY
     owner = d400_owner(be)
-    return owner if isinstance(owner, int) else None
+    return str(owner) if isinstance(owner, int) else None
 
 
 def d400_owner(be: C64Backend) -> D400Owner:
@@ -282,6 +252,19 @@ def d400_owner(be: C64Backend) -> D400Owner:
     return D400_NO_SOCKET
 
 
+def _saved_sids(path: Path) -> dict[str, Any]:
+    """The ``sids`` map already on disk at `path`, or ``{}`` when there is no
+    readable schema-2 file there."""
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
+        return {}
+    sids = raw.get("sids")
+    return sids if isinstance(sids, dict) else {}
+
+
 def _applicable_entry(
     cfg: Config, be: C64Backend | None, path: Path | None
 ) -> tuple[str, dict[str, Any]] | None:
@@ -290,17 +273,10 @@ def _applicable_entry(
     inapplicable file."""
     if path is None:
         path = calibration_path(cfg, be)
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
+    sids = _saved_sids(path)
+    if not sids:
         return None
-    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
-        return None
-    sids = raw.get("sids")
-    if not isinstance(sids, dict) or not sids:
-        return None
-    recorded = raw.get("d400_socket")
-    entry_key = _select_sid_entry(cfg, be, sids, recorded if isinstance(recorded, int) else None)
+    entry_key = _select_sid_entry(be, sids)
     if entry_key is None:
         return None
     entry = sids.get(entry_key)
@@ -347,9 +323,9 @@ def load_calibrated_table_and_chip(
 ) -> tuple[bytes | None, tuple[int | None, str] | None]:
     """:func:`load_calibrated_table`, with the ``(socket, detected)`` of the
     entry it came from (see :func:`_chip_of`), from one read of the file and of
-    the live socket map. Two reads can each pick a different entry — a
-    socket-map read that fails the second time falls back to the file's
-    recorded mapping — and pair one entry's table with another's chip."""
+    the live socket map. Two reads can each pick a different entry — the
+    socket map can change, or fail to read, between them — and pair one
+    entry's table with another's chip."""
     applicable = _applicable_entry(cfg, be, path)
     table, chip = _table_of(applicable), _chip_of(applicable)
     if table is not None and applicable is not None:
@@ -369,20 +345,14 @@ def _table_of(applicable: tuple[str, dict[str, Any]] | None) -> bytes | None:
 
 
 def _note_one_sid_assumption(cfg: Config, be: C64Backend | None, entry_key: str) -> None:
-    if (
-        entry_key == "default"
-        # A chip label recorded by the $D400 ARMSID probe does not rule out a
-        # second chip mirrored there, so a labeled entry is no exception.
-        # Only on a link that *cannot* isolate a socket; a backend with the
-        # socket map either resolved it or knowingly declined to.
-        and be is not None
-        and not getattr(be.profile, "supports_sid_config", False)
-    ):
+    # A chip label recorded by the $D400 ARMSID probe does not rule out a
+    # second chip mirrored there, so a labeled entry is no exception.
+    if entry_key == DEFAULT_ENTRY and be is not None:
         log.info(
             "audio: this calibration was measured without isolating a SID socket at $D400 "
             "(the %s link has no SID config query), so it assumes one SID. If this "
-            "machine has a second SID or address mirroring, re-measure over a link "
-            "that can isolate a socket, or set [audio].dac_curve explicitly.",
+            "machine has a second SID or address mirroring, the measured curve is a "
+            "blend of both; set [audio].dac_curve explicitly if it plays badly.",
             cfg.hardware.backend,
         )
 
@@ -412,20 +382,6 @@ class CalibrationDocument:
     key: str
     entries: dict[str, CalibrationResult]  # "1" / "2" / "default" -> result
     device: dict[str, str]  # free-form provenance (REST info / transport endpoint)
-    d400_socket: int | None = None
-
-
-def _saved_entries(path: Path) -> dict[str, Any]:
-    """The ``sids`` map already on disk at `path`, or empty when there is no
-    readable schema-2 file there."""
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
-        return {}
-    sids = raw.get("sids")
-    return sids if isinstance(sids, dict) else {}
 
 
 def _still_applies(name: str, kept: dict[str, Any], detected: str | None) -> bool:
@@ -442,6 +398,10 @@ def _still_applies(name: str, kept: dict[str, Any], detected: str | None) -> boo
 
 def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system.
+
+    The run's entries are merged into the file already on disk: an entry the
+    run did not measure — the other socket, or the ``default`` entry a
+    TeensyROM+ sharing the file measured — keeps its table.
 
     ``raw_signed_levels`` is written additively under the *same* schema
     version: readers only ever require ``sidtable`` (see
@@ -460,13 +420,7 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     When the file already holds a usable table for that entry, measured on the
     same chip, the old entry is kept and the rejected one is filed under its
     ``rejected`` key instead, so a failed re-measure leaves playback on the
-    table it had.
-
-    ``d400_socket`` — which socket answered ``$D400`` *before* the run isolated
-    anything — is written the same additive way. Every socket is measured at
-    ``$D400`` (that is what isolation does), so the entry keys alone can't say
-    which chip a machine reaches there normally; without it, a link that can't
-    query SID config has to guess (see :func:`_select_sid_entry`)."""
+    table it had."""
 
     def entry(r: CalibrationResult) -> dict[str, Any]:
         out: dict[str, Any] = {"detected": r.detected}
@@ -478,8 +432,8 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
         return out
 
     path = path_for_key(cfg, doc.key)
-    previous = _saved_entries(path)
-    sids: dict[str, Any] = {}
+    previous = _saved_sids(path)
+    sids: dict[str, Any] = dict(previous)
     for name, r in doc.entries.items():
         kept = previous.get(name)
         if r.sidtable is None and isinstance(kept, dict) and _still_applies(name, kept, r.detected):
@@ -494,7 +448,5 @@ def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "sids": sids,
     }
-    if doc.d400_socket is not None:
-        record["d400_socket"] = doc.d400_socket
     atomic_write_text(path, json.dumps(record, indent=2) + "\n")
     return path

@@ -1404,12 +1404,6 @@ class WaveformSceneTest(unittest.TestCase):
     def _2sid_scene_messages(self, api) -> str:
         """Run a 2SID tune through setup() on a bare link and collect every
         SID-hardware message it produces."""
-        from c64cast.sid import sid_resolved
-
-        sid_resolved._unplaceable_logged = False
-        # Module-global one-shot flag: leave it back at its pristine value so a
-        # later test doesn't inherit "already logged" from this one.
-        self.addCleanup(setattr, sid_resolved, "_unplaceable_logged", False)
         with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
             f.write(make_psid(second_sid_addr=0xD420, payload=bytes(2048)))
             path = f.name

@@ -599,6 +599,21 @@ class SystemTimingProbeTest(unittest.TestCase):
             with self.subTest(flag=flag):
                 self.assertEqual(self._rows("PAL", flag), [])
 
+    def _rate_rows(self, flag: bytes) -> list:
+        cfg = cfgmod.Config()
+        cfg.audio.enabled = True
+        cfg.audio.sample_rate = 12600
+        rows = doctor._probe_system_mode("sys", cfg, _KernalFlagApi(flag))
+        return [d for d in rows if d.subject == "sys/sample_rate"]
+
+    def test_auto_resolving_to_pal_checks_the_rate_against_pal(self):
+        (row,) = self._rate_rows(b"\x01")
+        self.assertEqual(row.level, "error")
+        self.assertIn("PAL", row.message)
+
+    def test_auto_resolving_to_ntsc_leaves_the_rate_to_the_offline_check(self):
+        self.assertEqual(self._rate_rows(b"\x00"), [])
+
     def test_the_teensyrom_reachability_probe_includes_the_row(self):
         cfg = cfgmod.Config()
         rows = doctor._probe_tr_reachability("sys", cfg, _KernalFlagApi(b"\x01"), "fw 0.7")

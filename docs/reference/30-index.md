@@ -70,7 +70,7 @@ Every name c64cast answers to — 463 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `--calibrate-dac` | [`audio` (A)](20-appendix-a-configuration.md#audio), [Audio (G)](26-appendix-g-cli-flags.md#audio), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
+| `--calibrate-dac` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [`audio` (A)](20-appendix-a-configuration.md#audio), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `callsign` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`callsign` (C)](22-appendix-c-overlays.md#callsign), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | camera | [Validation (1)](02-config-rules.md#validation), [Cameras and Microphones (6)](07-inputs-and-outputs.md#cameras-and-microphones), [Choosing a Camera (6)](07-inputs-and-outputs.md#choosing-a-camera) |
 | `cc_map` | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [Learning a Controller (6)](07-inputs-and-outputs.md#learning-a-controller), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |

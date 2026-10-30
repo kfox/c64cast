@@ -1870,7 +1870,7 @@ class VideoScene(MediaFileMixin, Scene):
             self.tempo_follow = False
         elif self.tempo_from_link and self.dac_pacing is not None:
             self.tempo_scale = self.dac_pacing.bitmap_tempo
-            self.tempo_follow = self.tempo_scale < 1.0
+            self.tempo_follow = True
         else:
             self.tempo_scale = self._fixed_tempo
             self.tempo_follow = False

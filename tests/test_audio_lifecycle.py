@@ -69,6 +69,15 @@ def _make(**kw: Any) -> AudioStreamer:
     return AudioStreamer(api, kw.pop("sample_rate", 8000), kw.pop("system", "NTSC"), **kw)
 
 
+def _stop_quietly(s: AudioStreamer) -> None:
+    """stop() for a test that ran the real worker against the real clock: how
+    many of its ring writes were late depends on the host's load, so the run
+    summary is not this test's to show. The LifecycleTest stop-report tests
+    assert it."""
+    with quiet_logging():
+        s.stop()
+
+
 class _SupersedeOnStompRead(AudioStreamer):
     """An AudioStreamer whose worker is superseded the first time it reads a
     set pause request: the next scene's start_* landing between a call site's
@@ -3858,12 +3867,7 @@ class LifecycleTest(unittest.TestCase):
         s.host_dma_servo = False
         s.start_for_external_source()
 
-        def stop_quietly() -> None:
-            # The run summary stop() logs is asserted by the underrun tests.
-            with quiet_logging():
-                s.stop()
-
-        self.addCleanup(stop_quietly)
+        self.addCleanup(_stop_quietly, s)
         s.push_samples(np.zeros(20, dtype=np.int16))
         deadline = time.monotonic() + 5.0
         while s._pushed_count - s._queued_samples < 20 and time.monotonic() < deadline:
@@ -3893,7 +3897,7 @@ class LifecycleTest(unittest.TestCase):
         s.servo.reset_for_consumer_start = seed_then_signal  # type: ignore[method-assign]
         s.host_dma_servo = False
         s.start_for_external_source()
-        self.addCleanup(s.stop)
+        self.addCleanup(_stop_quietly, s)
         s.push_samples(np.zeros(32 * 6, dtype=np.int16))
         self.assertTrue(started.wait(5.0))
         self.assertEqual(s.servo.ring_lead, 32 * 6)
@@ -3911,7 +3915,7 @@ class LifecycleTest(unittest.TestCase):
         s.servo.reset_for_consumer_start = seed_then_signal  # type: ignore[method-assign]
         s.host_dma_servo = False
         s.start_for_external_source(hold=True)
-        self.addCleanup(s.stop)
+        self.addCleanup(_stop_quietly, s)
         s.push_samples(np.zeros(32 * 6, dtype=np.int16))
         return s, started
 
@@ -4071,7 +4075,7 @@ class LifecycleTest(unittest.TestCase):
         s = _make_worker_streamer(chunk_size=32)
         s.host_dma_servo = False
         s.start_for_external_source()
-        self.addCleanup(s.stop)
+        self.addCleanup(_stop_quietly, s)
         s.push_samples(np.zeros(32 * 6, dtype=np.int16))
         deadline = time.monotonic() + 5.0
         while s._ring_landed_at is None and time.monotonic() < deadline:
@@ -4810,6 +4814,25 @@ class LifecycleTest(unittest.TestCase):
         # Counters reset for the next run.
         self.assertEqual(s._full_underruns, 0)
         self.assertEqual(s._partial_underruns, 0)
+
+    def test_stop_reports_late_sub_writes_as_a_degraded_spread(self):
+        s = _make()
+        s._total_slots = 1
+        s._late_slots = 1
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            s.stop()
+        self.assertTrue(any("1/1 ring sub-writes late (100.0%)" in m for m in cm.output))
+        self.assertEqual((s._late_slots, s._total_slots), (0, 0))
+
+    def test_a_few_late_sub_writes_are_reported_as_a_held_spread(self):
+        s = _make()
+        s._total_slots = 100
+        s._late_slots = 9
+        with self.assertLogs("c64cast.audio.audio", level="INFO") as cm:
+            s.stop()
+        (late,) = [m for m in cm.output if "sub-writes late" in m]
+        self.assertTrue(late.startswith("INFO:"))
+        self.assertIn("spread held", late)
 
     def test_second_stop_reports_nothing(self):
         # stop() runs at scene teardown and again at session teardown. The

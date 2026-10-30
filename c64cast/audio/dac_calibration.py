@@ -63,9 +63,12 @@ from .audio_handlers import (
     RING_BUFFER_SIZE,
 )
 from .dac_calibration_store import (
+    D400_UNKNOWN,
+    DEFAULT_ENTRY,
     CalibrationDocument,
     CalibrationResult,
-    active_socket_at_d400,
+    d400_owner,
+    has_sid_sockets,
     resolve_calibration_key,
     save_calibration,
 )
@@ -106,6 +109,10 @@ log = logging.getLogger(__name__)
 # in: measuring in the model the chip was left in made which table a user got
 # depend on whatever last set it, a menu edit or the last tune autoconfig played.
 CALIBRATION_MODEL = "6581"
+
+
+class NoPhysicalSidError(RuntimeError):
+    """An Ultimate 64 run found no socketed SID answering $D400 to measure."""
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,9 @@ def _estimate_text(n_sids: int, secs: float, settle: float) -> str:
     return f"MEASURING {n_sids} {noun} - ABOUT {total} SECONDS"
 
 
+_KEPT_CURVE = "its previous calibration, else the baked/linear curve"
+
+
 def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None) -> str:
     """The message an unsteady — as opposed to unreadable — ring fails with.
 
@@ -216,7 +226,7 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
             "measurement."
         )
     kept = (
-        "Nothing is written: playback keeps the baked/linear curve, which is "
+        f"Nothing is written: playback keeps {_KEPT_CURVE}, which is "
         "better than a table fitted to levels that move."
     )
     if saved is not None:
@@ -563,9 +573,8 @@ def _measure_one(
             f"{SELFTEST_TOLERANCE * 100:.0f}%). Codes $h0 set the master volume "
             "to 0, so they must measure as silence; that they don't means these "
             "are not consistent output levels, and any ladder folded from them "
-            f"would be wrong. No table written for {label} — playback keeps its "
-            "previous calibration, else the baked/linear curve, which is better "
-            "than a bad table. The raw "
+            f"would be wrong. No table written for {label} — playback keeps "
+            f"{_KEPT_CURVE}, which is better than a bad table. The raw "
             "levels are saved for diagnosis."
         )
     return sidtable, metrics, raw
@@ -573,8 +582,7 @@ def _measure_one(
 
 def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tuple[int, str]]:
     """Which physical SID sockets report a detected chip, as (socket, type)
-    pairs — empty on detection failure, which falls back to the single
-    "default" measurement."""
+    pairs — empty on detection failure."""
     out: list[tuple[int, str]] = []
     try:
         s1, s2 = detect_sockets(be)
@@ -594,8 +602,8 @@ def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tu
                 out.append((1, identity(0, ITEM_SOCKET1_TYPE)))
             if s2:
                 out.append((2, identity(1, ITEM_SOCKET2_TYPE)))
-    except Exception:  # noqa: BLE001 — best-effort; fall back to single measurement
-        log_fn("[calib] socket detection failed — falling back to a single measurement")
+    except Exception:  # noqa: BLE001 — run_calibration refuses an empty result
+        log_fn("[calib] SID socket detection failed")
     return out
 
 
@@ -758,6 +766,25 @@ def _report_run(
     log_fn(f"[calib] wrote {path}")
 
 
+def _require_physical_sid_at_d400(be: C64Backend) -> None:
+    """Refuse an Ultimate 64 run that has no socketed SID answering $D400."""
+    owner = d400_owner(be)
+    if owner == D400_UNKNOWN:
+        raise NoPhysicalSidError(
+            "--calibrate-dac could not read which SID socket answers $D400 (reading the "
+            "Ultimate's SID socket configuration failed), so nothing was measured. Check "
+            "the Web Remote Control Service is on and run it again."
+        )
+    if not isinstance(owner, int):
+        raise NoPhysicalSidError(
+            "--calibrate-dac found no physical SID answering $D400 on this Ultimate (an "
+            "UltiSID core answers there, or the SID sockets are empty or disabled). A DAC "
+            "curve is a property of a real chip, so there is nothing to calibrate and "
+            "nothing was written; playback uses the built-in curve. To calibrate a "
+            "socketed SID, map its socket to $D400 in the Ultimate's SID Addressing menu."
+        )
+
+
 def run_calibration(
     be: C64Backend,
     cfg: Config,
@@ -769,21 +796,22 @@ def run_calibration(
     device: int | str | None = None,
     log_fn: Callable[[str], None] = print,
 ) -> CalibrationRun:
-    """Measure the connected SID's (or SIDs', on a U64/U2+ with populated
+    """Measure the connected SID's (or SIDs', on an Ultimate 64 with populated
     physical sockets) Mahoney transfer curve and persist a per-system
     calibration file. Leaves the machine silenced + reset. Requires a capture
     device on the SID output (the ``mic`` extra / sounddevice).
 
-    On a backend with the multi-SID config surface
-    (``profile.supports_sid_config`` — U64 only), every physical SID socket
-    reporting a detected chip (``sid_hw_config.detect_sockets``) is measured
+    On an Ultimate 64 (:func:`has_sid_sockets`) the run needs a socketed SID
+    answering ``$D400`` and raises :class:`NoPhysicalSidError` before touching
+    the machine when there is none. Every physical SID socket reporting a
+    detected chip (``sid_hw_config.detect_sockets``) is then measured
     independently — isolated to ``$D400`` via :func:`_isolate_socket`,
     measured, then every socket's original SID address/socket config is
-    restored. A board with no populated sockets, or a backend without that
-    surface (TeensyROM has no config API; the Ultimate II+ has no sockets to
-    isolate), falls back to a single ``"default"`` measurement of whatever SID
-    currently answers ``$D400``, labeled only when that chip is an ARMSID or
-    ARM2SID (:func:`_identify_d400_chip`).
+    restored — and filed under its socket number. Any other machine (a
+    TeensyROM+, an Ultimate II+) has no socket to isolate, so the run makes a
+    single ``"default"`` measurement of whatever SID answers ``$D400``,
+    labeled only when that chip is an ARMSID or ARM2SID
+    (:func:`_identify_d400_chip`).
 
     Either way, an ARMSID or ARM2SID is measured in :data:`CALIBRATION_MODEL`
     and put back into its own model when the run ends, including on a failure or Ctrl+C.
@@ -793,9 +821,10 @@ def run_calibration(
     _require_sounddevice()
 
     key = resolve_calibration_key(cfg, be)
-    supports_sid_config = bool(getattr(be.profile, "supports_sid_config", False))
+    sid_sockets = has_sid_sockets(be)
+    if sid_sockets:
+        _require_physical_sid_at_d400(be)
     device_info = _device_provenance(cfg, be, log_fn)
-    normal_d400: int | None = None
     master_restore: dict[tuple[str, str], str] = {}
     # Filled as each ARMSID is switched, so a failure or Ctrl+C at any later
     # point still puts back every model switched so far.
@@ -809,11 +838,13 @@ def run_calibration(
             be=be, key=key, device=dev, fmt=fmt, secs=secs, settle=settle, log_fn=log_fn
         )
 
-        sockets = _populated_sockets(be, log_fn) if supports_sid_config else []
+        sockets = _populated_sockets(be, log_fn) if sid_sockets else []
+        if sid_sockets and not sockets:
+            raise NoPhysicalSidError(
+                "--calibrate-dac could not detect the SID in the socket answering $D400, "
+                "so nothing was measured."
+            )
         sockets = _sockets_in_calibration_model(be, sockets, model_restore, log_fn)
-        # Before the measurement loop: _isolate_socket remaps every socket to
-        # $D400 in turn, so asking afterwards answers with c64cast's own edit.
-        normal_d400 = active_socket_at_d400(be) if supports_sid_config else None
         d400_chip = None if sockets else _identify_d400_chip(be, model_restore, log_fn)
         if not sockets and model_restore:
             # The per-socket loop re-parks the voices after every routing
@@ -826,16 +857,13 @@ def run_calibration(
             entries = _measure_each_socket(ctx, st, sockets)
         else:
             sidtable, metrics, raw = _measure_one(ctx, "SID")
-            entries = {"default": CalibrationResult(sidtable, metrics, d400_chip, raw)}
+            entries = {DEFAULT_ENTRY: CalibrationResult(sidtable, metrics, d400_chip, raw)}
     finally:
         try:
             _silence_and_reset(be)
         finally:
             restore_sid_config(be, {**model_restore, **master_restore})
 
-    path = save_calibration(
-        cfg,
-        CalibrationDocument(key=key, entries=entries, device=device_info, d400_socket=normal_d400),
-    )
+    path = save_calibration(cfg, CalibrationDocument(key=key, entries=entries, device=device_info))
     _report_run(entries, path, log_fn)
     return CalibrationRun(key=key, path=path, entries=entries)

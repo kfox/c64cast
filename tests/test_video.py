@@ -4826,6 +4826,27 @@ class FollowDrainTest(unittest.TestCase):
         # So a run opened at a followed 1.0 still has a graph to retune.
         self.assertIs(kwargs["tempo_follow"], True)
 
+    def test_a_scene_the_link_starts_at_full_speed_follows_a_slower_drain(self):
+        # A TeensyROM+ whose slices are locked to the sample store starts at
+        # 1.0. When the lock is lost mid-scene, the writes halt the NMI player
+        # again and the drain falls to the unlocked figure.
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+        ):
+            source_cls.return_value.a_stream = None
+            scene = _link_tempo_scene(1.0)
+            scene.setup()
+            scene.teardown()
+        source = _TempoStubSource(1.0)
+        scene.source = cast(Any, source)
+        scene.audio = _UnderrunStubAudio()  # type: ignore[assignment]  # duck-typed stats()
+        cast(Any, scene.api).delivery_epoch = 0
+        scene._follow_start = 100.0
+        self._play(scene, 0.88, 120.0)
+        self.assertTrue(source.requests)
+        self.assertAlmostEqual(source.requests[-1], 0.88, places=3)
+
     def test_a_run_on_another_file_starts_from_the_hardware_figure(self):
         kwargs = self._setup_after_following("https://stub.invalid/other.mp4")
         self.assertEqual(kwargs["tempo_scale"], 0.88)
