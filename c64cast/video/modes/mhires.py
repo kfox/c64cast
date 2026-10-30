@@ -563,6 +563,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             # color RAM into the shared $D800 (one copy serves both banks and
             # both fields, hence the brief c3 tear), then arm. The alternation
             # free-runs, so the next phase-0 vblank brings the pair set up whole.
+            self._await_page_flip(api)
             (
                 target,
                 bm_addr,
@@ -589,6 +590,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             # Color RAM goes into the shared $D800 LAST, just before arming, so
             # its c3 tear on the still-displayed bank is as short as possible.
             # bg0 flips via the tracker IRQ, atomic with $DD00.
+            self._await_page_flip(api)
             target, bm_addr, scr_addr, bm_id, scr_id, dd00 = self._hostdma_swap_target()
             api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
             api.write_region(scr_addr, screen_bytes, region_id=scr_id)

@@ -177,6 +177,8 @@ _REGIONS: tuple[Region, ...] = (
             mi.MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             mi.HOSTDMA_SWAP_IRQ_HANDLER,
             mi.FLICKER_SWAP_IRQ_HANDLER,
+            mi.HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
+            mi.FLICKER_SWAP_REPORTING_IRQ_HANDLER,
         ),
         f"{_MI}:BANK_SWAP_IRQ_HANDLER_ADDR",
     ),

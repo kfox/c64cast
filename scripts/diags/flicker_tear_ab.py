@@ -20,8 +20,11 @@ this is checking for, so read the fps in the phase logs too.
 
 The residual is flicker-only, which is what identifies it — the handler checks
 $D012 and writes $DD00 a few cycles later, and a halt beginning in that gap
-passes the check and commits late anyway. Expect roughly that, not zero, until
-the staging path stops halting the bus.
+passes the check and commits late anyway. Most of that residual later proved to
+be a push into the bank on screen, which `--content position` names two-apart
+(c64cast#834). On an Ultimate 64 the C64 reports each flip and the next push
+waits for it, and 0 torn frames is the expected result there; the Ultimate II+
+and the TeensyROM+ keep the residual.
 
 Method. A synthetic video cycles 8 states. Colors alternate every frame so
 consecutive displayed frames are always tellable apart, while the stripe phase

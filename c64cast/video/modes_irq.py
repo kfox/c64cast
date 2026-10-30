@@ -793,6 +793,39 @@ assert len(FLICKER_SWAP_IRQ_HANDLER) == 63, (
 )
 
 
+# The Ultimate 64's FPGA debug register. The 6510 can write it and socket DMA
+# command 0xFF76 reads it back, which makes it the one byte of C64 state the
+# host can read over the DMA link while a stream runs: REST reads during a
+# stream wedge the machine. Elsewhere $D7FF is a SID mirror, where a store
+# could reach a SID add-on's configuration registers.
+COMMIT_REPORT_ADDR = 0xD7FF
+_STA_COMMIT_REPORT = bytes([0x8D, COMMIT_REPORT_ADDR & 0xFF, COMMIT_REPORT_ADDR >> 8])
+_STA_DD00 = bytes([0x8D, CIA2.PORT_A & 0xFF, CIA2.PORT_A >> 8])
+
+
+def _reporting_commits(handler: bytes, *, flip_at: int, exit_branches: tuple[int, ...]) -> bytes:
+    """`handler` with STA $D7FF right after its STA $DD00 at `flip_at`, so
+    the bank value it commits (still in A) is reported to the host, and each
+    exit branch whose operand sits at an `exit_branches` offset retargeted
+    past the inserted three bytes onto the kernal chain."""
+    chain = len(handler) - 3
+    out = bytearray(handler)
+    for operand in exit_branches:
+        assert operand + 1 + out[operand] == chain, f"branch at {operand - 1} misses the chain"
+        out[operand] += len(_STA_COMMIT_REPORT)
+    assert handler[flip_at : flip_at + 3] == _STA_DD00, f"no STA $DD00 at {flip_at}"
+    after_flip = flip_at + len(_STA_DD00)
+    return bytes(out[:after_flip]) + _STA_COMMIT_REPORT + bytes(out[after_flip:])
+
+
+HOSTDMA_SWAP_REPORTING_IRQ_HANDLER = _reporting_commits(
+    HOSTDMA_SWAP_IRQ_HANDLER, flip_at=34, exit_branches=(6, 14, 24)
+)
+FLICKER_SWAP_REPORTING_IRQ_HANDLER = _reporting_commits(
+    FLICKER_SWAP_IRQ_HANDLER, flip_at=52, exit_branches=(6, 29, 32, 42)
+)
+
+
 # Also in c64.CIA2, kept here as Python ints rather than strings for the
 # per-frame push.
 DD00_BANK_0 = CIA2.PORT_A_BANK_0  # $97

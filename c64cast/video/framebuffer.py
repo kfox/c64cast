@@ -21,13 +21,23 @@ from .modes_irq import (
     BANK_SWAP_IRQ_HANDLER_ADDR,
     DD00_BANK_2,
     FLICKER_SWAP_IRQ_HANDLER,
+    FLICKER_SWAP_REPORTING_IRQ_HANDLER,
     FLICKER_TRACKER_OFF_BANK,
     FLICKER_TRACKER_OFF_D018,
     FRAME_TRACKER_ADDR,
     HOSTDMA_SWAP_IRQ_HANDLER,
+    HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
     HOSTDMA_TRACKER_OFF_BANK,
 )
 from .palette import C64_PALETTE_BGR
+
+_HOSTDMA_HANDLERS = (HOSTDMA_SWAP_IRQ_HANDLER, HOSTDMA_SWAP_REPORTING_IRQ_HANDLER)
+_FLICKER_HANDLERS = (FLICKER_SWAP_IRQ_HANDLER, FLICKER_SWAP_REPORTING_IRQ_HANDLER)
+
+
+def _installed_is_one_of(ram: bytes, handlers: tuple[bytes, ...]) -> bool:
+    at = BANK_SWAP_IRQ_HANDLER_ADDR
+    return any(ram[at : at + len(handler)] == handler for handler in handlers)
 
 
 def _builtin_charset() -> bytes:
@@ -135,19 +145,12 @@ class Framebuffer:
         vector = ram[VECTORS.IRQ] | (ram[VECTORS.IRQ + 1] << 8)
         if vector != BANK_SWAP_IRQ_HANDLER_ADDR:
             return VIC_BANK_0.BASE
-        installed = ram[
-            BANK_SWAP_IRQ_HANDLER_ADDR : BANK_SWAP_IRQ_HANDLER_ADDR + len(HOSTDMA_SWAP_IRQ_HANDLER)
-        ]
-        if installed == HOSTDMA_SWAP_IRQ_HANDLER:
+        if _installed_is_one_of(ram, _HOSTDMA_HANDLERS):
             bank_byte = ram[FRAME_TRACKER_ADDR + HOSTDMA_TRACKER_OFF_BANK]
-        else:
-            installed = ram[
-                BANK_SWAP_IRQ_HANDLER_ADDR : BANK_SWAP_IRQ_HANDLER_ADDR
-                + len(FLICKER_SWAP_IRQ_HANDLER)
-            ]
-            if installed != FLICKER_SWAP_IRQ_HANDLER:
-                return VIC_BANK_0.BASE
+        elif _installed_is_one_of(ram, _FLICKER_HANDLERS):
             bank_byte = ram[FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_BANK]
+        else:
+            return VIC_BANK_0.BASE
         return VIC_BANK_2.BASE if bank_byte == DD00_BANK_2 else VIC_BANK_0.BASE
 
     def _flicker_page_b(self, ram: bytes, bank_base: int) -> int | None:
@@ -163,10 +166,7 @@ class Framebuffer:
         vector = ram[VECTORS.IRQ] | (ram[VECTORS.IRQ + 1] << 8)
         if vector != BANK_SWAP_IRQ_HANDLER_ADDR:
             return None
-        installed = ram[
-            BANK_SWAP_IRQ_HANDLER_ADDR : BANK_SWAP_IRQ_HANDLER_ADDR + len(FLICKER_SWAP_IRQ_HANDLER)
-        ]
-        if installed != FLICKER_SWAP_IRQ_HANDLER:
+        if not _installed_is_one_of(ram, _FLICKER_HANDLERS):
             return None
         page_b = ram[FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018 + 1]
         # $D018's matrix nibble is bank-relative, hence the bank_base addend.
