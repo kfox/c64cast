@@ -2,4 +2,5 @@
   the C64.** A pad mapped to `joystick` that was down when the controller was
   unplugged used to hold that direction until the program ended; c64cast now
   notices the port is gone within about a second, warns, and releases it.
-  Plug the controller back in and restart c64cast to use it again.
+  Plugged back in, a USB controller on macOS plays on as before; if its pads
+  stay dead, restart c64cast.

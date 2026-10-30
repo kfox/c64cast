@@ -194,14 +194,13 @@ class PortWatch(PollThread):
         self._present = present
         if present:
             self._log.info(
-                "%s: MIDI port %r is listed again; restart c64cast if its pads do nothing",
+                "%s: MIDI port %r is back; if it stays silent, restart c64cast to reopen it",
                 self._label,
                 name,
             )
             return
         self._log.warning(
-            "%s: MIDI port %r is gone (controller unplugged?); releasing %s — "
-            "restart c64cast to reconnect",
+            "%s: MIDI port %r is gone (controller unplugged?); releasing %s",
             self._label,
             name,
             self._releases,

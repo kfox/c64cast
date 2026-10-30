@@ -5,6 +5,7 @@ even the `midi` extra) is needed."""
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
@@ -299,6 +300,44 @@ class DrainWorkBoundTest(unittest.TestCase):
         with mock.patch.object(midi_scene, "MAX_DRAIN_WORK_S", 1.0):
             self.assertEqual(midi_scene._drain_budget_s(ULTIMATE_PROFILE), 1.0)
             self.assertEqual(midi_scene._drain_budget_s(TEENSYROM_PROFILE), 1.0)
+
+
+class PortWatchReportTest(unittest.TestCase):
+    """On macOS a replugged USB controller keeps feeding the port opened before the
+    unplug, so the loss warning no longer sends anyone to restart c64cast."""
+
+    PORT = "Pads MIDI 1"
+
+    def setUp(self):
+        self.lost: list[bool] = []
+        self.watch = _midi.PortWatch(
+            lambda: self.PORT,
+            lambda: self.lost.append(True),
+            label="test",
+            releases="every held pad",
+            logger=logging.getLogger("c64cast._midi"),
+            name="test-port-watch",
+        )
+
+    def _check(self, names: list[str]) -> None:
+        with mock.patch.object(_midi, "mido") as fake:
+            fake.get_input_names.return_value = names
+            self.watch.check()
+
+    def test_the_loss_names_what_it_releases_and_nothing_to_restart(self):
+        with self.assertLogs("c64cast._midi", level="WARNING") as logs:
+            self._check([])
+        self.assertEqual(self.lost, [True])
+        self.assertIn("releasing every held pad", logs.output[0])
+        self.assertNotIn("restart", logs.output[0])
+
+    def test_a_returning_port_is_reported_back_without_a_second_release(self):
+        with self.assertLogs("c64cast._midi", level="INFO") as logs:
+            self._check([])
+            self._check([self.PORT])
+        self.assertEqual(self.lost, [True])
+        self.assertTrue(logs.output[1].startswith("INFO:"), logs.output)
+        self.assertIn(f"{self.PORT!r} is back", logs.output[1])
 
 
 class PortListOnMacOSTest(unittest.TestCase):
