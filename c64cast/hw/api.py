@@ -2103,10 +2103,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         if has_emusid != self.profile.supports_emusid_mixer:
             self.profile = replace(self.profile, supports_emusid_mixer=has_emusid)
 
-        # One category, two capabilities: the System Mode enum and the VIC
-        # stream are both compiled under the firmware's `#ifdef U64`, so a
-        # device registering this category is an Ultimate 64 with a VIC of its
-        # own and one that doesn't is an Ultimate II+ with neither.
+        # One category, three capabilities: the System Mode enum, the VIC
+        # stream and the debug register read are all compiled under the
+        # firmware's `#ifdef U64`, so a device registering this category is
+        # an Ultimate 64 and one that doesn't is an Ultimate II+ with none.
         has_system_mode = SYSTEM_MODE_CATEGORY in categories
         if has_system_mode != self.profile.supports_system_mode:
             self.profile = replace(
@@ -2114,6 +2114,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 supports_system_mode=has_system_mode,
                 supports_video_stream=has_system_mode,
             )
+        if has_system_mode != self.profile.supports_debug_register:
+            self.profile = replace(self.profile, supports_debug_register=has_system_mode)
         halt = ULTIMATE_64_HALT_CYCLES_PER_BYTE if has_system_mode else 0.0
         if halt != self.profile.halt_cycles_per_byte:
             self.profile = replace(self.profile, halt_cycles_per_byte=halt)
@@ -2429,6 +2431,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         if not self.profile.supports_video_stream:
             return
         self.socket_dma.vicstream_off()
+
+    def read_debug_register(self) -> int:
+        """Over socket DMA rather than REST's ``machine:debugreg``, because
+        REST reads during a stream wedge the machine."""
+        if not self.profile.supports_debug_register:
+            raise BackendCapabilityError(
+                "read_debug_register: only an Ultimate 64 answers socket DMA 0xFF76"
+            )
+        return self.socket_dma.read_debug_register()
 
     def close(self) -> None:
         self.socket_dma.close()

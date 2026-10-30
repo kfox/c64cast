@@ -23,6 +23,7 @@ from unittest.mock import patch
 from c64cast.hw.backend import LinkError
 from c64cast.hw.socket_dma import (
     CMD_AUTHENTICATE,
+    CMD_DEBUG_REG,
     CMD_DMARUN,
     CMD_DMAWRITE,
     CMD_IDENTIFY,
@@ -277,6 +278,26 @@ class FlushTest(unittest.TestCase):
         fake.recv = _timed_out_recv  # type: ignore[method-assign]
         with self.assertRaises(OSError):
             c.flush()
+        self.assertIsNone(c._sock)
+
+
+class DebugRegisterTest(unittest.TestCase):
+    def test_sends_a_bare_read_and_returns_the_byte(self):
+        """A payload byte would be written to the register as well."""
+        fake = FakeSocket([_IDENT_REPLY, b"\x95"])
+        c = _client_with(fake)
+        before = len(fake.sent)
+        self.assertEqual(c.read_debug_register(), 0x95)
+        self.assertEqual(bytes(fake.sent[before:]), struct.pack("<HH", CMD_DEBUG_REG, 0))
+
+    def test_an_unanswered_read_closes_the_connection_and_raises_a_link_error(self):
+        """Its reply may still arrive, and the next round trip would read
+        it as its own."""
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        c.io_timeout = 0.05
+        with self.assertRaises(SocketDMAError):
+            c.read_debug_register()
         self.assertIsNone(c._sock)
 
 
