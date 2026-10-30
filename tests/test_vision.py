@@ -284,6 +284,39 @@ class VisionControllerTest(unittest.TestCase):
         self.assertTrue(resume.wait(0.5), "sustained pinch while paused should resume")
         ctl.stop()
 
+    def test_a_pinch_held_through_its_resume_does_not_pause_again(self):
+        # Paused from another surface, so the controller has no pose of its own
+        # on record. The resume takes the playlist a reset and a clear loop, and
+        # the hand is still pinching when it comes back.
+        ctl = _controller([pinch()], hold_threshold_s=0.05)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        state = _drive_ticks(ctl, 15, pause, resume)
+        self.assertTrue(resume.is_set())
+        pause.clear()
+        clock = FrozenClock(1.0, "monotonic")
+        with mock.patch.object(vision_mod, "time", clock):
+            state.last_tick = 1.0
+            for _ in range(15):
+                clock.advance(ctl.poll_interval_s)
+                ctl._tick(state)
+        self.assertFalse(pause.is_set(), "the resume pinch must not pause the show again")
+
+    def test_a_new_pinch_after_a_resume_still_pauses(self):
+        ctl = _controller([pinch()], hold_threshold_s=0.05)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        state = _drive_ticks(ctl, 15, pause, resume)
+        pause.clear()
+        ctl.recognizer = cast(GestureRecognizer, FakeRecognizer([fist(), fist(), pinch()]))
+        clock = FrozenClock(1.0, "monotonic")
+        with mock.patch.object(vision_mod, "time", clock):
+            state.last_tick = 1.0
+            for _ in range(5):
+                clock.advance(ctl.poll_interval_s)
+                ctl._tick(state)
+        self.assertTrue(pause.is_set())
+
     def test_no_pause_while_paused_on_swipe(self):
         # Paused: only the pinch-hold resume gesture matters; a swipe is ignored.
         ctl = _controller([fist(0.1), fist(0.9)], swipe_velocity=1.0)

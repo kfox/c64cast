@@ -477,8 +477,12 @@ class VisionController:
         self, st: _GestureState, static: Gesture, cur: tuple[float, float] | None, now: float
     ) -> None:
         """PAUSED: only the pinch hold-to-resume gesture matters (mirrors
-        keyboard.py — CTRL/SHIFT analogs are ignored)."""
+        keyboard.py — CTRL/SHIFT analogs are ignored). The pose is recorded as
+        already fired, as keyboard.py keeps its baselines, so a pose still held
+        when the show resumes fires nothing; the pinch that resumed it would
+        otherwise pause it again."""
         assert self._resume_event is not None
+        st.last_static, st.static_run, st.static_fired = static, 0, True
         if static == Gesture.PINCH:
             if st.held_since is None:
                 st.held_since = now
