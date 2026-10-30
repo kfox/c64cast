@@ -37,6 +37,11 @@ _XML_DECLARED_ENCODING = re.compile(rb"""<\?xml[^>]*?\sencoding\s*=\s*["']([A-Za
 def _parse_feed(xml: bytes) -> ET.Element:
     try:
         return ET.fromstring(xml)
+    except LookupError:
+        # An encoding name Python has no codec for (x-sjis, x-euc-jp). expat
+        # ignores the declaration on str input, as it did when feeds were
+        # parsed from decoded text.
+        return ET.fromstring(xml.decode("utf-8", errors="replace"))
     except ValueError:
         # expat decodes only UTF-8, UTF-16 and single-byte encodings, and
         # refuses a declared multi-byte one (Shift_JIS, GB2312, Big5) this way.

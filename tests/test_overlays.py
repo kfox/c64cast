@@ -837,6 +837,22 @@ class RssFetchTest(_RemotePeerTest):
                 ov._fetch_once()
                 self.assertEqual(ov._titles, [title])
 
+    def test_feed_declaring_an_encoding_python_does_not_know_is_read_as_utf8(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        body = (
+            '<?xml version="1.0" encoding="x-sjis"?>'
+            "<rss><channel><item><title>Café</title></item></channel></rss>"
+        ).encode()
+
+        def answer(handler):
+            _send_head(handler, "text/xml", len(body))
+            handler.wfile.write(body)
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        ov._fetch_once()
+        self.assertEqual(ov._titles, ["Café"])
+
     def test_oversized_feed_is_refused_without_reading_it_all(self):
         from c64cast.scenes.overlays import _fetch
         from c64cast.scenes.overlays.rss import RssOverlay
