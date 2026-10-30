@@ -64,6 +64,19 @@ frame, stepping across four slots, so frames two apart differ in bitmap; each
 torn frame is then named adjacent (a late swap), two-apart (frames N-1 and N+1
 at once: a push into the displayed bank) or partial (a band caught mid-write).
 
+`--content planes` runs the same two phases in mhires, where a frame is four
+planes the VIC reads from different places: the bitmap and screen RAM in the
+banked pair the page flip swaps, color RAM at the one shared $D800, and bg0 in
+$D021, which the swap IRQ writes. Compose cannot hold one plane still while
+another changes, so the launched c64cast replaces each pushed frame with
+`plane_frame(n)`: one column zone per plane, each lighting slot `n % 4` through
+that plane alone, plus a zone of noise that keeps every push as large as a
+video frame's. Each zone is scored on its own, so a torn frame names its
+plane: a two-apart seam in the bitmap or screen zone is a push into the bank
+on screen (c64cast#834), one in the color zone is the shared-RAM tear, and
+bg0 cannot tear, only change on the wrong frame, which the per-frame offsets
+against the bitmap zone show.
+
 The test video carries a steady tone and audio plays as it does for a user,
 so the audio writes share the DMA link with the bitmap pushes. `--no-audio`
 mutes it, which is the condition the numbers above were measured under.
@@ -72,6 +85,7 @@ mutes it, which is the condition the numbers above were measured under.
     scripts/diags/flicker_tear_ab.py --seconds 10
     scripts/diags/flicker_tear_ab.py --content position
     scripts/diags/flicker_tear_ab.py --phases flicker --seconds 40
+    scripts/diags/flicker_tear_ab.py --content planes --seconds 30
 
 Outputs land under scripts/diags/out/flickertear/. Resets the U64 on exit —
 note that rest_reset needs an http:// URL; on a u64:// URL it does nothing.
@@ -80,10 +94,14 @@ note that rest_reset needs an http:// URL; on a u64:// URL it does nothing.
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
+import re
 import subprocess
+import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import _diaglib as d
 import cv2
@@ -135,6 +153,79 @@ def position_state(i: int) -> np.ndarray:
     first = _band_first_cell(i % BANDS)
     img[:, first * 8 : (first + _BAND_CELLS) * 8] = PAL["white"]
     return img
+
+
+PLANE_ZONES = {"bitmap": 2, "screen": 7, "color": 12, "bg0": 17}
+_NOISE_CELLS = slice(22, 38)
+_WHITE = 1
+# Dark enough that a slot showing bg0 never reads as lit.
+BG0_STATES = (0, 6, 2, 11)
+_MC_C1 = 0x55
+_MC_C3 = 0xFF
+
+
+def plane_frame(n: int) -> dict[str, Any]:
+    """Push `n` of the planes content, in C64 memory layout: lit slot `n %
+    BANDS` in each plane's zone, through that plane alone."""
+    k = n % BANDS
+    bitmap = np.zeros((25, 40, 8), np.uint8)
+    screen = np.zeros((25, 40), np.uint8)
+    color = np.zeros((25, 40), np.uint8)
+    for cell in _MARKER_CELLS:
+        bitmap[:, cell] = _MC_C1
+        screen[:, cell] = _WHITE << 4
+    first = PLANE_ZONES["bitmap"]
+    screen[:, first : first + BANDS] = _WHITE << 4
+    bitmap[:, first + k] = _MC_C1
+    first = PLANE_ZONES["screen"]
+    bitmap[:, first : first + BANDS] = _MC_C1
+    screen[:, first + k] = _WHITE << 4
+    first = PLANE_ZONES["color"]
+    bitmap[:, first : first + BANDS] = _MC_C3
+    color[:, first + k] = _WHITE
+    rng = np.random.default_rng(n)
+    noise = bitmap[:, _NOISE_CELLS]
+    bitmap[:, _NOISE_CELLS] = rng.integers(0, 256, noise.shape, dtype=np.uint8)
+    screen[:, _NOISE_CELLS] = rng.integers(0, 256, noise.shape[:2], dtype=np.uint8)
+    color[:, _NOISE_CELLS] = rng.integers(0, 16, noise.shape[:2], dtype=np.uint8)
+    return {
+        "bitmap": bitmap.reshape(-1),
+        "screen": screen.reshape(-1),
+        "color": color.reshape(-1),
+        "bg": BG0_STATES[k],
+    }
+
+
+_APP_FLAG = "--as-c64cast-with-planes"
+_RATE_EVERY = 150
+
+
+def run_app_with_planes(app_args: list[str]) -> int:
+    """c64cast itself, each mhires push carrying `plane_frame` instead of the
+    composed frame. Patched at push rather than compose so the slot advances
+    once per frame sent to the machine, whatever the pipeline drops."""
+    import c64cast
+    from c64cast.app.cli import run
+    from c64cast.video.modes.mhires import MultiHiresDisplayMode
+
+    print(f"[planes] c64cast imported from {c64cast.__file__}", flush=True)
+    composed_push = MultiHiresDisplayMode.push
+    pushes = itertools.count()
+    since = [time.monotonic()]
+
+    def push(self, api, buffers):
+        n = next(pushes)
+        if n and n % _RATE_EVERY == 0:
+            now = time.monotonic()
+            print(f"[planes] {_RATE_EVERY / (now - since[0]):.1f} pushes/s", flush=True)
+            since[0] = now
+        planes = plane_frame(n)
+        if "screen_b" in buffers:
+            planes["screen_b"] = planes["screen"]
+        composed_push(self, api, cast(Any, {**buffers, **planes}))
+
+    MultiHiresDisplayMode.push = push  # type: ignore[method-assign]
+    return run(app_args)
 
 
 def build_test_video(
@@ -232,7 +323,14 @@ def build_test_video(
         )  # fmt: skip
 
 
-def write_config(cfg_path: Path, video_path: Path, *, flicker: bool, audio: bool = True) -> None:
+def write_config(
+    cfg_path: Path,
+    video_path: Path,
+    *,
+    flicker: bool,
+    audio: bool = True,
+    display: str = "hires",
+) -> None:
     cfg_path.write_text(
         f"""
 [audio]
@@ -260,7 +358,7 @@ loop = true
 
 [[scenes]]
 type = "video"
-display = "hires"
+display = "{display}"
 file = {d.toml_string(video_path)}
 """,
         encoding="utf-8",
@@ -292,17 +390,23 @@ def burst_capture(label: str, seconds: float, device) -> list[np.ndarray]:
     return frames
 
 
-def run_phase(label, cfg, url, seconds, device, outdir) -> tuple[list[np.ndarray], str]:
+def run_phase(
+    label, cfg, url, seconds, device, outdir, *, planes: bool = False
+) -> tuple[list[np.ndarray], str]:
     log = outdir / f"{label}.log"
     env = dict(os.environ)
     print(f"[{label}] launching c64cast …")
+    app_args = ["--config", str(cfg), "--url", url, "-v"]
     with open(log, "w") as lf:
-        proc = d.c64cast_popen(
-            ["--config", str(cfg), "--url", url, "-v"],
-            stdout=lf,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
+        if planes:
+            proc = subprocess.Popen(
+                [d.python_exe(), __file__, _APP_FLAG, *app_args],
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+        else:
+            proc = d.c64cast_popen(app_args, stdout=lf, stderr=subprocess.STDOUT, env=env)
         try:
             time.sleep(8.0)  # boot + first rendered frames
             frames = burst_capture(label, seconds, device)
@@ -385,6 +489,81 @@ def _position_row_states(frame: np.ndarray) -> list[str]:
     return out
 
 
+def _bg0_bgr() -> np.ndarray:
+    from c64cast.video.palette import HOST_PALETTES
+
+    table = HOST_PALETTES[HOST_PALETTE]
+    return np.array([table[i] for i in BG0_STATES], np.float32)
+
+
+def plane_row_states(frame: np.ndarray) -> dict[str, list[str]]:
+    """Classify every row of the planes content, per plane zone: the lit
+    slots ("2", "02", "-") for the bitmap, screen and color zones, the slot
+    whose bg0 color the row shows for the bg0 zone, "blank" outside the
+    picture."""
+    h = frame.shape[0]
+    pix = frame.astype(np.float32)
+    lit = pix.mean(axis=2) > LIT_LEVEL
+    full_cols = np.flatnonzero(lit.mean(axis=0) > 0.5)
+    if full_cols.size == 0:
+        return {zone: ["blank"] * h for zone in PLANE_ZONES}
+    x0, x1 = int(full_cols[0]), int(full_cols[-1])
+    cell = (x1 - x0 + 1) / 40.0
+
+    def centre(first: int, last: int) -> slice:
+        lo = x0 + int((first + 0.25) * cell)
+        hi = x0 + int((last + 0.75) * cell)
+        return slice(lo, max(lo + 1, hi))
+
+    marker = lit[:, centre(0, 0)].mean(axis=1) > 0.5
+    out: dict[str, list[str]] = {}
+    for zone, first in PLANE_ZONES.items():
+        if zone == "bg0":
+            rows = pix[:, centre(first, first + BANDS - 1)].mean(axis=1)
+            nearest = np.linalg.norm(rows[:, None, :] - _bg0_bgr()[None], axis=2).argmin(axis=1)
+            states = [str(s) for s in nearest]
+        else:
+            on = np.stack(
+                [lit[:, centre(first + b, first + b)].mean(axis=1) > 0.5 for b in range(BANDS)],
+                axis=1,
+            )
+            states = ["".join(str(b) for b in range(BANDS) if on[y, b]) or "-" for y in range(h)]
+        out[zone] = [st if marker[y] else "blank" for y, st in enumerate(states)]
+    return out
+
+
+def frame_slot(states: list[str]) -> int | None:
+    """The slot most rows of one zone show, or None with no single-slot row."""
+    single = [int(s) for s in states if len(s) == 1 and s.isdigit()]
+    return max(set(single), key=single.count) if single else None
+
+
+def score_planes(frames: list[np.ndarray]) -> dict[str, Any]:
+    """Per plane: the torn frames and their seam kinds; per frame, each
+    plane's slot offset from the bitmap's, mod BANDS."""
+    states = [plane_row_states(f) for f in frames]
+    report: dict[str, Any] = {"torn": {}, "kinds": {}, "offsets": {}}
+    for zone in PLANE_ZONES:
+        _, torn, blank, _ = score(range(len(frames)), lambda i, z=zone: states[i][z])
+        report["torn"][zone] = torn
+        report["kinds"][zone] = [seam_kind(states[i][zone]) for i in torn]
+        report["blank"] = blank
+    for zone in PLANE_ZONES:
+        if zone == "bitmap":
+            continue
+        offsets: list[int] = []
+        for st in states:
+            ref, own = frame_slot(st["bitmap"]), frame_slot(st[zone])
+            if ref is not None and own is not None:
+                offsets.append((own - ref) % BANDS)
+        report["offsets"][zone] = offsets
+    slots = [frame_slot(st["bitmap"]) for st in states]
+    report["flips"] = sum(
+        1 for a, b in zip(slots, slots[1:], strict=False) if None not in (a, b) and a != b
+    )
+    return report
+
+
 def seam_kind(states: list[str]) -> str:
     """Name what a torn position frame shows, from its long runs top to bottom.
 
@@ -448,7 +627,31 @@ def log_facts(text: str) -> str:
     return f"armed={armed} version={ver} " + (f"| {fps[0].strip()[-90:]}" if fps else "")
 
 
+def print_planes_report(
+    label: str, frames: list[np.ndarray], seconds: float, log: str, out: Path
+) -> None:
+    report = score_planes(frames)
+    scored = len(frames) - report["blank"]
+    rates = [float(r) for r in re.findall(r"\[planes\] ([0-9.]+) pushes/s", log)]
+    pushed = f"{np.median(rates):.1f}" if rates else "?"
+    print(
+        f"  {label}: {scored} scored frames, {report['blank']} blank; "
+        f"{report['flips'] / seconds:.1f} page flips/s seen, {pushed} pushes/s sent (median)"
+    )
+    for zone in PLANE_ZONES:
+        torn, kinds = report["torn"][zone], report["kinds"][zone]
+        tally = ", ".join(f"{k}={kinds.count(k)}" for k in sorted(set(kinds)))
+        print(f"    {zone:7s} torn {len(torn):4d}  {tally}")
+        for n, i in enumerate(torn[:3]):
+            cv2.imwrite(str(out / f"{label}_{zone}_torn_{n:02d}.png"), frames[i])
+    for zone, offsets in report["offsets"].items():
+        hist = {o: offsets.count(o) for o in range(BANDS)}
+        print(f"    {zone:7s} slot - bitmap slot: {hist}")
+
+
 def main() -> int:
+    if sys.argv[1:2] == [_APP_FLAG]:
+        return run_app_with_planes(sys.argv[2:])
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=d.U64_URL)
     ap.add_argument("--seconds", type=float, default=10.0, help="capture window per phase")
@@ -456,10 +659,11 @@ def main() -> int:
     ap.add_argument("--no-reset", action="store_true")
     ap.add_argument(
         "--content",
-        choices=("color", "position"),
+        choices=("color", "position", "planes"),
         default="color",
         help="color: the raster-gate test above; position: frames two apart "
-        "differ in bitmap, so a push into the bank on screen shows as a two-apart seam",
+        "differ in bitmap, so a push into the bank on screen shows as a two-apart seam; "
+        "planes: mhires, scored per plane (bitmap, screen, color RAM, bg0)",
     )
     ap.add_argument("--no-audio", action="store_true", help="mute, isolating the video path")
     ap.add_argument(
@@ -475,20 +679,35 @@ def main() -> int:
     video = out / "ab_every_frame.mkv"
     print(f"[build] test video -> {video}")
     audio = not args.no_audio
-    build_test_video(video, content=args.content, audio=audio)
+    planes = args.content == "planes"
+    if planes:
+        # Long enough that the looping playlist does not restart the scene,
+        # and fade it, inside the capture window.
+        seconds = max(25, int(args.seconds) + 20)
+        build_test_video(video, audio=audio, seconds=seconds)
+    else:
+        build_test_video(video, content=args.content, audio=audio)
 
     phases = []
     for label in args.phases.split(","):
         if label not in ("flicker", "plain"):
             ap.error(f"unknown phase {label!r}: choose from flicker, plain")
         cfg = out / f"{label}.toml"
-        write_config(cfg, video, flicker=label == "flicker", audio=audio)
+        write_config(
+            cfg,
+            video,
+            flicker=label == "flicker",
+            audio=audio,
+            display="mhires" if planes else "hires",
+        )
         phases.append((label, cfg))
     results: dict[str, list[np.ndarray]] = {}
     logs: dict[str, str] = {}
     try:
         for label, cfg in phases:
-            frames, text = run_phase(label, cfg, args.url, args.seconds, args.device, out)
+            frames, text = run_phase(
+                label, cfg, args.url, args.seconds, args.device, out, planes=planes
+            )
             results[label] = frames
             logs[label] = text
             print(f"[{label}] {log_facts(text)}")
@@ -501,6 +720,12 @@ def main() -> int:
         print("no frames captured — is the capture device attached?")
         return 1
 
+    if planes:
+        print("\n=== torn frames per plane, and each plane's slot against the bitmap's ===")
+        for label, _cfg in phases:
+            print_planes_report(label, results.get(label, []), args.seconds, logs[label], out)
+        print(f"\nframes + configs + logs: {out}")
+        return 0
     print("\n=== torn frames (picture holds both states at once) ===")
     for label, _cfg in phases:
         frames = results.get(label, [])

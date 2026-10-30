@@ -154,5 +154,67 @@ class PositionContentTest(unittest.TestCase):
         self.assertEqual(self.tool.seam_kind(self._states(picture)), "partial")
 
 
+def _mhires_picture(
+    planes: dict, rows: slice = slice(None), over: dict | None = None
+) -> np.ndarray:
+    """What the VIC draws from `planes`, with `over`'s values in `rows` of
+    character rows for each of its keys, and `over`'s bg0 if it has one."""
+    from c64cast.video.palette import HOST_PALETTES
+
+    table = np.array(HOST_PALETTES["u64"], np.uint8)
+    mixed = {
+        "bitmap": planes["bitmap"].reshape(25, 40, 8).copy(),
+        "screen": planes["screen"].reshape(25, 40).copy(),
+        "color": planes["color"].reshape(25, 40).copy(),
+    }
+    over = over or {}
+    for key, value in over.items():
+        if key != "bg":
+            mixed[key][rows] = value.reshape(mixed[key].shape)[rows]
+    bitmap, screen, color = mixed["bitmap"], mixed["screen"], mixed["color"]
+    bg = over.get("bg", planes["bg"])
+    codes = (bitmap[..., None] >> np.array([6, 4, 2, 0], np.uint8)) & 3  # (25, 40, 8, 4)
+    slots = np.stack([np.full_like(screen, bg), screen >> 4, screen & 15, color & 15], axis=-1)
+    index = np.take_along_axis(slots[:, :, None, :], codes.astype(np.intp), axis=3)
+    picture = table[index.transpose(0, 2, 1, 3).reshape(200, 160)]
+    return np.repeat(picture, 2, axis=1)
+
+
+class PlaneContentTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = _load("flicker_tear_ab")
+
+    def _report(self, *pictures: np.ndarray) -> dict:
+        return self.tool.score_planes([_captured(p) for p in pictures])
+
+    def _torn(self, report: dict) -> dict:
+        return {zone: kinds for zone, kinds in report["kinds"].items() if kinds}
+
+    def test_whole_frames_tear_nowhere_and_every_plane_shows_the_same_slot(self) -> None:
+        report = self._report(*(_mhires_picture(self.tool.plane_frame(n)) for n in range(4)))
+        self.assertEqual(self._torn(report), {})
+        self.assertEqual(report["blank"], 0)
+        for zone, offsets in report["offsets"].items():
+            self.assertEqual(offsets, [0, 0, 0, 0], zone)
+
+    def test_a_push_into_the_bank_on_screen_tears_bitmap_and_screen_two_apart(self) -> None:
+        shown, pushed = self.tool.plane_frame(1), self.tool.plane_frame(3)
+        bank = {"bitmap": pushed["bitmap"], "screen": pushed["screen"]}
+        report = self._report(_mhires_picture(shown, slice(0, 12), bank))
+        self.assertEqual(self._torn(report), {"bitmap": ["two-apart"], "screen": ["two-apart"]})
+
+    def test_a_color_ram_write_caught_by_the_beam_tears_only_color(self) -> None:
+        shown, pushed = self.tool.plane_frame(1), self.tool.plane_frame(2)
+        report = self._report(_mhires_picture(shown, slice(0, 12), {"color": pushed["color"]}))
+        self.assertEqual(self._torn(report), {"color": ["adjacent"]})
+
+    def test_a_bg0_ahead_of_the_bank_is_an_offset_not_a_tear(self) -> None:
+        shown = self.tool.plane_frame(1)
+        report = self._report(_mhires_picture(shown, over={"bg": self.tool.plane_frame(2)["bg"]}))
+        self.assertEqual(self._torn(report), {})
+        self.assertEqual(report["offsets"]["bg0"], [1])
+        self.assertEqual(report["offsets"]["screen"], [0])
+
+
 if __name__ == "__main__":
     unittest.main()
