@@ -539,7 +539,12 @@ class TestCheckRefusesAReleaseWithoutHighlights(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             changelog = Path(tmp) / "CHANGELOG.md"
             changelog.write_text(_cut(body, version), encoding="utf-8")
-            with patch.object(bv, "CHANGELOG", changelog):
+            fragments = Path(tmp) / "changelog.d"
+            fragments.mkdir()
+            with (
+                patch.object(bv, "CHANGELOG", changelog),
+                patch.object(bv, "FRAGMENT_DIR", fragments),
+            ):
                 return bv.check(version)
 
     def test_a_section_without_highlights_fails_the_check(self) -> None:
