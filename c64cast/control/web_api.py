@@ -185,8 +185,10 @@ def _path_hider(store: ConfigStore, media: MediaStore) -> Callable[[str], str]:
     label, and the home directory as ``~``. ``config.load`` logs the absolute
     path of every show it starts, and a failed build's exception text quotes
     the file it could not open."""
-    labeled = [(str(r.path), r.label) for r in store.roots]
-    stripped = [(os.path.join(r.path, ""), "") for r in media.roots]
+    # A filesystem root is a bare separator, and swapping it out would rewrite
+    # every slash in the text rather than one path's prefix.
+    labeled = [(str(r.path), r.label) for r in store.roots if r.path.parent != r.path]
+    stripped = [(os.path.join(r.path, ""), "") for r in media.roots if r.path.parent != r.path]
     # A stable sort with `labeled` first: a directory that is both kinds of
     # root names a config the way the config browser does.
     swaps = sorted(labeled + stripped, key=lambda swap: len(swap[0].rstrip(os.sep)), reverse=True)

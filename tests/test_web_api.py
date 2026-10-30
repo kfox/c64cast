@@ -899,6 +899,21 @@ class ConfigBrowserTest(WebApiTestCase):
                         ]
                         self.assertEqual(shown, expected)
 
+    def test_a_filesystem_root_as_a_root_leaves_a_viewers_log_slashes_alone(self):
+        message = "could not open /srv/clip.mp4 from http://example.com/clip.mp4"
+        self._capture_log().error(message)
+        media = media_store.MediaStore(
+            read_write={"video": "", "sid": "", "picture": "", "program": ""},
+            read_only=["/"],
+        )
+        store = config_store.ConfigStore(["/"], include_examples=False)
+        with self.client(media=media, store=store) as c:
+            tail = c.get("/api/session", headers=VIEWER_AUTH).json()["log"]
+            with c.websocket_connect("/api/ws", headers=VIEWER_AUTH) as ws:
+                fed = ws.receive_json()["log"]
+        for lines in (tail, fed):
+            self.assertIn(message, [r["message"] for r in lines])
+
     def test_a_viewer_reads_a_failed_build_with_the_home_directory_as_a_tilde(self):
         clip = Path.home() / "Movies" / "clip.mp4"
         self.build.error = FileNotFoundError(f"No such file or directory: '{clip}'")
@@ -907,6 +922,27 @@ class ConfigBrowserTest(WebApiTestCase):
             c.post("/api/session/start", headers=AUTH)
             self.assertReaches(SessionState.ERROR)
             for headers, expected in ((VIEWER_AUTH, shown), (AUTH, clip)):
+                with self.subTest(viewer=headers is VIEWER_AUTH):
+                    polled = c.get("/api/session", headers=headers).json()
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["session"]
+                    for status in (polled, fed):
+                        self.assertEqual(
+                            status["last_error"],
+                            f"FileNotFoundError: No such file or directory: '{expected}'",
+                        )
+
+    def test_a_viewer_reads_a_failed_build_with_a_media_path_relative_to_its_root(self):
+        directory = Path(tempfile.mkdtemp()).resolve()
+        media = media_store.MediaStore(
+            read_write={"video": str(directory), "sid": "", "picture": "", "program": ""}
+        )
+        clip = directory / "clip.mp4"
+        self.build.error = FileNotFoundError(f"No such file or directory: '{clip}'")
+        with quiet_logging(), self.client(media=media) as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.ERROR)
+            for headers, expected in ((VIEWER_AUTH, "clip.mp4"), (AUTH, str(clip))):
                 with self.subTest(viewer=headers is VIEWER_AUTH):
                     polled = c.get("/api/session", headers=headers).json()
                     with c.websocket_connect("/api/ws", headers=headers) as ws:
