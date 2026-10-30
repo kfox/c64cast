@@ -136,7 +136,7 @@ let clock = {bpm: 120, phase: 0, running: false, bpb: 4, at: 0};
 
 function post(cmd) {
   const sys = curSys();
-  if (sys) cmd.system = sys.name;
+  if (sys && cmd.system === undefined) cmd.system = sys.name;
   return fetch('/perf/command', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(cmd),
@@ -271,14 +271,32 @@ function renderClips(sys) {
     pad.appendChild(meta);
     // Press and release both go: only a gate clip acts on the release
     // (performance.py `_handle_event`), so this is safe for every launch type.
-    const down = (ev) => { ev.preventDefault(); post({action: 'launch', slot: c.slot, pressed: true}); };
-    const up = (ev) => { ev.preventDefault(); post({action: 'launch', slot: c.slot, pressed: false}); };
-    pad.addEventListener('pointerdown', down);
-    pad.addEventListener('pointerup', up);
-    pad.addEventListener('pointercancel', up);
+    pad.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      pad.setPointerCapture(ev.pointerId);
+      heldPads.set(ev.pointerId, {slot: c.slot, system: sys.name});
+      post({action: 'launch', slot: c.slot, pressed: true, system: sys.name});
+    });
     grid.appendChild(pad);
   });
 }
+
+// Keyed by pointer and released from the window, not from the pad: every
+// state push rebuilds the grid, so the pad that was pressed is usually gone,
+// and its capture with it, by the time the release arrives. That removal fires
+// lostpointercapture mid-hold, which is why it is not a release here. The
+// system is pinned at the press because a second finger can switch tabs
+// mid-hold.
+const heldPads = new Map();
+
+function releasePad(ev) {
+  const held = heldPads.get(ev.pointerId);
+  if (!held) return;
+  heldPads.delete(ev.pointerId);
+  post({action: 'launch', slot: held.slot, pressed: false, system: held.system});
+}
+window.addEventListener('pointerup', releasePad);
+window.addEventListener('pointercancel', releasePad);
 
 function renderFx(sys) {
   const box = document.getElementById('fx');
