@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -62,6 +63,40 @@ class PhaseConfigTest(unittest.TestCase):
                 tool.write_config(cfg_path, clip, flicker=True)
                 (scene,) = cfgmod.load(str(cfg_path)).scenes
                 self.assertEqual(scene.file, clip)
+
+
+class AudioTest(unittest.TestCase):
+    """Audio plays by default, as it does for a user, and `--no-audio` mutes."""
+
+    def setUp(self) -> None:
+        self.tool = _load("flicker_tear_ab")
+        self.out = Path(tempfile.mkdtemp())
+
+    def _audio_enabled(self, **kwargs: bool) -> bool:
+        cfg_path = self.out / "phase.toml"
+        self.tool.write_config(cfg_path, self.out / "ab.mkv", flicker=True, **kwargs)
+        return cfgmod.load(str(cfg_path)).audio.enabled
+
+    def test_a_phase_plays_audio_by_default(self) -> None:
+        self.assertTrue(self._audio_enabled())
+
+    def test_a_muted_phase_does_not(self) -> None:
+        self.assertFalse(self._audio_enabled(audio=False))
+
+    def _ffmpeg_inputs(self, *, audio: bool) -> list[str]:
+        with mock.patch.object(self.tool.subprocess, "run") as run:
+            self.tool.build_test_video(self.out / "ab.mkv", audio=audio)
+        argvs = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(argvs[-1][-1], str(self.out / "ab.mkv"))
+        return [arg for argv in argvs for arg in argv]
+
+    def test_the_video_carries_a_tone_when_audio_plays(self) -> None:
+        self.assertIn(
+            f"sine=frequency={self.tool.TONE_HZ}:duration=25", self._ffmpeg_inputs(audio=True)
+        )
+
+    def test_the_muted_video_carries_none(self) -> None:
+        self.assertNotIn("lavfi", self._ffmpeg_inputs(audio=False))
 
 
 def _captured(picture: np.ndarray) -> np.ndarray:

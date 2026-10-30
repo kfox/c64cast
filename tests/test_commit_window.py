@@ -52,8 +52,10 @@ from c64cast.video.modes_irq import (
     BORDER_STALE,
     DD00_BANK_2,
     FLICKER_SWAP_IRQ_HANDLER,
+    FLICKER_SWAP_REPORTING_IRQ_HANDLER,
     FRAME_TRACKER_ADDR,
     HOSTDMA_SWAP_IRQ_HANDLER,
+    HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
     MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     MHIRES_BANK_SWAP_IRQ_HANDLER,
     MHIRES_FRAME_TRACKER_LEN,
@@ -398,6 +400,18 @@ HANDLERS = (
     ),
     ("hostdma", HOSTDMA_SWAP_IRQ_HANDLER, partial(prime_page_flip, flicker=False), "dd00"),
     ("flicker", FLICKER_SWAP_IRQ_HANDLER, partial(prime_page_flip, flicker=True), "dd00"),
+    (
+        "hostdma reporting",
+        HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
+        partial(prime_page_flip, flicker=False),
+        "dd00",
+    ),
+    (
+        "flicker reporting",
+        FLICKER_SWAP_REPORTING_IRQ_HANDLER,
+        partial(prime_page_flip, flicker=True),
+        "dd00",
+    ),
 )
 
 

@@ -4,6 +4,7 @@ bring-up choreography) + BitmapDisplayMode."""
 from __future__ import annotations
 
 import logging
+import time
 from typing import cast
 
 from c64cast.hw.backend import C64Backend
@@ -24,13 +25,16 @@ from c64cast.video.flicker import (
 )
 from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER_ADDR,
+    COMMIT_REPORT_ADDR,
     DD00_BANK_0,
     DD00_BANK_2,
     FLICKER_SWAP_IRQ_HANDLER,
+    FLICKER_SWAP_REPORTING_IRQ_HANDLER,
     FLICKER_TRACKER_LEN,
     FRAME_TRACKER_ADDR,
     FRAME_TRACKER_LEN,
     HOSTDMA_SWAP_IRQ_HANDLER,
+    HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
     HOSTDMA_TRACKER_LEN,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
@@ -43,6 +47,13 @@ from c64cast.video.palette import build_fade_lut
 from .base import BitmapComposeBuffers, DisplayMode, FlickerComposeBuffers, fade_nibbles
 
 log = logging.getLogger(__name__)
+
+# How long a push waits for the C64 to report the previous page flip. A flip
+# lands within two fields (flicker commits on phase 0 only), so this is about
+# fifteen fields of a C64 that is not running its IRQ, such as one the
+# Ultimate menu has frozen.
+COMMIT_WAIT_TIMEOUT_S = 0.25
+COMMIT_POLL_INTERVAL_S = 0.001
 
 
 def engage_bitmap_mode(
@@ -156,6 +167,11 @@ class BitmapDisplayMode(DisplayMode):
     # mode's options instead unhooked the handler of whatever scene was on
     # screen whenever a scene built but never set up was torn down.
     _bank_swap_hooked: bool = False
+    # Until the C64 reports the flip to `_awaiting_commit`, the bank
+    # `_displayed_bank` names may still be on screen.
+    _reports_commits: bool = False
+    _awaiting_commit: int | None = None
+    _commit_timeout_logged: bool = False
     # Both set by the subclasses' __init__.
     use_reu_staged: bool
     _blend_table: BlendTable | None
@@ -228,13 +244,60 @@ class BitmapDisplayMode(DisplayMode):
             DD00_BANK_2,
         )
 
+    def _page_flip_handler(self, api: C64Backend, plain: bytes, reporting: bytes) -> bytes:
+        """The page-flip handler to install: `reporting` where the host can
+        read the commit back, after seeding the register with the bank the
+        setup pins, so a value left from an earlier scene cannot pass for the
+        first flip's commit."""
+        self._awaiting_commit = None
+        self._reports_commits = api.profile.supports_debug_register
+        if not self._reports_commits:
+            return plain
+        api.write_memory(f"{COMMIT_REPORT_ADDR:04X}", f"{DD00_BANK_0:02X}")
+        return reporting
+
+    def _await_page_flip(self, api: C64Backend) -> None:
+        """Hold the next frame's first write until the C64 reports the last
+        armed flip committed, so the frame goes into the bank that has left the
+        screen (c64cast#834). Bounded by COMMIT_WAIT_TIMEOUT_S, after which the
+        frame is written anyway: a C64 that commits nothing for that long is
+        not running its IRQ, and a skipped frame would hold the picture for as
+        long as that lasts, where a write risks only the tear this wait
+        prevents."""
+        armed = self._awaiting_commit
+        if armed is None:
+            return
+        deadline = time.monotonic() + COMMIT_WAIT_TIMEOUT_S
+        while api.read_debug_register() != armed:
+            if time.monotonic() >= deadline:
+                if not self._commit_timeout_logged:
+                    self._commit_timeout_logged = True
+                    log.warning(
+                        "%s: the C64 did not report a page flip within %.0f ms; "
+                        "writing the next frame anyway, so it may tear",
+                        self.name,
+                        COMMIT_WAIT_TIMEOUT_S * 1000,
+                    )
+                break
+            time.sleep(COMMIT_POLL_INTERVAL_S)
+        self._awaiting_commit = None
+
+    def _note_armed(self, dd00_value: int) -> None:
+        if self._reports_commits:
+            self._awaiting_commit = dd00_value
+
     def _arm_hostdma_swap(self, api: C64Backend, bg0: int, dd00_value: int) -> None:
-        """Write the 3-byte swap tracker [bg0, bank, ready=1] as one ACK-gated
-        segment. By the time it returns the off-screen bank is fully staged, so
-        the next vblank IRQ flips $DD00 to a complete frame (and sets $D021 from
-        bg0 atomically with the swap — for hires $D021 is unused, harmless)."""
+        """Write the 3-byte swap tracker [bg0, bank, ready=1] as one segment,
+        after the frame's writes to the off-screen bank. The link runs commands
+        in order, so the frame has landed before the tracker does, and the
+        next vblank IRQ in the raster window flips $DD00 to a complete frame
+        (and sets $D021 from bg0 atomically with the swap — for hires $D021 is
+        unused, harmless). The write returns when the kernel has taken the
+        bytes, not when the C64 has flipped: `_await_page_flip` is what tells
+        the next push the flip has happened."""
         tracker = bytes([bg0 & 0x0F, dd00_value & 0xFF, 0x01])
         api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+        self._note_armed(dd00_value)
 
     def _flicker_swap_target(self) -> tuple[int, int, int, int, int, int, int, int]:
         """Resolve the current off-screen bank to (target_bank, bitmap_addr,
@@ -283,6 +346,7 @@ class BitmapDisplayMode(DisplayMode):
         constant for the scene, so re-sending them would fight the alternation."""
         tracker = self._flicker_tracker(bg0, dd00_value, ready=True)[:3]
         api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+        self._note_armed(dd00_value)
 
     def _setup_flicker_doublebuffer(self, api: C64Backend) -> None:
         """Zero both banks' bitmap + both screen pages, pin bank 0, and install
@@ -306,7 +370,9 @@ class BitmapDisplayMode(DisplayMode):
         self._displayed_bank = 0
         self._install_bank_swap_irq(
             api,
-            FLICKER_SWAP_IRQ_HANDLER,
+            self._page_flip_handler(
+                api, FLICKER_SWAP_IRQ_HANDLER, FLICKER_SWAP_REPORTING_IRQ_HANDLER
+            ),
             FLICKER_TRACKER_LEN,
             audio_pump_active=False,
             tracker_init=self._flicker_tracker(0, DD00_BANK_0, ready=False),
@@ -396,7 +462,12 @@ class BitmapDisplayMode(DisplayMode):
         api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
         self._displayed_bank = 0
         self._install_bank_swap_irq(
-            api, HOSTDMA_SWAP_IRQ_HANDLER, HOSTDMA_TRACKER_LEN, audio_pump_active=False
+            api,
+            self._page_flip_handler(
+                api, HOSTDMA_SWAP_IRQ_HANDLER, HOSTDMA_SWAP_REPORTING_IRQ_HANDLER
+            ),
+            HOSTDMA_TRACKER_LEN,
+            audio_pump_active=False,
         )
 
     def apply_fade(self, buffers: BitmapComposeBuffers) -> BitmapComposeBuffers:

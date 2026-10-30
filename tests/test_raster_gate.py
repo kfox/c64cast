@@ -21,13 +21,16 @@ from c64cast.hw.c64 import (
 )
 from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER_ADDR,
+    COMMIT_REPORT_ADDR,
     DD00_BANK_0,
     DD00_BANK_2,
     FLICKER_SWAP_IRQ_HANDLER,
+    FLICKER_SWAP_REPORTING_IRQ_HANDLER,
     FLICKER_TRACKER_OFF_PHASE,
     FLICKER_TRACKER_OFF_READY,
     FRAME_TRACKER_ADDR,
     HOSTDMA_SWAP_IRQ_HANDLER,
+    HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,
     HOSTDMA_TRACKER_OFF_READY,
 )
 
@@ -182,6 +185,36 @@ class FlickerGateTest(_HandlerHarness, unittest.TestCase):
         self.assertFalse(self._committed(mem), "a commit slipped through the gate")
 
 
+class _ReportsCommits:
+    """The variants an Ultimate 64 runs (c64cast#834) store the bank they
+    commit to $D7FF, where the host reads it back, and nothing else."""
+
+    def _memory(self):
+        mem = super()._memory()  # type: ignore[misc]
+        mem[COMMIT_REPORT_ADDR] = DD00_BANK_0
+        return mem
+
+    def test_reports_the_bank_it_commits(self):
+        mem = self._memory()
+        self._stage(mem)  # type: ignore[attr-defined]
+        self._run_field(mem, RASTER_VBLANK_LINE)  # type: ignore[attr-defined]
+        self.assertEqual(mem[COMMIT_REPORT_ADDR], DD00_BANK_2)  # type: ignore[attr-defined]
+
+    def test_a_deferred_commit_reports_nothing(self):
+        mem = self._memory()
+        self._stage(mem)  # type: ignore[attr-defined]
+        self._run_field(mem, 128)  # type: ignore[attr-defined]
+        self.assertEqual(mem[COMMIT_REPORT_ADDR], DD00_BANK_0)  # type: ignore[attr-defined]
+
+
+class HostdmaReportingGateTest(_ReportsCommits, HostdmaGateTest):
+    CODE = HOSTDMA_SWAP_REPORTING_IRQ_HANDLER
+
+
+class FlickerReportingGateTest(_ReportsCommits, FlickerGateTest):
+    CODE = FLICKER_SWAP_REPORTING_IRQ_HANDLER
+
+
 class GateShapeTest(unittest.TestCase):
     def test_every_branch_targets_the_kernal_chain(self):
         """Includes the gate's BCS. A branch that lands mid-handler instead of
@@ -193,6 +226,8 @@ class GateShapeTest(unittest.TestCase):
         for name, code in (
             ("hostdma", HOSTDMA_SWAP_IRQ_HANDLER),
             ("flicker", FLICKER_SWAP_IRQ_HANDLER),
+            ("hostdma reporting", HOSTDMA_SWAP_REPORTING_IRQ_HANDLER),
+            ("flicker reporting", FLICKER_SWAP_REPORTING_IRQ_HANDLER),
         ):
             with self.subTest(handler=name):
                 mem = ObservableMemory()

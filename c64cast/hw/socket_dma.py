@@ -8,8 +8,8 @@ lets ``flush()`` work: a trailing IDENTIFY round-trip only responds once every
 prior command has been processed.
 
 Only the opcodes c64cast's write path needs are covered here (DMAWRITE,
-REUWRITE, IDENTIFY, AUTHENTICATE, plus DMARUN, RESET, KEYB and the VIC stream
-pair).
+REUWRITE, IDENTIFY, AUTHENTICATE, plus DMARUN, RESET, KEYB, the VIC stream
+pair and the debug register read).
 
 The full set is in the firmware's own protocol table:
 https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc
@@ -48,6 +48,7 @@ CMD_AUTHENTICATE = 0xFF1F
 # `#ifdef U64` in the firmware: Ultimate 64 only (a U2+ has no VIC to stream).
 CMD_VICSTREAM_ON = 0xFF20
 CMD_VICSTREAM_OFF = 0xFF30
+CMD_DEBUG_REG = 0xFF76
 
 #: The firmware's FreeRTOS tick, from its `configTICK_RATE_HZ` — the unit the
 #: VIC stream's auto-stop duration is counted in. 5 ms, so the uint16 the
@@ -416,9 +417,9 @@ class SocketDMAClient:
                 f"{_MAX_COMMAND_PAYLOAD}-byte wire length field"
             )
         header = struct.pack("<HH", opcode, len(payload))
-        # IDENTIFY and AUTHENTICATE leave C64 memory alone, so a cut one
-        # loses nothing.
-        changes_memory = opcode not in (CMD_IDENTIFY, CMD_AUTHENTICATE)
+        # IDENTIFY, AUTHENTICATE and a bare debug register read leave C64
+        # memory alone, so a cut one loses nothing.
+        changes_memory = opcode not in (CMD_IDENTIFY, CMD_AUTHENTICATE, CMD_DEBUG_REG)
         with self._whole_frame_locked(sending=changes_memory):
             self._sock.sendall(header + payload)
 
@@ -743,6 +744,29 @@ class SocketDMAClient:
         """Stop the VIC stream. Idempotent — the firmware clears an already
         clear enable bit without complaint."""
         self._send_with_reconnect(CMD_VICSTREAM_OFF, b"")
+
+    def read_debug_register(self) -> int:
+        """The Ultimate 64's debug register (``$D7FF`` on the C64 bus), in
+        one round trip. The server answers commands in order, so the value is
+        read after every command sent before it has run.
+
+        Sent with no payload, which the firmware reads as a read alone; a
+        payload byte would also be written to the register. Only an Ultimate
+        64 answers (``#ifdef U64``), so the caller checks
+        ``profile.supports_debug_register``. A failed round trip abandons the
+        connection, since its reply may still be in flight, and raises
+        `SocketDMAError`."""
+        with self._lock:
+            self._ensure_live_locked()
+            try:
+                with self._whole_frame_locked(sending=False):
+                    self._send_cmd_locked(CMD_DEBUG_REG, b"")
+                    value = self._recv_exact_locked(1)[0]
+            except OSError as e:
+                self._abandon_locked(f"debug register read went unanswered ({e})")
+                raise SocketDMAError(f"debug register read failed: {e}") from e
+            self._note_answered_locked()
+            return value
 
     def flush(self, *, reply_timeout: float | None = None) -> None:
         """Wait for the server to drain every previously-issued command,

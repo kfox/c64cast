@@ -329,14 +329,9 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     # bank 0 is displayed, and vice versa).
                                     # A C64-side raster IRQ at line 251 flips
                                     # $DD00 at vblank for a tear-free swap.
-                                    # MHires additionally DMAs shared $D800
-                                    # color RAM and writes $D021 (bg0) before
-                                    # the swap — a brief c3-mismatch window
-                                    # is unavoidable (the color DMA runs in
-                                    # parallel with the OLD bank still being
-                                    # displayed), but it's bounded to one
-                                    # VIC cell row at the bank-swap tear
-                                    # line and typically imperceptible.
+                                    # MHires additionally copies the shared
+                                    # $D800 color RAM right after the flip,
+                                    # so c3 changes with its frame.
                                     #
                                     # Caveats:
                                     #   * REU controller is shared with the
@@ -363,9 +358,9 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     #     Bitmap halts are on the OFF-SCREEN
                                     #     bank — VIC keeps rendering the
                                     #     visible frame cleanly during the
-                                    #     transfer. The mhires color DMA
-                                    #     does touch shared $D800; see the
-                                    #     tear-line caveat above.
+                                    #     transfer. The mhires color copy
+                                    #     touches shared $D800, after the
+                                    #     flip and ahead of the raster.
                                     #   * mcm silently ignores the flag.
                                     #   * Requires REU enabled on the U64 (F2
                                     #     → C64 and Cartridge Settings → RAM
@@ -393,8 +388,8 @@ double_buffer = "auto"              # Host-DMA double-buffer (page flip) for
                                     #     backend); false off. Gated off when the
                                     #     REU mic pump is active (shared $0314).
                                     # Residual: mhires color RAM ($D800) is not
-                                    # VIC-banked, so the c3 slot still tears
-                                    # briefly before each flip; bitmap+screen go
+                                    # VIC-banked, so the c3 slot still tears;
+                                    # bitmap+screen go
                                     # tear-free. Hires (no color RAM) and static-
                                     # palette mhires (cheap/grayscale) are fully
                                     # tear-free. Independent of use_reu_staged.

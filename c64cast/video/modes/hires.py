@@ -439,6 +439,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             # The field alternation free-runs against the displayed bank, so
             # staging both pages plus the bitmap lets the next phase-0 vblank
             # bring the whole pair set up in one piece.
+            self._await_page_flip(api)
             (
                 target,
                 bm_addr,
@@ -470,6 +471,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             return
         if self.double_buffer:
             # Hires has no color RAM, so this swap is fully tear-free.
+            self._await_page_flip(api)
             target, bm_addr, scr_addr, bm_id, scr_id, dd00 = self._hostdma_swap_target()
             api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
             api.write_region(scr_addr, screen_bytes, region_id=scr_id)

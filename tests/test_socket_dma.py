@@ -23,6 +23,7 @@ from unittest.mock import patch
 from c64cast.hw.backend import LinkError
 from c64cast.hw.socket_dma import (
     CMD_AUTHENTICATE,
+    CMD_DEBUG_REG,
     CMD_DMARUN,
     CMD_DMAWRITE,
     CMD_IDENTIFY,
@@ -278,6 +279,41 @@ class FlushTest(unittest.TestCase):
         with self.assertRaises(OSError):
             c.flush()
         self.assertIsNone(c._sock)
+
+
+class DebugRegisterTest(unittest.TestCase):
+    def test_sends_a_bare_read_and_returns_the_byte(self):
+        """A payload byte would be written to the register as well."""
+        fake = FakeSocket([_IDENT_REPLY, b"\x95"])
+        c = _client_with(fake)
+        before = len(fake.sent)
+        self.assertEqual(c.read_debug_register(), 0x95)
+        self.assertEqual(bytes(fake.sent[before:]), struct.pack("<HH", CMD_DEBUG_REG, 0))
+
+    def test_an_unanswered_read_closes_the_connection_and_raises_a_link_error(self):
+        """Its reply may still arrive, and the next round trip would read
+        it as its own."""
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        c.io_timeout = 0.05
+        with self.assertRaises(SocketDMAError):
+            c.read_debug_register()
+        self.assertIsNone(c._sock)
+
+    def test_an_answered_read_confirms_the_writes_before_it(self):
+        """Otherwise a connection dropped after the read charges a loss for
+        writes the server had already run, and the dirty cache resends them."""
+        fake1 = FakeSocket([_IDENT_REPLY, b"\x95"])
+        c = _client_with(fake1)
+        c.dmawrite(0xD020, b"\x0e")
+        c.read_debug_register()
+        fake1.peer_reset = True
+        fake2 = FakeSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD021, b"\x00")
+        self.assertEqual(c.reconnect_count, 1)
+        self.assertEqual(c.possible_loss_count, 0)
 
 
 class DmarunTest(unittest.TestCase):
@@ -1532,6 +1568,16 @@ class CutCommandTest(unittest.TestCase):
             c.flush()
         self._next_write_redials(fake1, c)
         # Nothing went out unconfirmed, so nothing counts as lost.
+        self.assertEqual(c.possible_loss_count, 0)
+
+    def test_a_debug_register_read_cut_mid_send_counts_no_loss(self):
+        """The read carries no payload, so a cut one wrote nothing."""
+        fake1 = _CutSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.cut_next_send = True
+        with self.assertRaises(KeyboardInterrupt):
+            c.read_debug_register()
+        self._next_write_redials(fake1, c)
         self.assertEqual(c.possible_loss_count, 0)
 
     def test_a_handshake_cut_mid_reply_leaves_no_socket_behind(self):

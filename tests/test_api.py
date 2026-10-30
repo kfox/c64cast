@@ -76,7 +76,7 @@ from c64cast.hw.api import (
     build_char_rom_dump_stub,
     parse_psid_for_player,
 )
-from c64cast.hw.backend import BackendCapabilityError
+from c64cast.hw.backend import SYSTEM_MODE_CATEGORY, BackendCapabilityError
 from c64cast.hw.c64 import (
     CPU,
     DEFAULT_DAC_SAMPLE_RATE,
@@ -2096,6 +2096,44 @@ class OpenVideoStreamTest(unittest.TestCase):
         with patch.object(self.api.socket_dma, "vicstream_off") as off:
             self.api.stop_video_stream()
         off.assert_not_called()
+
+
+class DebugRegisterTest(unittest.TestCase):
+    """Only a device the connect-time probe reads as an Ultimate 64 is read
+    over socket DMA 0xFF76: an Ultimate II+ never answers it, so each read
+    there would wait out the link's whole reply timeout."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.get = patch.object(self.api.session, "get").start()
+        self.get.return_value.raise_for_status.return_value = None
+        self.get.return_value.status_code = 200
+        self.addCleanup(patch.stopall)
+
+    def _refine_with(self, categories: list[str]) -> None:
+        self.get.return_value.json.return_value = {"categories": categories, "errors": []}
+        with quiet_logging():
+            self.api.refine_capabilities()
+
+    def test_an_unprobed_device_is_never_read(self):
+        with (
+            patch.object(self.api.socket_dma, "read_debug_register") as read,
+            self.assertRaises(BackendCapabilityError),
+        ):
+            self.api.read_debug_register()
+        read.assert_not_called()
+
+    def test_an_ultimate_64_is_granted_the_read(self):
+        self._refine_with([SYSTEM_MODE_CATEGORY, *_U64_CATEGORIES])
+        with patch.object(self.api.socket_dma, "read_debug_register", return_value=0x95):
+            self.assertEqual(self.api.read_debug_register(), 0x95)
+
+    def test_an_ultimate_ii_plus_is_not(self):
+        self._refine_with(_U2PLUS_CATEGORIES)
+        self.assertFalse(self.api.profile.supports_debug_register)
 
 
 class ParsePsidEdgeCaseTest(unittest.TestCase):

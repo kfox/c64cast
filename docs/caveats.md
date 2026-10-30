@@ -616,6 +616,15 @@ Because of the second point, this also can't be checked the usual way with the
 `hw-visual-verify` skill. Capture at 60 fps and average consecutive frame pairs
 offline, then compare against the preview's render.
 
+**Two frames at once, on the Ultimate II+ and the TeensyROM+.** Flicker blending
+and the host-DMA `double_buffer` write each frame into the VIC bank off screen
+and let the C64 flip to it at the next safe vblank. On an Ultimate 64 the C64
+reports each flip back over the DMA link, and the next frame waits for it. The
+other machines cannot report one, so a frame that starts before the flip is
+written into the picture on screen, showing the frames before and after it
+together with a jagged seam: measured on an Ultimate 64 without the report, 1 to
+2% of flicker frames and almost none on the plain double buffer.
+
 ## Preview window fidelity + limits
 
 `[preview] enabled = true` opens a desktop window mirroring the C64. It is a

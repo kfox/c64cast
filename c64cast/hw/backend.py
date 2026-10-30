@@ -198,6 +198,10 @@ class HardwareProfile:
     supports_rest_input: bool = False  # POST /v1/machine:input (firmware 3.15+,
     #   Ultimate 64 only): keyboard and joystick injection. Granted by the same
     #   probe, so False on an unprobed run.
+    supports_debug_register: bool = False  # the Ultimate 64's $D7FF, which the
+    #   6510 can write and socket-DMA 0xFF76 reads back. Granted by
+    #   refine_capabilities, so False on an unprobed run: an Ultimate II+
+    #   never answers 0xFF76.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
@@ -628,6 +632,12 @@ class C64Backend(ABC):
         `write_memory*` family it raises when the link fails, as a `LinkError`,
         because its callers retry, confirm or skip on that failure."""
         raise BackendCapabilityError("reu_write")
+
+    def read_debug_register(self) -> int:
+        """One read of the machine's debug register, behind every write sent
+        before it. Gated by `supports_debug_register`. Raises a `LinkError`
+        when the link fails."""
+        raise BackendCapabilityError("read_debug_register")
 
     def open_video_stream(self) -> Any:
         """A stopped :class:`~c64cast.hw.vic_stream.VicStreamReceiver` for this
