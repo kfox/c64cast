@@ -320,7 +320,8 @@ class LogDeclaredAudioTest(unittest.TestCase):
 
     def test_a_second_backend_in_the_same_process_is_told_again(self):
         # Both backends stay alive, as an ensemble's do: a collected first one
-        # would drop out of the weak latch and pass a per-process latch too.
+        # empties the weak latch, and then a latch that ignores which backend
+        # it holds passes too.
         apis = [_no_config_api("6581", assumed=True) for _ in range(2)]
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
             for api in apis:
