@@ -734,10 +734,10 @@ class AsidRingPlayer:
         flowing, so the write head stays a full ``lead`` ahead.
 
         **Refuses to bring up over a live writer.** ``PollThread.start()``
-        declines a duplicate, so a previous writer still blocked in ``reu_write``
-        past its join timeout would be stranded — installed, never armed, silent
-        for the whole run, and still REUWRITEing at the *old* slot size into a
-        ring this install just re-described at the new one. The next activation
+        only queues a writer behind a previous one still blocked in
+        ``reu_write`` past its join timeout, and that previous writer goes on
+        REUWRITEing at the *old* slot size into a ring this install just
+        re-described at the new one. The next activation
         brings it up once that worker is gone."""
         if self._writer.is_running():
             log.warning(
@@ -1149,7 +1149,7 @@ class AsidRingPlayer:
         cost two DMA ops, and the alternative is a wrong CIA latch surviving into
         every later scene."""
         # Stop the thread but KEEP the PollThread object: after a timed-out join
-        # it holds its reference so a later start() refuses a duplicate, which is
+        # it holds its reference so a later start() queues rather than duplicates, which is
         # what keeps reinit() (reachable from one 0x5F SysEx) from running a
         # second writer alongside an abandoned one over a single REU ring. The
         # stop event it sets also makes an in-flight _try_arm abandon its arm.

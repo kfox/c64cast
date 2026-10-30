@@ -1334,6 +1334,38 @@ class OBSStatusTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertTrue(client.disconnected)
 
+    def test_a_reactivated_overlay_polls_again_once_a_slow_peer_answers(self):
+        ov = _obs_overlay()
+        ov._connect = _FakeOBSClient
+        ov.poll_interval = 0.01
+        polling = threading.Event()
+        peer_answers = threading.Event()
+        self.addCleanup(peer_answers.set)
+        polls = 0
+
+        def slow_then_offline(client):
+            nonlocal polls
+            polls += 1
+            if polls == 1:
+                polling.set()
+                peer_answers.wait(10.0)
+                return ["LIVE", "DROP    0"]
+            raise OSError("OBS went away")
+
+        ov._poll_once = slow_then_offline
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        self.addCleanup(ov._poll.stop)
+        self.assertTrue(polling.wait(5.0))
+        with self.assertLogs("c64cast._pollthread", level="WARNING"):
+            ov.teardown(api=MagicMock(), scene=MagicMock())
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
+            peer_answers.set()
+            deadline = time.monotonic() + 5.0
+            while ov.compute_strings(t=0.0) != ["OBS OFFLINE"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(ov.compute_strings(t=0.0), ["OBS OFFLINE"])
+
     def test_teardown_disconnects_client(self):
         ov = _obs_overlay()
         client = _FakeOBSClient()

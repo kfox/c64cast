@@ -1020,10 +1020,8 @@ class BringUpTeardownTest(unittest.TestCase):
         self.assertEqual(fake.regs["0314"], kernal, "the abandoned writer hooked $0314")
 
     def test_start_refuses_to_install_over_a_writer_that_outlived_its_join(self):
-        # PollThread.start() declines a duplicate and never clears the stop event,
-        # so the abandoned worker exits on its next check and nothing replaces it:
-        # the player installs, never arms, and the scene is silent — while the
-        # stranded worker REUWRITEs at the old slot size into the new ring.
+        # PollThread.start() only queues a writer behind the abandoned one, which
+        # REUWRITEs at the old slot size into the new ring until it exits.
         p, api = self._player(prebuffer_seconds=0.0)
         with mock.patch.object(p._writer, "is_running", return_value=True):
             with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
