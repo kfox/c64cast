@@ -634,6 +634,26 @@ class WebcamSourceLossTest(unittest.TestCase):
         self.assertEqual(len(self.opened), 1)
         self.assertEqual(self.lookups, 0)
 
+    def test_a_camera_reopened_while_the_source_stops_is_closed_again(self):
+        src = self._source()
+        fresh = _ScriptedCap()
+        self.caps.append(fresh)
+        self.where = (3, 1200)
+        stopping = mock.Mock(is_set=mock.Mock(return_value=True))
+        src._try_reopen(cast(threading.Event, stopping))
+        self.assertTrue(fresh.released)
+        self.assertIsNot(src.cap, fresh)
+
+    def test_a_source_released_during_the_lookup_opens_nothing(self):
+        src = self._source()
+        self.where = (3, 1200)
+        lookup = mock.Mock(side_effect=lambda _identity: (src.release(), self.where)[1])
+        with mock.patch("c64cast.control.camera.find_camera", lookup):
+            src._try_reopen(self.stop)
+        lookup.assert_called_once()
+        self.assertEqual(len(self.opened), 1)
+        self.assertIsNone(src.cap)
+
     def test_reopen_attempts_back_off(self):
         src = self._source()
         with self.assertLogs("c64cast.video.video", "WARNING"):
