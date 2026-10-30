@@ -369,7 +369,7 @@ class LiveTuneTracker:
         ``[[scenes]]`` block. ``field`` is None for a change nothing can write:
         every non-``mode.`` target (effect and generator knobs are runtime state),
         and a per-scene target turned on a scene the config did not name, which
-        has no block to write to. ``key`` is what :meth:`forget` takes.
+        has no block to write to. The rows themselves are what :meth:`forget` takes.
 
         A surface that offers to save has to say which kind a row is, so the one
         snapshot answers every question about it; taking it once also means a
