@@ -284,7 +284,7 @@ class PlaylistMenu:
         The .bak is written **only when it does not already exist**, because
         "the original" is what it is for and a second save would otherwise
         overwrite it with the first save's output. That is not a hypothetical:
-        `session.save_live_tune_changes` calls this on every normal exit and
+        `session._maybe_save_live_tune` calls this on every normal exit and
         Ctrl+C when live-tune changes exist — automatically under
         `--overwrite` — so two runs of a tuned show used to leave no pristine
         copy at all, while the log line said "(backup .bak)" and read as

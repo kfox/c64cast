@@ -1190,9 +1190,9 @@ class _SidPlayerMixin(BufferedWriteBackend):
           * the flag must say vsync (`target_play_rate_hz`), and
           * the latch sampled after INIT must not already be far below this
             machine's kernal default. A tune running 2x/3x/4x multispeed sits
-            at 1/2, 1/3, 1/4 of it — well clear of the noise in an 8-sample
-            max of a free-running down-counter, which is what `sampled_latch`
-            is.
+            at 1/2, 1/3, 1/4 of it — well clear of the noise in a
+            `_DIVIDER_LATCH_SAMPLES`-read max of a free-running down-counter,
+            which is what `sampled_latch` is.
 
         Best-effort: a failed write logs and returns None, leaving the tune at
         the kernal rate exactly as before."""

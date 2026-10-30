@@ -66,7 +66,10 @@ _PINNED_URL_RE = re.compile(
 
 def _published_schema_url(version: str) -> str:
     """URL of the schema as published for `version`, or on `main` if unreleased."""
-    ref = f"v{version}" if version and version[0].isdigit() else "main"
+    # A PEP 440 local version (`0+unknown`, `0.4.0+g…`) is never tagged:
+    # `scripts/bump_version.py`'s VERSION_RE refuses one.
+    released = version[:1].isdigit() and "+" not in version
+    ref = f"v{version}" if released else "main"
     return _PUBLISHED_SCHEMA_URL.format(ref=ref)
 
 

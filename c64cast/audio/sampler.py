@@ -87,8 +87,9 @@ REU_ADDR_SELECT_BYTE = 0x01
 SAMPLER_VOLUME_MAX = 63
 SAMPLER_PAN_CENTER = 7
 
-# Above the $D418-DAC mic ring ($110000) and below REU-staged video ($E00000),
-# so the sampler ring coexists with REU-staged bitmap video.
+# Above the $D418-DAC mic ring (REU_MIC_BASE..REU_MIC_END) and below REU-staged
+# video (REU_VIDEO_SCREEN_BASE), so the sampler ring coexists with REU-staged
+# bitmap video.
 DEFAULT_RING_BASE = 0x200000
 
 # A jitter buffer, NOT the playback latency (that is the lead below). 1 MiB is

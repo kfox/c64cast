@@ -1360,7 +1360,7 @@ class PitchCompensationLatchTest(unittest.TestCase):
     def test_multiplier_is_sticky_until_timer_starts(self):
         # set_nmi_latch_for_mode runs at scene setup BEFORE the worker
         # prebuffers and arms the timer, so it stashes the multiplier and
-        # _start_nmi_timer applies it; otherwise the timer start would clobber
+        # NmiTimer.start applies it; otherwise the timer start would clobber
         # the compensation back to nominal.
         s = _make()
         s._worker_thread = cast(Any, object())
@@ -1408,7 +1408,7 @@ class _RFakeAPI(FakeAPI):
 
 
 class NmiArmVerifyTest(unittest.TestCase):
-    """_start_nmi_timer verifies the arm actually took by watching R move.
+    """NmiTimer.start verifies the arm actually took by watching R move.
 
     The two CIA #2 writes and the `$0318` vector ride a transport whose `_emit`
     absorbs a failed write, so a dropped one used to leave R frozen and the whole

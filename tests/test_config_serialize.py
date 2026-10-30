@@ -17,7 +17,7 @@ from unittest import mock
 
 from _fakes import MachineSettingsIsolation
 
-from c64cast import __version__
+from c64cast import UNINSTALLED_VERSION, __version__
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
 from c64cast.app import introspect, paths
@@ -423,6 +423,12 @@ class SchemaDirectiveTest(unittest.TestCase):
         # may point at a branch.
         self.assertIn("/v1.2.3/", ser._published_schema_url("1.2.3"))
         self.assertIn("/main/", ser._published_schema_url("unreleased"))
+
+    def test_an_uninstalled_checkout_points_at_main(self):
+        self.assertIn("/main/", ser._published_schema_url(UNINSTALLED_VERSION))
+
+    def test_a_local_version_is_not_a_tag(self):
+        self.assertIn("/main/", ser._published_schema_url("0.4.0+g1234abc"))
 
 
 class PinnedUrlVersionTest(unittest.TestCase):
