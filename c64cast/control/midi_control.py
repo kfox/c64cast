@@ -509,6 +509,7 @@ class MidiControlListener:
         # the control port.
         self.clock_port_name = clock_port
         self._clock_port: Any = None
+        self._clock_port_match = ""
         # One PollThread per reader; the clock/feedback ones only start when
         # their port opens. Each loop watches its own stop event (manual mode).
         self._reader_poll = PollThread(
@@ -527,6 +528,14 @@ class MidiControlListener:
             releases="held joystick directions",
             logger=log,
             name="midi-port-watch",
+        )
+        self._clock_port_watch = PortWatch(
+            lambda: self._clock_port_match,
+            lambda: None,
+            label="midi_control",
+            releases="nothing; the beat grid holds until the clock resumes",
+            logger=log,
+            name="midi-clock-port-watch",
         )
         # (id(playlist), port, direction) -> (playlist, the scene it was pressed on)
         self._held_joystick: dict[tuple[int, int, str], tuple[Playlist, Any]] = {}
@@ -607,6 +616,7 @@ class MidiControlListener:
         self._port_watch.start()
         if self._clock_port is not None:
             self._clock_poll.start()
+            self._clock_port_watch.start()
         if self._out_port is not None:
             self._feedback_poll.start()
         log.info(
@@ -669,6 +679,7 @@ class MidiControlListener:
                 exc_info=True,
             )
             return
+        self._clock_port_match = match
         log.info("midi_control: opened dedicated MIDI clock port %r", match)
 
     def _setup_feedback(self) -> None:
@@ -817,7 +828,13 @@ class MidiControlListener:
     def stop(self) -> None:
         # Signal every loop before joining any, so they wind down in
         # parallel (matching the old shared stop event) rather than serially.
-        polls = (self._reader_poll, self._clock_poll, self._feedback_poll, self._port_watch)
+        polls = (
+            self._reader_poll,
+            self._clock_poll,
+            self._feedback_poll,
+            self._port_watch,
+            self._clock_port_watch,
+        )
         for poll in polls:
             poll.stop_event.set()
         for poll in polls:
@@ -855,9 +872,11 @@ class MidiControlListener:
         port = self._clock_port
         if port is None:
             return
+        reopen = self._clock_port_watch.reopener()
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop):
+                port = self._clock_port = reopen(port)
+                for msg in poll_pending(port, stop) if port is not None else ():
                     try:
                         self._feed_tempo(msg)
                     except Exception:

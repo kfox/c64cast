@@ -552,6 +552,73 @@ class ReplugTests(_MidiControlTestCase):
         self.assertTrue(wait_for(lambda: len(fresh.sent) == 1))
         self.assertEqual(len(old.sent), 1)
 
+    def test_the_clock_reader_reads_the_reopened_clock_port(self):
+        pulse, start = mido.Message("clock"), mido.Message("start")
+        old, fresh = FakeMidiPort(pulse), FakeMidiPort(start)
+        listener = MidiControlListener({"system": _fake_playlist("system")}, [])
+        listener._opened_port_name = self.PORT
+        listener._clock_port, listener._clock_port_match = old, "DAW Clock"
+        fed: list[Any] = []
+        listener._feed_tempo = fed.append  # type: ignore[method-assign]
+        devices = FakeMidiDevices("DAW Clock", [fresh])
+        patcher = devices.patch()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener._clock_poll.start()
+        self.addCleanup(listener.stop)
+        self.assertTrue(wait_for(lambda: fed == [pulse]))
+        watch = listener._clock_port_watch
+        with self.assertLogs(self.LOG, level="WARNING") as gone:
+            devices.unplug(watch)
+        self.assertIn("MIDI port 'DAW Clock' is gone", gone.output[0])
+        with self.assertLogs(self.LOG, level="INFO") as logs:
+            devices.replug(watch)
+            self.assertTrue(wait_for(lambda: fed == [pulse, start]), fed)
+        self.assertIn("MIDI port 'DAW Clock' is back; reconnected", logs.output[-1])
+        self.assertEqual(devices.opened, ["DAW Clock"])
+        self.assertTrue(old.closed)
+        self.assertFalse(old.polled_after_close)
+        self.assertIs(listener._clock_port, fresh)
+        listener.stop()
+        self.assertTrue(fresh.closed)
+
+
+class ClockPortWatchTests(_MidiControlTestCase):
+    """The dedicated clock port is watched only when it is a port of its own."""
+
+    def _start(self, names: list[str], clock_port: str) -> tuple[MidiControlListener, list[str]]:
+        fake = self.fake = mock.MagicMock()
+        fake.get_input_names.return_value = names
+        opened: list[str] = []
+        fake.open_input.side_effect = lambda n: opened.append(n) or FakeMidiPort()
+        listener = MidiControlListener(
+            {"system": _fake_playlist("system")}, [], port=names[0], clock_port=clock_port
+        )
+        self.addCleanup(listener.stop)
+        with (
+            mock.patch.object(_midi, "mido", fake),
+            mock.patch.object(midi_control, "mido", fake),
+            self.assertLogs("c64cast.control.midi_control", level="INFO"),
+        ):
+            listener.start()
+        return listener, opened
+
+    def test_a_clock_port_of_its_own_gets_its_own_watch(self):
+        listener, opened = self._start(["Pads", "DAW Clock"], "clock")
+        self.assertEqual(opened, ["Pads", "DAW Clock"])
+        self.assertTrue(listener._clock_port_watch.is_running())
+        with (
+            mock.patch.object(_midi, "mido", self.fake),
+            self.assertNoLogs("c64cast.control.midi_control", level="WARNING"),
+        ):
+            listener._clock_port_watch.check()
+
+    def test_a_clock_port_that_is_the_control_port_is_neither_reopened_nor_watched(self):
+        listener, opened = self._start(["Pads"], "pads")
+        self.assertEqual(opened, ["Pads"])
+        self.assertIsNone(listener._clock_port)
+        self.assertFalse(listener._clock_port_watch.is_running())
+
 
 class TransportDispatchTests(_MidiControlTestCase):
     """transport.* actions enqueue a TransportEvent on pl.transport instead
