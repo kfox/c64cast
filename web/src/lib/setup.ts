@@ -20,6 +20,9 @@ const RESTART_TIMEOUT_MS = 30_000;
 
 export interface SetupState {
   pending: boolean;
+  /** Set once a submission has landed; the same app keeps answering, and
+   *  refusing everything else, until the host's restart replaces it. */
+  completed?: boolean;
   /** Whether a token typed here would actually take effect. False when the
    *  host's token is named by its configuration rather than generated;
    *  `setup_api.py` refuses one in that case. */
@@ -34,17 +37,23 @@ export interface SetupSubmission {
 
 /**
  * The host's setup state, or `null` when it has none to report — an ordinary
- * console answers `401` here, because the route stops existing the moment
- * setup completes. Throws only when the host could not be reached at all,
+ * console answers `401` here, because the route stops existing once the
+ * restart that follows setup lands. Throws only when the host could not be reached at all,
  * which is what lets `waitForRestart` tell "down" from "back up".
  */
 export async function probeSetup(): Promise<SetupState | null> {
+  const state = await readSetup();
+  return state?.pending ? state : null;
+}
+
+/** What the setup app answers, pending or completed, or `null` once some
+ *  other app is the one answering. */
+async function readSetup(): Promise<SetupState | null> {
   const response = await fetch(SETUP_PATH, {
     headers: { accept: "application/json" },
   });
   if (!response.ok) return null;
-  const state = (await response.json()) as SetupState;
-  return state.pending ? state : null;
+  return (await response.json()) as SetupState;
 }
 
 /** Submit the form. Resolves to the one-shot login URL that gets this browser
@@ -78,7 +87,7 @@ export async function waitForRestart(
   while (Date.now() < deadline) {
     await sleep(RESTART_POLL_MS);
     try {
-      if ((await probeSetup()) === null) return true;
+      if ((await readSetup()) === null) return true;
     } catch {
       // The listening socket is down between the two apps — expected, and why
       // this polls rather than navigating straight away.

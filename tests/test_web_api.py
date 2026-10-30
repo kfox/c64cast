@@ -2189,5 +2189,29 @@ class RequestFactoryTest(unittest.TestCase):
                 factory(None)
 
 
+class SetupWindowCrossSiteTest(WebApiTestCase):
+    """`/api/setup` through the assembled daemon app: the setup gate and the
+    token gate both let it through by design, and `SameOriginMiddleware` covers
+    only the transport paths, so the route's own check is the only one."""
+
+    def test_a_cross_site_form_cannot_complete_setup(self):
+        data = tempfile.TemporaryDirectory()
+        self.addCleanup(data.cleanup)
+        patcher = mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        completed: list[bool] = []
+        with self.client(setup_pending=True, on_setup_complete=lambda: completed.append(True)) as c:
+            r = c.post(
+                "/api/setup",
+                content='{"connection":"u64://203.0.113.9","token":"attacker-chosen-token-xx","x":"="}',
+                headers={"Origin": "http://evil.example", "Content-Type": "text/plain"},
+            )
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(completed, [])
+        self.assertFalse(paths.setup_state_path().is_file())
+        self.assertFalse(paths.web_token_path().is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

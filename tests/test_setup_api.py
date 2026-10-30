@@ -30,6 +30,10 @@ from c64cast.app import config as cfgmod
 from c64cast.app import paths
 from c64cast.control.setup_api import MIN_TOKEN_LENGTH, login_url, register_setup_routes
 
+JSON = {"Content-Type": "application/json"}
+CROSS_SITE_FORM = {"Origin": "http://evil.example", "Content-Type": "text/plain"}
+FORM_SMUGGLED_JSON = '{"connection":"u64://203.0.113.9","token":"attacker-chosen-token-xx","x":"="}'
+
 
 class _TmpRootsTestCase(unittest.TestCase):
     def setUp(self):
@@ -224,8 +228,55 @@ class RouteTest(_TmpRootsTestCase):
 
     def test_a_malformed_body_is_refused(self):
         client = self._client()
-        resp = client.post("/api/setup", content=b"not json")
+        resp = client.post("/api/setup", content=b"not json", headers=JSON)
         self.assertEqual(resp.status_code, 400)
+
+    def test_a_cross_site_text_plain_form_is_refused_and_changes_nothing(self):
+        # What a hostile page's `<form enctype="text/plain" method="post">`
+        # sends when its one input's name carries the JSON: a CORS-simple
+        # request, so the browser sends no preflight for anything to refuse.
+        client = self._client()
+        resp = client.post("/api/setup", content=FORM_SMUGGLED_JSON, headers=CROSS_SITE_FORM)
+        self.assertEqual(resp.status_code, 403)
+        self._assert_nothing_written()
+
+    def test_a_cross_origin_json_post_is_refused(self):
+        client = self._client()
+        resp = client.post(
+            "/api/setup",
+            content=FORM_SMUGGLED_JSON,
+            headers={**JSON, "Origin": CROSS_SITE_FORM["Origin"]},
+        )
+        self.assertEqual(resp.status_code, 403)
+        self._assert_nothing_written()
+
+    def test_a_same_origin_post_that_is_not_json_is_refused(self):
+        client = self._client()
+        resp = client.post(
+            "/api/setup",
+            content=FORM_SMUGGLED_JSON,
+            headers={"Origin": "http://testserver", "Content-Type": "text/plain"},
+        )
+        self.assertEqual(resp.status_code, 415)
+        self._assert_nothing_written()
+
+    def test_the_setup_pages_own_post_is_accepted(self):
+        # `web/src/lib/setup.ts` `submitSetup`: a same-origin fetch whose
+        # Origin the browser fills in, with an explicit JSON content type.
+        client = self._client()
+        resp = client.post(
+            "/api/setup",
+            json={"connection": "u64://192.168.2.64"},
+            headers={"Origin": "http://testserver"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.completed, [True])
+
+    def _assert_nothing_written(self) -> None:
+        self.assertEqual(self.completed, [])
+        self.assertFalse(paths.setup_state_path().is_file())
+        self.assertFalse(paths.web_token_path().is_file())
+        self.assertFalse(paths.settings_path().is_file())
 
     def test_an_oversized_body_is_refused_before_it_is_buffered(self):
         # Unauthenticated while the window is open, so `request.json()`'s unbounded
@@ -234,7 +285,7 @@ class RouteTest(_TmpRootsTestCase):
 
         client = self._client()
         with mock.patch.object(auth, "MAX_BODY_BYTES", 64):
-            resp = client.post("/api/setup", content=b"x" * 512)
+            resp = client.post("/api/setup", content=b"x" * 512, headers=JSON)
         self.assertEqual(resp.status_code, 413)
         # The cap it tripped is operator diagnostics, not something an
         # unauthenticated caller is told.
@@ -294,6 +345,42 @@ class RouteTest(_TmpRootsTestCase):
         self.assertIn("Permission denied", resp.json()["error"])
         self.assertFalse(paths.setup_state_path().is_file())
         self.assertEqual(self.completed, [])
+
+    def test_a_second_post_after_completion_is_refused(self):
+        # The app keeps serving until the restart loop notices `on_complete`,
+        # and nothing authenticates this route while it does.
+        client = self._client()
+        admin = "a" * MIN_TOKEN_LENGTH
+        first = client.post("/api/setup", json={"connection": "u64://10.0.0.1", "token": admin})
+        self.assertEqual(first.status_code, 200)
+
+        second = client.post(
+            "/api/setup", json={"connection": "u64://10.6.6.6", "token": "b" * MIN_TOKEN_LENGTH}
+        )
+
+        self.assertEqual(second.status_code, 409)
+        self.assertNotIn("login_url", second.json())
+        self.assertEqual(paths.web_token_path().read_text().strip(), admin)
+        settings = paths.settings_path().read_text(encoding="utf-8")
+        self.assertIn("10.0.0.1", settings)
+        self.assertNotIn("10.6.6.6", settings)
+        self.assertEqual(self.completed, [True])
+
+    def test_get_stops_reporting_pending_once_setup_completes(self):
+        client = self._client()
+        client.post("/api/setup", json={"connection": "u64://192.168.2.64"})
+        self.assertFalse(client.get("/api/setup").json()["pending"])
+
+    def test_a_failed_write_can_be_retried(self):
+        client = self._client()
+        with mock.patch(
+            "c64cast.control.setup_api._write_connection", side_effect=OSError("no disk")
+        ):
+            with self.assertLogs("c64cast.control.setup_api", level="ERROR"):
+                client.post("/api/setup", json={"connection": "u64://192.168.2.64"})
+        self.assertTrue(client.get("/api/setup").json()["pending"])
+        resp = client.post("/api/setup", json={"connection": "u64://192.168.2.64"})
+        self.assertEqual(resp.status_code, 200)
 
     def test_the_connection_lands_before_the_token_is_replaced(self):
         # Reordered: the token used to be written first, so a failure writing
