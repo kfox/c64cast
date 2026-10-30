@@ -166,6 +166,30 @@ class LifecycleTest(unittest.TestCase):
         poll.stop()
         self.assertEqual(len(idents), 1)
 
+    def test_start_over_a_live_worker_does_not_restart_it_when_it_returns(self):
+        release = threading.Event()
+        started = threading.Semaphore(0)
+        calls = 0
+
+        def worker(stop: threading.Event) -> None:
+            nonlocal calls
+            calls += 1
+            started.release()
+            release.wait()
+
+        poll = PollThread(worker, name="w", manual=True)
+        self.addCleanup(poll.stop)
+        self.addCleanup(release.set)
+        poll.start()
+        self.assertTrue(started.acquire(timeout=2.0))
+        poll.start()
+        release.set()
+        deadline = time.monotonic() + 2.0
+        while poll.is_running() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(poll.is_running())
+        self.assertEqual(calls, 1, "a worker that ended on its own was restarted")
+
     def test_restart_after_stop_runs_the_worker_again(self):
         poll, run_started = self._blocking_poll()
         poll.start()
