@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import re
+import shutil
 import threading
 import time
 import unittest
@@ -26,6 +28,7 @@ import warnings
 from typing import Any
 from unittest.mock import patch
 
+from _child_process import run_bounded
 from _fakes import TOO_DEEP_JSON
 
 from c64cast.control import perf_console
@@ -965,6 +968,132 @@ class PerfPageControlsTest(unittest.TestCase):
         # Not on /perf/command: a config write needs a status code, which a
         # performance command has nowhere to put. See web_api.api_live_tune.
         self.assertIn("'/api/session/live-tune'", perf_page_html())
+
+
+# Runs the page's script (from stdin) against a stub DOM that dispatches only to
+# the element an event is sent at, plays each scenario on a fresh copy, and
+# prints `{scenario: {posts, captured}}`: the commands the page POSTed and the
+# pointer ids the pad captured. A pointer event sent at `window` is a release
+# that landed off the pad, or after the pad was rebuilt away.
+_CLIP_PAD_JS = r"""
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(0, 'utf8');
+
+class El {
+  constructor() {
+    this.children = [];
+    this.listeners = {};
+    this.captured = [];
+    this.classList = {toggle() {}, add() {}, remove() {}};
+    this.style = {};
+  }
+  set innerHTML(_) { this.children = []; }
+  get innerHTML() { return ''; }
+  appendChild(child) { this.children.push(child); return child; }
+  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  removeAttribute() {}
+  setPointerCapture(id) { this.captured.push(id); }
+  send(type, pointerId) {
+    const ev = {type, pointerId, preventDefault() {}};
+    for (const fn of this.listeners[type] || []) fn(ev);
+  }
+}
+
+const GATE = {clips: [{slot: 3, name: 'g', state: 'idle', launch: 'gate',
+                       loop: false, quantize: 'off'}]};
+
+function boot() {
+  const ids = {};
+  const posts = [];
+  const ctx = {
+    console,
+    window: new El(),
+    document: {
+      getElementById: (id) => (ids[id] ||= new El()),
+      createElement: () => new El(),
+      activeElement: null,
+    },
+    fetch: (_, opts) => {
+      if (opts && opts.body) posts.push(JSON.parse(opts.body));
+      return new Promise(() => {});
+    },
+    WebSocket: class { close() {} },
+    location: {protocol: 'http:', host: 'test'},
+    setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
+    requestAnimationFrame: () => 0,
+    performance: {now: () => 0},
+  };
+  vm.createContext(ctx);
+  vm.runInContext(source, ctx);
+  ctx.renderClips(GATE);
+  return {ctx, posts, pad: () => ids.clips.children[0]};
+}
+
+const scenarios = {
+  drag_off: (p) => { const pad = p.pad(); pad.send('pointerdown', 7);
+                     p.ctx.window.send('pointerup', 7); return pad; },
+  rebuilt_mid_hold: (p) => { const pad = p.pad(); pad.send('pointerdown', 7);
+                             p.ctx.renderClips(GATE); p.ctx.window.send('pointerup', 7);
+                             return pad; },
+  cancelled: (p) => { const pad = p.pad(); pad.send('pointerdown', 7);
+                      p.ctx.window.send('pointercancel', 7); return pad; },
+  other_pointer: (p) => { const pad = p.pad(); pad.send('pointerdown', 7);
+                          p.ctx.window.send('pointerup', 8); return pad; },
+};
+const out = {};
+for (const [name, play] of Object.entries(scenarios)) {
+  const p = boot();
+  const pad = play(p);
+  out[name] = {posts: p.posts, captured: pad.captured};
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+class PerfPageClipPadTest(unittest.TestCase):
+    """A gate clip plays for as long as its pad is held, so a press whose
+    release never reaches the host leaves the clip on until someone taps it
+    again. The page's own pad handlers are run in node against a stub DOM.
+
+    One `node` process for every scenario, for the reason
+    test_page_assets.ScriptSyntaxTest gives (#616)."""
+
+    PRESS = {"action": "launch", "slot": 3, "pressed": True}
+    RELEASE = {"action": "launch", "slot": 3, "pressed": False}
+
+    @classmethod
+    def setUpClass(cls):
+        if shutil.which("node") is None:
+            raise unittest.SkipTest("node not on PATH")
+        script = re.search(r"<script>(.*)</script>", perf_page_html(), re.DOTALL)
+        assert script is not None
+        proc = run_bounded(
+            ["node", "-e", _CLIP_PAD_JS],
+            input=script.group(1),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(proc.stderr)
+        cls.results = json.loads(proc.stdout)
+
+    def test_a_press_captures_the_pointer(self):
+        self.assertEqual(self.results["drag_off"]["captured"], [7])
+
+    def test_a_release_off_the_pad_lets_the_clip_go(self):
+        self.assertEqual(self.results["drag_off"]["posts"], [self.PRESS, self.RELEASE])
+
+    def test_a_release_after_the_grid_is_rebuilt_lets_the_clip_go(self):
+        self.assertEqual(self.results["rebuilt_mid_hold"]["posts"], [self.PRESS, self.RELEASE])
+
+    def test_a_cancelled_pointer_lets_the_clip_go(self):
+        self.assertEqual(self.results["cancelled"]["posts"], [self.PRESS, self.RELEASE])
+
+    def test_another_pointer_lifting_does_not_release_the_held_pad(self):
+        self.assertEqual(self.results["other_pointer"]["posts"], [self.PRESS])
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")

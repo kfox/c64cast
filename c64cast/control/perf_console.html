@@ -271,14 +271,30 @@ function renderClips(sys) {
     pad.appendChild(meta);
     // Press and release both go: only a gate clip acts on the release
     // (performance.py `_handle_event`), so this is safe for every launch type.
-    const down = (ev) => { ev.preventDefault(); post({action: 'launch', slot: c.slot, pressed: true}); };
-    const up = (ev) => { ev.preventDefault(); post({action: 'launch', slot: c.slot, pressed: false}); };
-    pad.addEventListener('pointerdown', down);
-    pad.addEventListener('pointerup', up);
-    pad.addEventListener('pointercancel', up);
+    pad.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      pad.setPointerCapture(ev.pointerId);
+      heldPads.set(ev.pointerId, c.slot);
+      post({action: 'launch', slot: c.slot, pressed: true});
+    });
     grid.appendChild(pad);
   });
 }
+
+// Keyed by pointer and released from the window, not from the pad: every
+// state push rebuilds the grid, so the pad that was pressed is usually gone,
+// and its capture with it, by the time the release arrives. That removal fires
+// lostpointercapture mid-hold, which is why it is not a release here.
+const heldPads = new Map();
+
+function releasePad(ev) {
+  if (!heldPads.has(ev.pointerId)) return;
+  const slot = heldPads.get(ev.pointerId);
+  heldPads.delete(ev.pointerId);
+  post({action: 'launch', slot: slot, pressed: false});
+}
+window.addEventListener('pointerup', releasePad);
+window.addEventListener('pointercancel', releasePad);
 
 function renderFx(sys) {
   const box = document.getElementById('fx');
