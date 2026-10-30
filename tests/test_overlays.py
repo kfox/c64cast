@@ -3,6 +3,11 @@
 # pyright: reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import contextlib
+import http.server
+import os
+import tempfile
+import threading
 import time
 import unittest
 from contextlib import contextmanager
@@ -223,6 +228,27 @@ class ScreenCodeTest(unittest.TestCase):
     def test_space(self):
         self.assertEqual(ascii_to_screen(" "), bytes([0x20]))
 
+    def test_typographic_punctuation_draws_as_its_ascii_lookalike(self):
+        self.assertEqual(ascii_to_screen("It’s"), ascii_to_screen("It's"))
+        self.assertEqual(ascii_to_screen("“A” – B—C"), ascii_to_screen('"A" - B-C'))
+        self.assertEqual(ascii_to_screen("WAIT…"), ascii_to_screen("WAIT."))
+
+    def test_accented_letter_draws_as_its_base_letter(self):
+        self.assertEqual(ascii_to_screen("Café Jürgen"), ascii_to_screen("CAFE JURGEN"))
+
+    def test_whitespace_controls_draw_as_spaces(self):
+        self.assertEqual(ascii_to_screen("A\tB\nC\rD"), ascii_to_screen("A B C D"))
+
+    def test_unrepresentable_characters_draw_as_one_placeholder(self):
+        placeholder = ascii_to_screen("?")
+        for ch in ("ß", "€", "日", "\U0001f600", "\x07", "°", "©"):
+            with self.subTest(ch=ch):
+                self.assertEqual(ascii_to_screen(ch), placeholder)
+
+    def test_output_has_one_screen_code_per_input_character(self):
+        text = "Straße ’ \U0001f600"
+        self.assertEqual(len(ascii_to_screen(text)), len(text))
+
 
 class ScrollingTextTest(unittest.TestCase):
     def test_renders_screen_row_after_setup(self):
@@ -261,6 +287,25 @@ class ScrollingTextTest(unittest.TestCase):
 
         ov = ScrollingTextOverlay(messages=["HI"])
         self.assertEqual([(m.text, m.color) for m in ov.messages], [("HI", "white")])
+
+    def test_next_lap_starts_once_the_message_leaves_a_20_column_grid(self):
+        from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
+
+        class _TwentyColumns:
+            cols, rows = 20, 25
+
+            def paint_run(self, row, col, codes, fg, bg, *, draw_chars=True):
+                self.codes = bytes(codes)
+
+        ov = ScrollingTextOverlay(
+            messages=[{"text": "AB", "pre_delay_s": 0.0}], row=0, speed_cells_per_s=10.0
+        )
+        ov.start_time = 100.0
+        surface = _TwentyColumns()
+        # "AB" leaves the 20-column row after (2 + 20) / 10 s; 0.15 s into the
+        # second lap the first glyph has entered at the right edge.
+        ov.compose({"text": surface}, scene=MagicMock(), t=100.0 + 2.2 + 0.15)
+        self.assertEqual(surface.codes[19], ascii_to_screen("A")[0])
 
     def test_bad_row_raises(self):
         from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
@@ -437,6 +482,39 @@ class ClockTest(unittest.TestCase):
         # "12:34" → 0x31 0x32 0x3A 0x33 0x34 (digits + ':' pass through)
         self.assertEqual(bytes(buffers["screen"][35:40]), bytes([0x31, 0x32, 0x3A, 0x33, 0x34]))
 
+    def test_seconds_never_skip_at_a_frame_rate_that_does_not_divide_a_second(self):
+        from datetime import datetime
+
+        from c64cast.scenes.overlays.clock import ClockOverlay
+
+        frame_t = [1_000_000.01]
+
+        class _FrameClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.fromtimestamp(frame_t[0], tz)
+
+        ov = ClockOverlay(format="%S")
+        shown = []
+        with patch("c64cast.scenes.overlays.clock.datetime", _FrameClock):
+            for frame in range(4000):
+                frame_t[0] = 1_000_000.01 + frame * 0.03
+                ov.compose(_make_buffers(), scene=MagicMock(), t=frame_t[0])
+                if not shown or shown[-1] != ov._last_strings[0]:
+                    shown.append(ov._last_strings[0])
+        steps = {(int(b) - int(a)) % 60 for a, b in zip(shown, shown[1:], strict=False)}
+        self.assertEqual(steps, {1}, f"the displayed second jumped: {shown}")
+
+    def test_zero_refresh_recomputes_every_frame(self):
+        from c64cast.scenes.overlays.clock import ClockOverlay
+
+        ov = ClockOverlay(format="%S", refresh_s=0)
+        with patch("c64cast.scenes.overlays.clock.datetime") as dt_mock:
+            dt_mock.now.return_value.strftime.side_effect = ["01", "02"]
+            ov.compose(_make_buffers(), scene=MagicMock(), t=10.0)
+            ov.compose(_make_buffers(), scene=MagicMock(), t=10.03)
+        self.assertEqual(ov._last_strings, ["02"])
+
 
 class WeatherTest(unittest.TestCase):
     def test_uses_cache_when_fetch_fails(self):
@@ -552,6 +630,57 @@ class CountdownTest(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+@unittest.skipUnless(hasattr(time, "tzset"), "time.tzset is Unix-only")
+class CountdownWallClockTest(unittest.TestCase):
+    """`now` is pinned to one instant; `TZ` picks the local zone."""
+
+    NOW_UTC = "2026-10-31T16:00:00+00:00"
+
+    def setUp(self):
+        import os
+        import time as time_mod
+        from datetime import datetime
+
+        old_tz = os.environ.get("TZ")
+
+        def restore():
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time_mod.tzset()
+
+        self.addCleanup(restore)
+        os.environ["TZ"] = "America/New_York"
+        time_mod.tzset()
+
+        instant = datetime.fromisoformat(self.NOW_UTC)
+
+        class _Pinned(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return instant.astimezone(tz) if tz else instant.astimezone().replace(tzinfo=None)
+
+        patcher = patch("c64cast.scenes.overlays.countdown.datetime", _Pinned)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _shown(self, target):
+        from c64cast.scenes.overlays.countdown import CountdownOverlay
+
+        return CountdownOverlay(target=target).compute_strings(t=0.0)
+
+    def test_counts_the_hour_daylight_saving_gives_back(self):
+        # 12:00 EDT Oct 31 to 12:00 EST Nov 1 is 25 elapsed hours.
+        self.assertEqual(self._shown("2026-11-01T12:00:00"), ["1D 01:00:00"])
+
+    def test_target_with_a_utc_offset_counts_down(self):
+        self.assertEqual(self._shown("2026-10-31T17:30:00+00:00"), ["01:30:00"])
+
+    def test_target_with_a_z_suffix_counts_down(self):
+        self.assertEqual(self._shown("2026-10-31T16:00:05Z"), ["00:00:05"])
+
+
 class NetworkTest(unittest.TestCase):
     def test_bad_items_raises(self):
         from c64cast.scenes.overlays.network import NetworkOverlay
@@ -583,6 +712,17 @@ class MarqueeTest(unittest.TestCase):
         # 'A'=0x01, 'B'=0x02, 'C'=0x03 should appear at the start.
         self.assertEqual(row[:3], bytes([0x01, 0x02, 0x03]))
 
+    def test_text_shorter_than_the_row_repeats_across_it(self):
+        from c64cast.scenes.overlays.marquee import MarqueeOverlay
+
+        ov = MarqueeOverlay(text="AB", row=0, speed_cells_per_s=1.0)
+        ov.start_time = 100.0
+        buffers = _make_buffers()
+        ov.compose(buffers, scene=MagicMock(), t=103.0)
+        loop = ascii_to_screen("AB" + ov.SEPARATOR)
+        expected = bytes(loop[(3 + col) % len(loop)] for col in range(40))
+        self.assertEqual(bytes(buffers["screen"][0:40]), expected)
+
     def test_empty_text_raises(self):
         from c64cast.scenes.overlays.marquee import MarqueeOverlay
 
@@ -594,7 +734,7 @@ class RssTitleExtractionTest(unittest.TestCase):
     def test_extracts_rss20_titles(self):
         from c64cast.scenes.overlays.rss import _extract_titles
 
-        xml = """<?xml version="1.0"?><rss><channel>
+        xml = b"""<?xml version="1.0"?><rss><channel>
         <item><title>First</title></item>
         <item><title>Second</title></item>
         <item><title>Third</title></item>
@@ -605,12 +745,303 @@ class RssTitleExtractionTest(unittest.TestCase):
     def test_extracts_atom_titles(self):
         from c64cast.scenes.overlays.rss import _extract_titles
 
-        xml = """<?xml version="1.0"?>
+        xml = b"""<?xml version="1.0"?>
         <feed xmlns="http://www.w3.org/2005/Atom">
         <entry><title>Atom-1</title></entry>
         <entry><title>Atom-2</title></entry>
         </feed>"""
         self.assertEqual(_extract_titles(xml, 5), ["Atom-1", "Atom-2"])
+
+
+class _RemotePeer(http.server.BaseHTTPRequestHandler):
+    """A feed or weather service on loopback; `server.routes` maps a path's
+    first segment to the function that answers it."""
+
+    def do_GET(self):
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            self.server.routes["/" + self.path.split("?")[0].split("/")[1]](self)  # type: ignore[attr-defined]
+
+    def log_message(self, format, *args):
+        pass
+
+
+def _send_head(handler, content_type: str, length: int) -> None:
+    handler.send_response(200)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(length))
+    handler.end_headers()
+
+
+class _RemotePeerTest(unittest.TestCase):
+    def setUp(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RemotePeer)
+        server.daemon_threads = False
+        server.routes = {}  # type: ignore[attr-defined]
+        self.peer_stop = threading.Event()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(self.peer_stop.set)
+        self.server = server
+        self.base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def route(self, path, answer):
+        self.server.routes[path] = answer  # type: ignore[attr-defined]
+        return self.base + path
+
+    def drip(self, handler):
+        """Headers, then one byte per tick until the test ends: every socket
+        read succeeds well inside any per-read timeout."""
+        _send_head(handler, "application/rss+xml", 1 << 30)
+        while not self.peer_stop.wait(0.05):
+            handler.wfile.write(b" ")
+            handler.wfile.flush()
+
+    def finishes_within(self, target, seconds):
+        worker = threading.Thread(target=target, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(self.peer_stop.set)
+        worker.join(seconds)
+        return not worker.is_alive()
+
+
+class RssFetchTest(_RemotePeerTest):
+    def test_utf8_feed_without_a_charset_header_keeps_its_characters(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        body = '<?xml version="1.0" encoding="utf-8"?><rss><channel><item><title>It’s</title></item></channel></rss>'.encode()
+
+        def answer(handler):
+            _send_head(handler, "text/xml", len(body))
+            handler.wfile.write(body)
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        ov._fetch_once()
+        self.assertEqual(ov._titles, ["It’s"])
+
+    def test_feed_declaring_a_multibyte_encoding_is_parsed(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        for encoding, title in (
+            ("shift_jis", "日本語ニュース"),
+            ("gb2312", "中文新闻"),
+            ("euc-kr", "한국어 뉴스"),
+            ("big5", "中文新聞"),
+        ):
+            with self.subTest(encoding=encoding):
+                body = (
+                    f'<?xml version="1.0" encoding="{encoding}"?>'
+                    f"<rss><channel><item><title>{title}</title></item></channel></rss>"
+                ).encode(encoding)
+
+                def answer(handler, body=body):
+                    _send_head(handler, "text/xml", len(body))
+                    handler.wfile.write(body)
+
+                ov = RssOverlay(url=self.route("/feed", answer))
+                ov._fetch_once()
+                self.assertEqual(ov._titles, [title])
+
+    def test_feed_declaring_an_encoding_python_does_not_know_is_read_as_utf8(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        body = (
+            '<?xml version="1.0" encoding="x-sjis"?>'
+            "<rss><channel><item><title>Café</title></item></channel></rss>"
+        ).encode()
+
+        def answer(handler):
+            _send_head(handler, "text/xml", len(body))
+            handler.wfile.write(body)
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        ov._fetch_once()
+        self.assertEqual(ov._titles, ["Café"])
+
+    def test_oversized_feed_is_refused_without_reading_it_all(self):
+        from c64cast.scenes.overlays import _fetch
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        padding = b" " * (1 << 20)
+        head = b"<rss><channel>"
+        tail = b"<item><title>LATE</title></item></channel></rss>"
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", len(head) + len(padding) + len(tail))
+            handler.wfile.write(head + padding + tail)
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        with (
+            patch.object(_fetch, "MAX_BODY_BYTES", 64 * 1024),
+            self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
+        ):
+            ov._fetch_once()
+        self.assertEqual(ov._titles, [])
+
+    def test_a_feed_that_drips_forever_gives_up_at_the_deadline(self):
+        from c64cast.scenes.overlays import _fetch
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        ov = RssOverlay(url=self.route("/feed", self.drip))
+        with (
+            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
+        ):
+            self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
+
+
+class FetchTransportErrorTest(_RemotePeerTest):
+    def test_a_body_shorter_than_its_content_length_is_a_fetch_failure(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", 1000)
+            handler.wfile.write(b"<rss>")
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        ov._titles = ["KEPT"]
+        with self.assertLogs("c64cast.scenes.overlays.rss", level="INFO") as logs:
+            ov._fetch_once()
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+        self.assertEqual(ov._titles, ["KEPT"])
+
+    def test_a_body_that_stalls_past_the_read_timeout_is_a_request_exception(self):
+        import requests
+
+        from c64cast.scenes.overlays import _fetch
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", 1000)
+            handler.wfile.write(b"<rss>")
+            handler.wfile.flush()
+            self.peer_stop.wait(5.0)
+
+        url = self.route("/feed", answer)
+        with self.assertRaises(requests.RequestException):
+            _fetch.get_body(url, timeout=0.2)
+
+    def test_a_redirect_whose_body_drips_forever_gives_up_at_the_deadline(self):
+        from c64cast.scenes.overlays import _fetch
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        def answer(handler):
+            handler.send_response(302)
+            handler.send_header("Location", "/elsewhere")
+            handler.send_header("Content-Length", str(1 << 30))
+            handler.end_headers()
+            while not self.peer_stop.wait(0.05):
+                handler.wfile.write(b" ")
+                handler.wfile.flush()
+
+        ov = RssOverlay(url=self.route("/feed", answer))
+        self.route("/elsewhere", self.drip)
+        with (
+            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
+        ):
+            self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
+
+    def test_a_feed_behind_a_redirect_is_read(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        body = b"<rss><channel><item><title>MOVED</title></item></channel></rss>"
+
+        def moved(handler):
+            handler.send_response(301)
+            handler.send_header("Location", "/new")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+
+        def answer(handler):
+            _send_head(handler, "application/rss+xml", len(body))
+            handler.wfile.write(body)
+
+        self.route("/new", answer)
+        ov = RssOverlay(url=self.route("/old", moved) + "?x=1")
+        ov._fetch_once()
+        self.assertEqual(ov._titles, ["MOVED"])
+
+    def test_a_redirect_loop_is_a_fetch_failure(self):
+        from c64cast.scenes.overlays.rss import RssOverlay
+
+        def loop(handler):
+            handler.send_response(302)
+            handler.send_header("Location", "/loop")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+
+        ov = RssOverlay(url=self.route("/loop", loop))
+        with self.assertLogs("c64cast.scenes.overlays.rss", level="INFO") as logs:
+            ov._fetch_once()
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+
+    def test_a_redirect_to_a_raw_utf8_location_reaches_that_path(self):
+        from c64cast.scenes.overlays import _fetch
+
+        def moved(handler):
+            handler.send_response_only(302)
+            handler.flush_headers()
+            handler.wfile.write(b"Location: /caf\xc3\xa9\r\nContent-Length: 0\r\n\r\n")
+
+        def answer(handler):
+            path = handler.path.encode()
+            _send_head(handler, "text/plain", len(path))
+            handler.wfile.write(path)
+
+        self.route("/caf%C3%A9", answer)
+        self.assertEqual(_fetch.get_body(self.route("/old", moved), timeout=2.0), b"/caf%C3%A9")
+
+    def test_a_weather_reply_that_is_not_utf8_is_a_fetch_failure(self):
+        from c64cast.scenes.overlays import weather
+
+        body = b'{"current": "\xff"}'
+
+        def answer(handler):
+            _send_head(handler, "application/json", len(body))
+            handler.wfile.write(body)
+
+        ov = weather.WeatherOverlay(provider="open-meteo", lat=1.0, lon=2.0)
+        with (
+            patch.object(weather, "OPEN_METEO_URL", self.route("/forecast", answer)),
+            self.assertLogs("c64cast.scenes.overlays.weather", level="INFO") as logs,
+        ):
+            self.assertEqual(ov._fetch_once(), "")
+        self.assertEqual([r.levelname for r in logs.records], ["INFO"])
+
+
+class WeatherFetchTest(_RemotePeerTest):
+    def test_open_meteo_reply_reads_as_temperature_and_label(self):
+        from c64cast.scenes.overlays import weather
+
+        body = b'{"current": {"temperature_2m": 71.6, "weather_code": 0}}'
+
+        def answer(handler):
+            _send_head(handler, "application/json", len(body))
+            handler.wfile.write(body)
+
+        url = self.route("/forecast", answer)
+        with patch.object(weather, "OPEN_METEO_URL", url):
+            self.assertEqual(weather._fetch_open_meteo(1.0, 2.0, "F"), "72F CLEAR")
+
+    def test_a_service_that_drips_forever_gives_up_at_the_deadline(self):
+        from c64cast.scenes.overlays import _fetch, weather
+
+        for ov in (
+            weather.WeatherOverlay(provider="open-meteo", lat=1.0, lon=2.0),
+            weather.WeatherOverlay(provider="wttr.in", location="Here"),
+        ):
+            with self.subTest(provider=ov.provider):
+                url = self.route("/" + ov.provider.replace(".", ""), self.drip)
+                with (
+                    patch.object(weather, "OPEN_METEO_URL", url),
+                    patch.object(weather, "WTTR_URL", url),
+                    patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+                    self.assertLogs("c64cast.scenes.overlays.weather", level="WARNING"),
+                ):
+                    self.assertTrue(self.finishes_within(ov._poll_once, 5.0))
 
 
 class LogoTest(unittest.TestCase):
@@ -633,6 +1064,18 @@ class LogoTest(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_latin1_characters_are_raw_screen_codes(self):
+        from c64cast.scenes.overlays.logo import LogoOverlay
+
+        art = tempfile.mkdtemp()
+        path = os.path.join(art, "art.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(" ®A’\n")
+        ov = LogoOverlay(file=path, corner="top-left")
+        buffers = _make_buffers()
+        ov.compose(buffers, scene=MagicMock(), t=0.0)
+        self.assertEqual(bytes(buffers["screen"][0:4]), bytes([0xA0, 0xAE, 0x01, 0x27]))
+
     def test_missing_file_uses_placeholder(self):
         # Documented behavior: missing file → placeholder render so the
         # example config can ship with a hint path that still works.
@@ -650,6 +1093,21 @@ class LogoTest(unittest.TestCase):
         self.assertGreater(len(ov.lines), 0)
         joined = " ".join(ov.lines).upper()
         self.assertIn("PLACEHOLDER", joined)
+
+    def test_home_relative_path_loads_the_file(self):
+        import os
+        import tempfile
+
+        from c64cast.scenes.overlays.logo import LogoOverlay
+
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "art.txt"), "w") as f:
+            f.write("AB\n")
+        # os.path.expanduser reads USERPROFILE on Windows and HOME elsewhere.
+        with patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+            ov = LogoOverlay(file="~/art.txt", corner="top-left")
+        self.assertFalse(ov._placeholder)
+        self.assertEqual(ov.lines, ["AB"])
 
     def test_must_specify_position(self):
         import os
@@ -688,6 +1146,16 @@ class NetworkCollectTest(unittest.TestCase):
         self.assertEqual(lines[0], "192.168.1.2")
         self.assertEqual(lines[1], "MYHOST")
         self.assertEqual(lines[2], "PING  12MS")
+
+    def test_ping_without_a_target_reads_as_a_dash(self):
+        import c64cast.scenes.overlays.network as net
+
+        ov = self._ov(["ping"])
+        ov._target_host = None
+        with patch.object(net, "_tcp_ping_ms", return_value=0.2) as ping:
+            lines = ov._collect()
+        ping.assert_not_called()
+        self.assertEqual(lines, ["PING -"])
 
     def test_collect_preserves_previous_value_on_failure(self):
         import c64cast.scenes.overlays.network as net
@@ -784,29 +1252,29 @@ class OBSStatusTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 obs.OBSStatusOverlay()
 
+    def test_status_before_the_first_poll_is_plain_screen_codes(self):
+        ov = _obs_overlay()
+        lines = ov.compute_strings(t=0.0)
+        assert lines is not None
+        self.assertEqual(ascii_to_screen(lines[0]), ascii_to_screen("OBS ..."))
+
     def test_poll_once_formats_scene_and_dropped(self):
         ov = _obs_overlay(show_dropped=True)
-        ov._connect = lambda: _FakeOBSClient(scene="Main", skipped=2, render_skipped=3)
-        lines = ov._poll_once()
+        lines = ov._poll_once(_FakeOBSClient(scene="Main", skipped=2, render_skipped=3))
         self.assertEqual(lines[0], "MAIN")
         self.assertEqual(lines[1], "DROP    5")  # 2 + 3 summed
 
     def test_poll_once_without_dropped(self):
         ov = _obs_overlay(show_dropped=False)
-        ov._connect = lambda: _FakeOBSClient(scene="Cam")
-        self.assertEqual(ov._poll_once(), ["CAM"])
+        self.assertEqual(ov._poll_once(_FakeOBSClient(scene="Cam")), ["CAM"])
 
     def test_worker_publishes_then_offline_on_failure(self):
-        import threading
-
         ov = _obs_overlay()
         ov._connect = lambda: _FakeOBSClient(scene="Live")
-        # One successful poll updates the cache.
-        ov._poll_once = lambda: ["LIVE", "DROP    0"]
         stop = threading.Event()
         calls = {"n": 0}
 
-        def flaky():
+        def flaky(client):
             calls["n"] += 1
             if calls["n"] == 1:
                 return ["LIVE", "DROP    0"]
@@ -817,17 +1285,72 @@ class OBSStatusTest(unittest.TestCase):
         ov.poll_interval = 0.0
         with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
             ov._worker(stop)
-        # Final state reflects the failure → OFFLINE banner, client dropped.
         self.assertEqual(ov.compute_strings(t=0.0), ["OBS OFFLINE"])
-        self.assertIsNone(ov._client)
+
+    def test_a_client_whose_poll_failed_is_closed_before_reconnecting(self):
+        class NoBackoff(threading.Event):
+            def wait(self, timeout=None):
+                return self.is_set()
+
+        ov = _obs_overlay()
+        clients = [_FakeOBSClient(), _FakeOBSClient()]
+        failed = clients[0]
+        ov._connect = lambda: clients.pop(0)
+        stop = NoBackoff()
+
+        def fail_then_stop(client):
+            if client is failed:
+                raise OSError("request timed out")
+            stop.set()
+            return ["LIVE"]
+
+        ov._poll_once = fail_then_stop
+        with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
+            ov._worker(stop)
+        self.assertTrue(failed.disconnected)
+
+    def test_a_connect_still_running_at_teardown_is_closed_when_it_lands(self):
+        ov = _obs_overlay()
+        client = _FakeOBSClient()
+        connecting = threading.Event()
+        peer_answers = threading.Event()
+        self.addCleanup(peer_answers.set)
+
+        def slow_connect():
+            connecting.set()
+            peer_answers.wait(10.0)
+            return client
+
+        ov._connect = slow_connect
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        self.assertTrue(connecting.wait(5.0))
+        worker = ov._poll._thread
+        assert worker is not None
+        self.addCleanup(worker.join)
+        with self.assertLogs("c64cast._pollthread", level="WARNING"):
+            ov.teardown(api=MagicMock(), scene=MagicMock())
+        peer_answers.set()
+        worker.join(5.0)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(client.disconnected)
 
     def test_teardown_disconnects_client(self):
         ov = _obs_overlay()
         client = _FakeOBSClient()
-        ov._client = client
+        polled = threading.Event()
+        ov._connect = lambda: client
+        real_poll_once = ov._poll_once
+
+        def poll_once(c):
+            polled.set()
+            return real_poll_once(c)
+
+        ov._poll_once = poll_once
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        self.assertTrue(polled.wait(5.0))
         ov.teardown(api=MagicMock(), scene=MagicMock())
+        self.assertFalse(ov._poll.is_running())
         self.assertTrue(client.disconnected)
-        self.assertIsNone(ov._client)
 
 
 if __name__ == "__main__":

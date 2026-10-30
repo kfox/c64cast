@@ -17,7 +17,7 @@ import requests
 
 from c64cast._pollthread import PollThread
 
-from . import register
+from . import _fetch, register
 from .marquee import MarqueeBase
 
 log = logging.getLogger(__name__)
@@ -31,8 +31,28 @@ def _local(tag: str) -> str:
     return _NS_STRIP.sub("", tag)
 
 
-def _extract_titles(xml_text: str, limit: int) -> list[str]:
-    root = ET.fromstring(xml_text)
+_XML_DECLARED_ENCODING = re.compile(rb"""<\?xml[^>]*?\sencoding\s*=\s*["']([A-Za-z][\w.-]*)["']""")
+
+
+def _parse_feed(xml: bytes) -> ET.Element:
+    try:
+        return ET.fromstring(xml)
+    except LookupError:
+        # An encoding name Python has no codec for (x-sjis, x-euc-jp). expat
+        # ignores the declaration on str input, as it did when feeds were
+        # parsed from decoded text.
+        return ET.fromstring(xml.decode("utf-8", errors="replace"))
+    except ValueError:
+        # expat decodes only UTF-8, UTF-16 and single-byte encodings, and
+        # refuses a declared multi-byte one (Shift_JIS, GB2312, Big5) this way.
+        declared = _XML_DECLARED_ENCODING.match(xml)
+        if declared is None:
+            raise
+        return ET.fromstring(xml.decode(declared[1].decode("ascii"), errors="replace"))
+
+
+def _extract_titles(xml_text: bytes, limit: int) -> list[str]:
+    root = _parse_feed(xml_text)
     titles = []
     # 'item' is RSS, 'entry' is Atom.
     for el in root.iter():
@@ -92,14 +112,15 @@ class RssOverlay(MarqueeBase):
 
     def _fetch_once(self) -> None:
         try:
-            r = requests.get(self.url, timeout=5.0, headers={"User-Agent": "c64cast/1.0"})
-            r.raise_for_status()
-            titles = _extract_titles(r.text, self.max_items)
+            body = _fetch.get_body(self.url, timeout=5.0, headers={"User-Agent": "c64cast/1.0"})
+            titles = _extract_titles(body, self.max_items)
             if titles:
                 with self._lock:
                     self._titles = titles
         except requests.RequestException as e:
             log.info("rss: fetch failed (%s); keeping cached", e)
+        except _fetch.BodyLimitExceeded as e:
+            log.warning("rss: feed refused (%s); keeping cached", e)
         except ET.ParseError as e:
             log.warning("rss: parse failed (%s)", e)
         except Exception:

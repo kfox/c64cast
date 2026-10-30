@@ -123,6 +123,7 @@ _HARD_DEPS: tuple[tuple[str, str], ...] = (
     ("cv2", "opencv-python: video decode + palette quantize"),
     ("numpy", "array math everywhere"),
     ("requests", "U64 REST transport"),
+    ("urllib3", "bounded remote-overlay fetches (rss, weather)"),
     ("py65", "host-side SID emulator"),
 )
 

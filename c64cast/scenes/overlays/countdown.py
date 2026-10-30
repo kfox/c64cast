@@ -2,18 +2,15 @@
 
 Config:
   target  — ISO 8601 string ("2026-12-31T23:59:59" or "2026-12-31 18:00").
+            No UTC offset means local time; "+01:00" or "Z" pins the zone.
   format  — "auto" (default): picks the largest unit needed (D:HH:MM:SS).
             Anything else: strftime-style with placeholders {d}{h}{m}{s}.
-  done_text — what to show after the target time. Default "DONE".
-
-The base CornerTextOverlay change-detects on the rendered string, so
-when only the seconds field updates the delta cache only sends the
-seconds cell(s)."""
+  done_text — what to show after the target time. Default "DONE"."""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from . import register
 from .corner_text import CornerTextOverlay
@@ -22,12 +19,13 @@ log = logging.getLogger(__name__)
 
 
 def _parse_target(s: str) -> datetime:
+    """The target as an aware datetime; a target with no offset is local time."""
     # Tolerate the space-separated variant of ISO by swapping in a 'T'.
     try:
-        return datetime.fromisoformat(s)
+        target = datetime.fromisoformat(s)
     except ValueError:
-        pass
-    return datetime.fromisoformat(s.replace(" ", "T"))
+        target = datetime.fromisoformat(s.replace(" ", "T"))
+    return target if target.tzinfo is not None else target.astimezone()
 
 
 @register("countdown")
@@ -55,7 +53,7 @@ class CountdownOverlay(CornerTextOverlay):
         self.done_text = str(done_text)
 
     def compute_strings(self, t: float) -> list[str] | None:
-        remaining = (self.target_dt - datetime.now()).total_seconds()
+        remaining = (self.target_dt - datetime.now(UTC)).total_seconds()
         if remaining <= 0:
             return [self.done_text]
         total = int(remaining)

@@ -331,17 +331,19 @@ The built-in overlays:
 | `rss`              | text modes                | Marquee fed by a background RSS/Atom fetch (stdlib `ElementTree`).             |
 | `spectrum_petscii` | petscii / blank           | A strip of cells (bottom / center / split mode), 8 bands × 5 cols.             |
 | `spectrum_bitmap`  | mhires only               | The same 8 bands as pixel-height bars folded into the multicolor bitmap.       |
-| `clock`            | text modes                | Time/date in a corner; only updates when the formatted string changes.         |
+| `clock`            | text modes                | Time/date in a corner; recomputed every `refresh_s`, on wall-clock boundaries. |
 | `weather`          | text modes                | Temp + conditions in a corner; background thread polls every N minutes.        |
-| `callsign`         | text modes                | Static text in a corner. Single paint, then change-detect zero traffic.        |
+| `callsign`         | text modes                | Static text in a corner.                                                       |
 | `countdown`        | text modes                | Time-until-target in a corner; auto-format or `{d}{h}{m}{s}` template.         |
 | `network`          | text modes                | IP / hostname / U64 ping latency in a corner; background socket poll.          |
 | `logo`             | text modes                | Multi-line PETSCII art from a `.txt` file at `corner` or explicit `row`+`col` (wide art clips on mhires). |
 | `big_text`         | blank / mcm only          | Demo-scene 8×-scaled scrolling text (each source PETSCII char → 8×8 cells).    |
 
-Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `network`) share `overlays/corner_text.py` — subclass `CornerTextOverlay` and just implement `compute_strings(t) → Optional[list[str]]`. The base handles change-detection, blanking-on-shrink, and teardown cleanup.
+Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `network`) share `overlays/corner_text.py` — subclass `CornerTextOverlay` and just implement `compute_strings(t) → Optional[list[str]]`. The base handles corner placement, throttles `compute_strings` to `refresh_s` boundaries, and paints the last result into the scene's buffers every frame, so the scene's own per-frame repaint erases text that shrank. The base has no teardown of its own.
 
 `marquee` and `rss` share `overlays/marquee.py:MarqueeBase` — subclass and implement `_current_text()`.
+
+**A remote reply's body is bounded.** `rss` and `weather` fetch through `overlays/_fetch.py:get_body`, which caps the body at `MAX_BODY_BYTES` and its read at `BODY_DEADLINE_S`. The status line and headers are not under the deadline: `http.client` reads them a line at a time, so a peer that drips header bytes inside each read timeout still holds the poll thread. `requests`' own timeout bounds each socket read only, so a peer that dripped a byte inside it, or streamed without end, used to hold the poll thread past teardown — and `PollThread.start()` refuses a replacement while the old worker lives, so the overlay froze for the rest of the run. The deadline is checked between `urllib3`'s `read1()` calls, which return what one socket read brings (hence the `urllib3>=2.2` floor); the body is requested and read uncompressed, because urllib3's decoder can loop inside a single read on a stream that yields no output. `get_body` follows up to `MAX_REDIRECTS` redirects itself, stopping each at a response hook: `requests` reads a redirect's whole body before following it, and does so even with `allow_redirects=False`. An `rss` feed is parsed from its bytes, so the XML declaration, not a charset-less `Content-Type`, decides its encoding.
 
 ### `big_text` — the 8× scroller
 

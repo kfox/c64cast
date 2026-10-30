@@ -12,6 +12,7 @@ per-frame full-screen repaint.
 from __future__ import annotations
 
 import logging
+import math
 
 import numpy as np
 
@@ -102,19 +103,27 @@ class CornerTextOverlay(Overlay):
         self.bg_color = bg_color
         self.refresh_s = float(refresh_s)
         self._last_strings: list[str] = []
-        self._last_compute_t = -1e9  # ensure first frame computes
+        self._next_compute_t = -math.inf
 
     def compute_strings(self, t: float) -> list[str] | None:
         raise NotImplementedError
 
+    def _next_boundary_after(self, t: float) -> float:
+        # Pinned to wall-clock multiples of refresh_s rather than t + refresh_s:
+        # frame jitter would otherwise drift the sample point across a second
+        # boundary now and then, and a clock or countdown would skip a second.
+        if self.refresh_s <= 0:
+            return t
+        return (math.floor(t / self.refresh_s) + 1) * self.refresh_s
+
     def compose(self, buffers: dict, scene, t: float) -> None:
         # compute_strings is throttled, but the cached strings are painted
         # every frame: the scene rewrote these cells when it composed.
-        if (t - self._last_compute_t) >= self.refresh_s:
+        if t >= self._next_compute_t:
             new_strings = self.compute_strings(t)
             if new_strings is not None:
                 self._last_strings = new_strings
-            self._last_compute_t = t
+            self._next_compute_t = self._next_boundary_after(t)
         if not self._last_strings:
             return
         paint_corner_string(

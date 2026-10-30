@@ -13,6 +13,7 @@ keep the last good value visible.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -21,10 +22,13 @@ import requests
 
 from c64cast._pollthread import PollThread
 
-from . import register
+from . import _fetch, register
 from .corner_text import CornerTextOverlay
 
 log = logging.getLogger(__name__)
+
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+WTTR_URL = "https://wttr.in"
 
 # Compact 5-char labels by Open-Meteo WMO code; anything missing reads "MIST".
 WMO_CODES = {
@@ -63,14 +67,12 @@ def _fetch_open_meteo(lat: float, lon: float, units: str) -> str:
     """One-shot. Returns a short string like '72F CLEAR' or '' on failure."""
     unit_param = "fahrenheit" if units.upper() == "F" else "celsius"
     url = (
-        f"https://api.open-meteo.com/v1/forecast"
+        f"{OPEN_METEO_URL}"
         f"?latitude={lat}&longitude={lon}"
         f"&current=temperature_2m,weather_code"
         f"&temperature_unit={unit_param}"
     )
-    r = requests.get(url, timeout=4.0)
-    r.raise_for_status()
-    data = r.json()
+    data = json.loads(_fetch.get_body(url, timeout=4.0))
     cur = data.get("current", {})
     t = cur.get("temperature_2m")
     code = cur.get("weather_code")
@@ -83,10 +85,8 @@ def _fetch_open_meteo(lat: float, lon: float, units: str) -> str:
 def _fetch_wttr(location: str) -> str:
     """Returns the response trimmed. wttr.in's %t includes the degree sign;
     we strip it to keep the string ASCII-clean for screen-code conversion."""
-    url = f"https://wttr.in/{location}?format=%t+%C"
-    r = requests.get(url, timeout=4.0)
-    r.raise_for_status()
-    raw = r.text.strip()
+    url = f"{WTTR_URL}/{location}?format=%t+%C"
+    raw = _fetch.get_body(url, timeout=4.0).decode("utf-8", errors="replace").strip()
     # %t looks like "+72°F" — strip leading +, replace °.
     raw = raw.lstrip("+").replace("°", "")
     # Compress whitespace and clip; screen-code conversion only handles ASCII.
@@ -150,8 +150,12 @@ class WeatherOverlay(CornerTextOverlay):
                 return _fetch_open_meteo(self.lat, self.lon, self.units)
             assert self.location is not None
             return _fetch_wttr(self.location)
-        except requests.RequestException as e:
+        # ValueError: a body that is not UTF-8 JSON (JSONDecodeError, UnicodeDecodeError).
+        except (requests.RequestException, ValueError) as e:
             log.info("weather: fetch failed (%s); keeping cached value", e)
+            return ""
+        except _fetch.BodyLimitExceeded as e:
+            log.warning("weather: reply refused (%s); keeping cached value", e)
             return ""
         except Exception:
             log.exception("weather: unexpected fetch error")

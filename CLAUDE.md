@@ -26,7 +26,7 @@ The DMA password (if the U64 has one set) is supplied via `C64CAST_DMA_PASSWORD`
 
 **Firmware prerequisites:** three U64 switches in two menus (Ultimate DMA Service, Web Remote Control Service, Command Interface), plus **Bus Operation Mode = `Writes`** when a TeensyROM+ sits in an Ultimate's cartridge port — walkthrough in [docs/guide/04-setting-up.md](docs/guide/04-setting-up.md), symptoms in [docs/caveats.md](docs/caveats.md). The REU and the sampler are *not* switches — `hw_provision` enables them live+volatile per run.
 
-Hard deps: `opencv-python`, `numpy`, `requests`, `py65`; optional extras are grouped in [pyproject.toml](pyproject.toml) (`video` = PyAV, `yt` = yt-dlp, `wizard` = `--init`, …, `all`), and dev tools are a PEP 735 `dev` group installed by default.
+Hard deps: `opencv-python`, `numpy`, `requests` (with `urllib3`), `py65`; optional extras are grouped in [pyproject.toml](pyproject.toml) (`video` = PyAV, `yt` = yt-dlp, `wizard` = `--init`, …, `all`), and dev tools are a PEP 735 `dev` group installed by default.
 
 **Setup is `uv sync --all-extras` — never `uv pip` and never raw `pip`** (the mise/`UV_PYTHON` trap: ["Development setup"](CONTRIBUTING.md#development-setup)). The `make` targets route through `uv run`, so they hit the synced project env from any shell; `make doctor` is the fast offline self-check (environment-probe rationale on the probe docstrings in [c64cast/app/doctor.py](c64cast/app/doctor.py)); type-checking is `pyright` basic tree-wide + `mypy --strict` on the state-bearing modules — ["The pre-PR gate"](CONTRIBUTING.md#the-pre-pr-gate).
 

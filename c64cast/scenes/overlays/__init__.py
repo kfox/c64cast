@@ -20,6 +20,7 @@ import difflib
 import inspect
 import logging
 import re
+import unicodedata
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -37,15 +38,67 @@ from c64cast.scenes.backgrounds import SC_HYPHEN as SC_HYPHEN  # noqa: E402
 from c64cast.scenes.backgrounds import SC_SPACE as SC_SPACE  # noqa: E402
 from c64cast.scenes.backgrounds import SC_STAR as SC_STAR  # noqa: E402
 
+UNREPRESENTABLE = "?"
+
+_TO_ASCII_LOOKALIKE = str.maketrans(
+    {
+        "\t": " ",
+        "\n": " ",
+        "\r": " ",
+        " ": " ",
+        "‘": "'",
+        "’": "'",
+        "‚": "'",
+        "‛": "'",
+        "′": "'",
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "″": '"',
+        "‐": "-",
+        "‑": "-",
+        "‒": "-",
+        "–": "-",
+        "—": "-",
+        "―": "-",
+        "−": "-",
+        "…": ".",
+        "•": "*",
+    }
+)
+
+
+def _printable_ascii(ch: str) -> str:
+    """One printable ASCII character standing in for `ch`: a typographic
+    lookalike, an accented letter's base letter, else the placeholder. One
+    in, one out, so a caller's column arithmetic on `len(text)` holds."""
+    ch = ch.translate(_TO_ASCII_LOOKALIKE)
+    if " " <= ch <= "~":
+        return ch
+    base = unicodedata.normalize("NFD", ch)[0]
+    return base if " " <= base <= "~" else UNREPRESENTABLE
+
+
+def _ascii_screen_code(ch: str) -> int:
+    code = ord(ch.upper())
+    return code - 0x40 if 0x40 <= code <= 0x5F else code
+
 
 def ascii_to_screen(text: str) -> bytes:
-    """Convert an ASCII string to C64 screen codes (uppercase character set).
+    """Convert text to C64 screen codes (uppercase character set), one code
+    per character.
 
-    PETSCII letters A-Z (0x40-0x5F) map to screen codes 0x00-0x1F;
-    everything else passes through (digits, punctuation, space)."""
-    return bytes(
-        (ord(c) - 0x40) & 0x3F if 0x40 <= ord(c) <= 0x5F else ord(c) & 0xFF for c in text.upper()
-    )
+    PETSCII letters A-Z (0x40-0x5F) map to screen codes 0x00-0x1F; digits,
+    punctuation and space pass through. Anything outside printable ASCII is
+    folded to an ASCII lookalike or the `UNREPRESENTABLE` placeholder first."""
+    return bytes(_ascii_screen_code(_printable_ascii(c)) for c in text)
+
+
+def art_to_screen(text: str) -> bytes:
+    """`ascii_to_screen`, except that U+0080-U+00FF are raw screen codes:
+    the `logo` art format spells graphics glyphs that way (assets/logos/README.md)."""
+    return bytes(ord(c) if 0x80 <= ord(c) <= 0xFF else ascii_to_screen(c)[0] for c in text)
 
 
 class Overlay:
