@@ -737,7 +737,7 @@ class BuildStackHardwarePaletteTest(unittest.TestCase):
 
     def test_it_provisions_after_the_startup_reset_for_this_run(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         provision = self._build(cfg, None)
         self.assertEqual(self.cleared_before_provision, [True])
         provision.assert_called_once()
@@ -746,7 +746,7 @@ class BuildStackHardwarePaletteTest(unittest.TestCase):
 
     def test_a_build_that_fails_afterwards_restores_the_machines_palette(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         control = mock.MagicMock(name="control")
         self._build(cfg, control)
         control.restore.assert_called_once()
@@ -784,7 +784,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
 
     def test_a_missing_calibration_is_a_stack_build_error(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         resolve = mock.MagicMock(side_effect=ValueError("no usable calibration"))
         with (
             self.assertLogs("c64cast", "ERROR") as cm,
@@ -798,7 +798,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
         # Master volume, the HDMI mode switch (a capture device re-locks on it)
         # and the reset would all happen only to be reverted by the unwind.
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         resolve = mock.MagicMock(side_effect=ValueError("no usable calibration"))
         with (
             self.assertLogs("c64cast", "ERROR"),
@@ -816,7 +816,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
         # A calibration recorded at $D400 is switched through the chip's own
         # registers, which a TeensyROM+ reaches as well as an Ultimate (#605).
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         curve = session.dac_curve_resolve.DacCurve(
             "calibrated:k", bytes(256), (None, "ARMSID 6581")
         )
@@ -832,7 +832,7 @@ class BuildStackDacCurveTest(unittest.TestCase):
 
     def test_a_run_without_audio_resolves_no_curve(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         cfg.audio.enabled = False
         resolve = mock.MagicMock()
         with self.assertRaises(session.StackBuildError):
@@ -859,7 +859,7 @@ class BuildSessionOpensEverySystemFirstTest(unittest.TestCase):
         loaded = _loaded(["a", "b"], is_ensemble=True)
         for cfg in loaded.cfgs:
             cfg.audio.enabled = True
-            cfg.scenes = []
+            cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         self.events: list[str] = []
         self.apis: dict[str, mock.MagicMock] = {}
 
