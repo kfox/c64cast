@@ -658,7 +658,7 @@ def register_web_routes(
         # would make the list disagree with what actually gets written.
         rows = pl.live_tracker.pending()
         if action == "discard":
-            return {"ok": True, "discarded": pl.live_tracker.forget(r["key"] for r in rows)}
+            return {"ok": True, "discarded": pl.live_tracker.forget(rows)}
         if action != "save":
             raise HTTPException(400, 'a live-tune command needs action "save" or "discard"')
         savable = [r for r in rows if r["field"] is not None]
@@ -683,7 +683,7 @@ def register_web_routes(
             raise _store_error(e) from e
         # Only now: a refused patch leaves the record intact, so the console can
         # show the reason and the same Save button still means something.
-        pl.live_tracker.forget(r["key"] for r in savable)
+        pl.live_tracker.forget(savable)
         # And bring the run's own Config up to what the file now says. The C64's
         # menu save-back dumps *that* object wholesale, so leaving it stale would
         # let somebody at the machine quietly revert what was just saved from the

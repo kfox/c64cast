@@ -393,14 +393,25 @@ class LiveTuneTracker:
             )
         return rows
 
-    def forget(self, keys: Iterable[str]) -> int:
-        """Drop `keys`, returning how many were actually held.
+    def forget(self, rows: Iterable[Mapping[str, Any]]) -> int:
+        """Drop the changes :meth:`pending` handed out as `rows`, returning how
+        many were dropped.
 
         What a surface that has *written* them somewhere calls, so a console
         stops offering to save a change that is now in the file — and what a
-        "discard" is, handed the ``key`` of every :meth:`pending` row."""
+        "discard" is, handed every :meth:`pending` row.
+
+        A change whose value has moved since its row was taken is kept: the
+        caller acted on the row's ``new``, and a knob turned while a save's
+        write was on disk is a newer value the file never got."""
         with self._lock:
-            return sum(int(self._changes.pop(k, None) is not None) for k in keys)
+            dropped = 0
+            for row in rows:
+                held = self._changes.get(row["key"])
+                if held is not None and _values_equal(held.new, row["new"]):
+                    del self._changes[row["key"]]
+                    dropped += 1
+            return dropped
 
     def _persistable(self) -> list[dict[str, Any]]:
         """The :meth:`pending` rows a config file can actually take."""
