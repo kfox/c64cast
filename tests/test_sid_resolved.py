@@ -319,10 +319,12 @@ class LogDeclaredAudioTest(unittest.TestCase):
         self.assertEqual(len(assumptions), 1)
 
     def test_a_second_backend_in_the_same_process_is_told_again(self):
-        # A daemon's next session opens a backend of its own.
+        # Both backends stay alive, as an ensemble's do: a collected first one
+        # would drop out of the weak latch and pass a per-process latch too.
+        apis = [_no_config_api("6581", assumed=True) for _ in range(2)]
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
-            for _ in range(2):
-                sr.log_resolved_audio(_no_config_api("6581", assumed=True), (0xD400,), ("6581",))
+            for api in apis:
+                sr.log_resolved_audio(api, (0xD400,), ("6581",))
         assumptions = [r for r in cm.records if "convention" in r.getMessage()]
         self.assertEqual(len(assumptions), 2)
 
@@ -440,9 +442,9 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
         self.assertEqual(said, 1)
 
     def test_output_split_guidance_reaches_a_second_backend(self):
+        apis = [self._api(host_model="6581", curve="8580") for _ in range(2)]
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
-            for _ in range(2):
-                api = self._api(host_model="6581", curve="8580")
+            for api in apis:
                 sr.log_resolved_audio(api, (0xD400,), ("8580",))
         said = sum("not a failing SID" in r.getMessage() for r in cm.records)
         self.assertEqual(said, 2)
@@ -651,8 +653,9 @@ class UnplaceableChipsWarningTest(unittest.TestCase):
         self.assertIsNone(self._warning(api, (0xD400, 0xD420)))
 
     def test_stated_again_to_a_second_backend(self):
-        self.assertIsNotNone(self._warning(self._api(), (0xD400, 0xD420)))
-        self.assertIsNotNone(self._warning(self._api(), (0xD400, 0xD420)))
+        first, second = self._api(), self._api()
+        self.assertIsNotNone(self._warning(first, (0xD400, 0xD420)))
+        self.assertIsNotNone(self._warning(second, (0xD400, 0xD420)))
 
 
 class UnplaceableChipsOnEmuSurfaceTest(unittest.TestCase):
