@@ -121,7 +121,7 @@ class _InlineScripts(HTMLParser):
             self.bodies.append(data)
 
 
-def _inline_scripts(html: str) -> list[str]:
+def inline_scripts(html: str) -> list[str]:
     parser = _InlineScripts()
     parser.feed(html)
     parser.close()
@@ -169,7 +169,7 @@ class ScriptSyntaxTest(unittest.TestCase):
         scripts = []
         for name, render, _, _ in PAGES:
             with self.subTest(page=name):
-                bodies = _inline_scripts(render())
+                bodies = inline_scripts(render())
                 self.assertTrue(bodies, "page serves no inline script")
                 scripts += [
                     {"page": name, "filename": f"{name} script {i}", "source": body}

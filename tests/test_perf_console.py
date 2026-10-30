@@ -30,6 +30,7 @@ from unittest.mock import patch
 
 from _child_process import run_bounded
 from _fakes import TOO_DEEP_JSON
+from test_page_assets import inline_scripts
 
 from c64cast.control import perf_console
 from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY, viewer_limit
@@ -1072,11 +1073,10 @@ class PerfPageClipPadTest(unittest.TestCase):
     def setUpClass(cls):
         if shutil.which("node") is None:
             raise unittest.SkipTest("node not on PATH")
-        script = re.search(r"<script>(.*)</script>", perf_page_html(), re.DOTALL)
-        assert script is not None
+        (script,) = inline_scripts(perf_page_html())
         proc = run_bounded(
             ["node", "-e", _CLIP_PAD_JS],
-            input=script.group(1),
+            input=script,
             capture_output=True,
             text=True,
             encoding="utf-8",
