@@ -552,21 +552,28 @@ class ReplugTests(_MidiControlTestCase):
         self.assertTrue(wait_for(lambda: len(fresh.sent) == 1))
         self.assertEqual(len(old.sent), 1)
 
-    def test_the_clock_reader_reads_the_reopened_clock_port(self):
-        pulse, start = mido.Message("clock"), mido.Message("start")
-        old, fresh = FakeMidiPort(pulse), FakeMidiPort(start)
+    PULSE = mido.Message("clock") if HAVE_MIDI else None
+    START = mido.Message("start") if HAVE_MIDI else None
+
+    def _running_clock_reader(self, devices: FakeMidiDevices, old: FakeMidiPort):
         listener = MidiControlListener({"system": _fake_playlist("system")}, [])
         listener._opened_port_name = self.PORT
-        listener._clock_port, listener._clock_port_match = old, "DAW Clock"
+        listener._clock_port, listener._clock_port_match = old, devices.name
         fed: list[Any] = []
         listener._feed_tempo = fed.append  # type: ignore[method-assign]
-        devices = FakeMidiDevices("DAW Clock", [fresh])
         patcher = devices.patch()
         patcher.start()
         self.addCleanup(patcher.stop)
         listener._clock_poll.start()
         self.addCleanup(listener.stop)
-        self.assertTrue(wait_for(lambda: fed == [pulse]))
+        self.assertTrue(wait_for(lambda: fed == [self.PULSE]))
+        return listener, fed
+
+    def test_the_clock_reader_reads_the_reopened_clock_port(self):
+        pulse, start = self.PULSE, self.START
+        old, fresh = FakeMidiPort(pulse), FakeMidiPort(start)
+        devices = FakeMidiDevices("DAW Clock", [fresh])
+        listener, fed = self._running_clock_reader(devices, old)
         watch = listener._clock_port_watch
         with self.assertLogs(self.LOG, level="WARNING") as gone:
             devices.unplug(watch)
@@ -581,6 +588,25 @@ class ReplugTests(_MidiControlTestCase):
         self.assertIs(listener._clock_port, fresh)
         listener.stop()
         self.assertTrue(fresh.closed)
+
+    def test_a_failed_clock_port_reopen_is_retried_on_the_next_return(self):
+        old, fresh = FakeMidiPort(self.PULSE), FakeMidiPort(self.START)
+        devices = FakeMidiDevices("DAW Clock", [OSError("gone again"), fresh])
+        listener, fed = self._running_clock_reader(devices, old)
+        watch = listener._clock_port_watch
+        with self.assertLogs(self.LOG, level="WARNING") as logs:
+            devices.unplug(watch)
+            devices.replug(watch)
+            self.assertTrue(wait_for(lambda: len(logs.output) == 2))
+        self.assertIn("plug it in again to retry", logs.output[1])
+        self.assertIsNone(listener._clock_port)
+
+        with self.assertLogs(self.LOG, level="INFO"):
+            devices.unplug(watch)
+            devices.replug(watch)
+            self.assertTrue(wait_for(lambda: fed == [self.PULSE, self.START]), fed)
+        self.assertEqual(devices.opened, ["DAW Clock", "DAW Clock"])
+        self.assertIs(listener._clock_port, fresh)
 
 
 class ClockPortWatchTests(_MidiControlTestCase):
