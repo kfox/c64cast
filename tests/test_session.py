@@ -559,7 +559,7 @@ class MissingCameraTest(unittest.TestCase):
 
     def test_a_camera_only_vision_wanted_turns_vision_off_and_the_run_goes_on(self):
         cfg = cfgmod.Config()
-        cfg.scenes = []
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
         cfg.vision.enabled = True
         with self.assertLogs("c64cast", "WARNING") as logs:
             raised = self._build_with_no_camera(cfg)
