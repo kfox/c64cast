@@ -254,6 +254,15 @@ def _opt_index(value: Any, name: str) -> int | None:
     return value
 
 
+def _same_file(path: Path, running: Path) -> bool:
+    """A ref naming no file (`shows/nope.toml`, `shows/gig.toml/x.toml`) is
+    not the running config; `store.delete` answers it with a 404."""
+    try:
+        return path.samefile(running)
+    except OSError:
+        return False
+
+
 def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
     """Put what the file just took back onto the running Config, so the C64
     menu's own whole-config save-back can't quietly revert it.
@@ -865,12 +874,12 @@ def register_web_routes(
         # actually mid-show with — not startable again without a fresh
         # start — is the one this route needs to protect.
         #
-        # Compared as resolved paths, not as refs: `store.delete` resolves
-        # `shows//gig.toml` and `shows\\gig.toml` to the same file as
-        # `shows/gig.toml`.
+        # Compared by file identity, not by path: APFS opens `GIG.toml` and an
+        # NFD `café.toml` as the running file (NTFS the first), while their
+        # resolved paths still differ from it.
         active = status.state not in STARTABLE and status.config_path
         try:
-            if active and store.resolve(ref) == Path(status.config_path).resolve():
+            if active and _same_file(store.resolve(ref), Path(status.config_path)):
                 raise HTTPException(409, f"{ref} is the running config — stop it first")
             return store.delete(ref)
         except ConfigStoreError as e:

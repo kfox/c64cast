@@ -27,11 +27,13 @@ import logging
 import os
 import tempfile
 import threading
+import unicodedata
 import unittest
 import warnings
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib.parse import quote
 
 from _fakes import MachineSettingsIsolation, fake_system_stack
 
@@ -1129,6 +1131,38 @@ class ConfigCreateDeleteRouteTest(WebApiTestCase):
                 self.assertReaches(SessionState.IDLE)
                 self.assertEqual(r.status_code, 409, r.text)
                 self.assertTrue((self.root / "gig.toml").exists())
+
+    def test_deleting_the_running_config_through_a_filesystem_alias_is_refused(self):
+        nfc = unicodedata.normalize("NFC", "café.toml")
+        nfd = unicodedata.normalize("NFD", "café.toml")
+        for running, alias in (("gig.toml", "GIG.toml"), (nfc, nfd), ("gig.toml", "link.toml")):
+            with self.subTest(alias=alias):
+                (self.root / running).write_text(GIG_TOML, encoding="utf-8")
+                if alias == "link.toml" and not (self.root / alias).is_symlink():
+                    try:
+                        (self.root / alias).symlink_to(self.root / running)
+                    except OSError as e:
+                        self.skipTest(f"no symlinks here: {e}")
+                if not (self.root / alias).exists():
+                    self.skipTest(f"this filesystem keeps {alias!r} apart from {running!r}")
+                with self.client() as c:
+                    c.post("/api/session/start", headers=AUTH, json={"config": f"shows/{running}"})
+                    self.assertReaches(SessionState.RUNNING)
+                    r = c.delete(f"/api/configs/shows/{quote(alias)}", headers=AUTH)
+                    c.post("/api/session/stop", headers=AUTH)
+                    self.assertReaches(SessionState.IDLE)
+                self.assertEqual(r.status_code, 409, r.text)
+                self.assertTrue((self.root / running).exists())
+
+    def test_deleting_a_config_that_is_not_there_while_a_show_runs_is_a_404(self):
+        for ref in ("shows/nope.toml", "shows/gig.toml/nope.toml"):
+            with self.subTest(ref=ref), self.client() as c:
+                c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+                self.assertReaches(SessionState.RUNNING)
+                r = c.delete(f"/api/configs/{ref}", headers=AUTH)
+                c.post("/api/session/stop", headers=AUTH)
+                self.assertReaches(SessionState.IDLE)
+                self.assertEqual(r.status_code, 404, r.text)
 
     def test_deleting_a_stopped_configs_former_config_is_allowed(self):
         # status().config_path keeps naming the last-started config after a stop,
