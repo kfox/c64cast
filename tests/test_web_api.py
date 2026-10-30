@@ -23,17 +23,20 @@ machine."""
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import tempfile
 import threading
+import unicodedata
 import unittest
 import warnings
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib.parse import quote
 
-from _fakes import MachineSettingsIsolation, fake_system_stack
+from _fakes import MachineSettingsIsolation, fake_system_stack, quiet_logging
 
 try:
     with warnings.catch_warnings():
@@ -53,8 +56,8 @@ from c64cast.app import config_store, console_library, media_store, paths, serve
 from c64cast.app.serve import SessionState
 from c64cast.app.update_state import STALE_AFTER_DAYS, UpdateCheck, write_update_state
 from c64cast.app.upgrade import running_python
+from c64cast.control import perf_console, web_api
 from c64cast.control import screen as screen_mod
-from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
 
 TOKEN = "full-token-value"
@@ -221,6 +224,13 @@ class _FakePlaylist:
         self.config: Any = None
 
 
+def _home_as_tilde(path: Path) -> str:
+    """``path`` as a viewer reads it outside every media root. Windows keeps its
+    temp directory under home, so a temp path is shown from ``~`` there."""
+    home = Path.home()
+    return str(Path("~", path.relative_to(home))) if path.is_relative_to(home) else str(path)
+
+
 def _request(*names: str, config_path: str = "show.toml") -> serve.StartRequest:
     cfgs = [cfgmod.Config() for _ in names]
     for cfg in cfgs:
@@ -268,12 +278,15 @@ class _Build:
         self.gate: threading.Event | None = None
         self.entered = threading.Event()
         self.calls = 0
+        self.error: BaseException | None = None
 
     def __call__(self, req, generation, publish):
         self.calls += 1
         self.entered.set()
         if self.gate is not None:
             self.gate.wait(WAIT)
+        if self.error is not None:
+            raise self.error
         sess = _session(req)
         publish(sess)
         return sess
@@ -667,7 +680,7 @@ class StateFeedTest(WebApiTestCase):
         self.assertEqual(frame["role"], "full")
         self.assertEqual([s["name"] for s in frame["systems"]], ["a"])
 
-    def test_log_lines_arrive_once_rather_than_as_a_resent_tail(self):
+    def _capture_the_log(self) -> logging.Logger:
         self.log_buffer.install()
         self.addCleanup(self.log_buffer.uninstall)
         logger = logging.getLogger("c64cast")
@@ -677,6 +690,10 @@ class StateFeedTest(WebApiTestCase):
         self.addCleanup(
             lambda: (logger.setLevel(old_level), setattr(logger, "propagate", old_prop))
         )
+        return logger
+
+    def test_log_lines_arrive_once_rather_than_as_a_resent_tail(self):
+        logger = self._capture_the_log()
         with self.client() as c:
             with c.websocket_connect("/api/ws", headers=AUTH) as ws:
                 ws.receive_json()  # backlog, if any
@@ -686,6 +703,35 @@ class StateFeedTest(WebApiTestCase):
                     frame = ws.receive_json()
                     seen += [row["message"] for row in frame.get("log", [])]
         self.assertEqual(seen.count("a line the console should see once"), 1)
+
+    def test_every_console_sees_every_log_line(self):
+        # The cursor used to be one per route, not one per socket, so a line
+        # went to whichever console's push ran first and to no other.
+        logger = self._capture_the_log()
+        with self.client() as c:
+            with c.websocket_connect("/api/ws", headers=AUTH) as a:
+                a.receive_json()
+                with c.websocket_connect("/api/ws", headers=AUTH) as b:
+                    b.receive_json()
+                    logger.info("a line for everyone")
+                    seen_a: list[str] = []
+                    seen_b: list[str] = []
+                    for _ in range(3):
+                        seen_a += [row["message"] for row in a.receive_json().get("log", [])]
+                        seen_b += [row["message"] for row in b.receive_json().get("log", [])]
+        self.assertEqual(seen_a.count("a line for everyone"), 1, seen_a)
+        self.assertEqual(seen_b.count("a line for everyone"), 1, seen_b)
+
+    def test_a_reloaded_console_is_handed_the_backlog_again(self):
+        logger = self._capture_the_log()
+        with self.client() as c:
+            logger.info("logged before anyone connected")
+            with c.websocket_connect("/api/ws", headers=AUTH) as first:
+                before = [row["message"] for row in first.receive_json().get("log", [])]
+            with c.websocket_connect("/api/ws", headers=AUTH) as second:
+                after = [row["message"] for row in second.receive_json().get("log", [])]
+        self.assertIn("logged before anyone connected", before)
+        self.assertIn("logged before anyone connected", after)
 
     def test_a_command_frame_drives_the_supervisor(self):
         with self.client() as c:
@@ -708,6 +754,22 @@ class StateFeedTest(WebApiTestCase):
                 ws.receive_json()
                 ws.receive_json()
         self.assertEqual(self.manager.state, SessionState.RUNNING)
+
+    def test_viewers_cannot_take_the_operators_console(self):
+        # A handshake is a GET, which the viewer token passes, and the cap
+        # counted every socket alike.
+        one_guest = perf_console.FULL_TOKEN_CONSOLE_RESERVE + 1
+        with (
+            mock.patch.object(perf_console, "MAX_CONSOLE_SOCKETS", one_guest),
+            self.client() as c,
+        ):
+            with c.websocket_connect("/api/ws", headers=VIEWER_AUTH) as guest:
+                guest.receive_json()
+                with self.assertRaises(WebSocketDisconnect):
+                    with c.websocket_connect("/api/ws", headers=VIEWER_AUTH) as second:
+                        second.receive_json()
+                with c.websocket_connect("/api/ws", headers=AUTH) as operator:
+                    self.assertEqual(operator.receive_json()["role"], "full")
 
     def test_a_frame_that_is_not_json_does_not_take_the_feed_down(self):
         # The decode happens before the read-only check, so one stray frame — a
@@ -751,6 +813,152 @@ class ConfigBrowserTest(WebApiTestCase):
             body = c.get("/api/configs", headers=AUTH).json()
         self.assertEqual([r["label"] for r in body["roots"]], ["shows"])
         self.assertEqual([f["path"] for f in body["files"]], ["shows/gig.toml"])
+
+    def test_a_viewer_is_shown_no_absolute_config_path(self):
+        # The read-only link is handed to a guest, and the paths name the
+        # operator's home directory and layout.
+        root = str(self.root)
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+            self.assertReaches(SessionState.RUNNING)
+            for headers, sees_paths in ((VIEWER_AUTH, False), (AUTH, True)):
+                with self.subTest(sees_paths=sees_paths):
+                    session = c.get("/api/session", headers=headers).json()
+                    index = c.get("/api/configs", headers=headers).json()
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        frame = ws.receive_json()["session"]
+                    shown = [
+                        session["config_path"],
+                        frame["config_path"],
+                        index["roots"][0]["path"],
+                    ]
+                    self.assertEqual([root in path for path in shown], [sees_paths] * 3, shown)
+                    self.assertEqual(session["config_ref"], "shows/gig.toml")
+
+    def _capture_log(self) -> logging.Logger:
+        self.log_buffer.install()
+        self.addCleanup(self.log_buffer.uninstall)
+        logger = logging.getLogger("c64cast")
+        old_level, old_prop = logger.level, logger.propagate
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        self.addCleanup(
+            lambda: (logger.setLevel(old_level), setattr(logger, "propagate", old_prop))
+        )
+        return logger
+
+    def test_a_viewer_reads_the_log_with_config_roots_as_labels(self):
+        self._capture_log()
+        cfgmod.load(str(self.root / "gig.toml"))
+        root = str(self.root)
+        with self.client() as c:
+            for headers, sees_paths in ((VIEWER_AUTH, False), (AUTH, True)):
+                with self.subTest(sees_paths=sees_paths):
+                    tail = c.get("/api/session", headers=headers).json()["log"]
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["log"]
+                    for lines in (tail, fed):
+                        loading = [r["message"] for r in lines if "loading config" in r["message"]]
+                        self.assertEqual(len(loading), 1, lines)
+                        self.assertEqual(root in loading[0], sees_paths, loading)
+                        if not sees_paths:
+                            self.assertEqual(
+                                loading[0], f"loading config {Path('shows', 'gig.toml')}"
+                            )
+
+    def test_a_viewer_reads_the_home_directory_as_a_tilde(self):
+        clip = Path.home() / "Movies" / "clip.mp4"
+        self._capture_log().error("could not open %s", clip)
+        with self.client() as c:
+            viewer = c.get("/api/session", headers=VIEWER_AUTH).json()["log"]
+            full = c.get("/api/session", headers=AUTH).json()["log"]
+        shown = Path("~") / "Movies" / "clip.mp4"
+        self.assertIn(f"could not open {shown}", [r["message"] for r in viewer])
+        self.assertIn(f"could not open {clip}", [r["message"] for r in full])
+
+    def test_a_viewer_reads_media_paths_relative_to_their_root(self):
+        base = Path(tempfile.mkdtemp()).resolve()
+        for d in ("media/set", "media2"):
+            (base / d).mkdir(parents=True)
+        media = media_store.MediaStore(
+            read_write={"video": str(base / "media"), "sid": "", "picture": "", "program": ""},
+            read_only=[str(base / "media" / "set")],
+        )
+        opened = [base / "media" / "clip.mp4", base / "media" / "set" / "b.mp4"]
+        neighbor = base / "media2" / "c.mp4"
+        logger = self._capture_log()
+        for path in (*opened, neighbor):
+            logger.error("could not open %s", path)
+        with self.client(media=media) as c:
+            for headers, expected in (
+                (VIEWER_AUTH, ["clip.mp4", "b.mp4", _home_as_tilde(neighbor)]),
+                (AUTH, [str(p) for p in (*opened, neighbor)]),
+            ):
+                with self.subTest(viewer=headers is VIEWER_AUTH):
+                    tail = c.get("/api/session", headers=headers).json()["log"]
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["log"]
+                    for lines in (tail, fed):
+                        shown = [
+                            r["message"].removeprefix("could not open ")
+                            for r in lines
+                            if r["message"].startswith("could not open ")
+                        ]
+                        self.assertEqual(shown, expected)
+
+    def test_a_filesystem_root_as_a_root_leaves_a_viewers_log_slashes_alone(self):
+        message = "could not open /srv/clip.mp4 from http://example.com/clip.mp4"
+        self._capture_log().error(message)
+        media = media_store.MediaStore(
+            read_write={"video": "", "sid": "", "picture": "", "program": ""},
+            read_only=["/"],
+        )
+        store = config_store.ConfigStore(["/"], include_examples=False)
+        with self.client(media=media, store=store) as c:
+            tail = c.get("/api/session", headers=VIEWER_AUTH).json()["log"]
+            with c.websocket_connect("/api/ws", headers=VIEWER_AUTH) as ws:
+                fed = ws.receive_json()["log"]
+        for lines in (tail, fed):
+            self.assertIn(message, [r["message"] for r in lines])
+
+    def test_a_viewer_reads_a_failed_build_with_the_home_directory_as_a_tilde(self):
+        clip = Path.home() / "Movies" / "clip.mp4"
+        self.build.error = FileNotFoundError(f"No such file or directory: '{clip}'")
+        shown = Path("~") / "Movies" / "clip.mp4"
+        with quiet_logging(), self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.ERROR)
+            for headers, expected in ((VIEWER_AUTH, shown), (AUTH, clip)):
+                with self.subTest(viewer=headers is VIEWER_AUTH):
+                    polled = c.get("/api/session", headers=headers).json()
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["session"]
+                    for status in (polled, fed):
+                        self.assertEqual(
+                            status["last_error"],
+                            f"FileNotFoundError: No such file or directory: '{expected}'",
+                        )
+
+    def test_a_viewer_reads_a_failed_build_with_a_media_path_relative_to_its_root(self):
+        directory = Path(tempfile.mkdtemp()).resolve()
+        media = media_store.MediaStore(
+            read_write={"video": str(directory), "sid": "", "picture": "", "program": ""}
+        )
+        clip = directory / "clip.mp4"
+        self.build.error = FileNotFoundError(f"No such file or directory: '{clip}'")
+        with quiet_logging(), self.client(media=media) as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.ERROR)
+            for headers, expected in ((VIEWER_AUTH, "clip.mp4"), (AUTH, str(clip))):
+                with self.subTest(viewer=headers is VIEWER_AUTH):
+                    polled = c.get("/api/session", headers=headers).json()
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["session"]
+                    for status in (polled, fed):
+                        self.assertEqual(
+                            status["last_error"],
+                            f"FileNotFoundError: No such file or directory: '{expected}'",
+                        )
 
     def test_a_read_carries_the_text_and_the_form(self):
         with self.client() as c:
@@ -899,6 +1107,58 @@ class MediaBrowserTest(WebApiTestCase):
         with self.client() as c:
             r = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"})
         self.assertEqual(r.status_code, 200)
+
+    def test_a_viewer_sees_each_entry_relative_to_its_root(self):
+        (self.root / "set").mkdir()
+        (self.root / "set" / "b.mp4").write_bytes(b"")
+        with self.client() as c:
+            viewer = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"}).json()
+            full = c.get("/api/media", headers=AUTH, params={"kind": "video"}).json()
+        self.assertEqual(
+            sorted(e["spec"] for e in viewer["entries"]), [".", "clip.mp4", "set", "set/b.mp4"]
+        )
+        self.assertEqual(viewer["roots"], [""])
+        self.assertNotIn(str(self.root), json.dumps(viewer))
+        self.assertEqual(full["roots"], [str(self.root)])
+        self.assertEqual(
+            sorted(e["spec"] for e in full["entries"]),
+            [str(self.root), f"{self.root}/clip.mp4", f"{self.root}/set", f"{self.root}/set/b.mp4"],
+        )
+
+    def test_a_viewers_search_cannot_probe_the_roots_host_path(self):
+        def found(headers: dict[str, str], q: str) -> list[str]:
+            params = {"kind": "video", "q": q}
+            body = c.get("/api/media", headers=headers, params=params).json()
+            return [e["spec"] for e in body["entries"]]
+
+        with self.client() as c:
+            self.assertEqual(found(VIEWER_AUTH, str(self.root.parent)), [])
+            self.assertEqual(found(VIEWER_AUTH, "CLIP"), ["clip.mp4"])
+            self.assertIn(f"{self.root}/clip.mp4", found(AUTH, str(self.root.parent)))
+
+    def test_a_viewer_is_not_handed_the_roots_own_directory_name(self):
+        # A root configured as `~` would name the operator's account here.
+        with self.client() as c:
+            viewer = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"}).json()
+        self.assertNotIn(self.root.name, json.dumps(viewer))
+
+    def test_a_viewer_reads_a_nested_roots_entry_relative_to_the_root_it_came_from(self):
+        (self.root / "set").mkdir()
+        (self.root / "set" / "b.mp4").write_bytes(b"")
+        media = media_store.MediaStore(
+            read_write={"video": str(self.root / "set"), "sid": "", "picture": "", "program": ""},
+            read_only=[str(self.root)],
+        )
+        with self.client(media=media) as c:
+            viewer = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"}).json()
+            searched = c.get(
+                "/api/media", headers=VIEWER_AUTH, params={"kind": "video", "q": "set/"}
+            ).json()
+        self.assertEqual(
+            sorted(e["spec"] for e in viewer["entries"]),
+            [".", ".", "b.mp4", "clip.mp4", "set", "set/b.mp4"],
+        )
+        self.assertEqual([e["spec"] for e in searched["entries"]], ["set/b.mp4"])
 
 
 class MediaUploadTest(WebApiTestCase):
@@ -1084,6 +1344,50 @@ class ConfigCreateDeleteRouteTest(WebApiTestCase):
             r = c.delete("/api/configs/shows/gig.toml", headers=AUTH)
         self.assertEqual(r.status_code, 409)
         self.assertTrue((self.root / "gig.toml").exists())
+
+    def test_deleting_the_running_config_by_another_spelling_is_refused(self):
+        for spelling in ("shows//gig.toml", "shows%5Cgig.toml"):
+            with self.subTest(spelling=spelling), self.client() as c:
+                (self.root / "gig.toml").write_text(GIG_TOML, encoding="utf-8")
+                c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+                self.assertReaches(SessionState.RUNNING)
+                r = c.delete(f"/api/configs/{spelling}", headers=AUTH)
+                c.post("/api/session/stop", headers=AUTH)
+                self.assertReaches(SessionState.IDLE)
+                self.assertEqual(r.status_code, 409, r.text)
+                self.assertTrue((self.root / "gig.toml").exists())
+
+    def test_deleting_the_running_config_through_a_filesystem_alias_is_refused(self):
+        nfc = unicodedata.normalize("NFC", "café.toml")
+        nfd = unicodedata.normalize("NFD", "café.toml")
+        for running, alias in (("gig.toml", "GIG.toml"), (nfc, nfd), ("gig.toml", "link.toml")):
+            with self.subTest(alias=alias):
+                (self.root / running).write_text(GIG_TOML, encoding="utf-8")
+                if alias == "link.toml" and not (self.root / alias).is_symlink():
+                    try:
+                        (self.root / alias).symlink_to(self.root / running)
+                    except OSError as e:
+                        self.skipTest(f"no symlinks here: {e}")
+                if not (self.root / alias).exists():
+                    self.skipTest(f"this filesystem keeps {alias!r} apart from {running!r}")
+                with self.client() as c:
+                    c.post("/api/session/start", headers=AUTH, json={"config": f"shows/{running}"})
+                    self.assertReaches(SessionState.RUNNING)
+                    r = c.delete(f"/api/configs/shows/{quote(alias)}", headers=AUTH)
+                    c.post("/api/session/stop", headers=AUTH)
+                    self.assertReaches(SessionState.IDLE)
+                self.assertEqual(r.status_code, 409, r.text)
+                self.assertTrue((self.root / running).exists())
+
+    def test_deleting_a_config_that_is_not_there_while_a_show_runs_is_a_404(self):
+        for ref in ("shows/nope.toml", "shows/gig.toml/nope.toml"):
+            with self.subTest(ref=ref), self.client() as c:
+                c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+                self.assertReaches(SessionState.RUNNING)
+                r = c.delete(f"/api/configs/{ref}", headers=AUTH)
+                c.post("/api/session/stop", headers=AUTH)
+                self.assertReaches(SessionState.IDLE)
+                self.assertEqual(r.status_code, 404, r.text)
 
     def test_deleting_a_stopped_configs_former_config_is_allowed(self):
         # status().config_path keeps naming the last-started config after a stop,
@@ -1545,6 +1849,69 @@ class ScreenRouteTest(WebApiTestCase):
             # than refused with the 503 a host at its limit answers.
             self.assertEqual(c.get("/api/screen/stream", headers=AUTH).status_code, 200)
 
+    def _one_viewer_stream_app(self) -> tuple[Any, web_api.StreamSlots]:
+        real_slots = web_api.StreamSlots
+        made: list[web_api.StreamSlots] = []
+
+        def capture_slots(limit):
+            slots = real_slots(limit)
+            self.addCleanup(slots.pool.shutdown)
+            made.append(slots)
+            return slots
+
+        with (
+            mock.patch.object(
+                web_api, "MAX_SCREEN_WATCHERS", web_api.FULL_TOKEN_SCREEN_RESERVE + 1
+            ),
+            mock.patch.object(web_api, "StreamSlots", capture_slots),
+        ):
+            app = self.app()
+        return app, made[0]
+
+    @staticmethod
+    def _one_part(read, *, fps):
+        yield screen_mod.png_part(read())
+
+    def test_viewers_cannot_take_the_operators_last_stream(self):
+        app, slots = self._one_viewer_stream_app()
+        with mock.patch.object(web_api, "multipart_frames", self._one_part), TestClient(app) as c:
+            self._running(c)
+            # A viewer's stream still open, which TestClient cannot hold.
+            self.assertTrue(slots.claim(viewer=True))
+            viewer = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+            operator = c.get("/api/screen/stream", headers=AUTH)
+        self.assertEqual(viewer.status_code, 503)
+        self.assertEqual(operator.status_code, 200)
+
+    def test_a_finished_viewer_stream_gives_back_a_viewer_slot(self):
+        # Given back as a full slot, the viewer count never falls, and after
+        # `MAX_SCREEN_WATCHERS - FULL_TOKEN_SCREEN_RESERVE` streams no viewer
+        # can ever watch again.
+        app, _slots = self._one_viewer_stream_app()
+        with mock.patch.object(web_api, "multipart_frames", self._one_part), TestClient(app) as c:
+            self._running(c)
+            first = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+            second = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+
+    def test_a_viewer_stream_that_fails_to_open_gives_back_a_viewer_slot(self):
+        app, slots = self._one_viewer_stream_app()
+        with TestClient(app) as c:
+            self._running(c)
+            for failure in (screen_mod.ScreenUnavailable("no VIC"), RuntimeError("boom")):
+                with (
+                    self.subTest(failure=type(failure).__name__),
+                    mock.patch.object(screen_mod.ScreenFeed, "acquire", side_effect=failure),
+                ):
+                    if not isinstance(failure, screen_mod.ScreenUnavailable):
+                        with self.assertRaises(RuntimeError):
+                            c.get("/api/screen/stream", headers=VIEWER_AUTH)
+                    else:
+                        r = c.get("/api/screen/stream", headers=VIEWER_AUTH)
+                        self.assertEqual(r.status_code, 501)
+                    self.assertTrue(slots.claim(viewer=True))
+                    slots.release(viewer=True)
+
 
 class StreamSlotsTest(unittest.TestCase):
     """The screen stream's concurrency bound, driven directly.
@@ -1581,11 +1948,28 @@ class StreamSlotsTest(unittest.TestCase):
         self.assertTrue(slots.claim())
 
     def test_releasing_more_than_was_claimed_is_a_bug_that_shows(self):
-        # A `BoundedSemaphore`, so a double release from the response's
-        # background task raises here rather than silently widening the cap.
+        # A double release from the response's background task raises here
+        # rather than silently widening the cap.
         slots = self._slots(1)
         with self.assertRaises(ValueError):
             slots.release()
+        self.assertTrue(slots.claim())
+        with self.assertRaises(ValueError):
+            slots.release(viewer=True)
+
+    def test_viewers_take_every_stream_but_the_full_tokens_reserve(self):
+        reserve = web_api.FULL_TOKEN_SCREEN_RESERVE
+        slots = self._slots(reserve + 3)
+        self.assertEqual([slots.claim(viewer=True) for _ in range(4)], [True, True, True, False])
+        self.assertEqual([slots.claim() for _ in range(reserve)], [True] * reserve)
+        self.assertFalse(slots.claim())
+        slots.release(viewer=True)
+        self.assertTrue(slots.claim(viewer=True))
+
+    def test_a_pool_no_bigger_than_the_reserve_admits_no_viewer(self):
+        slots = self._slots(web_api.FULL_TOKEN_SCREEN_RESERVE)
+        self.assertFalse(slots.claim(viewer=True))
+        self.assertTrue(slots.claim())
 
 
 class ViewerLinkRouteTest(WebApiTestCase):
@@ -1661,6 +2045,42 @@ class LiveTuneSaveBackTest(WebApiTestCase):
         self.assertEqual(r.json()["saved"], ["mode.dither_strength"])
         self.assertIn("dither_strength = 0.8", (self.root / "gig.toml").read_text(encoding="utf-8"))
         self.assertFalse(pl.live_tracker.has_changes())
+
+    def test_a_knob_turned_during_the_save_stays_on_offer(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            write_the_file = self.store.patch
+
+            def knob_turns_mid_write(ref, edits):
+                out = write_the_file(ref, edits)
+                pl.live_tracker.record("mode.dither_strength", 0.5, 0.3)
+                return out
+
+            with mock.patch.object(self.store, "patch", knob_turns_mid_write):
+                r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("dither_strength = 0.8", (self.root / "gig.toml").read_text(encoding="utf-8"))
+        self.assertEqual([row["new"] for row in pl.live_tracker.pending()], [0.3])
+
+    def test_a_knob_turned_back_to_its_start_during_the_save_stays_on_offer(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            write_the_file = self.store.patch
+
+            def knob_returns_mid_write(ref, edits):
+                out = write_the_file(ref, edits)
+                pl.live_tracker.record("mode.dither_strength", 0.8, 0.5)
+                return out
+
+            with mock.patch.object(self.store, "patch", knob_returns_mid_write):
+                r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("dither_strength = 0.8", (self.root / "gig.toml").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [(row["old"], row["new"]) for row in pl.live_tracker.pending()], [(0.8, 0.5)]
+        )
 
     def test_the_rest_of_the_file_survives_the_save(self):
         # The write is a PATCH of the file on disk, not a dump of the config the

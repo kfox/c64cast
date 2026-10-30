@@ -817,8 +817,59 @@ class LiveTuneTrackerTests(unittest.TestCase):
         t = LiveTuneTracker()
         t.record("mode.dither_strength", 0.5, 0.9)
         t.record("source.scale", 1.0, 2.0)
-        self.assertEqual(t.forget(["mode.dither_strength"]), 1)
+        written = [r for r in t.pending() if r["target"] == "mode.dither_strength"]
+        self.assertEqual(t.forget(written), 1)
         self.assertEqual([r["target"] for r in t.pending()], ["source.scale"])
+
+    def test_forget_keeps_a_change_that_moved_after_its_row_was_taken(self):
+        # A save's write is on disk for a while; a knob turned meanwhile is a
+        # value the file never got, and has to stay on offer.
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.8)
+        rows = t.pending()
+        t.record("mode.dither_strength", 0.5, 0.3)
+        self.assertEqual(t.forget(rows), 0)
+        self.assertEqual([(r["old"], r["new"]) for r in t.pending()], [(0.5, 0.3)])
+
+    def test_saved_rebases_a_change_that_moved_onto_what_the_file_now_holds(self):
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.8)
+        rows = t.pending()
+        t.record("mode.dither_strength", 0.5, 0.3)
+        t.saved(rows)
+        self.assertEqual([(r["old"], r["new"]) for r in t.pending()], [(0.8, 0.3)])
+        # Back to the start-of-show value is still a move away from the file's.
+        t.record("mode.dither_strength", 0.3, 0.5)
+        self.assertEqual([(r["old"], r["new"]) for r in t.pending()], [(0.8, 0.5)])
+
+    def test_saved_offers_a_knob_returned_to_its_start_during_the_write(self):
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.8)
+        rows = t.pending()
+        t.record("mode.dither_strength", 0.8, 0.5)
+        t.saved(rows)
+        self.assertEqual([(r["old"], r["new"]) for r in t.pending()], [(0.8, 0.5)])
+
+    def test_saved_drops_a_change_turned_away_and_back_during_the_write(self):
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.8)
+        rows = t.pending()
+        t.record("mode.dither_strength", 0.8, 0.3)
+        t.record("mode.dither_strength", 0.3, 0.8)
+        t.saved(rows)
+        self.assertFalse(t.has_changes())
+
+    def test_saved_keeps_a_per_scene_change_on_its_scene(self):
+        t = LiveTuneTracker()
+        t.record("mode.palette_mode", "percell", "vivid", scene=2)
+        rows = t.pending()
+        t.record("mode.palette_mode", "vivid", "grayscale", scene=2)
+        t.saved(rows)
+        (row,) = t.pending()
+        self.assertEqual(
+            (row["key"], row["field"], row["scene"], row["old"], row["new"]),
+            ("mode.palette_mode@2", "palette_mode", 2, "vivid", "grayscale"),
+        )
 
     def test_a_per_scene_knob_is_recorded_against_the_scene_it_was_turned_on(self):
         t = LiveTuneTracker()
@@ -837,7 +888,7 @@ class LiveTuneTrackerTests(unittest.TestCase):
         t.record("mode.palette_mode", "cheap", "grayscale", scene=3)
         rows = t.pending()
         self.assertEqual([(r["scene"], r["new"]) for r in rows], [(0, "vivid"), (3, "grayscale")])
-        self.assertEqual(t.forget(["mode.palette_mode@0"]), 1)
+        self.assertEqual(t.forget([r for r in rows if r["scene"] == 0]), 1)
         self.assertEqual([r["scene"] for r in t.pending()], [3])
 
     def test_a_shared_knob_swept_across_a_scene_change_stays_one_entry(self):
@@ -981,7 +1032,8 @@ class LiveTuneTrackerTests(unittest.TestCase):
     def test_forget_reports_only_what_it_held(self):
         t = LiveTuneTracker()
         t.record("mode.dither_strength", 0.5, 0.9)
-        self.assertEqual(t.forget(["mode.dither_strength", "mode.never_turned"]), 1)
+        never_turned = {"key": "mode.never_turned", "new": 1.0}
+        self.assertEqual(t.forget([*t.pending(), never_turned]), 1)
         self.assertFalse(t.has_changes())
 
 

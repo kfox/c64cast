@@ -16,9 +16,11 @@ prevent. The behavior was checked by hand against an exploding playlist."""
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 import threading
+import time
 import unittest
 import warnings
 from typing import Any
@@ -27,11 +29,12 @@ from unittest.mock import patch
 from _fakes import TOO_DEEP_JSON
 
 from c64cast.control import perf_console
-from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY
+from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY, viewer_limit
 from c64cast.control.perf_console import (
     MAX_COMMAND_BYTES,
     MAX_TARGET_CHARS,
     TRANSPORT_VERBS,
+    ConsoleFeed,
     PerfBridge,
     SocketReader,
     _beats_remaining,
@@ -1359,6 +1362,148 @@ class SocketReaderTest(unittest.TestCase):
         socket = self._Socket([_Gone()])
         with self.assertRaises(_Gone):
             self._drive(socket, 1)
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")
+class ConsoleFeedTest(unittest.TestCase):
+    """The outbound half of both console sockets, driven with a fake WebSocket
+    on a real event loop — where the loop's own scheduling is the subject."""
+
+    class _Socket:
+        """Takes one frame, then hangs up once `hangup` is set."""
+
+        def __init__(self, scope: dict[str, Any] | None = None) -> None:
+            self.headers: dict[str, str] = {}
+            self.scope = scope or {}
+            self.accepted = False
+            self.closed_with: int | None = None
+            self.hangup = asyncio.Event()
+
+        async def accept(self) -> None:
+            # uvicorn's accept sends the 101 and yields to the loop.
+            await asyncio.sleep(0)
+            self.accepted = True
+
+        async def close(self, code: int = 1000) -> None:
+            self.closed_with = code
+
+        async def send_json(self, frame: Any) -> None:
+            from starlette.websockets import WebSocketDisconnect
+
+            await self.hangup.wait()
+            raise WebSocketDisconnect()
+
+        async def receive_text(self) -> str:
+            await asyncio.Event().wait()
+            return ""
+
+    @staticmethod
+    def _feed(**kwargs: Any) -> ConsoleFeed:
+        kwargs.setdefault("frames_for", lambda scope: dict)
+        kwargs.setdefault("dispatch", lambda msg: None)
+        return ConsoleFeed("test console", **kwargs)
+
+    def test_a_slow_tick_does_not_hold_the_event_loop(self):
+        # `/api/ws`'s tick is the screen sweep, and a sweep that retires a
+        # receiver tells the machine over the shared DMA link — a lock, an
+        # idle check and possibly a redial, on the loop serving every route.
+        ticking = threading.Event()
+        release = threading.Event()
+
+        def slow_tick() -> None:
+            ticking.set()
+            release.wait(1.0)
+
+        async def stalled_for() -> float:
+            socket = self._Socket()
+            served = asyncio.create_task(self._feed(on_tick=slow_tick).run(socket))
+            started = time.monotonic()
+            while not ticking.is_set():
+                await asyncio.sleep(0.005)
+            await asyncio.sleep(0.01)
+            stalled = time.monotonic() - started
+            release.set()
+            socket.hangup.set()
+            await served
+            return stalled
+
+        self.assertLess(asyncio.run(stalled_for()), 0.5)
+
+    def _open(self, feed: ConsoleFeed, sockets: list[Any]) -> list[Any]:
+        """Open every socket at once, let the handshakes settle, then hang up
+        on all of them; the sockets back, each marked accepted or not."""
+
+        async def burst() -> None:
+            served = [asyncio.create_task(feed.run(socket)) for socket in sockets]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            for socket in sockets:
+                socket.hangup.set()
+            await asyncio.gather(*served)
+
+        asyncio.run(burst())
+        return sockets
+
+    def test_a_burst_of_handshakes_cannot_get_past_the_cap(self):
+        # Each handshake reached the cap check before any of them had been
+        # counted, because the count was taken after the accept yielded.
+        sockets = self._open(self._feed(limit=3), [self._Socket() for _ in range(10)])
+        self.assertEqual(sum(socket.accepted for socket in sockets), 3)
+        self.assertEqual(sum(socket.closed_with is not None for socket in sockets), 7)
+
+    def test_viewers_take_every_socket_but_the_full_tokens_reserve(self):
+        reserve = perf_console.FULL_TOKEN_CONSOLE_RESERVE
+        limit = reserve + 3
+        guests = [self._Socket({SCOPE_ROLE_KEY: ROLE_VIEWER}) for _ in range(limit)]
+        operators = [self._Socket({SCOPE_ROLE_KEY: ROLE_FULL}) for _ in range(reserve)]
+        self._open(self._feed(limit=limit), guests + operators)
+        self.assertEqual([socket.accepted for socket in guests], [True] * 3 + [False] * reserve)
+        self.assertTrue(all(socket.accepted for socket in operators))
+
+    def test_a_pool_smaller_than_the_reserve_admits_no_viewer(self):
+        self.assertEqual(viewer_limit(1, perf_console.FULL_TOKEN_CONSOLE_RESERVE), 0)
+        guest = self._Socket({SCOPE_ROLE_KEY: ROLE_VIEWER})
+        operator = self._Socket({SCOPE_ROLE_KEY: ROLE_FULL})
+        self._open(self._feed(limit=1), [guest, operator])
+        self.assertEqual((guest.accepted, operator.accepted), (False, True))
+
+    def test_the_slots_come_back_when_the_sockets_go(self):
+        feed = self._feed(limit=2)
+        self._open(feed, [self._Socket() for _ in range(2)])
+        self.assertEqual(feed.clients, set())
+        sockets = self._open(feed, [self._Socket() for _ in range(2)])
+        self.assertTrue(all(socket.accepted for socket in sockets))
+
+    def test_a_handshake_that_fails_its_accept_gives_its_slot_back(self):
+        # A client gone before the 101 makes Starlette's accept raise; the slot
+        # was taken before the accept, so it has to come back on that path too.
+        from starlette.websockets import WebSocketDisconnect
+
+        class _Gone(self._Socket):
+            async def accept(self) -> None:
+                await asyncio.sleep(0)
+                raise WebSocketDisconnect()
+
+        feed = self._feed(limit=1)
+        asyncio.run(feed.run(_Gone()))
+        self.assertEqual(feed.clients, set())
+
+    def test_a_handshake_cancelled_in_its_accept_gives_its_slot_back(self):
+        class _Stuck(self._Socket):
+            async def accept(self) -> None:
+                await asyncio.Event().wait()
+
+        feed = self._feed(limit=1)
+
+        async def cancelled() -> None:
+            served = asyncio.create_task(feed.run(_Stuck()))
+            await asyncio.sleep(0)
+            served.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await served
+
+        asyncio.run(cancelled())
+        self.assertEqual(feed.clients, set())
 
 
 if __name__ == "__main__":

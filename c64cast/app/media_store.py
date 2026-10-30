@@ -513,9 +513,15 @@ class MediaStore:
             ", renamed" if renamed else "",
         )
 
-    def index(self, kind: str, q: str = "") -> dict[str, Any]:
+    def index(self, kind: str, q: str = "", *, within_root: bool = False) -> dict[str, Any]:
         """Every entry of `kind` across every root, plus whichever of their
         containing directories directly hold one.
+
+        With `within_root`, each entry's spec and `q` are its path under the
+        root it was found in (`.` and the name `.` for the root itself), and
+        `roots` is blanked, so a caller that hides the roots cannot have them
+        read or guessed back. A spec like that no longer resolves, so it is
+        for a caller that cannot write one into a scene anyway.
 
         `q` is a case-insensitive substring match on the entry's spec, applied
         during the walk — so a search reaches past `MAX_FILES` instead of
@@ -539,6 +545,8 @@ class MediaStore:
                 if visited > _MAX_SCAN:
                     truncated = True
                     break
+                if within_root:
+                    spec = path.relative_to(root.path).as_posix()
                 if needle and needle not in spec.lower():
                     continue
                 if len(entries) >= MAX_FILES:
@@ -546,13 +554,15 @@ class MediaStore:
                     break
                 entry = _stat_entry(spec, is_dir=is_dir, path=path)
                 if entry is not None:
+                    if within_root and spec == ".":
+                        entry["name"] = "."
                     entries.append(entry)
             if truncated:
                 break
 
         return {
             "kind": kind,
-            "roots": [r.spelling for r in self._roots],
+            "roots": ["" if within_root else r.spelling for r in self._roots],
             "entries": entries,
             "truncated": truncated,
         }

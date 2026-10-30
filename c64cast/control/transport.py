@@ -36,10 +36,10 @@ import hashlib
 import json
 import logging
 import os
-import queue
 import re
 import tempfile
 import threading
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -369,7 +369,7 @@ class LiveTuneTracker:
         ``[[scenes]]`` block. ``field`` is None for a change nothing can write:
         every non-``mode.`` target (effect and generator knobs are runtime state),
         and a per-scene target turned on a scene the config did not name, which
-        has no block to write to. ``key`` is what :meth:`forget` takes.
+        has no block to write to. The rows themselves are what :meth:`forget` takes.
 
         A surface that offers to save has to say which kind a row is, so the one
         snapshot answers every question about it; taking it once also means a
@@ -393,14 +393,36 @@ class LiveTuneTracker:
             )
         return rows
 
-    def forget(self, keys: Iterable[str]) -> int:
-        """Drop `keys`, returning how many were actually held.
-
-        What a surface that has *written* them somewhere calls, so a console
-        stops offering to save a change that is now in the file — and what a
-        "discard" is, handed the ``key`` of every :meth:`pending` row."""
+    def forget(self, rows: Iterable[Mapping[str, Any]]) -> int:
+        """Drop the changes :meth:`pending` handed out as `rows`, returning how
+        many were dropped — what a "discard" is, handed every :meth:`pending`
+        row. A change whose value has moved since its row was taken is kept."""
         with self._lock:
-            return sum(int(self._changes.pop(k, None) is not None) for k in keys)
+            dropped = 0
+            for row in rows:
+                held = self._changes.get(row["key"])
+                if held is not None and _values_equal(held.new, row["new"]):
+                    del self._changes[row["key"]]
+                    dropped += 1
+            return dropped
+
+    def saved(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        """Note that a config file now holds each row's ``new``, so a console
+        stops offering a change that is in the file.
+
+        The file's value becomes the change's starting point. A knob turned
+        while the write was on disk stays on offer, measured from what the file
+        now says — including one turned back to the row's ``old``, which
+        :meth:`record` dropped as "unchanged" against the start of the show."""
+        with self._lock:
+            for row in rows:
+                key = row["key"]
+                held = self._changes.get(key)
+                live = row["old"] if held is None else held.new
+                if _values_equal(live, row["new"]):
+                    self._changes.pop(key, None)
+                else:
+                    self._changes[key] = _Change(row["target"], row["scene"], row["new"], live)
 
     def _persistable(self) -> list[dict[str, Any]]:
         """The :meth:`pending` rows a config file can actually take."""
@@ -518,6 +540,11 @@ _CHORD_HOLD_WINDOW_S = 5.0
 # room for a slow network; a closed tab lets go within it.
 _HOLD_LEASE_S = 2.0
 
+#: Transport events held for the playlist thread, which drains none while it
+#: is paused; past this many the oldest are dropped, so what survives is the
+#: newest stretch of presses and releases, in order.
+MAX_QUEUED_EVENTS = 64
+
 
 @dataclass(frozen=True)
 class TransportEvent:
@@ -585,7 +612,7 @@ class TransportSession:
     current holder."""
 
     def __init__(self) -> None:
-        self._queue: queue.SimpleQueue[TransportEvent] = queue.SimpleQueue()
+        self._queue: deque[TransportEvent] = deque(maxlen=MAX_QUEUED_EVENTS)
         # action name -> wall-time the hold started. Mutated only in tick()
         # (playlist thread) — enqueue() only ever pushes onto _queue.
         self._held: dict[str, float] = {}
@@ -602,7 +629,7 @@ class TransportSession:
         self._scrubbed: tuple[Any, float] | None = None
 
     def enqueue(self, event: TransportEvent) -> None:
-        self._queue.put(event)
+        self._queue.append(event)
 
     def _scrub(self, scene: Any, target: float, now: float) -> None:
         """One step of a scrub: an approximate seek where the scene has one,
@@ -636,12 +663,8 @@ class TransportSession:
         ``scene.process_frame``."""
         dt = now - self._last_tick if self._last_tick is not None else 0.0
         self._last_tick = now
-        while True:
-            try:
-                event = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            self._dispatch(pl, event, now)
+        while self._queue:
+            self._dispatch(pl, self._queue.popleft(), now)
         self._expire_leases(now)
         if pl.on_card or pl.current is None:
             self._scrubbed = None

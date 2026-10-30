@@ -51,7 +51,15 @@ from c64cast._json import decode_json
 from c64cast.app.playlist import Playlist
 
 from . import live_tune, page_assets
-from .auth import BODY_TOO_LARGE_ERROR, BodyTooLarge, is_viewer, read_body, role_of, same_origin
+from .auth import (
+    BODY_TOO_LARGE_ERROR,
+    BodyTooLarge,
+    is_viewer,
+    read_body,
+    role_of,
+    same_origin,
+    viewer_limit,
+)
 from .performance import ClipEvent
 from .transport import JsonSlotStore, TransportEvent
 
@@ -102,6 +110,11 @@ _PUSH_INTERVAL_S = 0.35
 #: queued console connects and then shows nothing. Four browsers watching one
 #: show is already unusual; eight is generous for the two feeds together.
 MAX_CONSOLE_SOCKETS = 8
+
+#: Console sockets a viewer token may never take, so the operator's own
+#: console (and a second device of theirs) still connects while guests fill
+#: the rest. See :func:`auth.viewer_limit`.
+FULL_TOKEN_CONSOLE_RESERVE = 2
 
 #: Cap on a ``POST /perf/command`` body. A console command is a few hundred
 #: bytes, and this was the one POST in the package that skipped
@@ -227,20 +240,28 @@ class ConsoleFeed:
     raise out of the dispatch in its handler comment and the other didn't), and
     every guard below would otherwise have had to be written twice and kept in
     agreement forever. The routes differ only in what goes *into* a frame and
-    what a command frame dispatches to, which is what ``build_frame`` and
+    what a command frame dispatches to, which is what ``frames_for`` and
     ``dispatch`` are; ``on_tick`` is ``/api/ws``'s screen sweep, the one thing
     it does per cycle that isn't part of the frame.
+
+    ``frames_for`` is called once per accepted socket and returns that
+    socket's own frame builder, because a frame can depend on what *this*
+    console has already been sent: ``/api/ws`` follows the log by sequence
+    number, and one cursor shared by every socket handed each new line to
+    whichever console's push ran first and to none of the others.
 
     Three things the loop guarantees, so that neither caller has to remember
     them:
 
-    * **The frame build and the dispatch run off the event loop.** Both do real
-      blocking work — one frame reads the look store and the loop-preset store
-      from disk, and ``/api/ws``'s dispatch starts and stops sessions — and
-      the loop they used to run on also serves ``/status``, every ``/api``
-      route and the MJPEG screen stream, so a slow data dir or a slow session
-      change stalled all of it. The sync ``perf_state`` route got the threadpool for
-      free and was never affected, which was the tell.
+    * **The tick, the frame build and the dispatch run off the event loop.**
+      All three do real blocking work — one frame reads the look store and the
+      loop-preset store from disk, ``/api/ws``'s dispatch starts and stops
+      sessions, and its screen sweep tells a machine to stop streaming over the
+      shared DMA link — and the loop they used to run on also serves
+      ``/status``, every ``/api`` route and the MJPEG screen stream, so a slow
+      data dir, a slow session change or a slow link stalled all of it. The
+      sync ``perf_state`` route got the threadpool for free and was never
+      affected, which was the tell.
     * **A command frame cannot end the feed.** :meth:`PerfBridge.apply`
       validates rather than coerces, *and* the dispatch has its own guard here,
       so the exception ladder below only ever sees the socket's own send and
@@ -258,7 +279,7 @@ class ConsoleFeed:
         self,
         label: str,
         *,
-        build_frame: Callable[[Mapping[str, Any]], dict[str, Any]],
+        frames_for: Callable[[Mapping[str, Any]], Callable[[], dict[str, Any]]],
         dispatch: Callable[[Mapping[str, Any]], Any],
         on_tick: Callable[[], None] | None = None,
         limit: int | None = None,
@@ -266,7 +287,7 @@ class ConsoleFeed:
         self.label = label
         #: The sockets this feed is currently serving. Read as the cap.
         self.clients: set[Any] = set()
-        self._build_frame = build_frame
+        self._frames_for = frames_for
         self._dispatch = dispatch
         self._on_tick = on_tick
         # Read at construction rather than bound as a default, so a test can
@@ -288,24 +309,27 @@ class ConsoleFeed:
             log.debug("%s: refusing a state socket (%s)", self.label, why)
             await websocket.close(code=code)
             return
-        await websocket.accept()
+        build_frame = self._frames_for(websocket.scope)
+        # Counted before the accept, which yields to the loop: every handshake
+        # waiting there would otherwise pass the cap check above as well.
         self.clients.add(websocket)
         # The one gap the auth middleware can't cover: a socket is a single
         # `GET` handshake, so inbound command frames have to be dropped here.
         read_only = is_viewer(websocket.scope)
         reader = SocketReader(websocket, label=self.label)
         try:
+            await websocket.accept()
             # The polled receive lets a client command frame through without
             # blocking the push.
             while True:
                 if self._on_tick is not None:
-                    self._on_tick()
+                    await asyncio.to_thread(self._on_tick)
                 # Split from the socket's own failures below: a state frame
                 # that raises is *our* bug, and swallowing it leaves every
                 # connected console waiting forever for a push that will never
                 # come — a hang where an error belongs.
                 try:
-                    frame = await asyncio.to_thread(self._build_frame, websocket.scope)
+                    frame = await asyncio.to_thread(build_frame)
                 except Exception:
                     log.exception("%s: could not build a state frame", self.label)
                     break
@@ -332,6 +356,10 @@ class ConsoleFeed:
             return _WS_POLICY_VIOLATION, "cross-origin handshake"
         if len(self.clients) >= self._limit:
             return _WS_TRY_AGAIN_LATER, f"{self._limit} already open"
+        if is_viewer(websocket.scope):
+            viewers = sum(is_viewer(client.scope) for client in self.clients)
+            if viewers >= viewer_limit(self._limit, FULL_TOKEN_CONSOLE_RESERVE):
+                return _WS_TRY_AGAIN_LATER, f"viewers already hold {viewers}"
         return None
 
     async def _apply(self, msg: Mapping[str, Any]) -> None:
@@ -1108,7 +1136,7 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
 
     feed = ConsoleFeed(
         "perf console",
-        build_frame=lambda scope: with_role(bridge.state(), scope),
+        frames_for=lambda scope: lambda: with_role(bridge.state(), scope),
         dispatch=bridge.apply,
     )
 

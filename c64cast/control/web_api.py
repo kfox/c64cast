@@ -56,6 +56,7 @@ See docs/architecture/control.md#web_apipy--the-web-consoles-api--the-host---ser
 
 import asyncio
 import logging
+import os
 import threading
 from collections.abc import AsyncIterator, Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -95,8 +96,10 @@ from .auth import (
     SCOPE_ROLE_KEY,
     BodyTooLarge,
     ViewerCredential,
+    is_viewer,
     read_body,
     require_full,
+    viewer_limit,
 )
 from .screen import ScreenFeed, ScreenUnavailable, multipart_frames
 from .transport import COLOR_FIELD_NAMES, write_live_tune_row
@@ -115,6 +118,10 @@ _LOG_BACKLOG = 200
 #: watching one C64 is already an unusual show, and the refusal past it is a
 #: 503 a console can render.
 MAX_SCREEN_WATCHERS = 4
+
+#: Screen streams a viewer token may never take, so the operator can always
+#: watch. See :func:`auth.viewer_limit`.
+FULL_TOKEN_SCREEN_RESERVE = 1
 
 #: A request factory re-reads the config from disk and validates it, so a
 #: start picks up an edit made since the host launched. Its argument is the
@@ -145,7 +152,18 @@ _MEDIA_STATUS: tuple[tuple[type[MediaStoreError], int], ...] = (
 )
 
 
-def _status_payload(status: SessionStatus, log_buffer: Any, store: ConfigStore) -> dict[str, Any]:
+def _status_payload(
+    status: SessionStatus,
+    log_buffer: Any,
+    store: ConfigStore,
+    media: MediaStore,
+    scope: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The supervisor's state as a console reads it, with ``config_path``
+    emptied for a viewer for the reason :func:`perf_console.with_role` empties
+    ``tuned.config_path``, and ``last_error`` read through :func:`_path_hider`.
+    ``config_ref`` stays: it names the file relative to its root, which is what
+    the config browser already shows a viewer."""
     out = status.as_dict()
     out["log_seq"] = log_buffer.seq if log_buffer is not None else 0
     # The browser's default selection: the config the host was launched with,
@@ -153,7 +171,44 @@ def _status_payload(status: SessionStatus, log_buffer: Any, store: ConfigStore) 
     # path isn't under a root this store knows (a quick-playback run, or one
     # started from outside any configured `config_roots`).
     out["config_ref"] = store.ref_for(Path(out["config_path"])) if out.get("config_path") else None
+    if is_viewer(scope):
+        if out.get("config_path"):
+            out["config_path"] = ""
+        if out.get("last_error"):
+            out["last_error"] = _path_hider(store, media)(out["last_error"])
     return out
+
+
+def _path_hider(store: ConfigStore, media: MediaStore) -> Callable[[str], str]:
+    """Text as a viewer reads it: a path under a media root relative to that
+    root, the way ``/api/media`` lists it for a viewer, each config root as its
+    label, and the home directory as ``~``. ``config.load`` logs the absolute
+    path of every show it starts, and a failed build's exception text quotes
+    the file it could not open."""
+    # A filesystem root is a bare separator, and swapping it out would rewrite
+    # every slash in the text rather than one path's prefix.
+    labeled = [(str(r.path), r.label) for r in store.roots if r.path.parent != r.path]
+    stripped = [(os.path.join(r.path, ""), "") for r in media.roots if r.path.parent != r.path]
+    # A stable sort with `labeled` first: a directory that is both kinds of
+    # root names a config the way the config browser does.
+    swaps = sorted(labeled + stripped, key=lambda swap: len(swap[0].rstrip(os.sep)), reverse=True)
+    swaps.append((os.path.join(Path.home(), ""), os.path.join("~", "")))
+
+    def hidden(text: str) -> str:
+        for path, label in swaps:
+            text = text.replace(path, label)
+        return text
+
+    return hidden
+
+
+def _log_for(
+    lines: list[dict[str, Any]], store: ConfigStore, media: MediaStore, scope: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    if not is_viewer(scope):
+        return lines
+    hidden = _path_hider(store, media)
+    return [{**line, "message": hidden(line["message"])} for line in lines]
 
 
 def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -223,21 +278,35 @@ class StreamSlots:
     all of it, with a healthy process and an empty log.
 
     :meth:`claim` refuses rather than queues: a queued stream would connect
-    and then show nothing."""
+    and then show nothing. A viewer claim is also refused once viewers hold
+    every slot but :data:`FULL_TOKEN_SCREEN_RESERVE`."""
 
     def __init__(self, limit: int) -> None:
         self.limit = limit
         self.pool = ThreadPoolExecutor(max_workers=limit, thread_name_prefix="c64cast-screen")
-        self._slots = threading.BoundedSemaphore(limit)
+        self._lock = threading.Lock()
+        self._held = 0
+        self._viewers = 0
 
-    def claim(self) -> bool:
-        """Take a slot, or ``False`` when every one is in use."""
-        return self._slots.acquire(blocking=False)
+    def claim(self, *, viewer: bool = False) -> bool:
+        """Take a slot, or ``False`` when none is free to this caller."""
+        with self._lock:
+            if self._held >= self.limit:
+                return False
+            if viewer and self._viewers >= viewer_limit(self.limit, FULL_TOKEN_SCREEN_RESERVE):
+                return False
+            self._held += 1
+            self._viewers += viewer
+            return True
 
-    def release(self) -> None:
+    def release(self, *, viewer: bool = False) -> None:
         """Give a claimed slot back — from the response's own background task,
         so it happens however the body ended."""
-        self._slots.release()
+        with self._lock:
+            if self._held == 0 or (viewer and self._viewers == 0):
+                raise ValueError("released a screen stream slot that was not claimed")
+            self._held -= 1
+            self._viewers -= viewer
 
 
 def _opt_index(value: Any, name: str) -> int | None:
@@ -252,6 +321,15 @@ def _opt_index(value: Any, name: str) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool):
         raise EditRejected(f"`{name}` is a scene index, got {value!r}")
     return value
+
+
+def _same_file(path: Path, running: Path) -> bool:
+    """A ref naming no file (`shows/nope.toml`, `shows/gig.toml/x.toml`) is
+    not the running config; `store.delete` answers it with a 404."""
+    try:
+        return path.samefile(running)
+    except OSError:
+        return False
 
 
 def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -420,7 +498,7 @@ def register_web_routes(
         return parsed
 
     def _session_state(scope: Mapping[str, Any]) -> dict[str, Any]:
-        state = _status_payload(manager.status(), log_buffer, store)
+        state = _status_payload(manager.status(), log_buffer, store, media, scope)
         state["role"] = scope.get(SCOPE_ROLE_KEY)
         return state
 
@@ -520,7 +598,8 @@ def register_web_routes(
 
         # A viewer token reaches this route (it is a GET) and used to be able
         # to open as many streams as it liked. See `StreamSlots`.
-        if not streams.claim():
+        viewer = is_viewer(request.scope)
+        if not streams.claim(viewer=viewer):
             raise HTTPException(503, f"this host is already streaming to {streams.limit} watchers")
 
         # The watch is held by the *response*, not by the generator: acquired
@@ -530,15 +609,15 @@ def register_web_routes(
         # rides the same background task for the same reason.
         def _done() -> None:
             screen.release(name)
-            streams.release()
+            streams.release(viewer=viewer)
 
         try:
             read = screen.acquire(name)
         except ScreenUnavailable as e:
-            streams.release()
+            streams.release(viewer=viewer)
             raise HTTPException(501, str(e)) from e
         except BaseException:
-            streams.release()
+            streams.release(viewer=viewer)
             raise
         return StreamingResponse(
             _until_gone(multipart_frames(read, fps=screen_fps), request, streams.pool),
@@ -573,7 +652,7 @@ def register_web_routes(
     def api_session(request: Request) -> dict[str, Any]:
         state = _session_state(request.scope)
         if log_buffer is not None:
-            state["log"] = log_buffer.tail(_LOG_BACKLOG)
+            state["log"] = _log_for(log_buffer.tail(_LOG_BACKLOG), store, media, request.scope)
         return state
 
     @app.post("/api/session/start", status_code=202)
@@ -658,7 +737,7 @@ def register_web_routes(
         # would make the list disagree with what actually gets written.
         rows = pl.live_tracker.pending()
         if action == "discard":
-            return {"ok": True, "discarded": pl.live_tracker.forget(r["key"] for r in rows)}
+            return {"ok": True, "discarded": pl.live_tracker.forget(rows)}
         if action != "save":
             raise HTTPException(400, 'a live-tune command needs action "save" or "discard"')
         savable = [r for r in rows if r["field"] is not None]
@@ -683,7 +762,7 @@ def register_web_routes(
             raise _store_error(e) from e
         # Only now: a refused patch leaves the record intact, so the console can
         # show the reason and the same Save button still means something.
-        pl.live_tracker.forget(r["key"] for r in savable)
+        pl.live_tracker.saved(savable)
         # And bring the run's own Config up to what the file now says. The C64's
         # menu save-back dumps *that* object wholesale, so leaving it stale would
         # let somebody at the machine quietly revert what was just saved from the
@@ -707,15 +786,19 @@ def register_web_routes(
         return {"favorites": library.set_favorite(ref, bool(body.get("on", True)))}
 
     @app.get("/api/configs")
-    def api_configs() -> dict[str, Any]:
-        return store.index()
+    def api_configs(request: Request) -> dict[str, Any]:
+        index = store.index()
+        if is_viewer(request.scope):
+            for root in index["roots"]:
+                root["path"] = ""
+        return index
 
     # A GET, so the viewer role may browse it — it lists media a config
     # already names, and a viewer who can watch the screen can already see it.
     @app.get("/api/media")
-    def api_media(kind: str, q: str = "") -> dict[str, Any]:
+    def api_media(request: Request, kind: str, q: str = "") -> dict[str, Any]:
         try:
-            return media.index(kind, q)
+            return media.index(kind, q, within_root=is_viewer(request.scope))
         except MediaKindUnknown as e:
             raise HTTPException(400, str(e)) from e
 
@@ -864,10 +947,14 @@ def register_web_routes(
         # session that ran it has stopped. Only a config the supervisor is
         # actually mid-show with — not startable again without a fresh
         # start — is the one this route needs to protect.
+        #
+        # Compared by file identity, not by path: APFS opens `GIG.toml` and an
+        # NFD `café.toml` as the running file (NTFS the first), while their
+        # resolved paths still differ from it.
         active = status.state not in STARTABLE and status.config_path
-        if active and store.ref_for(Path(status.config_path)) == ref:
-            raise HTTPException(409, f"{ref} is the running config — stop it first")
         try:
+            if active and _same_file(store.resolve(ref), Path(status.config_path)):
+                raise HTTPException(409, f"{ref} is the running config — stop it first")
             return store.delete(ref)
         except ConfigStoreError as e:
             raise _store_error(e) from e
@@ -923,17 +1010,20 @@ def register_web_routes(
     # the dispatch guard and the socket cap all live there, once. Local to this
     # route are the payload (the supervisor's session state and the log tail)
     # and the dispatcher.
-    sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
+    def _console_frames(scope: Mapping[str, Any]) -> Callable[[], dict[str, Any]]:
+        sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
 
-    def _console_frame(scope: Mapping[str, Any]) -> dict[str, Any]:
-        nonlocal sent_seq
-        frame = with_role(bridge.state(), scope)
-        frame["session"] = _status_payload(manager.status(), log_buffer, store)
-        if log_buffer is not None:
-            lines = log_buffer.since(sent_seq)
-            if lines:
-                sent_seq = lines[-1]["seq"]
-            frame["log"] = lines
+        def frame() -> dict[str, Any]:
+            nonlocal sent_seq
+            out = with_role(bridge.state(), scope)
+            out["session"] = _status_payload(manager.status(), log_buffer, store, media, scope)
+            if log_buffer is not None:
+                lines = log_buffer.since(sent_seq)
+                if lines:
+                    sent_seq = lines[-1]["seq"]
+                out["log"] = _log_for(lines, store, media, scope)
+            return out
+
         return frame
 
     # Cheap, and the only regular tick this process has: it is what stops a
@@ -941,7 +1031,7 @@ def register_web_routes(
     # its own would be a thread paid for at idle.
     console_feed = ConsoleFeed(
         "web console",
-        build_frame=_console_frame,
+        frames_for=_console_frames,
         dispatch=_apply_command,
         on_tick=screen.sweep,
     )
