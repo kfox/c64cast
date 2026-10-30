@@ -359,6 +359,14 @@ class MultipartTest(unittest.TestCase):
             self.assertIsNotNone(next(gen, None))
             self.assertIsNone(next(gen, None))
 
+    def test_each_frame_restarts_the_patience(self):
+        gap: list[VicFrame | None] = [None] * 30  # 3 s at 10 fps, under _FIRST_FRAME_S
+        it = iter([_frame(1), *gap, _frame(2), *gap, _frame(3)])
+        with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
+            gen = screen_mod.multipart_frames(lambda: next(it, None), fps=10.0)
+            parts = list(gen)
+        self.assertEqual(len(parts), 3)
+
     def test_a_still_screen_keeps_its_stream(self):
         with mock.patch.object(screen_mod, "time", SleepDrivenClock()):
             gen = screen_mod.multipart_frames(lambda: _frame(1), fps=10.0)
