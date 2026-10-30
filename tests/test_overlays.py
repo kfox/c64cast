@@ -856,6 +856,13 @@ class _DripPeerTest(unittest.TestCase):
         port = self.drip_peer(b"HTTP/1.1 200 OK\r\nX-Drip: ")
         self.assert_gives_up(f"http://127.0.0.1:{port}/feed")
 
+    def test_a_proxy_that_drips_its_headers_gives_up_at_the_deadline(self):
+        proxy = f"http://127.0.0.1:{self.drip_peer(b'HTTP/1.1 200 OK\r\nX-Drip: ')}"
+        with patch.dict(os.environ, {"http_proxy": proxy, "HTTP_PROXY": proxy}):
+            for name in ("no_proxy", "NO_PROXY"):
+                os.environ.pop(name, None)
+            self.assert_gives_up("http://feed.invalid/feed")
+
     def test_a_peer_that_drips_its_status_line_gives_up_at_the_deadline(self):
         port = self.drip_peer(b"HTTP/1.1 200 ")
         self.assert_gives_up(f"http://127.0.0.1:{port}/feed")
@@ -1021,6 +1028,26 @@ class FetchTransportErrorTest(_RemotePeerTest):
         ov = RssOverlay(url=self.route("/old", moved) + "?x=1")
         ov._fetch_once()
         self.assertEqual(ov._titles, ["MOVED"])
+
+    def test_a_feed_behind_a_redirect_is_read_through_a_proxy(self):
+        from c64cast.scenes.overlays import _fetch
+
+        def as_proxy(handler):
+            if handler.path == "http://feed.invalid/old":
+                handler.send_response(301)
+                handler.send_header("Location", "/new")
+                handler.send_header("Content-Length", "0")
+                handler.end_headers()
+            else:
+                _send_head(handler, "application/rss+xml", len(handler.path))
+                handler.wfile.write(handler.path.encode())
+
+        self.route("/", as_proxy)
+        with patch.dict(os.environ, {"http_proxy": self.base, "HTTP_PROXY": self.base}):
+            for name in ("no_proxy", "NO_PROXY"):
+                os.environ.pop(name, None)
+            body = _fetch.get_body("http://feed.invalid/old", timeout=5.0)
+        self.assertEqual(body, b"http://feed.invalid/new")
 
     def test_a_redirect_loop_is_a_fetch_failure(self):
         from c64cast.scenes.overlays.rss import RssOverlay

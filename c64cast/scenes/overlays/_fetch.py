@@ -188,6 +188,9 @@ class _WatchedAdapter(HTTPAdapter):
         _watch_pools(self.poolmanager)
 
     def proxy_manager_for(self, proxy, **proxy_kwargs):
+        # Called on every send, returning the manager it cached for `proxy`.
+        new = proxy not in self.proxy_manager
         manager = super().proxy_manager_for(proxy, **proxy_kwargs)
-        _watch_pools(manager)
+        if new:
+            _watch_pools(manager)
         return manager
