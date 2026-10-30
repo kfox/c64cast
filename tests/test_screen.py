@@ -258,6 +258,22 @@ class LifetimeTest(unittest.TestCase):
         self._expire_linger(feed)
         self.assertEqual(second.stops, 0, "tab B is still watching")
 
+    def test_every_swept_watcher_leaving_spares_the_next_shows_stream(self):
+        running: dict[str, _FakeApi] = {"c64cast": self.api}
+        feed = ScreenFeed(lambda: dict(running))
+        self.addCleanup(feed.close)
+        feed.acquire("c64cast")
+        feed.acquire("c64cast")
+        running.clear()
+        feed.sweep()
+        running["c64cast"] = _FakeApi()
+        feed.acquire("c64cast")
+        feed.release("c64cast")
+        feed.release("c64cast")
+        self.assertEqual(feed._live["c64cast"].watchers, 1)
+        feed.release("c64cast")
+        self.assertEqual(feed._live["c64cast"].watchers, 0)
+
     def test_the_stream_still_ends_whichever_tab_leaves_first(self):
         feed, second = self._swept_watcher_then_a_new_show()
         feed.release("c64cast")
