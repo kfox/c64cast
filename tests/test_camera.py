@@ -103,52 +103,6 @@ class ResolveCameraIndexTest(unittest.TestCase):
             self.assertEqual(camera.resolve_camera_index("Cam Link"), (202, 0))
 
 
-class CameraReopenLookupTest(unittest.TestCase):
-    """:func:`camera.camera_identity` and :func:`camera.find_camera`: how a
-    camera that went away is found again by who it is, not where it was."""
-
-    def _patch(self, cams, available=True):
-        for patcher in (
-            mock.patch.object(camera, "camera_enumeration_available", return_value=available),
-            mock.patch.object(camera, "enumerate_cameras", return_value=list(cams)),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-    def test_identity_is_the_name_and_usb_id_at_that_index(self):
-        self._patch([FACETIME, CAMLINK, OBSVIRT])
-        self.assertEqual(camera.camera_identity(1), ("Cam Link 4K", "0fd9:0066"))
-
-    def test_a_plain_index_finds_its_linux_listing_by_device_number(self):
-        # `-d 2` opens /dev/video2 under CAP_ANY; the enumerator lists it at 202 and 1802.
-        self._patch(
-            [_cam(backend + 2, "Cam Link 4K", 0x0FD9, 0x66, backend=0) for backend in (1800, 200)]
-        )
-        self.assertEqual(camera.camera_identity(2), ("Cam Link 4K", "0fd9:0066"))
-
-    def test_no_identity_without_the_extra_or_a_listing(self):
-        self._patch([FACETIME], available=False)
-        self.assertIsNone(camera.camera_identity(0))
-        self._patch([FACETIME])
-        self.assertIsNone(camera.camera_identity(5))
-
-    def test_the_camera_is_found_at_its_new_index(self):
-        moved = _cam(0, "Cam Link 4K", vid=0x0FD9, pid=0x0066)
-        self._patch([moved, FACETIME])
-        self.assertEqual(camera.find_camera(("Cam Link 4K", "0fd9:0066")), (0, 1200))
-
-    def test_another_camera_at_its_old_index_is_not_it(self):
-        same_name_other_stick = _cam(1, "Cam Link 4K", vid=0x0FD9, pid=0x0067)
-        self._patch([FACETIME, same_name_other_stick])
-        self.assertIsNone(camera.find_camera(("Cam Link 4K", "0fd9:0066")))
-
-    def test_a_linux_camera_is_reopened_by_its_v4l2_listing(self):
-        self._patch(
-            [_cam(backend + 2, "Cam Link 4K", 0x0FD9, 0x66, backend=0) for backend in (1800, 200)]
-        )
-        self.assertEqual(camera.find_camera(("Cam Link 4K", "0fd9:0066")), (202, 0))
-
-
 class CameraInfoTest(unittest.TestCase):
     def test_vidpid_str_padded_lowercase(self):
         self.assertEqual(CAMLINK.vidpid_str(), "0fd9:0066")

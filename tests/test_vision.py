@@ -539,8 +539,8 @@ class _ClockedStop:
 
 class WebcamSourceLossTest(unittest.TestCase):
     """A camera that stops sending: the last frame is held for the grace period
-    and then black, the camera is reopened by who it is and never by its old
-    index, and vision is never handed the held frame."""
+    and then black, it goes live again if it sends again, and vision is never
+    handed the held frame."""
 
     def setUp(self):
         from c64cast.video import video
@@ -549,27 +549,10 @@ class WebcamSourceLossTest(unittest.TestCase):
         self.clock = FrozenClock(100.0, "monotonic")
         self.frame = np.full((4, 4, 3), 7, dtype=np.uint8)
         self.first = _ScriptedCap([self.frame])
-        self.opened: list[tuple] = []
-        self.caps = [self.first]
-        self.identity: tuple | None = ("Cam Link 4K", "0fd9:0066")
-        self.where: tuple[int, int] | None = None
-        self.lookups = 0
-
-        def open_capture(*args):
-            self.opened.append(args)
-            return self.caps.pop(0)
-
-        def find_camera(identity):
-            self.lookups += 1
-            self.assertEqual(identity, self.identity)
-            return self.where
-
         for patcher in (
             mock.patch.object(video, "time", self.clock),
             mock.patch.object(video, "PollThread"),
-            mock.patch.object(video.cv2, "VideoCapture", side_effect=open_capture),
-            mock.patch("c64cast.control.camera.camera_identity", lambda _i: self.identity),
-            mock.patch("c64cast.control.camera.find_camera", find_camera),
+            mock.patch.object(video.cv2, "VideoCapture", return_value=self.first),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -598,7 +581,8 @@ class WebcamSourceLossTest(unittest.TestCase):
         assert black is not None
         self.assertEqual(black.shape, self.frame.shape)
         self.assertFalse(black.any())
-        self.assertEqual(len(logs.records), 1, "one warning on loss, not one per attempt")
+        [warning] = [r.getMessage() for r in logs.records]
+        self.assertIn("then black until it sends again", warning)
 
     def test_vision_is_never_handed_the_held_frame(self):
         src = self._source()
@@ -609,36 +593,7 @@ class WebcamSourceLossTest(unittest.TestCase):
         self.assertIsNotNone(src.read())
         self.assertIsNone(src.read_live())
 
-    def test_a_camera_that_comes_back_is_reopened_and_goes_live(self):
-        src = self._source()
-        with self.assertLogs("c64cast.video.video", "WARNING"):
-            self._run(src, 2.0)
-        live = np.full((4, 4, 3), 9, dtype=np.uint8)
-        self.caps.append(_ScriptedCap([live] * 1000))
-        self.where = (3, 1200)
-        with self.assertLogs("c64cast.video.video", "INFO") as logs:
-            self._run(src, 6.0)
-        self.assertEqual(self.opened[-1], (3, 1200))
-        self.assertTrue(self.first.released)
-        frame = src.read_live()
-        assert frame is not None
-        np.testing.assert_array_equal(frame, live)
-        self.assertEqual([r.getMessage() for r in logs.records], ["camera 0 is back"])
-
-    def test_a_camera_nobody_can_name_is_not_reopened_by_its_old_index(self):
-        # Another camera, the built-in one say, may sit at that index by now.
-        self.identity = None
-        src = self._source()
-        with self.assertLogs("c64cast.video.video", "WARNING") as logs:
-            self._run(src, 20.0)
-        self.assertEqual(len(self.opened), 1)
-        self.assertEqual(self.lookups, 0)
-        [warning] = [r.getMessage() for r in logs.records]
-        self.assertNotIn("reopening", warning)
-        self.assertIn("until it sends again", warning)
-
-    def test_a_camera_nobody_can_name_goes_live_when_its_open_handle_sends_again(self):
-        self.identity = None
+    def test_a_camera_that_sends_again_goes_live(self):
         src = self._source()
         with self.assertLogs("c64cast.video.video", "WARNING"):
             self._run(src, 20.0)
@@ -646,39 +601,10 @@ class WebcamSourceLossTest(unittest.TestCase):
         self.first.frames.extend([live] * 1000)
         with self.assertLogs("c64cast.video.video", "INFO") as logs:
             self._run(src, 1.0)
-        self.assertEqual(len(self.opened), 1)
         frame = src.read_live()
         assert frame is not None
         np.testing.assert_array_equal(frame, live)
         self.assertEqual([r.getMessage() for r in logs.records], ["camera 0 is back"])
-
-    def test_a_camera_reopened_while_the_source_stops_is_closed_again(self):
-        src = self._source()
-        fresh = _ScriptedCap()
-        self.caps.append(fresh)
-        self.where = (3, 1200)
-        stopping = mock.Mock(is_set=mock.Mock(return_value=True))
-        src._try_reopen(cast(threading.Event, stopping))
-        self.assertTrue(fresh.released)
-        self.assertIsNot(src.cap, fresh)
-
-    def test_a_source_released_during_the_lookup_opens_nothing(self):
-        src = self._source()
-        self.where = (3, 1200)
-        lookup = mock.Mock(side_effect=lambda _identity: (src.release(), self.where)[1])
-        with mock.patch("c64cast.control.camera.find_camera", lookup):
-            src._try_reopen(self.stop)
-        lookup.assert_called_once()
-        self.assertEqual(len(self.opened), 1)
-        self.assertIsNone(src.cap)
-
-    def test_reopen_attempts_back_off(self):
-        src = self._source()
-        with self.assertLogs("c64cast.video.video", "WARNING"):
-            self._run(src, 30.0)
-        # 0.5 s doubling to 5 s: about a dozen tries in 30 s, not thousands.
-        self.assertLessEqual(self.lookups, 12)
-        self.assertGreaterEqual(self.lookups, 5)
 
 
 class VisionStaleFrameTest(unittest.TestCase):
