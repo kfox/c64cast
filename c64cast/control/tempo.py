@@ -105,10 +105,10 @@ class TempoClock:
     def _clock_loss_s_locked(self) -> float:
         return _CLOCK_LOSS_BEATS * 60.0 / self._bpm
 
-    def _clock_lost_locked(self, now: float) -> bool:
-        return (
-            self._external and self._running and now - self._base_time > self._clock_loss_s_locked()
-        )
+    def _ran_without_clock_locked(self, now: float) -> bool:
+        if not self._running:
+            return False
+        return not self._external or now - self._base_time > self._clock_loss_s_locked()
 
     def _phase_at_locked(self, now: float) -> float:
         if not self._running:
@@ -138,12 +138,13 @@ class TempoClock:
         grid on its first pulse; after a Stop, pulses only track the BPM until a
         Start or Continue, since a device keeps sending clock while stopped, and
         are ignored once a tap or the audio drive has taken the held grid over.
-        The first pulse after the clock was lost re-anchors on the free-running
-        phase, as the first pulse of a fresh clock does."""
+        The first pulse after the grid ran without the clock -- lost, or driven
+        by a tap or the audio analyzer -- re-anchors on the running phase, as
+        the first pulse of a fresh clock does."""
         with self._lock:
             if self._halted and self._running:
                 return
-            if self._clock_lost_locked(now):
+            if self._ran_without_clock_locked(now):
                 self._phase_base = self._phase_at_locked(now)
                 self._last_pulse_time = None
             self._external = True

@@ -327,6 +327,20 @@ class SourceAfterTapTest(unittest.TestCase):
             c.clock_pulse(2.0 + k * dt)
         self.assertEqual(c.source, "midi")
 
+    def test_a_returning_clock_takes_a_tapped_grid_back_without_rewinding(self):
+        c = TempoClock(bpm=120.0, source="midi", now=0.0)
+        dt = _pulse_dt(120.0)
+        for k in range(1, 25):
+            c.clock_pulse(k * dt)
+        c.tap(2.0)
+        c.tap(2.5)
+        back = 10.0
+        tapped = c.beat_phase_at(back)
+        c.clock_pulse(back)
+        self.assertAlmostEqual(c.beat_phase_at(back), tapped, places=9)
+        c.clock_pulse(back + dt)
+        self.assertAlmostEqual(c.beat_phase_at(back + dt), tapped + 1 / 24, places=9)
+
     def test_midi_bytes_leave_the_audio_source_alone(self):
         c = TempoClock(bpm=120.0, source="audio", now=0.0)
         c.audio_drive(128.0, now=1.0)
