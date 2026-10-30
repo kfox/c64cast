@@ -23,10 +23,11 @@ never run, which `threading` rejects outright.
 `stop()`'s join is bounded (`join_timeout`, default 0.5 s) so teardown never
 hangs on a wedged target. If the worker is still alive when the join times
 out, `stop()` keeps the thread reference instead of discarding it: `is_running()`
-then keeps reporting True for as long as the abandoned worker actually runs,
-and `start()`'s ordinary "already running" check refuses to spawn a
-replacement — and therefore never calls `self._stop.clear()` — until it
-finally exits.
+then keeps reporting True for as long as the abandoned worker actually runs.
+A `start()` in that window must not clear the stop event the abandoned worker
+is still reading, nor run a second worker beside it, so it queues the start:
+the abandoned worker hands over to a fresh one as it exits. A `stop()` before
+then cancels the queued start.
 
 See docs/architecture/config.md#_pollthreadpy--the-background-loop-idiom.
 """
@@ -87,6 +88,10 @@ class PollThread:
         self._join_timeout = join_timeout
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._start_queued = False
+        # Guards `_thread` and `_start_queued` against the exiting worker, which
+        # cannot take `_lifecycle`: `stop()` holds it across the join.
+        self._handoff = threading.Lock()
         # Reentrant: a target stopping its own poller then raises `Thread.join`'s
         # "cannot join current thread" instead of deadlocking here.
         self._lifecycle = threading.RLock()
@@ -96,34 +101,51 @@ class PollThread:
         return self._stop
 
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        with self._handoff:
+            return self._thread is not None
 
     def start(self) -> None:
-        with self._lifecycle:
-            if self.is_running():
-                return
-            self._stop.clear()
-            thread = threading.Thread(target=self._run, daemon=True, name=self._name)
-            # Started before published, so `stop()` cannot reach an unstarted thread.
-            thread.start()
-            self._thread = thread
+        with self._lifecycle, self._handoff:
+            if self._thread is None:
+                self._spawn()
+            elif self._stop.is_set():
+                self._start_queued = True
 
     def stop(self) -> None:
         with self._lifecycle:
-            self._stop.set()
-            if self._thread is not None:
-                self._thread.join(timeout=self._join_timeout)
-                if self._thread.is_alive():
-                    log.warning(
-                        "PollThread %r did not stop within %.1fs; it is still "
-                        "running and start() will refuse a replacement until it exits",
-                        self._name,
-                        self._join_timeout,
-                    )
-                    return
-                self._thread = None
+            with self._handoff:
+                self._start_queued = False
+                self._stop.set()
+                thread = self._thread
+            if thread is None:
+                return
+            thread.join(timeout=self._join_timeout)
+            if thread.is_alive():
+                log.warning(
+                    "PollThread %r did not stop within %.1fs; it is still "
+                    "running, and a start() before it exits waits for it",
+                    self._name,
+                    self._join_timeout,
+                )
+
+    def _spawn(self) -> None:
+        self._stop.clear()
+        thread = threading.Thread(target=self._run, daemon=True, name=self._name)
+        # Started before published, so `stop()` cannot reach an unstarted thread.
+        thread.start()
+        self._thread = thread
 
     def _run(self) -> None:
+        try:
+            self._loop()
+        finally:
+            with self._handoff:
+                self._thread = None
+                if self._start_queued:
+                    self._start_queued = False
+                    self._spawn()
+
+    def _loop(self) -> None:
         if self._manual:
             self._call_target(self._target, self._stop)
             return

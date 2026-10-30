@@ -19,6 +19,7 @@ import numpy as np
 from c64cast.app.config import AudioCfg, Config, SceneCfg
 from c64cast.app.scene_factory import build_scene, validate_scene_cfg
 from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import PREBUFFER_CHUNKS
 from c64cast.audio.audio_source import MicAudioSource, NullAudioSource
 from c64cast.hw.backend import C64Backend, HardwareProfile
 from c64cast.scenes import generators
@@ -2190,6 +2191,7 @@ class AudioFileShortClipTest(unittest.TestCase):
             collects += 1
             return collect(*args, **kwargs)
 
+        started = time.monotonic()
         with quiet_logging(), mock.patch.object(dac, "_collect_until", side_effect=counted):
             dac.start_for_external_source()
             try:
@@ -2197,9 +2199,14 @@ class AudioFileShortClipTest(unittest.TestCase):
                 time.sleep(0.3)
             finally:
                 dac.stop()
-        # An idle collect blocks a chunk period (128 ms at 8 kHz): a few
-        # passes, not hundreds of thousands.
-        self.assertLess(collects, 20, "the worker spun on an ended, empty input")
+        elapsed = time.monotonic() - started
+        # Once the ring is primed the worker collects in every drip slot of a
+        # chunk period, plus one fallback collect: a pace that scales with the
+        # time the run took, which a loaded runner stretches well past 0.3 s.
+        chunk_period = dac.chunk_size / dac.effective_rate
+        collects_per_period = -(-dac.chunk_size // dac._halt_quantum()) + 1
+        paced = PREBUFFER_CHUNKS + 1 + collects_per_period * (elapsed / chunk_period + 1)
+        self.assertLess(collects, paced, "the worker spun on an ended, empty input")
 
     def test_a_sampler_plays_a_clip_shorter_than_its_prebuffer(self):
         from _fakes import quiet_logging

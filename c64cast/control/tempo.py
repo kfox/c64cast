@@ -45,6 +45,12 @@ _TAP_RESET_S = 2.0
 # double-firing, a doubled console request), not a beat.
 _TAP_MIN_INTERVAL_S = 60.0 / _BPM_MAX
 
+# Beats of external-clock silence after which the grid free-runs at the last
+# measured BPM: past the beat or two the pulse EMA takes to follow a ramp, so
+# a hiccuping clock never trips it, and short enough that a bar-quantized pad
+# armed when the clock vanished still launches within the bar.
+_CLOCK_LOSS_BEATS = 2.0
+
 
 class TempoClock:
     """A process-wide beat grid, GIL-atomically readable by every consumer.
@@ -59,8 +65,11 @@ class TempoClock:
     running. External clock pulses snap ``_phase_base`` forward by exactly
     ``1/PPQN`` per pulse and re-anchor ``_base_time``, so the grid tracks the
     incoming clock exactly; between pulses the extrapolation (capped at one
-    pulse's worth) keeps the phase smooth. Internal/tap mode has no pulses, so
-    the extrapolation *is* the advance, uncapped, at the static/tapped BPM."""
+    pulse's worth) keeps the phase smooth. A running external clock that goes
+    quiet for ``_CLOCK_LOSS_BEATS`` without a Stop free-runs on from the held
+    phase at the last measured BPM, and the next pulse locks back on from
+    there. Internal/tap mode has no pulses, so the extrapolation *is* the
+    advance, uncapped, at the static/tapped BPM."""
 
     #: MIDI clock resolution — 24 pulses per quarter note, the fixed standard.
     PPQN = 24
@@ -93,15 +102,28 @@ class TempoClock:
         self._pulse_bpm: float | None = None
         self._tap_times: deque[float] = deque(maxlen=8)
 
+    def _clock_loss_s_locked(self) -> float:
+        return _CLOCK_LOSS_BEATS * 60.0 / self._bpm
+
+    def _ran_without_clock_locked(self, now: float) -> bool:
+        if not self._running:
+            return False
+        return not self._external or now - self._base_time > self._clock_loss_s_locked()
+
     def _phase_at_locked(self, now: float) -> float:
         if not self._running:
             return self._phase_base
-        advance = max(0.0, now - self._base_time) * self._bpm / 60.0
-        if self._external:
+        elapsed = max(0.0, now - self._base_time)
+        beats_per_s = self._bpm / 60.0
+        if not self._external:
+            return self._phase_base + elapsed * beats_per_s
+        one_pulse = 1.0 / self.PPQN
+        loss_s = self._clock_loss_s_locked()
+        if elapsed <= loss_s:
             # Never overrun the next pulse's 1/PPQN increment: the phase must
             # not run ahead of a late clock byte and jerk backwards when it lands.
-            advance = min(advance, 1.0 / self.PPQN)
-        return self._phase_base + advance
+            return self._phase_base + min(elapsed * beats_per_s, one_pulse)
+        return self._phase_base + one_pulse + (elapsed - loss_s) * beats_per_s
 
     def _claim_for_midi_locked(self) -> None:
         # The audio drive re-claims the grid every frame, so a MIDI byte
@@ -115,10 +137,16 @@ class TempoClock:
         interval. A free-running clock with no preceding Start still starts the
         grid on its first pulse; after a Stop, pulses only track the BPM until a
         Start or Continue, since a device keeps sending clock while stopped, and
-        are ignored once a tap or the audio drive has taken the held grid over."""
+        are ignored once a tap or the audio drive has taken the held grid over.
+        The first pulse after the grid ran without the clock -- lost, or driven
+        by a tap or the audio analyzer -- re-anchors on the running phase, as
+        the first pulse of a fresh clock does."""
         with self._lock:
             if self._halted and self._running:
                 return
+            if self._ran_without_clock_locked(now):
+                self._phase_base = self._phase_at_locked(now)
+                self._last_pulse_time = None
             self._external = True
             if self._last_pulse_time is not None:
                 if not self._halted:

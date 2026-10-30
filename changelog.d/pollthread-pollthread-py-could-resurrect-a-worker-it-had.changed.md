@@ -7,9 +7,9 @@
   still-running worker reads through the same shared `Event` — and spawned a
   second thread on top of the first, un-stopped. `stop()` now keeps the
   thread reference on a timed-out join (logging a warning) instead of
-  discarding it, so `is_running()` stays truthful and `start()`'s existing
-  "already running" no-op refuses the duplicate until the abandoned worker
-  actually exits. Separately, an unhandled exception from a target used to
+  discarding it, so `is_running()` stays truthful and a `start()` in that
+  window waits for the abandoned worker to exit instead of running a second
+  one beside it. Separately, an unhandled exception from a target used to
   end the thread via `threading.excepthook`, which prints straight to raw
   stderr and bypasses `--log-file`/`SessionLogBuffer` entirely — `_run` now
   catches it and calls `log.exception`, stopping the loop the same way as
@@ -18,5 +18,5 @@
   incompatible target signatures (`() -> None` vs. `(Event) -> None`); it
   now `@overload`s two constructor shapes so a wrong-arity target is a type
   error at the call site, with no change to any of the 21 consumer call
-  sites. New `tests/test_pollthread.py` cases pin the abandon-then-refuse
+  sites. New `tests/test_pollthread.py` cases pin the abandon-then-queue
   sequence and the exception-to-logging path.

@@ -93,8 +93,49 @@ class ExternalClockTest(unittest.TestCase):
         c.clock_pulse(dt)  # anchor
         c.clock_pulse(2 * dt)  # phase now 1/24
         base = c.beat_phase_at(2 * dt)
-        # Reading far past the last pulse must not run away — capped at +1/24.
-        self.assertLessEqual(c.beat_phase_at(2 * dt + 10.0) - base, 1.0 / TempoClock.PPQN + 1e-9)
+        # A late pulse must not let the phase run away — capped at +1/24 until
+        # the clock counts as lost.
+        self.assertLessEqual(c.beat_phase_at(2 * dt + 0.9) - base, 1.0 / TempoClock.PPQN + 1e-9)
+
+    def _clock_then_silence(self, bpm: float) -> tuple[TempoClock, float, float]:
+        """Run a clock at `bpm` for a bar, then let it go quiet. Returns the
+        clock, the last pulse's time and the phase at it."""
+        c = TempoClock(bpm=90.0, source="midi", now=0.0)
+        dt = _pulse_dt(bpm)
+        c.start(0.0)
+        last = 0.0
+        for k in range(4 * TempoClock.PPQN + 1):
+            last = (k + 1) * dt
+            c.clock_pulse(last)
+        return c, last, c.beat_phase_at(last)
+
+    def test_a_quiet_clock_falls_back_to_the_last_measured_tempo(self):
+        c, last, phase = self._clock_then_silence(120.0)
+        held = phase + 1.0 / TempoClock.PPQN
+        self.assertAlmostEqual(c.beat_phase_at(last + 1.0), held, places=9)
+        # Two beats at 120 BPM is one second of silence; from there the grid
+        # advances at 2 beats/s from where it was held.
+        self.assertTrue(c.running)
+        self.assertAlmostEqual(c.beat_phase_at(last + 1.5), held + 1.0, places=9)
+        self.assertAlmostEqual(c.beat_phase_at(last + 3.0), held + 4.0, places=9)
+
+    def test_returning_pulses_resync_from_the_free_running_phase(self):
+        c, last, _ = self._clock_then_silence(120.0)
+        back = last + 3.0
+        free_running = c.beat_phase_at(back)
+        dt = _pulse_dt(120.0)
+        c.clock_pulse(back)
+        self.assertAlmostEqual(c.beat_phase_at(back), free_running, places=9)
+        c.clock_pulse(back + dt)
+        self.assertAlmostEqual(c.beat_phase_at(back + dt), free_running + 1 / 24, places=9)
+        self.assertAlmostEqual(c.bpm, 120.0, places=4)
+
+    def test_a_stop_still_holds_a_quiet_grid(self):
+        c, last, _ = self._clock_then_silence(120.0)
+        c.stop(last + 0.1)
+        held = c.beat_phase_at(last + 0.1)
+        self.assertFalse(c.running)
+        self.assertEqual(c.beat_phase_at(last + 10.0), held)
 
     def test_free_running_clock_starts_without_a_start_byte(self):
         c = TempoClock(bpm=120.0, source="midi", now=0.0)
@@ -285,6 +326,20 @@ class SourceAfterTapTest(unittest.TestCase):
         for k in range(1, 4):
             c.clock_pulse(2.0 + k * dt)
         self.assertEqual(c.source, "midi")
+
+    def test_a_returning_clock_takes_a_tapped_grid_back_without_rewinding(self):
+        c = TempoClock(bpm=120.0, source="midi", now=0.0)
+        dt = _pulse_dt(120.0)
+        for k in range(1, 25):
+            c.clock_pulse(k * dt)
+        c.tap(2.0)
+        c.tap(2.5)
+        back = 10.0
+        tapped = c.beat_phase_at(back)
+        c.clock_pulse(back)
+        self.assertAlmostEqual(c.beat_phase_at(back), tapped, places=9)
+        c.clock_pulse(back + dt)
+        self.assertAlmostEqual(c.beat_phase_at(back + dt), tapped + 1 / 24, places=9)
 
     def test_midi_bytes_leave_the_audio_source_alone(self):
         c = TempoClock(bpm=120.0, source="audio", now=0.0)

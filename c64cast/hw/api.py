@@ -2109,11 +2109,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         # an Ultimate 64 and one that doesn't is an Ultimate II+ with none.
         has_system_mode = SYSTEM_MODE_CATEGORY in categories
         if has_system_mode != self.profile.supports_system_mode:
-            self.profile = replace(
-                self.profile,
-                supports_system_mode=has_system_mode,
-                supports_video_stream=has_system_mode,
-            )
+            self.profile = replace(self.profile, supports_system_mode=has_system_mode)
+        if has_system_mode != self.profile.supports_video_stream:
+            self.profile = replace(self.profile, supports_video_stream=has_system_mode)
         if has_system_mode != self.profile.supports_debug_register:
             self.profile = replace(self.profile, supports_debug_register=has_system_mode)
         halt = ULTIMATE_64_HALT_CYCLES_PER_BYTE if has_system_mode else 0.0

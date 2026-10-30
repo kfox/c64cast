@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import http.server
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -808,6 +809,70 @@ class _RemotePeerTest(unittest.TestCase):
         return not worker.is_alive()
 
 
+class _DripPeerTest(unittest.TestCase):
+    """A raw TCP peer that sends a fixed prefix, then one byte per tick, and
+    never reads the request: every socket read succeeds inside any per-read
+    timeout, before `http.client` has a complete header block."""
+
+    def drip_peer(self, prefix: bytes) -> int:
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        self.peer_stop = threading.Event()
+
+        def serve() -> None:
+            conn, _ = listener.accept()
+            with conn, contextlib.suppress(OSError):
+                conn.sendall(prefix)
+                while not self.peer_stop.wait(0.05):
+                    conn.sendall(b"x")
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(self.peer_stop.set)
+        return listener.getsockname()[1]
+
+    def assert_gives_up(self, url: str) -> None:
+        from c64cast.scenes.overlays import _fetch
+
+        raised: list[BaseException] = []
+
+        def fetch() -> None:
+            try:
+                _fetch.get_body(url, timeout=5.0)
+            except BaseException as e:  # noqa: BLE001 - the assertion is on the raise
+                raised.append(e)
+
+        worker = threading.Thread(target=fetch, daemon=True)
+        with patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5):
+            worker.start()
+            self.addCleanup(worker.join)
+            self.addCleanup(self.peer_stop.set)
+            worker.join(5.0)
+        self.assertFalse(worker.is_alive(), "the fetch outlived its deadline")
+        self.assertEqual([type(e) for e in raised], [_fetch.BodyLimitExceeded])
+
+    def test_a_peer_that_drips_its_headers_gives_up_at_the_deadline(self):
+        port = self.drip_peer(b"HTTP/1.1 200 OK\r\nX-Drip: ")
+        self.assert_gives_up(f"http://127.0.0.1:{port}/feed")
+
+    def test_a_proxy_that_drips_its_headers_gives_up_at_the_deadline(self):
+        proxy = f"http://127.0.0.1:{self.drip_peer(b'HTTP/1.1 200 OK\r\nX-Drip: ')}"
+        with patch.dict(os.environ, {"http_proxy": proxy, "HTTP_PROXY": proxy}):
+            for name in ("no_proxy", "NO_PROXY"):
+                os.environ.pop(name, None)
+            self.assert_gives_up("http://feed.invalid/feed")
+
+    def test_a_peer_that_drips_its_status_line_gives_up_at_the_deadline(self):
+        port = self.drip_peer(b"HTTP/1.1 200 ")
+        self.assert_gives_up(f"http://127.0.0.1:{port}/feed")
+
+    def test_a_peer_that_drips_its_tls_handshake_gives_up_at_the_deadline(self):
+        # A handshake record announcing 16 KiB, then its payload a byte at a time.
+        port = self.drip_peer(b"\x16\x03\x03\x40\x00")
+        self.assert_gives_up(f"https://127.0.0.1:{port}/feed")
+
+
 class RssFetchTest(_RemotePeerTest):
     def test_utf8_feed_without_a_charset_header_keeps_its_characters(self):
         from c64cast.scenes.overlays.rss import RssOverlay
@@ -887,7 +952,7 @@ class RssFetchTest(_RemotePeerTest):
 
         ov = RssOverlay(url=self.route("/feed", self.drip))
         with (
-            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5),
             self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
         ):
             self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
@@ -939,7 +1004,7 @@ class FetchTransportErrorTest(_RemotePeerTest):
         ov = RssOverlay(url=self.route("/feed", answer))
         self.route("/elsewhere", self.drip)
         with (
-            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5),
             self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
         ):
             self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
@@ -963,6 +1028,26 @@ class FetchTransportErrorTest(_RemotePeerTest):
         ov = RssOverlay(url=self.route("/old", moved) + "?x=1")
         ov._fetch_once()
         self.assertEqual(ov._titles, ["MOVED"])
+
+    def test_a_feed_behind_a_redirect_is_read_through_a_proxy(self):
+        from c64cast.scenes.overlays import _fetch
+
+        def as_proxy(handler):
+            if handler.path == "http://feed.invalid/old":
+                handler.send_response(301)
+                handler.send_header("Location", "/new")
+                handler.send_header("Content-Length", "0")
+                handler.end_headers()
+            else:
+                _send_head(handler, "application/rss+xml", len(handler.path))
+                handler.wfile.write(handler.path.encode())
+
+        self.route("/", as_proxy)
+        with patch.dict(os.environ, {"http_proxy": self.base, "HTTP_PROXY": self.base}):
+            for name in ("no_proxy", "NO_PROXY"):
+                os.environ.pop(name, None)
+            body = _fetch.get_body("http://feed.invalid/old", timeout=5.0)
+        self.assertEqual(body, b"http://feed.invalid/new")
 
     def test_a_redirect_loop_is_a_fetch_failure(self):
         from c64cast.scenes.overlays.rss import RssOverlay
@@ -1038,7 +1123,7 @@ class WeatherFetchTest(_RemotePeerTest):
                 with (
                     patch.object(weather, "OPEN_METEO_URL", url),
                     patch.object(weather, "WTTR_URL", url),
-                    patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+                    patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5),
                     self.assertLogs("c64cast.scenes.overlays.weather", level="WARNING"),
                 ):
                     self.assertTrue(self.finishes_within(ov._poll_once, 5.0))
@@ -1333,6 +1418,38 @@ class OBSStatusTest(unittest.TestCase):
         worker.join(5.0)
         self.assertFalse(worker.is_alive())
         self.assertTrue(client.disconnected)
+
+    def test_a_reactivated_overlay_polls_again_once_a_slow_peer_answers(self):
+        ov = _obs_overlay()
+        ov._connect = _FakeOBSClient
+        ov.poll_interval = 0.01
+        polling = threading.Event()
+        peer_answers = threading.Event()
+        self.addCleanup(peer_answers.set)
+        polls = 0
+
+        def slow_then_offline(client):
+            nonlocal polls
+            polls += 1
+            if polls == 1:
+                polling.set()
+                peer_answers.wait(10.0)
+                return ["LIVE", "DROP    0"]
+            raise OSError("OBS went away")
+
+        ov._poll_once = slow_then_offline
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        self.addCleanup(ov._poll.stop)
+        self.assertTrue(polling.wait(5.0))
+        with self.assertLogs("c64cast._pollthread", level="WARNING"):
+            ov.teardown(api=MagicMock(), scene=MagicMock())
+        ov.setup(api=MagicMock(), scene=MagicMock())
+        with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
+            peer_answers.set()
+            deadline = time.monotonic() + 5.0
+            while ov.compute_strings(t=0.0) != ["OBS OFFLINE"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(ov.compute_strings(t=0.0), ["OBS OFFLINE"])
 
     def test_teardown_disconnects_client(self):
         ov = _obs_overlay()

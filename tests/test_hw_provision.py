@@ -726,8 +726,8 @@ class ResolvePaletteTest(unittest.TestCase):
         # or it leaks into whatever test runs next.
         before = pal.C64_PALETTE_BGR.copy(), pal.active_host_palette_name()
         self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
-        hw_provision._palette_resolved = False
-        self.addCleanup(setattr, hw_provision, "_palette_resolved", False)
+        hw_provision.forget_resolved_palette()
+        self.addCleanup(hw_provision.forget_resolved_palette)
         self.pal = pal
 
     def test_auto_takes_the_ultimates_own_table(self):
@@ -809,8 +809,8 @@ class ResolveLivePaletteTest(unittest.TestCase):
 
         before = pal.C64_PALETTE_BGR.copy(), pal.active_host_palette_name()
         self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
-        hw_provision._palette_resolved = False
-        self.addCleanup(setattr, hw_provision, "_palette_resolved", False)
+        hw_provision.forget_resolved_palette()
+        self.addCleanup(hw_provision.forget_resolved_palette)
         self.pal = pal
 
     def test_a_live_read_wins_over_the_built_in_table(self):

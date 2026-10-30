@@ -166,6 +166,30 @@ class LifecycleTest(unittest.TestCase):
         poll.stop()
         self.assertEqual(len(idents), 1)
 
+    def test_start_over_a_live_worker_does_not_restart_it_when_it_returns(self):
+        release = threading.Event()
+        started = threading.Semaphore(0)
+        calls = 0
+
+        def worker(stop: threading.Event) -> None:
+            nonlocal calls
+            calls += 1
+            started.release()
+            release.wait()
+
+        poll = PollThread(worker, name="w", manual=True)
+        self.addCleanup(poll.stop)
+        self.addCleanup(release.set)
+        poll.start()
+        self.assertTrue(started.acquire(timeout=2.0))
+        poll.start()
+        release.set()
+        deadline = time.monotonic() + 2.0
+        while poll.is_running() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(poll.is_running())
+        self.assertEqual(calls, 1, "a worker that ended on its own was restarted")
+
     def test_restart_after_stop_runs_the_worker_again(self):
         poll, run_started = self._blocking_poll()
         poll.start()
@@ -206,11 +230,10 @@ class LifecycleTest(unittest.TestCase):
             poll.is_running(), "the worker really is still running; is_running() must say so"
         )
 
-    def test_start_after_a_timed_out_stop_refuses_a_duplicate(self):
-        # A stop() that gave up on a hung worker used to clear self._thread,
-        # so a later start() saw is_running() == False, called
-        # self._stop.clear() — un-stopping the still-running abandoned worker,
-        # which reads the same Event — and spawned a second thread on top.
+    def test_start_after_a_timed_out_stop_waits_for_the_old_worker(self):
+        # A start() over an abandoned worker must neither clear the stop event
+        # that worker still reads nor run a second worker beside it, and must
+        # still leave the poll running once the abandoned worker exits.
         hang = threading.Event()
         started = threading.Event()
         calls = 0
@@ -222,8 +245,10 @@ class LifecycleTest(unittest.TestCase):
                 calls += 1
             started.set()
             hang.wait()
+            stop.wait()
 
         poll = PollThread(stuck_worker, name="w", manual=True, join_timeout=0.05)
+        self.addCleanup(poll.stop)
         self.addCleanup(hang.set)
         poll.start()
         self.assertTrue(started.wait(2.0))
@@ -233,24 +258,45 @@ class LifecycleTest(unittest.TestCase):
             poll.stop()
         self.assertTrue(poll.is_running())
 
-        poll.start()  # must be a no-op: the old worker is still alive
+        poll.start()
+        self.assertTrue(poll.stop_event.is_set(), "the abandoned worker must stay stopped")
         self.assertFalse(
             started.wait(0.2), "start() must not spawn a second worker over a live one"
         )
         with calls_lock:
             self.assertEqual(calls, 1, "the abandoned worker must not have been resurrected either")
 
-        hang.set()  # let the abandoned worker finish
+        hang.set()
+        self.assertTrue(started.wait(2.0), "the queued start never ran once the old worker exited")
+        with calls_lock:
+            self.assertEqual(calls, 2)
+        self.assertFalse(poll.stop_event.is_set())
+        self.assertTrue(poll.is_running())
+
+    def test_stop_cancels_a_start_queued_behind_an_abandoned_worker(self):
+        hang = threading.Event()
+        started = threading.Event()
+
+        def stuck_worker(stop: threading.Event) -> None:
+            started.set()
+            hang.wait()
+
+        poll = PollThread(stuck_worker, name="w", manual=True, join_timeout=0.05)
+        self.addCleanup(hang.set)
+        poll.start()
+        self.assertTrue(started.wait(2.0))
+        started.clear()
+        with self.assertLogs("c64cast._pollthread", level="WARNING"):
+            poll.stop()
+            poll.start()
+            poll.stop()
+
+        hang.set()
         deadline = time.monotonic() + 2.0
         while poll.is_running() and time.monotonic() < deadline:
             time.sleep(0.005)
         self.assertFalse(poll.is_running(), "is_running() must self-correct once the worker exits")
-
-        poll.start()  # now it is safe, and must actually run
-        self.assertTrue(started.wait(2.0))
-        with calls_lock:
-            self.assertEqual(calls, 2)
-        poll.stop()
+        self.assertFalse(started.is_set(), "a stop() must cancel the queued start")
 
     def test_a_raised_target_is_logged_not_lost_to_threading_excepthook(self):
         calls = 0

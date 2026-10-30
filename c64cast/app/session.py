@@ -1431,6 +1431,7 @@ def build_session(
     else:
         profiler = NullProfiler()
     set_profiler(profiler)
+    hw_provision.forget_resolved_palette()
 
     # First, so each stack's Playlist receives the shared stop_event at
     # construction time.

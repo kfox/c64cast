@@ -290,6 +290,32 @@ class BuildSessionTest(unittest.TestCase):
         for call in bs.call_args_list:
             self.assertIs(call.kwargs["stop_event"], sess.stop_event)
 
+    def test_each_session_resolves_its_own_host_palette(self):
+        from c64cast.hw import hw_provision
+        from c64cast.video import palette as pal
+
+        before = pal.C64_PALETTE_BGR.copy(), pal.active_host_palette_name()
+        self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
+        self.addCleanup(hw_provision.forget_resolved_palette)
+
+        def open_resolving_palette(_ladder, _interrupts, cfg, _name):
+            hw_provision.resolve_palette(cfg, None)
+            return mock.MagicMock()
+
+        with self.assertLogs("c64cast.hw.hw_provision", level="INFO") as logs:
+            for host_palette in ("u64", "pepto"):
+                loaded = _loaded(["a"])
+                loaded.cfgs[0].hardware.host_palette = host_palette
+                with (
+                    mock.patch.object(session, "_open_stack", side_effect=open_resolving_palette),
+                    mock.patch.object(
+                        session, "_provision_stack", return_value=fake_system_stack("a")
+                    ),
+                ):
+                    session.build_session(_args(), loaded, loaded.cfgs)
+        self.assertEqual(pal.active_host_palette_name(), "pepto")
+        self.assertEqual([r for r in logs.records if r.levelname == "WARNING"], [])
+
     def test_a_failed_build_tears_down_what_came_up_in_reverse(self):
         # A partial failure must not leave hardware held: the machine is
         # unreachable until whatever opened it closes it again.
