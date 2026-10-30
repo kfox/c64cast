@@ -614,7 +614,7 @@ class VideoCfg:
     # a usable REU — the TeensyROM, whose slow cycle-clean bus DMA tears a
     # single-buffered mhires frame. The host writes each frame's bitmap+screen into the
     # OFF-screen VIC bank, then a tiny raster IRQ flips $DD00 at vblank. mhires color
-    # RAM, the un-banked $D800, still tears briefly. Unlike REU staging the IRQ does no
+    # RAM, the un-banked $D800, still tears. Unlike REU staging the IRQ does no
     # in-IRQ DMA.
     #
     # Tri-state — true | false | "auto" (default):

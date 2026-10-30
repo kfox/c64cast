@@ -274,7 +274,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._blending = False
         self.use_reu_staged = use_reu_staged
         # The host-DMA page flip: color RAM ($D800) is shared and un-banked, so
-        # its c3 slot still tears briefly. Mutually exclusive with use_reu_staged
+        # its c3 slot still tears. Mutually exclusive with use_reu_staged
         # (resolve_double_buffer ensures it).
         self.double_buffer = double_buffer
         self.audio_reu_pump_active = audio_reu_pump_active
@@ -434,7 +434,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             log.info(
                 "mhires: host-DMA double-buffer armed (bank 0 ↔ bank 2, "
                 "IRQ @ $%04X, tracker @ $%04X; bitmap+screen tear-free, "
-                "color RAM (c3) tears briefly)",
+                "color RAM (c3) still tears)",
                 BANK_SWAP_IRQ_HANDLER_ADDR,
                 FRAME_TRACKER_ADDR,
             )
@@ -561,7 +561,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if self._blend_table is not None:
             # Both pages plus the shared bitmap into the off-screen bank, then
             # color RAM into the shared $D800 (one copy serves both banks and
-            # both fields, hence the brief c3 tear), then arm. The alternation
+            # both fields, hence the c3 tear), then arm. The alternation
             # free-runs, so the next phase-0 vblank brings the pair set up whole.
             self._await_page_flip(api)
             (

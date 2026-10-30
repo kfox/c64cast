@@ -329,14 +329,9 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     # bank 0 is displayed, and vice versa).
                                     # A C64-side raster IRQ at line 251 flips
                                     # $DD00 at vblank for a tear-free swap.
-                                    # MHires additionally DMAs shared $D800
-                                    # color RAM and writes $D021 (bg0) before
-                                    # the swap — a brief c3-mismatch window
-                                    # is unavoidable (the color DMA runs in
-                                    # parallel with the OLD bank still being
-                                    # displayed), but it's bounded to one
-                                    # VIC cell row at the bank-swap tear
-                                    # line and typically imperceptible.
+                                    # MHires additionally copies the shared
+                                    # $D800 color RAM right after the flip,
+                                    # so c3 changes with its frame.
                                     #
                                     # Caveats:
                                     #   * REU controller is shared with the
