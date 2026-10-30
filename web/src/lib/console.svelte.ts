@@ -1,3 +1,4 @@
+import { mergeLog } from "./logLogic";
 import type { LogLine, PerfSystem, Role, SessionStatus, StateFrame, ValidationReport } from "./types";
 
 /** How many log lines the browser keeps — the daemon's own buffer ceiling, so
@@ -45,6 +46,7 @@ export class Console {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #backoff = RECONNECT_MIN_MS;
   #closed = false;
+  #firstOnSocket = false;
 
   get readOnly(): boolean {
     return this.role === "viewer";
@@ -99,6 +101,7 @@ export class Console {
       return;
     }
     this.#socket = socket;
+    this.#firstOnSocket = true;
 
     socket.onopen = () => {
       this.connected = true;
@@ -135,11 +138,10 @@ export class Console {
     this.ready = true;
     if (frame.role !== undefined) this.role = frame.role;
     if (frame.session) this.session = frame.session;
-    if (frame.log && frame.log.length) {
-      // Appended, not replaced: the daemon sends only what this connection
-      // has not seen.
-      const merged = this.log.concat(frame.log);
-      this.log = merged.length > LOG_LIMIT ? merged.slice(merged.length - LOG_LIMIT) : merged;
+    const firstOnSocket = this.#firstOnSocket;
+    this.#firstOnSocket = false;
+    if (frame.log && (firstOnSocket || frame.log.length)) {
+      this.log = mergeLog(this.log, frame.log, firstOnSocket, LOG_LIMIT);
     }
   }
 }
