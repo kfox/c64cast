@@ -97,6 +97,15 @@ class Gesture(enum.Enum):
     OPEN_HAND = "open_hand"
 
 
+class _Unread(enum.Enum):
+    """A tick with no reading: no fresh frame, or the recognizer failed."""
+
+    NO_READING = enum.auto()
+
+
+NO_READING = _Unread.NO_READING
+
+
 @dataclass
 class HandState:
     """One detected hand at one instant.
@@ -113,9 +122,9 @@ class HandState:
 
 
 class GestureRecognizer(Protocol):
-    """Frame → primary HandState. Returns None when no hand is detected (or the
-    frame is unusable), so the controller can skip the tick — the visual
-    analog of `CommodoreKeyPoller._read_modifiers` returning None."""
+    """Frame → primary HandState, or None when the frame has no hand in it. A
+    frame it cannot read should raise instead: the controller skips that tick,
+    where a None ends any pose being held."""
 
     def process(self, frame: np.ndarray, timestamp_ms: int) -> HandState | None: ...
 
@@ -402,24 +411,24 @@ class VisionController:
         with self._state_lock:
             return self._latest_hand
 
-    def _read_hand(self, timestamp_ms: int) -> HandState | None:
+    def _read_hand(self, timestamp_ms: int) -> HandState | None | _Unread:
         """Grab the latest live frame, mirror it, and run the recognizer.
 
-        Returns None on no-frame / stale-frame / no-hand / recognizer error —
-        the caller treats that as 'couldn't tell' and skips the tick (no state
-        change), the visual analog of a failed $028D read. A stale frame is a
-        camera that went away holding its last picture, and a hand frozen in
-        it mid-pinch must not resume the show."""
+        Returns None for a frame with no hand in it, and NO_READING when there
+        is no fresh frame or the recognizer failed — 'couldn't tell', the
+        visual analog of a failed $028D read. A stale frame is a camera that
+        went away holding its last picture, and a hand frozen in it mid-pinch
+        must not resume the show."""
         frame = self.source.read_live()
         if frame is None:
-            return None
+            return NO_READING
         if self.mirror:
             frame = cv2.flip(frame, 1)
         try:
             hand = self.recognizer.process(frame, timestamp_ms)
         except Exception:  # noqa: BLE001 — a bad frame shouldn't kill the thread
             self.log.debug("recognizer.process() failed", exc_info=True)
-            return None
+            return NO_READING
         with self._state_lock:
             self._latest_hand = hand
         return hand
@@ -447,6 +456,9 @@ class VisionController:
         dt = now - st.last_tick
         st.last_tick = now
         hand = self._read_hand(int((now - st.t0) * 1000))
+        if hand is NO_READING:
+            self._skip_unread_tick(st, dt)
+            return
         st.hand_frames = st.hand_frames + 1 if hand is not None else 0
         static = (
             classify_static(hand, pinch_threshold=self.pinch_threshold)
@@ -458,6 +470,17 @@ class VisionController:
             self._tick_paused(st, static, motion.cur, now)
         else:
             self._tick_running(st, static, motion, now)
+
+    @staticmethod
+    def _skip_unread_tick(st: _GestureState, dt: float) -> None:
+        """Carry every hold and fired pose over a tick that saw nothing. The
+        unseen time does not count toward a pinch hold. The hand settles again
+        before it can swipe: it may have entered the frame unseen, and the
+        next reading's travel since the last one, measured over one tick's dt,
+        would read as a swipe."""
+        if st.held_since is not None:
+            st.held_since += dt
+        st.hand_frames = 0
 
     @staticmethod
     def _wrist_motion(
