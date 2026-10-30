@@ -173,6 +173,21 @@ class ConnectAndIdentifyTest(unittest.TestCase):
         self.assertEqual(bytes(fake.sent), b"")
         self.assertTrue(fake.closed)
 
+    def test_unanswered_identify_names_another_connected_client(self):
+        # Measured on a U64 at 3.15a: while one c64cast streams, a second
+        # client's IDENTIFY goes unanswered, with both switches on.
+        class Unanswered(FakeSocket):
+            def recv(self, n: int, flags: int = 0) -> bytes:
+                raise TimeoutError("timed out")
+
+        fake = Unanswered()
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake):
+            c = SocketDMAClient("test-host", port=64)
+            with self.assertRaises(SocketDMAError) as ctx:
+                c.connect()
+        self.assertIn("another program", str(ctx.exception))
+        self.assertTrue(fake.closed)
+
     def test_empty_password_treated_as_none(self):
         # password="" should NOT trigger AUTHENTICATE — same as None.
         fake = FakeSocket([_IDENT_REPLY])

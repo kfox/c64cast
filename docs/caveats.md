@@ -265,12 +265,8 @@ Known limitations:
 * **No code/data under KERNAL ROM (`$E000-$FFFF`).** The player keeps
   KERNAL mapped to chain its `$EA31` IRQ tail, so it can't bank KERNAL
   out to expose RAM there — such tunes are refused. (Tunes under *BASIC*
-  ROM at `$A000-$BFFF` **are** supported; see "Per-tune memory banking"
+  ROM at `$A000-$BFFF` **are** supported; see "Per-call memory banking"
   above.)
-* **PAL/NTSC speed flag is ignored.** The kernal's default CIA #1 Timer
-  A latch is left alone, so PAL tunes on an NTSC kernal play ≈20% fast
-  (and vice versa). A future enhancement could reprogram the timer
-  based on the SID's `speed_flags`.
 
 `WaveformScene`'s oscilloscope can't read SID register state back from
 the U64 — the FPGA SID is faithful to real hardware, so `$D400-$D418`
@@ -281,9 +277,9 @@ in parallel on a host-side [py65](https://github.com/mnaberez/py65)
 6502 emulator, trapping writes to `$D400-$D418` into a 25-byte shadow
 that the render thread consumes. Audio still comes from the real SID
 on the U64; the host emulator's audio (if any — most SID PLAYs only
-write `$D4xx`) is discarded. The two run at the system video rate (60
-NTSC / 50 PAL) with no drift correction — one tick of skew is
-invisible in an oscilloscope view. The PSID validation above is
+write `$D4xx`) is discarded. The host emulator ticks PLAY at the
+tune's PLAY rate and derives its tick count from wall-clock time since
+audio started, so the two do not drift. The PSID validation above is
 shared, so if `run_sid_player` refuses a tune, `SidHostEmu` refuses
 the same tune with the same error.
 
@@ -537,7 +533,7 @@ The vector-swap launch requires the IRQ-enabled idle, so it's gated on
 cycle-clean DMA shipped together). On older firmware the spin-stub idle
 masks IRQs, so the swap would never fire — `run_sid_player` raises
 `BackendCapabilityError` rather than play silently. (The TR also has no
-REUWRITE opcode, so [cli.py](../c64cast/app/cli.py) coerces any `use_reu_pump`
+REUWRITE opcode, so [session.py](../c64cast/app/session.py) coerces any `use_reu_pump`
 / explicit `use_reu_staged = true` opt-in off on a no-REU backend, routing
 audio through the host-DMA NMI DAC and video through host-DMA; `--doctor`
 reports the same.)
@@ -712,7 +708,10 @@ Two transports are in play:
   Configuration → Command Interface → Enabled. The second gates command
   dispatch even when the listening socket is open, so with it off the
   connection succeeds and the first IDENTIFY never comes back; the CLI
-  names both toggles in the error either way.
+  names both toggles in the error either way. The same unanswered IDENTIFY
+  is what a second client sees while another one holds the service (a
+  second c64cast, or a `--serve` daemon running a show), so the error names
+  that cause first.
 * **REST** carries the operations that have no DMA equivalent:
   * `GET /v1/machine:readmem` — keyboard poller, waveform scene,
     U64-ping overlay
@@ -746,9 +745,15 @@ command and reopens the connection first, so the write is not lost
 (c64cast#520; details in
 [hardware-io.md](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient)).
 Sharing the API instance is safe because `SocketDMAClient` serializes
-every command on the wire via an internal lock, and the combined write
-rate (audio ≈8/sec + render ≈30-60/sec) sits well under the ≈200/sec
-DMA ceiling.
+every command on the wire via an internal lock. The combined rate reaches
+the ≈200/sec DMA ceiling on a heavy scene, though. A 30 fps
+video in host-DMA `mhires` with `flicker_tolerance = "clean"` on an
+Ultimate 64 at 3.15a sent 170–262 commands a second: 83–137 render
+writes, 40–110 page-flip commit polls (`read_debug_register`) and 38
+sampler REU writes; with `[audio].backend = "dac"` the audio drip's 82–88
+writes replaced the sampler's and the total ran 185–225. The playlist
+heartbeat's `writes=` counts render and DAC writes only, not the REU
+writes or the polls.
 
 ## Writes go over Socket DMA, not REST
 
@@ -966,8 +971,8 @@ system video rate (**30 NTSC / 25 PAL**) instead of the full rate. An
 oscilloscope reads fine at half-rate, a half-integer divisor keeps the
 render an exact submultiple of the video standard (so the wallclock
 phase-lock stays clean), and it halves DMA to ≈90 writes/s with comfortable
-headroom. The host-emulator poll rate (`_video_hz`) is independent and stays
-at the full video rate so the scope still tracks every PLAY tick. An
+headroom. The host-emulator poll rate (`_reg_poll_hz`) is independent and follows
+the tune's PLAY rate so the scope still tracks every PLAY tick. An
 explicit `target_fps` in the CLI/TOML still overrides the default — but
 raising a bank-2 tune back toward 60 fps risks the power-off above.
 
@@ -1198,18 +1203,14 @@ design, not bugs:
   anchor). Use it if the resync splices ever misbehave on unusual
   hardware/firmware.
 
-## Video-scene border is always restored to black (`$00`), not a configured value
+## The record-armed border is a poke over the display mode's own
 
-The Phase 3 record-armed red border (`VideoScene._set_record_border`) always
-restores to `0` rather than "whatever the border was before recording
-started." This is safe because every display mode `VideoScene` can use
-(hires, multi-hires, MCM) engages with a hardcoded `$00` border and never
-rewrites `$D020` again on its own (see `modes.engage_bitmap_mode`'s
-docstring) — and `[[scenes]].border` (the config knob that lets a *blank*
-scene pick a border color) is explicitly scoped `applies_to: ("blank",)`
-and has no effect on a video scene. If a future display mode gives
-`VideoScene` a configurable non-black border, `_set_record_border` will need
-to capture and restore that value instead of assuming `0`.
+The Phase 3 record-armed red border (`VideoTransportControls.set_record_border`
+in [video_transport.py](../c64cast/scenes/video_transport.py)) writes `$00`
+when the loop leaves the armed state, then drops the mode's `$D020` cache
+entry, so a mode whose border is not black puts its own back on its next push.
+A mode that pushes `$D020` (hires, mcm, petscii, blank) replaces the red while
+the loop is still armed whenever that push sends.
 
 ## `backgrounds.py` constants are screen codes, not PETSCII
 
@@ -1308,16 +1309,6 @@ deliberate trade the config lets you make (e.g. a slow-motion or mostly-static
 video clip may look fine), not a bug — see the `[color].dither` note under
 `modes/` in docs/architecture.md for the mechanism.
 
-## `Scene.video_buffer.maxlen` is "Optional[int]" to Pylance
-
-`collections.deque(maxlen=8)` has type `deque[T]`, but `deque.maxlen`
-can be None at the type level (for the unbounded form). The webcam
-scene reads `len(self.video_buffer) >= self.video_buffer.maxlen` which
-Pylance flags as comparing an int to Optional[int]. The runtime is
-fine; the live scenes silence the warning with
-`# type: ignore[operator]`. Don't "fix" it by adding an `if maxlen is
-not None` guard — it's a Pylance limitation, not a real issue.
-
 ## BASIC clear-and-loop is how the cursor stays hidden
 
 `api.run_basic_clear_loop()` runs `10 PRINT CHR$(147) : 20 GOTO 20`
@@ -1364,11 +1355,10 @@ camera that re-enumerates may shift indices between reboots.
 Installed without extras, the package imports fine but most features
 are disabled. Failure modes:
 
-* `[audio] enabled = true` without `[mic]` extra → `AudioStreamer`
-  raises `ImportError` at scene setup.
-* `type = "video"` without `[video]` extra → loader logs
-  "Found N video files but PyAV is not installed; skipping videos"
-  and the playlist runs without videos.
+* `[audio] enabled = true` without `[mic]` extra → the run
+  refuses to start, with an error naming the `mic` extra.
+* `type = "video"` without `[video]` extra → the scene logs
+  "PyAV unavailable; video scene cannot play <file>" and ends.
 * `[control]` enabled without `[control]` extra → control plane
   silently disabled with a warning.
 * `type = "midi"` without `[midi]` extra → scene setup raises
