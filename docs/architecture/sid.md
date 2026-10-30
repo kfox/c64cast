@@ -174,8 +174,8 @@ two gates decide whether to overwrite it:
    song's answer.
 2. **The sampled post-INIT latch must not already be far below the kernal
    default.** A 2×/3×/4× multispeed sits at 1/2, 1/3, 1/4 of it — well clear of
-   the noise in an 8-sample max of a free-running down-counter. This catches
-   tunes whose speed bit lies.
+   the noise in a `_DIVIDER_LATCH_SAMPLES`-read (16) max of a free-running
+   down-counter. This catches tunes whose speed bit lies.
 
 The latch is computed from the **machine's** clock for the **tune's** rate
 (`cia1_latch_for_rate(frame_rate(tune_clock), machine_system)`), so tempo comes
