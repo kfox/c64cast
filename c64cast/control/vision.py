@@ -403,12 +403,14 @@ class VisionController:
             return self._latest_hand
 
     def _read_hand(self, timestamp_ms: int) -> HandState | None:
-        """Grab the latest frame, mirror it, and run the recognizer.
+        """Grab the latest live frame, mirror it, and run the recognizer.
 
-        Returns None on no-frame / no-hand / recognizer error — the caller
-        treats that as 'couldn't tell' and skips the tick (no state change),
-        the visual analog of a failed $028D read."""
-        frame = self.source.read()
+        Returns None on no-frame / stale-frame / no-hand / recognizer error —
+        the caller treats that as 'couldn't tell' and skips the tick (no state
+        change), the visual analog of a failed $028D read. A stale frame is a
+        camera that went away holding its last picture, and a hand frozen in
+        it mid-pinch must not resume the show."""
+        frame = self.source.read_live()
         if frame is None:
             return None
         if self.mirror:

@@ -1017,6 +1017,22 @@ def prescan_color_fit(path: str, *, strength: float = 1.0) -> ColorFit | None:
     return fit
 
 
+#: How long a camera may go without a frame before it counts as gone and the
+#: grab loop starts trying to reopen it. Many frame periods even at a low rate.
+FRAME_STALE_S = 0.5
+
+#: How long `WebcamSource.read` keeps serving a gone camera's last frame before
+#: it serves black, so a cable knocked out and pushed back costs no blank.
+CAMERA_LOSS_GRACE_S = 3.0
+
+REOPEN_FIRST_WAIT_S = 0.5
+REOPEN_MAX_WAIT_S = 5.0
+
+
+def _open_capture(index: int, backend: int | None) -> cv2.VideoCapture:
+    return cv2.VideoCapture(index, backend) if backend is not None else cv2.VideoCapture(index)
+
+
 class WebcamSource:
     """Always-on shared camera broker.
 
@@ -1046,40 +1062,102 @@ class WebcamSource:
         # single-arg CAP_ANY open.
         from c64cast.control import camera
 
+        self._device = device
         index, backend = camera.resolve_camera_index(device)
-        self.cap: cv2.VideoCapture | None = (
-            cv2.VideoCapture(index, backend) if backend is not None else cv2.VideoCapture(index)
-        )
+        self.cap: cv2.VideoCapture | None = _open_capture(index, backend)
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open video device {device!r} (cv2 index {index})")
+        # What a reopen looks for. None leaves a lost camera unreopened rather
+        # than reopening its index, which another camera may hold by then.
+        self._identity = camera.camera_identity(index)
         self._lock = threading.Lock()
         self._latest: np.ndarray | None = None
+        self._latest_at = time.monotonic()
+        self._lost = False
+        self._reopen_at = 0.0
+        self._reopen_wait_s = REOPEN_FIRST_WAIT_S
         # manual=True: the grab loop blocks in cap.read() at the device frame
         # rate, so it paces itself.
         self._poll = PollThread(self._grab_loop, name="webcam-grab", manual=True, join_timeout=1.0)
         self._poll.start()
 
     def _grab_loop(self, stop: threading.Event) -> None:
-        while not stop.is_set():
-            cap = self.cap
-            if cap is None:
-                break
-            ok, img = cap.read()
-            if not ok:
-                # Transient device hiccup: keep the last good frame and back off
-                # rather than spinning.
-                stop.wait(0.01)
-                continue
+        while not stop.is_set() and self.cap is not None:
+            self._grab_step(stop)
+
+    def _grab_step(self, stop: threading.Event) -> None:
+        """One read, or, once no frame has come for `FRAME_STALE_S`, one reopen
+        attempt. OpenCV's `VideoCapture.read()` answers ``(False, None)`` for
+        a device that is gone; AVFoundation can also sit in `read()` for a
+        while first, which is why loss is judged by the time since the last
+        good frame rather than by counting failed reads."""
+        cap = self.cap
+        if cap is None:
+            return
+        ok, img = cap.read()
+        now = time.monotonic()
+        if ok:
             with self._lock:
-                self._latest = img
+                self._latest, self._latest_at = img, now
+            if self._lost:
+                log.info("camera %r is back", self._device)
+                self._lost = False
+                self._reopen_wait_s = REOPEN_FIRST_WAIT_S
+            return
+        if now - self._latest_at < FRAME_STALE_S:
+            stop.wait(0.01)
+            return
+        if not self._lost:
+            self._lost = True
+            self._reopen_at = now
+            log.warning(
+                "camera %r stopped sending frames; holding its last frame for %.0f s, "
+                "then black, and reopening it when it comes back",
+                self._device,
+                CAMERA_LOSS_GRACE_S,
+            )
+        if now < self._reopen_at:
+            stop.wait(0.05)
+            return
+        self._reopen_at = now + self._reopen_wait_s
+        self._reopen_wait_s = min(self._reopen_wait_s * 2, REOPEN_MAX_WAIT_S)
+        self._try_reopen(stop)
+
+    def _try_reopen(self, stop: threading.Event) -> None:
+        from c64cast.control import camera
+
+        found = None if self._identity is None else camera.find_camera(self._identity)
+        if found is None or self.cap is None:
+            return
+        self.cap.release()
+        fresh = _open_capture(*found)
+        if stop.is_set():
+            fresh.release()
+            return
+        self.cap = fresh
 
     def read(self) -> np.ndarray | None:
-        """Return an independent copy of the most recent grabbed frame.
+        """Return an independent copy of the most recent grabbed frame, or a
+        black one of the same size once the camera has sent nothing for
+        `CAMERA_LOSS_GRACE_S`.
 
         Copies so concurrent consumers can't race the grab thread's in-place
         overwrite or each other's downstream mutations (flip/crop/smoothing)."""
         with self._lock:
-            return None if self._latest is None else self._latest.copy()
+            if self._latest is None:
+                return None
+            if time.monotonic() - self._latest_at >= CAMERA_LOSS_GRACE_S:
+                return np.zeros_like(self._latest)
+            return self._latest.copy()
+
+    def read_live(self) -> np.ndarray | None:
+        """Like `read`, but None once the latest frame is older than
+        `FRAME_STALE_S`: for a consumer that would act on what the frame shows,
+        which a frame held over from a camera that went away no longer does."""
+        with self._lock:
+            if self._latest is None or time.monotonic() - self._latest_at >= FRAME_STALE_S:
+                return None
+            return self._latest.copy()
 
     def release(self) -> None:
         self._poll.stop()

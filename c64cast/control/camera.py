@@ -264,6 +264,30 @@ def _listing_to_open(listings: list[CameraInfo]) -> CameraInfo:
     return listings[0]
 
 
+def camera_identity(index: int) -> tuple[str, str | None] | None:
+    """The name and ``VID:PID`` of the camera opened at cv2 ``index``, or
+    ``None`` when enumeration is unavailable or lists nothing there. Compared
+    by ``index % 100`` for the reason :func:`device_identity` gives."""
+    if not camera_enumeration_available():
+        return None
+    for cam in enumerate_cameras():
+        if cam.index % 100 == index % 100:
+            return (cam.name, cam.vidpid_str())
+    return None
+
+
+def find_camera(identity: tuple[str, str | None]) -> tuple[int, int] | None:
+    """``(cv2_index, backend)`` of the connected camera with exactly this
+    :func:`camera_identity`, or ``None`` when it is not connected. Matching the
+    whole identity rather than an index is what keeps a camera that went away
+    from being replaced by whichever camera now sits at its old index."""
+    listings = [c for c in enumerate_cameras() if (c.name, c.vidpid_str()) == identity]
+    if not listings:
+        return None
+    cam = _listing_to_open(listings)
+    return (cam.index, cam.backend)
+
+
 def resolve_camera_index(device: int | str) -> tuple[int, int | None]:
     """Resolve a ``[video].device`` value to ``(cv2_index, backend_or_None)``.
 
