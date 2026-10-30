@@ -151,7 +151,13 @@ _MEDIA_STATUS: tuple[tuple[type[MediaStoreError], int], ...] = (
 )
 
 
-def _status_payload(status: SessionStatus, log_buffer: Any, store: ConfigStore) -> dict[str, Any]:
+def _status_payload(
+    status: SessionStatus, log_buffer: Any, store: ConfigStore, scope: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The supervisor's state as a console reads it, with ``config_path``
+    emptied for a viewer for the reason :func:`perf_console.with_role` empties
+    ``tuned.config_path``. ``config_ref`` stays: it names the file relative to
+    its root, which is what the config browser already shows a viewer."""
     out = status.as_dict()
     out["log_seq"] = log_buffer.seq if log_buffer is not None else 0
     # The browser's default selection: the config the host was launched with,
@@ -159,6 +165,8 @@ def _status_payload(status: SessionStatus, log_buffer: Any, store: ConfigStore) 
     # path isn't under a root this store knows (a quick-playback run, or one
     # started from outside any configured `config_roots`).
     out["config_ref"] = store.ref_for(Path(out["config_path"])) if out.get("config_path") else None
+    if out.get("config_path") and is_viewer(scope):
+        out["config_path"] = ""
     return out
 
 
@@ -449,7 +457,7 @@ def register_web_routes(
         return parsed
 
     def _session_state(scope: Mapping[str, Any]) -> dict[str, Any]:
-        state = _status_payload(manager.status(), log_buffer, store)
+        state = _status_payload(manager.status(), log_buffer, store, scope)
         state["role"] = scope.get(SCOPE_ROLE_KEY)
         return state
 
@@ -737,8 +745,12 @@ def register_web_routes(
         return {"favorites": library.set_favorite(ref, bool(body.get("on", True)))}
 
     @app.get("/api/configs")
-    def api_configs() -> dict[str, Any]:
-        return store.index()
+    def api_configs(request: Request) -> dict[str, Any]:
+        index = store.index()
+        if is_viewer(request.scope):
+            for root in index["roots"]:
+                root["path"] = ""
+        return index
 
     # A GET, so the viewer role may browse it — it lists media a config
     # already names, and a viewer who can watch the screen can already see it.
@@ -963,7 +975,7 @@ def register_web_routes(
         def frame() -> dict[str, Any]:
             nonlocal sent_seq
             out = with_role(bridge.state(), scope)
-            out["session"] = _status_payload(manager.status(), log_buffer, store)
+            out["session"] = _status_payload(manager.status(), log_buffer, store, scope)
             if log_buffer is not None:
                 lines = log_buffer.since(sent_seq)
                 if lines:

@@ -803,6 +803,27 @@ class ConfigBrowserTest(WebApiTestCase):
         self.assertEqual([r["label"] for r in body["roots"]], ["shows"])
         self.assertEqual([f["path"] for f in body["files"]], ["shows/gig.toml"])
 
+    def test_a_viewer_is_shown_no_absolute_config_path(self):
+        # The read-only link is handed to a guest, and the paths name the
+        # operator's home directory and layout.
+        root = str(self.root)
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+            self.assertReaches(SessionState.RUNNING)
+            for headers, sees_paths in ((VIEWER_AUTH, False), (AUTH, True)):
+                with self.subTest(sees_paths=sees_paths):
+                    session = c.get("/api/session", headers=headers).json()
+                    index = c.get("/api/configs", headers=headers).json()
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        frame = ws.receive_json()["session"]
+                    shown = [
+                        session["config_path"],
+                        frame["config_path"],
+                        index["roots"][0]["path"],
+                    ]
+                    self.assertEqual([root in path for path in shown], [sees_paths] * 3, shown)
+                    self.assertEqual(session["config_ref"], "shows/gig.toml")
+
     def test_a_read_carries_the_text_and_the_form(self):
         with self.client() as c:
             r = c.get("/api/configs/shows/gig.toml", headers=AUTH)
