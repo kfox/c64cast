@@ -56,6 +56,7 @@ See docs/architecture/control.md#web_apipy--the-web-consoles-api--the-host---ser
 
 import asyncio
 import logging
+import os
 import threading
 from collections.abc import AsyncIterator, Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -168,6 +169,26 @@ def _status_payload(
     if out.get("config_path") and is_viewer(scope):
         out["config_path"] = ""
     return out
+
+
+def _log_for(
+    lines: list[dict[str, Any]], store: ConfigStore, scope: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """``lines`` as ``scope`` may read them. A viewer reads each config root as
+    its label and the home directory as ``~``: ``config.load`` logs the absolute
+    path of every show it starts, and that is the path :func:`_status_payload`
+    empties."""
+    if not is_viewer(scope):
+        return lines
+    swaps = [(str(r.path), r.label) for r in store.roots]
+    swaps.append((os.path.join(Path.home(), ""), os.path.join("~", "")))
+
+    def hidden(text: str) -> str:
+        for path, label in swaps:
+            text = text.replace(path, label)
+        return text
+
+    return [{**line, "message": hidden(line["message"])} for line in lines]
 
 
 def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -611,7 +632,7 @@ def register_web_routes(
     def api_session(request: Request) -> dict[str, Any]:
         state = _session_state(request.scope)
         if log_buffer is not None:
-            state["log"] = log_buffer.tail(_LOG_BACKLOG)
+            state["log"] = _log_for(log_buffer.tail(_LOG_BACKLOG), store, request.scope)
         return state
 
     @app.post("/api/session/start", status_code=202)
@@ -980,7 +1001,7 @@ def register_web_routes(
                 lines = log_buffer.since(sent_seq)
                 if lines:
                     sent_seq = lines[-1]["seq"]
-                out["log"] = lines
+                out["log"] = _log_for(lines, store, scope)
             return out
 
         return frame

@@ -824,6 +824,47 @@ class ConfigBrowserTest(WebApiTestCase):
                     self.assertEqual([root in path for path in shown], [sees_paths] * 3, shown)
                     self.assertEqual(session["config_ref"], "shows/gig.toml")
 
+    def _capture_log(self) -> logging.Logger:
+        self.log_buffer.install()
+        self.addCleanup(self.log_buffer.uninstall)
+        logger = logging.getLogger("c64cast")
+        old_level, old_prop = logger.level, logger.propagate
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        self.addCleanup(
+            lambda: (logger.setLevel(old_level), setattr(logger, "propagate", old_prop))
+        )
+        return logger
+
+    def test_a_viewer_reads_the_log_with_config_roots_as_labels(self):
+        self._capture_log()
+        cfgmod.load(str(self.root / "gig.toml"))
+        root = str(self.root)
+        with self.client() as c:
+            for headers, sees_paths in ((VIEWER_AUTH, False), (AUTH, True)):
+                with self.subTest(sees_paths=sees_paths):
+                    tail = c.get("/api/session", headers=headers).json()["log"]
+                    with c.websocket_connect("/api/ws", headers=headers) as ws:
+                        fed = ws.receive_json()["log"]
+                    for lines in (tail, fed):
+                        loading = [r["message"] for r in lines if "loading config" in r["message"]]
+                        self.assertEqual(len(loading), 1, lines)
+                        self.assertEqual(root in loading[0], sees_paths, loading)
+                        if not sees_paths:
+                            self.assertEqual(
+                                loading[0], f"loading config {Path('shows', 'gig.toml')}"
+                            )
+
+    def test_a_viewer_reads_the_home_directory_as_a_tilde(self):
+        clip = Path.home() / "Movies" / "clip.mp4"
+        self._capture_log().error("could not open %s", clip)
+        with self.client() as c:
+            viewer = c.get("/api/session", headers=VIEWER_AUTH).json()["log"]
+            full = c.get("/api/session", headers=AUTH).json()["log"]
+        shown = Path("~") / "Movies" / "clip.mp4"
+        self.assertIn(f"could not open {shown}", [r["message"] for r in viewer])
+        self.assertIn(f"could not open {clip}", [r["message"] for r in full])
+
     def test_a_read_carries_the_text_and_the_form(self):
         with self.client() as c:
             r = c.get("/api/configs/shows/gig.toml", headers=AUTH)
