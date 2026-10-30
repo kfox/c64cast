@@ -193,11 +193,12 @@ class PlaneContentTest(unittest.TestCase):
         return {zone: kinds for zone, kinds in report["kinds"].items() if kinds}
 
     def test_whole_frames_tear_nowhere_and_every_plane_shows_the_same_slot(self) -> None:
-        report = self._report(*(_mhires_picture(self.tool.plane_frame(n)) for n in range(4)))
+        slots = (0, 1, 1, 2, 3)
+        report = self._report(*(_mhires_picture(self.tool.plane_frame(n)) for n in slots))
         self.assertEqual(self._torn(report), {})
         self.assertEqual(report["blank"], 0)
         for zone, offsets in report["offsets"].items():
-            self.assertEqual(offsets, [0, 0, 0, 0], zone)
+            self.assertEqual(offsets, [0] * len(slots), zone)
         self.assertEqual(report["flips"], 3)
 
     def test_a_frame_torn_near_the_top_is_placed_by_the_slot_most_rows_show(self) -> None:
