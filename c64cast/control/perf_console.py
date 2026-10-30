@@ -240,13 +240,15 @@ class ConsoleFeed:
     Three things the loop guarantees, so that neither caller has to remember
     them:
 
-    * **The frame build and the dispatch run off the event loop.** Both do real
-      blocking work — one frame reads the look store and the loop-preset store
-      from disk, and ``/api/ws``'s dispatch starts and stops sessions — and
-      the loop they used to run on also serves ``/status``, every ``/api``
-      route and the MJPEG screen stream, so a slow data dir or a slow session
-      change stalled all of it. The sync ``perf_state`` route got the threadpool for
-      free and was never affected, which was the tell.
+    * **The tick, the frame build and the dispatch run off the event loop.**
+      All three do real blocking work — one frame reads the look store and the
+      loop-preset store from disk, ``/api/ws``'s dispatch starts and stops
+      sessions, and its screen sweep tells a machine to stop streaming over the
+      shared DMA link — and the loop they used to run on also serves
+      ``/status``, every ``/api`` route and the MJPEG screen stream, so a slow
+      data dir, a slow session change or a slow link stalled all of it. The
+      sync ``perf_state`` route got the threadpool for free and was never
+      affected, which was the tell.
     * **A command frame cannot end the feed.** :meth:`PerfBridge.apply`
       validates rather than coerces, *and* the dispatch has its own guard here,
       so the exception ladder below only ever sees the socket's own send and
@@ -306,7 +308,7 @@ class ConsoleFeed:
             # blocking the push.
             while True:
                 if self._on_tick is not None:
-                    self._on_tick()
+                    await asyncio.to_thread(self._on_tick)
                 # Split from the socket's own failures below: a state frame
                 # that raises is *our* bug, and swallowing it leaves every
                 # connected console waiting forever for a push that will never

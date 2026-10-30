@@ -16,9 +16,11 @@ prevent. The behavior was checked by hand against an exploding playlist."""
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 import threading
+import time
 import unittest
 import warnings
 from typing import Any
@@ -32,6 +34,7 @@ from c64cast.control.perf_console import (
     MAX_COMMAND_BYTES,
     MAX_TARGET_CHARS,
     TRANSPORT_VERBS,
+    ConsoleFeed,
     PerfBridge,
     SocketReader,
     _beats_remaining,
@@ -1359,6 +1362,72 @@ class SocketReaderTest(unittest.TestCase):
         socket = self._Socket([_Gone()])
         with self.assertRaises(_Gone):
             self._drive(socket, 1)
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")
+class ConsoleFeedTest(unittest.TestCase):
+    """The outbound half of both console sockets, driven with a fake WebSocket
+    on a real event loop — where the loop's own scheduling is the subject."""
+
+    class _Socket:
+        """Takes one frame, then hangs up once `hangup` is set."""
+
+        def __init__(self, scope: dict[str, Any] | None = None) -> None:
+            self.headers: dict[str, str] = {}
+            self.scope = scope or {}
+            self.accepted = False
+            self.closed_with: int | None = None
+            self.hangup = asyncio.Event()
+
+        async def accept(self) -> None:
+            # uvicorn's accept sends the 101 and yields to the loop.
+            await asyncio.sleep(0)
+            self.accepted = True
+
+        async def close(self, code: int = 1000) -> None:
+            self.closed_with = code
+
+        async def send_json(self, frame: Any) -> None:
+            from starlette.websockets import WebSocketDisconnect
+
+            await self.hangup.wait()
+            raise WebSocketDisconnect()
+
+        async def receive_text(self) -> str:
+            await asyncio.Event().wait()
+            return ""
+
+    @staticmethod
+    def _feed(**kwargs: Any) -> ConsoleFeed:
+        kwargs.setdefault("frames_for", lambda scope: dict)
+        kwargs.setdefault("dispatch", lambda msg: None)
+        return ConsoleFeed("test console", **kwargs)
+
+    def test_a_slow_tick_does_not_hold_the_event_loop(self):
+        # `/api/ws`'s tick is the screen sweep, and a sweep that retires a
+        # receiver tells the machine over the shared DMA link — a lock, an
+        # idle check and possibly a redial, on the loop serving every route.
+        ticking = threading.Event()
+        release = threading.Event()
+
+        def slow_tick() -> None:
+            ticking.set()
+            release.wait(1.0)
+
+        async def stalled_for() -> float:
+            socket = self._Socket()
+            served = asyncio.create_task(self._feed(on_tick=slow_tick).run(socket))
+            started = time.monotonic()
+            while not ticking.is_set():
+                await asyncio.sleep(0.005)
+            await asyncio.sleep(0.01)
+            stalled = time.monotonic() - started
+            release.set()
+            socket.hangup.set()
+            await served
+            return stalled
+
+        self.assertLess(asyncio.run(stalled_for()), 0.5)
 
 
 if __name__ == "__main__":
