@@ -607,6 +607,9 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
     if be is None:
         return 4
     try:
+        # An Ultimate II+ claims the Ultimate 64's SID socket map until this
+        # runs, and a run over a machine with sockets is filed per socket.
+        be.refine_capabilities()
         # A calibration is keyed per system, so an unresolved `system = "auto"`
         # would file a PAL machine's curve under NTSC. Inside the try so an
         # unresponsive machine still closes `be` rather than abandoning the U64's
@@ -615,9 +618,9 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
         run = dac_calibration.run_calibration(
             be, cfg, device=args.audio_device, log_fn=lambda m: log.info("%s", m)
         )
-    # A rig that cannot be measured is a user-fixable setup problem, and both
-    # exceptions carry actionable text — so print it rather than traceback.
-    except (CaptureUnavailableError, MeasurementError) as e:
+    # A rig that cannot be measured is a user-fixable setup problem, and each
+    # exception carries actionable text — so print it rather than traceback.
+    except (CaptureUnavailableError, MeasurementError, dac_calibration.NoPhysicalSidError) as e:
         log.error("%s", e)
         return 3
     finally:

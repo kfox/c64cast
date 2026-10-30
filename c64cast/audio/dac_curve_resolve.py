@@ -41,9 +41,8 @@ class DacCurve:
     chip. Its socket is
     None for a ``"default"`` entry, measured without isolating one. A
     consumer that needs the chip reads it here rather than from the file again:
-    each read of the file makes its own socket-map read, and one that fails
-    falls back to the file's recorded mapping, which can name the other
-    socket. ``key`` is the calibration key the resolution looked up, None
+    each read of the file makes its own socket-map read, which can answer
+    differently. ``key`` is the calibration key the resolution looked up, None
     when it looked up none, for the same reason: deriving it again is another
     live round-trip, and one that fails falls back to the host key."""
 
@@ -136,7 +135,7 @@ def resolve_dac_curve_for_backend(cfg: Config, be: C64Backend | None = None) -> 
     * ``"linear"`` / ``"mahoney_ultisid"`` — explicit; passed through.
 
     `be`, when given a live/reachable backend, lets the resolution pick the
-    correct per-socket entry from a multi-SID calibration file (see
+    entry that applies to the connected machine (see
     :func:`~c64cast.audio.dac_calibration_store.load_calibrated_table`).
     Without it (e.g. offline ``--doctor --skip-probe``), resolution is
     best-effort."""
@@ -177,47 +176,25 @@ def provision_calibrated_chip_model(
     label; this enforces it. A chip of fixed model, or a table that names none,
     is left alone.
 
-    A calibration measured without socket detection recorded the chip only as
-    whatever answered ``$D400``, so that chip is the one switched: through the
-    socket an Ultimate maps there when it names one, else through the chip's
-    own register protocol, which works on every link. An Ultimate whose socket
-    map cannot be read switches nothing."""
+    A calibration measured without socket detection — a ``"default"`` entry,
+    which only a machine without the Ultimate 64's socket map plays — recorded
+    the chip only as whatever answered ``$D400``, so that chip is switched
+    there, through its own register protocol."""
     if not dac_curve.label.startswith("calibrated:") or dac_curve.measured is None:
         return None
     socket, recorded = dac_curve.measured
-    measured_at = f"socket {socket}"
     wanted = armsid.label_model(recorded) if armsid.is_reconfigurable(recorded) else None
     if wanted is None:
         return None
     if socket is None:
-        owner = d400_owner(be)
-        if owner == D400_UNKNOWN and be.profile.supports_sid_config:
-            # Not the register write: on a link with a socket map it would leave
-            # the socket's config item and the label cache on the old model.
-            log.warning(
-                "audio: the DAC calibration was measured on an %s at $D400, but this "
-                "run could not tell which socket answers $D400 (reading the SID "
-                "socket configuration failed); playing through it unchanged",
-                recorded,
-            )
-            return None
-        if not isinstance(owner, int):
-            return _provision_d400_model(be, recorded, wanted)
-        # A register write at $D400 would leave the socket's config item, the
-        # label cache and a scene's snapshot naming the old model, and a scene
-        # restore then sets the item from its probe while teardown sets the
-        # register back: the menu ends the run disagreeing with the chip.
-        socket = owner
-        measured_at = f"$D400 (now socket {socket})"
-    if not be.profile.supports_sid_config:
-        return None
+        return _provision_d400_model(be, recorded, wanted)
     live = detect_socket_models(be)[socket - 1]
     if not armsid.is_reconfigurable(live) or armsid.is_right_channel(live):
         log.warning(
-            "audio: the DAC calibration was measured on an %s at %s, which now "
+            "audio: the DAC calibration was measured on an %s in socket %d, which now "
             "reports %s; playing through it unchanged",
             recorded,
-            measured_at,
+            socket,
             live or "nothing",
         )
         return None

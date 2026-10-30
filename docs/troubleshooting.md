@@ -108,6 +108,12 @@ picture and the knobs that actually help:
   not record from the system default input instead. Name the input with
   `--audio-device` (index or name substring, from the list in the message or
   `c64cast --list-devices`), or install the extra.
+- **`--calibrate-dac` says it "found no physical SID answering $D400"** (exit
+  3). On an Ultimate 64, a calibration measures a socketed chip, and nothing in
+  a socket answers `$D400`: an UltiSID core does, or the sockets are empty or
+  disabled. Nothing was measured or written, and playback uses the built-in
+  curve. To calibrate a socketed SID, map its
+  socket to `$D400` in the Ultimate's SID Addressing menu and run it again.
 - **`--calibrate-dac` says "REJECTED — the volume-0 self-test is off by N%"**
   (and exits 4 if every SID failed). The measurement came back internally
   inconsistent: codes `$h0` set the master volume to 0, so they *must* measure
