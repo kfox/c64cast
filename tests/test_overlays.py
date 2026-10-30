@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import http.server
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -808,6 +809,63 @@ class _RemotePeerTest(unittest.TestCase):
         return not worker.is_alive()
 
 
+class _DripPeerTest(unittest.TestCase):
+    """A raw TCP peer that sends a fixed prefix, then one byte per tick, and
+    never reads the request: every socket read succeeds inside any per-read
+    timeout, before `http.client` has a complete header block."""
+
+    def drip_peer(self, prefix: bytes) -> int:
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        self.peer_stop = threading.Event()
+
+        def serve() -> None:
+            conn, _ = listener.accept()
+            with conn, contextlib.suppress(OSError):
+                conn.sendall(prefix)
+                while not self.peer_stop.wait(0.05):
+                    conn.sendall(b"x")
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(self.peer_stop.set)
+        return listener.getsockname()[1]
+
+    def assert_gives_up(self, url: str) -> None:
+        from c64cast.scenes.overlays import _fetch
+
+        raised: list[BaseException] = []
+
+        def fetch() -> None:
+            try:
+                _fetch.get_body(url, timeout=5.0)
+            except BaseException as e:  # noqa: BLE001 - the assertion is on the raise
+                raised.append(e)
+
+        worker = threading.Thread(target=fetch, daemon=True)
+        with patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5):
+            worker.start()
+            self.addCleanup(worker.join)
+            self.addCleanup(self.peer_stop.set)
+            worker.join(5.0)
+        self.assertFalse(worker.is_alive(), "the fetch outlived its deadline")
+        self.assertEqual([type(e) for e in raised], [_fetch.BodyLimitExceeded])
+
+    def test_a_peer_that_drips_its_headers_gives_up_at_the_deadline(self):
+        port = self.drip_peer(b"HTTP/1.1 200 OK\r\nX-Drip: ")
+        self.assert_gives_up(f"http://127.0.0.1:{port}/feed")
+
+    def test_a_peer_that_drips_its_status_line_gives_up_at_the_deadline(self):
+        port = self.drip_peer(b"HTTP/1.1 200 ")
+        self.assert_gives_up(f"http://127.0.0.1:{port}/feed")
+
+    def test_a_peer_that_drips_its_tls_handshake_gives_up_at_the_deadline(self):
+        # A handshake record announcing 16 KiB, then its payload a byte at a time.
+        port = self.drip_peer(b"\x16\x03\x03\x40\x00")
+        self.assert_gives_up(f"https://127.0.0.1:{port}/feed")
+
+
 class RssFetchTest(_RemotePeerTest):
     def test_utf8_feed_without_a_charset_header_keeps_its_characters(self):
         from c64cast.scenes.overlays.rss import RssOverlay
@@ -887,7 +945,7 @@ class RssFetchTest(_RemotePeerTest):
 
         ov = RssOverlay(url=self.route("/feed", self.drip))
         with (
-            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5),
             self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
         ):
             self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
@@ -939,7 +997,7 @@ class FetchTransportErrorTest(_RemotePeerTest):
         ov = RssOverlay(url=self.route("/feed", answer))
         self.route("/elsewhere", self.drip)
         with (
-            patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+            patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5),
             self.assertLogs("c64cast.scenes.overlays.rss", level="WARNING"),
         ):
             self.assertTrue(self.finishes_within(ov._fetch_once, 5.0))
@@ -1038,7 +1096,7 @@ class WeatherFetchTest(_RemotePeerTest):
                 with (
                     patch.object(weather, "OPEN_METEO_URL", url),
                     patch.object(weather, "WTTR_URL", url),
-                    patch.object(_fetch, "BODY_DEADLINE_S", 0.5),
+                    patch.object(_fetch, "RESPONSE_DEADLINE_S", 0.5),
                     self.assertLogs("c64cast.scenes.overlays.weather", level="WARNING"),
                 ):
                     self.assertTrue(self.finishes_within(ov._poll_once, 5.0))
