@@ -631,5 +631,128 @@ class VisionStaleFrameTest(unittest.TestCase):
         self.assertFalse(resume.is_set())
 
 
+class _GappySource:
+    """A live frame on every tick except the scripted ones, where the camera
+    has nothing fresh to give."""
+
+    def __init__(self, gaps):
+        self._gaps = set(gaps)
+        self._tick = 0
+
+    def read(self):
+        return np.zeros((4, 4, 3), dtype=np.uint8)
+
+    def read_live(self):
+        self._tick += 1
+        return None if self._tick in self._gaps else self.read()
+
+
+class _FailingRecognizer(FakeRecognizer):
+    def __init__(self, script, failures):
+        super().__init__(script)
+        self._failures = set(failures)
+        self._calls = 0
+
+    def process(self, frame, timestamp_ms):
+        self._calls += 1
+        if self._calls in self._failures:
+            raise RuntimeError("bad frame")
+        return super().process(frame, timestamp_ms)
+
+
+def _gappy_controller(script, gaps, **kw):
+    kw.setdefault("poll_interval_s", 0.005)
+    kw.setdefault("gesture_cooldown_s", 0.0)
+    kw.setdefault("gesture_dwell_s", 0.0)
+    return VisionController(
+        cast(WebcamSource, _GappySource(gaps)),
+        cast(GestureRecognizer, FakeRecognizer(script)),
+        mirror=False,
+        **kw,
+    )
+
+
+def _drive_until(ctl, state, pause, resume, ticks, *, cycle=None):
+    """Drive `ticks` more ticks on the virtual clock, continuing from `state`."""
+    ctl._pause_event, ctl._resume_event, ctl._cycle_event = pause, resume, cycle
+    clock = FrozenClock(state.last_tick, "monotonic")
+    with mock.patch.object(vision_mod, "time", clock):
+        for _ in range(ticks):
+            clock.advance(ctl.poll_interval_s)
+            ctl._tick(state)
+
+
+class VisionUnreadFrameTest(unittest.TestCase):
+    """A tick with no reading (no fresh frame, or the recognizer failed) says
+    nothing about the hand; a frame with no hand in it does."""
+
+    def test_a_dropped_frame_does_not_restart_the_pinch_hold(self):
+        # 10 ticks of hold needed; the camera drops tick 5 and tick 10. Each
+        # drop used to restart the hold, so 12 ticks never got there.
+        ctl = _gappy_controller([pinch()], gaps={5, 10}, hold_threshold_s=0.05)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        _drive_ticks(ctl, 14, pause, resume)
+        self.assertTrue(resume.is_set())
+
+    def test_a_failed_recognition_does_not_restart_the_pinch_hold(self):
+        ctl = VisionController(
+            cast(WebcamSource, FakeSource()),
+            cast(GestureRecognizer, _FailingRecognizer([pinch()], failures={5, 10})),
+            poll_interval_s=0.005,
+            hold_threshold_s=0.05,
+            gesture_cooldown_s=0.0,
+            gesture_dwell_s=0.0,
+            mirror=False,
+        )
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        _drive_ticks(ctl, 14, pause, resume)
+        self.assertTrue(resume.is_set())
+
+    def test_a_frame_with_no_hand_still_restarts_the_pinch_hold(self):
+        script = [pinch()] * 5 + [None] + [pinch()] * 8
+        ctl = _controller(script, hold_threshold_s=0.05)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        _drive_ticks(ctl, 14, pause, resume)
+        self.assertFalse(resume.is_set())
+
+    def test_time_without_frames_does_not_count_toward_the_hold(self):
+        # Two pinch frames either side of a camera gap longer than the hold.
+        ctl = _gappy_controller([pinch()], gaps=set(range(2, 30)), hold_threshold_s=0.05)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        _drive_ticks(ctl, 31, pause, resume)
+        self.assertFalse(resume.is_set())
+
+    def test_a_pose_held_across_a_dropped_frame_does_not_fire_again(self):
+        ctl = _gappy_controller([open_hand()], gaps={4})
+        pause, resume, cycle = threading.Event(), threading.Event(), threading.Event()
+        state = _drive_ticks(ctl, 3, pause, resume, cycle=cycle)
+        self.assertTrue(cycle.is_set())
+        cycle.clear()
+        _drive_until(ctl, state, pause, resume, 6, cycle=cycle)
+        self.assertFalse(cycle.is_set(), "the same held open hand cycled twice")
+
+    def test_a_pose_broken_by_a_frame_with_no_hand_fires_again(self):
+        ctl = _controller([open_hand()] * 3 + [None] + [open_hand()])
+        pause, resume, cycle = threading.Event(), threading.Event(), threading.Event()
+        state = _drive_ticks(ctl, 3, pause, resume, cycle=cycle)
+        cycle.clear()
+        _drive_until(ctl, state, pause, resume, 6, cycle=cycle)
+        self.assertTrue(cycle.is_set())
+
+    def test_a_dropped_frame_mid_motion_is_not_a_swipe(self):
+        # The wrist travels 0.3 between readings two ticks apart; measured
+        # over one tick that reads as twice the real speed.
+        hands = [fist(0.1), fist(0.1), fist(0.1), fist(0.1), fist(0.4), fist(0.4)]
+        speed = 0.3 / (2 * 0.005)
+        ctl = _gappy_controller(hands, gaps={5}, swipe_velocity=speed * 1.5)
+        pause, resume, skip = threading.Event(), threading.Event(), threading.Event()
+        _drive_ticks(ctl, 7, pause, resume, skip=skip)
+        self.assertFalse(skip.is_set())
+
+
 if __name__ == "__main__":
     unittest.main()
