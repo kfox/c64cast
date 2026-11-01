@@ -86,7 +86,7 @@ obs = ["obsws-python>=1.8.0,<2"]
 midi = ["mido>=1.3.3,<2", "python-rtmidi>=1.5.8,<2"]
 logging = ["rich>=15.0.0,<16"]
 tr = ["pyserial>=3.5,<4"]
-vision = ["mediapipe>=0.10.35,<1.2"]
+vision = ["mediapipe>=0.10.35,<1.3"]
 wizard = ["questionary>=2.1.1,<3"]
 camera = ["cv2-enumerate-cameras>=1.3.3,<2"]
 # No ceiling: yt-dlp is network-facing, its site extractors break constantly,
@@ -119,7 +119,7 @@ all = [
     "av>=18.0.0,<20",
     "cv2-enumerate-cameras>=1.3.3,<2",
     "fastapi>=0.140.0,<1",
-    "mediapipe>=0.10.35,<1.2",
+    "mediapipe>=0.10.35,<1.3",
     "mido>=1.3.3,<2",
     "obsws-python>=1.8.0,<2",
     "pyserial>=3.5,<4",
@@ -134,10 +134,10 @@ all = [
 ]
 [dependency-groups]
 dev = [
-    "ruff==0.17.2",
+    "ruff==0.17.3",
     "pre-commit==4.7.0",
     "coverage==7.17.0",
-    "mypy==2.4.0",
+    "mypy==2.4.1",
     "types-requests==2.33.0.20261006",
     "pyright==1.1.414",
     "jsonschema==4.26.0",
