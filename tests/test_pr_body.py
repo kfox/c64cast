@@ -105,11 +105,22 @@ class SectionsTest(unittest.TestCase):
                 )
 
     def test_an_underlined_template_heading_is_a_section(self):
-        body = GOOD.replace("## How it was verified", "How it was verified\n-------------------")
-        self.assertEqual(checker.problems(body), [])
+        for heading in ("How it was verified", "How it was verified:"):
+            with self.subTest(heading=heading):
+                body = GOOD.replace("## How it was verified", f"{heading}\n-------------------")
+                self.assertEqual(checker.problems(body), [])
+
+    def test_an_underlined_template_heading_with_nothing_under_it_is_empty(self):
+        body = GOOD.split("## How it was verified")[0] + "How it was verified\n---\n"
+        self.assertEqual(checker.problems(body), ["the 'How it was verified' section is empty"])
 
     def test_a_rule_after_a_blank_line_a_rule_or_a_list_item_is_not_a_heading(self):
         self.assertEqual(checker.problems(_with("---\n---\n\n- one item\n---")), [])
+
+    def test_a_rule_inside_a_code_block_is_not_an_underline(self):
+        for block in ("```yaml\nkey: value\n---\n```", "```\nmake test\n```\n---"):
+            with self.subTest(block=block):
+                self.assertEqual(checker.problems(_with(block)), [])
 
     def test_template_hints_left_in_html_comments_do_not_count(self):
         body = _with("<!--\n## Follow-ups\nnot in this PR\n-->")

@@ -101,7 +101,7 @@ def _heading(line: Line) -> str | None:
 
 
 def _setext_heading(line: Line, following: Line | None) -> str | None:
-    if following is None or following.in_code or line.in_code or not line.text.strip():
+    if following is None or line.in_code or not line.text.strip():
         return None
     if not _SETEXT_UNDERLINE.match(following.text):
         return None
