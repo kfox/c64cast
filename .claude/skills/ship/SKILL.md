@@ -217,8 +217,13 @@ CI.
 
 ```bash
 make preflight UV_PROJECT_ENVIRONMENT=<worktree>/.venv \
-  && gh pr create --draft --title "<type>: <what changed>" --body "<why, and what to look at>"
+  && gh pr create --draft --title "<type>: <what changed>" --body-file <body.md>
 ```
+
+Write `<body.md>` from `.github/PULL_REQUEST_TEMPLATE.md`, filling its three
+sections and adding none. The `check-pr-body.py` hook denies a `gh pr create`
+or `gh pr edit` whose body breaks the template, or whose body it cannot read,
+and the `pr-body` workflow refuses the same bodies on GitHub.
 
 The body should say what the change does, why, and anything a reviewer should
 look at closely — and nothing else. Not the findings the review declined, not
