@@ -241,14 +241,16 @@ class HookTest(unittest.TestCase):
 
     def test_a_body_file_is_read_from_the_directory_a_cd_moved_to(self):
         self._file(GOOD)
-        moved_to = tempfile.mkdtemp()
-        (Path(moved_to) / "body.md").write_text(_with("## Follow-ups"), encoding="utf-8")
-        reason = hook.decide(f"cd {moved_to} && gh pr create -F body.md", self.directory)
+        moved_to = Path(self.directory) / "moved"
+        moved_to.mkdir()
+        (moved_to / "body.md").write_text(_with("## Follow-ups"), encoding="utf-8")
+        reason = hook.decide("cd moved && gh pr create -F body.md", self.directory)
         self.assertIn("heading 'Follow-ups' is not one the template declares", reason)
 
     def test_a_body_file_under_the_home_directory_is_read(self):
         self._file(GOOD)
-        with mock.patch.dict("os.environ", {"HOME": self.directory}):
+        home = {"HOME": self.directory, "USERPROFILE": self.directory}
+        with mock.patch.dict("os.environ", home):
             self.assertIsNone(hook.decide("gh pr create -F ~/body.md", self.directory))
 
     def test_the_new_alias_of_create_is_checked(self):
