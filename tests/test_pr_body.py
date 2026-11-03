@@ -96,6 +96,21 @@ class SectionsTest(unittest.TestCase):
     def test_a_shell_comment_inside_a_code_block_is_not_a_heading(self):
         self.assertEqual(checker.problems(_with("```bash\n# run it\nmake test\n```")), [])
 
+    def test_an_underlined_heading_the_template_does_not_declare_is_refused(self):
+        for underline in ("-------", "======="):
+            with self.subTest(underline=underline):
+                found = checker.problems(_with(f"Caveats\n{underline}\n\nSomething."))
+                self.assertEqual(
+                    found, ["line 13: heading 'Caveats' is not one the template declares"]
+                )
+
+    def test_an_underlined_template_heading_is_a_section(self):
+        body = GOOD.replace("## How it was verified", "How it was verified\n-------------------")
+        self.assertEqual(checker.problems(body), [])
+
+    def test_a_rule_after_a_blank_line_a_rule_or_a_list_item_is_not_a_heading(self):
+        self.assertEqual(checker.problems(_with("---\n---\n\n- one item\n---")), [])
+
     def test_template_hints_left_in_html_comments_do_not_count(self):
         body = _with("<!--\n## Follow-ups\nnot in this PR\n-->")
         self.assertEqual(checker.problems(body), [])
@@ -110,7 +125,13 @@ class ContentTest(unittest.TestCase):
         self.assertRefused("Co-Authored-By: someone", "'Co-Authored-By'")
         self.assertRefused("Written with Claude.", "'Claude'")
         self.assertRefused("https://claude.ai/code/session_x", "'claude.ai'")
-        self.assertRefused("\N{ROBOT FACE} Generated with a tool", "'Generated with'")
+        self.assertRefused("\N{ROBOT FACE} Generated with a tool", "'\N{ROBOT FACE}'")
+        self.assertRefused("Generated with [a tool](https://example.com)", "'Generated with ['")
+
+    def test_a_file_generated_with_a_make_target_is_not_attribution(self):
+        self.assertEqual(
+            checker.problems(_with("`schema.json` is generated with `make schema`.")), []
+        )
 
     def test_the_agent_config_directory_and_instructions_file_are_not_attribution(self):
         self.assertEqual(
@@ -206,6 +227,24 @@ class HookTest(unittest.TestCase):
     def test_a_command_after_a_cd_and_env_prefix_is_still_read(self):
         cmd = "cd /x && GH_HOST=github.com gh pr create --body 'nothing'"
         self.assertIsNotNone(hook.decide(cmd, self.directory))
+
+    def test_a_body_file_is_read_from_the_directory_a_cd_moved_to(self):
+        self._file(GOOD)
+        moved_to = tempfile.mkdtemp()
+        (Path(moved_to) / "body.md").write_text(_with("## Follow-ups"), encoding="utf-8")
+        reason = hook.decide(f"cd {moved_to} && gh pr create -F body.md", self.directory)
+        self.assertIn("heading 'Follow-ups' is not one the template declares", reason)
+
+    def test_a_body_file_under_the_home_directory_is_read(self):
+        self._file(GOOD)
+        with mock.patch.dict("os.environ", {"HOME": self.directory}):
+            self.assertIsNone(hook.decide("gh pr create -F ~/body.md", self.directory))
+
+    def test_the_new_alias_of_create_is_checked(self):
+        self.assertIn(
+            "missing the 'What changed and why' section",
+            hook.decide("gh pr new --body 'Fixes a thing.'", self.directory),
+        )
 
     def test_other_gh_commands_pass(self):
         self.assertIsNone(hook.decide("gh pr view 12 --json body", self.directory))

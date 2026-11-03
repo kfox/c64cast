@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,8 @@ import _shell  # noqa: E402
 
 _CHECKER = Path(__file__).resolve().parents[2] / "scripts" / "check_pr_body.py"
 
+# `gh pr new` is gh's own alias for `gh pr create`.
+_VERBS = {"create": "create", "new": "create", "edit": "edit"}
 _BODY_FLAGS = ("--body", "-b")
 _BODY_FILE_FLAGS = ("--body-file", "-F")
 
@@ -57,12 +60,12 @@ def _option(argv: list[str], names: tuple[str, ...]) -> str | None:
 
 def _verb(argv: list[str]) -> str | None:
     argv = _shell.strip_prefix(argv)
-    if len(argv) >= 3 and argv[:2] == ["gh", "pr"] and argv[2] in ("create", "edit"):
-        return argv[2]
+    if len(argv) >= 3 and argv[:2] == ["gh", "pr"]:
+        return _VERBS.get(argv[2])
     return None
 
 
-def _body(command: _shell.Command, cwd: str) -> str | None:
+def _body(command: _shell.Command, cwd: Path) -> str | None:
     """The description this command sends, or None when there is none to read."""
     argv = command.argv
     inline = _option(argv, _BODY_FLAGS)
@@ -75,7 +78,7 @@ def _body(command: _shell.Command, cwd: str) -> str | None:
     if path == "-":
         return command.heredoc_body or None
     try:
-        return (Path(cwd) / path).read_text(encoding="utf-8")
+        return (cwd / os.path.expanduser(path)).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -83,7 +86,12 @@ def _body(command: _shell.Command, cwd: str) -> str | None:
 def decide(cmd: str, cwd: str) -> str | None:
     """The reason to deny `cmd`, or None to let it run."""
     reading = _shell.read(cmd)
+    base = Path(cwd)
     for command in reading.commands:
+        argv = _shell.strip_prefix(command.argv)
+        if argv[:1] == ["cd"]:
+            base = base / os.path.expanduser(argv[1]) if argv[1:] else Path.home()
+            continue
         verb = _verb(command.argv)
         if verb is None:
             continue
@@ -92,7 +100,7 @@ def decide(cmd: str, cwd: str) -> str | None:
             continue
         if reading.has_substitution():
             return USE_BODY_FILE
-        body = _body(command, cwd)
+        body = _body(command, base)
         if body is None:
             return USE_BODY_FILE
         checker = _checker()

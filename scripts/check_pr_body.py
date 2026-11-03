@@ -38,6 +38,8 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _ATX_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 _BOLD_LINE = re.compile(r"^\s*\*\*([^*]+?)\*\*:?\s*$")
+_SETEXT_UNDERLINE = re.compile(r"^\s{0,3}(?:=+|-+)\s*$")
+_NOT_A_PARAGRAPH = re.compile(r"^\s*(?:[-*+>|]|\d+[.)])(?:\s|$)")
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\.?\d)")
 
 _ATTRIBUTION = (
@@ -45,7 +47,7 @@ _ATTRIBUTION = (
     re.compile(r"\bAnthropic\b"),
     re.compile(r"claude\.ai"),
     re.compile(r"(?i)\bco-authored-by\b"),
-    re.compile(r"(?i)\bgenerated with\b"),
+    re.compile(r"(?i)\bgenerated with \["),
     re.compile("\N{ROBOT FACE}"),
 )
 
@@ -98,6 +100,16 @@ def _heading(line: Line) -> str | None:
     return match.group(1).strip().rstrip(":") if match else None
 
 
+def _setext_heading(line: Line, following: Line | None) -> str | None:
+    if following is None or following.in_code or line.in_code or not line.text.strip():
+        return None
+    if not _SETEXT_UNDERLINE.match(following.text):
+        return None
+    if _NOT_A_PARAGRAPH.match(line.text) or _SETEXT_UNDERLINE.match(line.text):
+        return None
+    return line.text.strip().rstrip(":")
+
+
 def _private_addresses(text: str) -> list[str]:
     found = []
     for candidate in _IPV4.findall(text):
@@ -116,8 +128,16 @@ def problems(body: str) -> list[str]:
 
     section_text: dict[str, list[str]] = {}
     current: str | None = None
-    for line in lines:
+    underlines: set[int] = set()
+    for index, line in enumerate(lines):
+        if index in underlines:
+            continue
+        following = lines[index + 1] if index + 1 < len(lines) else None
         heading = _heading(line)
+        if heading is None:
+            heading = _setext_heading(line, following)
+            if heading is not None:
+                underlines.add(index + 1)
         if heading is None:
             if current is not None and line.text.strip():
                 section_text[current].append(line.text)
