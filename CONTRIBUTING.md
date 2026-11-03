@@ -349,6 +349,12 @@ and reset when you are done.
   change lands through review.
 - `make preflight` must be green before you open the PR — see
   [The pre-PR gate](#the-pre-pr-gate).
+- **The PR description uses the three sections of
+  [the template](.github/PULL_REQUEST_TEMPLATE.md)** and no others. The
+  `pr-body` check refuses any other heading, an attribution trailer, a LAN
+  address or home-directory path, and a list of work the PR leaves undone. Fix
+  that work in the PR or open an issue for it. Check a draft locally with
+  `python3 scripts/check_pr_body.py FILE`.
 - Do not commit user media, personal configs, or machine-specific details (IP
   addresses, capture-device names, local paths). `assets/` tracks only its
   per-directory READMEs by design; everything else there is gitignored.
