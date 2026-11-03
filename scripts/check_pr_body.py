@@ -24,7 +24,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import sys
-from dataclasses import dataclass
+from typing import NamedTuple
 
 TEMPLATE = ".github/PULL_REQUEST_TEMPLATE.md"
 
@@ -68,8 +68,9 @@ _UNDONE_OR_REVIEW_NARRATIVE = (
 )
 
 
-@dataclass(frozen=True)
-class Line:
+# Not a dataclass: before Python 3.15 that needs this module in sys.modules,
+# and the hook and the tests load it by path without registering it.
+class Line(NamedTuple):
     number: int
     text: str
     in_code: bool
