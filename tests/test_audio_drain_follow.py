@@ -267,8 +267,9 @@ class StagedBitmapDrainTest(unittest.TestCase):
     """The measured drain a REU-staged bitmap starts an audio file from, by
     machine and standard; an unmeasured pair has none."""
 
-    def test_an_ultimate_64_ntsc_has_its_measured_figure(self):
-        self.assertEqual(U64_NTSC.staged_bitmap_drain(), 0.952)
+    def test_an_ultimate_64_ntsc_has_a_measured_figure_per_mode(self):
+        self.assertEqual(U64_NTSC.staged_bitmap_drain("hires"), 0.962)
+        self.assertEqual(U64_NTSC.staged_bitmap_drain("mhires"), 0.952)
 
     def test_unmeasured_machines_and_standards_have_none(self):
         for profile in (
@@ -277,7 +278,8 @@ class StagedBitmapDrainTest(unittest.TestCase):
             TEENSYROM_PROFILE,
             ULTIMATE_PROFILE,
         ):
-            self.assertIsNone(profile.staged_bitmap_drain(), profile)
+            for mode in ("hires", "mhires"):
+                self.assertIsNone(profile.staged_bitmap_drain(mode), (profile, mode))
 
 
 class _DrainingSink:
@@ -521,7 +523,7 @@ class AudioFileSourceDrainTest(unittest.TestCase):
     def test_a_measured_drain_plays_a_staged_bitmap_in_real_time_from_the_start(self):
         # An Ultimate 64 NTSC over a REU-staged bitmap: the link carries only
         # ~12 KiB/s, which predicts 0.985, while the DAC drains at ~0.95.
-        drain = U64_NTSC.staged_bitmap_drain()
+        drain = U64_NTSC.staged_bitmap_drain("mhires")
         assert drain is not None
         sink = _DrainingSink(self.now, drain)
         start = self.now[0]

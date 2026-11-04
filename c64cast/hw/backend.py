@@ -264,10 +264,10 @@ class HardwareProfile:
         # survives them and raises there instead of reading as a size.
         return int(min(max(knee, 0.0), sys.maxsize))
 
-    def staged_bitmap_drain(self) -> float | None:
+    def staged_bitmap_drain(self, mode: str) -> float | None:
         """The fraction of real time the `$D418` DAC's clock advances at while
-        an audio file plays over a REU-staged bitmap mode on this machine, or
-        None where that is unmeasured. The staged frames never cross the link,
+        an audio file plays over the REU-staged bitmap `mode` ("hires" or
+        "mhires") on this machine, or None where that is unmeasured. The staged frames never cross the link,
         so `halt_cycles_per_byte` cannot predict it.
 
         Not `C64Backend.dac_bitmap_tempo`: that is the drain under a bitmap
@@ -275,7 +275,7 @@ class HardwareProfile:
         there plays it about 7% fast."""
         if not self.supports_system_mode:
             return None
-        return ULTIMATE_64_STAGED_BITMAP_DRAIN.get(self.system)
+        return ULTIMATE_64_STAGED_BITMAP_DRAIN.get((self.system, mode))
 
     # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
@@ -360,10 +360,13 @@ ULTIMATE_PROFILE = HardwareProfile(
 # (2026-08-05, see audio.md).
 ULTIMATE_64_HALT_CYCLES_PER_BYTE = 1.270
 
-# Keyed by the resolved video standard. Measured on an Ultimate 64 off the
-# drain follower's window, hires and mhires alike (see audio.md); a standard
-# not listed has not been measured.
-ULTIMATE_64_STAGED_BITMAP_DRAIN: dict[str, float] = {"NTSC": 0.952}
+# Keyed by the resolved video standard and the display mode. Measured on an
+# Ultimate 64 off the drain follower's window (see audio.md); a pair not
+# listed has not been measured.
+ULTIMATE_64_STAGED_BITMAP_DRAIN: dict[tuple[str, str], float] = {
+    ("NTSC", "hires"): 0.962,
+    ("NTSC", "mhires"): 0.952,
+}
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
 # is declared True at the protocol level here; TeensyROMBackend.__init__ probes
