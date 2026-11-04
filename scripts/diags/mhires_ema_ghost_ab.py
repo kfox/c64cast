@@ -32,6 +32,7 @@ import os
 import cv2
 import numpy as np
 
+from c64cast.app.config import ColorCfg
 from c64cast.scenes.scenes import _crop_to_aspect
 from c64cast.video.modes import base as modes_base
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
@@ -42,6 +43,10 @@ OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
 
 def _timecode(s: float) -> str:
     return f"{int(s // 60):02d}:{s % 60:05.2f}"
+
+
+def fixed_fit_renderer(fit: ColorFit | None) -> OfflineMhires:
+    return OfflineMhires(color=ColorCfg(auto_fit=False), fit=fit)
 
 
 def render_sequence(
@@ -65,12 +70,12 @@ def render_sequence(
     base_q, base_c = 5000.0, 5000.0  # PERCELL_QUANT/CODE_HYSTERESIS_BONUS defaults
     modes_base.PERCELL_QUANT_HYSTERESIS_BONUS = base_q * hyst_scale  # read in mode __init__
     modes_base.PERCELL_CODE_HYSTERESIS_BONUS = base_c * hyst_scale
-    renderer = OfflineMhires(fit=fit)
+    renderer = fixed_fit_renderer(fit)
     saved: list[tuple[float, np.ndarray]] = []
     next_save = t0
     for tick in iter_frames(video, t0, t1, fps=fps):
         if stateless:
-            renderer = OfflineMhires(fit=fit)  # discard all history each frame
+            renderer = fixed_fit_renderer(fit)  # discard all history each frame
         renderer.show(tick.frame, tick.t)
         if tick.t + 1e-6 >= next_save:
             saved.append((tick.t, renderer.render()))

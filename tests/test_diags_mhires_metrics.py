@@ -3,6 +3,9 @@ video_cut_eval.py: the numbers those tools report are only as good as these."""
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
 
 import numpy as np
@@ -145,6 +148,32 @@ class OfflineRendererTest(unittest.TestCase):
         staged = renderer.framebuffer.ram[0xC700] & 0x0F
         self.assertNotEqual(staged, 0)
         self.assertEqual(renderer.framebuffer.ram[0xD021] & 0x0F, staged)
+
+
+class EvalToolTest(unittest.TestCase):
+    def _cuts_file(self, content: object) -> str:
+        path = os.path.join(tempfile.mkdtemp(), "cuts.json")
+        with open(path, "w") as fh:
+            json.dump(content, fh)
+        return path
+
+    def test_cuts_load_from_the_cut_labels_file_and_from_plain_lists(self):
+        from scripts.diags.mhires_video_eval import load_cuts
+
+        labels = {"a": {"cuts": [1.5, 3.0], "flash": [2.0], "fade": [], "motion": []}}
+        self.assertEqual(load_cuts(self._cuts_file(labels)), {"a": [1.5, 3.0]})
+        self.assertEqual(load_cuts(self._cuts_file({"a": [1.5]})), {"a": [1.5]})
+
+    def test_a_clip_with_no_frames_in_its_window_still_prints(self):
+        from scripts.diags.mhires_video_eval import _fmt, summarize
+
+        self.assertEqual(_fmt(summarize([], None, 30)), "frames=0")
+
+    def test_ghost_ab_renders_without_an_online_fit_when_the_window_fit_is_identity(self):
+        from scripts.diags.mhires_ema_ghost_ab import fixed_fit_renderer
+
+        renderer = fixed_fit_renderer(None)
+        self.assertIsNone(renderer._online)
 
 
 if __name__ == "__main__":

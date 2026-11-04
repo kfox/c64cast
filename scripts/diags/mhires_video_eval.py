@@ -17,9 +17,10 @@ the picture is to its source, what it costs the link, and how much it churns.
 `--clips` is a JSON list of {"name", "path", "t0", "t1"}; a `path` that is an
 image is scored as a still (`--still-frames` identical frames, the last one
 scored). `--cuts` is a JSON object mapping a clip name to the source times,
-in seconds, of the first frame of each true shot (`video_cut_eval.py` writes
-its labels in that form). With it the summary adds `post_cut_*`: the means
-over the `--post-cut` frames from each cut (`_mhires_metrics.post_cut_windows`).
+in seconds, of the first frame of each true shot, or `video_cut_eval.py`'s
+labels file, whose `cuts` lists are those times. With it the summary adds
+`post_cut_*`: the means over the `--post-cut` frames from each cut
+(`_mhires_metrics.post_cut_windows`).
 
 `--at-cut` makes the renderer do something at each of those cuts, so a run
 with it, compared against one without, measures what that change buys in the
@@ -297,13 +298,16 @@ def _parse_set(items: list[str]) -> dict[str, Any]:
     return out
 
 
+def load_cuts(path: str) -> dict[str, list[float]]:
+    raw = json.loads(Path(path).read_text())
+    return {name: v["cuts"] if isinstance(v, dict) else v for name, v in raw.items()}
+
+
 def cmd_score(args: argparse.Namespace) -> int:
     clips = [Clip(**c) for c in json.loads(Path(args.clips).read_text())]
     if args.only:
         clips = [c for c in clips if c.name in set(args.only.split(","))]
-    cuts: dict[str, list[float]] | None = (
-        json.loads(Path(args.cuts).read_text()) if args.cuts else None
-    )
+    cuts = load_cuts(args.cuts) if args.cuts else None
     variant = Variant(
         label=args.label,
         color=_parse_set(args.set),
@@ -344,6 +348,8 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def _fmt(s: dict[str, Any]) -> str:
+    if not s["frames"]:
+        return "frames=0"
     parts = [
         f"frames={s['frames']}",
         f"fid_q={s['fid_q']:.2f} fid_src={s['fid_src']:.2f}",

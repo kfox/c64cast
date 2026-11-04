@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-import av
 import cv2
 import numpy as np
 
@@ -31,6 +30,7 @@ from c64cast.app.scene_factory import _display_mode_for_scene
 from c64cast.hw.backend import ULTIMATE_PROFILE
 from c64cast.hw.c64 import VIC
 from c64cast.scenes.scenes import ONLINE_FIT_WARMUP_FRAMES, _crop_to_aspect, _render_with_overlays
+from c64cast.video import video
 from c64cast.video.framebuffer import Framebuffer
 from c64cast.video.modes.mhires import MultiHiresDisplayMode
 from c64cast.video.modes_irq import FRAME_TRACKER_ADDR, HOSTDMA_TRACKER_OFF_BG0
@@ -84,6 +84,8 @@ def iter_frames(
     set, each tick shows the newest frame due by then and a frame repeated
     from the last tick is skipped, as `current_frame` and the dedup do on a
     capped path; frames due between two ticks are never shown."""
+    video.ensure_pyav()
+    av = video.av
     container = av.open(path)
     try:
         stream = container.streams.video[0]
