@@ -19,7 +19,7 @@ cost (more per-frame color churn on noisy content) is what the low default
 displayed-frame rate); the *direction* across alphas does not.
 
     python -m scripts.diags.mhires_ema_ghost_ab \
-        --video assets/videos/WarGames.webm --t0 26 --t1 32 --fps 15
+        --video CLIP --t0 26 --t1 32 --fps 15
 
 Confirm the winning alpha on real hardware afterward (this is fps-approximate).
 """
@@ -28,84 +28,34 @@ from __future__ import annotations
 
 import argparse
 import os
-from types import SimpleNamespace
 
-import av
 import cv2
 import numpy as np
 
 from c64cast.app.config import ColorCfg
-from c64cast.app.scene_factory import _build_display_mode
-from c64cast.scenes.scenes import _crop_to_aspect, _render_with_overlays
-from c64cast.video.framebuffer import Framebuffer
+from c64cast.scenes.scenes import _crop_to_aspect
 from c64cast.video.modes import base as modes_base
-from c64cast.video.palette import ColorFitAccumulator
-
-# Reuse the offline no-wire backend from render_offline (framebuffer shadows
-# writes through the normal listener hook).
-from scripts.diags.render_offline import RenderBackend
+from c64cast.video.palette import ColorFit, ColorFitAccumulator
+from scripts.diags._offline_video import OfflineMhires, iter_frames
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
-
-
-def decode_window(path: str, t0: float, t1: float) -> list[tuple[float, np.ndarray]]:
-    """Decode [t0, t1] seconds of `path` to a PTS-sorted list of (pts, BGR)."""
-    container = av.open(path)
-    vs = container.streams.video[0]
-    tb = float(vs.time_base) if vs.time_base else 0.0
-    container.seek(int(t0 * 1_000_000))  # AV_TIME_BASE (microseconds)
-    out: list[tuple[float, np.ndarray]] = []
-    for frame in container.decode(vs):
-        pts = float(frame.pts) * tb if frame.pts is not None else 0.0
-        if pts < t0:
-            continue
-        if pts > t1:
-            break
-        out.append((pts, frame.to_ndarray(format="bgr24")))
-    container.close()
-    out.sort(key=lambda p: p[0])
-    return out
-
-
-def resample(frames: list[tuple[float, np.ndarray]], t0: float, t1: float, fps: float):
-    """Yield (tick_time, nearest-decoded-frame) at `fps` across [t0, t1]."""
-    if not frames:
-        return
-    dt = 1.0 / fps
-    ptss = np.array([p for p, _ in frames])
-    t = t0
-    while t <= t1 + 1e-6:
-        idx = int(np.argmin(np.abs(ptss - t)))
-        yield t, frames[idx][1]
-        t += dt
 
 
 def _timecode(s: float) -> str:
     return f"{int(s // 60):02d}:{s % 60:05.2f}"
 
 
-def _new_mode(fit):
-    """Fresh mhires mode + its own offline framebuffer. Returns (mode, api, fb)."""
-    api = RenderBackend()
-    fb = Framebuffer()
-    api.add_write_listener(fb.on_write)
-    mode = _build_display_mode("mhires", cell_strategy="frequency", color=ColorCfg())
-    mode.setup(api)
-    if fit is not None:
-        mode.set_color_fit(fit)
-    return mode, api, fb
-
-
-_SCENE = SimpleNamespace(name="wargames/mhires", effect=None, overlays=[])
+def fixed_fit_renderer(fit: ColorFit | None) -> OfflineMhires:
+    return OfflineMhires(color=ColorCfg(auto_fit=False), fit=fit)
 
 
 def render_sequence(
-    frames: list[tuple[float, np.ndarray]],
+    video: str,
     t0: float,
     t1: float,
     fps: float,
     alpha: float,
-    fit,
+    fit: ColorFit | None,
     save_every: float,
     stateless: bool = False,
     hyst_scale: float = 1.0,
@@ -120,16 +70,15 @@ def render_sequence(
     base_q, base_c = 5000.0, 5000.0  # PERCELL_QUANT/CODE_HYSTERESIS_BONUS defaults
     modes_base.PERCELL_QUANT_HYSTERESIS_BONUS = base_q * hyst_scale  # read in mode __init__
     modes_base.PERCELL_CODE_HYSTERESIS_BONUS = base_c * hyst_scale
-    mode, api, fb = _new_mode(fit)
+    renderer = fixed_fit_renderer(fit)
     saved: list[tuple[float, np.ndarray]] = []
     next_save = t0
-    for t, raw in resample(frames, t0, t1, fps):
-        img = _crop_to_aspect(raw)
+    for tick in iter_frames(video, t0, t1, fps=fps):
         if stateless:
-            mode, api, fb = _new_mode(fit)  # discard all history each frame
-        _render_with_overlays(mode, api, img, [], t, _SCENE, None)  # type: ignore[arg-type]
-        if t + 1e-6 >= next_save:
-            saved.append((t, fb.render()))
+            renderer = fixed_fit_renderer(fit)  # discard all history each frame
+        renderer.show(tick.frame, tick.t)
+        if tick.t + 1e-6 >= next_save:
+            saved.append((tick.t, renderer.render()))
             next_save += save_every
     return saved
 
@@ -143,7 +92,7 @@ def label(img: np.ndarray, text: str) -> np.ndarray:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--video", default="assets/videos/WarGames.webm")
+    ap.add_argument("--video", required=True)
     ap.add_argument("--t0", type=float, default=26.0, help="window start (s)")
     ap.add_argument("--t1", type=float, default=32.0, help="window end (s)")
     ap.add_argument("--fps", type=float, default=15.0, help="compose (displayed-frame) rate")
@@ -166,17 +115,15 @@ def main() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
     alphas = [float(a) for a in args.alphas.split(",")]
 
-    print(f"[decode] {args.video} [{args.t0}, {args.t1}]s ...")
-    frames = decode_window(args.video, args.t0, args.t1)
-    print(f"[decode] {len(frames)} frames")
+    # auto_fit: a fit fixed over the whole window keeps the color fit out of
+    # the comparison, so only the pick state differs between the renders.
+    acc = ColorFitAccumulator()
+    frames = 0
+    for tick in iter_frames(args.video, args.t0, args.t1, fps=args.fps):
+        acc.add(_crop_to_aspect(tick.frame))
+        frames += 1
     if not frames:
         raise SystemExit("no frames decoded in window")
-
-    # auto_fit: production prescans the whole file; a window scan is a faithful,
-    # fast stand-in and the ghost mechanism is independent of it anyway.
-    acc = ColorFitAccumulator()
-    for _, im in frames:
-        acc.add(im)
     fit = acc.result()
     print(f"[auto_fit] {'fit=' + str(fit) if fit else 'identity (no-op)'}")
 
@@ -188,7 +135,7 @@ def main() -> None:
     # after a cut = a longer-lived ghost.
     print("[render] stateless reference (fresh mode per frame)")
     ref = render_sequence(
-        frames, args.t0, args.t1, args.fps, 0.15, fit, args.save_every, stateless=True
+        args.video, args.t0, args.t1, args.fps, 0.15, fit, args.save_every, stateless=True
     )
     ref_imgs = [im.astype(np.int16) for _, im in ref]
 
@@ -208,7 +155,7 @@ def main() -> None:
     for alpha in alphas:
         print(f"[render] alpha={alpha}")
         seq = render_sequence(
-            frames,
+            args.video,
             args.t0,
             args.t1,
             args.fps,
