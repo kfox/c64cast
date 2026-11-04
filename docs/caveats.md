@@ -214,8 +214,8 @@ re-engages its own bitmap mode. `Ultimate64API._launch_sid_player` blanks the
 display (`blank_display()`, DEN off) immediately before DMA'ing the SID
 blobs, the same guard `reset()` uses for the same reason. The TeensyROM
 backend never does this (see the vector-swap note below): its "kick" doesn't
-reset the machine, and turning DEN off there would stall the cycle-clean DMA
-gate.
+reset the machine, and turning DEN off there wedges the cycle-clean DMA on
+TeensyROM firmware before v0.9.
 
 ### Per-call memory banking (`$01`)
 
@@ -1087,24 +1087,17 @@ active). Consequences worth knowing:
   text (`"Not enough room"`, `"File already exists."`, …) appended otherwise —
   instead of a bare token code. This is what makes the failure below diagnosable.
 
-  > **Known issue — intermittent TR launcher upload corruption (under
-  > investigation).** On the TeensyROM the launcher's own input poll (and,
-  > before the keyboard poller went quiet under a launcher scene, its
-  > `ReadC64Mem $028D`) shares one serial/TCP link with the launcher's
-  > `reset()` + PostFile. A poll read that
-  > lands in the post-reset menu chatter (or reads a running program's state)
-  > can desync the stream and leave stray bytes that make the *next* PostFile
-  > drop a byte — the uploaded `.prg` then loads one byte short (BASIC autostart
-  > stub lists garbage, `?SYNTAX ERROR`). It's a **race**: intermittent, but when
-  > it fires the symptom is consistent. The launcher works reliably
-  > single-threaded (no concurrent poll) and on the Ultimate (no shared-link
-  > poll), so reproducing it takes a TR+ under a live playlist —
-  > nothing narrower will show it. Candidate fixes (not yet shipped):
-  > make `read_segment` fully resync on any desync so no reader can poison a
-  > later command; a robust pre-upload drain. The keyboard poller no longer
-  > reads across the launcher's reset+upload; whether that alone cures the race
-  > is not yet measured on a TR+. Needs a soak harness (hundreds of launch cycles) to
-  > verify, since it can't be reproduced on demand.
+  > **TR launcher upload corruption — not seen since the link resync.** On the
+  > TeensyROM a poll read sharing the serial/TCP link with the launcher's
+  > `reset()` + PostFile used to desync the stream and make the next PostFile
+  > drop a byte, so the `.prg` loaded one byte short (`?SYNTAX ERROR`). The
+  > link now resyncs after a part-failed command, and the keyboard poller no
+  > longer reads across the launcher's reset+upload. A 600-launch soak on TR+
+  > Release_v0.9 (`scripts/diags/tr_launcher_soak.py`: 300 cycles with a poller
+  > reading `$028D` straight through reset+upload, 300 without) loaded every
+  > program byte for byte. With the poller reading through the upload, 4 of the
+  > 300 launches failed with a link timeout instead, and none did without it;
+  > a playlist keeps the poller out of that window.
 
 ## WLED pixel sink (`wled` scene) needs an external sender
 

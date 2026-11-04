@@ -25,9 +25,15 @@ recover from, then checks the next command and the C64 RAM it touched:
   * ``late-read`` — a 4 KiB read_segment under a 1 ms io_timeout, so its data
     arrives after the client has given up, then a read of the KERNAL reset
     vector.
+  * ``den0``      — clear DEN in $D011, so the VIC draws no badlines, then 500
+    write+read round trips and a Ping.
+    Reports how many failed or read back wrong; passes when DEN reads back
+    clear, the board still answers and a reset (no DMA) brings it back without
+    a power cycle. Not in the default run: firmware before v0.9 wedges until a
+    power cycle.
 
-Writes land at $4000-$40FF, $5000-$50FF and $6000-$6FFF (plain RAM). Resets
-the machine on exit.
+Writes land at $4000-$40FF, $5000-$50FF and $6000-$6FFF (plain RAM), and
+``den0`` also writes $D011. Resets the machine on exit.
 """
 
 from __future__ import annotations
@@ -56,6 +62,11 @@ A = 0x4000
 B = 0x5000
 BULK = 0x6000
 KERNAL_RESET_VECTOR = 0xFFFC
+VIC_CONTROL = 0xD011
+DEN = 0x10
+DEN_SETTLE_S = 0.1
+DEN0_ROUND_TRIPS = 500
+DEN0_ROUND_TRIP_BYTES = 256
 
 
 def _frame(addr: int, length: int, payload: bytes) -> bytes:
@@ -207,7 +218,47 @@ def case_late_read(tr: TRClient) -> bool:
     return ok
 
 
+def case_den0(tr: TRClient) -> bool:
+    _prime(tr)
+    d011 = _step("read $D011", lambda: tr.read_segment(VIC_CONTROL, 1))
+    if d011 is None:
+        return False
+    _step(
+        "write $D011 with DEN clear", lambda: tr.write_segment(VIC_CONTROL, bytes([d011[0] & ~DEN]))
+    )
+    # The VIC latches DEN at raster line $30, so the current frame keeps its badlines.
+    time.sleep(DEN_SETTLE_S)
+    blanked = _step("read $D011 (DEN=0)", lambda: tr.read_segment(VIC_CONTROL, 1))
+    den_clear = blanked is not None and not blanked[0] & DEN
+    print(f"    DEN read back clear: {den_clear}")
+    failed = mismatched = 0
+    t = time.monotonic()
+    for i in range(DEN0_ROUND_TRIPS):
+        pattern = bytes([i & 0xFF]) * DEN0_ROUND_TRIP_BYTES
+        try:
+            tr.write_segment(BULK, pattern)
+            mismatched += tr.read_segment(BULK, DEN0_ROUND_TRIP_BYTES) != pattern
+        except TRError as e:
+            failed += 1
+            if failed == 1:
+                print(f"    first failure at round trip {i}: {type(e).__name__}: {e}")
+    print(
+        f"    {DEN0_ROUND_TRIPS} write+read round trips of {DEN0_ROUND_TRIP_BYTES} B under DEN=0:"
+        f" {failed} failed, {mismatched} read back wrong ({time.monotonic() - t:.1f} s)"
+    )
+    line = _step("ping", tr.ping)
+    _step("reset", tr.reset)
+    tr.drain_after_command(3.0)
+    vec = _step(
+        "read KERNAL reset vector after reset", lambda: tr.read_segment(KERNAL_RESET_VECTOR, 2)
+    )
+    ok = den_clear and bool(line) and vec is not None
+    print(f"    under DEN=0 the board still answered and a reset alone recovered it: {ok}")
+    return ok
+
+
 CASES = {
+    "den0": case_den0,
     "short": case_short,
     "swallow": case_swallow,
     "cut-send": case_cut_send,
@@ -222,7 +273,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--url", default="tr://")
-    ap.add_argument("--case", action="append", choices=sorted(CASES), help="default: all")
+    ap.add_argument("--case", action="append", choices=sorted(CASES), help="default: all but den0")
     args = ap.parse_args()
 
     cfg = Config()
@@ -237,7 +288,7 @@ def main() -> int:
     results: dict[str, bool] = {}
     try:
         print(f"firmware: {tr.ping()!r}")
-        for name in args.case or list(CASES):
+        for name in args.case or [c for c in CASES if c != "den0"]:
             print(f"\n[{name}]")
             results[name] = CASES[name](tr)
             # Leave the next case a quiet link whatever this one did.

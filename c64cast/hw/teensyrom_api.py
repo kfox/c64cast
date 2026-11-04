@@ -580,19 +580,18 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
            input handling doesn't run the kernal keyboard scan — $028D would
            freeze and the C=-held-to-resume gesture could never be detected.
 
-        2. **Keep DEN on (don't blank_display).** The TR's cycle-clean DMA
-           gates its /DMA assert on a safe VIC cycle (a badline). Turning the
-           display OFF (DEN=0) removes badlines, so the DMA can never assert —
-           every subsequent read (and write) fails, which strands resume.
-           Firmware before v0.9 also wedges the TR until a power-cycle; from
-           v0.9 it abandons the transfer and answers FailToken.
+        2. **Keep DEN on (don't blank_display).** On firmware before v0.9,
+           turning the display OFF (DEN=0) stalls the cycle-clean DMA and
+           wedges the TR until a power-cycle, which strands resume. v0.9 keeps
+           reading and writing with DEN=0, but older firmware is still
+           supported, so DEN stays on.
 
         Neither a reset nor a blank is needed: the IRQ-enabled BASIC clear-loop
         set up at bring-up is still running underneath every scene (it's what
         keeps $028D live so pause/skip/cycle work *during* a scene — the DMA
         only overwrites screen/VIC RAM, never the BASIC program). So we just
         DMA-clear screen RAM to spaces for a clean 'paused' screen, leaving DEN
-        on — badlines keep flowing and the resume-hold reads keep working. This
+        on so the resume-hold reads keep working on every firmware. This
         is the closest possible idle to the (working) live-scene state."""
         self._clear_screen()
 
@@ -763,10 +762,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
 
         This reset+PostFile+LaunchFile sequence shares the link with the
         keyboard/menu poller's concurrent read_memory calls on read-capable
-        firmware — the documented, still-open launcher-upload race (see
-        docs/architecture/hardware-io.md). Logged here so a field report's
-        cryptic on-screen ?SYNTAX ERROR can be correlated back to this known
-        cause."""
+        firmware — the launcher-upload race, not seen since the link resync
+        (see docs/architecture/hardware-io.md). Logged here so a field report's
+        cryptic on-screen ?SYNTAX ERROR can be correlated back to it."""
         if self.profile.supports_read:
             log.debug(
                 "TR upload: keyboard poller may be active during upload of %s "

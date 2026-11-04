@@ -1630,7 +1630,7 @@ class Playlist:
             # resume-hold detection. Backend-specific: the Ultimate resets to the
             # BASIC READY banner; the TeensyROM clears the screen but keeps the
             # display ON, since a bare reset lands at the TR menu and freezes $028D,
-            # and blanking would remove the VIC badlines its cycle-clean DMA needs.
+            # and blanking wedges the DMA on TR firmware before v0.9.
             self.api.pause_idle()
         except Exception:
             self.log.exception("pause_idle failed")
