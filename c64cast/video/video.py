@@ -2310,8 +2310,8 @@ class AVFileSource:
 
     @property
     def demux_ended(self) -> bool:
-        """The demuxer has read to the end of the file; frames already
-        decoded may still be waiting to be shown."""
+        """The demuxer has stopped reading, at the end of the file or on a
+        crash; frames already decoded may still be waiting to be shown."""
         with self._lock:
             return self._eof
 

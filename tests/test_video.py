@@ -3230,6 +3230,14 @@ class CurrentFrameTelemetryTest(unittest.TestCase):
         src = _make_av_source_stub(frames, eof=False)
         self.assertEqual(src.video_buffer_depth, 3)
 
+    def test_demux_ended_while_decoded_frames_still_wait(self):
+        frames = [(float(t), np.zeros((2, 2, 3), np.uint8)) for t in range(3)]
+        reading = _make_av_source_stub(frames, eof=False)
+        self.assertFalse(reading.demux_ended)
+        drained = _make_av_source_stub(frames, eof=True)
+        self.assertTrue(drained.demux_ended)
+        self.assertFalse(drained.finished)
+
 
 @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AtempoTempoCompensationTest(unittest.TestCase):
