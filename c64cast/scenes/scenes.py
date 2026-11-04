@@ -2120,7 +2120,10 @@ class VideoScene(MediaFileMixin, Scene):
         self._av_lag_max = max(self._av_lag_max, lag)
         self._av_lag_sum += lag
         self._av_lag_count += 1
-        self._av_buf_min = min(self._av_buf_min, depth)
+        # Past the end of the file the buffer drains to nothing on every run,
+        # so a depth there says nothing about whether decode kept up.
+        if not self.source.demux_ended:
+            self._av_buf_min = min(self._av_buf_min, depth)
         # clock/wall is how fast the master clock advances against real time:
         # ~1.0 is real-time, and below that is the host-DMA servo under-draining
         # the ring under bitmap DMA load. Tempo compensation pre-compresses
@@ -2271,11 +2274,11 @@ class VideoScene(MediaFileMixin, Scene):
         clock_wall = self.transport.clock_s() / wall if wall > 0 else 0.0
         log.info(
             "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
-            "min buffer depth=%d, clock/wall=%.4f over %d displayed frames",
+            "min buffer depth=%s before EOF, clock/wall=%.4f over %d displayed frames",
             self._av_lag_min * 1000,
             (self._av_lag_sum / self._av_lag_count) * 1000,
             self._av_lag_max * 1000,
-            int(self._av_buf_min),
+            int(self._av_buf_min) if math.isfinite(self._av_buf_min) else "n/a",
             clock_wall,
             self._av_lag_count,
         )

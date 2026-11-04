@@ -899,6 +899,8 @@ class _StubSource:
         self.finished = False
         self.accepts_seeks = True
         self.last_frame_pts = 0.0
+        self.video_buffer_depth = 0
+        self.demux_ended = False
         self.seeks: list[float] = []
         self.exacts: list[bool] = []
         self.muted_calls: list[bool] = []
@@ -943,10 +945,6 @@ class _StubSource:
 
     def current_frame(self, clock_s: float) -> np.ndarray | None:
         return self._frame
-
-    @property
-    def video_buffer_depth(self) -> int:
-        return 0
 
     # The real source's tempo map at its starting point, a plain ratio: the
     # scale is the scene's tempo_scale, which the tests set on the scene.
@@ -2447,6 +2445,39 @@ class VideoSceneSpliceTest(unittest.TestCase):
             scene.transport_resume()
         with _freeze_time(at + 53.0):
             self.assertAlmostEqual(scene.transport_position(), 207.0)
+
+
+class VideoSceneAvLagSummaryTest(unittest.TestCase):
+    """The summary's minimum buffer depth is decode headroom, which only
+    means something while the demuxer is still reading the file."""
+
+    def _record(self, scene: VideoScene, source: _StubSource, depths: list[int]) -> None:
+        for depth in depths:
+            source.video_buffer_depth = depth
+            scene._record_av_lag(1.0, time.time())
+
+    def _summary(self, scene: VideoScene) -> str:
+        with self.assertLogs("c64cast.scenes.scenes", level="INFO") as caught:
+            scene._log_av_lag_summary()
+        (line,) = [out for out in caught.output if "video A/V lag summary:" in out]
+        return line
+
+    def test_the_drain_after_the_end_of_the_file_is_left_out_of_the_minimum(self):
+        source = _StubSource(duration=100.0)
+        scene = _make_video_scene_stub(source)
+        scene.wall_start_time = time.time() - 1.0
+        self._record(scene, source, [40, 38, 41])
+        source.demux_ended = True
+        self._record(scene, source, [3, 1, 0])
+        self.assertIn("min buffer depth=38 ", self._summary(scene))
+
+    def test_a_run_shown_entirely_after_the_end_of_the_file_has_no_minimum(self):
+        source = _StubSource(duration=1.0)
+        scene = _make_video_scene_stub(source)
+        scene.wall_start_time = time.time() - 1.0
+        source.demux_ended = True
+        self._record(scene, source, [2, 1, 0])
+        self.assertIn("min buffer depth=n/a ", self._summary(scene))
 
 
 class VideoSceneIdentitySkipTest(unittest.TestCase):

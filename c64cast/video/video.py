@@ -2309,6 +2309,13 @@ class AVFileSource:
             return len(self._video_buf)
 
     @property
+    def demux_ended(self) -> bool:
+        """The demuxer has read to the end of the file; frames already
+        decoded may still be waiting to be shown."""
+        with self._lock:
+            return self._eof
+
+    @property
     def finished(self) -> bool:
         """EOF with nothing left to show — unless a seek is still waiting
         for a live demux thread to restart it."""
