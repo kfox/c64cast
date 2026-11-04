@@ -7,7 +7,8 @@
 Each cycle resets the C64 and launches a 12 KB PRG the way `launch_program`
 does for `LauncherScene` (upload, then LaunchFile), while a
 `CommodoreKeyPoller` reads $028D every 100 ms on the same link; `--no-poller`
-is the control run without it. A failed cycle names the step it failed in. Then it reads the program back from $0801 and compares. The
+is the control run without it. Then it reads the program back from $0801 and
+compares; a cycle whose upload or LaunchFile failed names that step instead. The
 PRG is `0 GOTO 0` followed by filler, so nothing decrunches over it or writes
 to it while it runs.
 
@@ -90,9 +91,8 @@ def main() -> int:
         if not args.no_poller:
             poller.start(threading.Event(), threading.Event())
         for cycle in range(1, args.cycles + 1):
-            step = "reset"
+            be.reset()
             try:
-                be.reset()
                 # launch_program's own two steps, split so a failure names the one it hit.
                 step = "upload"
                 be.invalidate_cache()
