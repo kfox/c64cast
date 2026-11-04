@@ -3383,15 +3383,19 @@ class ConfigGenerativeTest(unittest.TestCase):
 
     def test_audio_source_file_starts_at_the_measured_staged_bitmap_drain(self):
         # The REU-staged frames never cross the link, so the halt prediction
-        # reads 0.985 where an Ultimate 64 NTSC measured ~0.95 (#686).
-        for display in ("hires", "mhires"):
-            src = self._dac_file_source(display, "NTSC")
-            self.assertEqual(src._drain_scale, 0.952, display)
-            self.assertTrue(src._drain_measured, display)
+        # reads 0.985 where an Ultimate 64 measured ~0.95 (#686).
+        for display, system, drain in (
+            ("hires", "NTSC", 0.962),
+            ("mhires", "NTSC", 0.952),
+            ("hires", "PAL", 0.947),
+            ("mhires", "PAL", 0.944),
+        ):
+            src = self._dac_file_source(display, system)
+            self.assertEqual(src._drain_scale, drain, (display, system))
+            self.assertTrue(src._drain_measured, (display, system))
 
     def test_audio_source_file_unmeasured_drain_keeps_the_prediction(self):
         for display, system, ultimate_64 in (
-            ("hires", "PAL", True),
             ("mhires", "NTSC", False),
             ("mcm", "NTSC", True),
         ):

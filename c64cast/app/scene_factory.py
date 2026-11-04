@@ -2311,7 +2311,7 @@ def _file_drain_start(mode: DisplayMode, api: C64Backend) -> float | None:
     ``mode``, or None to leave the start to the drain follower's prediction."""
     if not (isinstance(mode, BitmapDisplayMode) and mode.use_reu_staged):
         return None
-    return api.profile.staged_bitmap_drain()
+    return api.profile.staged_bitmap_drain(mode.name)
 
 
 def _video_tempo_configured(cfg: Config, mode: DisplayMode) -> float | None:
