@@ -762,10 +762,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
 
         This reset+PostFile+LaunchFile sequence shares the link with the
         keyboard/menu poller's concurrent read_memory calls on read-capable
-        firmware — the documented, still-open launcher-upload race (see
-        docs/architecture/hardware-io.md). Logged here so a field report's
-        cryptic on-screen ?SYNTAX ERROR can be correlated back to this known
-        cause."""
+        firmware — the launcher-upload race, not seen since the link resync
+        (see docs/architecture/hardware-io.md). Logged here so a field report's
+        cryptic on-screen ?SYNTAX ERROR can be correlated back to it."""
         if self.profile.supports_read:
             log.debug(
                 "TR upload: keyboard poller may be active during upload of %s "
