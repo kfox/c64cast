@@ -203,11 +203,11 @@ WriteC64Spans has a third. Its token, header and span list, and payload go out a
 
 ### Known issue: the launcher upload race
 
-Under investigation, **not yet fixed.** The TR launcher (`launch_program` = PostFile + LaunchFile) can produce an intermittently-corrupt upload.
+The TR launcher (`launch_program` = PostFile + LaunchFile) used to produce an intermittently-corrupt upload. The keyboard poller's `ReadC64Mem` shared the TR link with the launcher's reset+PostFile; a poll read landing in the post-reset chatter desynced the stream, so the next PostFile dropped a byte, the `.prg` loaded one byte short, and BASIC reported `?SYNTAX ERROR`.
 
-The mechanism: the keyboard poller's `ReadC64Mem` — and likely the launcher's own input poll — shares the TR link with the launcher's reset+PostFile. A poll read landing in the post-reset chatter desyncs the stream, so the next PostFile drops a byte. The `.prg` then loads one byte short and BASIC reports `?SYNTAX ERROR`.
+Two changes stand against it: `TRClient` resyncs the link after a part-failed command (c64cast#701, #640), and the playlist keeps the keyboard poller from reading across a launcher's reset+upload. `scripts/diags/tr_launcher_soak.py` measures it: each cycle resets, uploads and launches a 12 KB `0 GOTO 0` PRG, then reads it back from `$0801`. On TR+ Release_v0.9 over USB serial, 300 cycles with a `CommodoreKeyPoller` reading `$028D` straight through reset+upload and 300 with `--no-poller` loaded every program byte for byte. The poller run had 4 failed launches instead — three `serial read timed out (0/2 bytes)` and one firmware `Timeout!` on PostFile — and the control none; that run predates the harness naming the failing step.
 
-It is a race, so it reproduces intermittently; single-threaded runs and the Ultimate backend are both reliable. Three candidate fixes are open — a desync-safe `read_segment`, suspending the poller across reset+upload, or draining before upload — and all need a soak harness to verify. See [caveats.md](../caveats.md).
+Without the poller, the first `read_memory` after every LaunchFile fails and the next is clean: LaunchFile's console text waits on the link until a read takes it. See [caveats.md](../caveats.md).
 
 ## `vic_stream.py` — the machine's own VIC output
 
