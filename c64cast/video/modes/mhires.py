@@ -182,7 +182,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         dither_strength: float = 0.5,
         perceptual: bool = False,
         cell_strategy: str = "frequency",
-        motion_smoothing: float = 1.0,
+        motion_smoothing: float = base.DEFAULT_MOTION_SMOOTHING,
         auto_fit_strength: float = 1.0,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
@@ -351,9 +351,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
     def motion_smoothing(self, value: float) -> None:
         # base.ERROR_MIN_HYSTERESIS_MARGIN is NOT scaled by `s`, unlike the
         # three below: it only breaks near-ties, so it costs no motion tracking
-        # to scale away, and scaling it left it at ≈0.06 under
-        # motion_smoothing = 0.25 — too weak for the flicker it exists to
-        # suppress.
+        # to scale away, and scaling it left it at ≈0.025 under the default
+        # motion_smoothing — too weak for the flicker it exists to suppress.
         s = min(1.0, max(0.0, float(value)))
         self._motion_smoothing = s
         self._ema_alpha = 1.0 - s * (1.0 - base.PERCELL_PICK_EMA_ALPHA)

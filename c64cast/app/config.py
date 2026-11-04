@@ -36,6 +36,7 @@ from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
+from c64cast.video.modes.base import DEFAULT_MOTION_SMOOTHING
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -1910,9 +1911,11 @@ class ColorCfg:
         default=True,
         metadata={
             "help": "Per-source adaptive color fit for video + slideshow "
-            "scenes: pre-scan the source and stretch its contrast + "
-            "saturation to fill the C64 gamut (faithful — hue preserved). "
-            "Ignored by webcam scenes (can't pre-scan)."
+            "scenes: stretch the source's contrast + saturation to fill the "
+            "C64 gamut (faithful — hue preserved). A slideshow fits each image; "
+            "a video converges on its opening frames, or fits from the whole-file "
+            'pre-scan that force_palette or hardware_palette = "source" runs. '
+            "Ignored by webcam scenes."
         },
     )
     auto_fit_strength: float = field(
@@ -2102,7 +2105,7 @@ class ColorCfg:
         },
     )
     motion_smoothing: float = field(
-        default=0.1,
+        default=DEFAULT_MOTION_SMOOTHING,
         metadata={
             "help": "Temporal smoothing for mhires percell mode, 0..1. The percell "
             "path smooths its per-cell color choices over time (an EMA over color "

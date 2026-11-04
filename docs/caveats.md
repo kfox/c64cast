@@ -1248,8 +1248,8 @@ and mhires) — see the section below.
 
 `channel_boost` and `hue_corrections` are the *same* nudge for every video.
 `auto_fit` (default **true**) is their per-source adaptive sibling: for
-**video and slideshow scenes only**, c64cast pre-scans the source (a
-quick downscaled decode → one luma histogram + mean saturation) and derives a
+**video and slideshow scenes only**, c64cast gathers one luma histogram + mean
+saturation from the source and derives a
 contrast (levels) stretch plus a gentle saturation lift that expands the content
 to *fill* the C64 tonal + chroma range. The quantizer's target is always the
 fixed 16 colors and content that huddles in a corner of the gamut (dark, flat,
@@ -1267,13 +1267,18 @@ well-exposed source resolves to an identity fit (no-op). `auto_fit_strength`
 (0..1) lerps the whole transform toward identity — `auto_fit_strength = 0.0` is
 equivalent to off, handy for an A/B.
 
-**Where it runs:** the scene computes one `ColorFit` per video (video) or
-per image (slideshow) and installs it on the display mode via `set_color_fit`;
+**Where it runs:** a slideshow computes one `ColorFit` per image. A video
+converges online: it starts neutral and folds each of its first
+`ONLINE_FIT_WARMUP_FRAMES` (48, ≈2 s) new frames into the fit, which then holds
+for the rest of playback. Only when `force_palette` or `hardware_palette =
+"source"` already runs the blocking whole-file pre-scan does the video take its
+fit from that pass instead. Either way the scene installs the fit on the display
+mode via `set_color_fit`;
 the mode applies it as the first step of `compose`/`render`, *after* the cheap
 downscale, so per-frame cost is two LUT passes. Webcam scenes never call
-`set_color_fit` (they can't pre-scan, and a per-frame fit would flicker), so the
+`set_color_fit` (a per-frame fit would flicker), so the
 path is a no-op there — `_color_fit` stays `None`. See
-`palette.ColorFitAccumulator` / `apply_color_fit` and `video.prescan_color_fit`.
+`palette.ColorFitAccumulator` / `apply_color_fit` and `video.prescan_source_color`.
 
 ## Floyd-Steinberg/Atkinson dither is a per-pixel Python loop — fine for stills, not for forced-on video
 

@@ -783,13 +783,15 @@ class DisplayModePaletteTest(unittest.TestCase):
         )
         from c64cast.video.palette import PERCEPTUAL_DIST_SCALE
 
-        m = MultiHiresDisplayMode(palette_mode="percell", perceptual=True)
+        m = MultiHiresDisplayMode(palette_mode="percell", perceptual=True, motion_smoothing=1.0)
         self.assertTrue(m._perceptual)
         self.assertAlmostEqual(
             m._quant_hysteresis, PERCELL_QUANT_HYSTERESIS_BONUS * PERCEPTUAL_DIST_SCALE
         )
         # RGB mode leaves the bonus unscaled.
-        m_rgb = MultiHiresDisplayMode(palette_mode="percell", perceptual=False)
+        m_rgb = MultiHiresDisplayMode(
+            palette_mode="percell", perceptual=False, motion_smoothing=1.0
+        )
         self.assertEqual(m_rgb._quant_hysteresis, PERCELL_QUANT_HYSTERESIS_BONUS)
         self.assertFalse(MCMDisplayMode(perceptual=False)._perceptual)
         self.assertTrue(MCMDisplayMode(perceptual=True)._perceptual)
