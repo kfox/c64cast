@@ -25,8 +25,8 @@ recover from, then checks the next command and the C64 RAM it touched:
   * ``late-read`` — a 4 KiB read_segment under a 1 ms io_timeout, so its data
     arrives after the client has given up, then a read of the KERNAL reset
     vector.
-  * ``den0``      — clear DEN in $D011, so the VIC has no badline for the
-    cycle-clean DMA to assert on, then 500 write+read round trips and a Ping.
+  * ``den0``      — clear DEN in $D011, so the VIC draws no badlines, then 500
+    write+read round trips and a Ping.
     Reports how many failed or read back wrong; passes when DEN reads back
     clear, the board still answers and a reset (no DMA) brings it back without
     a power cycle. Not in the default run: firmware before v0.9 wedges until a
