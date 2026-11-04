@@ -43,12 +43,14 @@ from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.modes_irq import reu_pump_skips_irq_hook
 from c64cast.video.palette import (
+    IDENTITY_FIT,
     ColorFitAccumulator,
     ColorMapAccumulator,
     FrameSampler,
     derive_hardware_palette,
 )
 from c64cast.video.rolling_palette import RollingForcePalette
+from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
     TEMPO_SCALE_MIN,
     AVFileSource,
@@ -1543,6 +1545,7 @@ class VideoScene(MediaFileMixin, Scene):
         # None = no online fit (pre-scanned or disabled).
         self._online_fit: ColorFitAccumulator | None = None
         self._online_fit_frames = 0
+        self._refits_at_cuts = False
         # Capture-anchor marker (audio_marker.py). Only honored on the REU
         # pre-encode path.
         self.prepend_alignment_marker = prepend_alignment_marker
@@ -1658,6 +1661,7 @@ class VideoScene(MediaFileMixin, Scene):
         # mid-playback. auto_fit on its own converges online instead.
         self._online_fit = None
         self._online_fit_frames = 0
+        self._refits_at_cuts = False
         self._av_lag_min = math.inf
         self._av_lag_max = -math.inf
         self._av_lag_sum = 0.0
@@ -1733,6 +1737,11 @@ class VideoScene(MediaFileMixin, Scene):
                     "video: auto-fit converging online over first %d frames",
                     ONLINE_FIT_WARMUP_FRAMES,
                 )
+                if c.auto_fit_shots:
+                    self.source.shot_tracker = ShotTracker(
+                        _crop_to_aspect, ONLINE_FIT_WARMUP_FRAMES
+                    )
+                    self._refits_at_cuts = True
             else:
                 self.display_mode.set_color_fit(None)
                 self.display_mode.set_color_map(None)
@@ -2071,6 +2080,10 @@ class VideoScene(MediaFileMixin, Scene):
                 self._record_av_lag(clock_s, current_time)
                 self._follow_drain(clock_s, time.monotonic())
         img = _crop_to_aspect(img)
+        if new_source and self._refits_at_cuts:
+            shot = self.source.take_shot()
+            if shot is not None:
+                self._install_shot_fit(shot)
         # Before annotation, so the debug digits stay out of the
         # contrast/saturation stats.
         if (
@@ -2103,6 +2116,16 @@ class VideoScene(MediaFileMixin, Scene):
             raise
         self.release_audio_hold()
         return True
+
+    def _install_shot_fit(self, shot: ShotFit) -> None:
+        assert self.display_mode is not None and self._online_fit is not None
+        # Ending the warm-up freezes the online fit, so from the first cut on
+        # it is the opening's fit every shot is held against.
+        self._online_fit_frames = ONLINE_FIT_WARMUP_FRAMES
+        opening = self._online_fit.result() or IDENTITY_FIT
+        fit = (shot.result() or IDENTITY_FIT).held_to(opening, self._color.auto_fit_shot_max_rise)
+        log.debug("video: shot cut, auto-fit %s", fit)
+        self.display_mode.set_color_fit(None if fit.is_identity() else fit)
 
     def _record_av_lag(self, clock_s: float, current_time: float) -> None:
         """Accumulate the A/V lag (audio clock − displayed-frame PTS) for the

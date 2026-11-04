@@ -53,6 +53,7 @@ from .config import (
 from .orchestrator import OrchestratorError
 from .paths import expand_user
 from .scene_factory import (
+    auto_fit_shot_cfg_error,
     cell_strategy_cfg_error,
     color_match_cfg_error,
     dither_cfg_error,
@@ -1125,6 +1126,7 @@ _OVERRIDE_COLOR_CHECKS: tuple[
     (cell_strategy_cfg_error, lambda s, _cfg: _percell_checked_per_scene(s)),
     (motion_smoothing_cfg_error, lambda s, _cfg: _percell_checked_per_scene(s)),
     (flicker_tolerance_cfg_error, _flicker_checked_per_scene),
+    (auto_fit_shot_cfg_error, lambda _s, _cfg: False),
 )
 
 
@@ -1153,17 +1155,18 @@ def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
     by `_validate_scenes` or `_validate_hardware_palette`."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        err = flicker_tolerance_cfg_error("[color]", cfg.color)
-        if err and not _a_scene_reports(cfg, err):
-            out.append(
-                Diagnostic(
-                    level="error",
-                    category="color",
-                    subject=f"{name}/{err.split(' ', 1)[0].removeprefix('[color].')}",
-                    message=err,
-                    hint="See --describe section:color.",
+        for global_check in (flicker_tolerance_cfg_error, auto_fit_shot_cfg_error):
+            err = global_check("[color]", cfg.color)
+            if err and not _a_scene_reports(cfg, err):
+                out.append(
+                    Diagnostic(
+                        level="error",
+                        category="color",
+                        subject=f"{name}/{err.split(' ', 1)[0].removeprefix('[color].')}",
+                        message=err,
+                        hint="See --describe section:color.",
+                    )
                 )
-            )
         for i, (owner, s) in enumerate(scene_and_clip_cfgs(cfg)):
             if not s.color:
                 continue

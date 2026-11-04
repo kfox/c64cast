@@ -63,7 +63,7 @@ The same downscale applies to the one-shot color pre-scan (`scan_video_samples`)
 
 ### Seek-sampled color pre-scan (`scan_video_samples`)
 
-The force_palette and `hardware_palette = "source"` pre-scan needs a representative frame sample across the *whole* source, not real-time playback. It derives the auto_fit too when it runs; without either of those, a video's auto_fit skips the pre-scan and converges online over its first `ONLINE_FIT_WARMUP_FRAMES` (48) frames instead (`VideoScene.setup`).
+The force_palette and `hardware_palette = "source"` pre-scan needs a representative frame sample across the *whole* source, not real-time playback. It derives the auto_fit too when it runs; without either of those, a video's auto_fit skips the pre-scan and converges online over its first `ONLINE_FIT_WARMUP_FRAMES` (48) frames instead (`VideoScene.setup`), then refits at shot cuts ([per-shot auto_fit](#per-shot-auto_fit-shotspy)).
 
 **Why not sequential decode.** Decoding every frame is decode-bound and scales with file length. Striding the loop doesn't help: an `if i % stride: continue` skips accumulation, not decode, so the cost is unchanged.
 
@@ -90,6 +90,18 @@ Short clips pay a small per-seek overhead — an accepted trade for bounding the
 Both paths share `_frame_to_scan_bgr`, the decode-time downscale above, and one decode pass serves force_palette and auto_fit alike.
 
 **Progress reporting.** `scan_video_samples(..., on_progress=)` feeds the setup progress bar ([scenes/setup_progress.py](scenes.md#setup_progresspy--the-video-setup-progress-bar)) without touching either sampling function: the hook is implemented as `_SampleProgressTap`, just another accumulator appended to the list, counting `add()` calls against `max_samples`. The sequential fallback can sample fewer frames than planned, so the reported fraction may end short of 1.0 — the caller marks its own completion (`SegmentedProgress.complete`).
+
+### Per-shot auto_fit (`shots.py`)
+
+The online fit converges on a video's first `ONLINE_FIT_WARMUP_FRAMES` frames. Held for the whole video, a stretch made for a dark or flat opening is carried onto every later shot, and a bright shot blows out. With `[color].auto_fit_shots` (on by default) `VideoScene` refits at each shot cut instead. A whole-file pre-scan's fit is left alone.
+
+**Where the cut is found.** `AVFileSource` decodes 43 or more frames ahead of display. `ShotTracker.observe` runs on the demux thread for each frame entering the buffer, on the aspect crop the display mode will get, downscaled once to the 160 px both the detector and `ColorFitAccumulator` use. The detector is PySceneDetect's AdaptiveDetector ratio test at `SHOT_CUT_RATIO` = 2.0, not its 3.0 default: a VHS transfer's cuts reached only 2.0–2.2, because tape noise raises the neighboring frames' scores, and at 3.0 the clip lost every refit. `scripts/diags/video_cut_eval.py` scores it against hand-labeled cuts. The source keeps each cut's mark beside the buffer, keyed by the cut frame's pts, and drops the marks with the buffer on a seek. `current_frame` hands a mark to the scene (`take_shot`) once it returns the cut frame or one after it, so the fit changes on the cut.
+
+**What fit.** A shot's fit is the auto_fit accumulator over its first 48 frames, which the buffer holds by the time the cut is on screen. Installed as it comes, it scored far worse on dark and grainy shots: a fit can stretch a narrow luma range past a gain of 4, spreading grain across palette boundaries as cell shimmer. So `ColorFit.held_to` caps its contrast gain, 255/(white−black), and its saturation at `auto_fit_shot_max_rise` times the opening's. The opening is the online fit as it stood at the first cut, which also ends the warm-up. Anchoring on it, rather than on the fit before each cut, keeps the cap from ratcheting down shot by shot. A gain over the cap widens the black→white range about its center, so the midtones stay put.
+
+**Why 1.0, relax only.** Measured offline over six clips with `scripts/diags/mhires_video_eval.py`. At 1.0 no clip scored worse on fidelity and shimmer fell by up to 44%. At 1.15, a dark film clip's post-cut fidelity error rose 55% and a 4K clip's shimmer 15%. Whether a shot gains from strengthening could not be predicted from the lookahead: measured temporal noise overlapped completely between shots that gained and shots that lost. So strengthening is a setting, not something detected.
+
+**Detections that are not cuts** land on camera moves, flashes and fades, since the ratio test needs a frame to differ from its neighbors twice as much as they differ from each other. On 17 of 20 such detections the refit added fewer than 240 changed cells over three frames, against 1300–2500 of ordinary churn; the other three coincided with a change of the whole picture.
 
 ### A/V-lag telemetry
 

@@ -1269,8 +1269,12 @@ equivalent to off, handy for an A/B.
 
 **Where it runs:** a slideshow computes one `ColorFit` per image. A video
 converges online: it starts neutral and folds each of its first
-`ONLINE_FIT_WARMUP_FRAMES` (48, ≈2 s) new frames into the fit, which then holds
-for the rest of playback. Only when `force_palette` or `hardware_palette =
+`ONLINE_FIT_WARMUP_FRAMES` (48, ≈2 s) new frames into the fit. With
+`auto_fit_shots` (default **true**) it then refits at each shot cut, from the
+new shot's frames already waiting in the decode buffer, held to at most
+`auto_fit_shot_max_rise` times the opening's contrast and saturation, so by
+default a cut can only relax the fit; without it the opening's fit holds for
+the rest of playback. Only when `force_palette` or `hardware_palette =
 "source"` already runs the blocking whole-file pre-scan does the video take its
 fit from that pass instead. Either way the scene installs the fit on the display
 mode via `set_color_fit`;

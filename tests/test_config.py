@@ -2782,6 +2782,32 @@ class ValidateMotionSmoothingCfgTest(unittest.TestCase):
                 scene_factory.validate_motion_smoothing_cfg(cfg)
 
 
+class ValidateAutoFitShotCfgTest(unittest.TestCase):
+    def test_default_config_is_valid(self):
+        scene_factory.validate_auto_fit_shot_cfg(cfgmod.Config())
+
+    def test_one_and_above_are_valid(self):
+        for v in (1.0, 2.5):
+            cfg = cfgmod.Config()
+            cfg.color.auto_fit_shot_max_rise = v
+            scene_factory.validate_auto_fit_shot_cfg(cfg)
+
+    def test_below_one_raises(self):
+        for v in (0.0, 0.5, float("nan")):
+            cfg = cfgmod.Config()
+            cfg.color.auto_fit_shot_max_rise = v
+            with self.subTest(v=v), self.assertRaisesRegex(cfgmod.ConfigError, "max_rise"):
+                scene_factory.validate_auto_fit_shot_cfg(cfg)
+
+    def test_a_scene_override_below_one_raises_naming_the_scene(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = [
+            cfgmod.SceneCfg(type="video", file="z.mp4", color={"auto_fit_shot_max_rise": 0.5})
+        ]
+        with self.assertRaisesRegex(cfgmod.ConfigError, r"\[\[scenes\]\]\[0\]"):
+            scene_factory.validate_auto_fit_shot_cfg(cfg)
+
+
 class MotionSmoothingWiringTest(unittest.TestCase):
     """[color].motion_smoothing scales BOTH temporal buffers in the mhires
     percell path: 1.0 = the legacy EMA alpha + hysteresis; 0.0 = no smoothing

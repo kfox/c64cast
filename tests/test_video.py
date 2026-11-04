@@ -21,6 +21,7 @@ from unittest import mock
 import numpy as np
 from _fakes import FakeAPI, FrozenClock
 
+from c64cast.app.config import ColorCfg
 from c64cast.audio import sampler as sampler_mod
 from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import CHUNK_SIZE, PREBUFFER_CHUNKS
@@ -35,6 +36,8 @@ from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.scenes.video_transport import VideoTransportControls, _Anchor
 from c64cast.video import video as video_mod
+from c64cast.video.palette import ColorFit, ColorFitAccumulator
+from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
     AUDIO_DISCONTINUITY_S,
     DRY_FILL_MAX_PAST_NEWEST_S,
@@ -72,10 +75,14 @@ def _wait_until(predicate, limit_s: float = 5.0) -> bool:
 def _arm_locks(src: AVFileSource) -> AVFileSource:
     """The lock-side fields every `__new__` stub needs, in one place: the
     buffer lock, the condition that wakes a demux thread parked at EOF, and
-    the thread-exited flag `finished` reads."""
+    the thread-exited flag `finished` reads, plus the shot-cut marks kept
+    beside the buffer under that lock."""
     src._lock = threading.Lock()
     src._wake = threading.Condition(src._lock)
     src._demux_exited = False
+    src.shot_tracker = None
+    src._shot_marks = {}
+    src._shot_due = None
     return src
 
 
@@ -912,6 +919,7 @@ class _StubSource:
         self.seek_pending = False
         self._events = events
         self._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+        self.shots: list[ShotFit] = []
         # How many seeks had been requested at each `freeze_tempo` call.
         self.freezes: list[int] = []
 
@@ -945,6 +953,9 @@ class _StubSource:
 
     def current_frame(self, clock_s: float) -> np.ndarray | None:
         return self._frame
+
+    def take_shot(self) -> ShotFit | None:
+        return self.shots.pop(0) if self.shots else None
 
     # The real source's tempo map at its starting point, a plain ratio: the
     # scale is the scene's tempo_scale, which the tests set on the scene.
@@ -5335,6 +5346,173 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
         self._process(scene, events)
         self.assertIsNone(scene.audio)
         self.assertIs(scene._audio_set_aside, audio)
+
+
+def _ramp(lo: int, hi: int) -> np.ndarray:
+    row = np.linspace(lo, hi, 160).astype(np.uint8)
+    return np.repeat(np.tile(row, (100, 1))[:, :, None], 3, axis=2)
+
+
+def _span(fit: ColorFit | None) -> float:
+    assert fit is not None
+    return fit.white - fit.black
+
+
+def _shot_of(frame: np.ndarray) -> ShotFit:
+    shot = ShotFit(frames=1)
+    shot.add(frame)
+    return shot
+
+
+class SourceShotMarkTest(unittest.TestCase):
+    """AVFileSource keeps a cut's mark beside the buffer and hands it over once
+    the cut frame is shown or passed."""
+
+    IMG = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    def _src(self) -> AVFileSource:
+        src = _aligned_stub([], rate=8000)
+        src.max_video_buffer = 8
+        src._eof = False
+        src._frames_taken = 0
+        return src
+
+    def test_a_cut_found_by_the_tracker_is_marked_at_the_cut_frames_pts(self):
+        src = self._src()
+        shot = ShotFit(frames=1)
+        src.shot_tracker = mock.Mock(observe=mock.Mock(return_value=(0.5, shot)))
+        self.assertTrue(src._enqueue_frame(0.6, self.IMG))
+        self.assertEqual(src._shot_marks, {0.5: shot})
+
+    def test_a_frame_dropped_for_a_pending_seek_leaves_no_mark(self):
+        src = self._src()
+        src.shot_tracker = mock.Mock(observe=mock.Mock(return_value=(0.5, ShotFit(frames=1))))
+        src._pending_seek = 3.0
+        self.assertTrue(src._enqueue_frame(0.6, self.IMG))
+        self.assertEqual(src._shot_marks, {})
+
+    def test_the_shot_is_handed_over_once_its_frame_is_shown(self):
+        src = self._src()
+        shot = ShotFit(frames=1)
+        src._video_buf = [(t, self.IMG) for t in (0.0, 0.1, 0.2, 0.3)]
+        src._shot_marks = {0.2: shot}
+        src.current_frame(0.15)
+        self.assertIsNone(src.take_shot())
+        src.current_frame(0.2)
+        self.assertIs(src.take_shot(), shot)
+        self.assertIsNone(src.take_shot())
+
+    def test_a_cut_frame_skipped_over_still_hands_its_shot_over(self):
+        src = self._src()
+        shot = ShotFit(frames=1)
+        src._video_buf = [(t, self.IMG) for t in (0.0, 0.1, 0.2, 0.3)]
+        src._shot_marks = {0.1: shot}
+        src.current_frame(0.35)
+        self.assertIs(src.take_shot(), shot)
+
+    def test_a_seek_drops_the_marks_with_the_buffer(self):
+        src = self._src()
+        src._video_buf = [(t, self.IMG) for t in (0.0, 0.1)]
+        src._shot_marks = {0.1: ShotFit(frames=1)}
+        src.current_frame(0.05)
+        src._shot_due = ShotFit(frames=1)
+        src.request_seek(5.0)
+        self.assertEqual(src._shot_marks, {})
+        self.assertIsNone(src.take_shot())
+
+
+class VideoSceneShotSetupTest(unittest.TestCase):
+    """setup hands the source a ShotTracker only for an online auto_fit with
+    auto_fit_shots on."""
+
+    def _attached(self, **color: Any) -> tuple[object, bool]:
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+        ):
+            source_cls.return_value.a_stream = None
+            source_cls.return_value.shot_tracker = None
+            scene = _link_tempo_scene(1.0)
+            scene._color = ColorCfg(**color)
+            scene.setup()
+            attached = (source_cls.return_value.shot_tracker, scene._refits_at_cuts)
+            scene.teardown()
+        return attached
+
+    def test_an_online_fit_refits_at_cuts_by_default(self):
+        tracker, refits = self._attached()
+        self.assertIsInstance(tracker, ShotTracker)
+        self.assertTrue(refits)
+
+    def test_auto_fit_shots_off_attaches_no_tracker(self):
+        self.assertEqual(self._attached(auto_fit_shots=False), (None, False))
+
+    def test_auto_fit_off_attaches_no_tracker(self):
+        self.assertEqual(self._attached(auto_fit=False), (None, False))
+
+
+class VideoSceneShotFitTest(unittest.TestCase):
+    """At a shot cut the scene installs the shot's fit, held against the
+    online fit as it stood at the first cut."""
+
+    OPENING = _ramp(60, 160)
+    STRONG = _ramp(100, 130)
+    FULL = np.repeat(np.array([[0, 255]], dtype=np.uint8), 50, axis=0)[:, :, None].repeat(3, 2)
+
+    def _scene(self, *shots: ShotFit, max_rise: float = 1.0) -> VideoScene:
+        source = _StubSource()
+        source.shots = list(shots)
+        scene = _make_video_scene_stub(source)
+        cast(mock.MagicMock, scene.api).delivery_epoch = 0
+        scene._color = ColorCfg(auto_fit_shot_max_rise=max_rise)
+        scene._online_fit = ColorFitAccumulator(strength=1.0)
+        scene._online_fit.add(self.OPENING)
+        scene._refits_at_cuts = True
+        return scene
+
+    def _show_frames(self, scene: VideoScene, n: int) -> list[ColorFit | None]:
+        mode = cast(mock.MagicMock, scene.display_mode)
+        with (
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            for _ in range(n):
+                scene._last_rendered_img = None
+                scene.process_frame(0.0)
+        return [c.args[0] for c in mode.set_color_fit.call_args_list]
+
+    def _opening(self) -> ColorFit:
+        acc = ColorFitAccumulator(strength=1.0)
+        acc.add(self.OPENING)
+        return cast(ColorFit, acc.result())
+
+    def test_a_shot_stronger_than_the_opening_is_held_to_it(self):
+        strong = _shot_of(self.STRONG)
+        installed = self._show_frames(self._scene(strong), 1)
+        expected = cast(ColorFit, strong.result()).held_to(self._opening(), 1.0)
+        self.assertEqual(installed[0], expected)
+        opening = self._opening()
+        self.assertEqual(_span(installed[0]), _span(opening))
+
+    def test_the_first_cut_ends_the_warm_up(self):
+        scene = self._scene(_shot_of(self.STRONG))
+        self._show_frames(scene, 3)
+        self.assertEqual(scene._online_fit_frames, scenes.ONLINE_FIT_WARMUP_FRAMES)
+
+    def test_a_later_cut_is_held_to_the_opening_not_to_the_shot_before_it(self):
+        strong = _shot_of(self.STRONG)
+        scene = self._scene(_shot_of(self.FULL), strong)
+        installed = self._show_frames(scene, 2)
+        self.assertIsNone(installed[0])
+        self.assertEqual(
+            installed[1], cast(ColorFit, strong.result()).held_to(self._opening(), 1.0)
+        )
+
+    def test_max_rise_lets_a_shot_strengthen_past_the_opening(self):
+        strong = _shot_of(self.STRONG)
+        installed = self._show_frames(self._scene(strong, max_rise=2.0), 1)
+        opening = self._opening()
+        self.assertEqual(_span(installed[0]), _span(opening) / 2.0)
 
 
 if __name__ == "__main__":

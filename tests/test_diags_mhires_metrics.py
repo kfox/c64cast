@@ -11,8 +11,9 @@ from unittest.mock import patch
 
 import numpy as np
 
+from c64cast.video.shots import AdaptiveCutDetector
 from scripts.diags import _mhires_metrics as m
-from scripts.diags._cut_detectors import AdaptiveRatio, FfmpegScene
+from scripts.diags._cut_detectors import FfmpegScene
 
 
 def _flat(bgr: tuple[int, int, int]) -> np.ndarray:
@@ -118,11 +119,11 @@ class DetectorTest(unittest.TestCase):
     FRAMES = _shots([30, 30, 30], [(40, 40, 200), (230, 230, 230), (20, 20, 20)])
 
     def test_adaptive_ratio_reports_each_cut_at_its_first_frame(self):
-        self.assertEqual(_run(AdaptiveRatio(), self.FRAMES), [30, 60])
+        self.assertEqual(_run(AdaptiveCutDetector(), self.FRAMES), [30, 60])
 
     def test_adaptive_ratio_holds_a_minimum_shot_length(self):
         frames = _shots([30, 5, 30], [(40, 40, 200), (200, 60, 40), (40, 180, 40)])
-        self.assertEqual(_run(AdaptiveRatio(min_shot=15), frames), [30])
+        self.assertEqual(_run(AdaptiveCutDetector(min_shot=15), frames), [30])
 
     def test_ffmpeg_scene_fires_on_a_luma_jump_and_not_on_noise(self):
         self.assertEqual(_run(FfmpegScene(0.3), self.FRAMES), [30, 60])
@@ -132,7 +133,7 @@ class DetectorTest(unittest.TestCase):
     def test_ffmpeg_scene_is_blind_to_a_cut_that_keeps_luma(self):
         same_luma = _shots([30, 30], [(40, 40, 200), (200, 60, 70)])
         self.assertEqual(_run(FfmpegScene(0.3), same_luma), [])
-        self.assertEqual(_run(AdaptiveRatio(), same_luma), [30])
+        self.assertEqual(_run(AdaptiveCutDetector(), same_luma), [30])
 
 
 class OfflineRendererTest(unittest.TestCase):

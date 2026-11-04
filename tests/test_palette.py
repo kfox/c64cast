@@ -24,6 +24,7 @@ from c64cast.video.palette import (
     DEFAULT_HUE_CORRECTIONS,
     DEFAULT_PALE_PENALTY,
     GRAY_INDICES,
+    IDENTITY_FIT,
     PALE_INDICES,
     ColorFit,
     ColorFitAccumulator,
@@ -466,6 +467,37 @@ class ColorFitTest(unittest.TestCase):
     def test_strength_clamped(self):
         self.assertEqual(ColorFitAccumulator(strength=5.0)._strength, 1.0)
         self.assertEqual(ColorFitAccumulator(strength=-1.0)._strength, 0.0)
+
+
+class ColorFitHeldToTest(unittest.TestCase):
+    ANCHOR = ColorFit(black=40.0, white=200.0, sat_mult=1.2)
+
+    def test_a_fit_weaker_than_the_anchor_is_unchanged(self):
+        weaker = ColorFit(black=10.0, white=250.0, sat_mult=1.1)
+        self.assertEqual(weaker.held_to(self.ANCHOR, 1.0), weaker)
+
+    def test_a_stronger_gain_widens_to_the_anchors_span_about_its_center(self):
+        held = ColorFit(black=100.0, white=140.0, sat_mult=1.0).held_to(self.ANCHOR, 1.0)
+        self.assertEqual((held.black, held.white), (40.0, 200.0))
+
+    def test_a_widened_range_stays_inside_the_luma_scale(self):
+        held = ColorFit(black=220.0, white=250.0, sat_mult=1.0).held_to(self.ANCHOR, 1.0)
+        self.assertEqual((held.black, held.white), (95.0, 255.0))
+        held = ColorFit(black=0.0, white=20.0, sat_mult=1.0).held_to(self.ANCHOR, 1.0)
+        self.assertEqual((held.black, held.white), (0.0, 160.0))
+
+    def test_saturation_is_held_to_the_anchors_times_the_rise(self):
+        fit = ColorFit(black=40.0, white=200.0, sat_mult=1.6)
+        self.assertEqual(fit.held_to(self.ANCHOR, 1.0).sat_mult, 1.2)
+        self.assertAlmostEqual(fit.held_to(self.ANCHOR, 1.25).sat_mult, 1.5)
+
+    def test_a_rise_lets_the_gain_grow_by_that_factor(self):
+        held = ColorFit(black=100.0, white=140.0, sat_mult=1.0).held_to(self.ANCHOR, 2.0)
+        self.assertEqual((held.black, held.white), (80.0, 160.0))
+
+    def test_an_identity_anchor_at_no_rise_holds_any_fit_to_identity(self):
+        held = ColorFit(black=60.0, white=90.0, sat_mult=1.5).held_to(IDENTITY_FIT, 1.0)
+        self.assertTrue(held.is_identity())
 
 
 class HungarianTest(unittest.TestCase):
