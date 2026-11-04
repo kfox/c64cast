@@ -168,6 +168,53 @@ class OfflineRendererTest(unittest.TestCase):
         self.assertEqual(renderer.framebuffer.ram[0xD021] & 0x0F, staged)
 
 
+class LimitedFitTest(unittest.TestCase):
+    def test_a_capped_gain_widens_the_range_about_its_center(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        fit = limited_fit(ColorFit(black=40.0, white=100.0, sat_mult=1.0), None, 2.0, 1.0)
+        assert fit is not None
+        self.assertAlmostEqual(fit.white - fit.black, 127.5)
+        self.assertAlmostEqual((fit.black + fit.white) / 2, 70.0)
+
+    def test_a_widened_range_stays_inside_the_luma_scale(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        fit = limited_fit(ColorFit(black=0.0, white=40.0, sat_mult=1.0), None, 2.0, 1.0)
+        assert fit is not None
+        self.assertEqual((fit.black, fit.white), (0.0, 127.5))
+
+    def test_saturation_is_capped_and_the_fit_is_blended_from_the_one_before(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        before = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
+        shot = ColorFit(black=20.0, white=235.0, sat_mult=1.6)
+        fit = limited_fit(shot, before, None, 0.5, max_sat=1.2)
+        self.assertEqual(fit, ColorFit(black=10.0, white=245.0, sat_mult=1.1))
+
+    def test_a_rise_of_one_only_lets_a_cut_relax_the_fit(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        before = ColorFit(black=0.0, white=170.0, sat_mult=1.2)
+        stronger = limited_fit(
+            ColorFit(black=60.0, white=120.0, sat_mult=1.6), before, None, 1.0, max_rise=1.0
+        )
+        assert stronger is not None
+        self.assertAlmostEqual(stronger.white - stronger.black, 170.0)
+        self.assertAlmostEqual(stronger.sat_mult, 1.2)
+        weaker = ColorFit(black=10.0, white=240.0, sat_mult=1.0)
+        self.assertEqual(limited_fit(weaker, before, None, 1.0, max_rise=1.0), weaker)
+
+    def test_no_fit_on_either_side_stays_no_fit(self):
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        self.assertIsNone(limited_fit(None, None, 2.0, 0.5))
+
+
 class EvalToolTest(unittest.TestCase):
     def setUp(self):
         from c64cast.video import palette

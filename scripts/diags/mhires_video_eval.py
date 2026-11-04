@@ -29,7 +29,10 @@ frames after a cut:
   * refit: start a new online color fit, converging as at a scene's start.
   * ahead: install a fit taken over the new shot's first frames before the
     shot is shown, as a lookahead buffer could. A first pass over the clip
-    computes these fits.
+    computes these fits. `--fit-max-gain`, `--fit-max-sat`, `--fit-max-rise`
+    (from the fit before the cut, or the clip's opening fit with
+    `--fit-rise-from opening`) and `--fit-blend` limit the installed fit
+    (`limited_fit`).
 A new fit moves the quantizer's target, so score `refit` and `ahead` on
 `fid_src`; `fid_q` is the quantizer's error against a target that differs
 between the runs.
@@ -112,6 +115,11 @@ class Variant:
     at_cut: list[str]
     post_cut: int
     host_palette: str
+    fit_max_gain: float | None = None
+    fit_max_sat: float | None = None
+    fit_blend: float = 1.0
+    fit_max_rise: float | None = None
+    fit_rise_from: str = "before"
 
 
 @dataclass
@@ -157,6 +165,47 @@ def _cut_at(t: float, cut_times: list[float], passed: set[float]) -> float | Non
     return None
 
 
+IDENTITY_FIT = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
+
+
+def limited_fit(
+    shot: ColorFit | None,
+    before: ColorFit | None,
+    max_gain: float | None,
+    blend: float,
+    max_sat: float | None = None,
+    max_rise: float | None = None,
+    anchor: ColorFit | None = None,
+) -> ColorFit | None:
+    """`shot` with its stretch gain capped at `max_gain` (the range widened
+    about its center) and its saturation at `max_sat`, then lerped from
+    `before` toward it by `blend`. `max_rise` caps both again at that factor
+    of `anchor`'s own (`before` when unset), so 1.0 lets a cut only relax the
+    fit."""
+    if shot is None and before is None:
+        return None
+    fit = shot or IDENTITY_FIT
+    if max_rise is not None:
+        prior = (anchor if anchor is not None else before) or IDENTITY_FIT
+        rise_gain = 255.0 / max(prior.white - prior.black, 1e-6) * max_rise
+        rise_sat = prior.sat_mult * max_rise
+        max_gain = rise_gain if max_gain is None else min(max_gain, rise_gain)
+        max_sat = rise_sat if max_sat is None else min(max_sat, rise_sat)
+    if max_gain is not None and 255.0 / max(fit.white - fit.black, 1e-6) > max_gain:
+        center = (fit.black + fit.white) / 2
+        half = 255.0 / max_gain / 2
+        black = max(0.0, min(center - half, 255.0 - 2 * half))
+        fit = ColorFit(black=black, white=black + 2 * half, sat_mult=fit.sat_mult)
+    if max_sat is not None and fit.sat_mult > max_sat:
+        fit = ColorFit(black=fit.black, white=fit.white, sat_mult=max_sat)
+    base = before or IDENTITY_FIT
+    return ColorFit(
+        black=base.black + (fit.black - base.black) * blend,
+        white=base.white + (fit.white - base.white) * blend,
+        sat_mult=base.sat_mult + (fit.sat_mult - base.sat_mult) * blend,
+    )
+
+
 def shot_fits(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[float, ColorFit | None]:
     """Per labeled cut, the fit the online warm-up would reach over the new
     shot's first ONLINE_FIT_WARMUP_FRAMES frames, or the whole shot if it is
@@ -187,6 +236,7 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
     )
     fits = shot_fits(clip, variant, cut_times) if "ahead" in variant.at_cut else {}
     passed: set[float] = set()
+    opening: ColorFit | None = None
     rows: list[FrameRow] = []
     prev_out: np.ndarray | None = None
     prev_ref_lab: np.ndarray | None = None
@@ -200,7 +250,19 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
             if "refit" in variant.at_cut:
                 renderer.restart_online_fit()
             if "ahead" in variant.at_cut:
-                renderer.install_fit(fits[cut])
+                if not passed - {cut}:
+                    opening = renderer.mode._color_fit
+                renderer.install_fit(
+                    limited_fit(
+                        fits[cut],
+                        renderer.mode._color_fit,
+                        variant.fit_max_gain,
+                        variant.fit_blend,
+                        variant.fit_max_sat,
+                        variant.fit_max_rise,
+                        opening if variant.fit_rise_from == "opening" else None,
+                    )
+                )
         writes = renderer.show(tick.frame, tick.t)
         out = renderer.render()
         target = renderer.quantizer_target()
@@ -321,6 +383,11 @@ def cmd_score(args: argparse.Namespace) -> int:
         at_cut=args.at_cut,
         post_cut=args.post_cut,
         host_palette=args.host_palette,
+        fit_max_gain=args.fit_max_gain,
+        fit_blend=args.fit_blend,
+        fit_max_sat=args.fit_max_sat,
+        fit_max_rise=args.fit_max_rise,
+        fit_rise_from=args.fit_rise_from,
     )
     if variant.at_cut and cuts is None:
         raise SystemExit("--at-cut needs --cuts")
@@ -433,6 +500,33 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--cuts", help="JSON {clip name: [cut times, s]}")
     sc.add_argument(
         "--at-cut", action="append", default=[], choices=AT_CUT_ACTIONS, help="act at each cut"
+    )
+    sc.add_argument(
+        "--fit-max-gain",
+        type=float,
+        help="with --at-cut ahead: cap each shot fit's stretch gain, 255/(white-black)",
+    )
+    sc.add_argument(
+        "--fit-max-sat",
+        type=float,
+        help="with --at-cut ahead: cap each shot fit's saturation multiplier",
+    )
+    sc.add_argument(
+        "--fit-max-rise",
+        type=float,
+        help="with --at-cut ahead: cap gain and saturation at this factor of the fit before the cut (1.0: only relax)",
+    )
+    sc.add_argument(
+        "--fit-rise-from",
+        choices=("before", "opening"),
+        default="before",
+        help="what --fit-max-rise is a factor of: the fit before the cut, or the clip's opening fit",
+    )
+    sc.add_argument(
+        "--fit-blend",
+        type=float,
+        default=1.0,
+        help="with --at-cut ahead: move this far from the fit before the cut to the shot's (0..1)",
     )
     sc.add_argument(
         "--post-cut", type=int, default=DEFAULT_POST_CUT_FRAMES, help="frames scored after a cut"
