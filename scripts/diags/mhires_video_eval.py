@@ -251,7 +251,7 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
                 renderer.restart_online_fit()
             if "ahead" in variant.at_cut:
                 if not passed - {cut}:
-                    opening = renderer.mode._color_fit
+                    opening = renderer.mode._color_fit or IDENTITY_FIT
                 renderer.install_fit(
                     limited_fit(
                         fits[cut],
