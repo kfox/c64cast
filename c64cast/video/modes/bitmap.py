@@ -137,10 +137,11 @@ def engage_bitmap_mode(
 class BitmapDisplayMode(DisplayMode):
     """Mid-base for bitmap renderers (Hires, MultiHires).
 
-    Inherits default_target_fps = None so bitmap scenes follow the playlist's
-    system rate (60 fps NTSC / 50 fps PAL). The old cap of 30 fps was
-    conservative sizing for the HTTP transport; socket DMA handles full-frame
-    bitmap uploads at 60 fps comfortably within the ~200 writes/sec ceiling.
+    Inherits default_target_fps = None: the mode sets no rate of its own. The
+    frame-pushing scenes (video, webcam, generative) get theirs from
+    scene_factory._frame_push_default_fps — 20 fps while the 4-bit $D418 DAC
+    streams, half the system rate (30 NTSC / 25 PAL) without it, and the full
+    system rate (60 / 50) only with off-bus sampler audio.
 
     Bitmap modes implement compose()/push() (supports_compose = True) so text
     overlays can fold glyphs into the bitmap before push — including down the

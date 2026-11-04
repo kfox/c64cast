@@ -63,7 +63,7 @@ The same downscale applies to the one-shot color pre-scan (`scan_video_samples`)
 
 ### Seek-sampled color pre-scan (`scan_video_samples`)
 
-The auto_fit and force_palette pre-scan needs a representative frame sample across the *whole* source, not real-time playback.
+The force_palette and `hardware_palette = "source"` pre-scan needs a representative frame sample across the *whole* source, not real-time playback. It derives the auto_fit too when it runs; without either of those, a video's auto_fit skips the pre-scan and converges online over its first `ONLINE_FIT_WARMUP_FRAMES` (48) frames instead (`VideoScene.setup`).
 
 **Why not sequential decode.** Decoding every frame is decode-bound and scales with file length. Striding the loop doesn't help: an `if i % stride: continue` skips accumulation, not decode, so the cost is unchanged.
 
@@ -615,7 +615,7 @@ Range 0..1, default 0.1. A single dial over the mhires `percell` path's two *tem
 
 **The tradeoff.** Both exist to stop per-frame color churn reading as shimmer on noisy video. Both buy that by trading motion-tracking for stability — so on a hard shot cut they hold structure from the *previous* shot for a moment, and an outline lingers as an after-image while the buffers decay.
 
-**What the dial does.** `motion_smoothing` scales both together at construction time:
+**What the dial does.** `motion_smoothing` scales both together in its setter, at construction and on a live tune alike:
 
 | `s` | Behavior |
 | --- | --- |
@@ -633,7 +633,7 @@ Threaded `ColorCfg.motion_smoothing` → `_build_display_mode` → `MultiHiresDi
 
 Since neither buffer accounts for the ghost on its own, a combined dial is the correct control.
 
-**The earlier 0.25 default** was picked by an on-hardware flicker/ghost A/B on the U64 — WarGames hard cuts for the after-image, grainy dark footage for flicker — as the lowest value where flicker stays acceptable. It is a large ghost reduction against the `1.0` row above.
+**The 0.1 default** (`base.DEFAULT_MOTION_SMOOTHING`, shared by `ColorCfg` and the `MultiHiresDisplayMode` constructor) replaced an earlier 0.25, which an on-hardware flicker/ghost A/B on the U64 — WarGames hard cuts for the after-image, grainy dark footage for flicker — had picked as the lowest value where flicker stays acceptable. 0.1 gives up some of that flicker margin for shorter after-images on shot cuts.
 
 `validate_motion_smoothing_cfg` and `doctor._validate_motion_smoothing` bound it 0..1 and note a non-default value on the mhires percell scenes it affects. Orthogonal to `cell_strategy` (which 3 colors), `dither` (per-pixel fill), and `color_match` (distance space).
 

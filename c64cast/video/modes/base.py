@@ -134,6 +134,8 @@ PALETTE_PICK_EMA_ALPHA = 0.25
 # lower: ≈7-frame time constant, converging inside ≈120 ms.
 PERCELL_PICK_EMA_ALPHA = 0.15
 
+DEFAULT_MOTION_SMOOTHING = 0.1
+
 # Bitmap-code hysteresis for the percell path, in d² space (the units
 # quantize_distances returns). A pixel keeps its previous code while it stays
 # within this bonus of the frame's minimum-distance code.
@@ -416,8 +418,8 @@ class DisplayMode:
     # so the decoder keeps the native size.
     frame_target_size: tuple[int, int] | None = None
 
-    # Per-source adaptive color fit ([color].auto_fit), installed by a scene
-    # that can pre-scan its source (video / slideshow). None = disabled.
+    # Per-source adaptive color fit ([color].auto_fit), installed by a video
+    # or slideshow scene. None = disabled.
     _color_fit: ColorFit | None = None
 
     # Per-source forced-palette remap ([color].force_palette). Only mcm and

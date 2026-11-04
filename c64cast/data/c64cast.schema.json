@@ -687,7 +687,7 @@
         },
         "auto_fit": {
           "type": "boolean",
-          "description": "Per-source adaptive color fit for video + slideshow scenes: pre-scan the source and stretch its contrast + saturation to fill the C64 gamut (faithful \u2014 hue preserved). Ignored by webcam scenes (can't pre-scan).",
+          "description": "Per-source adaptive color fit for video + slideshow scenes: stretch the source's contrast + saturation to fill the C64 gamut (faithful \u2014 hue preserved). A slideshow fits each image; a video converges on its opening frames, or fits from the whole-file pre-scan that force_palette or hardware_palette = \"source\" runs. Ignored by webcam scenes.",
           "default": true
         },
         "auto_fit_strength": {
@@ -2394,7 +2394,7 @@
               },
               "auto_fit": {
                 "type": "boolean",
-                "description": "Per-source adaptive color fit for video + slideshow scenes: pre-scan the source and stretch its contrast + saturation to fill the C64 gamut (faithful \u2014 hue preserved). Ignored by webcam scenes (can't pre-scan).",
+                "description": "Per-source adaptive color fit for video + slideshow scenes: stretch the source's contrast + saturation to fill the C64 gamut (faithful \u2014 hue preserved). A slideshow fits each image; a video converges on its opening frames, or fits from the whole-file pre-scan that force_palette or hardware_palette = \"source\" runs. Ignored by webcam scenes.",
                 "default": true
               },
               "auto_fit_strength": {
