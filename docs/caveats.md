@@ -214,8 +214,8 @@ re-engages its own bitmap mode. `Ultimate64API._launch_sid_player` blanks the
 display (`blank_display()`, DEN off) immediately before DMA'ing the SID
 blobs, the same guard `reset()` uses for the same reason. The TeensyROM
 backend never does this (see the vector-swap note below): its "kick" doesn't
-reset the machine, and turning DEN off there would stall the cycle-clean DMA
-gate.
+reset the machine, and turning DEN off there wedges the cycle-clean DMA on
+TeensyROM firmware before v0.9.
 
 ### Per-call memory banking (`$01`)
 

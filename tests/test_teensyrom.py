@@ -1618,7 +1618,7 @@ class BackendTest(unittest.TestCase):
         # clear-loop: DeleteFile → PostFile → LaunchFile, then a DMA screen clear to
         # wipe the loader's "RUNNING.."/READY text. No BLNSW ($00CC) write — the clear
         # loop is what stops the cursor, and poking $CC never held. No spin MC and no
-        # $D011 blanking: DEN-off would hang the DMA. Acks: 5 + 2 + 1 probe + 1 clear.
+        # $D011 blanking: DEN-off hangs the DMA on firmware before v0.9. Acks: 5 + 2 + 1 probe + 1 clear.
         b, t = self._backend(read=True)
         _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
@@ -1733,8 +1733,8 @@ class BackendTest(unittest.TestCase):
     def test_pause_idle_clears_screen_keeping_display_on(self):
         # A pause on TR must not reset — a reset lands at the TeensyROM menu, freezing
         # $028D and stranding the resume-hold — and must not turn the VIC display off:
-        # DEN=0 removes badlines, hanging the cycle-clean DMA (HW-confirmed; wedges
-        # the TR on firmware before v0.9). So it clears screen RAM with DEN on: WriteC64Mem to $0400, and no
+        # DEN=0 wedges the cycle-clean DMA on firmware before v0.9 until a
+        # power-cycle. So it clears screen RAM with DEN on: WriteC64Mem to $0400, and no
         # ResetC64, no $D011, no $00CC (the running clear loop holds the cursor off).
         b, t = self._backend(read=True)
         t.queue_token(TOK_ACK)  # screen-clear write (<4096 -> 1 seg)
