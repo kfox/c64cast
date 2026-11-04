@@ -267,13 +267,15 @@ class StagedBitmapDrainTest(unittest.TestCase):
     """The measured drain a REU-staged bitmap starts an audio file from, by
     machine and standard; an unmeasured pair has none."""
 
-    def test_an_ultimate_64_ntsc_has_a_measured_figure_per_mode(self):
+    def test_an_ultimate_64_has_a_measured_figure_per_standard_and_mode(self):
+        u64_pal = replace(U64_NTSC, system="PAL")
         self.assertEqual(U64_NTSC.staged_bitmap_drain("hires"), 0.962)
         self.assertEqual(U64_NTSC.staged_bitmap_drain("mhires"), 0.952)
+        self.assertEqual(u64_pal.staged_bitmap_drain("hires"), 0.947)
+        self.assertEqual(u64_pal.staged_bitmap_drain("mhires"), 0.944)
 
     def test_unmeasured_machines_and_standards_have_none(self):
         for profile in (
-            replace(U64_NTSC, system="PAL"),
             replace(U64_NTSC, supports_system_mode=False),
             TEENSYROM_PROFILE,
             ULTIMATE_PROFILE,

@@ -366,6 +366,8 @@ ULTIMATE_64_HALT_CYCLES_PER_BYTE = 1.270
 ULTIMATE_64_STAGED_BITMAP_DRAIN: dict[tuple[str, str], float] = {
     ("NTSC", "hires"): 0.962,
     ("NTSC", "mhires"): 0.952,
+    ("PAL", "hires"): 0.947,
+    ("PAL", "mhires"): 0.944,
 }
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
