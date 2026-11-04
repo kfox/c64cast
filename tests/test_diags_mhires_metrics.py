@@ -135,6 +135,24 @@ class DetectorTest(unittest.TestCase):
 
 
 class OfflineRendererTest(unittest.TestCase):
+    def setUp(self):
+        from c64cast.video import palette
+
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+
+    def test_the_render_shows_the_colors_an_ultimate_emits(self):
+        from c64cast.video import palette
+        from scripts.diags._offline_video import OfflineMhires
+
+        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        renderer = OfflineMhires()
+        rng = np.random.default_rng(1)
+        renderer.show(rng.integers(0, 256, (400, 640, 3), dtype=np.uint8), 0.0)
+        shown = {tuple(int(c) for c in px) for px in renderer.render().reshape(-1, 3)}
+        u64 = {tuple(int(c) for c in px) for px in palette.U64_PALETTE_BGR}
+        self.assertTrue(shown <= u64, shown - u64)
+
     def test_a_bank_swapping_push_shows_its_staged_background(self):
         """Flicker blending stages bg0 in the swap tracker for the C64's IRQ to
         copy into $D021; the offline framebuffer has no IRQ."""
@@ -151,6 +169,12 @@ class OfflineRendererTest(unittest.TestCase):
 
 
 class EvalToolTest(unittest.TestCase):
+    def setUp(self):
+        from c64cast.video import palette
+
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+
     def _cuts_file(self, content: object) -> str:
         path = os.path.join(tempfile.mkdtemp(), "cuts.json")
         with open(path, "w") as fh:

@@ -111,6 +111,7 @@ class Variant:
     ema_alpha: float | None
     at_cut: list[str]
     post_cut: int
+    host_palette: str
 
 
 @dataclass
@@ -177,7 +178,7 @@ def score_clip(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[str
     cv2.setNumThreads(1)
     if variant.ema_alpha is not None:
         modes_base.PERCELL_PICK_EMA_ALPHA = variant.ema_alpha
-    renderer = OfflineMhires(color=ColorCfg(**variant.color))
+    renderer = OfflineMhires(color=ColorCfg(**variant.color), host_palette=variant.host_palette)
     is_still = Path(clip.path).suffix.lower() in IMAGE_SUFFIXES
     ticks = (
         iter(_still_ticks(clip.path, variant.still_frames))
@@ -319,6 +320,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         ema_alpha=args.ema_alpha,
         at_cut=args.at_cut,
         post_cut=args.post_cut,
+        host_palette=args.host_palette,
     )
     if variant.at_cut and cuts is None:
         raise SystemExit("--at-cut needs --cuts")
@@ -414,6 +416,11 @@ def main(argv: list[str] | None = None) -> int:
         "--set", action="append", default=[], metavar="FIELD=VALUE", help="[color] override"
     )
     sc.add_argument("--interp", help="swscale filter for the decode downscale (AREA, BICUBIC, ...)")
+    sc.add_argument(
+        "--host-palette",
+        default="u64",
+        help="[hardware].host_palette the quantizer aims at and the render shows (pepto for a real VIC-II)",
+    )
     sc.add_argument(
         "--fps", type=float, help="show at most this many frames/s (unset: every frame)"
     )

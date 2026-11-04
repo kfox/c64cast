@@ -34,7 +34,12 @@ from c64cast.video import video
 from c64cast.video.framebuffer import Framebuffer
 from c64cast.video.modes.mhires import MultiHiresDisplayMode
 from c64cast.video.modes_irq import FRAME_TRACKER_ADDR, HOSTDMA_TRACKER_OFF_BG0
-from c64cast.video.palette import ColorFit, ColorFitAccumulator
+from c64cast.video.palette import (
+    ColorFit,
+    ColorFitAccumulator,
+    resolve_host_palette,
+    set_host_palette,
+)
 from c64cast.video.video import _DecodePlan, _frame_to_scan_bgr, _trim_to_crop
 from scripts.diags.render_offline import RenderBackend
 
@@ -143,13 +148,19 @@ class Write:
 class OfflineMhires:
     """One video scene's mhires mode on an offline backend and framebuffer.
 
-    `fit` installs a fixed color fit instead of the online warm-up."""
+    `fit` installs a fixed color fit instead of the online warm-up.
+    `host_palette` is a `[hardware].host_palette` name; the default is the
+    table an Ultimate's `auto` falls back to, matching the link cost model.
+    The active palette is process-wide, so building one renderer sets it for
+    every renderer in the process."""
 
     color: ColorCfg = field(default_factory=ColorCfg)
     fit: ColorFit | None = None
+    host_palette: str = "u64"
     writes: list[Write] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        set_host_palette(resolve_host_palette(self.host_palette), name=self.host_palette)
         cfg = Config()
         cfg.color = self.color
         cfg.video.double_buffer = False
