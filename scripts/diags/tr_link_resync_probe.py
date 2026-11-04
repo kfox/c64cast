@@ -27,12 +27,13 @@ recover from, then checks the next command and the C64 RAM it touched:
     vector.
   * ``den0``      — clear DEN in $D011, so the VIC has no badline for the
     cycle-clean DMA to assert on, then 500 write+read round trips and a Ping.
-    Reports how many failed or read back wrong; passes when the board still
-    answers and a reset (no DMA) brings it back without a power cycle. Not in
-    the default run: firmware before v0.9 wedges until a power cycle.
+    Reports how many failed or read back wrong; passes when DEN reads back
+    clear, the board still answers and a reset (no DMA) brings it back without
+    a power cycle. Not in the default run: firmware before v0.9 wedges until a
+    power cycle.
 
-Writes land at $4000-$40FF, $5000-$50FF and $6000-$6FFF (plain RAM). Resets
-the machine on exit.
+Writes land at $4000-$40FF, $5000-$50FF and $6000-$6FFF (plain RAM), and
+``den0`` also writes $D011. Resets the machine on exit.
 """
 
 from __future__ import annotations
@@ -227,7 +228,9 @@ def case_den0(tr: TRClient) -> bool:
     )
     # The VIC latches DEN at raster line $30, so the current frame keeps its badlines.
     time.sleep(DEN_SETTLE_S)
-    _step("read $D011 (DEN=0)", lambda: tr.read_segment(VIC_CONTROL, 1))
+    blanked = _step("read $D011 (DEN=0)", lambda: tr.read_segment(VIC_CONTROL, 1))
+    den_clear = blanked is not None and not blanked[0] & DEN
+    print(f"    DEN read back clear: {den_clear}")
     failed = mismatched = 0
     t = time.monotonic()
     for i in range(DEN0_ROUND_TRIPS):
@@ -249,8 +252,8 @@ def case_den0(tr: TRClient) -> bool:
     vec = _step(
         "read KERNAL reset vector after reset", lambda: tr.read_segment(KERNAL_RESET_VECTOR, 2)
     )
-    ok = bool(line) and vec is not None
-    print(f"    the board answered throughout and a reset alone recovered it: {ok}")
+    ok = den_clear and bool(line) and vec is not None
+    print(f"    under DEN=0 the board still answered and a reset alone recovered it: {ok}")
     return ok
 
 
