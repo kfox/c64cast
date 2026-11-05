@@ -5459,20 +5459,24 @@ class VideoSceneShotSetupTest(unittest.TestCase):
 
 class VideoSceneShotFitTest(unittest.TestCase):
     """At a shot cut the scene installs the shot's fit, held against the
-    online fit as it stood at the first cut."""
+    opening's online fit, which keeps warming up across cuts."""
 
     OPENING = _ramp(60, 160)
     STRONG = _ramp(100, 130)
     FULL = np.repeat(np.array([[0, 255]], dtype=np.uint8), 50, axis=0)[:, :, None].repeat(3, 2)
 
-    def _scene(self, *shots: ShotFit, max_rise: float = 1.0) -> VideoScene:
+    WIDE = _ramp(0, 255)
+
+    def _scene(self, *shots: ShotFit, max_rise: float = 1.0, warmed: bool = True) -> VideoScene:
         source = _StubSource()
         source.shots = list(shots)
+        source._frame = self.WIDE
         scene = _make_video_scene_stub(source)
         cast(mock.MagicMock, scene.api).delivery_epoch = 0
         scene._color = ColorCfg(auto_fit_shot_max_rise=max_rise)
         scene._online_fit = ColorFitAccumulator(strength=1.0)
         scene._online_fit.add(self.OPENING)
+        scene._online_fit_frames = scenes.ONLINE_FIT_WARMUP_FRAMES if warmed else 1
         scene._refits_at_cuts = True
         return scene
 
@@ -5500,10 +5504,15 @@ class VideoSceneShotFitTest(unittest.TestCase):
         opening = self._opening()
         self.assertEqual(_span(installed[0]), _span(opening))
 
-    def test_the_first_cut_ends_the_warm_up(self):
-        scene = self._scene(_shot_of(self.STRONG))
-        self._show_frames(scene, 3)
-        self.assertEqual(scene._online_fit_frames, scenes.ONLINE_FIT_WARMUP_FRAMES)
+    def test_a_shot_in_the_warm_up_is_held_to_the_opening_as_it_grows(self):
+        strong = _shot_of(self.STRONG)
+        installed = self._show_frames(self._scene(strong, warmed=False), 3)
+        acc = ColorFitAccumulator(strength=1.0)
+        for frame in (self.OPENING, self.WIDE, self.WIDE, self.WIDE):
+            acc.add(frame)
+        grown = cast(ColorFit, acc.result())
+        self.assertEqual(installed[-1], cast(ColorFit, strong.result()).held_to(grown, 1.0))
+        self.assertNotEqual(installed[0], installed[-1])
 
     def test_a_later_cut_is_held_to_the_opening_not_to_the_shot_before_it(self):
         strong = _shot_of(self.STRONG)

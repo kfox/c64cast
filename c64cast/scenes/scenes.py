@@ -44,6 +44,7 @@ from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.modes_irq import reu_pump_skips_irq_hook
 from c64cast.video.palette import (
     IDENTITY_FIT,
+    ColorFit,
     ColorFitAccumulator,
     ColorMapAccumulator,
     FrameSampler,
@@ -1546,6 +1547,7 @@ class VideoScene(MediaFileMixin, Scene):
         self._online_fit: ColorFitAccumulator | None = None
         self._online_fit_frames = 0
         self._refits_at_cuts = False
+        self._shot: ShotFit | None = None
         # Capture-anchor marker (audio_marker.py). Only honored on the REU
         # pre-encode path.
         self.prepend_alignment_marker = prepend_alignment_marker
@@ -1662,6 +1664,7 @@ class VideoScene(MediaFileMixin, Scene):
         self._online_fit = None
         self._online_fit_frames = 0
         self._refits_at_cuts = False
+        self._shot = None
         self._av_lag_min = math.inf
         self._av_lag_max = -math.inf
         self._av_lag_sum = 0.0
@@ -2094,7 +2097,7 @@ class VideoScene(MediaFileMixin, Scene):
         ):
             self._online_fit.add(img)
             self._online_fit_frames += 1
-            self.display_mode.set_color_fit(self._online_fit.result())
+            self._apply_fit()
         if self.show_frame_numbers:
             fps = self.source.video_fps or 30.0
             file_s = tr.clock_to_content(frame_clock_s)
@@ -2118,14 +2121,25 @@ class VideoScene(MediaFileMixin, Scene):
         return True
 
     def _install_shot_fit(self, shot: ShotFit) -> None:
-        assert self.display_mode is not None and self._online_fit is not None
-        # Ending the warm-up freezes the online fit, so from the first cut on
-        # it is the opening's fit every shot is held against.
-        self._online_fit_frames = ONLINE_FIT_WARMUP_FRAMES
-        opening = self._online_fit.result() or IDENTITY_FIT
-        fit = (shot.result() or IDENTITY_FIT).held_to(opening, self._color.auto_fit_shot_max_rise)
-        log.debug("video: shot cut, auto-fit %s", fit)
-        self.display_mode.set_color_fit(None if fit.is_identity() else fit)
+        self._shot = shot
+        self._apply_fit()
+        log.debug("video: shot cut, auto-fit %s", self._shown_fit())
+
+    def _shown_fit(self) -> ColorFit | None:
+        """The opening's online fit, which keeps warming up across cuts, or
+        the current shot's fit held to it."""
+        assert self._online_fit is not None
+        opening = self._online_fit.result()
+        if self._shot is None:
+            return opening
+        fit = (self._shot.result() or IDENTITY_FIT).held_to(
+            opening or IDENTITY_FIT, self._color.auto_fit_shot_max_rise
+        )
+        return None if fit.is_identity() else fit
+
+    def _apply_fit(self) -> None:
+        assert self.display_mode is not None
+        self.display_mode.set_color_fit(self._shown_fit())
 
     def _record_av_lag(self, clock_s: float, current_time: float) -> None:
         """Accumulate the A/V lag (audio clock − displayed-frame PTS) for the
