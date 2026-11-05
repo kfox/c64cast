@@ -176,6 +176,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         hue_corrections: list[dict] | None = None,
         hue_corrections_replace: bool = False,
         channel_boost: list[float] | None = None,
+        dark_tone_taper: bool = True,
         force_palette: bool = False,
         text_double_height: bool = False,
         dither_method: str = "none",
@@ -203,6 +204,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
+        self._dark_tone_taper = bool(dark_tone_taper)
         # The gray penalty and the percell code/quant hysteresis all live in d²
         # space, so they are rescaled to the Lab metric's smaller magnitude when
         # `perceptual` is on, to hold the same bias strength.
@@ -486,6 +488,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._sat_factor,
             self._hue_corrections,
             self._channel_boost,
+            self._dark_tone_taper,
         )
 
     def compose(self, frame) -> MHiresComposeBuffers:

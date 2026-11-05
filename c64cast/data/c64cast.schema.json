@@ -675,6 +675,11 @@
           "description": "Per-channel pre-quantize gain [blue, green, red] (OpenCV BGR order). Empty = built-in default [1.3, 1.2, 1.0] (blue/green lift toward C64-friendly hues; red left neutral).",
           "default": []
         },
+        "dark_tone_taper": {
+          "type": "boolean",
+          "description": "mhires only: ease channel_boost's green gain to 1.0 on dark, colorful warm and navy pixels, so dark amber stays brown or orange instead of turning green and navy floors stay blue instead of speckling gray. Bright tones, teal and cyan keep the full boost.",
+          "default": true
+        },
         "hue_corrections": {
           "type": "array",
           "description": "List of [[color.hue_corrections]] bands applied before quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, val_thresh, sat_mult, val_mult, hue_target_deg, name). Empty = built-in purple rescue only.",
@@ -2381,6 +2386,11 @@
                 "type": "array",
                 "description": "Per-channel pre-quantize gain [blue, green, red] (OpenCV BGR order). Empty = built-in default [1.3, 1.2, 1.0] (blue/green lift toward C64-friendly hues; red left neutral).",
                 "default": []
+              },
+              "dark_tone_taper": {
+                "type": "boolean",
+                "description": "mhires only: ease channel_boost's green gain to 1.0 on dark, colorful warm and navy pixels, so dark amber stays brown or orange instead of turning green and navy floors stay blue instead of speckling gray. Bright tones, teal and cyan keep the full boost.",
+                "default": true
               },
               "hue_corrections": {
                 "type": "array",
