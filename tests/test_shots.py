@@ -76,6 +76,19 @@ class ShotTrackerTest(unittest.TestCase):
         assert landing[0] is not None
         self.assertEqual(landing[0][1].result(), expected.result())
 
+    def test_a_seek_landing_on_the_picture_it_left_starts_no_shot(self):
+        tracker = self._tracker()
+        _observe_all(tracker, [_dark() for _ in range(30)])
+        tracker.restart()
+        self.assertEqual([tracker.observe(k * FRAME_S, _dark()) for k in range(5)], [None] * 5)
+
+    def test_a_cut_soon_after_a_seek_is_found(self):
+        tracker = self._tracker()
+        _observe_all(tracker, [_dark() for _ in range(30)] + [_bright(k) for k in range(6)])
+        tracker.restart()
+        after = _observe_all(tracker, [_dark() for _ in range(4)] + [_bright(k) for k in range(10)])
+        self.assertEqual([pts for _, pts, _ in after], [0.0, 4 * FRAME_S])
+
     def test_no_cut_after_a_seek_carries_a_stamp_from_before_it(self):
         tracker = self._tracker()
         frames = [_dark() for _ in range(30)] + [_bright(k) for k in range(30)]

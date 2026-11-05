@@ -28,6 +28,10 @@ from c64cast.video.rolling_palette import _downscale
 SHOT_CUT_RATIO = 2.0
 
 
+def _hsv(frame_bgr: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+
+
 def content_score(prev_hsv: np.ndarray, hsv: np.ndarray) -> float:
     """PySceneDetect's ContentDetector score with its default weights: hue,
     saturation and value 1.0 each, edges 0, so the mean of the three
@@ -61,7 +65,7 @@ class AdaptiveCutDetector:
 
     def push(self, frame: np.ndarray) -> list[int]:
         self._index += 1
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = _hsv(frame)
         prev, self._prev_hsv = self._prev_hsv, hsv
         if prev is None:
             return []
@@ -116,14 +120,25 @@ class ShotTracker:
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
         self._recent: deque[tuple[float, np.ndarray]] = deque(maxlen=self._detector.window + 1)
         self._shot: ShotFit | None = None
+        self._before_seek: np.ndarray | None = None
         self._restarted = False
 
     def restart(self) -> None:
-        """Forget the frames before a seek, and start a shot at the next frame
-        observed: a seek is a cut the detector cannot be trusted to find, since
-        its window and minimum shot length would span frames from two places."""
+        """Forget the frames before a seek, since the detector's window and
+        minimum shot length would span frames from two places. The next frame
+        observed starts a shot when it differs from the last one before the
+        seek by the detector's own floor: a seek to another shot is a cut it
+        cannot find, and a resync resume lands on the picture it paused on."""
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
+        self._before_seek = self._recent[-1][1] if self._recent else None
+        self._recent.clear()
         self._restarted = True
+
+    def _lands_on_another_shot(self, small: np.ndarray) -> bool:
+        if self._before_seek is None:
+            return True
+        score = content_score(_hsv(self._before_seek), _hsv(small))
+        return score >= self._detector.min_score
 
     def observe(self, pts: float, frame_bgr: np.ndarray) -> tuple[float, ShotFit] | None:
         """Fold in the next decoded frame. Returns the pts of a frame just
@@ -135,9 +150,11 @@ class ShotTracker:
         if self._restarted:
             self._restarted = False
             self._detector.push(small)
-            self._shot = ShotFit(self._fit_frames)
-            self._shot.add(small)
-            found = (pts, self._shot)
+            if self._lands_on_another_shot(small):
+                self._shot = ShotFit(self._fit_frames)
+                found = (pts, self._shot)
+            if self._shot is not None:
+                self._shot.add(small)
         elif self._detector.push(small):
             self._shot = ShotFit(self._fit_frames)
             # The cut frame and the ones after it arrived before the decision.
