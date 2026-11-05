@@ -1274,6 +1274,7 @@ class AVFileSource:
         # Shot cuts among the buffered frames, by the cut frame's pts.
         self._shot_marks: dict[float, ShotFit] = {}
         self._shot_due: ShotFit | None = None
+        self._shown_frame: np.ndarray | None = None
         self._lock = threading.Lock()
         # Wakes a demux thread parked at EOF (_await_seek_after_eof) when a
         # seek is requested or the source closes.
@@ -1603,6 +1604,7 @@ class AVFileSource:
             self._pending_seek = None
             if target is None:
                 return False
+            shown = self._shown_frame
             # In the same critical section that retires the request, or
             # `finished` could see neither a pending seek nor a live pass.
             self._eof = False
@@ -1625,7 +1627,7 @@ class AVFileSource:
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
         if self.shot_tracker is not None:
-            self.shot_tracker.restart()
+            self.shot_tracker.restart(shown)
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 
@@ -2300,6 +2302,7 @@ class AVFileSource:
             # the A/V lag. Up to one frame interval is healthy; a growing lag
             # means the decoder is falling behind the audio-master clock.
             self.last_frame_pts = chosen_pts
+            self._shown_frame = chosen_img
             for mark_pts in [p for p in self._shot_marks if p <= chosen_pts]:
                 self._shot_due = self._shot_marks.pop(mark_pts)
             # The chosen frame normally stays in the buffer so a clock stall

@@ -67,7 +67,7 @@ class ShotTrackerTest(unittest.TestCase):
     def test_a_seek_back_soon_after_a_cut_starts_a_shot_at_the_landing_frame(self):
         tracker = self._tracker(fit_frames=4)
         _observe_all(tracker, [_dark() for _ in range(30)] + [_bright(k) for k in range(6)])
-        tracker.restart()
+        tracker.restart(_bright(5))
         landing = [tracker.observe(k * FRAME_S, _dark()) for k in range(5)]
         self.assertEqual([c[0] for c in landing if c is not None], [0.0])
         expected = ColorFitAccumulator(strength=1.0)
@@ -79,13 +79,21 @@ class ShotTrackerTest(unittest.TestCase):
     def test_a_seek_landing_on_the_picture_it_left_starts_no_shot(self):
         tracker = self._tracker()
         _observe_all(tracker, [_dark() for _ in range(30)])
-        tracker.restart()
+        tracker.restart(_dark())
+        self.assertEqual([tracker.observe(k * FRAME_S, _dark()) for k in range(5)], [None] * 5)
+
+    def test_the_picture_shown_at_a_seek_is_compared_as_prepared(self):
+        tracker = ShotTracker(lambda frame: frame[:, 80:], fit_frames=4)
+        _observe_all(tracker, [_dark() for _ in range(30)])
+        shown = _dark()
+        shown[:, :80] = 220
+        tracker.restart(shown)
         self.assertEqual([tracker.observe(k * FRAME_S, _dark()) for k in range(5)], [None] * 5)
 
     def test_a_cut_soon_after_a_seek_is_found(self):
         tracker = self._tracker()
         _observe_all(tracker, [_dark() for _ in range(30)] + [_bright(k) for k in range(6)])
-        tracker.restart()
+        tracker.restart(_bright(5))
         after = _observe_all(tracker, [_dark() for _ in range(4)] + [_bright(k) for k in range(10)])
         self.assertEqual([pts for _, pts, _ in after], [0.0, 4 * FRAME_S])
 
@@ -94,7 +102,7 @@ class ShotTrackerTest(unittest.TestCase):
         frames = [_dark() for _ in range(30)] + [_bright(k) for k in range(30)]
         for i, frame in enumerate(frames[:31]):
             tracker.observe(100 + i * FRAME_S, frame)
-        tracker.restart()
+        tracker.restart(frames[30])
         stamps = [c[0] for i, f in enumerate(frames[31:]) if (c := tracker.observe(i * FRAME_S, f))]
         self.assertTrue(all(pts < 100 for pts in stamps), stamps)
 

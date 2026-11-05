@@ -123,14 +123,16 @@ class ShotTracker:
         self._before_seek: np.ndarray | None = None
         self._restarted = False
 
-    def restart(self) -> None:
+    def restart(self, shown_bgr: np.ndarray | None) -> None:
         """Forget the frames before a seek, since the detector's window and
         minimum shot length would span frames from two places. The next frame
-        observed starts a shot when it differs from the last one before the
-        seek by the detector's own floor: a seek to another shot is a cut it
-        cannot find, and a resync resume lands on the picture it paused on."""
+        observed starts a shot when it differs from `shown_bgr`, the picture
+        on screen, by the detector's own floor: a seek to another shot is a
+        cut it cannot find, and a resync resume lands on the picture it paused
+        on. The last frame observed would not do: it is as far ahead as the
+        decode buffer is deep."""
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
-        self._before_seek = self._recent[-1][1] if self._recent else None
+        self._before_seek = None if shown_bgr is None else _downscale(self._prepare(shown_bgr))
         self._recent.clear()
         self._restarted = True
 

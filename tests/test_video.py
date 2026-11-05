@@ -83,6 +83,7 @@ def _arm_locks(src: AVFileSource) -> AVFileSource:
     src.shot_tracker = None
     src._shot_marks = {}
     src._shot_due = None
+    src._shown_frame = None
     return src
 
 
@@ -1832,7 +1833,7 @@ class AlignedAudioTest(unittest.TestCase):
         src = _make_demux_source_stub([], pending_seek=3.0)
         src.shot_tracker = mock.Mock()
         self.assertTrue(src._apply_pending_seek())
-        src.shot_tracker.restart.assert_called_once_with()
+        src.shot_tracker.restart.assert_called_once_with(None)
 
     def test_sound_from_before_a_seeks_target_is_trimmed_not_followed_on_from(self):
         # A seek lands on the keyframe before its target, and the sound read
@@ -5415,6 +5416,21 @@ class SourceShotMarkTest(unittest.TestCase):
         src._shot_marks = {0.1: shot}
         src.current_frame(0.35)
         self.assertIs(src.take_shot(), shot)
+
+    def test_a_seek_back_to_the_picture_shown_starts_no_shot(self):
+        # Decoded ahead past a cut, as a full buffer or a muted pause leaves
+        # it: the landing matches what is on screen, not the last decode.
+        src = _make_demux_source_stub([])
+        src.shot_tracker = ShotTracker(lambda frame: frame, fit_frames=4)
+        dark = np.full((120, 160, 3), 40, dtype=np.uint8)
+        bright = np.full((120, 160, 3), 220, dtype=np.uint8)
+        for i, frame in enumerate([dark] * 20 + [bright] * 10):
+            self.assertTrue(src._enqueue_frame(i / 30, frame))
+        src.current_frame(5 / 30)
+        src.request_seek(5 / 30)
+        self.assertTrue(src._apply_pending_seek())
+        self.assertTrue(src._enqueue_frame(5 / 30, dark))
+        self.assertEqual(src._shot_marks, {})
 
     def test_a_seek_drops_the_marks_with_the_buffer(self):
         src = self._src()
