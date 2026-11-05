@@ -21,6 +21,7 @@ from c64cast.video.palette import (
     ColorFit,
     ColorMap,
     HueCorrection,
+    apply_channel_boost_tapered,
     apply_color_fit,
     apply_hue_corrections,
     boost_saturation,
@@ -39,15 +40,21 @@ def shape_for_quantize(
     sat_factor: float,
     hue_corrections: tuple[HueCorrection, ...],
     channel_boost: np.ndarray,
+    dark_tone_taper: bool = False,
 ) -> np.ndarray:
     """The `[color]` shaping chain in front of the quantizer: auto-fit,
-    saturation, hue corrections, then the per-channel boost. Takes a BGR uint8
-    image and returns it as float32 BGR, clipped to 0..255."""
+    saturation, hue corrections, then the per-channel boost (tapered on dark
+    warm and navy tones when `dark_tone_taper`). Takes a BGR uint8 image and
+    returns it as float32 BGR, clipped to 0..255."""
     if fit is not None:
         img = apply_color_fit(img, fit)
     img = boost_saturation(img, sat_factor)
     img = apply_hue_corrections(img, hue_corrections)
-    return np.clip(img.astype(np.float32) * channel_boost, 0, 255)
+    f = img.astype(np.float32)
+    boosted = (
+        apply_channel_boost_tapered(f, channel_boost) if dark_tone_taper else f * channel_boost
+    )
+    return np.clip(boosted, 0, 255)
 
 
 class ComposeBuffers(TypedDict):

@@ -397,6 +397,7 @@ def _build_display_mode(
             double_buffer=double_buffer,
             audio_reu_pump_active=audio_reu_pump_active,
             channel_boost=channel_boost,
+            dark_tone_taper=color.dark_tone_taper,
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,

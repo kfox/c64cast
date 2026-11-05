@@ -2827,6 +2827,20 @@ class MotionSmoothingWiringTest(unittest.TestCase):
         self.assertAlmostEqual(cast(MultiHiresDisplayMode, mode)._ema_alpha, 1.0)
 
 
+class DarkToneTaperWiringTest(unittest.TestCase):
+    def test_config_path_forwards_dark_tone_taper(self):
+        from typing import cast
+
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        for value in (True, False):
+            with self.subTest(value=value):
+                mode = scene_factory._build_display_mode(
+                    "mhires", color=cfgmod.ColorCfg(dark_tone_taper=value)
+                )
+                self.assertIs(cast(MultiHiresDisplayMode, mode)._dark_tone_taper, value)
+
+
 class BuildSceneTempoScaleTest(unittest.TestCase):
     """build_scene resolves VideoScene.tempo_scale: the observed bitmap+DAC
     speed fraction on the host-DMA DAC path over a bitmap mode, else 1.0 (off)

@@ -670,6 +670,41 @@ def parse_channel_boost(
     return np.array([float(v) for v in raw], dtype=np.float32)
 
 
+# Luma and chroma ramps for [color].dark_tone_taper, in the 0..255 levels the
+# boost stage sees. Chroma is the max-min channel spread rather than HSV S,
+# because HSV S reads a dim brown shadow, which needs the green lift to stay
+# brown, as saturated as dark amber, which the lift turns green. Bright warm
+# tones keep the lift so honey and sand still reach yellow; navy fades out
+# lower than warm so bright sky and sea keep their texture.
+_TAPER_WARM_LUMA = (80.0, 200.0)
+_TAPER_NAVY_LUMA = (60.0, 120.0)
+_TAPER_CHROMA = (40.0, 100.0)
+_LUMA_BGR = np.array([0.114, 0.587, 0.299], dtype=np.float32)
+
+
+def _ramp(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    return np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+
+
+def apply_channel_boost_tapered(img: np.ndarray, channel_boost: np.ndarray) -> np.ndarray:
+    """Multiply float32 BGR `img` by `channel_boost`, easing the green gain to
+    1.0 on dark, colorful warm pixels (red over blue) and dark navy pixels
+    (blue over green and red). Teal, cyan, grays and bright tones get the full
+    boost."""
+    blue, green, red = img[..., 0], img[..., 1], img[..., 2]
+    luma = img @ _LUMA_BGR
+    chroma = img.max(axis=-1) - img.min(axis=-1)
+    spread = chroma + 1.0
+    warm = np.clip((red - blue) / spread, 0.0, 1.0) * (1.0 - _ramp(luma, *_TAPER_WARM_LUMA))
+    navy = np.clip((blue - np.maximum(green, red)) / spread, 0.0, 1.0) * (
+        1.0 - _ramp(luma, *_TAPER_NAVY_LUMA)
+    )
+    eased = _ramp(chroma, *_TAPER_CHROMA) * (warm + navy)
+    out = img * channel_boost
+    out[..., 1] = green * (channel_boost[1] + (1.0 - channel_boost[1]) * eased)
+    return out
+
+
 # Adaptive per-source color fit ([color].auto_fit), the per-source sibling of
 # channel_boost + hue_corrections: a scene pre-scans its source, derives a
 # levels stretch plus a saturation lift filling the C64 tonal and chroma range,

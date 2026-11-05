@@ -31,6 +31,7 @@ from c64cast.video.palette import (
     HueCorrection,
     RollingColorMapAccumulator,
     _hungarian,
+    apply_channel_boost_tapered,
     apply_color_fit,
     apply_hue_corrections,
     boost_saturation,
@@ -251,6 +252,39 @@ class BoostSaturationTest(unittest.TestCase):
         self.assertGreaterEqual(int(boosted[0, 0, 2]), int(muted_red[0, 0, 2]))
         self.assertLessEqual(int(boosted[0, 0, 0]), int(muted_red[0, 0, 0]))
         self.assertLessEqual(int(boosted[0, 0, 1]), int(muted_red[0, 0, 1]))
+
+
+class ChannelBoostTaperTest(unittest.TestCase):
+    """apply_channel_boost_tapered eases only the green gain, and only on dark,
+    colorful warm and navy pixels."""
+
+    def _green_gain(self, bgr):
+        px = np.array([[bgr]], dtype=np.float32)
+        return float(apply_channel_boost_tapered(px, CHANNEL_BOOST)[0, 0, 1] / bgr[1])
+
+    def test_dark_amber_loses_the_green_lift(self):
+        self.assertAlmostEqual(self._green_gain((20, 60, 120)), 1.0, delta=0.01)
+
+    def test_dark_navy_loses_most_of_the_green_lift(self):
+        self.assertLess(self._green_gain((140, 20, 10)), 1.03)
+
+    def test_full_boost_where_the_lift_is_wanted(self):
+        cases = {
+            "dark teal": (100, 100, 10),
+            "bright sand": (120, 220, 250),
+            "bright sky": (230, 180, 120),
+            "dim brown shadow": (30, 40, 55),
+            "gray": (60, 60, 60),
+        }
+        for name, bgr in cases.items():
+            with self.subTest(name):
+                self.assertAlmostEqual(self._green_gain(bgr), float(CHANNEL_BOOST[1]), places=5)
+
+    def test_blue_and_red_gains_are_untouched(self):
+        px = np.array([[(20, 60, 120)]], dtype=np.float32)
+        out = apply_channel_boost_tapered(px, CHANNEL_BOOST)[0, 0]
+        self.assertAlmostEqual(float(out[0]), 20 * float(CHANNEL_BOOST[0]), places=4)
+        self.assertAlmostEqual(float(out[2]), 120 * float(CHANNEL_BOOST[2]), places=4)
 
 
 class DiverseTopNTest(unittest.TestCase):
@@ -724,6 +758,17 @@ class DisplayModePaletteTest(unittest.TestCase):
             self.assertEqual(disabled._hue_corrections, ())
             boosted = cls(palette_mode="cheap", channel_boost=[1.0, 1.0, 1.0])
             self.assertEqual(tuple(boosted._channel_boost), (1.0, 1.0, 1.0))
+
+    def test_mhires_dark_tone_taper_switch(self):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        amber = np.full((8, 8, 3), (20, 60, 120), dtype=np.uint8)
+        tapered = MultiHiresDisplayMode(palette_mode="percell").quantizer_input(amber)
+        plain = MultiHiresDisplayMode(
+            palette_mode="percell", dark_tone_taper=False
+        ).quantizer_input(amber)
+        self.assertLess(float(tapered[..., 1].mean()), float(plain[..., 1].mean()))
+        np.testing.assert_allclose(tapered[..., [0, 2]], plain[..., [0, 2]])
 
     def test_parse_channel_boost(self):
         # Empty / None → built-in default; valid → float32 (3,); bad → raise.

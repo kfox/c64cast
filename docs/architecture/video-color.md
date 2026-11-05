@@ -395,6 +395,20 @@ The gray penalty and the percell code/quant hysteresis bonuses are all d²-space
 
 Cost is one extra `cvtColor` per frame on the small downscaled `flat` (≤64k px) — negligible.
 
+### `[color].dark_tone_taper` — where the green lift fades out
+
+Implemented in `palette.apply_channel_boost_tapered`, the last step of `shape_for_quantize` when mhires passes `dark_tone_taper` (default on). It eases only the green gain of `channel_boost` toward 1.0, and only on dark, colorful pixels of two hue families: warm (red over blue) and navy (blue over both green and red).
+
+**Why green, and why not a flat cut.** The default 1.2 green lift pushes dark amber past brown into green, and dark navy floors toward dark gray. A flat green of 1.0 fixed those but cost bright warm tones: on a music video, honey and sand reach yellow only with the lift and turn pink without it. On a dim film it also cost the low-chroma brown shadows, which the lift keeps brown. So the taper is per pixel, gated three ways:
+
+- **Brightness**, after the fit: warm fades out between luma 80 and 200, navy between 60 and 120. Navy fades lower because bright sky and sea read as navy hue, and tapering them flattened the sea's texture.
+- **Chroma** as the max−min channel spread, ramped 40–100. HSV saturation was tried first and failed: the fit and saturation lift inflate it on dim pixels, so a dim brown shadow read as saturated as dark amber.
+- **Hue**: teal and cyan (green about equal to blue) are excluded. Gating every cool hue cleaned more navy specks but shifted cyan walls to light blue.
+
+A per-shot switch for the navy half was measured and rejected: a shot's navy share did not predict whether tapering helped it, because the bright sky shots carried as much navy hue as the dark floors. A per-pixel brightness gate separates them and also handles a frame that holds both.
+
+**Measured** on eight clips plus a 2.5-minute neon-lit film clip, error against the source: that clip's dark amber −16%, a VHS ad −6%, a TV opening −3%, the honey-and-sand music video within +2%, everything else within ±1%. On the film clip, navy pixels rendered dark gray fell from 4.7% to 2.3%. A U64 A/B judged the colors better with A/V lag unchanged. MCM and PETSCII share `shape_for_quantize` but keep the flat boost: they were not measured.
+
 ### `[color].cell_strategy` — which 3 colors fill a cell
 
 Implemented in `modes.pick_cell_colors`. Selects *which* 3 of a cell's present colors fill the per-cell `c1`/`c2`/`c3` slots on the mhires `percell` path.
