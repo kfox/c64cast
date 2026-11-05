@@ -740,7 +740,7 @@ fourcc = "mp4v"
 # starved warm colors). Omit / leave empty for the built-in default below.
 channel_boost = [1.3, 1.2, 1.0]
 #
-# dark_tone_taper (mhires only): ease channel_boost's green gain to 1.0 on
+# dark_tone_taper (mhires and mcm): ease channel_boost's green gain to 1.0 on
 # dark, colorful warm and navy pixels, so dark amber stays brown/orange
 # instead of turning green and navy floors stay blue instead of speckling
 # gray. Bright tones, teal and cyan keep the full boost.

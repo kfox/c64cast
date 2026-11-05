@@ -73,6 +73,7 @@ class MCMDisplayMode(CharDisplayMode):
         hue_corrections: list[dict] | None = None,
         hue_corrections_replace: bool = False,
         channel_boost: list[float] | None = None,
+        dark_tone_taper: bool = True,
         force_palette: bool = False,
         dither_method: str = "none",
         dither_strength: float = 0.5,
@@ -91,6 +92,7 @@ class MCMDisplayMode(CharDisplayMode):
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
+        self._dark_tone_taper = bool(dark_tone_taper)
         # The gray penalty is in d² units, so it is rescaled to the Lab
         # metric's smaller magnitude when `perceptual` is on.
         self._perceptual = bool(perceptual)
@@ -176,6 +178,7 @@ class MCMDisplayMode(CharDisplayMode):
             self._sat_factor,
             self._hue_corrections,
             self._channel_boost,
+            self._dark_tone_taper,
         )
 
     def compose(self, frame) -> MCMComposeBuffers:

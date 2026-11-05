@@ -235,7 +235,7 @@ class QuantizerInputTest(unittest.TestCase):
         img = self._image()
         for palette_mode, sat in (("percell", DEFAULT_SAT_FACTOR), ("grayscale", 1.0)):
             with self.subTest(palette_mode=palette_mode):
-                mode = MCMDisplayMode(palette_mode, channel_boost=self.BOOST)
+                mode = MCMDisplayMode(palette_mode, channel_boost=self.BOOST, dark_tone_taper=False)
                 np.testing.assert_allclose(
                     mode.quantizer_input(img), self._expected(img, mode, sat), atol=1e-3
                 )
