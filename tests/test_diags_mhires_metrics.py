@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -166,6 +167,120 @@ class OfflineRendererTest(unittest.TestCase):
         staged = renderer.framebuffer.ram[0xC700] & 0x0F
         self.assertNotEqual(staged, 0)
         self.assertEqual(renderer.framebuffer.ram[0xD021] & 0x0F, staged)
+
+
+class LimitedFitTest(unittest.TestCase):
+    def test_a_capped_gain_widens_the_range_about_its_center(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        fit = limited_fit(ColorFit(black=40.0, white=100.0, sat_mult=1.0), None, 2.0, 1.0)
+        assert fit is not None
+        self.assertAlmostEqual(fit.white - fit.black, 127.5)
+        self.assertAlmostEqual((fit.black + fit.white) / 2, 70.0)
+
+    def test_a_widened_range_stays_inside_the_luma_scale(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        fit = limited_fit(ColorFit(black=0.0, white=40.0, sat_mult=1.0), None, 2.0, 1.0)
+        assert fit is not None
+        self.assertEqual((fit.black, fit.white), (0.0, 127.5))
+
+    def test_a_range_widened_near_white_stays_inside_the_luma_scale(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        fit = limited_fit(ColorFit(black=220.0, white=250.0, sat_mult=1.0), None, 2.0, 1.0)
+        assert fit is not None
+        self.assertEqual((fit.black, fit.white), (127.5, 255.0))
+
+    def test_the_tighter_of_an_absolute_cap_and_a_rise_cap_wins(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        before = ColorFit(black=0.0, white=127.5, sat_mult=1.5)
+        shot = ColorFit(black=100.0, white=140.0, sat_mult=2.0)
+        by_absolute = limited_fit(shot, before, 3.0, 1.0, max_sat=1.2, max_rise=2.0)
+        assert by_absolute is not None
+        self.assertAlmostEqual(255.0 / (by_absolute.white - by_absolute.black), 3.0)
+        self.assertAlmostEqual(by_absolute.sat_mult, 1.2)
+        by_rise = limited_fit(shot, before, 5.0, 1.0, max_sat=1.8, max_rise=1.0)
+        assert by_rise is not None
+        self.assertAlmostEqual(255.0 / (by_rise.white - by_rise.black), 2.0)
+        self.assertAlmostEqual(by_rise.sat_mult, 1.5)
+
+    def test_saturation_is_capped_and_the_fit_is_blended_from_the_one_before(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        before = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
+        shot = ColorFit(black=20.0, white=235.0, sat_mult=1.6)
+        fit = limited_fit(shot, before, None, 0.5, max_sat=1.2)
+        self.assertEqual(fit, ColorFit(black=10.0, white=245.0, sat_mult=1.1))
+
+    def test_a_rise_of_one_only_lets_a_cut_relax_the_fit(self):
+        from c64cast.video.palette import ColorFit
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        before = ColorFit(black=0.0, white=170.0, sat_mult=1.2)
+        stronger = limited_fit(
+            ColorFit(black=60.0, white=120.0, sat_mult=1.6), before, None, 1.0, max_rise=1.0
+        )
+        assert stronger is not None
+        self.assertAlmostEqual(stronger.white - stronger.black, 170.0)
+        self.assertAlmostEqual(stronger.sat_mult, 1.2)
+        weaker = ColorFit(black=10.0, white=240.0, sat_mult=1.0)
+        self.assertEqual(limited_fit(weaker, before, None, 1.0, max_rise=1.0), weaker)
+
+    def test_no_fit_on_either_side_stays_no_fit(self):
+        from scripts.diags.mhires_video_eval import limited_fit
+
+        self.assertIsNone(limited_fit(None, None, 2.0, 0.5))
+
+    def test_a_full_range_opening_still_anchors_the_rise_at_every_cut(self):
+        import cv2
+
+        from c64cast.video.palette import ColorFit
+        from scripts.diags import mhires_video_eval as ev
+        from scripts.diags._offline_video import OfflineMhires
+
+        still = os.path.join(tempfile.mkdtemp(), "still.png")
+        cv2.imwrite(still, np.tile(np.arange(256, dtype=np.uint8), (64, 1)))
+        variant = ev.Variant(
+            label="t",
+            color={"auto_fit": False},
+            interpolation=None,
+            fps=None,
+            sigma=1.0,
+            still_delta=1.0,
+            still_frames=3,
+            ema_alpha=None,
+            at_cut=["ahead"],
+            post_cut=1,
+            host_palette="pepto",
+            fit_max_rise=2.0,
+            fit_rise_from="opening",
+        )
+        shot_fits = {
+            0.04: ColorFit(black=64.0, white=191.5, sat_mult=1.0),
+            0.08: ColorFit(black=96.0, white=159.75, sat_mult=1.0),
+        }
+        installed: list[ColorFit | None] = []
+        real_install = OfflineMhires.install_fit
+
+        def record(renderer, fit):
+            installed.append(fit)
+            real_install(renderer, fit)
+
+        with (
+            patch.object(ev, "shot_fits", return_value=shot_fits),
+            patch.object(OfflineMhires, "install_fit", record),
+        ):
+            ev.score_clip(ev.Clip(name="t", path=still), variant, list(shot_fits))
+        gains = [255.0 / (f.white - f.black) for f in installed if f is not None]
+        self.assertEqual(len(gains), 2)
+        self.assertAlmostEqual(gains[1], 2.0)
 
 
 class EvalToolTest(unittest.TestCase):
