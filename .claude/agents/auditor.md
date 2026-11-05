@@ -186,8 +186,8 @@ The classes this codebase keeps producing, so look for them first:
 
 Prove a finding against the suite's fakes first. When your prompt says hardware
 is authorized for this run, settle what the fakes cannot (a restore, a teardown,
-a timing claim) on the rig, under "Hardware during a review or a ship run" in
-`CLAUDE.md`. Without that authorization, report the claim as an open question
+a timing claim) on the rig, under the rules in
+`.claude/skills/hw-visual-verify/hardware-runs.md`. Without that authorization, report the claim as an open question
 for the caller.
 
 ## Report
