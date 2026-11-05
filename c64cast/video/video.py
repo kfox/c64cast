@@ -1624,6 +1624,8 @@ class AVFileSource:
         self._dry_stall_level, self._dry_window = 0, None
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
+        if self.shot_tracker is not None:
+            self.shot_tracker.restart()
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 

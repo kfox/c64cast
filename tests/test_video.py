@@ -1828,6 +1828,12 @@ class AlignedAudioTest(unittest.TestCase):
         # timeline, and the new pass warns of its own.
         self.assertEqual((src._audio_shift_s, src._audio_jump_warned), (0.0, False))
 
+    def test_a_seek_restarts_the_shot_tracker(self):
+        src = _make_demux_source_stub([], pending_seek=3.0)
+        src.shot_tracker = mock.Mock()
+        self.assertTrue(src._apply_pending_seek())
+        src.shot_tracker.restart.assert_called_once_with()
+
     def test_sound_from_before_a_seeks_target_is_trimmed_not_followed_on_from(self):
         # A seek lands on the keyframe before its target, and the sound read
         # from there starts that far behind it: far past the discontinuity

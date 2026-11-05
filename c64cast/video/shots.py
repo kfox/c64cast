@@ -116,6 +116,14 @@ class ShotTracker:
         self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
         self._recent: deque[tuple[float, np.ndarray]] = deque(maxlen=self._detector.window + 1)
         self._shot: ShotFit | None = None
+        self._restarted = False
+
+    def restart(self) -> None:
+        """Forget the frames before a seek, and start a shot at the next frame
+        observed: a seek is a cut the detector cannot be trusted to find, since
+        its window and minimum shot length would span frames from two places."""
+        self._detector = AdaptiveCutDetector(ratio=SHOT_CUT_RATIO)
+        self._restarted = True
 
     def observe(self, pts: float, frame_bgr: np.ndarray) -> tuple[float, ShotFit] | None:
         """Fold in the next decoded frame. Returns the pts of a frame just
@@ -124,7 +132,13 @@ class ShotTracker:
         small = _downscale(self._prepare(frame_bgr))
         self._recent.append((pts, small))
         found = None
-        if self._detector.push(small):
+        if self._restarted:
+            self._restarted = False
+            self._detector.push(small)
+            self._shot = ShotFit(self._fit_frames)
+            self._shot.add(small)
+            found = (pts, self._shot)
+        elif self._detector.push(small):
             self._shot = ShotFit(self._fit_frames)
             # The cut frame and the ones after it arrived before the decision.
             for _, earlier in self._recent:

@@ -64,6 +64,27 @@ class ShotTrackerTest(unittest.TestCase):
             expected.add(_bright(k)[:, 80:])
         self.assertEqual(shot.result(), expected.result())
 
+    def test_a_seek_back_soon_after_a_cut_starts_a_shot_at_the_landing_frame(self):
+        tracker = self._tracker(fit_frames=4)
+        _observe_all(tracker, [_dark() for _ in range(30)] + [_bright(k) for k in range(6)])
+        tracker.restart()
+        landing = [tracker.observe(k * FRAME_S, _dark()) for k in range(5)]
+        self.assertEqual([c[0] for c in landing if c is not None], [0.0])
+        expected = ColorFitAccumulator(strength=1.0)
+        for _ in range(4):
+            expected.add(_dark())
+        assert landing[0] is not None
+        self.assertEqual(landing[0][1].result(), expected.result())
+
+    def test_no_cut_after_a_seek_carries_a_stamp_from_before_it(self):
+        tracker = self._tracker()
+        frames = [_dark() for _ in range(30)] + [_bright(k) for k in range(30)]
+        for i, frame in enumerate(frames[:31]):
+            tracker.observe(100 + i * FRAME_S, frame)
+        tracker.restart()
+        stamps = [c[0] for i, f in enumerate(frames[31:]) if (c := tracker.observe(i * FRAME_S, f))]
+        self.assertTrue(all(pts < 100 for pts in stamps), stamps)
+
 
 if __name__ == "__main__":
     unittest.main()
