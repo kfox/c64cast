@@ -1894,7 +1894,7 @@ class ColorCfg:
     dark_tone_taper: bool = field(
         default=True,
         metadata={
-            "help": "mhires only: ease channel_boost's green gain to 1.0 on "
+            "help": "mhires and mcm: ease channel_boost's green gain to 1.0 on "
             "dark, colorful warm and navy pixels, so dark amber stays brown "
             "or orange instead of turning green and navy floors stay blue "
             "instead of speckling gray. Bright tones, teal and cyan keep the "

@@ -2829,16 +2829,17 @@ class MotionSmoothingWiringTest(unittest.TestCase):
 
 class DarkToneTaperWiringTest(unittest.TestCase):
     def test_config_path_forwards_dark_tone_taper(self):
-        from typing import cast
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
 
-        from c64cast.video.modes import MultiHiresDisplayMode
-
-        for value in (True, False):
-            with self.subTest(value=value):
-                mode = scene_factory._build_display_mode(
-                    "mhires", color=cfgmod.ColorCfg(dark_tone_taper=value)
-                )
-                self.assertIs(cast(MultiHiresDisplayMode, mode)._dark_tone_taper, value)
+        for name, cls in (("mcm", MCMDisplayMode), ("mhires", MultiHiresDisplayMode)):
+            for value in (True, False):
+                with self.subTest(mode=name, value=value):
+                    mode = scene_factory._build_display_mode(
+                        name, color=cfgmod.ColorCfg(dark_tone_taper=value)
+                    )
+                    self.assertIsInstance(mode, cls)
+                    assert isinstance(mode, (MCMDisplayMode, MultiHiresDisplayMode))
+                    self.assertIs(mode._dark_tone_taper, value)
 
 
 class BuildSceneTempoScaleTest(unittest.TestCase):

@@ -397,7 +397,7 @@ Cost is one extra `cvtColor` per frame on the small downscaled `flat` (≤64k px
 
 ### `[color].dark_tone_taper` — where the green lift fades out
 
-Implemented in `palette.apply_channel_boost_tapered`, the last step of `shape_for_quantize` when mhires passes `dark_tone_taper` (default on). It eases only the green gain of `channel_boost` toward 1.0, and only on dark, colorful pixels of two hue families: warm (red over blue) and navy (blue over both green and red).
+Implemented in `palette.apply_channel_boost_tapered`, the last step of `shape_for_quantize` when mhires or mcm passes `dark_tone_taper` (default on). It eases only the green gain of `channel_boost` toward 1.0, and only on dark, colorful pixels of two hue families: warm (red over blue) and navy (blue over both green and red).
 
 **Why green, and why not a flat cut.** The default 1.2 green lift pushes dark amber past brown into green, and dark navy floors toward dark gray. A flat green of 1.0 fixed those but cost bright warm tones: on a music video, honey and sand reach yellow only with the lift and turn pink without it. On a dim film it also cost the low-chroma brown shadows, which the lift keeps brown. So the taper is per pixel, gated three ways:
 
@@ -407,7 +407,11 @@ Implemented in `palette.apply_channel_boost_tapered`, the last step of `shape_fo
 
 A per-shot switch for the navy half was measured and rejected: a shot's navy share did not predict whether tapering helped it, because the bright sky shots carried as much navy hue as the dark floors. A per-pixel brightness gate separates them and also handles a frame that holds both.
 
-**Measured** on eight clips plus a 2.5-minute neon-lit film clip, error against the source: that clip's dark amber −16%, a VHS ad −6%, a TV opening −3%, the honey-and-sand music video within +2%, everything else within ±1%. On the film clip, navy pixels rendered dark gray fell from 4.7% to 2.3%. A U64 A/B judged the colors better with A/V lag unchanged. MCM and PETSCII share `shape_for_quantize` but keep the flat boost: they were not measured.
+**Measured** on eight clips plus a 2.5-minute neon-lit film clip, error against the source: that clip's dark amber −16%, a VHS ad −6%, a TV opening −3%, the honey-and-sand music video within +2%, everything else within ±1%. On the film clip, navy pixels rendered dark gray fell from 4.7% to 2.3%. A U64 A/B judged the colors better with A/V lag unchanged. Measured the same way, all on mhires.
+
+**MCM** follows the same pattern: error against the source fell on five of the eight clips and on the film clip (the VHS ad −6%, the film clip −4%) and rose on the honey-and-sand video (+2%) and a 4K film (+1%). Dark amber rendered green roughly halved on the film clip, the VHS ad and the TV opening.
+
+**PETSCII** keeps the flat boost. Its frames are shaped by each style's own `petscii_styles._shaped_flat`, not by `shape_for_quantize`, and tapering that site moved the error by −1.5% to +2% with nothing gained on the film clip: PETSCII's glyph colors rarely render dark amber as green to begin with.
 
 ### `[color].cell_strategy` — which 3 colors fill a cell
 

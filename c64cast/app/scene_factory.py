@@ -382,6 +382,7 @@ def _build_display_mode(
         return MCMDisplayMode(
             palette_mode=palette_mode,
             channel_boost=channel_boost,
+            dark_tone_taper=color.dark_tone_taper,
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
