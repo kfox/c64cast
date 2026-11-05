@@ -14,7 +14,7 @@ rules for them were measured against this tree's 13,704 standalone comments and
 matched the legitimate categories -- an upstream quirk, the provenance of a
 measured constant, a cross-file contract -- several times more often than the
 narration they were aimed at. A hook that cries wolf is a hook people learn to
-bypass. CLAUDE.md's "Code comments" section carries the full policy.
+bypass.
 
 Only the comments a diff **adds** are examined, never the file around them: a
 comment already in the tree is not this commit's business, and a hook that
