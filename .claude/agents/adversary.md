@@ -186,7 +186,7 @@ The pinned paths in `CLAUDE.md` overlap most of this list. Prove an exploit
 against the suite's fakes and the in-process app. Never aim one at a service
 outside this machine. Use the rig only for an availability claim the fakes
 cannot settle, only when your prompt authorizes hardware for this run, and
-only under "Hardware during a review or a ship run" in `CLAUDE.md`.
+only under the rules in `.claude/skills/hw-visual-verify/hardware-runs.md`.
 
 ## Report
 

@@ -102,7 +102,7 @@ not is a finding, and its fix is deleting it.
   - `make mutation-ready` before any mutation proof.
 - **Hardware.** Prove a finding against the suite's fakes first. Use the rig
   only when your prompt says hardware is authorized for this run, and then
-  follow "Hardware during a review or a ship run" in `CLAUDE.md`: take the lock,
+  follow `.claude/skills/hw-visual-verify/hardware-runs.md`: take the lock,
   run with audio on as users do, and leave the machine reset. Without that authorization, a claim only
   hardware can settle goes in the report as an open question.
 - **Read before judging.** Read the module's section under

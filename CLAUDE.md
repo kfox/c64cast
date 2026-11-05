@@ -18,7 +18,7 @@ scripts/c64cast.sh -u tr:// clip.mp4 tune.sid assets/pictures/
 
 **Quick playback** (positional `MEDIA` args, mutually exclusive with `--config`) builds an in-memory-only config — one scene per argument by extension/URL, no loop unless `--loop`. Details: [c64cast/app/quickcast.py](c64cast/app/quickcast.py)'s docstring; URL resolution is shared with config-driven video scenes ([`scene_factory.py`](docs/architecture/config.md#scene_factorypy)).
 
-**Audio is on by default**; `--no-audio` mutes. U64 video audio uses the Ultimate Audio FPGA PCM sampler when available; `[audio].backend = "dac"` forces the 4-bit `$D418` DAC (the only path on TeensyROM and for mic/webcam audio). The sampler's effective clock ships as 6160000 Hz, not the nominal 6.25 MHz, and firmware 3.15a (FPGA 125) re-confirmed it — why, and how to re-measure: [audio.md → sampler](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm).
+**Audio is on by default**; `--no-audio` mutes. U64 video audio uses the Ultimate Audio FPGA PCM sampler when available; `[audio].backend = "dac"` forces the 4-bit `$D418` DAC (the only path on TeensyROM and for mic/webcam audio). The sampler's effective clock is a measured constant, not the nominal 6.25 MHz — why, and how to re-measure: [audio.md → sampler](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm).
 
 Flag groups (`-h` shows them grouped): `connection`, `quick playback`, `video input`, `audio`, `vision input`, `playlist`, `web console`, `introspection`, `updates`, `debug`. Notable: `--config`, `-v` / `-vv`, `--log-file PATH` (each scene activation logs a `SCENE_CONFIG_JSON` snapshot safe for a public video description — [`recording_metadata.py`](docs/architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging)).
 
@@ -189,51 +189,18 @@ a site the list has not caught up to yet:
   ones holding publish rights (PyPI, the Pages site, GitHub releases). A change
   here can turn a gate green without running it, or ship what nobody reviewed.
 
-**Hardware during a review or a ship run.** The suite fakes every backend, so
-prove a finding there first. When the caller's prompt says hardware use is
-authorized for this run, an agent can use the rig without asking again to
-settle what the fakes cannot: a register restore, a teardown, what the VIC
-draws, a timing claim. The prompt names the target and whether a capture
-device is attached. The rules:
-
-- **Take the lock.** Run every command that touches the machine, the capture
-  device or the audio input under `scripts/diags/hw_lock.py`, as the outermost
-  command. Keep each locked command short.
-- **Use the committed tools.** `scripts/diags/u64_probe.py`, `hdmi_capture.py`
-  and `run_and_capture.py` cover most needs, and the
-  [`hw-visual-verify`](.claude/skills/hw-visual-verify/SKILL.md) skill covers
-  captures. Improve those tools rather than writing throwaway scripts.
-- **Keep the target out of the repo.** It comes from the prompt. Never write a
-  host, IP address or device name into a committed file.
-- **Run the way users do.** Audio is on by default, and so is the rig run:
-  don't pass `--no-audio`. Several defects only appear when audio shares the
-  DMA link with render. Whoever is near the speakers mutes them at their end.
-- **Prefer a run that ends on its own** over a background run you have to stop.
-  `run_and_capture.py` resets the machine on exit. Never kill a run mid-DMA:
-  that can wedge the U64 until it is power-cycled. Stop a run in the same step
-  as the observation it was for.
-- **No REST polling during a stream.** Don't poll the U64's REST API in a loop
-  while c64cast is streaming to it.
-- **Leave the machine silent and reset.** A clean c64cast exit already resets
-  it. After anything else, run `scripts/diags/u64_probe.py --reset-only --url
-  http://HOST` and check that it printed an HTTP status, not `FAILED`.
-- **Hand back what needs a person.** A check that needs someone's own eyes or
-  ears, such as judging audio or a monitor with no capture, goes back to the
-  caller as an open question.
-
+**Hardware during a review or a ship run** is allowed only when the caller's
+prompt authorizes it for that run, and then only under the rules in
+[.claude/skills/hw-visual-verify/hardware-runs.md](.claude/skills/hw-visual-verify/hardware-runs.md).
 Without that authorization, a claim only hardware can settle goes back to the
 caller as an open question.
 
 ## Spelling
 
 **Everything in this repository is written in American English — prose, code,
-comments, docstrings, identifiers, log messages, and commit messages.** British
-spellings are forbidden: write `color`, `behavior`, `serialize`, `normalize`,
-`recognize`, `analyzer`, `catalog`, `artifact`, `judgment`, `center`,
-`optimization`, `labeled`, `modeled`, `traveling`, `license`, `defense`. The
-program has always named itself that way — `color_match`, `grayscale`,
-`palette_mode` — so British prose puts the text at odds with the keys it is
-telling the reader to type.
+comments, docstrings, identifiers, log messages, and commit messages.** The
+program names itself that way (`color_match`, `grayscale`), so British prose
+contradicts the keys it tells the reader to type.
 
 Two variants are interchangeable in American English and both are accepted:
 `grey`/`gray` and `canceled`/`cancelled`. Neither is a defect to fix.
@@ -271,30 +238,15 @@ output: anything between the dots is a leak.
   `assertLogs` — so asserting tests go in their own class.
 - `patch.object(...).start()` needs a `stop()`: use `with` or `addCleanup`.
 
-**The startup hook ([tests/sitecustomize.py](tests/sitecustomize.py), via
-`PYTHONPATH=tests`) arms guards that fail a test, naming it:**
-
-- **Filesystem** ([tests/_fs_sandbox.py](tests/_fs_sandbox.py)): no reads or
-  writes outside the checkout and temp dirs, no untracked `assets/` file, no
-  `.git/`, no `git -C` one repository while `GIT_DIR` names another. Fix the
-  test with a `tempfile.mkdtemp()` fixture, or `tmp_cwd()` for a *relative*
-  default. Never widen the sandbox; `allow_outside_checkout(path)` is only for a
-  test whose subject is a real path.
-- **Threads** ([tests/_thread_sandbox.py](tests/_thread_sandbox.py)): no thread
-  the test started may outlive it. Stop and join it from `addCleanup`.
-- **Hangs** ([tests/_timeout_sandbox.py](tests/_timeout_sandbox.py)): 60 s per
-  test, then every stack and `TestTimedOut`. `C64CAST_TEST_TIMEOUT_S=0` turns it
-  off under a debugger.
-- **Child processes:** a test module starts one only through `run_bounded()`
-  ([tests/_child_process.py](tests/_child_process.py), 20 s), and the AST sweep
-  in [tests/test_child_process.py](tests/test_child_process.py) fails any
-  unbounded `subprocess` use. A child the code under test starts is clamped to
-  the same bound by [tests/_child_sandbox.py](tests/_child_sandbox.py), whose
-  docstring lists the capped sites.
-- **RNG** ([tests/_rng_sandbox.py](tests/_rng_sandbox.py)): `random` and numpy's
-  global generator are reseeded per test, so seed inside the test or `setUp`,
-  never in `setUpClass` or at import — or prefer a `random.Random()` /
-  `np.random.Generator` instance.
+**[tests/sitecustomize.py](tests/sitecustomize.py) arms guards that fail a
+test and name it:** filesystem ([_fs_sandbox.py](tests/_fs_sandbox.py)),
+threads that outlive their test, a 60 s hang timeout
+(`C64CAST_TEST_TIMEOUT_S=0` under a debugger), child processes outside
+`run_bounded()`, and global-RNG seeding outside the test. What each one
+enforces and how to fix a test it trips are in ["Tests"](CONTRIBUTING.md#tests)
+and each module's docstring. Never widen the filesystem sandbox to pass a test;
+use a `tempfile.mkdtemp()` fixture or `tmp_cwd()`, and keep
+`allow_outside_checkout(path)` for a test whose subject is a real path.
 
 ## Quirks worth knowing
 
@@ -303,31 +255,9 @@ lives in [docs/architecture.md](docs/architecture.md) — read the relevant sect
 before touching one of those subsystems.**
 
 - `C64_PALETTE_BGR` is OpenCV BGR order, not RGB.
-- **The `[preview]` window must be pumped from the main thread.** cv2's HighGUI may only create/service a window on the process's main thread (hard Cocoa requirement on macOS — an off-thread `namedWindow` raises "Unknown C++ exception from OpenCV code"). Every playlist runs on a worker thread, so `PreviewWindow` is deliberately *not* self-driving like `StreamRecorder` is: it's `open()`/`pump()`/`close()`, driven by `session._pump_previews_until_done` from the otherwise-parked main thread. Don't "simplify" it back into a thread — that's what the pre-cv2 pygame version did, and it never worked on macOS. See [docs/caveats.md](docs/caveats.md) → "Preview window fidelity + limits".
-- `AudioStreamer` shares the render path's `Ultimate64API` instance. The U64 DMA service is single-connection only: a second concurrent socket TCP-accepts but its IDENTIFY gets no reply while the first is open (before 3.15 the first also blocked new ones for a few seconds after close; 3.15a serves the next one at once). Firmware 3.15 closes a DMA connection idle for 1 s; `SocketDMAClient` checks for that before each command and redials first ([hardware-io.md](docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient)). The shared `SocketDMAClient` is thread-safe (per-command mutex around sendall). The combined rate reaches the ≈200/sec DMA ceiling on a heavy scene: host-DMA flicker `mhires` video measured 170–262 commands/s (render writes, page-flip commit polls, audio), and the heartbeat's `writes=` leaves out the REU writes and polls ([caveats.md](docs/caveats.md)).
+- **The `[preview]` window must be pumped from the main thread** (a macOS Cocoa requirement), so `PreviewWindow` is `open()`/`pump()`/`close()` driven by `session._pump_previews_until_done`. Don't turn it back into a thread — see [caveats.md](docs/caveats.md) → "Preview window fidelity + limits".
+- `AudioStreamer` shares the render path's `Ultimate64API`, because the U64 DMA service is single-connection; the shared `SocketDMAClient` is thread-safe and redials after the firmware's idle close. Render and audio together can reach the ≈200 commands/s ceiling — [hardware-io.md](docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient), [caveats.md](docs/caveats.md).
 - Address strings passed to `write_memory*` work in either case (`"d018"` and `"D018"` are both fine).
 - The dirty cache is keyed by `region_id` (small ints) not address — so a mode switch from PETSCII to MCM (both writing $0400) gets a clean diff baseline via `api.invalidate_cache()`. `InterstitialScene` reuses `RegionID.SCREEN`/`RegionID.COLOR` for the same reason.
 - `backgrounds.py` constants are C64 *screen codes* (what goes to $0400), not PETSCII codes — the encodings diverge above 0x40 (e.g. `@` is PETSCII 0x40 but screen code 0x00).
-- Memory writes go over the **Ultimate DMA Service** (TCP port 64, persistent socket, ≈5 ms / ≈200 writes/sec). See [docs/caveats.md](docs/caveats.md) → "Writes go over Socket DMA, not REST" for the transport measurements and why REST can't carry writes. Reducing write *count* (coalesce via `write_regs`, dirty-skip via `write_region`) is still the right move under DMA — it's cheaper than tightening the per-write floor. **Payload below ~2.1 KB is free on this link** (8 B and 2 KB both cost ≈5.2 ms), which is *why* count is the lever — so never split a write to save bytes, and widen one to cover a clean gap without hesitation. That trade is per-link and inverted on the TeensyROM+, so it lives on `HardwareProfile.write_cost_s` rather than in any caller; measure with `scripts/diags/link_cost_model.py`.
-
-Where the per-subsystem detail lives (the [architecture reference](docs/architecture.md) is split by topic area; its module index routes any module to its notes):
-
-| Topic | Section |
-|---|---|
-| `[color]` shaping, `dither`, `color_match`, `cell_strategy`, `motion_smoothing`, `palette_mode`, fades | [`video/modes/`](docs/architecture/video-color.md#modes--displaymode-hierarchy) |
-| Forced-palette remap + rolling palette (`force_palette`) | [`rolling_palette.py` + `palette.py`](docs/architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
-| DAC curves, Mahoney `$D418`, per-system calibration, REU pump | [`audio.py`, `audio_handlers.py`, `dsp.py`](docs/architecture/audio.md#audiopy--audiostreamer) |
-| Ultimate Audio FPGA sampler | [`sampler.py`](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
-| Audio-input music features (reactive visuals from live input), `[audio_features]` | [`audio_features.py`](docs/architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
-| Bitmap + `$D418`-DAC tempo compensation (`tempo_scale`) | [`video.py`](docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
-| SID player PRG — relocation, per-call `$01` banking, TR vector-swap | [SID player PRG](docs/architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
-| SID Player Autoconfig (`sid_model`, 6581/8580 matching) | [`waveform.py` + `sidemu.py` + `sid_host_emu.py`](docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
-| SID stereo panning (`sid_panning`, per-source U64 mixer pan) | [`sid_panning.py`](docs/architecture/sid.md#sid-panning) |
-| SID mixer volume (`sid_volume`) + LED mirroring of socketed SIDs | [`sid_volume.py`](docs/architecture/sid.md#sid-volume) |
-| ASID decode + buffered ring player | [`asid.py` + `asid_scene.py`](docs/architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
-| WLED bridge — broadcast / listen / pixel sink | [`wled_sync.py`, `wled_device.py`, `wled_sink.py`](docs/architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3) |
-| MIDI live-tune Phases 1-5 (live params, transport, loops, resync, wizard) | [`midi_control.py`, `transport.py`, `midi_setup.py`](docs/architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
-| Live DJ/VJ arc — tempo/beat grid (Phase 1) + clip-launch grid (Phase 2) + layerable effect chain (Phase 3) + grid-controller LED feedback (Phase 4) + phone/web console (Phase 5) + vision gestures / WLED tempo / look snapshot-recall (Phase 6) | [`tempo.py`, `performance.py`](docs/architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2), [`effects.py` chain](docs/architecture/scenes.md#the-layerable-chain-live-djvj-phase-3), [LED feedback](docs/architecture/control.md#grid-controller-led-feedback-live-djvj-phase-4), [`perf_console.py`](docs/architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5), [vision perf mode](docs/architecture/control.md#visionpy--webcam-gesture-control-optional-camera-as-input) + [looks](docs/architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2) + [WLED tempo](docs/architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3) |
-| Ensemble audio slot contention | [`ensemble.py`](docs/architecture/config.md#ensemblepy--audio-slot-coordination) |
-| TeensyROM link errors + launcher upload race | [`teensyrom_dma.py`](docs/architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
-| Cross-ensemble span/mirror broadcasts | [`app/orchestrator.py` + `app/orchestrators/`](docs/architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
+- **On the U64 DMA link, write *count* is the lever, not bytes:** payload below ~2.1 KB is free, so coalesce (`write_regs`), dirty-skip (`write_region`), never split a write to save bytes, and widen one over a clean gap. The trade inverts on the TeensyROM+, so it lives on `HardwareProfile.write_cost_s`, not in callers — measurements in [hardware-io.md](docs/architecture/hardware-io.md).

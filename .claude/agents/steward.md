@@ -230,7 +230,7 @@ The contracts this repository states, and what keeps each one honest:
 - **American English** in prose, code and identifiers. The three deliberate
   exceptions are listed in `CLAUDE.md`, and `grey`/`gray` and
   `canceled`/`cancelled` are both fine.
-- **The test rules in `CLAUDE.md`** are contracts the suite enforces at runtime,
+- **The test rules in `CLAUDE.md` and CONTRIBUTING.md → "Tests"** are contracts the suite enforces at runtime,
   and a test that only passes by breaking one is a finding:
   - a run prints only pass/fail/skip;
   - `assertLogs` and `quiet_logging()` never nest;
