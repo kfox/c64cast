@@ -2261,6 +2261,7 @@ class ClipColorDiagnosticTest(unittest.TestCase):
             "motion_smoothing": "5.0",
             "flicker_tolerance": '"bogus"',
             "auto_fit_shot_max_rise": "0.5",
+            "input_smoothing": "5.0",
         }
         for key, value in bad.items():
             with self.subTest(key=key):
@@ -2301,6 +2302,16 @@ class ClipColorDiagnosticTest(unittest.TestCase):
         diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
         self.assertEqual(
             [d.subject for d in diags if d.level == "error"], ["system/auto_fit_shot_max_rise"]
+        )
+
+    def test_a_bad_global_input_smoothing_is_reported_against_its_own_field(self):
+        loaded = _load(
+            '[color]\ninput_smoothing = "on"\n\n'
+            + self._CLIP.format(key="dither_strength", value="1.0")
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"], ["system/input_smoothing"]
         )
 
     def test_a_nan_global_luma_cap_is_reported_against_its_own_field(self):

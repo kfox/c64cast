@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 467 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 468 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -271,6 +271,7 @@ Every name c64cast answers to — 467 of them — and the pages that discuss eac
 |---|---|
 | `image_duration_s` | [`slideshow` (2)](03-vocabulary.md#slideshow), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `--init` | [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection), [The Extras (I)](28-appendix-i-extras.md#the-extras) |
+| `input_smoothing` | [`input_smoothing` (3)](04-display-pipeline.md#input_smoothing), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `input_source` | [`launcher` (2)](03-vocabulary.md#launcher), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `--install-char-rom` | [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `intensity` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest import mock
 
+import numpy as np
 from _fakes import FakeAPI, MachineSettingsIsolation
 
 from c64cast._midi import MIDI_AVAILABLE
@@ -125,7 +126,7 @@ class ColorSectionTest(unittest.TestCase):
         self.assertEqual(c.dither_strength, 0.1)
 
     def test_motion_smoothing_default(self):
-        self.assertEqual(cfgmod.Config().color.motion_smoothing, 0.1)
+        self.assertEqual(cfgmod.Config().color.motion_smoothing, "auto")
 
     def test_color_section_parses_dither(self):
         cfg = self._load('[color]\ndither = "ordered"\ndither_strength = 1.25\n')
@@ -2769,13 +2770,13 @@ class ValidateMotionSmoothingCfgTest(unittest.TestCase):
         scene_factory.validate_motion_smoothing_cfg(cfgmod.Config())
 
     def test_range_bounds_valid(self):
-        for v in (0.0, 0.5, 1.0):
+        for v in (0.0, 0.5, 1.0, 1, "auto"):
             cfg = cfgmod.Config()
             cfg.color.motion_smoothing = v
             scene_factory.validate_motion_smoothing_cfg(cfg)
 
     def test_out_of_range_raises(self):
-        for v in (-0.1, 1.5):
+        for v in (-0.1, 1.5, "fast", "0.3"):
             cfg = cfgmod.Config()
             cfg.color.motion_smoothing = v
             with self.assertRaisesRegex(cfgmod.ConfigError, "motion_smoothing"):
@@ -2855,15 +2856,130 @@ class MotionSmoothingWiringTest(unittest.TestCase):
         self.assertLess(lo._quant_hysteresis, mid._quant_hysteresis)
         self.assertLess(mid._quant_hysteresis, hi._quant_hysteresis)
 
-    def test_config_path_forwards_value(self):
-        from typing import cast
-
+    def _wired(self, setting, scene_type):
         from c64cast.video.modes import MultiHiresDisplayMode
 
-        mode = scene_factory._build_display_mode(
-            "mhires", color=cfgmod.ColorCfg(motion_smoothing=0.0)
+        wiring = scene_factory.DisplayWiring(
+            color=cfgmod.ColorCfg(motion_smoothing=setting), scene_type=scene_type
         )
-        self.assertAlmostEqual(cast(MultiHiresDisplayMode, mode)._ema_alpha, 1.0)
+        mode = scene_factory.build_wired_display_mode("mhires", wiring)
+        return cast(MultiHiresDisplayMode, mode).motion_smoothing
+
+    def test_config_path_forwards_value(self):
+        self.assertAlmostEqual(self._wired(0.0, "video"), 0.0)
+
+    def test_auto_is_higher_on_video_than_on_live_and_still_scenes(self):
+        from c64cast.video.modes import base
+
+        self.assertAlmostEqual(self._wired("auto", "video"), base.VIDEO_MOTION_SMOOTHING)
+        for scene_type in ("webcam", "generative", "slideshow"):
+            with self.subTest(scene_type):
+                self.assertAlmostEqual(
+                    self._wired("auto", scene_type), base.DEFAULT_MOTION_SMOOTHING
+                )
+        self.assertGreater(base.VIDEO_MOTION_SMOOTHING, base.DEFAULT_MOTION_SMOOTHING)
+
+    def test_an_explicit_value_wins_over_auto_on_video(self):
+        self.assertAlmostEqual(self._wired(0.1, "video"), 0.1)
+
+
+class InputSmoothingTest(unittest.TestCase):
+    _W, _H = 160, 200
+
+    def _mode(self, strength):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        return MultiHiresDisplayMode(input_smoothing=strength)
+
+    def _flat(self, level):
+        return np.full((self._W * self._H, 3), float(level), dtype=np.float32)
+
+    def test_a_still_pixel_keeps_the_set_share_of_its_history(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        out = mode._smooth_still_input(self._flat(103))
+        np.testing.assert_allclose(out, 100.6, atol=1e-3)
+
+    def test_the_history_is_the_smoothed_frame_not_the_raw_one(self):
+        mode = self._mode(0.8)
+        for level in (100, 103):
+            mode._smooth_still_input(self._flat(level))
+        out = mode._smooth_still_input(self._flat(103))
+        np.testing.assert_allclose(out, 103 + 0.8 * (100.6 - 103), atol=1e-3)
+
+    def test_a_moving_pixel_takes_the_new_frame(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        out = mode._smooth_still_input(self._flat(140))
+        np.testing.assert_allclose(out, 140.0)
+
+    def test_a_pixel_halfway_through_the_motion_gate_keeps_half_the_share(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        out = mode._smooth_still_input(self._flat(108))
+        np.testing.assert_allclose(out, 108 + 0.4 * (100 - 108), atol=1e-3)
+
+    def test_a_replayed_scene_starts_without_the_last_runs_history(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        mode.setup(FakeAPI())
+        out = mode._smooth_still_input(self._flat(103))
+        np.testing.assert_allclose(out, 103.0)
+
+    def test_a_palette_mode_switch_starts_without_the_old_shaping_history(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        mode.set_palette_mode(FakeAPI(), "vivid")
+        out = mode._smooth_still_input(self._flat(103))
+        np.testing.assert_allclose(out, 103.0)
+
+    def test_compose_leaves_the_input_alone_when_off(self):
+        frame = np.full((self._H, self._W, 3), 90, dtype=np.uint8)
+        mode = self._mode(0.0)
+        mode.compose(frame)
+        mode.compose(frame)
+        self.assertIsNone(mode._smoothed_input)
+
+    def test_compose_smooths_when_on(self):
+        frame = np.full((self._H, self._W, 3), 90, dtype=np.uint8)
+        mode = self._mode(0.8)
+        mode.compose(frame)
+        self.assertIsNotNone(mode._smoothed_input)
+
+    def _wired(self, setting, scene_type):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        wiring = scene_factory.DisplayWiring(
+            color=cfgmod.ColorCfg(input_smoothing=setting), scene_type=scene_type
+        )
+        mode = scene_factory.build_wired_display_mode("mhires", wiring)
+        return cast(MultiHiresDisplayMode, mode)._input_smoothing
+
+    def test_auto_is_on_for_video_only(self):
+        from c64cast.video.modes import base
+
+        self.assertAlmostEqual(self._wired("auto", "video"), base.VIDEO_INPUT_SMOOTHING)
+        self.assertGreater(base.VIDEO_INPUT_SMOOTHING, 0.0)
+        for scene_type in ("webcam", "generative", "slideshow"):
+            with self.subTest(scene_type):
+                self.assertEqual(self._wired("auto", scene_type), 0.0)
+
+    def test_an_explicit_value_wins_over_auto(self):
+        self.assertEqual(self._wired(0.0, "video"), 0.0)
+        self.assertAlmostEqual(self._wired(0.5, "webcam"), 0.5)
+
+    def test_auto_and_unit_values_are_valid(self):
+        for v in ("auto", 0.0, 0.8, 1):
+            cfg = cfgmod.Config()
+            cfg.color.input_smoothing = v
+            scene_factory.validate_input_smoothing_cfg(cfg)
+
+    def test_other_values_raise(self):
+        for v in (-0.1, 1.5, "on"):
+            cfg = cfgmod.Config()
+            cfg.color.input_smoothing = v
+            with self.assertRaisesRegex(cfgmod.ConfigError, "input_smoothing"):
+                scene_factory.validate_input_smoothing_cfg(cfg)
 
 
 class DarkToneTaperWiringTest(unittest.TestCase):
