@@ -148,6 +148,9 @@ VIDEO_MOTION_SMOOTHING = 0.3
 # [color].input_smoothing's "auto" on video. Live and still content stays at 0
 # because none of it was judged with input smoothing on.
 VIDEO_INPUT_SMOOTHING = 0.8
+# [color].sharpen's "auto" on video, the strength judged best on a U64; 0.6
+# made faces jagged. Live and still content was never judged sharpened.
+VIDEO_SHARPEN = 0.3
 
 # Bitmap-code hysteresis for the percell path, in d² space (the units
 # quantize_distances returns). A pixel keeps its previous code while it stays

@@ -3032,24 +3032,39 @@ class SharpenTest(unittest.TestCase):
                 mode.compose(frame)
                 self.assertEqual(spy.call_count, expected)
 
-    def test_config_path_forwards_value(self):
+    def _wired(self, setting, scene_type):
         from c64cast.video.modes import MultiHiresDisplayMode
 
-        wiring = scene_factory.DisplayWiring(color=cfgmod.ColorCfg(sharpen=0.6), scene_type="video")
+        wiring = scene_factory.DisplayWiring(
+            color=cfgmod.ColorCfg(sharpen=setting), scene_type=scene_type
+        )
         mode = scene_factory.build_wired_display_mode("mhires", wiring)
-        self.assertAlmostEqual(cast(MultiHiresDisplayMode, mode)._sharpen, 0.6)
+        return cast(MultiHiresDisplayMode, mode)._sharpen
 
-    def test_off_by_default(self):
-        self.assertEqual(cfgmod.ColorCfg().sharpen, 0.0)
+    def test_auto_is_the_default(self):
+        self.assertEqual(cfgmod.ColorCfg().sharpen, "auto")
 
-    def test_unit_values_are_valid(self):
-        for v in (0.0, 0.6, 1):
+    def test_auto_is_on_for_video_only(self):
+        from c64cast.video.modes import base
+
+        self.assertAlmostEqual(self._wired("auto", "video"), base.VIDEO_SHARPEN)
+        self.assertGreater(base.VIDEO_SHARPEN, 0.0)
+        for scene_type in ("webcam", "generative", "slideshow"):
+            with self.subTest(scene_type):
+                self.assertEqual(self._wired("auto", scene_type), 0.0)
+
+    def test_an_explicit_value_wins_over_auto(self):
+        self.assertEqual(self._wired(0.0, "video"), 0.0)
+        self.assertAlmostEqual(self._wired(0.6, "webcam"), 0.6)
+
+    def test_auto_and_unit_values_are_valid(self):
+        for v in ("auto", 0.0, 0.6, 1):
             cfg = cfgmod.Config()
             cfg.color.sharpen = v
             scene_factory.validate_sharpen_cfg(cfg)
 
     def test_other_values_raise(self):
-        for v in (-0.1, 1.5):
+        for v in (-0.1, 1.5, "on"):
             cfg = cfgmod.Config()
             cfg.color.sharpen = v
             with self.assertRaisesRegex(cfgmod.ConfigError, "sharpen"):

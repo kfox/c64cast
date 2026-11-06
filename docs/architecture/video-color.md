@@ -685,9 +685,9 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 ### `[color].sharpen` — edge-gated unsharp mask before quantizing
 
-0..1, default 0 (off), mhires only. `MultiHiresDisplayMode._sharpen_edges` runs after `_smooth_still_input`, so the smoothed history never carries sharpening. It adds `sharpen` × (frame − Gaussian blur, σ 1) to each pixel, scaled by an edge gate. The gate is the Sobel magnitude of the blurred luma, fading in from 30 to 90 (`_SHARPEN_EDGE_LEVELS`), so flat areas get no sharpening.
+`"auto"` (default) or 0..1, mhires only. `"auto"` is `base.VIDEO_SHARPEN` (0.3) on video scenes and 0 elsewhere, resolved by `scene_factory.resolve_sharpen` in `build_wired_display_mode`. `MultiHiresDisplayMode._sharpen_edges` runs after `_smooth_still_input`, so the smoothed history never carries sharpening. It adds `sharpen` × (frame − Gaussian blur, σ 1) to each pixel, scaled by an edge gate. The gate is the Sobel magnitude of the blurred luma, fading in from 30 to 90 (`_SHARPEN_EDGE_LEVELS`), so flat areas get no sharpening.
 
-**Why it is off by default.** It can only add contrast at boundaries, and boundaries are where the remaining shimmer sits. Over eight clips (`scripts/diags/mhires_video_eval.py`), against the defaults with it off:
+**What it costs.** It can only add contrast at boundaries, and boundaries are where the remaining shimmer sits. Over eight clips (`scripts/diags/mhires_video_eval.py`), against the defaults with it off:
 
 - At 0.3, shimmer rose 3–5% and changed cells 1–3%, and fidelity against the source moved −0.7% to +1.5%.
 - At 0.6, shimmer rose 6–9% and fidelity moved −1.2% to +3.0%.
@@ -695,7 +695,7 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 Those metrics score closeness to the source, not crispness, so they can show what it costs but not what it gains. The gain is visual: soft footage, lines and grids read sharper. That makes it a per-source choice.
 
-**On a U64**, playing the same film segment at 0, 0.3 and 0.6, 0.3 looked best, with no distracting halos. 0.6 looked too sharp and jagged on facial close-ups. It also tipped more amber surfaces green. The guide therefore suggests 0.3 as the starting point.
+**On a U64**, playing the same film segment at 0, 0.3 and 0.6, 0.3 looked best, with no distracting halos. 0.6 looked too sharp and jagged on facial close-ups. It also tipped more amber surfaces green. At 0.3, three more sources were judged good on a U64: a low-quality clip with hard cuts, a short animated logo clip and a full-length music video. So `"auto"` turns it on at 0.3 for video. Webcam, generative and slideshow content was never judged sharpened, so it stays off there.
 
 ### `petscii_styles.py`
 

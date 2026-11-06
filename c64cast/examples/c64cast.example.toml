@@ -915,8 +915,9 @@ input_smoothing = "auto"
 # sharpen: how strongly mhires sharpens edges before quantizing, 0..1 (mhires
 # only). Only pixels on an edge are sharpened, so flat areas keep their grain
 # steady; it crisps soft footage, lines and grids, at the cost of some extra
-# shimmer along those edges. 0 (default) turns it off.
-sharpen = 0.0
+# shimmer along those edges. 0 turns it off. "auto" (default) is 0.3 for video
+# scenes and 0 for webcam, generative and slideshow scenes.
+sharpen = "auto"
 #
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video

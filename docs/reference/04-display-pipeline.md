@@ -443,10 +443,17 @@ It affects only `mhires`.
 
 ### `sharpen`
 
-`[color].sharpen` (0 to 1) sharpens edges before `mhires` quantizes, which
-crisps soft footage, lines and grids. Only pixels on an edge are sharpened,
-so the grain on flat areas is left alone; the edges themselves shimmer a
-little more. The default, `0`, turns it off. It affects only `mhires`.
+`[color].sharpen` sharpens edges before `mhires` quantizes, which crisps soft
+footage, lines and grids. Only pixels on an edge are sharpened, so the grain
+on flat areas is left alone; the edges themselves shimmer a little more.
+Values run from 0 to 1.
+
+| Value | Behavior |
+|---|---|
+| `"auto"` | The default: `0.3` for video scenes, off for webcam, generative and slideshow scenes |
+| `0` | Off |
+
+At `0.6`, close-ups of faces look jagged. It affects only `mhires`.
 
 ### Blending Colors the VIC Cannot Draw — `flicker_tolerance`
 
