@@ -67,6 +67,7 @@ from .scene_factory import (
     resolve_scene_display,
     resolve_wled_broadcast,
     resolve_wled_listen,
+    sharpen_cfg_error,
     split_file_spec,
     validate_control_cfg,
     validate_dac_bitmap_tempo_cfg,
@@ -1129,6 +1130,7 @@ _OVERRIDE_COLOR_CHECKS: tuple[
     (flicker_tolerance_cfg_error, _flicker_checked_per_scene),
     (auto_fit_shot_cfg_error, lambda _s, _cfg: False),
     (input_smoothing_cfg_error, lambda _s, _cfg: False),
+    (sharpen_cfg_error, lambda _s, _cfg: False),
 )
 
 
@@ -1161,6 +1163,7 @@ def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
             flicker_tolerance_cfg_error,
             auto_fit_shot_cfg_error,
             input_smoothing_cfg_error,
+            sharpen_cfg_error,
         ):
             err = global_check("[color]", cfg.color)
             if err and not _a_scene_reports(cfg, err):

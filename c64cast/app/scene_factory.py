@@ -416,6 +416,7 @@ def _build_display_mode(
             cell_strategy=cell_strategy,
             motion_smoothing=motion_smoothing,
             input_smoothing=input_smoothing,
+            sharpen=color.sharpen,
             auto_fit_strength=auto_fit_strength,
             flicker_tolerance=flicker_tolerance,
             flicker_max_luma_delta=color.flicker_max_luma_delta,
@@ -1559,6 +1560,21 @@ def validate_input_smoothing_cfg(cfg: Config) -> None:
             raise ConfigError(err)
 
 
+def sharpen_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Range-check one resolved [color] section's sharpen."""
+    if not 0.0 <= color.sharpen <= 1.0:
+        return f"{label}.sharpen must be 0..1.0, got {color.sharpen!r}"
+    return None
+
+
+def validate_sharpen_cfg(cfg: Config) -> None:
+    """Guard sharpen on [color] and every scene override."""
+    for label, color in effective_colors(cfg):
+        err = sharpen_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
+
+
 def validate_motion_smoothing_cfg(cfg: Config) -> None:
     """Guard motion_smoothing on [color] and every scene override: reject
     anything but "auto" or a number in 0..1."""
@@ -2012,6 +2028,7 @@ PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
     validate_cell_strategy_cfg,
     validate_motion_smoothing_cfg,
     validate_input_smoothing_cfg,
+    validate_sharpen_cfg,
     validate_auto_fit_shot_cfg,
     validate_flicker_cfg,
     validate_hardware_palette_cfg,

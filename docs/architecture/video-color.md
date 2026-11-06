@@ -683,6 +683,18 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 **Measured** over eight clips (`scripts/diags/mhires_video_eval.py`), against `motion_smoothing = "auto"` alone: shimmer fell 11–32% and changed cells 3–21% on every clip. Fidelity against the source moved 0% to +0.4%, apart from the 4K film at +2.5%, and SSIM fell 0.2–2.5%. It costs about 0.5 ms per composed frame. It was on, at this setting, in the U64 run that settled `motion_smoothing` at 0.3.
 
+### `[color].sharpen` — edge-gated unsharp mask before quantizing
+
+0..1, default 0 (off), mhires only. `MultiHiresDisplayMode._sharpen_edges` runs after `_smooth_still_input`, so the smoothed history never carries sharpening. It adds `sharpen` × (frame − Gaussian blur, σ 1) to each pixel, scaled by an edge gate. The gate is the Sobel magnitude of the blurred luma, fading in from 30 to 90 (`_SHARPEN_EDGE_LEVELS`), so flat areas get no sharpening.
+
+**Why it is off by default.** It can only add contrast at boundaries, and boundaries are where the remaining shimmer sits. Over eight clips (`scripts/diags/mhires_video_eval.py`), against the defaults with it off:
+
+- At 0.3, shimmer rose 3–5% and changed cells 1–3%, and fidelity against the source moved −0.7% to +1.5%.
+- At 0.6, shimmer rose 6–9% and fidelity moved −1.2% to +3.0%.
+- It costs about 0.3 ms per composed frame.
+
+Those metrics score closeness to the source, not crispness, so they can show what it costs but not what it gains. The gain is visual: soft footage, lines and grids read sharper. That makes it a per-source choice.
+
 ### `petscii_styles.py`
 
 Registers the styles in `STYLE_NAMES` (default, halftone, random_glyph, letter_rain, neon, inverse_pop, hatch, color_only). Each subclass owns its own char ramp + color policy and declares its preferred border + background; the mode pokes those on setup and on every SHIFT cycle. The `random` config sentinel is resolved at scene `setup()` to a concrete style — subsequent cycles proceed from there in declared order, so SHIFT behavior stays predictable instead of re-randomizing each press. New styles are one PetsciiStyle subclass + a registry entry away (no PETSCIIDisplayMode change needed).

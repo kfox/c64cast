@@ -85,6 +85,11 @@ Raise it for calm footage; lower it for fast motion.
 still areas by blending each unmoving pixel with its recent past, and leaves
 moving pixels alone. `"auto"` turns it on for video; `0` turns it off.
 
+**`sharpen`**, also `mhires` only, crisps soft footage by sharpening its edges,
+at the cost of a little extra shimmer along them. It is off (`0`) by default;
+try `0.3` on a blurry source, and go higher only if the extra shimmer doesn't
+bother you.
+
 **`flicker_tolerance`** is a different trick entirely: rather than avoiding
 flicker, it puts it to work. Two screen pages alternate every video field, so
 the eye fuses a cell's pair of hardware colors into a shade the sixteen-color

@@ -74,6 +74,13 @@ log = logging.getLogger(__name__)
 _STILL_MOTION_LEVELS = (4.0, 12.0)
 _STILL_MOTION_WINDOW = (5, 5)
 
+# sharpen's edge gate, in Sobel magnitude of the blurred luma: no sharpening
+# below the first, full above the second. Ungated, the unsharp mask amplified
+# grain on flat walls into more shimmer.
+_SHARPEN_EDGE_LEVELS = (30.0, 90.0)
+_SHARPEN_SIGMA = 1.0
+_LUMA_BGR = np.array([0.114, 0.587, 0.299], dtype=np.float32)
+
 
 def _solid_last(top3: np.ndarray, table: BlendTable) -> np.ndarray:
     """Reorder each cell's 3 picks so slot c3 holds a real palette color.
@@ -192,6 +199,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         cell_strategy: str = "frequency",
         motion_smoothing: float = base.DEFAULT_MOTION_SMOOTHING,
         input_smoothing: float = 0.0,
+        sharpen: float = 0.0,
         auto_fit_strength: float = 1.0,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
@@ -257,6 +265,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self.motion_smoothing = motion_smoothing
         self._input_smoothing = float(input_smoothing)
         self._smoothed_input: np.ndarray | None = None
+        self._sharpen = float(sharpen)
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         self._cell_strategy = cell_strategy
@@ -509,6 +518,23 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._smoothed_input = out
         return out
 
+    def _sharpen_edges(self, flat: np.ndarray) -> np.ndarray:
+        """Unsharp-mask the shaped frame by `sharpen`, only where the luma has
+        an edge."""
+        assert self.frame_target_size is not None
+        w, h = self.frame_target_size
+        img = flat.reshape(h, w, 3)
+        blur = cv2.GaussianBlur(img, (0, 0), _SHARPEN_SIGMA)
+        luma = blur @ _LUMA_BGR
+        edge = np.hypot(
+            cv2.Sobel(luma, cv2.CV_32F, 1, 0, ksize=3),
+            cv2.Sobel(luma, cv2.CV_32F, 0, 1, ksize=3),
+        )
+        lo, hi = _SHARPEN_EDGE_LEVELS
+        gate = np.clip((edge - lo) / (hi - lo), 0.0, 1.0)
+        out = img + (self._sharpen * gate)[..., None] * (img - blur)
+        return np.clip(out, 0.0, 255.0).reshape(-1, 3)
+
     def quantizer_input(self, img: np.ndarray) -> np.ndarray:
         return shape_for_quantize(
             img,
@@ -550,6 +576,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             flat = self.quantizer_input(img).reshape(-1, 3)
             if self._input_smoothing > 0.0:
                 flat = self._smooth_still_input(flat)
+            if self._sharpen > 0.0:
+                flat = self._sharpen_edges(flat)
             offset_fn = ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
             if offset_fn is not None:
                 w, h = self.frame_target_size

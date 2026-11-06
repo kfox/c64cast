@@ -441,6 +441,13 @@ out as the pixel moves, so motion is not smeared.
 
 It affects only `mhires`.
 
+### `sharpen`
+
+`[color].sharpen` (0 to 1) sharpens edges before `mhires` quantizes, which
+crisps soft footage, lines and grids. Only pixels on an edge are sharpened,
+so the grain on flat areas is left alone; the edges themselves shimmer a
+little more. The default, `0`, turns it off. It affects only `mhires`.
+
 ### Blending Colors the VIC Cannot Draw — `flicker_tolerance`
 
 Off by default. `hires` (`"normal"` style) and `mhires` with

@@ -2982,6 +2982,80 @@ class InputSmoothingTest(unittest.TestCase):
                 scene_factory.validate_input_smoothing_cfg(cfg)
 
 
+class SharpenTest(unittest.TestCase):
+    _W, _H = 160, 200
+
+    def _mode(self, amount):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        return MultiHiresDisplayMode(sharpen=amount)
+
+    def _frame(self, step):
+        img = np.full((self._H, self._W, 3), 100.0, dtype=np.float32)
+        img[:, self._W // 2 :] += step
+        return img.reshape(-1, 3)
+
+    def _row(self, flat):
+        return flat.reshape(self._H, self._W, 3)[self._H // 2, :, 1]
+
+    def test_an_edge_gains_contrast(self):
+        out = self._row(self._mode(1.0)._sharpen_edges(self._frame(80.0)))
+        mid = self._W // 2
+        self.assertLess(out[mid - 1], 100.0)
+        self.assertGreater(out[mid], 180.0)
+
+    def test_a_bright_edge_stays_in_the_quantizer_range(self):
+        out = self._mode(1.0)._sharpen_edges(self._frame(150.0))
+        self.assertLessEqual(out.max(), 255.0)
+        self.assertGreaterEqual(out.min(), 0.0)
+
+    def test_a_faint_step_below_the_edge_gate_is_untouched(self):
+        flat = self._frame(4.0)
+        out = self._mode(1.0)._sharpen_edges(flat.copy())
+        np.testing.assert_allclose(out, flat, atol=1e-3)
+
+    def test_a_stronger_amount_overshoots_further(self):
+        mid = self._W // 2
+        weak = self._row(self._mode(0.3)._sharpen_edges(self._frame(80.0)))[mid]
+        strong = self._row(self._mode(1.0)._sharpen_edges(self._frame(80.0)))[mid]
+        self.assertGreater(strong, weak)
+        self.assertGreater(weak, 180.0)
+
+    def test_compose_sharpens_only_when_on(self):
+        frame = np.full((self._H, self._W, 3), 90, dtype=np.uint8)
+        for amount, expected in ((0.0, 0), (0.6, 1)):
+            mode = self._mode(amount)
+            with (
+                self.subTest(amount=amount),
+                mock.patch.object(mode, "_sharpen_edges", side_effect=lambda f: f) as spy,
+            ):
+                mode.compose(frame)
+                self.assertEqual(spy.call_count, expected)
+
+    def test_config_path_forwards_value(self):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        wiring = scene_factory.DisplayWiring(color=cfgmod.ColorCfg(sharpen=0.6), scene_type="video")
+        mode = scene_factory.build_wired_display_mode("mhires", wiring)
+        self.assertAlmostEqual(cast(MultiHiresDisplayMode, mode)._sharpen, 0.6)
+
+    def test_off_by_default(self):
+        self.assertEqual(cfgmod.ColorCfg().sharpen, 0.0)
+
+    def test_unit_values_are_valid(self):
+        for v in (0.0, 0.6, 1):
+            cfg = cfgmod.Config()
+            cfg.color.sharpen = v
+            scene_factory.validate_sharpen_cfg(cfg)
+
+    def test_other_values_raise(self):
+        for v in (-0.1, 1.5):
+            cfg = cfgmod.Config()
+            cfg.color.sharpen = v
+            with self.assertRaisesRegex(cfgmod.ConfigError, "sharpen"):
+                scene_factory.validate_sharpen_cfg(cfg)
+
+
 class DarkToneTaperWiringTest(unittest.TestCase):
     def test_config_path_forwards_dark_tone_taper(self):
         from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode

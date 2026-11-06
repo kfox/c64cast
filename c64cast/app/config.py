@@ -2181,6 +2181,16 @@ class ColorCfg:
             "choices": ("auto",),
         },
     )
+    sharpen: float = field(
+        default=0.0,
+        metadata={
+            "help": "How strongly mhires sharpens edges before quantizing, "
+            "0..1. Only pixels on an edge are sharpened, so flat areas "
+            "keep their grain steady; it crisps soft footage, lines and grids, at the "
+            "cost of some extra shimmer along those edges. 0 (default) turns it off. "
+            "mhires only.",
+        },
+    )
 
 
 @dataclass
