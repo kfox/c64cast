@@ -904,6 +904,14 @@ flicker_score_pairs = []
 # video scenes and 0.1 for webcam, generative and slideshow scenes.
 motion_smoothing = "auto"
 #
+# input_smoothing: how much of the previous frame a still pixel keeps before
+# mhires quantizes it, 0..1 (mhires only). Grain on a flat area that sits
+# between two palette colors flips pixels between them every frame; blending a
+# pixel with its own history steadies it, and the blend fades out as the pixel
+# moves, so motion is not smeared. 0 turns it off. "auto" (default) is 0.8 for
+# video scenes and 0 for webcam, generative and slideshow scenes.
+input_smoothing = "auto"
+#
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video
 # and slideshow scenes only (not webcam): a slideshow fits each image, and a

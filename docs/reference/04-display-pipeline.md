@@ -426,6 +426,21 @@ cut, structure from the previous shot lingers for a moment as an after-image.
 Lower it if after-images bother you; raise it if motion shimmers. It affects
 nothing outside `mhires` with `palette_mode = "percell"`.
 
+### `input_smoothing`
+
+Grain on a flat area that sits between two palette colors flips its pixels
+from one to the other every frame. `[color].input_smoothing` steadies them
+before `mhires` quantizes: each pixel that has barely moved is blended with
+its own recent history, keeping that share of it, from 0 to 1. The blend fades
+out as the pixel moves, so motion is not smeared.
+
+| Value | Behavior |
+|---|---|
+| `"auto"` | The default: `0.8` for video scenes, off for webcam, generative and slideshow scenes |
+| `0` | Off |
+
+It affects only `mhires`.
+
 ### Blending Colors the VIC Cannot Draw — `flicker_tolerance`
 
 Off by default. `hires` (`"normal"` style) and `mhires` with

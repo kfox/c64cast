@@ -671,6 +671,16 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 `validate_motion_smoothing_cfg` and `doctor._validate_motion_smoothing` accept `"auto"` or a number in 0..1 and note a non-default value on the mhires percell scenes it affects. Orthogonal to `cell_strategy` (which 3 colors), `dither` (per-pixel fill), and `color_match` (distance space).
 
+### `[color].input_smoothing` — steadying still pixels before quantizing
+
+`"auto"` (default) or 0..1, mhires only. `MultiHiresDisplayMode._smooth_still_input` runs after `quantizer_input` (fit, boost, taper) and before the dither offset. It blends each pixel toward its own smoothed history by the setting, and the share it keeps fades to zero as the pixel moves. Motion is the pixel's largest channel change from that history, averaged over 5×5 pixels, and the fade runs from 4 to 12 levels (`_STILL_MOTION_LEVELS`). `"auto"` is `base.VIDEO_INPUT_SMOOTHING` (0.8) on video scenes and 0 elsewhere; `scene_factory.resolve_input_smoothing` resolves it in `build_wired_display_mode`, beside `motion_smoothing`.
+
+**Why the input and not the picks.** `motion_smoothing` steadies the per-cell decisions, and turning it up past 0.3 turned grain into slow, blotchy blobs instead of removing it. The shimmer left on a flat wall comes from grain of about 3 levels a frame moving pixels back and forth across a quantizer boundary. Averaging that grain away before the quantizer sees it removes the cause rather than holding a stale decision.
+
+**Why the gate is narrow.** An ungated input-frame EMA was rejected for smearing motion, and a wider gate smeared slow motion here too: fidelity against the source on a slow 4K film rose 27%. Gating on local flatness instead lost the benefit, because the shimmer sits on band and edge boundaries rather than in flat interiors. A 4–12 gate leaves anything moving faster than grain untouched.
+
+**Measured** over eight clips (`scripts/diags/mhires_video_eval.py`), against `motion_smoothing = "auto"` alone: shimmer fell 11–32% and changed cells 3–21% on every clip. Fidelity against the source moved 0% to +0.4%, apart from the 4K film at +2.5%, and SSIM fell 0.2–2.5%. It costs about 0.5 ms per composed frame. On a U64 A/B with `motion_smoothing` at 0.3, there was no smearing in motion.
+
 ### `petscii_styles.py`
 
 Registers the styles in `STYLE_NAMES` (default, halftone, random_glyph, letter_rain, neon, inverse_pop, hatch, color_only). Each subclass owns its own char ramp + color policy and declares its preferred border + background; the mode pokes those on setup and on every SHIFT cycle. The `random` config sentinel is resolved at scene `setup()` to a concrete style — subsequent cycles proceed from there in declared order, so SHIFT behavior stays predictable instead of re-randomizing each press. New styles are one PetsciiStyle subclass + a registry entry away (no PETSCIIDisplayMode change needed).

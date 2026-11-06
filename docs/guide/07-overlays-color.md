@@ -81,6 +81,10 @@ its palette is re-chosen. Smoothing damps that at the cost of slight
 after-images. `"auto"` uses `0.3` for video and `0.1` for everything else.
 Raise it for calm footage; lower it for fast motion.
 
+**`input_smoothing`** also applies only to `mhires`. It steadies film grain on
+still areas by blending each unmoving pixel with its recent past, and leaves
+moving pixels alone. `"auto"` turns it on for video; `0` turns it off.
+
 **`flicker_tolerance`** is a different trick entirely: rather than avoiding
 flicker, it puts it to work. Two screen pages alternate every video field, so
 the eye fuses a cell's pair of hardware colors into a shade the sixteen-color

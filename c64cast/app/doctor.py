@@ -59,6 +59,7 @@ from .scene_factory import (
     dither_cfg_error,
     flicker_tolerance_cfg_error,
     hardware_palette_cfg_error,
+    input_smoothing_cfg_error,
     motion_smoothing_cfg_error,
     resolve_cell_strategy,
     resolve_color_match,
@@ -1127,6 +1128,7 @@ _OVERRIDE_COLOR_CHECKS: tuple[
     (motion_smoothing_cfg_error, lambda s, _cfg: _percell_checked_per_scene(s)),
     (flicker_tolerance_cfg_error, _flicker_checked_per_scene),
     (auto_fit_shot_cfg_error, lambda _s, _cfg: False),
+    (input_smoothing_cfg_error, lambda _s, _cfg: False),
 )
 
 
@@ -1155,7 +1157,11 @@ def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
     by `_validate_scenes` or `_validate_hardware_palette`."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        for global_check in (flicker_tolerance_cfg_error, auto_fit_shot_cfg_error):
+        for global_check in (
+            flicker_tolerance_cfg_error,
+            auto_fit_shot_cfg_error,
+            input_smoothing_cfg_error,
+        ):
             err = global_check("[color]", cfg.color)
             if err and not _a_scene_reports(cfg, err):
                 out.append(

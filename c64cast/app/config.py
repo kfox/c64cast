@@ -36,7 +36,11 @@ from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
-from c64cast.video.modes.base import DEFAULT_MOTION_SMOOTHING, VIDEO_MOTION_SMOOTHING
+from c64cast.video.modes.base import (
+    DEFAULT_MOTION_SMOOTHING,
+    VIDEO_INPUT_SMOOTHING,
+    VIDEO_MOTION_SMOOTHING,
+)
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -2161,6 +2165,19 @@ class ColorCfg:
             f"{DEFAULT_MOTION_SMOOTHING} for webcam, generative and slideshow scenes. "
             "Lower it if after-images still bother you, raise it if motion "
             "shimmers. No effect on other modes or palette_modes.",
+            "choices": ("auto",),
+        },
+    )
+    input_smoothing: str | float = field(
+        default="auto",
+        metadata={
+            "help": "How much of the previous frame a still pixel keeps before "
+            "mhires quantizes it, 'auto' or 0..1. Grain on a flat area that sits "
+            "between two palette colors flips pixels between them every frame; "
+            "blending a pixel with its own history steadies it. The blend fades out "
+            "as the pixel moves, so motion is not smeared. 0 turns it off. 'auto' "
+            f"(default) is {VIDEO_INPUT_SMOOTHING} for video scenes and 0 for "
+            "webcam, generative and slideshow scenes. mhires only.",
             "choices": ("auto",),
         },
     )

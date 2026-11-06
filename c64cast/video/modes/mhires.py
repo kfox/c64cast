@@ -67,6 +67,13 @@ from .bitmap import BitmapDisplayMode, engage_bitmap_mode
 
 log = logging.getLogger(__name__)
 
+# input_smoothing's motion gate, in 0..255 levels of a pixel's largest channel
+# change from the smoothed previous frame, averaged over 5x5 pixels: full
+# smoothing below the first, none above the second. Grain on a flat wall moves
+# about 3 levels a frame; a gate reaching higher smeared slow motion.
+_STILL_MOTION_LEVELS = (4.0, 12.0)
+_STILL_MOTION_WINDOW = (5, 5)
+
 
 def _solid_last(top3: np.ndarray, table: BlendTable) -> np.ndarray:
     """Reorder each cell's 3 picks so slot c3 holds a real palette color.
@@ -184,6 +191,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         perceptual: bool = False,
         cell_strategy: str = "frequency",
         motion_smoothing: float = base.DEFAULT_MOTION_SMOOTHING,
+        input_smoothing: float = 0.0,
         auto_fit_strength: float = 1.0,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
@@ -247,6 +255,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # derive _ema_alpha and the two hysteresis bonuses identically. Reads
         # _penalty_scale, set just above.
         self.motion_smoothing = motion_smoothing
+        self._input_smoothing = float(input_smoothing)
+        self._smoothed_input: np.ndarray | None = None
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         self._cell_strategy = cell_strategy
@@ -481,6 +491,23 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         palette_mode swap moves both together."""
         return self._gray_penalty[table.pairs].mean(axis=1).astype(np.float32)
 
+    def _smooth_still_input(self, flat: np.ndarray) -> np.ndarray:
+        """Blend each still pixel of the shaped frame toward its smoothed
+        history by `input_smoothing`, fading to no blend as the pixel moves."""
+        prev = self._smoothed_input
+        if prev is None:
+            self._smoothed_input = flat
+            return flat
+        assert self.frame_target_size is not None
+        w, h = self.frame_target_size
+        change = np.abs(flat - prev).max(axis=1).reshape(h, w)
+        motion = cv2.blur(change, _STILL_MOTION_WINDOW).ravel()
+        lo, hi = _STILL_MOTION_LEVELS
+        keep = self._input_smoothing * (1.0 - np.clip((motion - lo) / (hi - lo), 0.0, 1.0))
+        out = flat + keep[:, None] * (prev - flat)
+        self._smoothed_input = out
+        return out
+
     def quantizer_input(self, img: np.ndarray) -> np.ndarray:
         return shape_for_quantize(
             img,
@@ -520,6 +547,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             d = quantize_distances(flat)
         else:
             flat = self.quantizer_input(img).reshape(-1, 3)
+            if self._input_smoothing > 0.0:
+                flat = self._smooth_still_input(flat)
             offset_fn = ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
             if offset_fn is not None:
                 w, h = self.frame_target_size
