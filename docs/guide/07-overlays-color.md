@@ -87,8 +87,8 @@ moving pixels alone. `"auto"` turns it on for video; `0` turns it off.
 
 **`sharpen`**, also `mhires` only, crisps soft footage by sharpening its edges,
 at the cost of a little extra shimmer along them. It is off (`0`) by default;
-try `0.3` on a blurry source, and go higher only if the extra shimmer doesn't
-bother you.
+`0.3` is a good starting point. Higher values make close-ups of faces look
+jagged and can tip amber tones toward green.
 
 **`flicker_tolerance`** is a different trick entirely: rather than avoiding
 flicker, it puts it to work. Two screen pages alternate every video field, so

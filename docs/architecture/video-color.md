@@ -695,6 +695,8 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 Those metrics score closeness to the source, not crispness, so they can show what it costs but not what it gains. The gain is visual: soft footage, lines and grids read sharper. That makes it a per-source choice.
 
+**On a U64**, playing the same film segment at 0, 0.3 and 0.6, 0.3 looked best, with no distracting halos. 0.6 looked too sharp and jagged on facial close-ups. It also tipped more amber surfaces green. The guide therefore suggests 0.3 as the starting point.
+
 ### `petscii_styles.py`
 
 Registers the styles in `STYLE_NAMES` (default, halftone, random_glyph, letter_rain, neon, inverse_pop, hatch, color_only). Each subclass owns its own char ramp + color policy and declares its preferred border + background; the mode pokes those on setup and on every SHIFT cycle. The `random` config sentinel is resolved at scene `setup()` to a concrete style — subsequent cycles proceed from there in declared order, so SHIFT behavior stays predictable instead of re-randomizing each press. New styles are one PetsciiStyle subclass + a registry entry away (no PETSCIIDisplayMode change needed).
