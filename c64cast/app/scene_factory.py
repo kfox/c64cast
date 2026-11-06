@@ -83,6 +83,7 @@ from c64cast.video.modes import (
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
 )
+from c64cast.video.modes.base import DEFAULT_MOTION_SMOOTHING, VIDEO_MOTION_SMOOTHING
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -336,6 +337,7 @@ def _build_display_mode(
     dither_method: str = "none",
     cell_strategy: str = "frequency",
     flicker_tolerance: str = DEFAULT_TOLERANCE,
+    motion_smoothing: float = DEFAULT_MOTION_SMOOTHING,
 ) -> DisplayMode:
     border = resolve_color(border)
     background = resolve_color(background)
@@ -407,7 +409,7 @@ def _build_display_mode(
             dither_strength=dither_strength,
             perceptual=perceptual,
             cell_strategy=cell_strategy,
-            motion_smoothing=color.motion_smoothing,
+            motion_smoothing=motion_smoothing,
             auto_fit_strength=auto_fit_strength,
             flicker_tolerance=flicker_tolerance,
             flicker_max_luma_delta=color.flicker_max_luma_delta,
@@ -781,6 +783,7 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
         dither_method=resolve_dither_method(color.dither, wiring.scene_type),
         cell_strategy=resolve_cell_strategy(color.cell_strategy, wiring.scene_type),
         flicker_tolerance=flicker_tolerance,
+        motion_smoothing=resolve_motion_smoothing(color.motion_smoothing, wiring.scene_type),
     )
 
 
@@ -1505,18 +1508,29 @@ def validate_dither_cfg(cfg: Config) -> None:
             raise ConfigError(err)
 
 
+def resolve_motion_smoothing(setting: str | float, scene_type: str) -> float:
+    """Resolve [color].motion_smoothing's `"auto"` for a scene type; an explicit
+    number passes through unchanged."""
+    if setting != "auto":
+        return float(setting)
+    return VIDEO_MOTION_SMOOTHING if scene_type == "video" else DEFAULT_MOTION_SMOOTHING
+
+
 def motion_smoothing_cfg_error(label: str, color: ColorCfg) -> str | None:
-    """Range-check one resolved [color] section's motion_smoothing (0..1);
+    """Check one resolved [color] section's motion_smoothing ("auto" or 0..1);
     returns the ConfigError message, or None if `color` is fine. See
     `dither_cfg_error` for why this is split from `validate_motion_smoothing_cfg`."""
-    if not 0.0 <= color.motion_smoothing <= 1.0:
-        return f"{label}.motion_smoothing must be 0..1.0, got {color.motion_smoothing}"
+    value = color.motion_smoothing
+    if value == "auto":
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float) or not 0.0 <= value <= 1.0:
+        return f'{label}.motion_smoothing must be "auto" or 0..1.0, got {value!r}'
     return None
 
 
 def validate_motion_smoothing_cfg(cfg: Config) -> None:
-    """Guard motion_smoothing on [color] and every scene override: reject an
-    out-of-range value (0..1)."""
+    """Guard motion_smoothing on [color] and every scene override: reject
+    anything but "auto" or a number in 0..1."""
     for label, color in effective_colors(cfg):
         err = motion_smoothing_cfg_error(label, color)
         if err:

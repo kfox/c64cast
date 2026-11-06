@@ -125,7 +125,7 @@ class ColorSectionTest(unittest.TestCase):
         self.assertEqual(c.dither_strength, 0.1)
 
     def test_motion_smoothing_default(self):
-        self.assertEqual(cfgmod.Config().color.motion_smoothing, 0.1)
+        self.assertEqual(cfgmod.Config().color.motion_smoothing, "auto")
 
     def test_color_section_parses_dither(self):
         cfg = self._load('[color]\ndither = "ordered"\ndither_strength = 1.25\n')
@@ -2769,13 +2769,13 @@ class ValidateMotionSmoothingCfgTest(unittest.TestCase):
         scene_factory.validate_motion_smoothing_cfg(cfgmod.Config())
 
     def test_range_bounds_valid(self):
-        for v in (0.0, 0.5, 1.0):
+        for v in (0.0, 0.5, 1.0, 1, "auto"):
             cfg = cfgmod.Config()
             cfg.color.motion_smoothing = v
             scene_factory.validate_motion_smoothing_cfg(cfg)
 
     def test_out_of_range_raises(self):
-        for v in (-0.1, 1.5):
+        for v in (-0.1, 1.5, "fast", "0.3", True):
             cfg = cfgmod.Config()
             cfg.color.motion_smoothing = v
             with self.assertRaisesRegex(cfgmod.ConfigError, "motion_smoothing"):
@@ -2855,15 +2855,31 @@ class MotionSmoothingWiringTest(unittest.TestCase):
         self.assertLess(lo._quant_hysteresis, mid._quant_hysteresis)
         self.assertLess(mid._quant_hysteresis, hi._quant_hysteresis)
 
-    def test_config_path_forwards_value(self):
-        from typing import cast
-
+    def _wired(self, setting, scene_type):
         from c64cast.video.modes import MultiHiresDisplayMode
 
-        mode = scene_factory._build_display_mode(
-            "mhires", color=cfgmod.ColorCfg(motion_smoothing=0.0)
+        wiring = scene_factory.DisplayWiring(
+            color=cfgmod.ColorCfg(motion_smoothing=setting), scene_type=scene_type
         )
-        self.assertAlmostEqual(cast(MultiHiresDisplayMode, mode)._ema_alpha, 1.0)
+        mode = scene_factory.build_wired_display_mode("mhires", wiring)
+        return cast(MultiHiresDisplayMode, mode).motion_smoothing
+
+    def test_config_path_forwards_value(self):
+        self.assertAlmostEqual(self._wired(0.0, "video"), 0.0)
+
+    def test_auto_is_higher_on_video_than_on_live_and_still_scenes(self):
+        from c64cast.video.modes import base
+
+        self.assertAlmostEqual(self._wired("auto", "video"), base.VIDEO_MOTION_SMOOTHING)
+        for scene_type in ("webcam", "generative", "slideshow"):
+            with self.subTest(scene_type):
+                self.assertAlmostEqual(
+                    self._wired("auto", scene_type), base.DEFAULT_MOTION_SMOOTHING
+                )
+        self.assertGreater(base.VIDEO_MOTION_SMOOTHING, base.DEFAULT_MOTION_SMOOTHING)
+
+    def test_an_explicit_value_wins_over_auto_on_video(self):
+        self.assertAlmostEqual(self._wired(0.1, "video"), 0.1)
 
 
 class DarkToneTaperWiringTest(unittest.TestCase):

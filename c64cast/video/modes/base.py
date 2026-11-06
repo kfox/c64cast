@@ -142,6 +142,9 @@ PALETTE_PICK_EMA_ALPHA = 0.25
 PERCELL_PICK_EMA_ALPHA = 0.15
 
 DEFAULT_MOTION_SMOOTHING = 0.1
+# Higher for video, whose grain shimmers on flat areas at 0.1; webcam and
+# generative content was never judged above 0.1.
+VIDEO_MOTION_SMOOTHING = 0.3
 
 # Bitmap-code hysteresis for the percell path, in d² space (the units
 # quantize_distances returns). A pixel keeps its previous code while it stays

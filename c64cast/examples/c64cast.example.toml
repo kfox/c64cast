@@ -900,8 +900,9 @@ flicker_score_pairs = []
 # outline from the previous shot lingers as an after-image for a moment. 1.0 =
 # full smoothing (most stable, ghostiest); 0.0 = track the source exactly (no
 # after-image, but can flicker on grainy content). Lower it if after-images
-# still bother you; raise it if motion shimmers.
-motion_smoothing = 0.1
+# still bother you; raise it if motion shimmers. "auto" (default) is 0.3 for
+# video scenes and 0.1 for webcam, generative and slideshow scenes.
+motion_smoothing = "auto"
 #
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video

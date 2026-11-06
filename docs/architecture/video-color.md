@@ -632,7 +632,7 @@ The border cannot blend: `$D020` is a single register the field IRQ does not man
 
 ### `[color].motion_smoothing` — temporal smoothing / after-images
 
-Range 0..1, default 0.1. A single dial over the mhires `percell` path's two *temporal* flicker-suppression buffers. No-op on every other mode and palette_mode — only percell carries them.
+`"auto"` (default) or 0..1. A single dial over the mhires `percell` path's two *temporal* flicker-suppression buffers. No-op on every other mode and palette_mode — only percell carries them.
 
 **The two buffers:**
 
@@ -655,7 +655,7 @@ Range 0..1, default 0.1. A single dial over the mhires `percell` path's two *tem
 | `0.0` | `_ema_alpha = 1.0` (new frame fully replaces count history) and both hysteresis bonuses zeroed. Tracks the source frame-exactly — no after-image, but grainy content can flicker. |
 | between | Lerps both: `_ema_alpha = 1 - s·(1-0.15)`, `hyst = base·s·penalty_scale`. |
 
-Threaded `ColorCfg.motion_smoothing` → `_build_display_mode` → `MultiHiresDisplayMode.__init__`; `compose()` reads `self._ema_alpha` rather than the module constant.
+Threaded `ColorCfg.motion_smoothing` → `resolve_motion_smoothing` (in `build_wired_display_mode`, against the scene type) → `_build_display_mode` → `MultiHiresDisplayMode.__init__`; `compose()` reads `self._ema_alpha` rather than the module constant.
 
 **Why one dial and not an EMA-only knob.** An offline stateless-vs-stateful A/B (`scripts/diags/mhires_ema_ghost_ab.py`, measuring how far the stateful render deviates from a fresh-mode render of the same frame) isolated the contributions:
 
@@ -667,7 +667,9 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 **The 0.1 default** (`base.DEFAULT_MOTION_SMOOTHING`, shared by `ColorCfg` and the `MultiHiresDisplayMode` constructor) replaced an earlier 0.25, which an on-hardware flicker/ghost A/B on the U64 — WarGames hard cuts for the after-image, grainy dark footage for flicker — had picked as the lowest value where flicker stays acceptable. 0.1 gives up some of that flicker margin for shorter after-images on shot cuts.
 
-`validate_motion_smoothing_cfg` and `doctor._validate_motion_smoothing` bound it 0..1 and note a non-default value on the mhires percell scenes it affects. Orthogonal to `cell_strategy` (which 3 colors), `dither` (per-pixel fill), and `color_match` (distance space).
+**Why `"auto"` is 0.3 on video.** On film and broadcast video, 0.1 leaves grain shimmering on flat areas that sit between two palette colors: a wall rendered ~6% of its pixels changed per frame against the source's 0.5%. Over eight clips (`scripts/diags/mhires_video_eval.py`), 0.3 cut shimmer by 14–33% and changed cells by 4–27% against 0.1, every clip improving. Fidelity against the source moved −0.9% to +2.0% (the 4K film the most), and SSIM fell 0.4–1.8%. Higher values cut more shimmer for more fidelity cost. On a U64 A/B with input smoothing on, 0.6 read as slow, blotchy blobs on flat areas, and 0.3 read as much better than 0.6. Webcam, generative and slideshow scenes keep 0.1 (`base.VIDEO_MOTION_SMOOTHING` vs `DEFAULT_MOTION_SMOOTHING`), because none of them was judged at a higher value. Resetting the two buffers at each detected shot cut measured as no change at 0.3 with input smoothing on (every metric within ±0.5% on all eight clips but one link-time figure), as it had at 0.1, so a cut does not reset them.
+
+`validate_motion_smoothing_cfg` and `doctor._validate_motion_smoothing` accept `"auto"` or a number in 0..1 and note a non-default value on the mhires percell scenes it affects. Orthogonal to `cell_strategy` (which 3 colors), `dither` (per-pixel fill), and `color_match` (distance space).
 
 ### `petscii_styles.py`
 

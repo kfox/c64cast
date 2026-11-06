@@ -36,7 +36,7 @@ from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
-from c64cast.video.modes.base import DEFAULT_MOTION_SMOOTHING
+from c64cast.video.modes.base import DEFAULT_MOTION_SMOOTHING, VIDEO_MOTION_SMOOTHING
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -2145,10 +2145,10 @@ class ColorCfg:
             "still applies. Empty (default) uses the scored set.",
         },
     )
-    motion_smoothing: float = field(
-        default=DEFAULT_MOTION_SMOOTHING,
+    motion_smoothing: str | float = field(
+        default="auto",
         metadata={
-            "help": "Temporal smoothing for mhires percell mode, 0..1. The percell "
+            "help": "Temporal smoothing for mhires percell mode: 'auto' or 0..1. The percell "
             "path smooths its per-cell color choices over time (an EMA over color "
             "counts plus per-pixel/per-cell decision hysteresis) to suppress "
             "frame-to-frame flicker on noisy video. That smoothing trades "
@@ -2156,8 +2156,12 @@ class ColorCfg:
             "the previous shot lingers as an after-image for a moment. 1.0 (full "
             "smoothing) is the most stable but ghostiest; 0.0 tracks the source "
             "exactly (no after-image) but can flicker on grainy content. "
+            f"'auto' (default) is {VIDEO_MOTION_SMOOTHING} for video scenes, whose "
+            "grain shimmers on flat areas at lower values, and "
+            f"{DEFAULT_MOTION_SMOOTHING} for webcam, generative and slideshow scenes. "
             "Lower it if after-images still bother you, raise it if motion "
             "shimmers. No effect on other modes or palette_modes.",
+            "choices": ("auto",),
         },
     )
 

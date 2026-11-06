@@ -415,12 +415,12 @@ clearly. Both exist to stop per-frame color churn reading as shimmer on noisy
 video, and both buy that stability by trading away motion tracking — on a hard
 cut, structure from the previous shot lingers for a moment as an after-image.
 
-`[color].motion_smoothing` is one dial over both, from 0 to 1:
+`[color].motion_smoothing` is one dial over both, from 0 to 1, or `"auto"`:
 
 | Value | Behavior |
 |---|---|
 | `1.0` | Full memory. The most stable, and the ghostiest |
-| `0.25` | The default: chosen on hardware as the lowest value where flicker stays acceptable |
+| `"auto"` | The default: `0.3` for video scenes, where film grain shimmers on flat areas at lower values, and `0.1` for webcam, generative and slideshow scenes |
 | `0.0` | No memory. Tracks the source exactly, and grainy content can flicker |
 
 Lower it if after-images bother you; raise it if motion shimmers. It affects

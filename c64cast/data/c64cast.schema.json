@@ -808,9 +808,19 @@
           "default": []
         },
         "motion_smoothing": {
-          "type": "number",
-          "description": "Temporal smoothing for mhires percell mode, 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes.",
-          "default": 0.1
+          "description": "Temporal smoothing for mhires percell mode: 'auto' or 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. 'auto' (default) is 0.3 for video scenes, whose grain shimmers on flat areas at lower values, and 0.1 for webcam, generative and slideshow scenes. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto"
+              ]
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "default": "auto"
         }
       }
     },
@@ -2535,9 +2545,19 @@
                 "default": []
               },
               "motion_smoothing": {
-                "type": "number",
-                "description": "Temporal smoothing for mhires percell mode, 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes.",
-                "default": 0.1
+                "description": "Temporal smoothing for mhires percell mode: 'auto' or 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. 'auto' (default) is 0.3 for video scenes, whose grain shimmers on flat areas at lower values, and 0.1 for webcam, generative and slideshow scenes. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes.",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "auto"
+                    ]
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "default": "auto"
               }
             }
           },
