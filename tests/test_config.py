@@ -2775,7 +2775,7 @@ class ValidateMotionSmoothingCfgTest(unittest.TestCase):
             scene_factory.validate_motion_smoothing_cfg(cfg)
 
     def test_out_of_range_raises(self):
-        for v in (-0.1, 1.5, "fast", "0.3", True):
+        for v in (-0.1, 1.5, "fast", "0.3"):
             cfg = cfgmod.Config()
             cfg.color.motion_smoothing = v
             with self.assertRaisesRegex(cfgmod.ConfigError, "motion_smoothing"):

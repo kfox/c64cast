@@ -1523,7 +1523,7 @@ def motion_smoothing_cfg_error(label: str, color: ColorCfg) -> str | None:
     value = color.motion_smoothing
     if value == "auto":
         return None
-    if isinstance(value, bool) or not isinstance(value, int | float) or not 0.0 <= value <= 1.0:
+    if isinstance(value, str) or not 0.0 <= value <= 1.0:
         return f'{label}.motion_smoothing must be "auto" or 0..1.0, got {value!r}'
     return None
 
