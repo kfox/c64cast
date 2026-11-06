@@ -1,4 +1,4 @@
-1st Edition, August 2026
+2nd Edition, October 2026
 
 Copyright © 2026 the c64cast authors. c64cast is free software, released
 under the MIT License. You may copy, modify and redistribute it, including
