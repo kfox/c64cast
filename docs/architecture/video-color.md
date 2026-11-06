@@ -415,13 +415,15 @@ Implemented in `palette.apply_channel_boost_tapered`, the last step of `shape_fo
 
 **Why green, and why not a flat cut.** The default 1.2 green lift pushes dark amber past brown into green, and dark navy floors toward dark gray. A flat green of 1.0 fixed those but cost bright warm tones: on a music video, honey and sand reach yellow only with the lift and turn pink without it. On a dim film it also cost the low-chroma brown shadows, which the lift keeps brown. So the taper is per pixel, gated three ways:
 
-- **Brightness**, after the fit: warm fades out between luma 80 and 200, navy between 60 and 120. Navy fades lower because bright sky and sea read as navy hue, and tapering them flattened the sea's texture.
+- **Brightness**, after the fit: warm fades out between luma 150 and 210, navy between 60 and 120. Warm starts that high because a per-shot fit lifts saturated amber walls to luma ~120–160, where they sit on the orange/green boundary and a part-strength lift still tips them green; 80–200 left that residue. It ends at 210 rather than higher because the honey-and-sand video's warm tones sit mostly between 150 and 220, so every point the fade's top end rises costs that video more for no further amber gain. Navy fades lower because bright sky and sea read as navy hue, and tapering them flattened the sea's texture.
 - **Chroma** as the max−min channel spread, ramped 40–100. HSV saturation was tried first and failed: the fit and saturation lift inflate it on dim pixels, so a dim brown shadow read as saturated as dark amber.
 - **Hue**: teal and cyan (green about equal to blue) are excluded. Gating every cool hue cleaned more navy specks but shifted cyan walls to light blue.
 
 A per-shot switch for the navy half was measured and rejected: a shot's navy share did not predict whether tapering helped it, because the bright sky shots carried as much navy hue as the dark floors. A per-pixel brightness gate separates them and also handles a frame that holds both.
 
 **Measured** on eight clips plus a 2.5-minute neon-lit film clip, error against the source: that clip's dark amber −16%, a VHS ad −6%, a TV opening −3%, the honey-and-sand music video within +2%, everything else within ±1%. On the film clip, navy pixels rendered dark gray fell from 4.7% to 2.3%. A U64 A/B judged the colors better with A/V lag unchanged. Measured the same way, all on mhires.
+
+**Raising the warm ramp from 80–200 to 150–210**, measured against 80–200 at defaults: error against the source fell on the VHS ad (mhires −5.3%, MCM −6.7%) and the film clip (−1.7%, −1.2%), with dark amber rendered green down on every clip that has it (the TV opening 5.3% → 1.3% on mhires, 5.9% → 1.6% on MCM). It rose on the honey-and-sand video (+2.1% mhires, +2.7% MCM), the cost of fading the lift on its mid-bright warm tones; every other clip moved between −1.0% and 0%. Ramps ending at 220, 230 and 250 removed no more green from the amber and cost that video +3.2% to +4.3%.
 
 **MCM** follows the same pattern: error against the source fell on five of the eight clips and on the film clip (the VHS ad −6%, the film clip −4%) and rose on the honey-and-sand video (+2%) and a 4K film (+1%). Dark amber rendered green roughly halved on the film clip, the VHS ad and the TV opening.
 

@@ -269,6 +269,9 @@ class ChannelBoostTaperTest(unittest.TestCase):
     def test_dark_navy_loses_most_of_the_green_lift(self):
         self.assertLess(self._green_gain((140, 20, 10)), 1.03)
 
+    def test_fitted_amber_wall_loses_most_of_the_green_lift(self):
+        self.assertLess(self._green_gain((0, 130, 155)), 1.03)
+
     def test_full_boost_where_the_lift_is_wanted(self):
         cases = {
             "dark teal": (100, 100, 10),

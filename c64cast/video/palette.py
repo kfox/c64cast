@@ -673,10 +673,11 @@ def parse_channel_boost(
 # Luma and chroma ramps for [color].dark_tone_taper, in the 0..255 levels the
 # boost stage sees. Chroma is the max-min channel spread rather than HSV S,
 # because HSV S reads a dim brown shadow, which needs the green lift to stay
-# brown, as saturated as dark amber, which the lift turns green. Bright warm
-# tones keep the lift so honey and sand still reach yellow; navy fades out
-# lower than warm so bright sky and sea keep their texture.
-_TAPER_WARM_LUMA = (80.0, 200.0)
+# brown, as saturated as dark amber, which the lift turns green. Warm fades
+# out high because a per-shot fit lifts amber walls to mid luma, where part of
+# the lift still tips them green; only bright warm tones (honey, sand) keep it. Navy
+# fades out lower so bright sky and sea keep their texture.
+_TAPER_WARM_LUMA = (150.0, 210.0)
 _TAPER_NAVY_LUMA = (60.0, 120.0)
 _TAPER_CHROMA = (40.0, 100.0)
 _LUMA_BGR = np.array([0.114, 0.587, 0.299], dtype=np.float32)
