@@ -2913,6 +2913,26 @@ class InputSmoothingTest(unittest.TestCase):
         out = mode._smooth_still_input(self._flat(140))
         np.testing.assert_allclose(out, 140.0)
 
+    def test_a_pixel_halfway_through_the_motion_gate_keeps_half_the_share(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        out = mode._smooth_still_input(self._flat(108))
+        np.testing.assert_allclose(out, 108 + 0.4 * (100 - 108), atol=1e-3)
+
+    def test_a_replayed_scene_starts_without_the_last_runs_history(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        mode.setup(FakeAPI())
+        out = mode._smooth_still_input(self._flat(103))
+        np.testing.assert_allclose(out, 103.0)
+
+    def test_a_palette_mode_switch_starts_without_the_old_shaping_history(self):
+        mode = self._mode(0.8)
+        mode._smooth_still_input(self._flat(100))
+        mode.set_palette_mode(FakeAPI(), "vivid")
+        out = mode._smooth_still_input(self._flat(103))
+        np.testing.assert_allclose(out, 103.0)
+
     def test_compose_leaves_the_input_alone_when_off(self):
         frame = np.full((self._H, self._W, 3), 90, dtype=np.uint8)
         mode = self._mode(0.0)

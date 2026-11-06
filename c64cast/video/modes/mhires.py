@@ -333,6 +333,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
     def _reset_pick_state(self) -> None:
         """Drop the per-frame EMA and hysteresis state, so the next frame
         re-picks bg0 and every cell's slots from its own content."""
+        self._smoothed_input = None
         self._smoothed_counts = None
         self._smoothed_cell_counts = None
         self._last_cand = None
