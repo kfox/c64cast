@@ -1273,7 +1273,9 @@ converges online: it starts neutral and folds each of its first
 `auto_fit_shots` (default **true**) it also refits at each shot cut, warm-up
 or not, from the new shot's frames already waiting in the decode buffer, held
 to at most `auto_fit_shot_max_rise` times the opening's 48-frame contrast and
-saturation, so by default a cut can only relax the fit; without it the
+saturation, so by default a cut can only relax the fit, and then moved
+`auto_fit_shot_relax` (default 0.5) of the way from the opening's fit to that
+held fit; without it the
 opening's fit holds for the rest of playback. Only when `force_palette` or `hardware_palette =
 "source"` already runs the blocking whole-file pre-scan does the video take its
 fit from that pass instead. Either way the scene installs the fit on the display

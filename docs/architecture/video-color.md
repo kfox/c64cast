@@ -101,6 +101,8 @@ The online fit converges on a video's first `ONLINE_FIT_WARMUP_FRAMES` frames. H
 
 **Why 1.0, relax only.** Measured offline over six clips with `scripts/diags/mhires_video_eval.py`. At 1.0 no clip scored worse on fidelity and shimmer fell by up to 44%. At 1.15, a dark film clip's post-cut fidelity error rose 55% and a 4K clip's shimmer 15%. Whether a shot gains from strengthening could not be predicted from the lookahead: measured temporal noise overlapped completely between shots that gained and shots that lost. So strengthening is a setting, not something detected.
 
+**Why halfway.** On Ultimate 64 A/Bs of a dark-arena film and a commercial, the shot's own fit (relax 1) won on mid-tone subjects, but the opening's strong stretch (relax 0) won on thin bright lines and faces over near-black, and washed out shots that were already bright. `auto_fit_shot_relax` = 0.5 moves the held fit halfway from the opening's (`ColorFit.toward`), and read as the better compromise on the same hardware. It is applied after `held_to`, so the cap still bounds what a shot can strengthen.
+
 **Detections that are not cuts** land on camera moves, flashes and fades, since the ratio test needs a frame to differ from its neighbors twice as much as they differ from each other. On 17 of 20 such detections the refit added fewer than 240 changed cells over three frames, against 1300–2500 of ordinary churn; the other three coincided with a change of the whole picture.
 
 ### A/V-lag telemetry

@@ -2127,14 +2127,16 @@ class VideoScene(MediaFileMixin, Scene):
 
     def _shown_fit(self) -> ColorFit | None:
         """The opening's online fit, which keeps warming up across cuts, or
-        the current shot's fit held to it."""
+        the current shot's fit held to it and relaxed from it."""
         assert self._online_fit is not None
         opening = self._online_fit.result()
         if self._shot is None:
             return opening
-        fit = (self._shot.result() or IDENTITY_FIT).held_to(
-            opening or IDENTITY_FIT, self._color.auto_fit_shot_max_rise
+        anchor = opening or IDENTITY_FIT
+        held = (self._shot.result() or IDENTITY_FIT).held_to(
+            anchor, self._color.auto_fit_shot_max_rise
         )
+        fit = anchor.toward(held, self._color.auto_fit_shot_relax)
         return None if fit.is_identity() else fit
 
     def _apply_fit(self) -> None:

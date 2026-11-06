@@ -2799,6 +2799,19 @@ class ValidateAutoFitShotCfgTest(unittest.TestCase):
             with self.subTest(v=v), self.assertRaisesRegex(cfgmod.ConfigError, "max_rise"):
                 scene_factory.validate_auto_fit_shot_cfg(cfg)
 
+    def test_relax_in_zero_to_one_is_valid(self):
+        for v in (0.0, 0.5, 1.0):
+            cfg = cfgmod.Config()
+            cfg.color.auto_fit_shot_relax = v
+            scene_factory.validate_auto_fit_shot_cfg(cfg)
+
+    def test_relax_outside_zero_to_one_raises(self):
+        for v in (-0.1, 1.5, float("nan")):
+            cfg = cfgmod.Config()
+            cfg.color.auto_fit_shot_relax = v
+            with self.subTest(v=v), self.assertRaisesRegex(cfgmod.ConfigError, "relax"):
+                scene_factory.validate_auto_fit_shot_cfg(cfg)
+
     def test_a_scene_override_below_one_raises_naming_the_scene(self):
         cfg = cfgmod.Config()
         cfg.scenes = [

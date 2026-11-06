@@ -1955,6 +1955,17 @@ class ColorCfg:
             "harder, at the cost of more cell shimmer on grainy footage."
         },
     )
+    auto_fit_shot_relax: float = field(
+        default=0.5,
+        metadata={
+            "help": "How far a shot's fit moves from the opening's fit toward its "
+            "own, 0..1. 0 keeps the opening's fit on every shot; 1 installs the "
+            "shot's own fit, held by auto_fit_shot_max_rise. A full relax brings "
+            "out mid-tone subjects but flattens thin bright lines and faces over "
+            "near-black, and the opening's fit washes out shots that are already "
+            "bright, so 0.5 (default) goes halfway."
+        },
+    )
     force_palette: bool = field(
         default=False,
         metadata={

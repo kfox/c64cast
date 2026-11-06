@@ -7,3 +7,6 @@
   strengthen the opening's contrast and saturation. At 1.0 a cut can only
   relax the fit, which reduced cell shimmer on every clip measured. Raise it to
   let dark shots punch harder, at the cost of more shimmer on grainy footage.
+  `[color].auto_fit_shot_relax` (default `0.5`) sets how far a shot's fit
+  moves from the opening's toward its own: 0 keeps the opening's fit, 1 takes
+  the shot's.

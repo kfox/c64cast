@@ -767,6 +767,14 @@ class ColorFit:
             black=black, white=white, sat_mult=min(self.sat_mult, anchor.sat_mult * max_rise)
         )
 
+    def toward(self, other: ColorFit, amount: float) -> ColorFit:
+        """The fit `amount` of the way from this one to `other`, 0..1."""
+        return ColorFit(
+            black=self.black + (other.black - self.black) * amount,
+            white=self.white + (other.white - self.white) * amount,
+            sat_mult=self.sat_mult + (other.sat_mult - self.sat_mult) * amount,
+        )
+
 
 IDENTITY_FIT = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
 

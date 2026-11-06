@@ -1526,9 +1526,13 @@ def validate_motion_smoothing_cfg(cfg: Config) -> None:
 def auto_fit_shot_cfg_error(label: str, color: ColorCfg) -> str | None:
     """Range-check one resolved [color] section's auto_fit_shot_max_rise
     (>= 1.0: below it a cut could only weaken the fit, and 0 divides by zero
-    in `ColorFit.held_to`); returns the ConfigError message, or None."""
+    in `ColorFit.held_to`) and auto_fit_shot_relax (0..1: outside it the
+    blend extrapolates past one of the two fits); returns the ConfigError
+    message, or None."""
     if not color.auto_fit_shot_max_rise >= 1.0:
         return f"{label}.auto_fit_shot_max_rise must be >= 1.0, got {color.auto_fit_shot_max_rise}"
+    if not 0.0 <= color.auto_fit_shot_relax <= 1.0:
+        return f"{label}.auto_fit_shot_relax must be in 0..1, got {color.auto_fit_shot_relax}"
     return None
 
 

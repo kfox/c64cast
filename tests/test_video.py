@@ -5483,13 +5483,15 @@ class VideoSceneShotFitTest(unittest.TestCase):
 
     WIDE = _ramp(0, 255)
 
-    def _scene(self, *shots: ShotFit, max_rise: float = 1.0, warmed: bool = True) -> VideoScene:
+    def _scene(
+        self, *shots: ShotFit, max_rise: float = 1.0, relax: float = 1.0, warmed: bool = True
+    ) -> VideoScene:
         source = _StubSource()
         source.shots = list(shots)
         source._frame = self.WIDE
         scene = _make_video_scene_stub(source)
         cast(mock.MagicMock, scene.api).delivery_epoch = 0
-        scene._color = ColorCfg(auto_fit_shot_max_rise=max_rise)
+        scene._color = ColorCfg(auto_fit_shot_max_rise=max_rise, auto_fit_shot_relax=relax)
         scene._online_fit = ColorFitAccumulator(strength=1.0)
         scene._online_fit.add(self.OPENING)
         scene._online_fit_frames = scenes.ONLINE_FIT_WARMUP_FRAMES if warmed else 1
@@ -5519,6 +5521,29 @@ class VideoSceneShotFitTest(unittest.TestCase):
         self.assertEqual(installed[0], expected)
         opening = self._opening()
         self.assertEqual(_span(installed[0]), _span(opening))
+
+    def test_the_default_relax_goes_halfway_from_the_opening_to_the_shot(self):
+        tinted = self.WIDE.copy()
+        tinted[..., 0] = (tinted[..., 0] / 1.2).astype(np.uint8)
+        wide = _shot_of(tinted)
+        installed = self._show_frames(
+            self._scene(wide, max_rise=2.0, relax=ColorCfg().auto_fit_shot_relax), 1
+        )
+        opening = self._opening()
+        shot = cast(ColorFit, wide.result())
+        self.assertNotEqual(shot.sat_mult, opening.sat_mult)
+        self.assertEqual(
+            installed[0],
+            ColorFit(
+                black=(opening.black + shot.black) / 2,
+                white=(opening.white + shot.white) / 2,
+                sat_mult=(opening.sat_mult + shot.sat_mult) / 2,
+            ),
+        )
+
+    def test_no_relax_keeps_the_opening_fit_on_a_shot(self):
+        installed = self._show_frames(self._scene(_shot_of(self.WIDE), relax=0.0), 1)
+        self.assertEqual(installed[0], self._opening())
 
     def test_a_shot_in_the_warm_up_is_held_to_the_opening_as_it_grows(self):
         strong = _shot_of(self.STRONG)
