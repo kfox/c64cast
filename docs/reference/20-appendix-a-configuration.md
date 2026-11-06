@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order, and the fields within each in alphabetical order too: 20 sections and 188 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order, and the fields within each in alphabetical order too: 20 sections and 189 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -107,6 +107,7 @@ auto_fit_strength = 0.9
 | **`hue_corrections_replace_defaults`**<br>*Type:* `bool`<br>*Default:* `False` | If true, user hue_corrections REPLACE the built-in defaults instead of extending them. |
 | **`input_smoothing`**<br>*Type:* `str \| float`<br>*Default:* `'auto'` | How much of the previous frame a still pixel keeps before mhires quantizes it, 'auto' or 0..1. Grain on a flat area that sits between two palette colors flips pixels between them every frame; blending a pixel with its own history steadies it. The blend fades out as the pixel moves, so motion is not smeared. 0 turns it off. 'auto' (default) is 0.8 for video scenes and 0 for webcam, generative and slideshow scenes. mhires only. Choices: `auto`. |
 | **`motion_smoothing`**<br>*Type:* `str \| float`<br>*Default:* `'auto'` | Temporal smoothing for mhires percell mode: 'auto' or 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. 'auto' (default) is 0.3 for video scenes, whose grain shimmers on flat areas at lower values, and 0.1 for webcam, generative and slideshow scenes. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes. Choices: `auto`. *Live-tunable* while a show runs, as `mode.motion_smoothing` — Appendix F. |
+| **`sharpen`**<br>*Type:* `str \| float`<br>*Default:* `'auto'` | How strongly mhires sharpens edges before quantizing, 'auto' or 0..1. Only pixels on an edge are sharpened, so flat areas keep their grain steady; it crisps soft footage, lines and grids, at the cost of some extra shimmer along those edges. 0 turns it off. 'auto' (default) is 0.3 for video scenes and 0 for webcam, generative and slideshow scenes. mhires only. Choices: `auto`. |
 
 ## `[control]`
 

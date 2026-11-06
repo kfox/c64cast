@@ -40,6 +40,7 @@ from c64cast.video.modes.base import (
     DEFAULT_MOTION_SMOOTHING,
     VIDEO_INPUT_SMOOTHING,
     VIDEO_MOTION_SMOOTHING,
+    VIDEO_SHARPEN,
 )
 from c64cast.video.palette import (
     CELL_STRATEGIES,
@@ -2178,6 +2179,18 @@ class ColorCfg:
             "as the pixel moves, so motion is not smeared. 0 turns it off. 'auto' "
             f"(default) is {VIDEO_INPUT_SMOOTHING} for video scenes and 0 for "
             "webcam, generative and slideshow scenes. mhires only.",
+            "choices": ("auto",),
+        },
+    )
+    sharpen: str | float = field(
+        default="auto",
+        metadata={
+            "help": "How strongly mhires sharpens edges before quantizing, "
+            "'auto' or 0..1. Only pixels on an edge are sharpened, so flat areas "
+            "keep their grain steady; it crisps soft footage, lines and grids, at the "
+            "cost of some extra shimmer along those edges. 0 turns it off. 'auto' "
+            f"(default) is {VIDEO_SHARPEN} for video scenes and 0 for webcam, "
+            "generative and slideshow scenes. mhires only.",
             "choices": ("auto",),
         },
     )

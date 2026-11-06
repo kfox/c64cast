@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 468 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 469 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -494,6 +494,7 @@ Every name c64cast answers to — 468 of them — and the pages that discuss eac
 | `setup_progress_bar` | [`video` (A)](20-appendix-a-configuration.md#video) |
 | `setup_wizard` | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `shape` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
+| `sharpen` | [`sharpen` (3)](04-display-pipeline.md#sharpen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `show_date` | [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `show_dropped` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
 | `--sid-model` | [Machine Settings (1)](02-config-rules.md#machine-settings), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Connection (G)](26-appendix-g-cli-flags.md#connection) |

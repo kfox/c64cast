@@ -836,6 +836,21 @@
             }
           ],
           "default": "auto"
+        },
+        "sharpen": {
+          "description": "How strongly mhires sharpens edges before quantizing, 'auto' or 0..1. Only pixels on an edge are sharpened, so flat areas keep their grain steady; it crisps soft footage, lines and grids, at the cost of some extra shimmer along those edges. 0 turns it off. 'auto' (default) is 0.3 for video scenes and 0 for webcam, generative and slideshow scenes. mhires only.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto"
+              ]
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "default": "auto"
         }
       }
     },
@@ -2576,6 +2591,21 @@
               },
               "input_smoothing": {
                 "description": "How much of the previous frame a still pixel keeps before mhires quantizes it, 'auto' or 0..1. Grain on a flat area that sits between two palette colors flips pixels between them every frame; blending a pixel with its own history steadies it. The blend fades out as the pixel moves, so motion is not smeared. 0 turns it off. 'auto' (default) is 0.8 for video scenes and 0 for webcam, generative and slideshow scenes. mhires only.",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "auto"
+                    ]
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "default": "auto"
+              },
+              "sharpen": {
+                "description": "How strongly mhires sharpens edges before quantizing, 'auto' or 0..1. Only pixels on an edge are sharpened, so flat areas keep their grain steady; it crisps soft footage, lines and grids, at the cost of some extra shimmer along those edges. 0 turns it off. 'auto' (default) is 0.3 for video scenes and 0 for webcam, generative and slideshow scenes. mhires only.",
                 "anyOf": [
                   {
                     "type": "string",

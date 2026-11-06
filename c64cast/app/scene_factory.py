@@ -87,6 +87,7 @@ from c64cast.video.modes.base import (
     DEFAULT_MOTION_SMOOTHING,
     VIDEO_INPUT_SMOOTHING,
     VIDEO_MOTION_SMOOTHING,
+    VIDEO_SHARPEN,
 )
 from c64cast.video.palette import (
     CELL_STRATEGIES,
@@ -343,6 +344,7 @@ def _build_display_mode(
     flicker_tolerance: str = DEFAULT_TOLERANCE,
     motion_smoothing: float = DEFAULT_MOTION_SMOOTHING,
     input_smoothing: float = 0.0,
+    sharpen: float = 0.0,
 ) -> DisplayMode:
     border = resolve_color(border)
     background = resolve_color(background)
@@ -416,6 +418,7 @@ def _build_display_mode(
             cell_strategy=cell_strategy,
             motion_smoothing=motion_smoothing,
             input_smoothing=input_smoothing,
+            sharpen=sharpen,
             auto_fit_strength=auto_fit_strength,
             flicker_tolerance=flicker_tolerance,
             flicker_max_luma_delta=color.flicker_max_luma_delta,
@@ -791,6 +794,7 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
         flicker_tolerance=flicker_tolerance,
         motion_smoothing=resolve_motion_smoothing(color.motion_smoothing, wiring.scene_type),
         input_smoothing=resolve_input_smoothing(color.input_smoothing, wiring.scene_type),
+        sharpen=resolve_sharpen(color.sharpen, wiring.scene_type),
     )
 
 
@@ -1531,6 +1535,14 @@ def resolve_input_smoothing(setting: str | float, scene_type: str) -> float:
     return VIDEO_INPUT_SMOOTHING if scene_type == "video" else 0.0
 
 
+def resolve_sharpen(setting: str | float, scene_type: str) -> float:
+    """Resolve [color].sharpen's `"auto"` for a scene type; an explicit number
+    passes through unchanged."""
+    if setting != "auto":
+        return float(setting)
+    return VIDEO_SHARPEN if scene_type == "video" else 0.0
+
+
 def _auto_or_unit_error(label: str, name: str, value: str | float) -> str | None:
     if value == "auto":
         return None
@@ -1555,6 +1567,19 @@ def validate_input_smoothing_cfg(cfg: Config) -> None:
     """Guard input_smoothing on [color] and every scene override."""
     for label, color in effective_colors(cfg):
         err = input_smoothing_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
+
+
+def sharpen_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Check one resolved [color] section's sharpen ("auto" or 0..1)."""
+    return _auto_or_unit_error(label, "sharpen", color.sharpen)
+
+
+def validate_sharpen_cfg(cfg: Config) -> None:
+    """Guard sharpen on [color] and every scene override."""
+    for label, color in effective_colors(cfg):
+        err = sharpen_cfg_error(label, color)
         if err:
             raise ConfigError(err)
 
@@ -2012,6 +2037,7 @@ PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
     validate_cell_strategy_cfg,
     validate_motion_smoothing_cfg,
     validate_input_smoothing_cfg,
+    validate_sharpen_cfg,
     validate_auto_fit_shot_cfg,
     validate_flicker_cfg,
     validate_hardware_palette_cfg,
