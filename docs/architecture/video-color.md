@@ -679,7 +679,7 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 **Why the gate is narrow.** An ungated input-frame EMA was rejected for smearing motion, and a wider gate smeared slow motion here too: fidelity against the source on a slow 4K film rose 27%. Gating on local flatness instead lost the benefit, because the shimmer sits on band and edge boundaries rather than in flat interiors. A 4–12 gate leaves anything moving faster than grain untouched.
 
-**Measured** over eight clips (`scripts/diags/mhires_video_eval.py`), against `motion_smoothing = "auto"` alone: shimmer fell 11–32% and changed cells 3–21% on every clip. Fidelity against the source moved 0% to +0.4%, apart from the 4K film at +2.5%, and SSIM fell 0.2–2.5%. It costs about 0.5 ms per composed frame. On a U64 A/B with `motion_smoothing` at 0.3, there was no smearing in motion.
+**Measured** over eight clips (`scripts/diags/mhires_video_eval.py`), against `motion_smoothing = "auto"` alone: shimmer fell 11–32% and changed cells 3–21% on every clip. Fidelity against the source moved 0% to +0.4%, apart from the 4K film at +2.5%, and SSIM fell 0.2–2.5%. It costs about 0.5 ms per composed frame. It was on, at this setting, in the U64 run that settled `motion_smoothing` at 0.3.
 
 ### `petscii_styles.py`
 
