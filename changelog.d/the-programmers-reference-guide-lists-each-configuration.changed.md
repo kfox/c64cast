@@ -1,1 +1,0 @@
-- The Programmer's Reference Guide lists each configuration section's fields in alphabetical order, so a field is easy to find without knowing where the source declares it.

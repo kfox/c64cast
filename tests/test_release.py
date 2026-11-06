@@ -255,7 +255,7 @@ class TestHighlightsConvention(unittest.TestCase):
         for name in ("RELEASING.md", "CHANGELOG.md", "CONTRIBUTING.md", "changelog.d/README.md"):
             with self.subTest(name=name):
                 self.assertNotRegex(
-                    _read(name).split("\n## [0.4.0]", 1)[0],
+                    re.split(r"\n## \[\d", _read(name), maxsplit=1)[0],
                     r"(?i)verbatim",
                     f"{name} still says the release body is the changelog verbatim",
                 )
