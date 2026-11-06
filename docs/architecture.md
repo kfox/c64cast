@@ -10,7 +10,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 * **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`, `hw/uci.py`, `hw/menu_screen.py`, `hw/machine_input.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/audio_servo.py`, `audio/mic_lead.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
-* **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/flicker.py`, `video/rolling_palette.py`, `video/palette.py`, `hw/hardware_palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
+* **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/flicker.py`, `video/rolling_palette.py`, `video/palette.py`, `video/shots.py`, `hw/hardware_palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/sid_resolved.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `control/setup_gate.py`, `control/setup_api.py`, `control/console_mdns.py`, `app/serve.py`, `control/web_api.py`, `app/config_store.py`, `app/console_library.py`, `app/media_store.py`, `control/web_static.py`, `control/screen.py`, `control/midi_control.py`, `control/live_tune.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/page_assets.py`, `control/transport.py`, `control/midi_setup.py`
@@ -128,6 +128,7 @@ the two lists account for every module in the tree.
 | `app/session.py` | [Config, CLI & ensemble](architecture/config.md#sessionpy--the-session-lifecycle) |
 | `app/serve.py` | [Control surfaces & live performance](architecture/control.md#appservepy--the-session-supervisor) |
 | `scenes/setup_progress.py` | [Scenes, sources & overlays](architecture/scenes.md#setup_progresspy--the-video-setup-progress-bar) |
+| `video/shots.py` | [Video input & the color pipeline](architecture/video-color.md#per-shot-auto_fit-shotspy) |
 | `app/schema.py` | [Config, CLI & ensemble](architecture/config.md#schemapy--the-editor-surface) |
 | `sid/armsid.py` | [SID playback & the oscilloscope](architecture/sid.md#armsidpy--armsid--arm2sid) |
 | `sid/emusid_mixer.py` | [SID playback & the oscilloscope](architecture/sid.md#emusid_mixerpy--u2-emulated-stereo-sid-snoop-routing--model-matching) |

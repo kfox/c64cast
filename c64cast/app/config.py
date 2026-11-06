@@ -1923,7 +1923,8 @@ class ColorCfg:
             "help": "Per-source adaptive color fit for video + slideshow "
             "scenes: stretch the source's contrast + saturation to fill the "
             "C64 gamut (faithful — hue preserved). A slideshow fits each image; "
-            "a video converges on its opening frames, or fits from the whole-file "
+            "a video converges on its opening frames and refits at shot cuts "
+            "(auto_fit_shots), or fits from the whole-file "
             'pre-scan that force_palette or hardware_palette = "source" runs. '
             "Ignored by webcam scenes."
         },
@@ -1933,6 +1934,36 @@ class ColorCfg:
         metadata={
             "help": "Strength of the auto_fit transform, 0..1 (1 = full, 0 = off). "
             "Lerps the derived stretch toward identity."
+        },
+    )
+    auto_fit_shots: bool = field(
+        default=True,
+        metadata={
+            "help": "Refit a video's online auto_fit at each shot cut, from the "
+            "new shot's frames waiting in the decode buffer, so a fit stretched "
+            "for a dark opening is not carried onto a bright shot. Held against "
+            "the opening's fit by auto_fit_shot_max_rise. Only the online fit: a "
+            "whole-file pre-scan keeps its one fit."
+        },
+    )
+    auto_fit_shot_max_rise: float = field(
+        default=1.0,
+        metadata={
+            "help": "How far a shot's fit may strengthen the opening's contrast "
+            "gain and saturation, as a factor of them (>= 1.0). 1.0 lets a cut "
+            "only relax the fit; a higher value lets dark or flat shots punch "
+            "harder, at the cost of more cell shimmer on grainy footage."
+        },
+    )
+    auto_fit_shot_relax: float = field(
+        default=0.5,
+        metadata={
+            "help": "How far a shot's fit moves from the opening's fit toward its "
+            "own, 0..1. 0 keeps the opening's fit on every shot; 1 installs the "
+            "shot's own fit, held by auto_fit_shot_max_rise. A full relax brings "
+            "out mid-tone subjects but flattens thin bright lines and faces over "
+            "near-black, and the opening's fit washes out shots that are already "
+            "bright, so 0.5 (default) goes halfway."
         },
     )
     force_palette: bool = field(

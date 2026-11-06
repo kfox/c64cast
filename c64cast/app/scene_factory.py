@@ -1523,6 +1523,27 @@ def validate_motion_smoothing_cfg(cfg: Config) -> None:
             raise ConfigError(err)
 
 
+def auto_fit_shot_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Range-check one resolved [color] section's auto_fit_shot_max_rise
+    (>= 1.0: below it a cut could only weaken the fit, and 0 divides by zero
+    in `ColorFit.held_to`) and auto_fit_shot_relax (0..1: outside it the
+    blend extrapolates past one of the two fits); returns the ConfigError
+    message, or None."""
+    if not color.auto_fit_shot_max_rise >= 1.0:
+        return f"{label}.auto_fit_shot_max_rise must be >= 1.0, got {color.auto_fit_shot_max_rise}"
+    if not 0.0 <= color.auto_fit_shot_relax <= 1.0:
+        return f"{label}.auto_fit_shot_relax must be in 0..1, got {color.auto_fit_shot_relax}"
+    return None
+
+
+def validate_auto_fit_shot_cfg(cfg: Config) -> None:
+    """Guard auto_fit_shot_max_rise on [color] and every scene and clip override."""
+    for label, color in effective_colors(cfg):
+        err = auto_fit_shot_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
+
+
 COLOR_MATCH_CHOICES: tuple[str, ...] = ("auto", *COLOR_MATCH_MODES)
 
 # Display modes whose "auto" color_match resolves to perceptual (CIE-Lab): the
@@ -1945,6 +1966,7 @@ PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
     validate_color_match_cfg,
     validate_cell_strategy_cfg,
     validate_motion_smoothing_cfg,
+    validate_auto_fit_shot_cfg,
     validate_flicker_cfg,
     validate_hardware_palette_cfg,
     validate_wled_cfg,

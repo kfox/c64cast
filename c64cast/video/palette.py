@@ -752,6 +752,31 @@ class ColorFit:
             sat_mult=1.0 + (self.sat_mult - 1.0) * st,
         )
 
+    def held_to(self, anchor: ColorFit, max_rise: float) -> ColorFit:
+        """This fit with its contrast gain, 255/(white-black), and its
+        saturation each held to at most `max_rise` times the anchor's. A gain
+        over the cap widens the black→white range about its center, inside
+        0..255, so the midtones stay where the fit put them."""
+        min_span = (anchor.white - anchor.black) / max_rise
+        black, white = self.black, self.white
+        if white - black < min_span:
+            center = (black + white) / 2.0
+            black = max(0.0, min(center - min_span / 2.0, 255.0 - min_span))
+            white = black + min_span
+        return ColorFit(
+            black=black, white=white, sat_mult=min(self.sat_mult, anchor.sat_mult * max_rise)
+        )
+
+    def toward(self, other: ColorFit, amount: float) -> ColorFit:
+        """The fit `amount` of the way from this one to `other`, 0..1."""
+        return ColorFit(
+            black=self.black + (other.black - self.black) * amount,
+            white=self.white + (other.white - self.white) * amount,
+            sat_mult=self.sat_mult + (other.sat_mult - self.sat_mult) * amount,
+        )
+
+
+IDENTITY_FIT = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
 
 _CONTRAST_LUT_CACHE: dict[tuple[int, int], np.ndarray] = {}
 

@@ -915,6 +915,17 @@ motion_smoothing = 0.1
 # (1 = full, 0 = off). On by default.
 auto_fit = true
 auto_fit_strength = 0.9
+# auto_fit_shots: a video's online fit refits at each shot cut, from the new
+# shot's frames already waiting in the decode buffer, so a stretch made for a
+# dark opening is not carried onto every later shot. auto_fit_shot_max_rise
+# caps how far a shot may strengthen the opening's contrast and saturation:
+# 1.0 (the default) lets a cut only relax the fit, which cut cell shimmer on
+# every clip measured; above it, dark shots punch harder but grain shimmers.
+# auto_fit_shot_relax is how far a shot's fit moves from the opening's toward
+# its own: 0 keeps the opening's, 1 takes the shot's, 0.5 (default) goes halfway.
+auto_fit_shots = true
+auto_fit_shot_max_rise = 1.0
+auto_fit_shot_relax = 0.5
 #
 # force_palette: the EXTREME, deliberately FALSE-COLOR remap (off by default).
 # Everything above is faithful — pixels still map to their nearest C64 color, so

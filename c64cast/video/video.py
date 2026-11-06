@@ -33,6 +33,7 @@ from c64cast._pollthread import PollThread
 from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator, FrameSampler
+from .shots import ShotFit, ShotTracker
 
 # Audio is fed toward the sink on the picture's timeline: a packet that starts
 # later than the audio fed so far is preceded by silence, and one that starts
@@ -1268,6 +1269,12 @@ class AVFileSource:
 
         # PTS-sorted decoded video frames: (pts_seconds, BGR np.ndarray)
         self._video_buf: list[tuple[float, np.ndarray]] = []
+        # Set by VideoScene before the demuxer starts; None skips the work.
+        self.shot_tracker: ShotTracker | None = None
+        # Shot cuts among the buffered frames, by the cut frame's pts.
+        self._shot_marks: dict[float, ShotFit] = {}
+        self._shot_due: ShotFit | None = None
+        self._shown_frame: np.ndarray | None = None
         self._lock = threading.Lock()
         # Wakes a demux thread parked at EOF (_await_seek_after_eof) when a
         # seek is requested or the source closes.
@@ -1491,6 +1498,8 @@ class AVFileSource:
             # applied after the seek would stamp the target off it.
             self._pending_tempo = None
             self._video_buf.clear()
+            self._shot_marks.clear()
+            self._shot_due = None
             if unmute:
                 self._muted = False
             try:
@@ -1595,6 +1604,7 @@ class AVFileSource:
             self._pending_seek = None
             if target is None:
                 return False
+            shown = self._shown_frame
             # In the same critical section that retires the request, or
             # `finished` could see neither a pending seek nor a live pass.
             self._eof = False
@@ -1616,6 +1626,8 @@ class AVFileSource:
         self._dry_stall_level, self._dry_window = 0, None
         self._audio_shift_s = 0.0
         self._audio_jump_warned = False
+        if self.shot_tracker is not None:
+            self.shot_tracker.restart(shown)
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 
@@ -1838,6 +1850,7 @@ class AVFileSource:
         the demuxer until the consumer drains is correct in both modes;
         host-DMA just doesn't hit the wait."""
         self._video_read_s = self._clock_to_content(pts)
+        cut = self.shot_tracker.observe(pts, img) if self.shot_tracker is not None else None
         while True:
             if self._closed:
                 return False
@@ -1849,6 +1862,8 @@ class AVFileSource:
                     return True
                 if len(self._video_buf) < self.max_video_buffer + self._dry_extra_frames():
                     self._video_buf.append((pts, img))
+                    if cut is not None:
+                        self._shot_marks[cut[0]] = cut[1]
                     return True
                 oldest, newest = self._video_buf[0][0], self._video_buf[-1][0]
                 # The stamp the clock must reach for the picture to move:
@@ -2287,6 +2302,9 @@ class AVFileSource:
             # the A/V lag. Up to one frame interval is healthy; a growing lag
             # means the decoder is falling behind the audio-master clock.
             self.last_frame_pts = chosen_pts
+            self._shown_frame = chosen_img
+            for mark_pts in [p for p in self._shot_marks if p <= chosen_pts]:
+                self._shot_due = self._shot_marks.pop(mark_pts)
             # The chosen frame normally stays in the buffer so a clock stall
             # cannot black-frame the display. After demux EOF that would trap
             # the buffer at size 1 forever, so `finished` never fires and the
@@ -2299,6 +2317,13 @@ class AVFileSource:
                 self._frames_taken += consumed_through
                 del self._video_buf[:consumed_through]
             return chosen_img
+
+    def take_shot(self) -> ShotFit | None:
+        """The fit of a shot whose first frame `current_frame` has returned
+        or passed since the last call, or None. With several, the latest."""
+        with self._lock:
+            shot, self._shot_due = self._shot_due, None
+            return shot
 
     @property
     def video_buffer_depth(self) -> int:

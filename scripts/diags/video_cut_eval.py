@@ -40,8 +40,8 @@ import cv2
 import numpy as np
 
 from c64cast.scenes.scenes import _crop_to_aspect
+from c64cast.video.shots import AdaptiveCutDetector
 from scripts.diags._cut_detectors import (
-    AdaptiveRatio,
     FfmpegScene,
     ProductionHistogram,
     analysis_frame,
@@ -71,7 +71,7 @@ def detectors() -> dict[str, Callable[[], Any]]:
     return {
         "hist-prod": ProductionHistogram,
         "hist-every": lambda: ProductionHistogram(every_frame=True),
-        "adaptive": AdaptiveRatio,
+        "adaptive": AdaptiveCutDetector,
         "ffmpeg-0.3": lambda: FfmpegScene(0.3),
         "ffmpeg-0.4": lambda: FfmpegScene(0.4),
     }
@@ -87,7 +87,9 @@ def run_detector(make: Callable[[], Any], frames: list[np.ndarray]) -> list[int]
 
 def loose_candidates(frames: list[np.ndarray]) -> list[int]:
     found: set[int] = set()
-    found.update(run_detector(lambda: AdaptiveRatio(ratio=2.0, min_score=8.0, min_shot=1), frames))
+    found.update(
+        run_detector(lambda: AdaptiveCutDetector(ratio=2.0, min_score=8.0, min_shot=1), frames)
+    )
     found.update(run_detector(lambda: FfmpegScene(LOOSE_FFMPEG_THRESHOLD), frames))
     found.update(run_detector(lambda: ProductionHistogram(every_frame=True), frames))
     return sorted(found)
