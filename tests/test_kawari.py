@@ -20,8 +20,16 @@ class FakeKawari:
     `stale_unlocks` is how many unlock sequences are ignored before one takes:
     on hardware the first after a deactivate never did."""
 
-    def __init__(self, *, model: int = 0, stale_unlocks: int = 0, stock: bool = False):
+    def __init__(
+        self,
+        *,
+        model: int = 0,
+        stale_unlocks: int = 0,
+        stock: bool = False,
+        overlay_reads_answered: int | None = None,
+    ):
         self.stock = stock
+        self.overlay_reads_answered = overlay_reads_answered
         self.stale_unlocks = stale_unlocks
         self.active = False
         self.flags = 0
@@ -64,6 +72,10 @@ class FakeKawari:
         if address == kawari.VIDEO_MEM_FLAGS:
             return bytes([self.flags])
         if address == kawari.VIDEO_MEM_1_VAL and self.flags & kawari.FLAGS_OVERLAY:
+            if self.overlay_reads_answered is not None:
+                if self.overlay_reads_answered == 0:
+                    return None
+                self.overlay_reads_answered -= 1
             return bytes([self.overlay[self.port_addr & 0xFF]])
         return b"\xff" * length
 
@@ -94,6 +106,16 @@ class ReadPaletteTest(unittest.TestCase):
 
     def test_an_unknown_chip_model_is_not_read(self):
         self.assertIsNone(kawari.read_palette(FakeKawari(model=len(kawari.CHIP_MODELS))))
+
+    def test_an_unanswered_chip_model_read_is_no_answer_and_relocks(self):
+        bus = FakeKawari(overlay_reads_answered=0)
+        self.assertIsNone(kawari.read_palette(bus))
+        self.assertFalse(bus.active)
+
+    def test_an_unanswered_palette_byte_is_no_answer_and_relocks(self):
+        bus = FakeKawari(overlay_reads_answered=20)
+        self.assertIsNone(kawari.read_palette(bus))
+        self.assertFalse(bus.active)
 
     def test_a_backend_that_cannot_read_is_no_answer(self):
         bus = SimpleNamespace(
@@ -126,6 +148,13 @@ class AutoPaletteTest(unittest.TestCase):
     def test_auto_assumes_pepto_for_a_stock_vic(self):
         hw_provision.resolve_palette(Config(), _KawariApi(stock=True))
         self.assertEqual(self.pal.active_host_palette_name(), "pepto")
+
+    def test_a_backend_without_reads_asks_nothing(self):
+        api = _KawariApi()
+        api.profile = SimpleNamespace(supports_read=False, supports_system_mode=False)
+        hw_provision.resolve_palette(Config(), api)
+        self.assertEqual(self.pal.active_host_palette_name(), "pepto")
+        self.assertEqual(api.flag_writes, [])
 
     def test_skip_probe_asks_nothing(self):
         cfg = Config()
