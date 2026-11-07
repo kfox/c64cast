@@ -27,7 +27,7 @@ from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 from c64cast.app.config import Config
-from c64cast.hw import uci
+from c64cast.hw import kawari, uci
 
 from .backend import SYSTEM_MODE_CATEGORY
 
@@ -997,7 +997,7 @@ def read_active_palette(api: object) -> tuple[tuple[int, int, int], ...] | None:
     return tuple((b, g, r) for r, g, b in rgb)
 
 
-def live_palette_name(table: Sequence[Sequence[int]]) -> str:
+def live_palette_name(table: Sequence[Sequence[int]], source: str = "u64") -> str:
     """A name for a live-read palette that changes when its colors do.
 
     Two machines reporting different colors would otherwise both be called
@@ -1005,7 +1005,19 @@ def live_palette_name(table: Sequence[Sequence[int]]) -> str:
     comparing.
     """
     digest = hashlib.sha256(bytes(v & 0xFF for color in table for v in color)).hexdigest()
-    return f"u64-live:{digest[:6]}"
+    return f"{source}-live:{digest[:6]}"
+
+
+def read_kawari_palette(api: object) -> tuple[str, tuple[tuple[int, int, int], ...]] | None:
+    """``(chip model, BGR table)`` when the C64's VIC is a Kawari that answers,
+    else None (a stock VIC-II, or a backend that can't read memory)."""
+    if not getattr(getattr(api, "profile", None), "supports_read", False):
+        return None
+    answer = kawari.read_palette(api)  # type: ignore[arg-type]
+    if answer is None:
+        return None
+    model, rgb = answer
+    return model, tuple((b, g, r) for r, g, b in rgb)
 
 
 def resolve_palette(cfg: Config, api: object) -> None:
@@ -1068,9 +1080,19 @@ def _resolve_palette_table(cfg: Config, api: object) -> tuple[str, Sequence[Sequ
 
     profile = getattr(api, "profile", None)
     is_u64 = profile is not None and getattr(profile, "supports_system_mode", False)
-    if not is_u64 or cfg.debug.skip_probe:
+    if cfg.debug.skip_probe:
+        log.debug("[hardware].host_palette = auto -> pepto (nothing asked under --skip-probe)")
+        return "pepto", HOST_PALETTES["pepto"]
+    if not is_u64:
         # Every other machine in reach is a real C64 — the Ultimate II+ and the
-        # TeensyROM+ both drive one, and neither has a palette of its own.
+        # TeensyROM+ both drive one, and neither has a palette of its own — but
+        # its VIC may be a Kawari, which can say what it drives.
+        kawari_live = read_kawari_palette(api)
+        if kawari_live is not None:
+            model, table = kawari_live
+            name = live_palette_name(table, source="kawari")
+            log.info("[hardware].host_palette = auto -> %s (live, Kawari as %s)", name, model)
+            return name, table
         log.debug("[hardware].host_palette = auto -> pepto (real VIC-II assumed)")
         return "pepto", HOST_PALETTES["pepto"]
 

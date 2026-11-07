@@ -15,6 +15,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`c64.py` — the hardware constant register](#c64py--the-hardware-constant-register)
 * [`hw_provision.py` — live REU + sampler auto-provisioning](#hw_provisionpy--live-reu--sampler-auto-provisioning)
 * [`uci.py` — the Ultimate Command Interface at `$DF1C-$DF1F`](#ucipy--the-ultimate-command-interface-at-df1c-df1f)
+* [`kawari.py` — reading a VIC-II Kawari's palette](#kawaripy--reading-a-vic-ii-kawaris-palette)
 * [`menu_screen.py` — the Ultimate menu's own screen](#menu_screenpy--the-ultimate-menus-own-screen)
 * [`machine_input.py` — keyboard and joystick injection](#machine_inputpy--keyboard-and-joystick-injection)
 
@@ -340,6 +341,16 @@ Every failure — firmware without the command, a timeout, a short reply, a bad 
 Two commands are wired up, both on target `4`: `read_palette_rgb` (`CTRL_CMD_GET_PALETTE`, `0x51`) and `set_palette_rgb` (`CTRL_CMD_SET_PALETTE`, `0x52`). Ultimate 64 firmware 3.15a added runtime palette control to the Command Interface (4d4f6a72, between the 3.15 and 3.15a tags, under the firmware's `#ifdef U64`); older firmware answers `21,UNKNOWN COMMAND`, which both paths handle quietly. What the read is for, and why it is named the way it is, is [palette resolution](video-color.md#palettepy--which-16-colors-the-machine-emits-hardwarehost_palette); what the write is for is [`[color].hardware_palette`](video-color.md#hardware_palettepy--pushing-a-scenes-own-16-colors-colorhardware_palette).
 
 **A command with a payload** pushes it through the same `$DF1D` FIFO, one single-byte write per byte after the target and command bytes. The firmware checks the length exactly (50 bytes in all for `SET_PALETTE`) and answers anything else with `81,INVALID PARAMS`. `SET_PALETTE` has no data reply, so the transaction acks once the status has drained. A push is about 50 DMA writes plus the REST reads of the drain: 0.45–0.75 s measured on a U64-II.
+
+## `kawari.py` — reading a VIC-II Kawari's palette
+
+[kawari.py](../../c64cast/hw/kawari.py) asks a VIC-II Kawari, the FPGA replacement VIC, for the RGB palette it drives, so that `[hardware].host_palette = "auto"` on a TeensyROM+ or Ultimate II+ machine aims at the right 16 colors instead of assuming pepto. Measured on an NTSC Kawari, its palette sat **ΔE 11.8** from pepto (U64 table: 7.6). The register map is the project's `doc/REGISTERS.md` (randyrossi/vicii-kawari). Like `uci.py`, it needs only a `MemoryBus`: the reads and writes are ordinary cartridge-bus DMA on `$D03x`.
+
+The sequence: write `VIC2` to `$D03F` to activate the extra registers, then set the overlay flag (`$20`) so the first 256 bytes of video memory answer as the configuration overlay. Each overlay byte is a write of its address to port A (`$D039`/`$D03A`) and a read of `$D03B`. Chip model is overlay `$1F` (0-3), the palette is `$40-$7F` as RGBx with 6 bits a channel (scaled ×255/63; the upper two bits are masked). A `$80` write deactivates the registers again once the chip-model byte has been read, whether or not it named a Kawari. Nothing is written with the persist flag, so the chip's EEPROM settings are untouched. Each read flushes first, because on an Ultimate the address write rides the DMA socket and the read is REST.
+
+**The first unlock after a deactivate does not take.** On hardware, alternate reads failed: `$D03F` read `$FF` straight after the `VIC2` writes, and the attempt after that worked. The VIC has no reset line, so the state survives a C64 reset and a new run. `_unlock` therefore reads `$D03F` back and sends the sequence once more if it is still `$FF`. A stock VIC-II reads `$FF` from every one of these registers, which is the detection: it stays locked through both attempts, and a chip-model byte outside 0-3 is refused as well.
+
+**The palette is the digital/RGB one.** A Kawari's composite output is synthesized from separate luma/phase/amplitude registers, so on a composite display the RGB table is not what is shown, and `host_palette = "pepto"` is the override. On a TeensyROM+ the read runs while the machine still sits at the TR menu, before the clear loop starts, and it works there.
 
 ## `menu_screen.py` — the Ultimate menu's own screen
 
