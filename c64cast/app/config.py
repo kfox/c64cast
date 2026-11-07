@@ -313,7 +313,7 @@ class HardwareCfg:
             "choices": HOST_SID_TUNE_MATCH_CHOICES,
         },
     )
-    # An Ultimate 64's FPGA VIC and a real VIC-II are ~25 counts per channel apart, and
+    # An Ultimate 64's FPGA VIC and a real VIC-II are ~18 counts per channel apart, and
     # the quantizer picks indices by distance, so aiming at the wrong table sends ~19%
     # of pixels to the wrong color.
     host_palette: str = field(
