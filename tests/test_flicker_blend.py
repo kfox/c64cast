@@ -160,7 +160,7 @@ class BlendTableTest(unittest.TestCase):
         """It used to clamp to the flash criterion, which put a computed number
         above a pair a human had looked at and accepted. On the VIC-II rendering
         that withheld five of the eight pairs scored as fusing cleanly."""
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         capped = flicker.blend_pairs(flicker.FLASH_CRITERION_LUMA_DELTA, tolerance="clean")
         wide = flicker.blend_pairs(1.0, tolerance="clean")
         self.assertLess(len(capped), len(wide))
@@ -390,12 +390,12 @@ class FlickerFollowsPaletteTest(unittest.TestCase):
         # Over the full capped set, not the warm-excluded one: the exclusion
         # removes the same four colors on every machine, so filtering first
         # would measure only how much of the disagreement it deleted.
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
-        pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS))
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
+        wiki = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS))
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
         u64 = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS))
-        self.assertNotEqual(pepto, u64)
-        self.assertLess(len(pepto & u64), min(len(pepto), len(u64)))
+        self.assertNotEqual(wiki, u64)
+        self.assertLess(len(wiki & u64), min(len(wiki), len(u64)))
 
 
 class FlickerHandlerTest(unittest.TestCase):

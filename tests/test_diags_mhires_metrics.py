@@ -147,7 +147,7 @@ class OfflineRendererTest(unittest.TestCase):
         from c64cast.video import palette
         from scripts.diags._offline_video import OfflineMhires
 
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         renderer = OfflineMhires()
         rng = np.random.default_rng(1)
         renderer.show(rng.integers(0, 256, (400, 640, 3), dtype=np.uint8), 0.0)
@@ -171,6 +171,12 @@ class OfflineRendererTest(unittest.TestCase):
 
 
 class LimitedFitTest(unittest.TestCase):
+    def setUp(self):
+        from c64cast.video import palette
+
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+
     def test_a_capped_gain_widens_the_range_about_its_center(self):
         from c64cast.video.palette import ColorFit
         from scripts.diags.mhires_video_eval import limited_fit

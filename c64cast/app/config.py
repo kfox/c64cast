@@ -327,9 +327,11 @@ class HardwareCfg:
             "other machine drives a real C64: a VIC-II Kawari in it reports the "
             "palette it is driving, and a stock VIC-II is assumed, as it is "
             "for every machine under `--skip-probe`. 'u64' is the "
-            "Ultimate 64's own built-in table; 'pepto' is the classic VIC-II "
-            "rendering, right for a real C64 (so for an Ultimate II+, and for a "
-            "TeensyROM+ in a breadbin). Can also be the path to a VICE .vpl "
+            "Ultimate 64's own built-in table. 'pepto' (what a stock VIC-II is "
+            "assumed to show), 'pepto-ntsc' and 'pepto-palold' are Pepto's "
+            "measurements of a real VIC-II; 'colodore' is his later "
+            "re-measurement, 'community-colors' a hand-tuned community palette, "
+            "and 'c64-wiki' the table the C64-Wiki lists. Can also be the path to a VICE .vpl "
             "file, which is how to describe a machine with a custom palette "
             "loaded that cannot be asked for it.",
         },

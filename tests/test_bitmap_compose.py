@@ -371,7 +371,7 @@ class PercellBg0HysteresisTest(unittest.TestCase):
 
 
 class PercellHysteresisReleaseTest(unittest.TestCase):
-    """On pepto, cyan sits closer to white than the video hysteresis bonus, so
+    """On the C64-Wiki table, cyan sits closer to white than the video hysteresis bonus, so
     an uncapped hold kept a brightening face cyan for the whole shot."""
 
     def setUp(self):
@@ -379,7 +379,7 @@ class PercellHysteresisReleaseTest(unittest.TestCase):
 
         before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
         self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         self.mode = MultiHiresDisplayMode(
             "percell",
             dither_method="none",

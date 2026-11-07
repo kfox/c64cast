@@ -189,9 +189,10 @@ def resolve_color(token: int | str, *, default: int | None = None) -> int:
 # quantizer has to aim at the colors the display will actually show, so the
 # active table is selected per run from [hardware].host_palette.
 
-# The classic RGB rendering of a real VIC-II's output. The right table for a
-# C64 whose own VIC drives the display: an Ultimate II+ or a TeensyROM+.
-PEPTO_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+# The table the C64-Wiki lists. It stays the table in effect until a session
+# resolves [hardware].host_palette, because the flicker blend-tier counts, the
+# PETSCII hue-band rescue and the luminance cell pick are pinned against it.
+C64_WIKI_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
     (0, 0, 0),
     (255, 255, 255),
     (0, 0, 136),
@@ -210,9 +211,108 @@ PEPTO_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
     (187, 187, 187),
 )
 
+# Philip Timmermann's (Pepto) measurements of a real VIC-II, pepto.de/projects/colorvic,
+# as VICE ships them: PAL, NTSC, and the five-luma PAL of the earliest chips.
+PEPTO_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (0x00, 0x00, 0x00),
+    (0xFF, 0xFF, 0xFF),
+    (0x2B, 0x37, 0x68),
+    (0xB2, 0xA4, 0x70),
+    (0x86, 0x3D, 0x6F),
+    (0x43, 0x8D, 0x58),
+    (0x79, 0x28, 0x35),
+    (0x6F, 0xC7, 0xB8),
+    (0x25, 0x4F, 0x6F),
+    (0x00, 0x39, 0x43),
+    (0x59, 0x67, 0x9A),
+    (0x44, 0x44, 0x44),
+    (0x6C, 0x6C, 0x6C),
+    (0x84, 0xD2, 0x9A),
+    (0xB5, 0x5E, 0x6C),
+    (0x95, 0x95, 0x95),
+)
+
+PEPTO_NTSC_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (0x00, 0x00, 0x00),
+    (0xFF, 0xFF, 0xFF),
+    (0x2B, 0x37, 0x67),
+    (0xB1, 0xA3, 0x70),
+    (0x86, 0x3D, 0x6F),
+    (0x42, 0x8C, 0x58),
+    (0x79, 0x28, 0x34),
+    (0x6E, 0xC6, 0xB7),
+    (0x25, 0x4E, 0x6F),
+    (0x00, 0x38, 0x42),
+    (0x59, 0x66, 0x99),
+    (0x43, 0x43, 0x43),
+    (0x6B, 0x6B, 0x6B),
+    (0x83, 0xD1, 0x9A),
+    (0xB5, 0x5E, 0x6B),
+    (0x95, 0x95, 0x95),
+)
+
+PEPTO_PAL_OLD_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (0x00, 0x00, 0x00),
+    (0xFF, 0xFF, 0xFF),
+    (0x1D, 0x29, 0x58),
+    (0xD5, 0xC6, 0x91),
+    (0xA8, 0x5C, 0x91),
+    (0x43, 0x8D, 0x58),
+    (0x79, 0x28, 0x35),
+    (0x6F, 0xC7, 0xB8),
+    (0x43, 0x6F, 0x91),
+    (0x00, 0x39, 0x43),
+    (0x59, 0x67, 0x9A),
+    (0x35, 0x35, 0x35),
+    (0x74, 0x74, 0x74),
+    (0x84, 0xD2, 0x9A),
+    (0xBE, 0x66, 0x74),
+    (0xB8, 0xB8, 0xB8),
+)
+
+# Pepto's 2017 re-measurement, colodore.com, as VICE ships it.
+COLODORE_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (0x00, 0x00, 0x00),
+    (0xFF, 0xFF, 0xFF),
+    (0x2E, 0x28, 0x96),
+    (0xCE, 0xD6, 0x5B),
+    (0xAD, 0x2D, 0x9F),
+    (0x36, 0xB9, 0x41),
+    (0xC4, 0x24, 0x27),
+    (0x47, 0xF3, 0xEF),
+    (0x15, 0x48, 0x9F),
+    (0x00, 0x35, 0x5E),
+    (0x66, 0x5F, 0xDA),
+    (0x47, 0x47, 0x47),
+    (0x78, 0x78, 0x78),
+    (0x84, 0xFF, 0x91),
+    (0xFF, 0x64, 0x68),
+    (0xAE, 0xAE, 0xAE),
+)
+
+# Retrofan's hand-tuned C64 Community Colors v1.2a, as VICE ships it.
+COMMUNITY_COLORS_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (0x00, 0x00, 0x00),
+    (0xFF, 0xFF, 0xFF),
+    (0x29, 0x2A, 0xAF),
+    (0xCC, 0xD8, 0x62),
+    (0xB6, 0x3F, 0xB0),
+    (0x4A, 0xC6, 0x4A),
+    (0xC4, 0x39, 0x37),
+    (0x4E, 0xED, 0xE4),
+    (0x1C, 0x59, 0xB6),
+    (0x08, 0x38, 0x68),
+    (0x6C, 0x74, 0xEA),
+    (0x4D, 0x4D, 0x4D),
+    (0x84, 0x84, 0x84),
+    (0x9E, 0xFA, 0xA6),
+    (0xE6, 0x7C, 0x70),
+    (0xB5, 0xB6, 0xB6),
+)
+
 # The Ultimate 64's own table (the firmware's `default_colors`), which its FPGA
 # VIC drives to both HDMI and composite. Confirmed against an HDMI capture to
-# within 4 counts per channel. It sits 25.5 counts from PEPTO_PALETTE_BGR on
+# within 4 counts per channel. It sits 25.5 counts from C64_WIKI_PALETTE_BGR on
 # average, 60 at worst (Orange).
 U64_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
     (0x00, 0x00, 0x00),
@@ -235,13 +335,18 @@ U64_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
 
 HOST_PALETTES: dict[str, tuple[tuple[int, int, int], ...]] = {
     "pepto": PEPTO_PALETTE_BGR,
+    "pepto-ntsc": PEPTO_NTSC_PALETTE_BGR,
+    "pepto-palold": PEPTO_PAL_OLD_PALETTE_BGR,
+    "colodore": COLODORE_PALETTE_BGR,
+    "community-colors": COMMUNITY_COLORS_PALETTE_BGR,
+    "c64-wiki": C64_WIKI_PALETTE_BGR,
     "u64": U64_PALETTE_BGR,
 }
 
 # The active table, in OpenCV BGR channel order — not RGB. Mutated in place by
 # set_host_palette rather than rebound: half the render pipeline holds a direct
 # reference to this array from import time.
-C64_PALETTE_BGR = np.array(PEPTO_PALETTE_BGR, dtype=np.float32)
+C64_PALETTE_BGR = np.array(C64_WIKI_PALETTE_BGR, dtype=np.float32)
 
 # Modules that keep their own palette-derived tables register a rebuild hook
 # here, so swapping the host palette can't leave one of them on stale colors.
@@ -302,7 +407,7 @@ def resolve_host_palette(name: str) -> tuple[tuple[int, int, int], ...]:
 
 
 # Which palette the active table came from, for the ensemble conflict check.
-_ACTIVE_PALETTE_NAME = "pepto"
+_ACTIVE_PALETTE_NAME = "c64-wiki"
 
 
 def active_host_palette_name() -> str:
