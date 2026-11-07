@@ -162,6 +162,23 @@ PERCELL_CODE_HYSTERESIS_BONUS = 5000.0
 # video-color.md#colormotion_smoothing--temporal-smoothing--after-images.
 PERCELL_QUANT_HYSTERESIS_BONUS = 5000.0
 
+# A held color is kept only while it trails the best one by less than this
+# share of the gap the pair shows when the input sits exactly on the best
+# color. Without it, a palette whose two entries lie closer than the bonus
+# (pepto's white and cyan) never releases a pixel even at a pure-white input.
+HYSTERESIS_RELEASE_FRACTION = 0.5
+
+
+def hysteresis_release_gaps(entry_distances: np.ndarray) -> np.ndarray:
+    """(entries, entries) cap on the keep margin, indexed [held, best].
+
+    `entry_distances[j, i]` is the distance function applied to entry j's own
+    color, measured to entry i, so `[held, best]` is how far the held entry
+    trails when the input is the best entry itself."""
+    on_best = entry_distances.T - np.diag(entry_distances)[None, :]
+    return HYSTERESIS_RELEASE_FRACTION * np.maximum(on_best, 0.0)
+
+
 # bg0 stickiness for the percell path: keep the current bg0 unless a
 # challenger's smoothed count beats it by this relative margin. A vanished bg0
 # has a smoothed count of ≈0, so it can never get stuck on an absent color.
