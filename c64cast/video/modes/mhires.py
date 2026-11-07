@@ -725,7 +725,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
     def _capped(
         bonus: float, release: np.ndarray | None, held: np.ndarray, best: np.ndarray
     ) -> float | np.ndarray:
-        """A hysteresis bonus, capped per pixel by the held/best pair's release gap."""
         return bonus if release is None else np.minimum(bonus, release[held, best])
 
     def _compose_percell(

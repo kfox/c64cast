@@ -420,6 +420,17 @@ class PercellHysteresisReleaseTest(unittest.TestCase):
         white_slot = list(cand[0]).index(1)
         self.assertTrue(np.all(cells[:, 12:] == white_slot), f"codes: {np.unique(cells[:, 12:])}")
 
+    def test_compose_releases_a_frame_held_on_cyan(self):
+        from c64cast.video import palette
+
+        for color in (3, 1):
+            frame = np.zeros((200, 320, 3), dtype=np.uint8)
+            frame[:] = palette.C64_PALETTE_BGR[color]
+            self.mode.compose(frame)
+        last = self.mode._last_quantized
+        assert last is not None
+        self.assertTrue(np.all(last == 1), f"still held: {np.unique(last)}")
+
 
 class BitmapREUStructureTest(unittest.TestCase):
     """REU bank-swap push stages the right REU regions + a frame tracker."""
