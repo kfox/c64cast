@@ -103,8 +103,10 @@ host_palette = "auto"               # the 16 colors the C64 being driven really
                                     # firmware 3.15a or newer reports the colors
                                     # it is really driving, a custom .vpl
                                     # included; one that cannot answer is
-                                    # assumed to show its built-in table) and
-                                    # anything else a real VIC-II, as is every
+                                    # assumed to show its built-in table). Any
+                                    # other machine drives a real C64: a VIC-II
+                                    # Kawari reports its palette, and a stock
+                                    # VIC-II is assumed, as it is for every
                                     # machine under --skip-probe. "u64" is the
                                     # Ultimate 64's own built-in table; "pepto"
                                     # is the classic VIC-II rendering — right for
