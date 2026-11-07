@@ -215,7 +215,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         return best
 
     def _errmin_fg(
-        self, dist: np.ndarray, bg: int, release: np.ndarray | None = None
+        self, dist: np.ndarray, bg: int, release: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         """Pick each cell's foreground by minimizing that cell's own error, and
         return (per-cell fg (25, 40), per-pixel fg mask (200, 320)).
@@ -228,7 +228,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         The `"sample"` alternative reads a single pixel per cell instead, and
         stays available for the tightest CPU budgets: this path costs ≈+0.8
         ms/frame. `release` is base.hysteresis_release_gaps over the same
-        entries; without it the hysteresis bonus is uncapped.
+        entries.
         """
         entries = dist.shape[1]
         # (1000, 64, E): each cell's 8×8 pixels against every candidate, in the
@@ -242,11 +242,10 @@ class HiresDisplayMode(BitmapDisplayMode):
         prev = self._last_fg
         if prev is not None and prev.shape == best.shape:
             rows = np.arange(cell_cost.shape[0])
-            bonus = HIRES_CELL_HYSTERESIS_BONUS * (
-                PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
+            bonus = np.minimum(
+                HIRES_CELL_HYSTERESIS_BONUS * (PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0),
+                release[prev, best],
             )
-            if release is not None:
-                bonus = np.minimum(bonus, release[prev, best])
             keep = cell_cost[rows, prev] <= cell_cost[rows, best] + bonus
             best = np.where(keep, prev, best)
         self._last_fg = best
