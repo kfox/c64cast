@@ -156,6 +156,24 @@ class CellPickTest(unittest.TestCase):
                 mode.compose(src)
                 self.assertIsNotNone(mode._last_fg)
 
+    def test_a_cell_held_on_a_solid_takes_a_close_blend_entry_it_sits_on(self):
+        """On pepto, brown and the blend entry at 18 lie closer than the cell
+        bonus, so an uncapped hold never let a brown cell go."""
+        from c64cast.video import palette
+
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        mode = HiresDisplayMode(flicker_tolerance="clean")
+        assert mode._blend_table is not None
+        brown, blend = 9, 18
+        for entry in (brown, blend):
+            frame = np.zeros((200, 320, 3), np.float32)
+            frame[120:] = mode._blend_table.bgr[entry]
+            mode.compose(frame)
+        assert mode._last_fg is not None
+        self.assertTrue((mode._last_fg.reshape(25, 40)[15:] == blend).all())
+
     def test_exported_from_the_modes_package(self):
         self.assertIs(video_modes.HiresDisplayMode, HiresDisplayMode)
 
