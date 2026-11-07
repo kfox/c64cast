@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from functools import partial
 from typing import cast
 
 import cv2
@@ -46,6 +47,7 @@ from .base import (
     ORDERED_DITHER_OFFSET_FNS,
     BitmapComposeBuffers,
     FlickerComposeBuffers,
+    hysteresis_release_gaps,
 )
 from .bitmap import BitmapDisplayMode, engage_bitmap_mode
 
@@ -212,7 +214,9 @@ class HiresDisplayMode(BitmapDisplayMode):
         self._last_bg_index = best
         return best
 
-    def _errmin_fg(self, dist: np.ndarray, bg: int) -> tuple[np.ndarray, np.ndarray]:
+    def _errmin_fg(
+        self, dist: np.ndarray, bg: int, release: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Pick each cell's foreground by minimizing that cell's own error, and
         return (per-cell fg (25, 40), per-pixel fg mask (200, 320)).
 
@@ -223,7 +227,8 @@ class HiresDisplayMode(BitmapDisplayMode):
 
         The `"sample"` alternative reads a single pixel per cell instead, and
         stays available for the tightest CPU budgets: this path costs ≈+0.8
-        ms/frame.
+        ms/frame. `release` is base.hysteresis_release_gaps over the same
+        entries; without it the hysteresis bonus is uncapped.
         """
         entries = dist.shape[1]
         # (1000, 64, E): each cell's 8×8 pixels against every candidate, in the
@@ -240,6 +245,8 @@ class HiresDisplayMode(BitmapDisplayMode):
             bonus = HIRES_CELL_HYSTERESIS_BONUS * (
                 PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
             )
+            if release is not None:
+                bonus = np.minimum(bonus, release[prev, best])
             keep = cell_cost[rows, prev] <= cell_cost[rows, best] + bonus
             best = np.where(keep, prev, best)
         self._last_fg = best
@@ -331,10 +338,12 @@ class HiresDisplayMode(BitmapDisplayMode):
             # A blend entry is the pair (a, b) and a solid is (c, c), so every
             # index below is just an entry and only the final nibble split cares
             # which kind it is.
+            perceptual = self._perceptual
             if table is None:
-                dist = quantize_distances_for(flat, perceptual=self._perceptual)
+                distances = partial(quantize_distances_for, perceptual=perceptual)
             else:
-                dist = blend_distances_for(flat, table, perceptual=self._perceptual)
+                distances = partial(blend_distances_for, table=table, perceptual=perceptual)
+            dist = distances(flat)
             entry_bgr = C64_PALETTE_BGR if table is None else table.bgr
             quantized = dist.argmin(axis=1).reshape(200, 320)
             counts = np.bincount(quantized.ravel(), minlength=dist.shape[1])
@@ -344,7 +353,8 @@ class HiresDisplayMode(BitmapDisplayMode):
                 # entry sits between its two solids, so a single sample lands on
                 # one of them at random and the widened palette then measures
                 # worse than the 16 solids.
-                sample_fg, is_fg = self._errmin_fg(dist, bg)
+                release = hysteresis_release_gaps(distances(entry_bgr.astype(np.float32)))
+                sample_fg, is_fg = self._errmin_fg(dist, bg, release)
             else:
                 sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
                 is_fg = quantized != bg
