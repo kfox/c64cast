@@ -33,7 +33,7 @@ from _fakes import FakeAPI  # noqa: E402
 
 from c64cast.hw.c64 import VIC_BANK_0, VIC_BANK_2  # noqa: E402
 from c64cast.scenes.scenes import Scene, _render_with_overlays  # noqa: E402
-from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
+from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode, base  # noqa: E402
 from c64cast.video.modes_irq import (  # noqa: E402
     BANK_SWAP_IRQ_HANDLER_ADDR,
     FRAME_TRACKER_ADDR,
@@ -368,6 +368,68 @@ class PercellBg0HysteresisTest(unittest.TestCase):
         all_blue = np.full(32000, 6, dtype=np.int64)
         seen = [self._bg0(mode, all_blue) for _ in range(6)]
         self.assertEqual(seen[-1], 6, f"bg0 never tracked the sustained change: {seen}")
+
+
+class PercellHysteresisReleaseTest(unittest.TestCase):
+    """On pepto, cyan sits closer to white than the video hysteresis bonus, so
+    an uncapped hold kept a brightening face cyan for the whole shot."""
+
+    def setUp(self):
+        from c64cast.video import palette
+
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        self.mode = MultiHiresDisplayMode(
+            "percell",
+            dither_method="none",
+            cell_strategy="frequency",
+            motion_smoothing=0.3,
+            perceptual=True,
+        )
+        self.distances = self.mode._shaped_distances(None)
+        self.release = base.hysteresis_release_gaps(
+            self.distances(palette.C64_PALETTE_BGR.astype(np.float32))
+        )
+
+    def _compose(self, cell_colors: list[int]) -> None:
+        """One frame whose every cell holds `cell_colors` (32 palette indices,
+        in cell pixel order), fed as those exact palette colors."""
+        from c64cast.video import palette
+
+        cells = np.tile(np.array(cell_colors), (1000, 1))
+        order = cells.reshape(25, 40, 8, 4).transpose(0, 2, 1, 3).reshape(32000)
+        flat = palette.C64_PALETTE_BGR[order].astype(np.float32)
+        self.mode._compose_percell(self.distances(flat), flat, None, self.release)
+
+    def test_a_pixel_held_on_cyan_takes_white_once_the_input_is_white(self):
+        self._compose([3] * 32)
+        self._compose([1] * 32)
+        last = self.mode._last_quantized
+        assert last is not None
+        self.assertTrue(np.all(last == 1), f"still held: {np.unique(last)}")
+
+    def test_a_code_held_on_cyan_takes_white_within_an_unchanged_cell(self):
+        self._compose([0] * 12 + [3] * 10 + [1] * 10)
+        cand = self.mode._last_cand
+        self._compose([0] * 12 + [1] * 20)
+        assert cand is not None and self.mode._last_cand is not None
+        self.assertTrue(np.array_equal(cand, self.mode._last_cand), "the cell's colors changed")
+        cells = self.mode._last_codes
+        assert cells is not None
+        white_slot = list(cand[0]).index(1)
+        self.assertTrue(np.all(cells[:, 12:] == white_slot), f"codes: {np.unique(cells[:, 12:])}")
+
+    def test_compose_releases_a_frame_held_on_cyan(self):
+        from c64cast.video import palette
+
+        for color in (3, 1):
+            frame = np.zeros((200, 320, 3), dtype=np.uint8)
+            frame[:] = palette.C64_PALETTE_BGR[color]
+            self.mode.compose(frame)
+        last = self.mode._last_quantized
+        assert last is not None
+        self.assertTrue(np.all(last == 1), f"still held: {np.unique(last)}")
 
 
 class BitmapREUStructureTest(unittest.TestCase):

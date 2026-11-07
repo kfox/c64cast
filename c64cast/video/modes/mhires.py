@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import cast
 
 import cv2
@@ -545,6 +545,16 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._dark_tone_taper,
         )
 
+    def _shaped_distances(self, table: BlendTable | None) -> Callable[[np.ndarray], np.ndarray]:
+        """The (N, entries) distance function the per-pixel picks run on: the
+        active metric plus each entry's penalty."""
+        if table is None:
+            penalty = self._gray_penalty * self._penalty_scale
+            return lambda px: quantize_distances_for(px, perceptual=self._perceptual) + penalty
+        assert self._entry_penalty_cache is not None
+        penalty = self._entry_penalty_cache * self._penalty_scale
+        return lambda px: blend_distances_for(px, table, perceptual=self._perceptual) + penalty
+
     def compose(self, frame) -> MHiresComposeBuffers:
         assert self.frame_target_size is not None
         if self._pal_generation != palette_generation():
@@ -566,12 +576,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             # mid-scene, which is the one flip set_palette_mode never sees.
             self._reset_pick_state()
             self._blending = table is not None
+        entries = C64_PALETTE_BGR if table is None else table.bgr
         if forced:
             # The remap already chose each color, so the shaping stages and the
             # gray penalty are skipped.
             assert self._color_map is not None
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
-            d = quantize_distances(flat)
+            distances = quantize_distances
         else:
             flat = self.quantizer_input(img).reshape(-1, 3)
             if self._input_smoothing > 0.0:
@@ -583,16 +594,14 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 w, h = self.frame_target_size
                 offset = offset_fn(h, w, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            if table is None:
-                d = quantize_distances_for(flat, perceptual=self._perceptual)
-                d += self._gray_penalty * self._penalty_scale
-            else:
-                d = blend_distances_for(flat, table, perceptual=self._perceptual)
-                assert self._entry_penalty_cache is not None
-                d += self._entry_penalty_cache * self._penalty_scale
+            distances = self._shaped_distances(table)
+        d = distances(flat)
 
         if self.palette_mode == "percell":
-            bitmap_ram, screen_ram, color_ram, bg0, screen_b = self._compose_percell(d, flat, table)
+            release = base.hysteresis_release_gaps(distances(entries.astype(np.float32)))
+            bitmap_ram, screen_ram, color_ram, bg0, screen_b = self._compose_percell(
+                d, flat, table, release
+            )
         else:
             bitmap_ram, screen_ram, color_ram, bg0 = self._compose_global(d)
             screen_b = None
@@ -712,8 +721,18 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         color_ram = np.full(1000, c3, dtype=np.uint8)
         return bitmap_ram, screen_ram, color_ram, bg0
 
+    @staticmethod
+    def _capped(
+        bonus: float, release: np.ndarray | None, held: np.ndarray, best: np.ndarray
+    ) -> float | np.ndarray:
+        return bonus if release is None else np.minimum(bonus, release[held, best])
+
     def _compose_percell(
-        self, d: np.ndarray, flat: np.ndarray, table: BlendTable | None = None
+        self,
+        d: np.ndarray,
+        flat: np.ndarray,
+        table: BlendTable | None = None,
+        release: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray | None]:
         """Per-cell path: pick bg0 globally, then for each 4×8 cell pick
         its own top-3 non-bg0 colors by population. Each pixel resolves
@@ -727,6 +746,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         picking, smoothing, hysteresis and dithering are shared verbatim; only
         bg0's pick and the final slot split care which entries are pairs.
         `screen_b` is the second screen page, or None when not blending.
+        `release` is base.hysteresis_release_gaps over those entries; without
+        it the two hysteresis margins are uncapped.
 
         Both the global bg0 pick and the per-cell top-3 picks go through
         EMA-smoothed counts (base.PALETTE_PICK_EMA_ALPHA for bg0,
@@ -744,7 +765,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             idx = np.arange(quantized.size)
             d_last = d[idx, self._last_quantized]
             d_min = d[idx, quantized]
-            keep = (d_last - d_min) <= self._quant_hysteresis
+            margin = self._capped(self._quant_hysteresis, release, self._last_quantized, quantized)
+            keep = (d_last - d_min) <= margin
             quantized = np.where(keep, self._last_quantized, quantized)
         self._last_quantized = quantized
 
@@ -859,7 +881,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                     d_min = np.take_along_axis(d_cand, codes[..., None].astype(np.intp), axis=2)[
                         ..., 0
                     ]
-                    keep = ((d_last - d_min) <= self._code_hysteresis) & cell_unchanged[:, None]
+                    margin = self._capped(
+                        self._code_hysteresis,
+                        release,
+                        np.take_along_axis(cand, last.astype(np.intp), axis=1),
+                        np.take_along_axis(cand, codes.astype(np.intp), axis=1),
+                    )
+                    keep = ((d_last - d_min) <= margin) & cell_unchanged[:, None]
                     codes = np.where(keep, last, codes).astype(np.uint8)
             self._last_codes = codes
             self._last_cand = cand
