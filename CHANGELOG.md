@@ -30,6 +30,64 @@ practice not read at all. Releases that ask nothing of anyone leave it out.
 Entries for the next release are one file each under `changelog.d/` (its
 README.md has the format), and are collected here when the release is cut.
 
+## [0.5.1] - 2026-11-07
+
+### Highlights
+
+- **Video on a real C64 matches the colors the chip actually shows.** On a
+  TeensyROM+ or Ultimate II+, `host_palette = "auto"` now uses Pepto's
+  measured VIC-II palette instead of the brighter C64-Wiki table it used by
+  mistake, and on a VIC-II Kawari it reads the palette the Kawari is driving.
+
+- **More palettes to choose from.** `host_palette` now offers `colodore`,
+  `community-colors`, `pepto-ntsc`, `pepto-palold` and `c64-wiki` (the old
+  `pepto` look) alongside `pepto` and `u64`.
+
+- **Bright areas of mhires video no longer stick on a nearby color.** With
+  `motion_smoothing` on, a brightening white face could stay cyan for the rest
+  of a shot on a palette whose colors sit close together; held colors now let
+  go as the picture moves on.
+
+### Upgrade notes
+
+- **`host_palette = "pepto"` now means different colors.** A config that set
+  it to keep the old look should say `host_palette = "c64-wiki"`.
+
+### Added
+
+- **A C64 with a VIC-II Kawari now gets its colors right automatically.**
+  With `[hardware].host_palette = "auto"` on a TeensyROM+ or Ultimate II+,
+  c64cast reads the RGB palette the Kawari is driving straight from its
+  registers at startup, instead of assuming the classic VIC-II colors. The
+  read leaves the Kawari's settings untouched. On a Kawari's composite output,
+  set `host_palette = "pepto"`.
+
+- **Five more `[hardware].host_palette` presets.** `pepto-ntsc`,
+  `pepto-palold`, `colodore`, `community-colors` and `c64-wiki` join `pepto` and
+  `u64`, each copied from the palette file VICE ships. A `.vpl` path still works
+  for anything else.
+
+### Changed
+
+- **`pepto` is now Pepto's measured VIC-II palette, and a real C64 gets it.**
+  The table c64cast called `pepto` was the brighter, more saturated one the
+  C64-Wiki lists, about ΔE 25 from Pepto's measurement. `pepto` now holds
+  Pepto's PAL measurement, and `host_palette = "auto"` uses it for a stock
+  VIC-II, so video on a TeensyROM+ or Ultimate II+ picks colors against what the
+  chip really shows. The old table is `c64-wiki`.
+
+### Fixed
+
+- **Bright areas of mhires video no longer stick on a near color on a real
+  C64.** With the `c64-wiki` palette (called `pepto` before this release, and
+  what `auto` chose for a real VIC-II, such as a TeensyROM+ host),
+  `motion_smoothing` held pixels and bitmap codes on cyan as a white face
+  brightened, until most of the face was cyan for the rest of the shot. A held
+  color now gives way whenever the input moves well past it toward another
+  palette color, so palettes whose entries sit close together release as
+  quickly as the Ultimate 64's. Hires cells get the same release, which also
+  frees a cell held on a solid color next to a close `flicker_tolerance` blend.
+
 ## [0.5.0] - 2026-11-06
 
 ### Highlights
@@ -6289,7 +6347,8 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/kfox/c64cast/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/kfox/c64cast/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kfox/c64cast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kfox/c64cast/compare/v0.2.1...v0.3.0
