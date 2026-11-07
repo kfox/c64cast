@@ -159,9 +159,9 @@ class DeriveHardwarePaletteTest(PaletteSwapTestCase):
 
 class PaletteGenerationTest(PaletteSwapTestCase):
     def test_moves_when_the_colors_change_and_only_then(self):
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         before = palette.palette_generation()
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         self.assertEqual(palette.palette_generation(), before)
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
         self.assertEqual(palette.palette_generation(), before + 1)
@@ -169,7 +169,7 @@ class PaletteGenerationTest(PaletteSwapTestCase):
     def test_mhires_rebuilds_its_pairwise_table_on_a_swap(self):
         from c64cast.video.modes import MultiHiresDisplayMode
 
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         mode = MultiHiresDisplayMode("grayscale")
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
         mode.compose(np.zeros((200, 160, 3), dtype=np.uint8))
@@ -181,7 +181,7 @@ class PaletteGenerationTest(PaletteSwapTestCase):
 
         InversePopStyle._LUT_CACHE[True] = np.zeros(16, dtype=np.uint8)
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         self.assertEqual(InversePopStyle._LUT_CACHE, {})
 
     def _swap_to_a_reversed_palette(self) -> None:
@@ -191,7 +191,7 @@ class PaletteGenerationTest(PaletteSwapTestCase):
     def test_mhires_grayscale_slots_follow_a_swap_at_compose(self):
         from c64cast.video.modes import MultiHiresDisplayMode
 
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         mode = MultiHiresDisplayMode("grayscale")
         assert mode._fixed_lut is not None
         stale = mode._fixed_lut.copy()
@@ -205,7 +205,7 @@ class PaletteGenerationTest(PaletteSwapTestCase):
     def test_mhires_grayscale_slots_follow_a_swap_at_set_color_match(self):
         from c64cast.video.modes import MultiHiresDisplayMode
 
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         mode = MultiHiresDisplayMode("grayscale")
         self._swap_to_a_reversed_palette()
         mode.set_color_match("perceptual")
@@ -275,7 +275,7 @@ def _rgb(table_bgr: np.ndarray) -> list[tuple[int, int, int]]:
 class HardwarePaletteTest(PaletteSwapTestCase):
     def setUp(self):
         super().setUp()
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         self.api = _FakeApi()
         self.pushes: list[list[tuple[int, int, int]]] = []
         self.answers: list[bool] = []
@@ -311,9 +311,9 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         self.control.show_machine()
         self.assertEqual(self.pushes[-1], _rgb(MACHINE))
         np.testing.assert_array_equal(
-            palette.C64_PALETTE_BGR, np.asarray(palette.PEPTO_PALETTE_BGR, dtype=np.float32)
+            palette.C64_PALETTE_BGR, np.asarray(palette.C64_WIKI_PALETTE_BGR, dtype=np.float32)
         )
-        self.assertEqual(palette.active_host_palette_name(), "pepto")
+        self.assertEqual(palette.active_host_palette_name(), "c64-wiki")
 
     def test_show_machine_with_nothing_shown_does_not_push(self):
         self.control.show_machine()
@@ -328,7 +328,7 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         self._show()
         self.control.release()
         self.assertEqual(len(self.pushes), 1)
-        self.assertEqual(palette.active_host_palette_name(), "pepto")
+        self.assertEqual(palette.active_host_palette_name(), "c64-wiki")
 
     def test_the_same_table_after_a_release_does_not_push(self):
         """A looping clip or a playlist lap sets the same scene up again."""
@@ -383,7 +383,7 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING") as logs:
             self.api.listeners[0]()
         self.assertIn("re-push after a C64 reset", logs.output[0])
-        self.assertEqual(palette.active_host_palette_name(), "pepto")
+        self.assertEqual(palette.active_host_palette_name(), "c64-wiki")
         self.assertFalse(self.control.show(self.scene_table, "scene"))
 
     def test_restore_pushes_the_snapshot_never_the_built_in_table(self):
@@ -395,7 +395,7 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         self.assertEqual(self.pushes[-1], _rgb(MACHINE))
         self.assertEqual(self.api.listeners, [])
         self.assertIsNone(self.api.hardware_palette)
-        self.assertEqual(palette.active_host_palette_name(), "pepto")
+        self.assertEqual(palette.active_host_palette_name(), "c64-wiki")
 
     def test_restore_after_a_reset_still_pushes_when_a_scene_was_showing(self):
         self._show()
@@ -418,7 +418,7 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING") as logs:
             self.assertFalse(self.control.show(self.scene_table, "scene"))
         self.assertIn("rest of the run", logs.output[0])
-        self.assertEqual(palette.active_host_palette_name(), "pepto")
+        self.assertEqual(palette.active_host_palette_name(), "c64-wiki")
         self.assertFalse(self.control.show(self.scene_table, "scene"))
         self.api.listeners[0]()
         self.assertEqual(self.pushes, [_rgb(self.scene_table)] * 2 + [_rgb(MACHINE)])

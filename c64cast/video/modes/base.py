@@ -165,7 +165,7 @@ PERCELL_QUANT_HYSTERESIS_BONUS = 5000.0
 # A held color is kept only while it trails the best one by less than this
 # share of the gap the pair shows when the input sits exactly on the best
 # color. Without it, a palette whose two entries lie closer than the bonus
-# (pepto's white and cyan) never releases a pixel even at a pure-white input.
+# (the C64-Wiki table's white and cyan) never releases a pixel even at a pure-white input.
 HYSTERESIS_RELEASE_FRACTION = 0.5
 
 

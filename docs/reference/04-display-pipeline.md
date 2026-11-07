@@ -244,12 +244,12 @@ fragments flat desaturated regions, a pale sky, into drab gray.
 Both metrics measure distance to the sixteen C64 colors, which raises a question
 neither of them answers: sixteen colors *as rendered by what?* The palette is
 fixed as an idea and not as a set of RGB triples. An Ultimate 64's video output
-and a real VIC-II's are about 25 counts per channel apart, and 60 apart on
-orange.
+and a real VIC-II's, as Pepto measured it, are about 18 counts per channel
+apart, and 38 apart on yellow.
 
 That is not a tint the eye discounts and then forgives, because the quantizer
 picks by distance: aim at the wrong table and pixels are sent to the wrong color
-outright. Measured on an Ultimate 64 against the VIC-II rendering, that was
+outright. Measured on an Ultimate 64 against the C64-Wiki table, that was
 **18.8 % of pixels** and **+12.9 % mean perceptual error**, worst on the grays,
 the browns and orange.
 
@@ -257,7 +257,12 @@ the browns and orange.
 |---|---|
 | `auto` | The default, and needs no configuration. Ask the machine: an Ultimate 64 reports the sixteen colors it is driving, or is assumed to show its built-in table when its firmware cannot answer. Anything else is driving a real C64: a VIC-II Kawari reports the palette it is driving, and a stock VIC-II is assumed. Under `--skip-probe` nothing is asked, and a VIC-II is assumed for every machine |
 | `u64` | The Ultimate 64's own table, stated outright |
-| `pepto` | The classic VIC-II rendering — right for a real C64, so for an Ultimate II+ and for a TeensyROM+ in a breadbin |
+| `pepto` | Pepto's measurement of a PAL VIC-II, and what a stock VIC-II is assumed to show |
+| `pepto-ntsc` | Pepto's measurement decoded for NTSC |
+| `pepto-palold` | Pepto's measurement of the earliest PAL VIC-IIs, which have five luma levels rather than nine |
+| `colodore` | Pepto's later re-measurement of a PAL VIC-II, from colodore.com |
+| `community-colors` | Community Colors v1.2a, a hand-tuned palette from the C64 community |
+| `c64-wiki` | The table the C64-Wiki lists, brighter than any measurement |
 | *a path* | A VICE `.vpl` file, which is how to describe a machine running a custom palette |
 
 `auto` is right on every stock setup, and this is a setting most configurations

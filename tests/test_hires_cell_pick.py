@@ -157,13 +157,13 @@ class CellPickTest(unittest.TestCase):
                 self.assertIsNotNone(mode._last_fg)
 
     def test_a_cell_held_on_a_solid_takes_a_close_blend_entry_it_sits_on(self):
-        """On pepto, brown and the blend entry at 18 lie closer than the cell
+        """On the C64-Wiki table, brown and the blend entry at 18 lie closer than the cell
         bonus, so an uncapped hold never let a brown cell go."""
         from c64cast.video import palette
 
         before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
         self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         mode = HiresDisplayMode(flicker_tolerance="clean")
         assert mode._blend_table is not None
         brown, blend = 9, 18

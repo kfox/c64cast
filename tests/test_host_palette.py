@@ -70,10 +70,11 @@ class ResolveHostPaletteTest(unittest.TestCase):
     def test_known_names(self):
         self.assertIs(palette.resolve_host_palette("pepto"), palette.PEPTO_PALETTE_BGR)
         self.assertIs(palette.resolve_host_palette("u64"), palette.U64_PALETTE_BGR)
+        self.assertIs(palette.resolve_host_palette("c64-wiki"), palette.C64_WIKI_PALETTE_BGR)
 
     def test_an_unknown_name_lists_the_known_ones(self):
         with self.assertRaises(ValueError) as ctx:
-            palette.resolve_host_palette("colodore")
+            palette.resolve_host_palette("palette-of-nowhere")
         msg = str(ctx.exception)
         self.assertIn("pepto", msg)
         self.assertIn("u64", msg)
@@ -93,6 +94,39 @@ class ResolveHostPaletteTest(unittest.TestCase):
             palette.resolve_host_palette("/nonexistent/nope.vpl")
 
 
+class PresetTableTest(unittest.TestCase):
+    """Each preset is a transcription of a published palette, so a red and a
+    cyan from the source file pin it; a slip while copying a table shows up as
+    the wrong name answering with another palette's colors."""
+
+    SOURCE_RED_CYAN = {
+        "pepto": ((0x2B, 0x37, 0x68), (0xB2, 0xA4, 0x70)),
+        "pepto-ntsc": ((0x2B, 0x37, 0x67), (0xB1, 0xA3, 0x70)),
+        "pepto-palold": ((0x1D, 0x29, 0x58), (0xD5, 0xC6, 0x91)),
+        "colodore": ((0x2E, 0x28, 0x96), (0xCE, 0xD6, 0x5B)),
+        "community-colors": ((0x29, 0x2A, 0xAF), (0xCC, 0xD8, 0x62)),
+        "c64-wiki": ((0x00, 0x00, 0x88), (0xEE, 0xFF, 0xAA)),
+    }
+
+    def test_each_preset_matches_its_source(self):
+        for name, (red, cyan) in self.SOURCE_RED_CYAN.items():
+            with self.subTest(name=name):
+                table = palette.resolve_host_palette(name)
+                self.assertEqual(len(table), 16)
+                self.assertEqual((table[2], table[3]), (red, cyan))
+                self.assertEqual((table[0], table[1]), ((0, 0, 0), (0xFF, 0xFF, 0xFF)))
+
+    def test_every_built_in_name_is_pinned(self):
+        self.assertEqual(set(palette.HOST_PALETTES) - {"u64"}, set(self.SOURCE_RED_CYAN))
+
+    def test_the_start_up_table_is_the_c64_wiki_one(self):
+        """The blend-tier, hue-band and cell-pick tests are pinned against it."""
+        np.testing.assert_array_equal(
+            palette.C64_PALETTE_BGR, np.asarray(palette.C64_WIKI_PALETTE_BGR, dtype=np.float32)
+        )
+        self.assertEqual(palette.active_host_palette_name(), "c64-wiki")
+
+
 class U64PaletteTableTest(unittest.TestCase):
     """The Ultimate 64's table is measurement-confirmed against its own HDMI
     output, so it is pinned rather than left to drift."""
@@ -105,11 +139,11 @@ class U64PaletteTableTest(unittest.TestCase):
         self.assertEqual(palette.U64_PALETTE_BGR[1], (0xF7, 0xF7, 0xF7))  # white
         self.assertEqual(palette.U64_PALETTE_BGR[0], (0, 0, 0))
 
-    def test_far_enough_from_pepto_to_matter(self):
+    def test_far_enough_from_the_c64_wiki_table_to_matter(self):
         """The whole point of the knob: these are not two roundings of one
         table. If this ever shrinks to a couple of counts, the [hardware]
         setting is no longer earning its place."""
-        a = np.array(palette.PEPTO_PALETTE_BGR, dtype=np.float32)
+        a = np.array(palette.C64_WIKI_PALETTE_BGR, dtype=np.float32)
         b = np.array(palette.U64_PALETTE_BGR, dtype=np.float32)
         self.assertGreater(np.abs(a - b).mean(), 20.0)
 
@@ -145,7 +179,7 @@ class PaletteAccuracyTest(PaletteSwapTestCase):
         source = self._lab(px)
         emitted = np.array(palette.U64_PALETTE_BGR, dtype=np.float32)
 
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
         wrong_idx = palette.quantize_flat_for(px, perceptual=True)
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
         right_idx = palette.quantize_flat_for(px, perceptual=True)

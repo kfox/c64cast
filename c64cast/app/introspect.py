@@ -361,7 +361,7 @@ def palette_swatches() -> list[dict[str, Any]]:
 
     ``name`` is the spelling a config should be written with and ``label`` the
     one to show; both round-trip through ``palette.resolve_color``. ``hex`` is
-    read from the *live* table rather than the Pepto constant, so a host that
+    read from the *live* table rather than the import-time constant, so a host that
     has matched the machine's own palette offers swatches in the colors that
     machine actually emits. Imported lazily — palette pulls in numpy/cv2, and
     the ``--describe`` path never asks for this."""
