@@ -388,7 +388,7 @@ PETSCII is not wired up — its bg/fg-per-character-cell selection is not a raw 
 
 ### `[color].auto_fit` shaping — a luma stretch and one saturation lift
 
-`palette.apply_color_fit`, the first step of `shape_for_quantize`, stretches levels on luma and lifts saturation once. Both were multiplicative before, and on near-neutral pixels they compounded.
+`palette.apply_color_fit`, the first step of `shape_for_quantize`, stretches levels on luma and lifts saturation once, because multiplicative versions of either compound on near-neutral pixels.
 
 **Luma, not per channel.** The stretch adds each pixel's luma shift to all three channels. A per-channel stretch multiplies the channel spread by the gain as well, while HSV saturation barely moves, so it is a hidden chroma lift. A video whose dark opening sets white near 58 holds every later shot at a gain of about 1.6 (`ColorFit.held_to`), and pale concrete in a bright shot then left the gray axis.
 
