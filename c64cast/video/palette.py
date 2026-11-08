@@ -620,13 +620,6 @@ def boost_saturation(img_bgr: np.ndarray, factor: float) -> np.ndarray:
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 
-# Hue-targeted correction ([color].hue_corrections). The C64's only purple
-# (index 4) is a bright, fully-saturated magenta, so real dark blue-leaning
-# violets never reach it under the brightness-dominated weighted-BGR quantizer.
-# A pre-quantization HSV pass over a hue band snaps hue and lifts S and V; the
-# default table ships only that one rescue.
-
-
 @dataclass(frozen=True)
 class HueCorrection:
     """One hue-band correction applied before quantization.
@@ -649,19 +642,10 @@ class HueCorrection:
     name: str = ""
 
 
-# The one C64 color gap worth closing by default: dark blue-violets → purple.
-DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = (
-    HueCorrection(
-        hue_lo_deg=240.0,
-        hue_hi_deg=330.0,
-        sat_thresh=40.0 / 255.0,
-        val_thresh=30.0 / 255.0,
-        sat_mult=2.2,
-        val_mult=1.9,
-        hue_target_deg=300.0,
-        name="purple_rescue",
-    ),
-)
+# No default band: a violet → magenta snap with V x1.9 lifted lilac-lit shadows
+# and faces a whole luma step, to light blue or purple, on the pepto, Ultimate 64
+# and Kawari tables alike.
+DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = ()
 
 
 def apply_hue_corrections(

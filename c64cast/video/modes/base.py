@@ -367,9 +367,8 @@ def resolve_color_shaping(
     Returns (channel_boost_bgr, hue_corrections). Applies to every chromatic
     display mode regardless of palette_mode — palette_mode picks slots, [color]
     shapes colors. `channel_boost` None/empty falls back to the built-in
-    CHANNEL_BOOST. User hue bands EXTEND the built-in defaults unless `replace`
-    is set — `replace` is honored even with no bands, the escape hatch for
-    "no hue corrections at all".
+    CHANNEL_BOOST. `DEFAULT_HUE_CORRECTIONS` is empty, so `replace` does not
+    change the result.
     """
     boost = parse_channel_boost(channel_boost)
     user = parse_hue_corrections(hue_corrections or [])

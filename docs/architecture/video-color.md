@@ -247,8 +247,7 @@ scheme and silently inherit `true`. Storing the scene's `color` as a sparse
 `dict[str, Any]` of exactly what TOML wrote makes "unset" precisely "key
 absent," with no ambiguity against the default. `hue_corrections` is an
 all-or-nothing replace when a scene sets it (not an extend of the global's
-list) — the same shape distinction `hue_corrections_replace_defaults` already
-draws between the *built-in* purple-rescue band and user bands.
+list).
 
 `scene_factory.effective_colors(cfg)` is the loop every `validate_*_cfg` guard
 (dither/color_match/cell_strategy/motion_smoothing) and doctor's per-aspect

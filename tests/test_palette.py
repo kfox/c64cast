@@ -351,6 +351,17 @@ class PaletteHueClassificationTest(unittest.TestCase):
             )
 
 
+_VIOLET_BAND = HueCorrection(
+    hue_lo_deg=240.0,
+    hue_hi_deg=330.0,
+    sat_thresh=40.0 / 255.0,
+    val_thresh=30.0 / 255.0,
+    sat_mult=2.2,
+    val_mult=1.9,
+    hue_target_deg=300.0,
+)
+
+
 class HueCorrectionTest(unittest.TestCase):
     """The global [color] hue-correction pre-quantization step."""
 
@@ -362,18 +373,20 @@ class HueCorrectionTest(unittest.TestCase):
         flat = np.clip(x.reshape(-1, 3).astype(np.float32) * CHANNEL_BOOST, 0, 255)
         return int(quantize_flat(flat)[0])
 
-    def test_rescues_dark_violet_to_purple(self):
-        # A dark, blue-leaning violet (TRON arena-wall glyph color, BGR) maps
-        # to blue/gray without correction and to C64 purple (index 4) with it.
-        violet = np.array([[[120, 30, 70]]], dtype=np.uint8)  # B=120 G=30 R=70
-        self.assertNotEqual(
-            self._pipeline_index(violet, ()), 4, "violet should NOT reach purple without correction"
-        )
-        self.assertEqual(
-            self._pipeline_index(violet, DEFAULT_HUE_CORRECTIONS),
-            4,
-            "violet should reach C64 purple with the default rescue",
-        )
+    def test_band_snaps_dark_violet_to_purple(self):
+        violet = np.array([[[120, 30, 70]]], dtype=np.uint8)
+        self.assertNotEqual(self._pipeline_index(violet, ()), 4)
+        self.assertEqual(self._pipeline_index(violet, (_VIOLET_BAND,)), 4)
+
+    def test_default_shaping_keeps_a_lilac_shadow_dark_on_a_real_vic(self):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        before = palette_mod.C64_PALETTE_BGR.copy(), palette_mod.active_host_palette_name()
+        self.addCleanup(lambda: palette_mod.set_host_palette(before[0], name=before[1]))
+        palette_mod.set_host_palette(palette_mod.PEPTO_PALETTE_BGR, name="pepto")
+        shadow = np.full((8, 8, 3), (110, 60, 95), dtype=np.uint8)
+        shaped = MultiHiresDisplayMode("percell").quantizer_input(shadow).reshape(-1, 3)
+        self.assertEqual(int(quantize_flat_for(shaped[:1], perceptual=True)[0]), 6)
 
     def test_empty_table_is_identity(self):
         img = np.array([[[120, 30, 70], [10, 200, 200]]], dtype=np.uint8)
@@ -382,11 +395,9 @@ class HueCorrectionTest(unittest.TestCase):
         self.assertIs(out, img)
 
     def test_leaves_colors_outside_band_untouched(self):
-        # Saturated red and green sit well outside the violet→magenta band, so
-        # the default purple rescue must not alter them at all.
         for bgr in ((20, 20, 220), (20, 200, 20)):
             img = np.array([[bgr]], dtype=np.uint8)
-            out = apply_hue_corrections(img, DEFAULT_HUE_CORRECTIONS)
+            out = apply_hue_corrections(img, (_VIOLET_BAND,))
             np.testing.assert_array_equal(out, img)
 
     def test_parse_validates_and_roundtrips(self):
@@ -761,8 +772,6 @@ class DisplayModePaletteTest(unittest.TestCase):
         # alias for cheap (MCM already picks fg per cell).
         for mode in ("cheap", "vivid", "grayscale", "percell"):
             MCMDisplayMode(palette_mode=mode)
-        # Color shaping is global now: every mode carries the default purple
-        # rescue + a 3-vector channel boost, regardless of palette_mode.
         m = MCMDisplayMode(palette_mode="percell")
         self.assertEqual(m._hue_corrections, DEFAULT_HUE_CORRECTIONS)
         self.assertEqual(tuple(m._channel_boost), tuple(CHANNEL_BOOST))
