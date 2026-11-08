@@ -15,7 +15,7 @@ import numpy as np
 
 from c64cast.video import petscii_styles as ps
 from c64cast.video.modes import PETSCIIDisplayMode
-from c64cast.video.palette import CHANNEL_BOOST, DEFAULT_HUE_CORRECTIONS
+from c64cast.video.palette import CHANNEL_BOOST, DEFAULT_HUE_CORRECTIONS, HueCorrection
 
 # The global [color] shaping PETSCIIDisplayMode passes into every style.compose.
 _BOOST = CHANNEL_BOOST
@@ -116,21 +116,21 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
             "letter_rain must only emit screen codes 0x01..0x1A (A-Z)",
         )
 
-    def test_hue_corrections_reach_styles_and_rescue_purple(self):
-        # A dark blue-leaning violet (BGR) like the TRON arena glyphs: it
-        # quantizes to gray/blue without the purple-rescue hue band and to
-        # C64 purple (index 4) with it.
+    def test_hue_corrections_reach_styles(self):
+        violet_to_purple = HueCorrection(
+            hue_lo_deg=240.0,
+            hue_hi_deg=330.0,
+            sat_thresh=40.0 / 255.0,
+            val_thresh=30.0 / 255.0,
+            sat_mult=2.2,
+            val_mult=1.9,
+            hue_target_deg=300.0,
+        )
         violet = np.full((25, 40, 3), (114, 57, 74), dtype=np.uint8)
         _, plain = ps.ColorOnlyStyle().compose(violet, _BOOST, ())
-        _, rescued = ps.ColorOnlyStyle().compose(violet, _BOOST, _HUE)
-        self.assertNotIn(
-            4, {int(c) for c in np.unique(plain)}, "expected NO purple without the hue band"
-        )
-        self.assertIn(
-            4,
-            {int(c) for c in np.unique(rescued)},
-            "expected C64 purple (index 4) with the purple rescue",
-        )
+        _, banded = ps.ColorOnlyStyle().compose(violet, _BOOST, (violet_to_purple,))
+        self.assertNotIn(4, {int(c) for c in np.unique(plain)})
+        self.assertIn(4, {int(c) for c in np.unique(banded)})
 
 
 # Rows of the uppercase character ROM for the glyphs the ramps below use;

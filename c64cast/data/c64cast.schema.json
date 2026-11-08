@@ -682,12 +682,12 @@
         },
         "hue_corrections": {
           "type": "array",
-          "description": "List of [[color.hue_corrections]] bands applied before quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, val_thresh, sat_mult, val_mult, hue_target_deg, name). Empty = built-in purple rescue only.",
+          "description": "List of [[color.hue_corrections]] bands applied before quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, val_thresh, sat_mult, val_mult, hue_target_deg, name). Empty = no hue corrections.",
           "default": []
         },
         "hue_corrections_replace_defaults": {
           "type": "boolean",
-          "description": "If true, user hue_corrections REPLACE the built-in defaults instead of extending them.",
+          "description": "No effect: there are no built-in hue_corrections bands to replace. Still accepted so existing configs load.",
           "default": false
         },
         "auto_fit": {
@@ -1673,7 +1673,7 @@
           },
           "palette_mode": {
             "type": "string",
-            "description": "VIC-II slot-allocation strategy for mcm/mhires display (ignored by other modes): percell (default), cheap, vivid, grayscale. Color shaping (channel boost + hue corrections, e.g. the purple rescue) is the global [color] section, applied to every mode.",
+            "description": "VIC-II slot-allocation strategy for mcm/mhires display (ignored by other modes): percell (default), cheap, vivid, grayscale. Color shaping (channel boost + hue corrections) is the global [color] section, applied to every mode.",
             "enum": [
               "percell",
               "cheap",
@@ -2449,12 +2449,12 @@
               },
               "hue_corrections": {
                 "type": "array",
-                "description": "List of [[color.hue_corrections]] bands applied before quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, val_thresh, sat_mult, val_mult, hue_target_deg, name). Empty = built-in purple rescue only.",
+                "description": "List of [[color.hue_corrections]] bands applied before quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, val_thresh, sat_mult, val_mult, hue_target_deg, name). Empty = no hue corrections.",
                 "default": []
               },
               "hue_corrections_replace_defaults": {
                 "type": "boolean",
-                "description": "If true, user hue_corrections REPLACE the built-in defaults instead of extending them.",
+                "description": "No effect: there are no built-in hue_corrections bands to replace. Still accepted so existing configs load.",
                 "default": false
               },
               "auto_fit": {

@@ -56,8 +56,7 @@ _SECTION_DC = {
 #   songlengths_file — points at an HVSC DB the user supplies; path is local.
 #   log_file        — headless-run convenience; not part of the showcase.
 #   frame_numbers   — a video-flicker diagnostic aid; not part of the showcase.
-#   hue_corrections — the built-in purple-rescue default is the showcase; shown
-#                     commented in [color] (uncommented would double-apply it).
+#   hue_corrections — empty by default; an example band is shown commented in [color].
 #   pre_emphasis    — default is None (source-aware auto: mic 0.7 / line 0.6),
 #                     not representable as a TOML value; shown commented in [dsp].
 #   dac_calibration_profile — default is None (auto-derived from device identity);

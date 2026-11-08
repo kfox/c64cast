@@ -1642,8 +1642,8 @@ class SceneCfg:
         metadata={
             "help": "VIC-II slot-allocation strategy for mcm/mhires display (ignored "
             "by other modes): percell (default), cheap, vivid, grayscale. "
-            "Color shaping (channel boost + hue corrections, e.g. the purple "
-            "rescue) is the global [color] section, applied to every mode.",
+            "Color shaping (channel boost + hue corrections) is the global "
+            "[color] section, applied to every mode.",
             "choices": _PALETTE_MODE_CHOICES,
             "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
             "apply": "live",
@@ -1885,11 +1885,8 @@ class ColorCfg:
     display mode (mcm, mhires, petscii) regardless of palette_mode.
 
     Two stages run before nearest-palette quantization: a per-channel gain
-    (channel_boost) and a set of hue-band corrections. The C64's only purple
-    (index 4) is a bright magenta, so dark real-world violets quantize to
-    gray/blue and never to purple; the built-in default ships a single
-    "purple_rescue" hue band that snaps + boosts the violet→magenta range to
-    recover it. User bands extend the defaults unless replace is set."""
+    (channel_boost) and a set of hue-band corrections. No hue band is built in;
+    user bands are the whole list."""
 
     channel_boost: list[float] = field(
         default_factory=list,
@@ -1915,14 +1912,14 @@ class ColorCfg:
             "help": "List of [[color.hue_corrections]] bands applied before "
             "quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, "
             "val_thresh, sat_mult, val_mult, hue_target_deg, name). "
-            "Empty = built-in purple rescue only."
+            "Empty = no hue corrections."
         },
     )
     hue_corrections_replace_defaults: bool = field(
         default=False,
         metadata={
-            "help": "If true, user hue_corrections REPLACE the built-in defaults "
-            "instead of extending them."
+            "help": "No effect: there are no built-in hue_corrections bands to "
+            "replace. Still accepted so existing configs load."
         },
     )
     auto_fit: bool = field(

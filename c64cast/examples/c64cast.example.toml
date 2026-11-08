@@ -980,17 +980,13 @@ force_palette_colors = 16
 # force_palette or flicker_tolerance.
 hardware_palette = "off"
 #
-# hue_corrections: the C64's single purple (index 4) is a bright magenta, so
-# dark real-world violets quantize to gray/blue and never to purple. The
-# built-in default ships one band ("purple_rescue") that snaps + boosts the
-# violet→magenta hue range so it reaches C64 purple. Define your own
-# [[color.hue_corrections]] bands to tune any hue; by default they EXTEND the
-# built-in defaults (set hue_corrections_replace_defaults = true to replace —
-# e.g. set true with no bands to disable the purple rescue entirely).
+# hue_corrections: none by default. Define [[color.hue_corrections]] bands to
+# push a hue range toward a palette color before quantizing.
+# hue_corrections_replace_defaults has no effect (there are no built-in bands).
 hue_corrections_replace_defaults = false
-# Example band (commented — uncommenting ADDS it on top of the purple rescue):
+# Example band (commented), a violet → magenta snap:
 #   [[color.hue_corrections]]
-#   name = "purple_rescue"   # label, for logs only
+#   name = "violet_to_purple"   # label, for logs only
 #   hue_lo_deg = 240         # band start, degrees 0..360 (wraps if hi < lo)
 #   hue_hi_deg = 330         # band end, degrees 0..360
 #   sat_thresh = 0.16        # only touch pixels with saturation >= this (0..1)
