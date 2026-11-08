@@ -441,6 +441,33 @@ class ColorFitTest(unittest.TestCase):
         # Blue stays the dominant channel (hue preserved, not recolored).
         self.assertEqual(int(np.argmax(out[0, 0])), 0)
 
+    def test_stretch_keeps_a_pastel_near_gray(self):
+        # Pale mauve concrete: a per-channel stretch would multiply its small
+        # channel spread by the gain and push it off the gray axis.
+        mauve = self._solid((150, 140, 155))
+        out = apply_color_fit(mauve, ColorFit(black=9.0, white=156.0, sat_mult=1.0))
+        spread = int(out[0, 0].max()) - int(out[0, 0].min())
+        self.assertEqual(spread, 15)
+        self.assertGreater(int(out[0, 0].min()), int(mauve[0, 0].min()))
+
+    def test_shaping_lifts_saturation_once_not_twice(self):
+        from c64cast.video.modes.base import shape_for_quantize
+
+        pastel = self._solid((150, 140, 155))
+        fit = ColorFit(black=0.0, white=255.0, sat_mult=1.5)
+        shaped = shape_for_quantize(pastel, fit, 1.8, (), np.ones(3, np.float32))
+        mode_only = boost_saturation(pastel, 1.8).astype(np.float32)
+        np.testing.assert_array_equal(shaped, mode_only)
+
+    def test_fit_lift_stronger_than_the_modes_wins(self):
+        from c64cast.video.modes.base import shape_for_quantize
+
+        pastel = self._solid((150, 140, 155))
+        fit = ColorFit(black=0.0, white=255.0, sat_mult=1.5)
+        shaped = shape_for_quantize(pastel, fit, 1.0, (), np.ones(3, np.float32))
+        fit_only = boost_saturation(pastel, 1.5).astype(np.float32)
+        np.testing.assert_array_equal(shaped, fit_only)
+
     def test_apply_identity_is_noop(self):
         img = self._solid((30, 120, 200))
         fit = ColorFit(black=0.0, white=255.0, sat_mult=1.0)

@@ -868,36 +868,46 @@ class ColorFit:
 
 IDENTITY_FIT = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
 
-_CONTRAST_LUT_CACHE: dict[tuple[int, int], np.ndarray] = {}
+_LUMA_SHIFT_LUT_CACHE: dict[tuple[int, int], np.ndarray] = {}
 
 
-def _contrast_lut(black: float, white: float) -> np.ndarray:
-    """256-entry uint8 LUT mapping i → clip((i-black)*255/(white-black)).
+def _luma_shift_lut(black: float, white: float) -> np.ndarray:
+    """256-entry int16 LUT: how far the levels stretch moves luma i, i.e.
+    clip((i-black)*255/(white-black)) - i.
 
     Cached per (black, white) so a video's fixed fit builds the table once, not
-    per frame (mirrors `_saturation_lut`). Identical for all three channels, so
-    a single cv2.LUT pass over a BGR image preserves hue (uniform scale+offset)."""
+    per frame (mirrors `_saturation_lut`)."""
     key = (int(round(black)), int(round(white)))
-    lut = _CONTRAST_LUT_CACHE.get(key)
+    lut = _LUMA_SHIFT_LUT_CACHE.get(key)
     if lut is None:
         span = max(float(key[1] - key[0]), 1.0)
-        lut = np.clip((np.arange(256, dtype=np.float32) - key[0]) * (255.0 / span), 0, 255).astype(
-            np.uint8
-        )
-        _CONTRAST_LUT_CACHE[key] = lut
+        levels = np.arange(256, dtype=np.float32)
+        stretched = np.clip((levels - key[0]) * (255.0 / span), 0, 255).astype(np.int16)
+        lut = stretched - levels.astype(np.int16)
+        _LUMA_SHIFT_LUT_CACHE[key] = lut
     return lut
 
 
-def apply_color_fit(img_bgr: np.ndarray, fit: ColorFit) -> np.ndarray:
+def apply_color_fit(img_bgr: np.ndarray, fit: ColorFit, sat_factor: float = 1.0) -> np.ndarray:
     """Apply a ColorFit to a BGR uint8 image; return BGR uint8.
 
-    Contrast stretch (all channels, hue-preserving) then saturation lift. An
-    identity fit is a no-op. Cheap: a cached LUT plus the boost_saturation LUT.
+    Levels stretch on luma alone, then one saturation lift: the fit's
+    `sat_mult` or `sat_factor`, whichever is stronger.
+
+    The stretch shifts all three channels by the same amount rather than
+    scaling each, because scaling multiplies a near-gray's channel spread by
+    the gain (≈1.6× on a dark-opened video) and pushes pastels off the gray
+    axis onto chromatic palette entries. The two lifts do not multiply for the
+    same reason: a mode's 1.8× on top of the fit's 1.2-1.6× gave near-grays
+    up to 2.9× and turned pale walls purple and light red.
     """
-    if fit.is_identity():
-        return img_bgr
-    out = cv2.LUT(img_bgr, _contrast_lut(fit.black, fit.white))
-    return boost_saturation(out, fit.sat_mult)
+    sat = max(fit.sat_mult, sat_factor)
+    if fit.black <= 1.0 and fit.white >= 254.0:
+        return boost_saturation(img_bgr, sat)
+    luma = np.asarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), dtype=np.uint8)
+    shift = _luma_shift_lut(fit.black, fit.white)[luma]
+    stretched = np.clip(img_bgr.astype(np.int16) + shift[..., None], 0, 255).astype(np.uint8)
+    return boost_saturation(stretched, sat)
 
 
 class ColorFitAccumulator:

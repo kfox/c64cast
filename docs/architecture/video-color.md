@@ -386,6 +386,16 @@ That is precisely why `"auto"` never picks these for a motion scene: independent
 
 PETSCII is not wired up — its bg/fg-per-character-cell selection is not a raw pixel grid in the same way.
 
+### `[color].auto_fit` shaping — a luma stretch and one saturation lift
+
+`palette.apply_color_fit`, the first step of `shape_for_quantize`, stretches levels on luma and lifts saturation once. Both were multiplicative before, and on near-neutral pixels they compounded.
+
+**Luma, not per channel.** The stretch adds each pixel's luma shift to all three channels. A per-channel stretch multiplies the channel spread by the gain as well, while HSV saturation barely moves, so it is a hidden chroma lift. A video whose dark opening sets white near 58 holds every later shot at a gain of about 1.6 (`ColorFit.held_to`), and pale concrete in a bright shot then left the gray axis.
+
+**One lift, not a product.** mhires and mcm boost saturation by `DEFAULT_SAT_FACTOR` (1.8) after the fit's own `sat_mult` (1.0–1.6). Applied in series they gave near-grays up to 2.9×, plus the stretch's 1.6×, and the gray penalty did the rest. `apply_color_fit` now takes the mode's factor and applies `max(fit.sat_mult, sat_factor)`, so the fit's lift only counts where it is stronger: PETSCII, which passes 1.0.
+
+**Measured** with `scripts/diags/mhires_video_eval.py` on mhires against the live palette of a VIC-II Kawari. Over 16 low-saturation clips, `fid_src` fell 21% (geometric mean); the three pastel-heavy ones, by 48–58%. Over the 12 general clips it fell 0.7%, with shimmer down 18%. The worst clip, a pencil-sketch video, scored 52% worse, but it renders as the wrong grays under every variant tried, including the old chain. Dropping only the double lift fixed the pastel clips offline but barely changed the reported bridge shot on hardware: the stretch's chroma gain alone still sent the walls light red. Both changes together took them to light gray, and read as the better picture on a Kawari A/B. Tapering either lift by saturation, or lowering the mode's 1.8, scored worse on one set or the other.
+
 ### `[color].color_match` — the distance space
 
 Implemented in `palette.py`. Selects the *color space* the nearest-palette decision runs in, for every quantizing mode (mcm, mhires, hires, petscii).

@@ -47,8 +47,9 @@ def shape_for_quantize(
     warm and navy tones when `dark_tone_taper`). Takes a BGR uint8 image and
     returns it as float32 BGR, clipped to 0..255."""
     if fit is not None:
-        img = apply_color_fit(img, fit)
-    img = boost_saturation(img, sat_factor)
+        img = apply_color_fit(img, fit, sat_factor)
+    else:
+        img = boost_saturation(img, sat_factor)
     img = apply_hue_corrections(img, hue_corrections)
     f = img.astype(np.float32)
     boosted = (
