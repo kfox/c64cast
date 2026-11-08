@@ -1281,7 +1281,7 @@ opening's fit holds for the rest of playback. Only when `force_palette` or `hard
 fit from that pass instead. Either way the scene installs the fit on the display
 mode via `set_color_fit`;
 the mode applies it as the first step of `compose`/`render`, *after* the cheap
-downscale, so per-frame cost is two LUT passes. Webcam scenes never call
+downscale, so per-frame cost is a luma shift and one saturation pass. Webcam scenes never call
 `set_color_fit` (a per-frame fit would flicker), so the
 path is a no-op there — `_color_fit` stays `None`. See
 `palette.ColorFitAccumulator` / `apply_color_fit` and `video.prescan_source_color`.
