@@ -10,8 +10,7 @@ entirely offline by ``tests/test_vdc.py`` and reused by both the hardware probe
 and the backend's ``write_vdc_region``.
 
 Nothing in this module is wired into a backend or the display-mode hierarchy
-yet. It is pre-implementation tooling; see ``~/src/c128-vdc-plan.md`` (outside
-the repo) for the full plan and the open hardware questions.
+yet. It is pre-implementation tooling.
 
 ## Why the VDC is hard
 
@@ -35,9 +34,10 @@ The VDC emits 16 fixed colors and the palette index *is* the RGBI nibble
 like the VIC's ``host_palette``. This is **not** the CGA index order: adjacent
 even/odd indices are the dark/light pair of one hue (2/3 blue, 4/5 green, …),
 which is worth knowing before writing a test whose expected colors come from a
-CGA table. Values below match ``~/src/vdc-ega/palettes/vdc-irfanview.pal`` and
-were confirmed against a real 8563 R8/R9; note the "brown" special case at
-index 12 (``170,85,0`` rather than ``170,170,0``).
+CGA table. Values below match ``palettes/vdc-irfanview.pal`` in vdc-ega
+(<https://github.com/The8BitTheory/vdc-ega>) and were confirmed against a real
+8563 R8/R9; note the "brown" special case at index 12 (``170,85,0`` rather than
+``170,170,0``).
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ CHARSET_64K_BITS: Final = 0x18  # R28: OR in to address the full 64 KiB
 # The RGBI palette (index == RGBI nibble: R G B I, intensity in bit 0)
 # ---------------------------------------------------------------------------
 
-# (R, G, B), 0-255. Index 0..15. Matches ~/src/vdc-ega/palettes/vdc-irfanview.pal.
+# (R, G, B), 0-255. Index 0..15. Matches vdc-ega's palettes/vdc-irfanview.pal.
 VDC_PALETTE_RGB: Final = (
     (0x00, 0x00, 0x00),  # 0  black
     (0x55, 0x55, 0x55),  # 1  dark grey
@@ -185,7 +185,7 @@ ATTR_BYTES: Final = ATTR_COLS * ATTR_ROWS  # 8000
 FRAME_BYTES: Final = BITMAP_BYTES + ATTR_BYTES  # 24000
 
 # Default VRAM layout for a single 640x200 8x2-color bitmap frame (from
-# ~/src/vdc-ega/src/view320x200x4.bas): bitmap at 0, attributes at 16000.
+# vdc-ega's src/view320x200x4.bas): bitmap at 0, attributes at 16000.
 BITMAP_BASE: Final = 0x0000
 ATTR_BASE: Final = 16000
 
@@ -458,7 +458,7 @@ def pack_bitmap_frame(indexed: np.ndarray) -> tuple[bytes, bytes]:
     Each 8x2 block gets the two most-populated colors as (background,
     foreground); every pixel picks whichever of the two it is nearer to in RGB
     space, and the bitmap bit is set for foreground. The attribute byte is
-    ``(bg << 4) | fg`` (matches ``~/src/vdc-ega/src/bmp320200x4.bas``).
+    ``(bg << 4) | fg`` (matches vdc-ega's ``src/bmp320200x4.bas``).
 
     Caller owns scaling/quantization: feed a 640-wide frame already reduced to
     VDC palette indices (e.g. via ``palette`` helpers against
@@ -535,9 +535,10 @@ def build_c128_crt(rom: bytes, *, name: str = "c64cast VDC") -> bytes:
 
     A TeensyROM launches this as an ``rtBinC128`` cartridge — GAME and EXROM
     both deasserted, so the C128 boots **native 128 mode** and autostarts the
-    ROM at ``$8000`` (see ``~/src/TeensyROM/Source/Teensy/FileParsers.ino`` and
-    the reference ``TRMenuFiles/ROMs/C128_789010.crt.h``). c64cast reaches this
-    through the existing ``launch_program`` / ``supports_run_crt`` path.
+    ROM at ``$8000`` (see ``Source/Teensy/FileParsers.ino`` and the reference
+    ``Source/Teensy/TRMenuFiles/ROMs/C128_789010.crt.h`` in the TeensyROM
+    firmware, <https://github.com/SensoriumEmbedded/TeensyROM>). c64cast reaches
+    this through the existing ``launch_program`` / ``supports_run_crt`` path.
 
     This builds only the **container**; the ROM body (autostart signature +
     MMU setup + the resident VDC blit routine) is the caller's, and is not yet
