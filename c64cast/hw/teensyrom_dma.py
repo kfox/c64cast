@@ -15,6 +15,10 @@ command, and every command is acknowledged (`AckToken 0x64CC` / `FailToken
     them, so no single halt outlasts what an NMI or raster IRQ can absorb.
     TR+ firmware v0.9+; `probe_spans` detects it at connect unless
     `[teensyrom].dma_slicing` is `off`, the default.
+  * **WriteREU `0x64FA`** — copy host data straight into the TR+'s REU
+    emulation memory, off the C64 bus (the Ultimate's REUWRITE, with a
+    handshake). Answers only while REU emulation runs: Special IO set to an
+    REU and a program launched with it. `probe_reu` asks for its size.
   * **ReadC64Mem `0x64FD`** — sequential DMA read back (addr + len -> ack ->
     `len` data bytes). Backs `read_memory`. Added in the same cycle-clean
     firmware that made WriteC64Mem safe over a running interpreter (TR+ fw
@@ -65,6 +69,7 @@ DEFAULT_BAUD = 2_000_000  # 2 Mbaud 8N1, per the firmware author
 # Protocol tokens (Common_Defs.h).
 TOK_WRITE_C64_MEM = 0x64FB
 TOK_WRITE_C64_SPANS = 0x64FC
+TOK_WRITE_REU = 0x64FA
 TOK_SAMPLE_WATCH = 0x64F9
 TOK_READ_C64_MEM = 0x64FD
 TOK_RESET_C64 = 0x64EE
@@ -133,6 +138,21 @@ _SPANS_JOB_CEILING_S = (SPANS_MAX_SLICES * 5 + 1000) / 1000 + 0.5
 # passes with nothing arriving; plus a margin. The resync's wait from the last
 # byte sent is far shorter, so a header that did not go out sets this instead.
 _SPANS_HEADER_WAIT_S = (500 * 10 + SPANS_MAX * 4 // 2 + 1000) / 1000 + 0.3
+# WriteREU's header: REU offset and data length, three bytes each.
+_REU_FIELD_BYTES = 3
+_REU_HEADER_BYTES = 2 * _REU_FIELD_BYTES
+REU_FIELD_MAX = (1 << (8 * _REU_FIELD_BYTES)) - 1
+
+
+def _reu_write_ceiling_s(data_bytes: int) -> float:
+    """How long after WriteREU's token the firmware may still be receiving it,
+    and so still owe a reply: SpansCeilingmS(sizeof Head + Len) (SerUSBIO.ino),
+    then its discard until a second passes with nothing arriving; plus a
+    margin."""
+    return (500 * 10 + (_REU_HEADER_BYTES + data_bytes) // 2 + 1000) / 1000 + 0.3
+
+
+_REU_HEADER_WAIT_S = _reu_write_ceiling_s(0)
 # The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
 # firmware carrying WriteC64Spans can produce.
 _SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
@@ -171,6 +191,15 @@ class SampleWatchStats:
 
 
 _SAMPLE_WATCH_REPLY = struct.Struct("<IQIIII")
+
+
+@dataclass(frozen=True)
+class ReuProbe:
+    """What `TRClient.probe_reu` found: the REU's size in bytes while REU
+    emulation runs, else None and the firmware's reason."""
+
+    size: int | None
+    detail: str
 
 
 class SpansProbe(enum.Enum):
@@ -230,6 +259,11 @@ class TRSpansRefused(TRNak):
     because another DMA user holds the bus (REU emulation running, or the C64
     paused). Nothing was written and the firmware is ready for its next
     command, so the caller can carry the same write with WriteC64Mem."""
+
+
+class _ReuTokenUnanswered(TRError):
+    """WriteREU's token got no reply, or one that is not WriteREU's: firmware
+    that predates the command answers it with text."""
 
 
 class TRTransport(ABC):
@@ -874,7 +908,7 @@ class TRClient:
                 raise TRError(f"WriteC64Spans ${first:04X}: unexpected reply 0x{tok:04X}")
             self._discard_owed = True
             try:
-                self._send_spans_header(header + span_list)
+                self._send_header_after_token(header + span_list)
                 self._expect_ack(f"WriteC64Spans ${first:04X} (spans)")
                 self._send(payload)
                 # Set once the whole payload is out: a cut one starts no job.
@@ -898,15 +932,17 @@ class TRClient:
         not have, and ignores them. The resync before the next command covers
         the rest."""
         with contextlib.suppress(OSError):
-            self._send_spans_header(bytes(4))
+            self._send_header_after_token(bytes(4))
 
-    def _send_spans_header(self, data: bytes) -> None:
-        """Send what follows WriteC64Spans' token, its header first, under the
-        caller's lock, right after the token went out. Until it has all gone,
-        the firmware may take the next command's bytes as that header, for
-        ``_SPANS_HEADER_WAIT_S`` after the token, so that is when the reply is
-        due until the send completes."""
-        self._reply_due = self._last_send + _SPANS_HEADER_WAIT_S
+    def _send_header_after_token(
+        self, data: bytes, header_wait_s: float = _SPANS_HEADER_WAIT_S
+    ) -> None:
+        """Send what follows a staged command's token (WriteC64Spans,
+        WriteREU), its header first, under the caller's lock, right after the
+        token went out. Until it has all gone, the firmware may take the next
+        command's bytes as that header, for ``header_wait_s`` after the token,
+        so that is when the reply is due until the send completes."""
+        self._reply_due = self._last_send + header_wait_s
         self._send(data)
         self._reply_due = float("-inf")
 
@@ -996,8 +1032,96 @@ class TRClient:
         # on the token's second byte), and ServiceSerial reads whatever comes
         # next as one-byte commands of its own.
         if tok != TOK_FAIL:
-            self._send_spans_header(header)
+            self._send_header_after_token(header)
         return self.transport.drain_text(0.3)
+
+    def write_reu(self, offset: int, data: bytes) -> None:
+        """One WriteREU: copy `data` into REU emulation's memory at `offset`,
+        never touching the C64 bus. Three replies gate it, as WriteC64Spans'
+        do, and each is awaited before more is sent: the token's (firmware
+        without the command answers with text, and would read a header sent
+        blind as commands of its own), the header's, and the landing.
+
+        Raises TRNak when REU emulation is not running or the write runs past
+        the end of the REU, with nothing written; TRError or OSError on a
+        failure part way, after which the bytes that arrived stay in REU
+        memory."""
+        if not (0 <= offset <= REU_FIELD_MAX and len(data) <= REU_FIELD_MAX):
+            raise ValueError(f"WriteREU fields are 0-{REU_FIELD_MAX}")
+        header = offset.to_bytes(_REU_FIELD_BYTES, "big") + len(data).to_bytes(
+            _REU_FIELD_BYTES, "big"
+        )
+        what = f"WriteREU ${offset:06X}"
+        with self._command():
+            t0 = time.perf_counter()
+            self._open_reu_write(what)
+            token_sent = self._last_send
+            self._send_header_after_token(header, _REU_HEADER_WAIT_S)
+            self._expect_ack(f"{what} (header)")
+            self._discard_owed = True
+            try:
+                self._send(data)
+                self._reply_due = token_sent + _reu_write_ceiling_s(len(data))
+                self._expect_ack(what)
+            except TRNak:
+                self._out_of_step = True
+                raise
+            self._discard_owed = False
+            self._latencies.append(time.perf_counter() - t0)
+
+    def probe_reu(self) -> ReuProbe:
+        """Is REU emulation running, and how big is its REU? A WriteREU of
+        length 0 at offset 0, which the firmware documents as this probe: it
+        writes nothing. Firmware without the command, a TR without the REU and
+        REU emulation that is off all answer with a size of None, and the
+        firmware's own words in `detail`."""
+        with self._command():
+            self._drain_stale()
+            try:
+                size = self._open_reu_write("WriteREU probe")
+            except (TRNak, _ReuTokenUnanswered) as e:
+                return ReuProbe(None, str(e))
+            self._send_header_after_token(bytes(_REU_HEADER_BYTES), _REU_HEADER_WAIT_S)
+            self._expect_ack("WriteREU probe (header)")
+            self._expect_ack("WriteREU probe")
+            return ReuProbe(size, "")
+
+    def _open_reu_write(self, what: str) -> int:
+        """Send WriteREU's token under the caller's lock and return the REU
+        size its AckToken carries. A FailToken (REU emulation off, no REU on
+        this board, the minimal image's Busy!) raises TRNak with nothing owed.
+        Anything else, or no reply, is not this command's answer: the firmware
+        may yet act on the token, so a zero-length header at offset 0, which
+        writes nothing, goes out for it before `_ReuTokenUnanswered` is
+        raised, and the resync before the next command drains whatever answers
+        it."""
+        try:
+            self._send(self._u16(TOK_WRITE_REU))
+            tok = self._read_token()
+        except TRError as e:
+            self._close_reu_token()
+            raise _ReuTokenUnanswered(f"{what}: no reply to the token ({e})") from e
+        except BaseException:
+            self._close_reu_token()
+            raise
+        if tok == TOK_FAIL:
+            detail = self.transport.drain_text(0.15).strip()
+            if _FIRMWARE_TIMEOUT_TEXT in detail:
+                raise TRError(f"{what}: TR timed out on the token")
+            raise TRNak(f"{what}: refused — {detail}")
+        if tok != TOK_ACK:
+            self._close_reu_token()
+            raise _ReuTokenUnanswered(f"{what}: unexpected reply 0x{tok:04X}")
+        return int.from_bytes(self.transport.recv_exact(4), "little")
+
+    def _close_reu_token(self) -> None:
+        """End a WriteREU whose token got no usable reply, under the caller's
+        lock. A zero-length header writes nothing on firmware that acted on
+        the token, and firmware that did not reads its zero bytes as commands
+        it does not have, and ignores them."""
+        self._out_of_step = True
+        with contextlib.suppress(OSError):
+            self._send_header_after_token(bytes(_REU_HEADER_BYTES), _REU_HEADER_WAIT_S)
 
     def sample_watch(self, store: int | None) -> SampleWatchStats:
         """One SampleWatch: watch the C64's writes to `store`, or stop

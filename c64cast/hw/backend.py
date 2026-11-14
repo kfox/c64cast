@@ -203,6 +203,11 @@ class HardwareProfile:
     #   refine_capabilities, so False on an unprobed run: an Ultimate II+
     #   never answers 0xFF76.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
+    reu_host_rec: bool = True  # host DMA reaches the REU's registers ($DF00-$DF0A).
+    #   False on the TeensyROM, whose REU emulation answers only the 6510's own
+    #   bus cycles, so only C64-driven REU transfers work there.
+    reu_size_bytes: int | None = None  # the REU's size as the link reports it;
+    #   None where the link does not (the Ultimate's is provisioned over REST).
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
 
@@ -383,11 +388,12 @@ TEENSYROM_PROFILE = HardwareProfile(
     supports_probe=True,  # Ping 0x6455 / FWCheck 0x64E0
     supports_run_prg=True,  # PostFile + LaunchFile
     supports_run_crt=True,  # RemoteLaunch handles CRT launch
-    supports_reu=False,  # no REUWRITE opcode
+    supports_reu=False,  # granted once WriteREU answers with REU emulation running
     supports_config=False,  # no device config API (Ultimate-only REST surface)
     supports_sid_config=False,  # no config API at all, so no SID config surface
     supports_sampler=False,  # no FPGA PCM sampler (Ultimate-only feature)
     reu_bus_clean=False,
+    reu_host_rec=False,
     writes_are_acked=True,  # every write returns Ack/Fail -> flush ~free
     kernal_irq_intact=True,
     write_transport="tr_serial",

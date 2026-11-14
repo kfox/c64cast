@@ -256,7 +256,7 @@ Default `true`, so the REU paths that hard-require it work without the manual F2
 
 *Restoring.* The change is live and **volatile**, never saved to flash, so it reverts on the next power-cycle even if teardown's restore is missed. `teardown_stack` calls `hw_provision.restore_reu` while the REST session is still open to put the originals back; those originals ride on `SystemStack.reu_restore`, which survives SIGHUP and control-plane reloads since they reuse the same `api`.
 
-*When it is skipped.* No-REU backends (`profile.supports_reu`, i.e. TeensyROM); under `--skip-probe`, since we never write config we could not first read back; and when `auto_reu = false`, meaning you manage the REU yourself. It is best-effort throughout — any REST failure logs a warning and leaves the existing doctor/probe degradation in place.
+*When it is skipped.* Backends with no REST config surface (`profile.supports_config`, i.e. TeensyROM, whose REU is set in its own menu); under `--skip-probe`, since we never write config we could not first read back; and when `auto_reu = false`, meaning you manage the REU yourself. It is best-effort throughout — any REST failure logs a warning and leaves the existing doctor/probe degradation in place.
 
 ### `--doctor`: REU enable check
 
