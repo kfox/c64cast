@@ -77,8 +77,9 @@ class ReuIsEnabledHelperTest(unittest.TestCase):
 
 
 class _FakeProfile:
-    def __init__(self, supports_reu: bool = True) -> None:
+    def __init__(self, supports_reu: bool = True, supports_config: bool = True) -> None:
         self.supports_reu = supports_reu
+        self.supports_config = supports_config
 
 
 class _FakeApi:
@@ -213,6 +214,14 @@ class ProvisionReuTest(unittest.TestCase):
         api = _FakeApi(reu_status="Disabled", reu_size="2 MB", supports_reu=False)
         self.assertIsNone(hw_provision.provision_reu(api, _cfg(_PUMP_TOML)))
         self.assertEqual(api.put_calls, [])
+
+    def test_skipped_on_reu_backend_without_rest_config(self):
+        # A TeensyROM running REU emulation has an REU but no REST config API.
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
+        api.profile.supports_config = False
+        self.assertIsNone(hw_provision.provision_reu(api, _cfg(_PUMP_TOML)))
+        self.assertEqual(api.put_calls, [])
+        api.session.get.assert_not_called()
 
     def test_skipped_under_skip_probe(self):
         api = _FakeApi(reu_status="Disabled", reu_size="2 MB")

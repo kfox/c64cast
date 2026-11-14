@@ -89,6 +89,7 @@ from c64cast.video.modes.base import (
     VIDEO_MOTION_SMOOTHING,
     VIDEO_SHARPEN,
 )
+from c64cast.video.modes_irq import reu_stages_bitmap
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -2313,11 +2314,12 @@ class _SceneBuildContext:
 
     @property
     def backend_supports_reu(self) -> bool:
-        """Whether THIS backend has an REU at all (capability, not "REU
-        enabled" — that's ``reu_available``). Resolves the
-        [video].double_buffer "auto" host-DMA page-flip path on no-REU
-        backends (the TeensyROM). See resolve_double_buffer."""
-        return self.api.profile.supports_reu
+        """Whether THIS backend has an REU that can hold the bitmap staging
+        slots (capability, not "REU enabled" — that's ``reu_available``).
+        Resolves the [video].double_buffer "auto" host-DMA page-flip path on
+        backends without one (a TeensyROM without REU emulation, or with one
+        too small). See resolve_double_buffer."""
+        return reu_stages_bitmap(self.api.profile)
 
     @property
     def color(self) -> ColorCfg:

@@ -162,7 +162,9 @@ def provision_reu(api: object, cfg: Config) -> dict[str, str] | None:
     Gated entirely here so `session.build_stack` can call it unconditionally:
 
       * ``[ultimate64].auto_reu`` must be on (default true),
-      * the backend must have an REU (``profile.supports_reu`` — Ultimate only),
+      * the backend must have an REU (``profile.supports_reu``) whose config
+        it serves over REST (``profile.supports_config`` — Ultimate only; the
+        TeensyROM's REU is a menu setting),
       * a probe must be allowed (not ``--skip-probe`` — we never write config we
         can't first read back to restore),
       * the config must HARD-require the REU (`wants_reu`: ``use_reu_pump`` or
@@ -180,6 +182,8 @@ def provision_reu(api: object, cfg: Config) -> dict[str, str] | None:
         return None
     profile = getattr(api, "profile", None)
     if profile is None or not getattr(profile, "supports_reu", False):
+        return None
+    if not getattr(profile, "supports_config", False):
         return None
     if cfg.debug.skip_probe:
         return None

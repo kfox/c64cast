@@ -2092,24 +2092,28 @@ def _device_identity_diagnostic(name: str, api: object) -> Diagnostic:
 
 
 def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnostic]:
-    """On a backend with no REU (e.g. TeensyROM), report that a config's
-    REU-staged opt-in is ignored. session.build_stack coerces these off to the
-    host-DMA paths, so this is informational, not a failure. The sampler's
-    REU ring is left to `_probe_sampler_status`, because `[audio].backend =
-    "auto"` falls back to the DAC by design and there is no opt-in to remove."""
+    """On a backend whose REU registers the host cannot program (the
+    TeensyROM), report which of a config's REU opt-ins it can run.
+    session.build_stack fits them to the backend, so this is informational,
+    not a failure. The sampler's REU ring is left to `_probe_sampler_status`,
+    because `[audio].backend = "auto"` falls back to the DAC by design and
+    there is no opt-in to remove."""
     wants, reasons = hw_provision.wants_reu(
         dataclasses.replace(cfg, audio=dataclasses.replace(cfg.audio, backend="dac"))
     )
-    if not wants or getattr(api, "profile", None) is None or api.profile.supports_reu:  # type: ignore[attr-defined]
+    profile = getattr(api, "profile", None)
+    if not wants or profile is None or profile.reu_host_rec:
         return []
     return [
         Diagnostic(
             level="warn",
             category="connectivity",
             subject=f"{name} (REU)",
-            message=f"config requests REU ({', '.join(reasons)}) but this backend has no REU",
-            hint="The opt-in is ignored — the host-DMA NMI DAC / host-DMA "
-            "video paths are used instead. Remove the flag to silence this.",
+            message=f"config requests REU ({', '.join(reasons)}), but this "
+            "backend's REU answers only the C64",
+            hint="The REU pump stays on the host-DMA NMI DAC. Bitmap staging and "
+            "the buffered ASID player use the REU only while REU emulation runs "
+            "(Special IO set to an REU, on firmware with WriteREU).",
         )
     ]
 

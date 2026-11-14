@@ -31,7 +31,9 @@ from c64cast.hw import teensyrom_dma as tr_dma
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
 from c64cast.hw.backend import (
     TEENSYROM_PROFILE,
+    ULTIMATE_PROFILE,
     BackendCapabilityError,
+    LinkError,
     NmiSampleStore,
     make_backend,
 )
@@ -48,6 +50,7 @@ from c64cast.hw.teensyrom_dma import (
     TOK_FW_FULL,
     TOK_READ_C64_MEM,
     TOK_RETRY,
+    TOK_WRITE_REU,
     SerialTransport,
     SpansProbe,
     TcpTransport,
@@ -1511,8 +1514,7 @@ class BackendTest(unittest.TestCase):
         self.assertIsNone(b.read_memory(0x028D, 1))
 
     def test_reu_write_unsupported(self):
-        # The TR has no REUWRITE opcode, so reu_write stays on the ABC's raising
-        # default and the experimental REU paths gate on it.
+        # Until WriteREU finds REU emulation running, the REU paths gate off.
         b, _ = self._backend()
         self.assertFalse(b.profile.supports_reu)
         with self.assertRaises(BackendCapabilityError):
@@ -2072,13 +2074,300 @@ class ReuCoercionTest(unittest.TestCase):
         _coerce_reu_for_backend(cfg, self._backend(supports_reu=False))
         self.assertEqual(cfg.video.use_reu_staged, "auto")
 
-    def test_reu_backend_unchanged(self):
+    def test_reu_backend_with_host_rec_unchanged(self):
         from c64cast.app.cli import _coerce_reu_for_backend
 
         cfg = self._cfg(pump=True, staged=True)
-        _coerce_reu_for_backend(cfg, self._backend(supports_reu=True))
+        _coerce_reu_for_backend(cfg, mock.MagicMock(profile=ULTIMATE_PROFILE))
         self.assertTrue(cfg.audio.use_reu_pump)
         self.assertIs(cfg.video.use_reu_staged, True)
+
+    def test_tr_reu_turns_the_pump_off(self):
+        # The pump programs its first transfer over host DMA, which the TR's REU
+        # emulation never sees.
+        from c64cast.app.cli import _coerce_reu_for_backend
+
+        cfg = self._cfg(pump=True, staged=False)
+        with self.assertLogs("c64cast", level="WARNING") as logs:
+            _coerce_reu_for_backend(cfg, self._backend(supports_reu=True))
+        self.assertFalse(cfg.audio.use_reu_pump)
+        self.assertIn("answers only the C64", logs.output[0])
+
+    def test_tr_reu_keeps_explicit_staging_to_bitmap_modes(self):
+        # Char modes push through the REU from the host, so explicit true
+        # becomes auto: bitmap modes stage, char modes stay on host DMA.
+        from c64cast.app.cli import _coerce_reu_for_backend
+
+        cfg = self._cfg(pump=False, staged=True)
+        backend = self._backend(supports_reu=True)
+        backend.profile = replace(backend.profile, reu_size_bytes=_REU_SIZE)
+        with self.assertLogs("c64cast", level="INFO"):
+            _coerce_reu_for_backend(cfg, backend)
+        self.assertEqual(cfg.video.use_reu_staged, "auto")
+
+    def test_doctor_says_the_tr_reu_answers_only_the_c64(self):
+        from c64cast.app import doctor
+
+        cfg = self._cfg(pump=False, staged=True)
+        found = doctor._probe_reu_unavailable("a", cfg, self._backend(supports_reu=True))
+        self.assertEqual(len(found), 1)
+        self.assertIn("answers only the C64", found[0].message)
+        self.assertIn("Special IO", found[0].hint or "")
+
+    def test_tr_reu_too_small_for_staging_turns_it_off(self):
+        from c64cast.app.cli import _coerce_reu_for_backend
+
+        cfg = self._cfg(pump=False, staged=True)
+        backend = self._backend(supports_reu=True)
+        backend.profile = replace(backend.profile, reu_size_bytes=128 << 10)
+        with self.assertLogs("c64cast", level="WARNING"):
+            _coerce_reu_for_backend(cfg, backend)
+        self.assertIs(cfg.video.use_reu_staged, False)
+
+
+_REU_SIZE = 512 << 10
+
+
+def _queue_reu_write_acks(t: LoopbackTransport, size: int = _REU_SIZE) -> None:
+    """The three replies one WriteREU gets: the token's ack with the REU
+    size, the header's ack and the landing's."""
+    t.queue_token(TOK_ACK)
+    t.queue_raw(size.to_bytes(4, "little"))
+    t.queue_token(TOK_ACK)
+    t.queue_token(TOK_ACK)
+
+
+class _RefusalTextTransport(LoopbackTransport):
+    """Releases a refusal's text line once the next command goes out, as the
+    firmware does, so a drain of stale chatter before the command cannot eat
+    it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refusal_text = b""
+
+    def send_all(self, data: bytes) -> None:
+        super().send_all(data)
+        if data == TOK_WRITE_REU.to_bytes(2, "big"):
+            self.queue_stale(self.refusal_text)
+
+
+class WriteReuFramingTest(unittest.TestCase):
+    def setUp(self):
+        self.t = _RefusalTextTransport()
+        self.client = TRClient(self.t)
+
+    def test_write_is_token_then_big_endian_header_then_data(self):
+        _queue_reu_write_acks(self.t)
+        self.client.write_reu(0x012345, b"\xaa\xbb")
+        self.assertEqual(
+            bytes(self.t.sent),
+            TOK_WRITE_REU.to_bytes(2, "big") + bytes([1, 0x23, 0x45, 0, 0, 2, 0xAA, 0xBB]),
+        )
+        self.assertFalse(self.client._out_of_step)
+
+    def test_refused_token_sends_nothing_more(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.refusal_text = b"REU emulation is off\r\n"
+        with self.assertRaises(TRNak) as cm:
+            self.client.write_reu(0, b"\x01")
+        self.assertIn("REU emulation is off", str(cm.exception))
+        self.assertEqual(bytes(self.t.sent), b"\x64\xfa")
+        self.assertFalse(self.client._out_of_step)
+
+    def test_token_timeout_is_not_a_refusal(self):
+        # The firmware gave up on bytes whose rest may still reach its
+        # dispatcher, so the next command has to resync first.
+        self.t.queue_token(TOK_FAIL)
+        self.t.refusal_text = b"Timeout!\r\n"
+        with self.assertRaises(TRError) as cm:
+            self.client.write_reu(0, b"\x01")
+        self.assertNotIsInstance(cm.exception, TRNak)
+        self.assertTrue(self.client._out_of_step)
+
+    def test_a_token_reply_read_that_failed_still_sends_the_zero_header(self):
+        # The firmware's wait for a header outlasts the resync, so a command
+        # sent after it would be read as that header.
+        for exc in (KeyboardInterrupt, OSError):
+            with self.subTest(exc=exc.__name__):
+                t = LoopbackTransport()
+                c = TRClient(t)
+                with (
+                    mock.patch.object(t, "recv_exact", side_effect=exc),
+                    self.assertRaises(exc),
+                ):
+                    c.write_reu(0, b"\x01")
+                self.assertEqual(bytes(t.sent), b"\x64\xfa" + bytes(6))
+                self.assertTrue(c._out_of_step)
+
+    def test_header_refused_past_the_end_sends_no_data(self):
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_raw(_REU_SIZE.to_bytes(4, "little"))
+        self.t.queue_token(TOK_FAIL)
+        self.t.queue_stale(b"Runs past the end of the 524288 byte REU\n")
+        with self.assertRaises(TRNak):
+            self.client.write_reu(_REU_SIZE - 1, b"\x01\x02")
+        self.assertEqual(len(self.t.sent), 2 + 6)
+        self.assertFalse(self.client._out_of_step)
+
+    def test_payload_refused_leaves_the_link_out_of_step(self):
+        # The firmware discards what it is still owed after a payload failure.
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_raw(_REU_SIZE.to_bytes(4, "little"))
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_token(TOK_FAIL)
+        with self.assertRaises(TRNak):
+            self.client.write_reu(0, b"\x01")
+        self.assertTrue(self.client._out_of_step)
+
+    def test_old_firmware_text_reply_closes_the_token(self):
+        # Firmware without the command answers "Unk cmd: 0x64fa" as text.
+        self.t.queue_raw(b"Un")
+        with self.assertRaises(TRError):
+            self.client.write_reu(0, b"\x01")
+        self.assertEqual(bytes(self.t.sent), b"\x64\xfa" + bytes(6))
+        self.assertTrue(self.client._out_of_step)
+
+    def test_probe_reports_the_size_and_writes_nothing(self):
+        _queue_reu_write_acks(self.t)
+        found = self.client.probe_reu()
+        self.assertEqual(found.size, _REU_SIZE)
+        self.assertEqual(bytes(self.t.sent), b"\x64\xfa" + bytes(6))
+
+    def test_probe_refused_reports_the_reason(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.refusal_text = b"REU emulation is off\r\n"
+        found = self.client.probe_reu()
+        self.assertIsNone(found.size)
+        self.assertIn("REU emulation is off", found.detail)
+        self.assertFalse(self.client._out_of_step)
+
+    def test_probe_on_old_firmware_finds_nothing(self):
+        found = self.client.probe_reu()  # no reply at all
+        self.assertIsNone(found.size)
+        self.assertTrue(self.client._out_of_step)
+
+    def test_fields_are_three_bytes(self):
+        with self.assertRaises(ValueError):
+            self.client.write_reu(1 << 24, b"\x01")
+        self.assertEqual(bytes(self.t.sent), b"")
+
+
+class ReuBackendTest(unittest.TestCase):
+    @staticmethod
+    def _backend(
+        *, reu_size: int | None = _REU_SIZE
+    ) -> tuple[TeensyROMBackend, _RefusalTextTransport]:
+        t = _RefusalTextTransport()
+        t.queue_token(TOK_FW_FULL)
+        t.queue_token(TOK_ACK)
+        t.queue_raw(b"\xe2\xfc")
+        profile = replace(
+            TEENSYROM_PROFILE, supports_reu=reu_size is not None, reu_size_bytes=reu_size
+        )
+        b = TeensyROMBackend(t, profile=profile, storage="sd")
+        t.sent.clear()
+        return b, t
+
+    @staticmethod
+    def _headers(sent: bytes) -> list[tuple[int, int]]:
+        """(offset, length) of each WriteREU on the wire, in order."""
+        out, pos = [], 0
+        while (pos := sent.find(b"\x64\xfa", pos)) != -1:
+            head = sent[pos + 2 : pos + 8]
+            offset, length = int.from_bytes(head[:3], "big"), int.from_bytes(head[3:], "big")
+            out.append((offset, length))
+            pos += 8 + length
+        return out
+
+    def test_offset_folds_by_the_reu_size(self):
+        # Where the C64's REU transfer finds it: the firmware wraps a transfer's
+        # address at the REU size.
+        b, t = self._backend()
+        _queue_reu_write_acks(t)
+        b.reu_write(0xE10000, b"\x01" * 16)
+        self.assertEqual(self._headers(bytes(t.sent)), [(0x010000, 16)])
+
+    def test_write_across_the_end_wraps_to_offset_zero(self):
+        b, t = self._backend()
+        _queue_reu_write_acks(t)
+        _queue_reu_write_acks(t)
+        b.reu_write(_REU_SIZE - 4, b"\x01" * 10)
+        self.assertEqual(self._headers(bytes(t.sent)), [(_REU_SIZE - 4, 4), (0, 6)])
+
+    def test_long_write_goes_in_segments(self):
+        b, t = self._backend()
+        seg = b.tr.MAX_SEGMENT_BYTES
+        for _ in range(3):
+            _queue_reu_write_acks(t)
+        b.reu_write(0, bytes(2 * seg + 1))
+        self.assertEqual(self._headers(bytes(t.sent)), [(0, seg), (seg, seg), (2 * seg, 1)])
+
+    def test_write_without_reu_is_a_capability_error(self):
+        b, t = self._backend(reu_size=None)
+        with self.assertRaises(BackendCapabilityError):
+            b.reu_write(0, b"\x01")
+        self.assertEqual(bytes(t.sent), b"")
+
+    def test_refused_write_raises_link_error(self):
+        b, t = self._backend()
+        t.queue_token(TOK_FAIL)
+        t.refusal_text = b"REU emulation is off\r\n"
+        with self.assertRaises(LinkError):
+            b.reu_write(0, b"\x01")
+
+    @staticmethod
+    def _queue_clear_loop(t: LoopbackTransport) -> None:
+        _queue_bringup_acks(t)
+        t.queue_token(TOK_ACK)
+        t.queue_raw(b"\x14\x00")  # CURLIN: already in the GOTO loop
+        t.queue_token(TOK_ACK)  # screen clear
+
+    def test_clear_loop_grants_the_reu_it_finds(self):
+        b, t = self._backend(reu_size=None)
+        self._queue_clear_loop(t)
+        _queue_reu_write_acks(t)
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as logs:
+            b.run_basic_clear_loop()
+        self.assertTrue(b.profile.supports_reu)
+        self.assertTrue(b.profile.reu_bus_clean)
+        self.assertEqual(b.profile.reu_size_bytes, _REU_SIZE)
+        self.assertIn("512 KiB", "\n".join(logs.output))
+
+    def test_clear_loop_with_reu_emulation_off_revokes_it(self):
+        b, t = self._backend()
+        self._queue_clear_loop(t)
+        t.queue_token(TOK_FAIL)
+        t.refusal_text = b"REU emulation is off\r\n"
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as logs:
+            b.run_basic_clear_loop()
+        self.assertFalse(b.profile.supports_reu)
+        self.assertIsNone(b.profile.reu_size_bytes)
+        self.assertIn("Special IO", "\n".join(logs.output))
+
+    def test_reu_emulation_off_is_reported_once_from_a_fresh_connect(self):
+        b, t = self._backend(reu_size=None)
+        t.refusal_text = b"REU emulation is off\r\n"
+        self._queue_clear_loop(t)
+        t.queue_token(TOK_FAIL)
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as logs:
+            b.run_basic_clear_loop()
+        self.assertIn("Special IO", "\n".join(logs.output))
+        self._queue_clear_loop(t)
+        t.queue_token(TOK_FAIL)
+        with self.assertNoLogs("c64cast.hw.teensyrom_api", level="INFO"):
+            b.run_basic_clear_loop()
+
+    def test_a_failed_probe_revokes_the_reu_and_the_bring_up_goes_on(self):
+        b, t = self._backend()
+        self._queue_clear_loop(t)
+        t.queue_token(TOK_FAIL)
+        t.refusal_text = b"Timeout!\r\n"
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="DEBUG") as logs:
+            b.run_basic_clear_loop()
+        self.assertFalse(b.profile.supports_reu)
+        self.assertIsNone(b.profile.reu_size_bytes)
+        self.assertIn("probe failed", "\n".join(logs.output))
 
 
 class _FakePort:
@@ -2717,6 +3006,42 @@ class LateSpansReplyTest(unittest.TestCase):
         self.assertEqual(len(drains), 2)
         self.assertAlmostEqual(drains[0], tr_dma._SPANS_JOB_CEILING_S - t.io_timeout)
         self.assertAlmostEqual(drains[1], drains[0] - cap_cut)
+
+
+class _LateReuReplyLink(_LateReplyLink):
+    """A late-reply link whose answer to WriteREU's token carries the REU size
+    behind its AckToken."""
+
+    def send_all(self, data: bytes) -> None:
+        if data != TOK_WRITE_REU.to_bytes(2, "big"):
+            super().send_all(data)
+            return
+        self.answers.pop(0)
+        now = self.clock.monotonic()
+        self.replies += [(now, b"\xcc\x64"), (now + 1e-6, _REU_SIZE.to_bytes(4, "little"))]
+        self.replies.sort()
+
+
+class LateReuReplyTest(unittest.TestCase):
+    """The C64's own REU transfers can hold up WriteREU's payload past
+    io_timeout, so its landing reply can come after the client gave up; no
+    later command may read it as its own."""
+
+    def test_a_reu_reply_later_than_io_timeout_is_not_read_by_a_later_command(self):
+        clock = _frozen_clock(self)
+        t = _LateReuReplyLink(clock)
+        c = TRClient(t)
+        data = b"\x01" * 4096
+        late_s = tr_dma._reu_write_ceiling_s(len(data)) - 0.5  # inside the firmware's bound
+        t.answers = [(0.0, TOK_ACK), (0.0, TOK_ACK), (late_s, TOK_ACK)]
+        with self.assertRaises(TRError):
+            c.write_reu(0x010000, data)
+        t.answers = [(0.0, TOK_ACK)]
+        c.write_segment(0xD020, b"\x0e")
+        clock.sleep(late_s)
+        t.answers = [(0.0, TOK_FAIL)]
+        with self.assertRaises(tr_dma.TRNak):
+            c.write_segment(0xD020, b"\x0e")
 
 
 class _FloodingLoopback(_SpansLoopback):

@@ -20,8 +20,11 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     `BackendCapabilityError`. See `_launch_sid_player`.
   * **dump_char_rom** rides the shared `_StubRunnerBackend` orchestration and
     the same `$0314` vector-swap kick. See `_kick_char_rom_dump`.
-  * **reu_write** is left on the ABC's raising default — there is no REUWRITE
-    opcode. Callers gate on `profile.supports_reu`.
+  * **reu_write** rides WriteREU (`0x64FA`, TR+ firmware with REU host
+    writes), which `run_basic_clear_loop` probes once its launch has started
+    REU emulation. Callers gate on `profile.supports_reu`, which the probe
+    grants; without the command or with REU emulation off it stays False and
+    every REU path keeps to host DMA. See `reu_write` for the offset fold.
 
 The semantic helpers (`silence_sid`, `restore_kernal_irq_vector`,
 `disable_case_switch`) are inherited from `BufferedWriteBackend` — they're pure
@@ -50,6 +53,7 @@ from .backend import (
     BackendCapabilityError,
     DacPacing,
     HardwareProfile,
+    LinkError,
     NmiSampleStore,
     printable_device_text,
     read_program_file,
@@ -61,6 +65,7 @@ from .teensyrom_dma import (
     SNOOP_IN_USE,
     SPANS_FIELD_MAX,
     SPANS_SEGMENT_BYTES,
+    ReuProbe,
     SpansProbe,
     TRClient,
     TRError,
@@ -97,6 +102,16 @@ _LOCKED_SLICE_OVERHEAD_CYCLES = 5
 _LOCKED_SLICE_MIN_BYTES = 8
 # How many NMI periods a locked slice waits for a store before starting anyway.
 _LOCKED_STORE_WAIT_PERIODS = 2
+
+# WriteREU's refusal from firmware that has the command, at the menu or with
+# Special IO set to something other than an REU.
+_REU_EMULATION_OFF = "REU emulation is off"
+
+
+class TRReuWriteError(LinkError):
+    """A WriteREU did not land: the link failed, or the firmware refused it
+    (REU emulation stopped, say, because a launched program reset the C64)."""
+
 
 # Where uploaded helper PRGs live on the TR's storage. PostFile auto-creates
 # the directory; a dedicated folder keeps our files out of the user's roots.
@@ -216,6 +231,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._spans_held = False
         self._spans_retry_at = 0.0
         self._spans_backoff_s = SPANS_REFUSED_BACKOFF_MIN_S
+        self._reu_probed = False
         if dma_slicing != "off":
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
             if self._spans is not None and dma_slicing in ("auto", "locked"):
@@ -549,6 +565,33 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         with self._spans_lock:
             self._clear_spans_refusal()
 
+    def reu_write(self, reu_offset: int, data: bytes) -> None:
+        """Bus-clean write into the TR+'s REU emulation at `reu_offset`.
+
+        The offset is folded by the REU's size mask, splitting a write that
+        crosses the end, because that is where the C64's own REU transfers
+        find it: the firmware wraps a transfer's 24-bit REU address at the REU
+        size, but refuses a host write past the end rather than wrapping it.
+        So c64cast's REU layout, placed for the Ultimate's 16 MB, lands where
+        the 6510 reads it on a 512 KiB REU.
+
+        Sent in `TRClient.MAX_SEGMENT_BYTES` pieces, the WriteC64Mem bound, so
+        the audio worker's writes are not held behind one long command."""
+        size = self.profile.reu_size_bytes
+        if not self.profile.supports_reu or size is None:
+            raise BackendCapabilityError("reu_write")
+        mask = size - 1
+        view = memoryview(data)
+        pos = reu_offset & mask
+        try:
+            while view:
+                n = min(len(view), size - pos, self.tr.MAX_SEGMENT_BYTES)
+                self.tr.write_reu(pos, bytes(view[:n]))
+                view = view[n:]
+                pos = (pos + n) & mask
+        except (OSError, TRError) as e:
+            raise TRReuWriteError(str(e)) from e
+
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Bring the C64 to a clean, streamable idle state.
 
@@ -570,6 +613,39 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             self._bring_up_irq_clear_loop()
         else:
             self._bring_up_spin_stub()
+        self._probe_reu()
+
+    def _probe_reu(self) -> None:
+        """Grant or revoke `supports_reu` from WriteREU's probe. Here, after the
+        launch, because REU emulation runs only while a program launched with
+        Special IO set to an REU does: at the menu the probe always answers
+        that it is off."""
+        try:
+            found = self.tr.probe_reu()
+        except (OSError, TRError) as e:
+            found = ReuProbe(None, f"the WriteREU probe failed ({e})")
+        first = not self._reu_probed
+        self._reu_probed = True
+        if found.size == self.profile.reu_size_bytes and not first:
+            return
+        self.profile = replace(
+            self.profile,
+            supports_reu=found.size is not None,
+            reu_bus_clean=found.size is not None,
+            reu_size_bytes=found.size,
+        )
+        if found.size is not None:
+            log.info(
+                "TR REU emulation: %d KiB, written over WriteREU off the C64 bus",
+                found.size >> 10,
+            )
+        elif _REU_EMULATION_OFF in found.detail:
+            log.info(
+                "TR REU emulation is off, so REU-staged video stays on host DMA; "
+                "set Special IO to an REU in the TeensyROM menu to stage it"
+            )
+        else:
+            log.debug("TR REU host writes unavailable: %s", found.detail)
 
     def pause_idle(self) -> None:
         """TR paused-idle state — clear the screen but keep the VIC display ON.

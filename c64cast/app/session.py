@@ -37,11 +37,12 @@ from c64cast.control.keyboard import CommodoreKeyPoller
 from c64cast.control.vision import MediaPipeHandRecognizer, VisionController
 from c64cast.hw import char_rom, hardware_palette, hw_provision
 from c64cast.hw.api import InvalidPasswordError, RestAuthError, SocketDMAError
-from c64cast.hw.backend import BackendSetupError, C64Backend, make_backend
+from c64cast.hw.backend import BackendSetupError, C64Backend, HardwareProfile, make_backend
 from c64cast.hw.teensyrom_dma import TRError
 from c64cast.scenes.interstitial import default_factory as interstitial_factory
 from c64cast.scenes.scenes import Scene
 from c64cast.sid.sid_hw_config import restore_sid_config
+from c64cast.video.modes_irq import REU_VIDEO_BITMAP_SPAN, reu_stages_bitmap
 from c64cast.video.video import WebcamSource
 
 from . import config as cfgmod
@@ -162,14 +163,18 @@ def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
     bank-swap staging for this system, by asking the U64 if its REU is on.
 
     Returns False (auto → host-DMA everywhere) unless the setting is literally
-    "auto" AND the backend has a REU AND a probe is allowed AND the firmware
-    reports the REU Enabled. Any uncertainty (explicit setting, --skip-probe,
+    "auto" AND the backend has a REU AND either the link reported its size
+    (the TeensyROM's bring-up, which --skip-probe does not skip) and it holds
+    the staging slots, or a probe is allowed and the firmware reports the REU
+    Enabled. Any uncertainty (explicit setting, --skip-probe,
     no-REU backend, failed query, REU disabled) degrades to host-DMA so video
     never silently freezes. Logs the verdict so the chosen path is visible."""
     if cfg.video.use_reu_staged != "auto":
         return False  # explicit true/false ignores the probe entirely
     if not api.profile.supports_reu:
         return False  # backend (e.g. TeensyROM) has no REU to stage into
+    if api.profile.reu_size_bytes is not None:
+        return _link_reu_stages_bitmap(api.profile)
     if cfg.debug.skip_probe:
         log.info(
             "[video].use_reu_staged = auto, but --skip-probe is set — "
@@ -197,6 +202,28 @@ def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
             "and Cartridge Settings -> RAM Expansion Unit to "
             "double-buffer bitmap scenes)."
         )
+    return False
+
+
+def _link_reu_stages_bitmap(profile: HardwareProfile) -> bool:
+    """For a REU whose size the link reported (the TeensyROM's, found running
+    by `run_basic_clear_loop`): whether it holds the bitmap staging slots."""
+    if reu_stages_bitmap(profile):
+        log.info(
+            "[video].use_reu_staged = auto: %s REU (%d KiB) is running — "
+            "double-buffering bitmap (hires/mhires) scenes via REU bank-swap; "
+            "char modes stay on host-DMA.",
+            profile.name,
+            (profile.reu_size_bytes or 0) >> 10,
+        )
+        return True
+    log.info(
+        "[video].use_reu_staged = auto: the %d KiB %s REU is smaller than the "
+        "%d KiB the bitmap staging slots need — keeping video on the host-DMA path.",
+        (profile.reu_size_bytes or 0) >> 10,
+        profile.name,
+        REU_VIDEO_BITMAP_SPAN >> 10,
+    )
     return False
 
 
@@ -248,31 +275,66 @@ def _resolve_sampler_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
 
 
 def _coerce_reu_for_backend(cfg: cfgmod.Config, api: C64Backend) -> None:
-    """Disable the REU-staged audio/video opt-ins when the backend has no REU.
+    """Disable the REU-staged audio/video opt-ins the backend's REU can't run:
+    `_coerce_reu_pump_for_backend` then `_coerce_reu_staged_for_backend`."""
+    _coerce_reu_pump_for_backend(cfg, api)
+    _coerce_reu_staged_for_backend(cfg, api)
 
-    A backend without an REU (e.g. TeensyROM — no REUWRITE opcode) can't run
-    the REU-staged paths; `[audio].use_reu_pump` / an explicit
-    `[video].use_reu_staged = true` would otherwise reach `reu_write` and raise.
-    Coerce them off (in place — config dataclasses are mutable) so the host-DMA
-    NMI DAC / host-DMA video paths are used instead. `use_reu_staged = "auto"`
-    already self-heals via `_resolve_reu_available` (which returns False when
-    `not supports_reu`), so only the explicit opt-ins need handling here."""
-    if api.profile.supports_reu:
+
+def _coerce_reu_pump_for_backend(cfg: cfgmod.Config, api: C64Backend) -> None:
+    """Turn `[audio].use_reu_pump` off (in place — config dataclasses are
+    mutable) where the backend has no REU, or one whose registers the host
+    cannot program: the pump's bring-up sets its first transfer up over host
+    DMA, and the TeensyROM's REU emulation never sees those writes. The
+    host-DMA NMI DAC path is used instead. Runs before the audio streamer is
+    built, so it reads capabilities that do not wait on the bring-up."""
+    if not cfg.audio.use_reu_pump or api.profile.reu_host_rec:
         return
-    if cfg.audio.use_reu_pump:
-        log.warning(
-            "[audio].use_reu_pump needs an REU; the %s backend has none — "
-            "using the host-DMA NMI DAC path instead",
-            cfg.hardware.backend,
-        )
-        cfg.audio.use_reu_pump = False
-    if cfg.video.use_reu_staged is True:  # explicit true (auto self-heals)
+    log.warning(
+        "[audio].use_reu_pump needs REU registers the host can program; the "
+        "%s backend's REU answers only the C64 — using the host-DMA NMI DAC "
+        "path instead",
+        cfg.hardware.backend,
+    )
+    cfg.audio.use_reu_pump = False
+
+
+def _coerce_reu_staged_for_backend(cfg: cfgmod.Config, api: C64Backend) -> None:
+    """Fit an explicit `[video].use_reu_staged = true` to the backend's REU, in
+    place. With no REU, or one too small for the bitmap staging slots, it
+    falls back to the host-DMA video path. Where the host cannot program the
+    REU's registers (the TeensyROM), the char modes' REU push cannot run, so
+    it becomes "auto": bitmap modes stage, char modes stay on host DMA.
+    `"auto"` already self-heals via `_resolve_reu_available`.
+
+    The TeensyROM's REU is found by its bring-up, so `build_stack` runs this
+    after `run_basic_clear_loop`."""
+    if cfg.video.use_reu_staged is not True:
+        return
+    if not api.profile.supports_reu:
         log.warning(
             "[video].use_reu_staged = true needs an REU; the %s backend has "
             "none — using the host-DMA video path instead",
             cfg.hardware.backend,
         )
         cfg.video.use_reu_staged = False
+    elif not reu_stages_bitmap(api.profile):
+        log.warning(
+            "[video].use_reu_staged = true needs %d KiB of REU for its staging "
+            "slots; the %s backend's REU has %d KiB — using the host-DMA video "
+            "path instead",
+            REU_VIDEO_BITMAP_SPAN >> 10,
+            cfg.hardware.backend,
+            (api.profile.reu_size_bytes or 0) >> 10,
+        )
+        cfg.video.use_reu_staged = False
+    elif not api.profile.reu_host_rec:
+        log.info(
+            "[video].use_reu_staged = true: the %s backend's REU answers only the "
+            "C64, so bitmap modes stage through it and char modes stay on host DMA",
+            cfg.hardware.backend,
+        )
+        cfg.video.use_reu_staged = "auto"
 
 
 def _coerce_reu_for_transport(cfg: cfgmod.Config, midi_cfg: cfgmod.MidiControlCfg) -> None:
@@ -844,9 +906,9 @@ def _provision_stack(
     def release_on_failure(label: str, fn: Callable[[], object]) -> None:
         unwind.callback(release.step, name, label, fn)
 
-    # Drop REU-staged opt-ins on a backend with no REU, before the AudioStreamer
-    # + scenes are built (so the host-DMA paths are used instead).
-    _coerce_reu_for_backend(cfg, api)
+    # Drop the REU pump where the backend can't run it, before the AudioStreamer
+    # is built (so the host-DMA NMI DAC is used instead).
+    _coerce_reu_pump_for_backend(cfg, api)
 
     # Enable + size the U64 REU, live and volatile, for runs that hard-require it.
     # Before `_resolve_reu_available`, so that probe sees the now-enabled REU;
@@ -888,6 +950,15 @@ def _provision_stack(
         "DAC chip model restore", lambda: restore_sid_config(api, dac_model_restore or {})
     )
 
+    # Before the REU-staging decisions and the scenes, because the TeensyROM's
+    # REU runs only once this launch has started it.
+    log.info("%s: reset + run BASIC clear loop", cfg.hardware.backend)
+    api.reset()
+    time.sleep(1)
+    api.run_basic_clear_loop()
+    _warn_if_menu_open(api)
+
+    _coerce_reu_staged_for_backend(cfg, api)
     reu_available = _resolve_reu_available(cfg, api)
     sampler_available = _resolve_sampler_available(cfg, api)
     try:
@@ -909,12 +980,6 @@ def _provision_stack(
     target_fps = api.profile.default_fps
     if api.profile.max_fps is not None:
         target_fps = min(target_fps, api.profile.max_fps)
-
-    log.info("%s: reset + run BASIC clear loop", cfg.hardware.backend)
-    api.reset()
-    time.sleep(1)
-    api.run_basic_clear_loop()
-    _warn_if_menu_open(api)
 
     # Here because the machine is idle and nothing has painted: the Ultimate's
     # dump soft-resets and puts the clear loop back itself. Best-effort and never

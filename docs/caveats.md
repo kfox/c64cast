@@ -164,6 +164,30 @@ Useful for checking configuration and connectivity; any playback behavior has
 to be verified with the U2+ in an ordinary C64, where its cartridge-port RESET
 works.
 
+## REU-staged video on a TeensyROM+ needs WriteREU firmware and REU emulation on
+
+On a TeensyROM+, `[video].use_reu_staged = auto` stages `hires`/`mhires`
+through the REU bank-swap only when two things hold. First, the firmware has to
+answer WriteREU (`0x64FA`). Second, REU emulation has to be running: Special IO
+set to an REU in the TeensyROM menu. When either is missing, video stays on host
+DMA and the log says why. On mhires, staging cuts the video's DMA onto the C64
+bus from about 290 KiB/s to about 1 KiB/s. The frames still cross the USB link,
+written into the REU instead.
+
+The character modes and the REU audio pump stay on host DMA on a TeensyROM+
+regardless. Its REU emulation acts on register writes the C64 makes, never on
+ones the host DMAs in, and both of those paths program the registers from the
+host.
+
+The firmware also has to keep every REU register write the C64 makes while the
+host is talking to it. Teensyduino 1.61.0 masks all interrupts while it queues
+a USB transfer, and a C64 write to `$DF02` at that moment is lost. The next
+transfer then starts where the previous one ended. A staged mhires color
+transfer that starts there runs on into CIA1 and sets its data direction
+registers wrong, which the KERNAL reads as SHIFT held down. Firmware that
+guards its USB transfers with the interrupt priority mask (BASEPRI) instead,
+leaving the PHI2 interrupt running, keeps those writes; use a build that does.
+
 ## SID playback uses a C64-side player PRG, not `runners:sidplay`
 
 `WaveformScene` deliberately avoids the U64 firmware's
@@ -439,11 +463,12 @@ an IRQ ring consumer modeled on the REU audio pump. `AsidScene` runs no `$D418`
 DAC, so the whole `$C000` page and the REU are free for it. See
 [asid_player.py](../c64cast/sid/asid_player.py).
 
-**U64 only.** It needs a bus-clean `reu_write` (`profile.supports_reu`).
-`auto` engages it where an REU exists and stays coalesced otherwise; `on` forces
-it (warns + falls back on a no-REU backend); `off` always coalesces. TeensyROM /
-any no-REU backend keeps the coalesced path unchanged (and its display is never
-blanked). A buffered run folds the ASID ring into the REU auto-provisioner
+It needs a bus-clean `reu_write` (`profile.supports_reu`): an Ultimate, or a
+TeensyROM+ whose firmware answers WriteREU with REU emulation running.
+`auto` engages it where such an REU exists and stays coalesced otherwise; `on`
+forces it (warns + falls back on a no-REU backend); `off` always coalesces. A
+backend without one keeps the coalesced path unchanged (and its display is
+never blanked). A buffered run folds the ASID ring into the REU auto-provisioner
 (`hw_provision.wants_reu`), so the REU is enabled + sized like the sampler's.
 
 **v1 limitations (documented, not over-engineered):**
