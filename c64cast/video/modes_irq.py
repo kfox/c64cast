@@ -27,7 +27,7 @@ from c64cast.audio.audio_handlers import (
     REU_PUMP_HANDLER_STUB,
 )
 from c64cast.hw.asm6502 import assemble
-from c64cast.hw.backend import C64Backend
+from c64cast.hw.backend import C64Backend, HardwareProfile
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
@@ -131,6 +131,19 @@ REU_VIDEO_TOP = (
     + REU_VIDEO_BITMAP_COLOR_LEN
     - 1
 )
+
+# The REU bytes the bitmap staging slots span. A REU smaller than this wraps
+# one slot's address onto another's, since a REU transfer's address wraps at
+# the REU's size.
+REU_VIDEO_BITMAP_SPAN = REU_VIDEO_TOP - REU_VIDEO_BITMAP_BASE + 1
+
+
+def reu_stages_bitmap(profile: HardwareProfile) -> bool:
+    """Whether `profile`'s REU can hold the bitmap staging slots: it has one,
+    and where the link reports its size, the slots fit in it."""
+    size = profile.reu_size_bytes
+    return profile.supports_reu and (size is None or size >= REU_VIDEO_BITMAP_SPAN)
+
 
 # C64-side bank-swap raster IRQ handler. Lives at $C500 (audio_handlers.py owns
 # $C000-$C2FF for NMI DAC + REU pump handlers; api.py uses $C300/$C400

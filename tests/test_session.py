@@ -19,6 +19,7 @@ import os
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -28,7 +29,9 @@ from c64cast.app import config as cfgmod
 from c64cast.app import profiler as profiler_mod
 from c64cast.app import scene_factory, session
 from c64cast.audio.audio import AudioStreamer
+from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
 from c64cast.scenes.scenes import WebcamScene
+from c64cast.video.modes_irq import REU_VIDEO_BITMAP_SPAN, reu_stages_bitmap
 
 
 def _loaded(names: list[str], *, is_ensemble: bool = False) -> cfgmod.LoadResult:
@@ -795,6 +798,94 @@ class BuildStackHardwarePaletteTest(unittest.TestCase):
         control.restore.assert_called_once()
 
 
+class BuildStackResolvesReuAfterBringUpTest(unittest.TestCase):
+    """The TeensyROM's REU runs only once the clear loop's launch starts it, so
+    build_stack decides REU staging, and builds the scenes, after that."""
+
+    def test_reu_staging_is_decided_after_the_clear_loop(self):
+        api = mock.MagicMock(name="api")
+        api.profile = TEENSYROM_PROFILE
+        api.disable_case_switch.side_effect = session.StackBuildError(4)
+        api.read_menu_screen.return_value = None
+        seen: list[tuple[str, bool]] = []
+
+        def note(label: str, result: object = None):
+            def record(*_args, **_kwargs):
+                seen.append((label, api.run_basic_clear_loop.called))
+                return result
+
+            return record
+
+        cfg = cfgmod.Config()
+        cfg.audio.enabled = False
+        cfg.scenes = [cfgmod.SceneCfg(type="blank")]
+        with (
+            mock.patch.object(session, "_open_backend", return_value=api),
+            mock.patch.object(session, "hw_provision"),
+            mock.patch.object(
+                session, "_coerce_reu_staged_for_backend", side_effect=note("coerce")
+            ),
+            mock.patch.object(
+                session, "_resolve_reu_available", side_effect=note("resolve", False)
+            ),
+            mock.patch.object(session, "_resolve_sampler_available", return_value=False),
+            mock.patch.object(
+                session.scene_factory, "scenes_from_config", side_effect=note("scenes", [])
+            ),
+            mock.patch.object(session.char_rom, "ensure_installed"),
+            mock.patch.object(session.time, "sleep"),
+            mock.patch.object(session.hardware_palette, "provision_hardware_palette"),
+            self.assertRaises(session.StackBuildError),
+        ):
+            session.build_stack(cfg, "a", stop_event=threading.Event(), profiler=mock.MagicMock())
+        self.assertEqual(seen, [("coerce", True), ("resolve", True), ("scenes", True)])
+
+
+class ResolveReuFromTheLinkTest(unittest.TestCase):
+    """`use_reu_staged = "auto"` on a REU whose size the link reported."""
+
+    @staticmethod
+    def _api(size: int) -> mock.MagicMock:
+        return mock.MagicMock(
+            profile=replace(TEENSYROM_PROFILE, supports_reu=True, reu_size_bytes=size)
+        )
+
+    def test_a_reu_that_holds_the_slots_stages_bitmap_video(self):
+        with self.assertLogs("c64cast", level="INFO") as logs:
+            self.assertTrue(session._resolve_reu_available(cfgmod.Config(), self._api(512 << 10)))
+        self.assertIn("512 KiB", logs.output[0])
+
+    def test_a_reu_too_small_for_the_slots_keeps_host_dma(self):
+        api = self._api(128 << 10)
+        with self.assertLogs("c64cast", level="INFO"):
+            self.assertFalse(session._resolve_reu_available(cfgmod.Config(), api))
+        self.assertFalse(reu_stages_bitmap(api.profile))
+
+    def test_it_never_asks_rest(self):
+        with (
+            mock.patch.object(session.hw_provision, "reu_is_enabled") as rest,
+            self.assertLogs("c64cast", level="INFO"),
+        ):
+            session._resolve_reu_available(cfgmod.Config(), self._api(512 << 10))
+        rest.assert_not_called()
+
+    def test_skip_probe_still_stages_on_a_reu_the_link_reported(self):
+        # --skip-probe skips the Ultimate's REST query, not the bring-up's
+        # WriteREU probe, and the found REU already turns off the page-flip
+        # fallback (resolve_double_buffer), so declining here tears hires.
+        cfg = cfgmod.Config()
+        cfg.debug.skip_probe = True
+        with self.assertLogs("c64cast", level="INFO"):
+            self.assertTrue(session._resolve_reu_available(cfg, self._api(512 << 10)))
+
+    def test_the_slots_span_is_what_fits(self):
+        profile = replace(TEENSYROM_PROFILE, supports_reu=True)
+        self.assertTrue(reu_stages_bitmap(replace(profile, reu_size_bytes=REU_VIDEO_BITMAP_SPAN)))
+        self.assertFalse(
+            reu_stages_bitmap(replace(profile, reu_size_bytes=REU_VIDEO_BITMAP_SPAN - 1))
+        )
+
+
 class BuildStackDacCurveTest(unittest.TestCase):
     """build_stack resolves [audio].dac_curve only for a run with audio, and
     turns a 'calibrated' curve with no calibration into a StackBuildError, so
@@ -1331,6 +1422,7 @@ class ReloadPinsReuPumpTest(unittest.TestCase):
         self.loaded = cfgmod.load_master(master)
         self.assertTrue(self.loaded.cfgs[0].audio.use_reu_pump)
         stack = fake_system_stack("a")
+        stack.api.profile = ULTIMATE_PROFILE
         stack.audio = mock.MagicMock(spec=AudioStreamer)
         stack.audio.use_reu_pump = True
         stack.reu_available = True

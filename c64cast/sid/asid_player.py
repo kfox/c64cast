@@ -8,8 +8,9 @@ register writes to the SID(s), honoring the ``0x30`` recipe's write order and
 inter-write waits. Open-loop, like :mod:`c64cast.audio.sampler`: the C64 crystal
 is exact, so the read head is computed from wall-clock and never read back.
 
-**U64-only** — it needs bus-clean ``reu_write`` (``profile.supports_reu``); on
-any no-REU backend :class:`AsidScene` keeps the coalesced path. Because
+It needs bus-clean ``reu_write`` (``profile.supports_reu``: the Ultimate, or a
+TeensyROM+ running REU emulation); on any other backend :class:`AsidScene`
+keeps the coalesced path. Because
 :class:`AsidScene` runs no ``$D418`` DAC / NMI, the whole ``$C000`` RAM page and
 the REU are free for the player.
 

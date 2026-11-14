@@ -135,7 +135,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._multi_sid = multi_sid and bool(getattr(api.profile, "supports_sid_config", False))
         self._max_sids = MAX_SIDS if max_sids is None else max(1, min(max_sids, MAX_SIDS))
 
-        # The buffered path needs a bus-clean `reu_write`, so it is U64 only.
+        # The buffered path needs a bus-clean `reu_write`.
         supports_reu = bool(getattr(api.profile, "supports_reu", False))
         want = (buffered_player or "auto").lower()
         self._use_buffered_player = want in ("auto", "on") and supports_reu

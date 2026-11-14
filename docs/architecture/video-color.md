@@ -733,9 +733,9 @@ Char modes (petscii, blank) stay on host-DMA under auto, because their delta cac
 
 Explicit `true`/`false` ignore the probe.
 
-**Where `reu_available` comes from.** Computed once in `session._resolve_reu_available` — gated on `"auto"`, `api.profile.supports_reu`, and not `--skip-probe`, via `hw_provision.reu_is_enabled` — then stashed on `SystemStack.reu_available` and threaded through `scenes_from_config`/`build_scene`, including SIGHUP/control-plane reloads and ensemble-follower rebuilds. A `display = "random"` slideshow stores the raw tri-state plus `reu_available` and re-resolves per concrete mode at each setup.
+**Where `reu_available` comes from.** Computed once in `session._resolve_reu_available` — gated on `"auto"` and `api.profile.supports_reu`; a REU whose size the link reported (the TeensyROM's bring-up, which `--skip-probe` does not skip) stages when it holds `REU_VIDEO_BITMAP_SPAN`, otherwise the answer needs a probe (not `--skip-probe`) via `hw_provision.reu_is_enabled` — then stashed on `SystemStack.reu_available` and threaded through `scenes_from_config`/`build_scene`, including SIGHUP/control-plane reloads and ensemble-follower rebuilds. A `display = "random"` slideshow stores the raw tri-state plus `reu_available` and re-resolves per concrete mode at each setup.
 
-Any uncertainty — no REU, a failed query, `--skip-probe`, a non-REU backend — degrades to host-DMA, so video never silently freezes.
+Any uncertainty — no REU, a failed query, `--skip-probe` on an Ultimate, a non-REU backend — degrades to host-DMA, so video never silently freezes.
 
 #### The two REU pipelines
 
