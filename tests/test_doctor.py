@@ -397,14 +397,46 @@ class ExtrasProbeTest(unittest.TestCase):
         def fake(name, *a, **kw):
             return None if name == "av" else real(name)
 
-        with mock.patch.object(doctor, "_running_from_checkout", return_value=False):
-            with mock.patch.object(doctor.importlib.util, "find_spec", side_effect=fake):
-                diags = doctor._probe_extras()
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch.object(doctor.importlib.util, "find_spec", side_effect=fake),
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/deno"),
+        ):
+            diags = doctor._probe_extras()
         missing = [d for d in diags if d.level == "warn"]
         self.assertTrue(missing, "expected the faked-missing extra to warn")
         for d in missing:
             with self.subTest(extra=d.subject):
                 self.assertEqual(d.hint, 'uv tool install --force "c64cast[all]"')
+
+    def _yt_warnings(self, *, missing: str | None, runtime: str | None) -> list[str]:
+        real = doctor.importlib.util.find_spec
+
+        def fake(name, *a, **kw):
+            return None if name == missing else real(name)
+
+        with (
+            mock.patch.object(doctor.importlib.util, "find_spec", side_effect=fake),
+            mock.patch.object(doctor.shutil, "which", return_value=runtime),
+        ):
+            diags = doctor._probe_extras()
+        return [d.message for d in diags if d.subject == "yt" and d.level == "warn"]
+
+    def test_youtube_solver_and_runtime_present_is_quiet(self):
+        self.assertEqual(self._yt_warnings(missing=None, runtime="/usr/bin/node"), [])
+
+    def test_missing_ejs_package_warns(self):
+        (msg,) = self._yt_warnings(missing="yt_dlp_ejs", runtime="/usr/bin/node")
+        self.assertIn("yt-dlp-ejs not installed", msg)
+
+    def test_no_js_runtime_warns(self):
+        (msg,) = self._yt_warnings(missing=None, runtime=None)
+        self.assertIn("no JavaScript runtime", msg)
+
+    def test_solver_is_not_probed_without_yt_dlp(self):
+        (msg,) = self._yt_warnings(missing="yt_dlp", runtime=None)
+        self.assertIn("not installed", msg)
+        self.assertNotIn("JavaScript", msg)
 
     def test_camera_extra_is_probed(self):
         # The camera extra (cv2-enumerate-cameras) must appear in the extras

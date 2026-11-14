@@ -26,4 +26,4 @@ Extras do not accumulate. Installing `c64cast[midi]` over `c64cast[video]` leave
 | **`web`**<br>`websockets` | `--serve` web console host. `fastapi>=0.140.0,<1`, `uvicorn>=0.51.0,<1`, `websockets>=16.1.1,<18`, `zeroconf>=0.150.0,<1`. |
 | **`wizard`**<br>`questionary` | `--init` config wizard. `questionary>=2.1.1,<3`. |
 | **`wled`**<br>`zeroconf` | [wled].listen virtual WLED device. `zeroconf>=0.150.0,<1`, `fastapi>=0.140.0,<1`, `uvicorn>=0.51.0,<1`, `websockets>=16.1.1,<18`. |
-| **`yt`**<br>`yt_dlp` | cast URL playback (YouTube et al.). `yt-dlp>=2026.7.4`. |
+| **`yt`**<br>`yt_dlp` | cast URL playback (YouTube et al.). `yt-dlp[default]>=2026.7.4`. |
