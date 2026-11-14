@@ -413,7 +413,10 @@ class ExtrasProbeTest(unittest.TestCase):
         real = doctor.importlib.util.find_spec
 
         def fake(name, *a, **kw):
-            return None if name == missing else real(name)
+            if name == missing:
+                return None
+            # CI's test job runs without the `yt` extra.
+            return object() if name in ("yt_dlp", "yt_dlp_ejs") else real(name)
 
         with (
             mock.patch.object(doctor.importlib.util, "find_spec", side_effect=fake),
