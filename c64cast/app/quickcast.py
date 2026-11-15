@@ -79,6 +79,10 @@ class ResolvedMedia:
 #: `resolve_media_url`'s network fetch (see the ydl opts below).
 URL_RESOLVE_TIMEOUT_S = 20.0
 
+#: yt-dlp's `js_runtimes` keys, each mapped to the executable yt-dlp looks for
+#: on PATH (QuickJS's is `qjs`).
+YTDLP_JS_RUNTIMES = {"deno": "deno", "node": "node", "bun": "bun", "quickjs": "qjs"}
+
 
 class _YtDlpLog:
     """Absorb yt-dlp's own console output at debug level.
@@ -329,6 +333,10 @@ def resolve_media_url(url: str) -> ResolvedMedia:
         # Only the first entry of a playlist or feed is played, and yt-dlp
         # otherwise resolves every entry, one fetch and one timeout each.
         "playlist_items": "1",
+        # yt-dlp enables only deno unless told otherwise, so a host with just
+        # node, bun or QuickJS left YouTube's JS challenge unsolved and its
+        # progressive formats withheld.
+        "js_runtimes": {name: {} for name in YTDLP_JS_RUNTIMES},
         # A share link names both a video and the playlist it was opened from
         # (`watch?v=X&list=PL…`); without this yt-dlp plays the playlist.
         "noplaylist": True,

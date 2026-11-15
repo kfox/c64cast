@@ -406,6 +406,28 @@ class ResolveMediaUrlTest(unittest.TestCase):
         self.assertIsNone(resolved.license)
         self.assertIsNone(resolved.webpage_url)
 
+    def test_ytdlp_enables_every_js_runtime(self):
+        seen: dict = {}
+
+        class FakeYDL:
+            def __init__(self, opts):
+                seen.update(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download):  # noqa: ARG002
+                return {"url": "http://stream/v.m3u8", "vcodec": "h264"}
+
+        mod = types.ModuleType("yt_dlp")
+        mod.YoutubeDL = FakeYDL  # type: ignore[attr-defined]
+        sys.modules["yt_dlp"] = mod
+        quickcast.resolve_media_url("https://youtu.be/abc")
+        self.assertEqual(set(seen["js_runtimes"]), {"deno", "node", "bun", "quickjs"})
+
     def test_ytdlp_audio_only(self):
         self._install_fake_ytdlp({"url": "http://stream/a", "vcodec": "none", "title": "Pod"})
         resolved = quickcast.resolve_media_url("https://example.com/pod")

@@ -52,6 +52,7 @@ from .config import (
 )
 from .orchestrator import OrchestratorError
 from .paths import expand_user
+from .quickcast import YTDLP_JS_RUNTIMES
 from .scene_factory import (
     auto_fit_shot_cfg_error,
     cell_strategy_cfg_error,
@@ -1845,6 +1846,38 @@ def _probe_extras() -> list[Diagnostic]:
                     level="ok", category="extras", subject=extra, message=f"installed ({module})"
                 )
             )
+            if extra == "yt":
+                out.extend(_probe_youtube_challenge_solver(hint))
+    return out
+
+
+def _probe_youtube_challenge_solver(install_hint: str) -> list[Diagnostic]:
+    """yt-dlp withholds YouTube's progressive formats, the ones URL playback
+    needs, unless the yt-dlp-ejs scripts and a JS runtime to run them are both
+    present."""
+    out: list[Diagnostic] = []
+    if importlib.util.find_spec("yt_dlp_ejs") is None:
+        out.append(
+            Diagnostic(
+                level="warn",
+                category="extras",
+                subject="yt",
+                message="yt-dlp-ejs not installed: YouTube URLs fail with "
+                "'Requested format is not available'",
+                hint=install_hint,
+            )
+        )
+    if not any(shutil.which(exe) for exe in YTDLP_JS_RUNTIMES.values()):
+        out.append(
+            Diagnostic(
+                level="warn",
+                category="extras",
+                subject="yt",
+                message="no JavaScript runtime on PATH (deno, node, bun or qjs): "
+                "YouTube URLs fail with 'Requested format is not available'",
+                hint="install deno (https://deno.com) or Node.js",
+            )
+        )
     return out
 
 
