@@ -22,15 +22,14 @@ from c64cast.video.flicker import (
     parse_scoring_pairs,
 )
 from c64cast.video.modes_irq import (
-    BANK_SWAP_CHUNK_SIZE,
     BANK_SWAP_IRQ_HANDLER_ADDR,
     DD00_BANK_0,
     FRAME_TRACKER_ADDR,
-    MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
-    MHIRES_BANK_SWAP_IRQ_HANDLER,
     MHIRES_FRAME_TRACKER_LEN,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
+    bank_swap_chunk_size,
+    bank_swap_irq_handler,
     push_mhires_via_reu,
 )
 from c64cast.video.palette import (
@@ -472,10 +471,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             api.write_memory_file(f"{VIC_BANK_2.SCREEN:04X}", zeros_screen)
             api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
             self._displayed_bank = 0
-            handler = (
-                MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER
-                if self.audio_reu_pump_active
-                else MHIRES_BANK_SWAP_IRQ_HANDLER
+            handler = bank_swap_irq_handler(
+                api.profile, mhires=True, pump=self.audio_reu_pump_active
             )
             self._install_bank_swap_irq(
                 api, handler, MHIRES_FRAME_TRACKER_LEN, audio_pump_active=self.audio_reu_pump_active
@@ -488,7 +485,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 BANK_SWAP_IRQ_HANDLER_ADDR,
                 FRAME_TRACKER_ADDR,
                 self.audio_reu_pump_active,
-                BANK_SWAP_CHUNK_SIZE,
+                bank_swap_chunk_size(api.profile),
             )
 
     def _entry_penalty(self, table: BlendTable) -> np.ndarray:

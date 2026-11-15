@@ -236,7 +236,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
             if self._spans is not None and dma_slicing in ("auto", "locked"):
                 self._lock_capable = self._probe_lock(dma_slicing)
-                if not self._lock_capable:
+                if self._lock_capable:
+                    self.profile = replace(self.profile, nmi_locked_writes=True)
+                else:
                     self._spans = None
             if self._spans is not None:
                 log.info("TR writes: %s", self.describe_writes())

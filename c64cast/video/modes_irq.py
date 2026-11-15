@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import time
+from functools import cache
 
 from c64cast.audio.audio_handlers import (
     REU_PUMP_BODY_SUBROUTINE_ADDR,
@@ -318,9 +319,17 @@ assert _RASTER_GATE_LIMIT <= 0xFF
 # what the best U64 run at 12 kHz used, alongside a 32-byte pump chunk (see
 # REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the figures, which changed both chunks at
 # once). A badline stretches any halt by up to 43 cycles, more than any chunk
-# the one-byte counter allows can leave free (below 32 the bitmap family's
-# chunk count no longer fits it), so a stretched chunk can still lose a tick;
-# a smaller one only leaves less of the stretch past the period.
+# worth its per-chunk overhead can leave free, so a stretched chunk can still
+# lose a tick; a smaller one only leaves less of the stretch past the period.
+#
+# A link whose host writes are locked to the NMI (`nmi_locked_writes`, the
+# TeensyROM's WriteC64Spans slices started on each sample store) leaves far
+# less: each slice fills the period up to audio_rate's main-program reserve,
+# so a chunk the C64 starts in a sliced period has only the slack the
+# estimate leaves. There the halt is 1 cycle/byte plus 12 per transfer
+# (scripts/diags/reu_halt_probe.py), the same as the Ultimate's, and at
+# 10 kHz NTSC on mhires 40-byte chunks still lost 3.7 % of the NMIs while
+# 20-byte ones lost none (clock/wall 0.9634 against 1.0000).
 #
 # After each chunk DMA, only the LENGTH register decrements to 0; the src/dst
 # registers auto-increment and stay valid across chunks, so the per-chunk
@@ -341,24 +350,62 @@ assert _RASTER_GATE_LIMIT <= 0xFF
 # block $FB-$FE). asid_player.ZP_PTR uses $FB too; the ASID player's own IRQ
 # handler owns $0314, so it never runs alongside a bank-swap dispatcher.
 BANK_SWAP_CHUNK_SIZE = 40  # bytes per chunked REC DMA
+BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES = 20  # the same, under NMI-locked host writes
 _CHUNK_COUNTER_ZP = 0xFB  # zero-page chunk counter
 assert halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES) >= BANK_SWAP_CHUNK_SIZE, (
     "a bank-swap chunk's halt must fit inside the shortest NMI period the streamer arms"
 )
 
 
+def bank_swap_chunk_size(profile: HardwareProfile) -> int:
+    """The REC chunk the bank-swap dispatchers copy in over `profile`'s link."""
+    if profile.nmi_locked_writes:
+        return BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES
+    return BANK_SWAP_CHUNK_SIZE
+
+
+def _chunk_loops(name: str, chunks: int, chunk_bytes: int) -> str:
+    """`chunks` REC triggers of `chunk_bytes` each, in runs the one-byte
+    counter can count."""
+    loops = []
+    for run, start in enumerate(range(0, chunks, 0xFF)):
+        label = f"{name}_chunk{run}"
+        loops.append(
+            f"""
+            LDA #${min(0xFF, chunks - start):02X}
+            STA ${_CHUNK_COUNTER_ZP:02X}
+        {label}:
+            LDA #${chunk_bytes:02X}
+            STA ${REU.LENGTH_LO:04X}
+            LDA #$00
+            STA ${REU.LENGTH_HI:04X}
+            LDA #${REU.CMD_FETCH_EXEC:02X}
+            STA ${REU.COMMAND:04X}
+            DEC ${_CHUNK_COUNTER_ZP:02X}
+            BNE {label}
+            """
+        )
+    return "".join(loops)
+
+
 def _family_source(
-    name: str, tracker_addr: int, family_bytes: int, *, banked: bool, pump: bool
+    name: str,
+    tracker_addr: int,
+    family_bytes: int,
+    *,
+    banked: bool,
+    pump: bool,
+    chunk_bytes: int,
 ) -> str:
     """One REC family: load its registers from the tracker, aim a banked
-    family at the hidden bank, then copy it in BANK_SWAP_CHUNK_SIZE chunks.
+    family at the hidden bank, then copy it in `chunk_bytes` chunks.
 
     The bitmap and screen destinations differ between bank 0 ($2000, $0400)
     and bank 2 ($A000, $8400) only in bit 7 of the high byte, so the handler
     replaces that bit with the hidden bank's rather than trusting the host's.
     """
-    chunks, rest = divmod(family_bytes, BANK_SWAP_CHUNK_SIZE)
-    assert rest == 0 and 0 < chunks <= 0xFF, (family_bytes, BANK_SWAP_CHUNK_SIZE)
+    chunks, rest = divmod(family_bytes, chunk_bytes)
+    assert rest == 0 and 0 < chunk_bytes <= 0xFF, (family_bytes, chunk_bytes)
     aim = (
         f"""
             LDA ${tracker_addr + 1:04X}
@@ -388,17 +435,7 @@ def _family_source(
             DEX
             BPL {name}_regs
         {aim}
-            LDA #${chunks:02X}
-            STA ${_CHUNK_COUNTER_ZP:02X}
-        {name}_chunk:
-            LDA #${BANK_SWAP_CHUNK_SIZE:02X}
-            STA ${REU.LENGTH_LO:04X}
-            LDA #$00
-            STA ${REU.LENGTH_HI:04X}
-            LDA #${REU.CMD_FETCH_EXEC:02X}
-            STA ${REU.COMMAND:04X}
-            DEC ${_CHUNK_COUNTER_ZP:02X}
-            BNE {name}_chunk
+        {_chunk_loops(name, chunks, chunk_bytes)}
         {tick}
     """
 
@@ -413,8 +450,10 @@ def _bank_swap_dispatcher(
     ready_off: int,
     pump: bool,
     last_line: int,
+    chunk_bytes: int,
 ) -> bytes:
-    """Assemble a REU bank-swap dispatcher for $C500.
+    """Assemble a REU bank-swap dispatcher for $C500, copying in
+    `chunk_bytes` REC chunks.
 
     A raster IRQ does up to two things, in this order:
 
@@ -475,11 +514,13 @@ def _bank_swap_dispatcher(
         else ""
     )
     commit_families = "".join(
-        _family_source(f"f{i}", _SNAPSHOT + off, n, banked=False, pump=pump)
+        _family_source(
+            f"f{i}", _SNAPSHOT + off, n, banked=False, pump=pump, chunk_bytes=chunk_bytes
+        )
         for i, (off, n) in enumerate(after_flip)
     )
     copy_families = "".join(
-        _family_source(f"h{i}", _SNAPSHOT + off, n, banked=True, pump=pump)
+        _family_source(f"h{i}", _SNAPSHOT + off, n, banked=True, pump=pump, chunk_bytes=chunk_bytes)
         for i, (off, n) in enumerate(hidden)
     )
     source = f"""
@@ -553,7 +594,7 @@ assert VIC_BANK_2.SCREEN == VIC_BANK_0.SCREEN | 0x8000
 HIRES_COMMIT_LAST_SAFE_LINE = RASTER_COMMIT_LAST_SAFE_LINE - 1
 
 
-def _hires_dispatcher(*, pump: bool) -> bytes:
+def _hires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) -> bytes:
     return _bank_swap_dispatcher(
         tracker_len=FRAME_TRACKER_LEN,
         hidden=(
@@ -566,6 +607,7 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
         ready_off=TRACKER_OFF_READY_FLAG,
         pump=pump,
         last_line=HIRES_COMMIT_LAST_SAFE_LINE,
+        chunk_bytes=chunk_bytes,
     )
 
 
@@ -579,9 +621,18 @@ def _hires_dispatcher(*, pump: bool) -> bytes:
 # PAL lines, so a commit read at the end of line 45 finished the chunk on line 57. The
 # worst case is computed from these bytes in tests/test_commit_window.py.
 MHIRES_COMMIT_LAST_SAFE_LINE = 38
+# The same with BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES chunks: row 0's colors take
+# two of them, whose second trigger and fixed REC cost land past line 50 from
+# a read on line 38.
+MHIRES_COMMIT_LAST_SAFE_LINE_LOCKED_WRITES = 37
 
 
-def _mhires_dispatcher(*, pump: bool) -> bytes:
+def _mhires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) -> bytes:
+    last_line = (
+        MHIRES_COMMIT_LAST_SAFE_LINE
+        if chunk_bytes == BANK_SWAP_CHUNK_SIZE
+        else MHIRES_COMMIT_LAST_SAFE_LINE_LOCKED_WRITES
+    )
     return _bank_swap_dispatcher(
         tracker_len=MHIRES_FRAME_TRACKER_LEN,
         hidden=(
@@ -593,7 +644,8 @@ def _mhires_dispatcher(*, pump: bool) -> bytes:
         border_off=None,
         ready_off=MHIRES_TRACKER_OFF_READY_FLAG,
         pump=pump,
-        last_line=MHIRES_COMMIT_LAST_SAFE_LINE,
+        last_line=last_line,
+        chunk_bytes=chunk_bytes,
     )
 
 
@@ -601,6 +653,18 @@ BANK_SWAP_IRQ_HANDLER = _hires_dispatcher(pump=False)
 MHIRES_BANK_SWAP_IRQ_HANDLER = _mhires_dispatcher(pump=False)
 BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = _hires_dispatcher(pump=True)
 MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = _mhires_dispatcher(pump=True)
+
+
+@cache
+def _dispatcher(*, mhires: bool, pump: bool, chunk_bytes: int) -> bytes:
+    build = _mhires_dispatcher if mhires else _hires_dispatcher
+    return build(pump=pump, chunk_bytes=chunk_bytes)
+
+
+def bank_swap_irq_handler(profile: HardwareProfile, *, mhires: bool, pump: bool) -> bytes:
+    """The REU bank-swap dispatcher a hires or mhires scene installs over
+    `profile`'s link, with the REU audio pump's routing when `pump`."""
+    return _dispatcher(mhires=mhires, pump=pump, chunk_bytes=bank_swap_chunk_size(profile))
 
 
 # Host-DMA double-buffer swap IRQ handler (no-REU backends, e.g. TeensyROM).

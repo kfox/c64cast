@@ -208,6 +208,10 @@ class HardwareProfile:
     #   bus cycles, so only C64-driven REU transfers work there.
     reu_size_bytes: int | None = None  # the REU's size as the link reports it;
     #   None where the link does not (the Ultimate's is provisioned over REST).
+    nmi_locked_writes: bool = False  # while an NMI consumer runs, host writes go
+    #   in slices started on its sample store and sized to fill the period (the
+    #   TeensyROM's locked WriteC64Spans), so a C64-driven REU transfer in the
+    #   same period has only its slack. Granted by the TR's lock probe.
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
 

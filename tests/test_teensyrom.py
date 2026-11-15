@@ -990,6 +990,14 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.sent.clear()
         return b, t
 
+    def test_a_lock_capable_link_reports_nmi_locked_writes(self):
+        b, _ = self._backend(lock=True)
+        self.assertTrue(b.profile.nmi_locked_writes)
+
+    def test_a_link_without_the_lock_reports_no_nmi_locked_writes(self):
+        b, _ = self._backend("auto", lock=False)
+        self.assertFalse(b.profile.nmi_locked_writes)
+
     def test_bitmap_tempo_is_real_time_while_the_lock_holds(self):
         b, _ = self._locked()
         self.assertEqual(_bitmap_tempo(b, True), 1.0)
