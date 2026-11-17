@@ -30,6 +30,71 @@ practice not read at all. Releases that ask nothing of anyone leave it out.
 Entries for the next release are one file each under `changelog.d/` (its
 README.md has the format), and are collected here when the release is cut.
 
+## [0.5.2] - 2026-11-17
+
+### Highlights
+
+- **Shadows, faces and pale walls keep their own colors.** Dark scenes and
+  shadowed skin no longer come out purple and light blue, and pale walls and
+  concrete no longer turn purple, light red or light blue in bright shots.
+
+- **YouTube URLs play again.** They no longer fail with "Requested format is
+  not available", and `--doctor` says what is missing when they would.
+
+- **Bitmap video on a TeensyROM+ goes through the REU.** With REU emulation
+  on and firmware that supports it, `hires` and `mhires` video stages frames
+  through the REU as it does on an Ultimate, cutting mhires traffic on the C64
+  bus from about 290 KiB/s to about 1 KiB/s.
+
+### Upgrade notes
+
+- **To keep the old magenta-boosted look,** define the band yourself as a
+  `[[color.hue_corrections]]` entry; the example config has it, commented out.
+  `hue_corrections_replace_defaults` no longer does anything.
+
+- **Reinstall to pick up the YouTube fix.** Run
+  `uv tool install --force "c64cast[all]"` so the `yt` extra brings in
+  yt-dlp's challenge solver, and have deno, Node.js, Bun or QuickJS installed
+  for it to run with.
+
+### Added
+
+- **REU-staged bitmap video on the TeensyROM+.** Where the TeensyROM+ firmware
+  supports WriteREU and REU emulation is on (Special IO set to an REU in the
+  TeensyROM menu), `hires` and `mhires` scenes now stage frames through the REU
+  bank-swap, as they do on an Ultimate. On mhires that cuts the video's DMA
+  onto the C64 bus from about 290 KiB/s to about 1 KiB/s; the frames still
+  cross the USB link, into the REU. Buffered ASID playback uses the same REU.
+  Older firmware, or REU emulation left off, keeps host-DMA video as before.
+  The character modes and the REU audio pump stay on host DMA on a TeensyROM+.
+
+### Fixed
+
+- **Dark scenes and faces in shadow no longer turn purple.** Color shaping
+  used to snap every violet-to-pink pixel to magenta and nearly double its
+  brightness before matching it to the 16 colors. On a real VIC-II, a VIC-II
+  Kawari and the Ultimate 64 alike, that sent lilac-lit shadows and shadowed
+  skin to light blue and purple instead of dark blue, brown and black. The band is no longer applied
+  by default. To keep the old look, define it as a `[[color.hue_corrections]]`
+  band: the example config shows it, commented out.
+  `hue_corrections_replace_defaults` now has no effect, since there are no
+  built-in bands to replace.
+
+- **Pale walls and concrete no longer turn purple, light red or light blue.**
+  With `auto_fit` on, the contrast stretch also strengthened the color of
+  near-grays, and the auto-fit's saturation lift multiplied the display
+  mode's own instead of standing in for it. Together they lifted pastels several
+  times over in bright shots of a video with a dark opening. The stretch now acts
+  on brightness alone, and the stronger of the two saturation lifts applies,
+  not both.
+
+- YouTube URLs no longer fail with "Requested format is not available": the
+  `yt` extra now installs yt-dlp's JavaScript challenge solver (`yt-dlp-ejs`),
+  and c64cast lets yt-dlp run it with deno, Node.js, Bun or QuickJS, whichever
+  is installed. `--doctor` warns when the solver or a JavaScript runtime is
+  missing. Reinstall with `uv tool install --force "c64cast[all]"` to pick it
+  up.
+
 ## [0.5.1] - 2026-11-07
 
 ### Highlights
@@ -6347,7 +6412,8 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/kfox/c64cast/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/kfox/c64cast/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/kfox/c64cast/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kfox/c64cast/compare/v0.3.0...v0.4.0
