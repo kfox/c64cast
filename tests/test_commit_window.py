@@ -26,6 +26,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_END,
 )
 from c64cast.hw.api import Ultimate64API
+from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
@@ -62,6 +63,7 @@ from c64cast.video.modes_irq import (
     MHIRES_TRACKER_OFF_COLOR_REGS,
     REU_VIDEO_BITMAP_COLOR_LEN,
     TRACKER_OFF_BORDER,
+    bank_swap_irq_handler,
 )
 from c64cast.video.palette import C64_PALETTE_BGR
 
@@ -69,12 +71,19 @@ from c64cast.video.palette import C64_PALETTE_BGR
 # and the last pixel line of cell row 24.
 FIRST_BADLINE = 51
 LAST_PICTURE_LINE = FIRST_BADLINE + 25 * 8 - 1  # 250
+CELL_ROW_COLORS = 40
+
+_SHORT = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
 
 DISPATCHERS = (
     ("hires", BANK_SWAP_IRQ_HANDLER, False),
     ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, True),
     ("hires+pump", BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, False),
     ("mhires+pump", MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, True),
+    ("hires short", bank_swap_irq_handler(_SHORT, mhires=False, pump=False), False),
+    ("mhires short", bank_swap_irq_handler(_SHORT, mhires=True, pump=False), True),
+    ("hires+pump short", bank_swap_irq_handler(_SHORT, mhires=False, pump=True), False),
+    ("mhires+pump short", bank_swap_irq_handler(_SHORT, mhires=True, pump=True), True),
 )
 
 
@@ -105,8 +114,10 @@ def run_commit(handler: bytes, *, prime, line: int) -> list[tuple[str, int]]:
     """One raster IRQ at `line` through `handler`, its state set by `prime`.
 
     Returns each $DD00 / $D020 / $D021 write and each REU chunk's end, stamped
-    in cycles from the end of the dispatcher's `LDA $D012`. A chunk halts the
-    CPU for its length, which py65 does not model, so the stamps add it."""
+    in cycles from the end of the dispatcher's `LDA $D012`, plus a "row0"
+    event at the end of the chunk that completes cell row 0's colors. A chunk
+    halts the CPU for its length, which py65 does not model, so the stamps add
+    it."""
     from py65.devices.mpu6502 import MPU
     from py65.memory import ObservableMemory
 
@@ -123,6 +134,9 @@ def run_commit(handler: bytes, *, prime, line: int) -> list[tuple[str, int]]:
     for name, address in (("dd00", CIA2.PORT_A), ("d020", 0xD020), ("d021", 0xD021)):
         mem.subscribe_to_write([address], lambda _a, _v, name=name: pending.append(name))
     mem.subscribe_to_write([REU.COMMAND], lambda _a, _v: pending.append("chunk"))
+    length = {"lo": 0}
+    mem.subscribe_to_write([REU.LENGTH_LO], lambda _a, v: length.__setitem__("lo", v))
+    copied = 0
 
     mpu = MPU(memory=mem)
     mpu.pc = BANK_SWAP_IRQ_HANDLER_ADDR
@@ -137,10 +151,14 @@ def run_commit(handler: bytes, *, prime, line: int) -> list[tuple[str, int]]:
         if reads_raster and read_at is None:
             read_at = mpu.processorCycles
         for name in pending:
-            if name == "chunk":
-                halted += modes_irq.BANK_SWAP_CHUNK_SIZE
             assert read_at is not None, f"{name} written before the raster was read"
-            events.append((name, mpu.processorCycles + halted - read_at))
+            if name == "chunk":
+                halted += length["lo"]
+                copied += length["lo"]
+            stamp = mpu.processorCycles + halted - read_at
+            events.append((name, stamp))
+            if name == "chunk" and copied - length["lo"] < CELL_ROW_COLORS <= copied:
+                events.append(("row0", stamp))
         pending.clear()
     raise AssertionError("dispatcher never chained to the kernal")
 
@@ -382,7 +400,7 @@ def latest_safe_read_line(cycles: int) -> int:
 # Each handler with the state its commit needs, and the write that has to
 # land before the first badline: the flip, on REU hires the border written
 # after it (the picture's first line has a side border too), or on mhires the
-# first color-RAM chunk, which holds cell row 0's colors.
+# color-RAM chunk that completes cell row 0's colors.
 HANDLERS = (
     ("hires", BANK_SWAP_IRQ_HANDLER, partial(prime_reu, mhires=False), "d020"),
     (
@@ -391,12 +409,36 @@ HANDLERS = (
         partial(prime_reu, mhires=False),
         "d020",
     ),
-    ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, partial(prime_reu, mhires=True), "chunk"),
+    ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, partial(prime_reu, mhires=True), "row0"),
     (
         "mhires+pump",
         MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
         partial(prime_reu, mhires=True),
-        "chunk",
+        "row0",
+    ),
+    (
+        "hires short",
+        bank_swap_irq_handler(_SHORT, mhires=False, pump=False),
+        partial(prime_reu, mhires=False),
+        "d020",
+    ),
+    (
+        "mhires short",
+        bank_swap_irq_handler(_SHORT, mhires=True, pump=False),
+        partial(prime_reu, mhires=True),
+        "row0",
+    ),
+    (
+        "hires+pump short",
+        bank_swap_irq_handler(_SHORT, mhires=False, pump=True),
+        partial(prime_reu, mhires=False),
+        "d020",
+    ),
+    (
+        "mhires+pump short",
+        bank_swap_irq_handler(_SHORT, mhires=True, pump=True),
+        partial(prime_reu, mhires=True),
+        "row0",
     ),
     ("hostdma", HOSTDMA_SWAP_IRQ_HANDLER, partial(prime_page_flip, flicker=False), "dd00"),
     ("flicker", FLICKER_SWAP_IRQ_HANDLER, partial(prime_page_flip, flicker=True), "dd00"),
@@ -472,7 +514,7 @@ class CommitBudgetTest(unittest.TestCase):
         events = run_commit(
             MHIRES_BANK_SWAP_IRQ_HANDLER, prime=partial(prime_reu, mhires=True), line=0
         )
-        own = next(t for n, t in events if n == "chunk")
+        own = next(t for n, t in events if n == "row0")
         self.assertLess(latest_safe_read_line(worst_case_cycles(own)), RASTER_COMMIT_LAST_SAFE_LINE)
 
     def test_the_full_window_was_too_long_for_the_hires_border(self):

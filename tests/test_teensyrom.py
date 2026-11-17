@@ -990,6 +990,12 @@ class LockedSlicingBackendTest(unittest.TestCase):
         t.sent.clear()
         return b, t
 
+    def test_short_reu_chunks_do_not_depend_on_the_lock(self):
+        for lock in (True, False):
+            with self.subTest(lock=lock):
+                b, _ = self._backend("auto", lock=lock)
+                self.assertTrue(b.profile.reu_short_chunks)
+
     def test_bitmap_tempo_is_real_time_while_the_lock_holds(self):
         b, _ = self._locked()
         self.assertEqual(_bitmap_tempo(b, True), 1.0)

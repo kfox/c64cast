@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from c64cast.audio import audio_handlers as ah
 from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr
+from c64cast.hw.backend import HardwareProfile
 from c64cast.scenes.overlays import big_text
 from c64cast.sid import asid_player as ap
 from c64cast.sid import waveform
@@ -64,6 +65,8 @@ _AH = "c64cast.audio.audio_handlers"
 _MI = "c64cast.video.modes_irq"
 _API = "c64cast.hw.api"
 _AP = "c64cast.sid.asid_player"
+
+_SHORT_CHUNKS = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
 
 _REGIONS: tuple[Region, ...] = (
     Region(
@@ -175,6 +178,11 @@ _REGIONS: tuple[Region, ...] = (
             mi.MHIRES_BANK_SWAP_IRQ_HANDLER,
             mi.BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             mi.MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
+            *(
+                mi.bank_swap_irq_handler(_SHORT_CHUNKS, mhires=mhires, pump=pump)
+                for mhires in (False, True)
+                for pump in (False, True)
+            ),
             mi.HOSTDMA_SWAP_IRQ_HANDLER,
             mi.FLICKER_SWAP_IRQ_HANDLER,
             mi.HOSTDMA_SWAP_REPORTING_IRQ_HANDLER,

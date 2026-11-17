@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from typing import cast
 from unittest import mock
 
@@ -28,6 +29,7 @@ from c64cast.app.config import Config, VideoCfg
 from c64cast.app.scene_factory import _build_display_mode
 from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 from c64cast.hw.api import Ultimate64API
+from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import (
     CIA1,
     CIA2,
@@ -51,6 +53,7 @@ from c64cast.video.modes_irq import (
     AUDIO_HANDLER_INSTALL_ADDR,
     AUDIO_HANDLER_STUB,
     BANK_SWAP_CHUNK_SIZE,
+    BANK_SWAP_CHUNK_SIZE_SHORT,
     BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
@@ -80,8 +83,11 @@ from c64cast.video.modes_irq import (
     TRACKER_OFF_BORDER,
     TRACKER_OFF_READY_FLAG,
     TRACKER_OFF_SCREEN_REGS,
+    bank_swap_irq_handler,
     uninstall_bank_swap_irq,
 )
+
+_SHORT = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
 
 
 class ReuStagedFlagDefaultTest(unittest.TestCase):
@@ -1361,6 +1367,20 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertEqual(handler, MHIRES_BANK_SWAP_IRQ_HANDLER)
         self.assertNotIn(f"{AUDIO_HANDLER_INSTALL_ADDR:04X}", fake.mem_files)
 
+    def test_a_link_with_short_reu_chunks_gets_the_short_chunk_handler(self):
+        for mode_cls, mhires in ((HiresDisplayMode, False), (MultiHiresDisplayMode, True)):
+            with self.subTest(mode=mode_cls.__name__):
+                fake = FakeAPI()
+                fake.profile = replace(fake.profile, reu_short_chunks=True)
+                mode_cls(use_reu_staged=True).setup(cast(Ultimate64API, fake))
+                handler = fake.mem_files[f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}"]
+                self.assertEqual(
+                    handler, bank_swap_irq_handler(fake.profile, mhires=mhires, pump=False)
+                )
+                self.assertNotEqual(
+                    handler, MHIRES_BANK_SWAP_IRQ_HANDLER if mhires else BANK_SWAP_IRQ_HANDLER
+                )
+
     def test_audio_stub_uploaded_when_audio_active_hires(self):
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
@@ -1586,6 +1606,10 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
         ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, True, False),
         ("hires+pump", BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, False, True),
         ("mhires+pump", MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, True, True),
+        ("hires short", bank_swap_irq_handler(_SHORT, mhires=False, pump=False), False, False),
+        ("mhires short", bank_swap_irq_handler(_SHORT, mhires=True, pump=False), True, False),
+        ("hires+pump short", bank_swap_irq_handler(_SHORT, mhires=False, pump=True), False, True),
+        ("mhires+pump short", bank_swap_irq_handler(_SHORT, mhires=True, pump=True), True, True),
     )
 
     @staticmethod
@@ -1700,7 +1724,7 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 color = (self.SRC_BANK << 16) | (0 << 15) | (2 << 13)
                 self.assertEqual(sources[0], color, "the first commit transfer is slot 0's color")
                 # And the newer frame is then copied, from its own slot.
-                color_chunks = REU_VIDEO_BITMAP_COLOR_LEN // BANK_SWAP_CHUNK_SIZE
+                color_chunks = sum(1 for k, dst, _ in log if k == "rec" and dst >= SCREEN.COLOR_RAM)
                 self.assertTrue(all(self._slot(s) == 1 for s in sources[color_chunks:]))
 
     def test_a_restage_while_a_frame_waits_is_not_lost(self):
@@ -1772,6 +1796,15 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
 
     def test_chunk_halt_fits_the_shortest_nmi_period(self):
         self.assertLessEqual(BANK_SWAP_CHUNK_SIZE, halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES))
+
+    def test_with_short_reu_chunks_every_chunk_is_the_short_one(self):
+        for name, handler, mhires, _ in self.CASES[4:]:
+            with self.subTest(mode=name):
+                m = self.Machine(self, handler, mhires=mhires)
+                m.stage(slot=0)
+                _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
+                chunks = {n for k, _, n in log if k == "rec"}
+                self.assertEqual(chunks, {BANK_SWAP_CHUNK_SIZE_SHORT})
 
 
 class ReuPumpBodySubroutineTest(unittest.TestCase):

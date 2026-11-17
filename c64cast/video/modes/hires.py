@@ -23,8 +23,6 @@ from c64cast.video.flicker import (
     parse_scoring_pairs,
 )
 from c64cast.video.modes_irq import (
-    BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
-    BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
     BORDER_SHOWN_ADDR,
     BORDER_STALE,
@@ -32,6 +30,7 @@ from c64cast.video.modes_irq import (
     FRAME_TRACKER_ADDR,
     REU_VIDEO_BITMAP_LEN,
     REU_VIDEO_BITMAP_SCREEN_LEN,
+    bank_swap_irq_handler,
     push_bitmap_via_reu,
 )
 from c64cast.video.palette import (
@@ -301,10 +300,8 @@ class HiresDisplayMode(BitmapDisplayMode):
             # starts from a known state.
             api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
             self._displayed_bank = 0
-            handler = (
-                BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER
-                if self.audio_reu_pump_active
-                else BANK_SWAP_IRQ_HANDLER
+            handler = bank_swap_irq_handler(
+                api.profile, mhires=False, pump=self.audio_reu_pump_active
             )
             self._install_bank_swap_irq(api, handler, audio_pump_active=self.audio_reu_pump_active)
             log.info(

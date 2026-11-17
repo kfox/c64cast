@@ -208,6 +208,9 @@ class HardwareProfile:
     #   bus cycles, so only C64-driven REU transfers work there.
     reu_size_bytes: int | None = None  # the REU's size as the link reports it;
     #   None where the link does not (the Ultimate's is provisioned over REST).
+    reu_short_chunks: bool = False  # C64-driven REU copies lose NMI ticks at
+    #   the usual chunk size on this link, so the bank-swap dispatchers copy in
+    #   shorter ones (modes_irq.bank_swap_chunk_size).
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
 
@@ -386,6 +389,7 @@ TEENSYROM_PROFILE = HardwareProfile(
     supports_read=True,  # ReadC64Mem 0x64FD (fw v0.7.2.5+); probed at connect
     supports_reset=True,  # ResetC64Token 0x64EE
     supports_probe=True,  # Ping 0x6455 / FWCheck 0x64E0
+    reu_short_chunks=True,
     supports_run_prg=True,  # PostFile + LaunchFile
     supports_run_crt=True,  # RemoteLaunch handles CRT launch
     supports_reu=False,  # granted once WriteREU answers with REU emulation running
