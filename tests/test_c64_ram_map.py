@@ -66,7 +66,7 @@ _MI = "c64cast.video.modes_irq"
 _API = "c64cast.hw.api"
 _AP = "c64cast.sid.asid_player"
 
-_LOCKED_WRITES = HardwareProfile(name="Locked", family="fake", nmi_locked_writes=True)
+_SHORT_CHUNKS = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
 
 _REGIONS: tuple[Region, ...] = (
     Region(
@@ -179,7 +179,7 @@ _REGIONS: tuple[Region, ...] = (
             mi.BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             mi.MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             *(
-                mi.bank_swap_irq_handler(_LOCKED_WRITES, mhires=mhires, pump=pump)
+                mi.bank_swap_irq_handler(_SHORT_CHUNKS, mhires=mhires, pump=pump)
                 for mhires in (False, True)
                 for pump in (False, True)
             ),

@@ -53,7 +53,7 @@ from c64cast.video.modes_irq import (
     AUDIO_HANDLER_INSTALL_ADDR,
     AUDIO_HANDLER_STUB,
     BANK_SWAP_CHUNK_SIZE,
-    BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES,
+    BANK_SWAP_CHUNK_SIZE_SHORT,
     BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
@@ -87,7 +87,7 @@ from c64cast.video.modes_irq import (
     uninstall_bank_swap_irq,
 )
 
-_LOCKED = HardwareProfile(name="Locked", family="fake", nmi_locked_writes=True)
+_SHORT = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
 
 
 class ReuStagedFlagDefaultTest(unittest.TestCase):
@@ -1367,11 +1367,11 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertEqual(handler, MHIRES_BANK_SWAP_IRQ_HANDLER)
         self.assertNotIn(f"{AUDIO_HANDLER_INSTALL_ADDR:04X}", fake.mem_files)
 
-    def test_a_link_with_nmi_locked_writes_gets_the_short_chunk_handler(self):
+    def test_a_link_with_short_reu_chunks_gets_the_short_chunk_handler(self):
         for mode_cls, mhires in ((HiresDisplayMode, False), (MultiHiresDisplayMode, True)):
             with self.subTest(mode=mode_cls.__name__):
                 fake = FakeAPI()
-                fake.profile = replace(fake.profile, nmi_locked_writes=True)
+                fake.profile = replace(fake.profile, reu_short_chunks=True)
                 mode_cls(use_reu_staged=True).setup(cast(Ultimate64API, fake))
                 handler = fake.mem_files[f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}"]
                 self.assertEqual(
@@ -1606,10 +1606,10 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
         ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, True, False),
         ("hires+pump", BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, False, True),
         ("mhires+pump", MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, True, True),
-        ("hires locked", bank_swap_irq_handler(_LOCKED, mhires=False, pump=False), False, False),
-        ("mhires locked", bank_swap_irq_handler(_LOCKED, mhires=True, pump=False), True, False),
-        ("hires+pump locked", bank_swap_irq_handler(_LOCKED, mhires=False, pump=True), False, True),
-        ("mhires+pump locked", bank_swap_irq_handler(_LOCKED, mhires=True, pump=True), True, True),
+        ("hires short", bank_swap_irq_handler(_SHORT, mhires=False, pump=False), False, False),
+        ("mhires short", bank_swap_irq_handler(_SHORT, mhires=True, pump=False), True, False),
+        ("hires+pump short", bank_swap_irq_handler(_SHORT, mhires=False, pump=True), False, True),
+        ("mhires+pump short", bank_swap_irq_handler(_SHORT, mhires=True, pump=True), True, True),
     )
 
     @staticmethod
@@ -1797,14 +1797,14 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
     def test_chunk_halt_fits_the_shortest_nmi_period(self):
         self.assertLessEqual(BANK_SWAP_CHUNK_SIZE, halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES))
 
-    def test_under_nmi_locked_writes_every_chunk_is_the_short_one(self):
+    def test_with_short_reu_chunks_every_chunk_is_the_short_one(self):
         for name, handler, mhires, _ in self.CASES[4:]:
             with self.subTest(mode=name):
                 m = self.Machine(self, handler, mhires=mhires)
                 m.stage(slot=0)
                 _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
                 chunks = {n for k, _, n in log if k == "rec"}
-                self.assertEqual(chunks, {BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES})
+                self.assertEqual(chunks, {BANK_SWAP_CHUNK_SIZE_SHORT})
 
 
 class ReuPumpBodySubroutineTest(unittest.TestCase):

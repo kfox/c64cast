@@ -73,17 +73,17 @@ FIRST_BADLINE = 51
 LAST_PICTURE_LINE = FIRST_BADLINE + 25 * 8 - 1  # 250
 CELL_ROW_COLORS = 40
 
-_LOCKED = HardwareProfile(name="Locked", family="fake", nmi_locked_writes=True)
+_SHORT = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
 
 DISPATCHERS = (
     ("hires", BANK_SWAP_IRQ_HANDLER, False),
     ("mhires", MHIRES_BANK_SWAP_IRQ_HANDLER, True),
     ("hires+pump", BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, False),
     ("mhires+pump", MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER, True),
-    ("hires locked", bank_swap_irq_handler(_LOCKED, mhires=False, pump=False), False),
-    ("mhires locked", bank_swap_irq_handler(_LOCKED, mhires=True, pump=False), True),
-    ("hires+pump locked", bank_swap_irq_handler(_LOCKED, mhires=False, pump=True), False),
-    ("mhires+pump locked", bank_swap_irq_handler(_LOCKED, mhires=True, pump=True), True),
+    ("hires short", bank_swap_irq_handler(_SHORT, mhires=False, pump=False), False),
+    ("mhires short", bank_swap_irq_handler(_SHORT, mhires=True, pump=False), True),
+    ("hires+pump short", bank_swap_irq_handler(_SHORT, mhires=False, pump=True), False),
+    ("mhires+pump short", bank_swap_irq_handler(_SHORT, mhires=True, pump=True), True),
 )
 
 
@@ -417,26 +417,26 @@ HANDLERS = (
         "row0",
     ),
     (
-        "hires locked",
-        bank_swap_irq_handler(_LOCKED, mhires=False, pump=False),
+        "hires short",
+        bank_swap_irq_handler(_SHORT, mhires=False, pump=False),
         partial(prime_reu, mhires=False),
         "d020",
     ),
     (
-        "mhires locked",
-        bank_swap_irq_handler(_LOCKED, mhires=True, pump=False),
+        "mhires short",
+        bank_swap_irq_handler(_SHORT, mhires=True, pump=False),
         partial(prime_reu, mhires=True),
         "row0",
     ),
     (
-        "hires+pump locked",
-        bank_swap_irq_handler(_LOCKED, mhires=False, pump=True),
+        "hires+pump short",
+        bank_swap_irq_handler(_SHORT, mhires=False, pump=True),
         partial(prime_reu, mhires=False),
         "d020",
     ),
     (
-        "mhires+pump locked",
-        bank_swap_irq_handler(_LOCKED, mhires=True, pump=True),
+        "mhires+pump short",
+        bank_swap_irq_handler(_SHORT, mhires=True, pump=True),
         partial(prime_reu, mhires=True),
         "row0",
     ),

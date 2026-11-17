@@ -322,14 +322,14 @@ assert _RASTER_GATE_LIMIT <= 0xFF
 # worth its per-chunk overhead can leave free, so a stretched chunk can still
 # lose a tick; a smaller one only leaves less of the stretch past the period.
 #
-# A link whose host writes are locked to the NMI (`nmi_locked_writes`, the
-# TeensyROM's WriteC64Spans slices started on each sample store) leaves far
-# less: each slice fills the period up to audio_rate's main-program reserve,
-# so a chunk the C64 starts in a sliced period has only the slack the
-# estimate leaves. There the halt is 1 cycle/byte plus 12 per transfer
-# (scripts/diags/reu_halt_probe.py), the same as the Ultimate's, and at
-# 10 kHz NTSC on mhires 40-byte chunks still lost 3.7 % of the NMIs while
-# 20-byte ones lost none (clock/wall 0.9634 against 1.0000).
+# On a link with `reu_short_chunks` (the TeensyROM+), 40-byte chunks lose
+# ticks anyway, though scripts/diags/reu_halt_probe.py measures its REU halt
+# at the Ultimate's 1 cycle/byte plus 12 per transfer. Counted by the TR
+# firmware's sample-store watch at 10 kHz NTSC on mhires, 40-byte chunks lost
+# 3.8 % of the NMIs, 25-byte ones 0.003 % and 20-byte ones none, as many as
+# the same video written without the REU. Shortening the TR's NMI-locked host
+# write slices instead changed nothing, and with the lock off 20-byte chunks
+# still halved the loss, so the size belongs to the link, not to its lock.
 #
 # After each chunk DMA, only the LENGTH register decrements to 0; the src/dst
 # registers auto-increment and stay valid across chunks, so the per-chunk
@@ -350,7 +350,7 @@ assert _RASTER_GATE_LIMIT <= 0xFF
 # block $FB-$FE). asid_player.ZP_PTR uses $FB too; the ASID player's own IRQ
 # handler owns $0314, so it never runs alongside a bank-swap dispatcher.
 BANK_SWAP_CHUNK_SIZE = 40  # bytes per chunked REC DMA
-BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES = 20  # the same, under NMI-locked host writes
+BANK_SWAP_CHUNK_SIZE_SHORT = 20  # the same, on a link with reu_short_chunks
 _CHUNK_COUNTER_ZP = 0xFB  # zero-page chunk counter
 assert halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES) >= BANK_SWAP_CHUNK_SIZE, (
     "a bank-swap chunk's halt must fit inside the shortest NMI period the streamer arms"
@@ -359,8 +359,8 @@ assert halt_quantum_bytes(NMI_SAFE_MIN_PERIOD_CYCLES) >= BANK_SWAP_CHUNK_SIZE, (
 
 def bank_swap_chunk_size(profile: HardwareProfile) -> int:
     """The REC chunk the bank-swap dispatchers copy in over `profile`'s link."""
-    if profile.nmi_locked_writes:
-        return BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES
+    if profile.reu_short_chunks:
+        return BANK_SWAP_CHUNK_SIZE_SHORT
     return BANK_SWAP_CHUNK_SIZE
 
 
@@ -621,17 +621,17 @@ def _hires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) ->
 # PAL lines, so a commit read at the end of line 45 finished the chunk on line 57. The
 # worst case is computed from these bytes in tests/test_commit_window.py.
 MHIRES_COMMIT_LAST_SAFE_LINE = 38
-# The same with BANK_SWAP_CHUNK_SIZE_LOCKED_WRITES chunks: row 0's colors take
+# The same with BANK_SWAP_CHUNK_SIZE_SHORT chunks: row 0's colors take
 # two of them, whose second trigger and fixed REC cost land past line 50 from
 # a read on line 38.
-MHIRES_COMMIT_LAST_SAFE_LINE_LOCKED_WRITES = 37
+MHIRES_COMMIT_LAST_SAFE_LINE_SHORT_CHUNKS = 37
 
 
 def _mhires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) -> bytes:
     last_line = (
         MHIRES_COMMIT_LAST_SAFE_LINE
         if chunk_bytes == BANK_SWAP_CHUNK_SIZE
-        else MHIRES_COMMIT_LAST_SAFE_LINE_LOCKED_WRITES
+        else MHIRES_COMMIT_LAST_SAFE_LINE_SHORT_CHUNKS
     )
     return _bank_swap_dispatcher(
         tracker_len=MHIRES_FRAME_TRACKER_LEN,
