@@ -629,7 +629,7 @@ class MidiControlListener:
             tuple[int, int | str, str], tuple[Playlist, Any, Callable[[], None]]
         ] = {}
         self._held_inputs_lock = threading.Lock()
-        # (id(playlist), cc number) -> that XY-pad axis. Reader thread only.
+        # Reader thread only, so unlocked.
         self._pad_axes: dict[tuple[int, int], _PadAxis] = {}
         self._warned_channels: set[int] = set()
         # A dispatch/clock-feed failure is per *message*, and the message comes

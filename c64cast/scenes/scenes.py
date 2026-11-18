@@ -2495,7 +2495,6 @@ class LauncherScene(MediaFileMixin, Scene):
         self._motion_lock = threading.Lock()
         self._motion_x = 0.0
         self._motion_y = 0.0
-        # The firmware's last report of its queued mouse reports, and when.
         self._mouse_backlog = 0
         self._mouse_backlog_at = 0.0
         self._injection_refused_logged = False
