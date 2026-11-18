@@ -198,8 +198,12 @@ class HTTPHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         parts = urlsplit(self.path)
-        if parts.path in ("/v1/machine:reset", "/v1/machine:reboot"):
-            log.info("HTTP: PUT %s (ignored)", parts.path)
+        if parts.path == "/v1/machine:reset":
+            log.info("HTTP: PUT reset (ignored)")
+            self._ok(b"")
+            return
+        if parts.path == "/v1/machine:reboot":
+            log.info("HTTP: PUT reboot (ignored)")
             self._ok(b"")
             return
         self.send_error(404)
