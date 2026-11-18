@@ -87,7 +87,7 @@ the two lists account for every module in the tree.
 | `app/introspect.py` | [Config, CLI & ensemble](architecture/config.md#introspectpy--the-model-and-the-terminal-renderers) |
 | `control/keyboard.py` | [Control surfaces & live performance](architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle) |
 | `control/live_tune.py` | [Control surfaces & live performance](architecture/control.md#live_tunepy--the-one-live-tune-seam-live-djvj-phase-7) |
-| `hw/machine_input.py` | [Hardware I/O & transports](architecture/hardware-io.md#machine_inputpy--keyboard-and-joystick-injection) |
+| `hw/machine_input.py` | [Hardware I/O & transports](architecture/hardware-io.md#machine_inputpy--keyboard-joystick-and-mouse-injection) |
 | `hw/menu_screen.py` | [Hardware I/O & transports](architecture/hardware-io.md#menu_screenpy--the-ultimate-menus-own-screen) |
 | `control/midi_control.py` | [Control surfaces & live performance](architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
 | `sid/midi_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope) |

@@ -32,15 +32,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 from c64cast._midi import MIDI_AVAILABLE, PortWatch, mido, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast._wire_log import LogThrottle
-from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
+from c64cast.hw.machine_input import JOYSTICK_INPUTS, MOUSE_BUTTONS, is_joystick_port
 
 from . import live_tune
 from .transport import TransportEvent
@@ -94,6 +95,11 @@ _ACTIONS = (
     # Holds joystick `input` on `port` (default 2) of a launched program while
     # the note is down. Release-aware; a no-op outside a launcher scene.
     "joystick",
+    # The mouse the firmware drives on port 1: `mouse_button` holds button
+    # `input` like `joystick`; `mouse_move` turns one axis of an XY pad (a cc
+    # with absolute positions) into pointer motion. See _PadAxis.
+    "mouse_button",
+    "mouse_move",
 )
 
 # Double-tap window for the osd.position action (a second press within this many
@@ -111,6 +117,7 @@ _RELEASE_AWARE_ACTIONS = (
     "transport.stop",
     "clip_launch",
     "joystick",
+    "mouse_button",
 )
 
 # MMC (MIDI Machine Control) transport command bytes, from the SysEx frame
@@ -126,6 +133,40 @@ _MMC_COMMANDS = frozenset({0x01, 0x02, 0x04, 0x05, 0x06, 0x09})
 # write, so there's no burst risk to throttle against.
 _POLL_INTERVAL_S = 0.001
 
+# `mouse_move` scale: HID counts per pad step, so a full sweep of the pad
+# crosses most of a 320-pixel screen at the machine's default sensitivity.
+_PAD_DEFAULT_SCALE = 2.0
+_PAD_MAX_SCALE = 16.0
+_PAD_AXES = ("x", "y")
+# What separates a stroke from a finger set down somewhere else. Within a
+# stroke one message moves at most _PAD_STROKE_MAX_STEP; after the pad has been
+# quiet for _PAD_QUIET_S the finger may have lifted, and only a slow drag's
+# one or two steps carry on.
+_PAD_STROKE_MAX_STEP = 32
+_PAD_QUIET_S = 0.1
+_PAD_CREEP_MAX_STEP = 2
+
+
+class _PadAxis:
+    """One axis of an XY pad, which reports where the finger is (0-127),
+    turned into how far it moved, as a trackpad does. A change too large to
+    belong to the stroke in progress moves nothing and becomes the new anchor,
+    so lifting and touching down elsewhere does not fling the pointer."""
+
+    def __init__(self) -> None:
+        self._last: int | None = None
+        self._last_at = 0.0
+
+    def step(self, value: int, now: float) -> int:
+        last, self._last = self._last, value
+        quiet = now - self._last_at >= _PAD_QUIET_S
+        self._last_at = now
+        if last is None:
+            return 0
+        change = value - last
+        limit = _PAD_CREEP_MAX_STEP if quiet else _PAD_STROKE_MAX_STEP
+        return change if abs(change) <= limit else 0
+
 
 @dataclass(frozen=True)
 class _CCMapping:
@@ -137,7 +178,10 @@ class _CCMapping:
     mode: str | None = None  # for "transport.jog": "abs" | "rel" (None -> "rel")
     slot: int | None = None  # loop_slot/clip_launch: pad/preset (>= 1); fx_toggle: layer (>= 0)
     port: int | None = None  # joystick: 1 or 2 (None -> 2)
-    input: str | None = None  # joystick: one of machine_input.JOYSTICK_INPUTS
+    input: str | None = None  # joystick / mouse_button: an input name of machine_input
+    axis: str | None = None  # mouse_move: "x" | "y"
+    scale: float = _PAD_DEFAULT_SCALE  # mouse_move: HID counts per pad step
+    invert: bool = False  # mouse_move: against the pad's direction
 
 
 def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping]:
@@ -205,6 +249,30 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
                 raise ValueError(
                     f"cc_map[{i}] action 'joystick' needs an 'input' in {JOYSTICK_INPUTS}"
                 )
+        if action == "mouse_button":
+            if kind not in ("note", "cc"):
+                raise ValueError(
+                    f"cc_map[{i}] action 'mouse_button' needs type 'note' or 'cc', got {kind!r}"
+                )
+            if joystick_input not in MOUSE_BUTTONS:
+                raise ValueError(
+                    f"cc_map[{i}] action 'mouse_button' needs an 'input' in {MOUSE_BUTTONS}"
+                )
+        axis = entry.get("axis")
+        scale = entry.get("scale", _PAD_DEFAULT_SCALE)
+        invert = entry.get("invert", False)
+        if action == "mouse_move":
+            if kind != "cc":
+                raise ValueError(f"cc_map[{i}] action 'mouse_move' needs type 'cc', got {kind!r}")
+            if axis not in _PAD_AXES:
+                raise ValueError(f"cc_map[{i}] action 'mouse_move' needs an 'axis' in {_PAD_AXES}")
+            if not _is_pad_scale(scale):
+                raise ValueError(
+                    f"cc_map[{i}] action 'mouse_move' scale must be a number in "
+                    f"(0, {_PAD_MAX_SCALE}], got {scale!r}"
+                )
+            if not isinstance(invert, bool):
+                raise ValueError(f"cc_map[{i}] action 'mouse_move' invert must be true or false")
         out[(kind, number)] = _CCMapping(
             kind=kind,
             number=number,
@@ -215,8 +283,26 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
             slot=slot,
             port=port,
             input=joystick_input,
+            axis=axis,
+            scale=float(scale),
+            invert=invert,
+        )
+    if any(m.action == "joystick" and m.port == 1 for m in out.values()) and any(
+        m.action.startswith("mouse_") for m in out.values()
+    ):
+        raise ValueError(
+            "cc_map maps both a joystick on port 1 and the mouse, which the firmware "
+            "drives on port 1 too"
         )
     return out
+
+
+def _is_pad_scale(scale: object) -> bool:
+    return (
+        isinstance(scale, (int, float))
+        and not isinstance(scale, bool)
+        and 0 < scale <= _PAD_MAX_SCALE
+    )
 
 
 def _parse_mmc_sysex(data: tuple[int, ...]) -> int | None:
@@ -523,9 +609,9 @@ class MidiControlListener:
         )
         self._port_watch = PortWatch(
             lambda: self._opened_port_name,
-            self._release_held_joysticks,
+            self._release_held_inputs,
             label="midi_control",
-            releases="held joystick directions",
+            releases="held joystick directions and mouse buttons",
             logger=log,
             name="midi-port-watch",
         )
@@ -537,9 +623,14 @@ class MidiControlListener:
             logger=log,
             name="midi-clock-port-watch",
         )
-        # (id(playlist), port, direction) -> (playlist, the scene it was pressed on)
-        self._held_joystick: dict[tuple[int, int, str], tuple[Playlist, Any]] = {}
-        self._held_joystick_lock = threading.Lock()
+        # (id(playlist), port or "mouse", input) -> (playlist, the scene it was
+        # pressed on, the call that releases it there)
+        self._held_inputs: dict[
+            tuple[int, int | str, str], tuple[Playlist, Any, Callable[[], None]]
+        ] = {}
+        self._held_inputs_lock = threading.Lock()
+        # Reader thread only, so unlocked.
+        self._pad_axes: dict[tuple[int, int], _PadAxis] = {}
         self._warned_channels: set[int] = set()
         # A dispatch/clock-feed failure is per *message*, and the message comes
         # off the wire: a controller sending something this build mishandles
@@ -887,21 +978,28 @@ class MidiControlListener:
         except Exception:
             log.exception("midi_control clock reader crashed")
 
-    def _note_joystick(self, pl: Playlist, port: int, direction: str, pressed: bool) -> None:
-        key = (id(pl), port, direction)
-        with self._held_joystick_lock:
+    def _note_held(
+        self,
+        pl: Playlist,
+        port: int | str,
+        name: str,
+        pressed: bool,
+        release: Callable[[], None],
+    ) -> None:
+        key = (id(pl), port, name)
+        with self._held_inputs_lock:
             if pressed:
-                self._held_joystick[key] = (pl, pl.current)
+                self._held_inputs[key] = (pl, pl.current, release)
             else:
-                self._held_joystick.pop(key, None)
+                self._held_inputs.pop(key, None)
 
-    def _release_held_joysticks(self) -> None:
-        with self._held_joystick_lock:
-            held = self._held_joystick
-            self._held_joystick = {}
-        for (_pl_id, port, direction), (pl, scene) in held.items():
+    def _release_held_inputs(self) -> None:
+        with self._held_inputs_lock:
+            held = self._held_inputs
+            self._held_inputs = {}
+        for pl, scene, release in held.values():
             if pl.current is scene:
-                scene.inject_joystick(port, direction, False)
+                release()
 
     def _targets(self, msg: Any) -> list[Playlist]:
         """channel == broadcast_channel-1 -> every playlist; other channel N
@@ -1021,7 +1119,24 @@ class MidiControlListener:
             if inject is not None and mapping.input is not None:
                 joystick_port = mapping.port or 2
                 inject(joystick_port, mapping.input, pressed)
-                self._note_joystick(pl, joystick_port, mapping.input, pressed)
+                self._note_held(
+                    pl,
+                    joystick_port,
+                    mapping.input,
+                    pressed,
+                    partial(inject, joystick_port, mapping.input, False),
+                )
+        elif action == "mouse_button":
+            press = getattr(pl.current, "inject_mouse_button", None)
+            if mapping.kind == "cc":
+                pressed = value >= 64
+            if press is not None and mapping.input is not None:
+                press(mapping.input, pressed)
+                self._note_held(
+                    pl, "mouse", mapping.input, pressed, partial(press, mapping.input, False)
+                )
+        elif action == "mouse_move":
+            self._move_mouse(pl, mapping, value)
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(
@@ -1042,6 +1157,22 @@ class MidiControlListener:
                     mode=mapping.mode or "rel",
                 )
             )
+
+    def _move_mouse(self, pl: Playlist, mapping: _CCMapping, value: int) -> None:
+        """Feed `value` to the pad axis `mapping` reads and move the launcher's
+        mouse pointer by what it moved. The axis is tracked in every scene, so
+        a launcher starts from where the finger already is. A pad's y grows
+        upward and the mouse's downward."""
+        axis = self._pad_axes.setdefault((id(pl), mapping.number), _PadAxis())
+        step = axis.step(value, time.monotonic())
+        move = getattr(pl.current, "inject_mouse_motion", None)
+        if not step or move is None:
+            return
+        counts = step * mapping.scale * (-1 if mapping.invert else 1)
+        if mapping.axis == "x":
+            move(counts, 0.0)
+        else:
+            move(0.0, -counts)
 
     @staticmethod
     def _toggle_effect_layer(pl: Playlist, slot: int) -> None:

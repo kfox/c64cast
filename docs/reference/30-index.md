@@ -279,7 +279,7 @@ Every name c64cast answers to — 469 of them — and the pages that discuss eac
 | `inter_message_pause_s` | [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
 | `interleave_videos` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Single-Scene Mode (1)](02-config-rules.md#single-scene-mode), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next) |
 | `[interstitial]` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`interstitial` (A)](20-appendix-a-configuration.md#interstitial) |
-| `invert` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
+| `invert` | [Driving the Machine's Mouse (6)](07-inputs-and-outputs.md#driving-the-machines-mouse), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `items` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`network` (C)](22-appendix-c-overlays.md#network) |
 
 ## J
@@ -418,7 +418,7 @@ Every name c64cast answers to — 469 of them — and the pages that discuss eac
 | `[playlist]` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
 | `poll_hz` | [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `poll_interval_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
-| `port` | [`control` (A)](20-appendix-a-configuration.md#control), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control), [`web` (A)](20-appendix-a-configuration.md#web) |
+| `port` | [Driving the Machine's Mouse (6)](07-inputs-and-outputs.md#driving-the-machines-mouse), [`control` (A)](20-appendix-a-configuration.md#control), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `port` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `port` (midi_control) | [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `port` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
@@ -478,7 +478,7 @@ Every name c64cast answers to — 469 of them — and the pages that discuss eac
 | `sampler_clock_hz` | [The Ultimate Audio Sampler (4)](05-sound-and-music.md#the-ultimate-audio-sampler), [The Sampler's Clock (4)](05-sound-and-music.md#the-samplers-clock), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `sampler_sample_rate` | [The Ultimate Audio Sampler (4)](05-sound-and-music.md#the-ultimate-audio-sampler), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `--save-settings` | [NTSC or PAL (1)](02-config-rules.md#ntsc-or-pal), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone) |
-| `scale` | [Generators (3)](04-display-pipeline.md#generators), [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [Recording (6)](07-inputs-and-outputs.md#recording) |
+| `scale` | [Generators (3)](04-display-pipeline.md#generators), [Driving the Machine's Mouse (6)](07-inputs-and-outputs.md#driving-the-machines-mouse), [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped) |
 | `scale` (preview) | [`preview` (A)](20-appendix-a-configuration.md#preview) |
 | `scale` (recording) | [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
 | `scale` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [`source` (F)](25-appendix-f-live-targets.md#source) |

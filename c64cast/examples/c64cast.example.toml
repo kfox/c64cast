@@ -1180,6 +1180,22 @@ number = 80
 action = "osd.position"             # tap flips the OSD corner; double-tap (<400ms) hides
                                     #   it; a tap while hidden re-enables it
 
+# An XY pad's two ccs move the mouse of a program a launcher scene runs (C64
+# Ultimate firmware 1.2.1+). The pointer follows the finger like a trackpad.
+[[midi_control.cc_map]]
+type = "cc"
+number = 1
+action = "mouse_move"
+axis = "x"                          # "x" | "y"; a pad's y grows upward
+scale = 2.0                         # HID counts per pad step, at most 16
+invert = false                      # true reverses the axis
+
+[[midi_control.cc_map]]
+type = "cc"
+number = 2
+action = "mouse_move"
+axis = "y"
+
 [performance]
 # Live-performance tempo/beat grid (Live DJ/VJ Phase 1): a process-wide beat
 # clock every consumer reads (launch quantization, tempo-locked effects, WLED).

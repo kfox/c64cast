@@ -188,7 +188,7 @@ virtual ports, or enabling MIDI Thru at the operating system.
 
 A `[[midi_control.cc_map]]` entry maps a message to an action. The message is a
 `note`, a `cc`, a `pc` (program change) or an `mmc` (a transport
-system-exclusive frame). The actions fall into six groups:
+system-exclusive frame). The actions fall into seven groups:
 
 | Group | Actions |
 |---|---|
@@ -198,6 +198,7 @@ system-exclusive frame). The actions fall into six groups:
 | Performance | `clip_launch`, `tempo_tap`, `look_save`, `look_recall` |
 | Feedback | `osd.position` |
 | The machine's joystick | `joystick` |
+| The machine's mouse | `mouse_button`, `mouse_move` |
 
 A `param` entry names its target as `holder.name`:
 
@@ -260,6 +261,52 @@ When an input is dropped, the launcher logs one warning for that scene. An
 injection counts as player input for the launcher's idle timeout. When the
 scene ends, c64cast releases everything it pressed and then resets the
 machine.
+
+### Driving the Machine's Mouse
+
+The same route can drive a mouse on control port 1, the way a 1351 would.
+A `mouse_button` entry holds `left`, `right` or `middle` while its note or pad
+is down, with the same `note`-or-`cc` rule as `joystick`. A `mouse_move` entry
+moves the pointer from an XY pad: a pad that sends one `cc` for its X position
+and another for its Y, each 0–127 as the finger moves. Map each axis to its
+own entry:
+
+```toml
+[[midi_control.cc_map]]
+type = "cc"
+number = 1
+action = "mouse_move"
+axis = "x"       # x or y
+scale = 2.0      # HID counts per pad step, up to 16
+invert = false   # true reverses the axis
+
+[[midi_control.cc_map]]
+type = "cc"
+number = 2
+action = "mouse_move"
+axis = "y"
+```
+
+The pointer follows how far the finger moved, not where it is, as on a
+laptop's trackpad: c64cast keeps the last value of each axis and moves by the
+difference. A change too large to come from one stroke moves nothing and
+becomes the new starting point, and so does any change but the smallest after
+the pad has gone quiet for a tenth of a second, so lifting your finger and
+putting it down elsewhere does not throw the pointer across the screen. A
+slow drag still moves, one step at a time. A pad's Y grows upward, so pushing
+up moves the pointer up; `invert` reverses either axis. At the machine's
+default Mouse Sensitivity, one count is one step of the pointer, and the
+machine's own Mouse Sensitivity and Mouse Mode settings apply on top of
+`scale`.
+
+The mouse and a joystick on port 1 cannot share the port, so a config that maps
+both a `joystick` with `port = 1` and a mouse action is refused when it loads.
+c64cast sends the motion gathered between requests in one go and holds the
+rest back while the machine still has more than a couple of reports queued,
+so a fast pad does not build up lag. The mouse needs the input route to have
+one: c64cast asks the machine when it connects, and C64 Ultimate firmware
+1.2.1 has it. On a machine without it the mouse entries do nothing, the
+connect log says so, and the launcher logs one warning per scene.
 
 ### What Ships Mapped
 

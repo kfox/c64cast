@@ -204,6 +204,7 @@ def mirrored_choices() -> dict[str, tuple[str, object]]:
             "control.midi_control._MMC_COMMANDS",
             set(midi_control._MMC_COMMANDS),
         ),
+        "_MIDI_MOUSE_AXIS_CHOICES": ("control.midi_control._PAD_AXES", midi_control._PAD_AXES),
         "_MIDI_VOICE_MODE_CHOICES": ("sid.midi_scene.VOICE_MODES", midi_scene.VOICE_MODES),
         "_MIDI_WAVEFORM_CHOICES": (
             "sid.midi_scene._WAVEFORM_BITS",

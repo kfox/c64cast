@@ -493,7 +493,8 @@ newer, the launched game can also be played from a MIDI pad grid or keyboard: ma
 the fire button, and holding the pad holds the joystick. "Playing c64cast
 Live" in Chapter 5 shows the mapping. Older firmware, the C64 Ultimate on
 1.1.0, the Ultimate II+ and the TeensyROM cannot take joystick input this
-way, and c64cast logs that the input was dropped.
+way, and c64cast logs that the input was dropped. On a C64 Ultimate with
+firmware 1.2.1 or newer, an XY pad can drive a mouse in the program too.
 
 ## Webcam
 

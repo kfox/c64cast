@@ -738,5 +738,158 @@ class JoystickSenderTest(unittest.TestCase):
             api.send_input.assert_called_once()
 
 
+def _mouse(transition, *buttons):
+    return machine_input.mouse_button_event(transition, list(buttons))
+
+
+def _move(x, y):
+    return {"kind": "mouse", "move": {"x": x, "y": y}}
+
+
+class MouseSenderTest(unittest.TestCase):
+    """Mouse buttons ride the joystick's batching and minimum hold; motion
+    gathers between requests and waits while the firmware's report queue is
+    backed up."""
+
+    def setUp(self):
+        lag = mock.patch.object(scenes, "_INJECT_MAX_LAG_S", 30.0)
+        lag.start()
+        self.addCleanup(lag.stop)
+
+    def _scene(self, tmp, *, mouse: bool = True):
+        scene, api = _make_scene(tmp, input_source="none")
+        api.profile.supports_rest_input = True
+        api.profile.supports_rest_mouse = mouse
+        scene._sender.is_running = lambda: True
+        return scene, api
+
+    def test_a_button_press_and_release_go_in_separate_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            scene.inject_mouse_button("left", True)
+            scene.inject_joystick(2, "left", True)
+            scene.inject_mouse_button("left", False)
+            self.assertEqual(
+                scene._next_batch(), [_mouse("press", "left"), _joy(2, "press", "left")]
+            )
+            self.assertEqual(scene._next_batch(), [_mouse("release", "left")])
+
+    def test_a_button_release_waits_for_the_minimum_hold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            scene._held.add(("mouse", "left"))
+            scene._mark_pressed({("mouse", "left")})
+            wait = scene._hold_remaining([_mouse("release", "left")])
+            self.assertGreater(wait, scenes._INJECT_MIN_HOLD_S - _CLOCK_TICK_S)
+
+    def test_a_stale_backlog_collapses_a_button_into_mouse_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            for transition in ("press", "release", "press", "release"):
+                scene._injected.put((0.0, _mouse(transition, "right")))
+            with mock.patch.object(scenes, "_INJECT_MAX_LAG_S", 0.0):
+                scene._collapse_stale()
+            self.assertEqual(
+                [event for _t, event in scene._collapsed],
+                [_mouse("press", "right"), _mouse("release", "right")],
+            )
+
+    def test_a_failed_post_resends_held_buttons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            scene._held |= {("mouse", "middle"), ("mouse", "left"), (1, "fire")}
+            self.assertEqual(
+                scene._held_state(),
+                [
+                    machine_input.RELEASE_ALL,
+                    _joy(1, "press", "fire"),
+                    _mouse("press", "left", "middle"),
+                ],
+            )
+
+    def test_motion_gathers_into_whole_counts_and_keeps_the_fractions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            for _ in range(3):
+                scene.inject_mouse_motion(1.5, -0.75)
+            self.assertEqual(scene._take_motion(), [_move(4, -2)])
+            scene.inject_mouse_motion(0.5, -0.25)
+            self.assertEqual(scene._take_motion(), [_move(1, 0)])
+            scene.inject_mouse_motion(0.0, -0.5)
+            self.assertEqual(scene._take_motion(), [_move(0, -1)])
+            self.assertEqual(scene._take_motion(), [])
+
+    def test_motion_past_one_report_splits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            scene.inject_mouse_motion(200.0, 0.0)
+            self.assertEqual(scene._take_motion(), [_move(127, 0), _move(73, 0)])
+
+    def test_motion_waits_while_the_firmware_is_backed_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            api.send_input.return_value = {"mouse": {"attached": True, "pending": 10}}
+            scene._post([_move(1, 0)])
+            scene.inject_mouse_motion(5.0, 0.0)
+            self.assertEqual(scene._take_motion(), [])
+            drained = (10 - scenes._MOUSE_MAX_BACKLOG) * machine_input.MOUSE_REPORT_INTERVAL_S
+            scene._mouse_backlog_at -= drained + _CLOCK_TICK_S
+            self.assertEqual(scene._take_motion(), [_move(5, 0)])
+
+    def test_a_reply_at_the_backlog_limit_lets_motion_through(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            api.send_input.return_value = {"mouse": {"pending": scenes._MOUSE_MAX_BACKLOG}}
+            scene._post([_move(1, 0)])
+            scene.inject_mouse_motion(3.0, 0.0)
+            self.assertEqual(scene._take_motion(), [_move(3, 0)])
+
+    def test_the_sender_posts_motion_and_teardown_forgets_the_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = _make_scene(tmp, input_source="none", reset_before_launch=False)
+            api.profile.supports_rest_input = True
+            api.profile.supports_rest_mouse = True
+            posted = threading.Event()
+
+            def send(events):
+                posted.set()
+                return {"mouse": {"pending": 1}}
+
+            api.send_input.side_effect = send
+            scene.setup()
+            self.addCleanup(scene._sender.stop)
+            scene._last_input_t = 0.0
+            scene.inject_mouse_motion(3.0, -4.0)
+            self.assertTrue(posted.wait(2.0))
+            self.assertEqual(api.send_input.call_args_list[0].args[0], [_move(3, -4)])
+            self.assertGreater(scene._last_input_t, 0.0)
+            scene._sender.stop()
+            with scene._motion_lock:
+                scene._motion_x = 9.0
+            scene.teardown()
+            self.assertEqual(api.send_input.call_args.args[0], [machine_input.RELEASE_ALL])
+            self.assertEqual((scene._motion_x, scene._motion_y), (0.0, 0.0))
+
+    def test_a_machine_without_the_mouse_drops_with_one_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp, mouse=False)
+            with self.assertLogs("c64cast.scenes.scenes", level="WARNING") as cm:
+                scene.inject_mouse_button("left", True)
+                scene.inject_mouse_motion(4.0, 0.0)
+            self.assertEqual(len(cm.records), 1)
+            self.assertIn("no mouse", cm.output[0])
+            self.assertTrue(scene._injected.empty())
+            self.assertEqual(scene._take_motion(), [])
+            scene.inject_joystick(2, "up", True)
+            self.assertFalse(scene._injected.empty())
+
+    def test_an_unknown_button_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            with self.assertRaises(ValueError):
+                scene.inject_mouse_button("fire", True)
+            self.assertTrue(scene._injected.empty())
+
+
 if __name__ == "__main__":
     unittest.main()

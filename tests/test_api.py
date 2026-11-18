@@ -1571,7 +1571,11 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def _refine_with(self, categories: object) -> None:
-        self.get.return_value.json.return_value = {"categories": categories, "errors": []}
+        self.get.return_value.json.return_value = {
+            "categories": categories,
+            "mouse": {"attached": False, "inputs": [], "pending": 0},
+            "errors": [],
+        }
         self.api.refine_capabilities()
 
     def test_u64_category_list_keeps_the_sid_surface(self):
@@ -1957,6 +1961,36 @@ class SendInputTest(unittest.TestCase):
         get.return_value.status_code = 200
         self.api._refine_route_capabilities()
         self.assertTrue(self.api.profile.supports_rest_input)
+
+    def test_refine_grants_the_mouse_when_the_input_state_has_one(self):
+        get = patch.object(self.api.session, "get").start()
+        get.return_value.status_code = 200
+        get.return_value.json.return_value = {
+            "mouse": {"attached": False, "inputs": [], "pending": 0},
+            "errors": [],
+        }
+        self.api._refine_route_capabilities()
+        self.assertTrue(self.api.profile.supports_rest_mouse)
+
+    def test_refine_leaves_the_mouse_off_with_one_line_when_the_state_has_none(self):
+        get = patch.object(self.api.session, "get").start()
+        get.return_value.status_code = 200
+        get.return_value.json.return_value = {"keyboard": {"inputs": []}, "errors": []}
+        self.api.profile = replace(self.api.profile, supports_rest_mouse=True)
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self.api._refine_route_capabilities()
+        self.assertFalse(self.api.profile.supports_rest_mouse)
+        self.assertEqual(len(cm.records), 1)
+        self.assertIn("no mouse", cm.output[0])
+
+    def test_refine_asks_for_no_mouse_without_the_input_route(self):
+        get = patch.object(self.api.session, "get").start()
+        get.return_value.status_code = 404
+        get.return_value.content = b""
+        with self.assertLogs("c64cast.hw.api", level="INFO"):
+            self.api._refine_route_capabilities()
+        self.assertFalse(self.api.profile.supports_rest_mouse)
+        self.assertEqual(get.call_count, 2)
 
     def test_refine_revokes_the_flag_when_the_route_is_absent_or_unsupported(self):
         for status in (404, 501):

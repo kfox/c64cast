@@ -43,6 +43,7 @@ from c64cast.app import config as cfgmod
 from c64cast.control import midi_control
 from c64cast.control.midi_control import (
     MidiControlListener,
+    _PadAxis,
     _parse_cc_map,
     _parse_mmc_sysex,
 )
@@ -235,6 +236,10 @@ class MidiActionChoicesDriftTest(unittest.TestCase):
     def test_mmc_commands_match(self):
         self.assertEqual(midi_control._MMC_COMMANDS, set(cfgmod._MIDI_MMC_COMMAND_CHOICES))
 
+    def test_mouse_move_scale_bounds_match(self):
+        self.assertEqual(midi_control._PAD_MAX_SCALE, cfgmod._MIDI_MOUSE_MAX_SCALE)
+        self.assertEqual(midi_control._PAD_DEFAULT_SCALE, cfgmod._MIDI_MOUSE_DEFAULT_SCALE)
+
 
 @unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
 class _MidiControlTestCase(unittest.TestCase):
@@ -374,6 +379,167 @@ class JoystickDispatchTests(_MidiControlTestCase):
         ):
             with self.subTest(entry=entry), self.assertRaises(ValueError):
                 _parse_cc_map([entry])
+
+
+class PadAxisTest(unittest.TestCase):
+    """An XY pad axis reports absolute positions; the pointer follows their
+    change, and a change no stroke makes re-anchors instead of moving."""
+
+    def _steps(self, values_at):
+        axis = _PadAxis()
+        return [axis.step(value, at) for value, at in values_at]
+
+    def test_a_stroke_moves_by_each_change(self):
+        self.assertEqual(
+            self._steps([(60, 0.0), (64, 0.01), (70, 0.02), (69, 0.03)]), [0, 4, 6, -1]
+        )
+
+    def test_the_first_touch_only_anchors(self):
+        self.assertEqual(self._steps([(100, 5.0)]), [0])
+
+    def test_a_jump_too_large_for_a_stroke_re_anchors(self):
+        limit = midi_control._PAD_STROKE_MAX_STEP
+        self.assertEqual(
+            self._steps([(0, 0.0), (limit, 0.01), (limit * 2 + 1, 0.02), (limit * 2 + 3, 0.03)]),
+            [0, limit, 0, 2],
+        )
+
+    def test_a_touch_down_elsewhere_after_a_lift_moves_nothing(self):
+        quiet = midi_control._PAD_QUIET_S
+        creep = midi_control._PAD_CREEP_MAX_STEP
+        self.assertEqual(
+            self._steps(
+                [(60, 0.0), (61, 0.01), (61 + creep + 1, 0.01 + quiet), (70, 0.02 + quiet)]
+            ),
+            [0, 1, 0, 70 - (61 + creep + 1)],
+        )
+
+    def test_a_slow_drag_keeps_moving(self):
+        quiet = midi_control._PAD_QUIET_S
+        self.assertEqual(
+            self._steps([(60, 0.0), (61, quiet), (62, 2 * quiet), (60, 3 * quiet)]), [0, 1, 1, -2]
+        )
+
+
+class MouseDispatchTests(_MidiControlTestCase):
+    """mouse_button holds a button like joystick holds a direction;
+    mouse_move turns an XY pad's cc into motion on the current scene."""
+
+    X = {"type": "cc", "number": 12, "action": "mouse_move", "axis": "x"}
+    Y = {"type": "cc", "number": 13, "action": "mouse_move", "axis": "y"}
+
+    def _listener(self, *entries) -> tuple[MidiControlListener, Any]:
+        pl = _fake_playlist("system")
+        return MidiControlListener({"system": pl}, list(entries)), pl
+
+    def _cc(self, listener, number, *values):
+        for value in values:
+            listener._dispatch(mido.Message("control_change", control=number, value=value))
+
+    def test_note_on_presses_and_note_off_releases_a_button(self):
+        listener, pl = self._listener(
+            {"type": "note", "number": 50, "action": "mouse_button", "input": "left"}
+        )
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        listener._dispatch(mido.Message("note_off", note=50))
+        self.assertEqual(
+            pl.current.inject_mouse_button.call_args_list,
+            [mock.call("left", True), mock.call("left", False)],
+        )
+
+    def test_a_cc_button_presses_at_64_and_up(self):
+        listener, pl = self._listener(
+            {"type": "cc", "number": 20, "action": "mouse_button", "input": "right"}
+        )
+        self._cc(listener, 20, 127, 0)
+        self.assertEqual(
+            pl.current.inject_mouse_button.call_args_list,
+            [mock.call("right", True), mock.call("right", False)],
+        )
+
+    def test_x_moves_right_and_y_moves_up_the_screen_by_scale(self):
+        listener, pl = self._listener(self.X, self.Y)
+        self._cc(listener, 12, 60, 65)
+        self._cc(listener, 13, 60, 65)
+        self.assertEqual(
+            pl.current.inject_mouse_motion.call_args_list,
+            [mock.call(10.0, 0.0), mock.call(0.0, -10.0)],
+        )
+
+    def test_scale_and_invert_apply_per_axis(self):
+        listener, pl = self._listener(
+            {**self.X, "scale": 0.5, "invert": True}, {**self.Y, "invert": True}
+        )
+        self._cc(listener, 12, 60, 65)
+        self._cc(listener, 13, 60, 65)
+        self.assertEqual(
+            pl.current.inject_mouse_motion.call_args_list,
+            [mock.call(-2.5, 0.0), mock.call(0.0, 10.0)],
+        )
+
+    def test_the_axes_anchor_independently(self):
+        listener, pl = self._listener(self.X, self.Y)
+        self._cc(listener, 12, 60)
+        self._cc(listener, 13, 10)
+        self._cc(listener, 12, 61)
+        pl.current.inject_mouse_motion.assert_called_once_with(2.0, 0.0)
+
+    def test_a_scene_without_a_mouse_still_tracks_the_pad(self):
+        listener, pl = self._listener(self.X)
+        launcher = pl.current
+        pl.current = object()
+        self._cc(listener, 12, 60, 64)
+        pl.current = launcher
+        self._cc(listener, 12, 66)
+        launcher.inject_mouse_motion.assert_called_once_with(4.0, 0.0)
+
+    def test_a_held_button_is_released_when_the_port_disappears(self):
+        listener, pl = self._listener(
+            {"type": "note", "number": 50, "action": "mouse_button", "input": "left"}
+        )
+        listener._opened_port_name = "Pads MIDI 1"
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        with (
+            mock.patch.object(_midi, "mido") as fake,
+            self.assertLogs("c64cast.control.midi_control", level="WARNING"),
+        ):
+            fake.get_input_names.return_value = []
+            listener._port_watch.check()
+        pl.current.inject_mouse_button.assert_called_with("left", False)
+
+    def test_malformed_entries_are_refused(self):
+        for entry in (
+            {"type": "note", "number": 50, "action": "mouse_button"},
+            {"type": "note", "number": 50, "action": "mouse_button", "input": "fire"},
+            {"type": "pc", "number": 50, "action": "mouse_button", "input": "left"},
+            {"type": "note", "number": 12, "action": "mouse_move", "axis": "x"},
+            {"type": "cc", "number": 12, "action": "mouse_move"},
+            {"type": "cc", "number": 12, "action": "mouse_move", "axis": "z"},
+            {**self.X, "scale": 0},
+            {**self.X, "scale": -1.0},
+            {**self.X, "scale": 16.5},
+            {**self.X, "scale": True},
+            {**self.X, "scale": "2"},
+            {**self.X, "invert": 1},
+        ):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                _parse_cc_map([entry])
+
+    def test_the_largest_scale_is_accepted(self):
+        mapping = _parse_cc_map([{**self.X, "scale": 16}])[("cc", 12)]
+        self.assertEqual(mapping.scale, 16.0)
+
+    def test_a_joystick_on_port_1_cannot_be_mapped_with_the_mouse(self):
+        joystick = {"type": "note", "number": 40, "action": "joystick", "input": "up"}
+        for mouse in (
+            self.X,
+            {"type": "note", "number": 50, "action": "mouse_button", "input": "left"},
+        ):
+            with self.subTest(mouse=mouse):
+                with self.assertRaises(ValueError):
+                    _parse_cc_map([{**joystick, "port": 1}, mouse])
+                _parse_cc_map([{**joystick, "port": 2}, mouse])
+                _parse_cc_map([joystick, mouse])
 
 
 class UnpluggedControllerTests(_MidiControlTestCase):

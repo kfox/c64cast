@@ -568,6 +568,52 @@ class MidiControlJoystickTest(unittest.TestCase):
                 self._check(entry)
 
 
+class MidiControlMouseTest(unittest.TestCase):
+    """validate_midi_control_cfg guards the mouse actions' shape, and a
+    joystick on port 1 next to the mouse the firmware drives there too."""
+
+    X = {"type": "cc", "number": 12, "action": "mouse_move", "axis": "x"}
+    LEFT = {"type": "note", "number": 50, "action": "mouse_button", "input": "left"}
+
+    def _check(self, *entries: dict) -> None:
+        from dataclasses import replace
+
+        cfg = replace(cfgmod.MidiControlCfg(), enabled=True, cc_map=list(entries))
+        scene_factory.validate_midi_control_cfg(cfg)
+
+    def test_valid_entries_pass(self):
+        self._check(self.X, {**self.X, "number": 13, "axis": "y", "scale": 0.5, "invert": True})
+        self._check(self.LEFT, {**self.LEFT, "type": "cc", "number": 20, "input": "middle"})
+        self._check({**self.X, "scale": 16})
+        self._check(self.X, {"type": "note", "number": 40, "action": "joystick", "input": "up"})
+
+    def test_bad_entries_raise(self):
+        for entry in (
+            {"type": "note", "number": 50, "action": "mouse_button"},
+            {**self.LEFT, "input": "fire"},
+            {**self.LEFT, "type": "pc"},
+            {**self.X, "type": "note"},
+            {"type": "cc", "number": 12, "action": "mouse_move"},
+            {**self.X, "axis": "z"},
+            {**self.X, "scale": 0},
+            {**self.X, "scale": 16.5},
+            {**self.X, "scale": True},
+            {**self.X, "scale": "2"},
+            {**self.X, "invert": "yes"},
+        ):
+            with self.subTest(entry=entry), self.assertRaises(cfgmod.ConfigError):
+                self._check(entry)
+
+    def test_a_joystick_on_port_1_with_the_mouse_raises(self):
+        joystick = {"type": "note", "number": 40, "action": "joystick", "input": "up", "port": 1}
+        for mouse in (self.X, self.LEFT):
+            with self.subTest(mouse=mouse):
+                with self.assertRaises(cfgmod.ConfigError) as ctx:
+                    self._check(joystick, mouse)
+                self.assertIn("port 1", str(ctx.exception))
+                self._check({**joystick, "port": 2}, mouse)
+
+
 class MidiControlJumpTest(unittest.TestCase):
     def _check(self, scene: object) -> None:
         from dataclasses import replace
