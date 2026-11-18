@@ -741,6 +741,8 @@ Two transports are in play:
   * `GET /v1/machine:readmem` — keyboard poller, waveform scene,
     U64-ping overlay
   * `PUT /v1/machine:reset` — between scenes
+  * `PUT /v1/machine:reboot` — in place of the reset after a `.crt`
+    cartridge, which a reset would start again
   * `POST /v1/runners:run_crt` — a `launcher` scene's `.crt` cartridge
   * `GET /` — startup reachability probe
 
@@ -1050,8 +1052,9 @@ DMARUN) or `.crt` cartridge (`/v1/runners:run_crt`) chosen
 by extension, and then hands the whole machine to it. From that point the
 program owns the VIC, SID, and CIAs — c64cast stops painting; the scene
 only polls for player input and times out. `teardown()` resets the machine
-so the next scene starts clean (mandatory for `.crt`, which `run_crt` leaves
-active). Consequences worth knowing:
+so the next scene starts clean. After a `.crt` that reset is a
+`machine:reboot`, because `run_crt` leaves the cartridge in and a plain
+`machine:reset` would start it again. Consequences worth knowing:
 
 * **`duration_s` is an idle timeout, not a runtime.** It resets on player
   input, so an actively-played game stays up and an untouched demo runs the

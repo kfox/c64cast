@@ -371,6 +371,7 @@ class U64_API:
     # (see api.run_sid_player). Neither may be added here.
     READ_MEM: Final = "/v1/machine:readmem"
     RESET: Final = "/v1/machine:reset"
+    REBOOT: Final = "/v1/machine:reboot"
     RUN_CRT: Final = "/v1/runners:run_crt"
     VERSION: Final = "/v1/version"
     # Firmware 3.15+; probed per connection (Ultimate64API.probe_route).
