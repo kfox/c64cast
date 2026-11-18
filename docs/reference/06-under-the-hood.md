@@ -97,17 +97,18 @@ every chip's scope, but only the first is audible.
 Some features depend on what an Ultimate's firmware answers rather than on
 which backend it is. c64cast asks for each of them at runtime and never reads a
 version number to decide, so a machine whose firmware picks a feature up later
-gets it then without a c64cast change. Ultimate 64 firmware 3.15a answers
-all of the ones below, and C64 Ultimate firmware 1.1.0 answers none of them.
+gets it then without a c64cast change. Ultimate 64 firmware 3.15a and C64
+Ultimate firmware 1.2.1 answer all of the ones below, and C64 Ultimate firmware
+1.1.0 answers none of them.
 
-| Feature | Ultimate 64 firmware 3.15a and later | Ultimate 64 firmware before 3.15a | C64 Ultimate firmware 1.1.0 | Without it |
-|---|---|---|---|---|
-| Live palette read, for `host_palette = auto` | ✓ | — | — | The Ultimate 64's built-in palette is assumed, with a warning when the machine has a custom `.vpl` loaded |
-| Palette push, for `[color].hardware_palette = "source"` | ✓ | — | — | Scenes show the machine's own palette, after one warning |
-| `Vol Master`, the mixer's master level: read when deciding whether audio is audible, and raised from `OFF` for a run that wants audio | ✓ | ✓ from 3.15 | — | Nothing to read or raise; every source plays at its own level |
-| Closes a DMA connection idle for one second | ✓ | — | — | Nothing to recover from: the connection stays open, and the check before each write finds it alive |
-| Telling that the Ultimate menu is open, in `--doctor` and at startup | ✓ | ✓ from 3.15 | — | No warning: an open menu takes the keyboard and hides the picture with nothing on the host side to say why |
-| The `[midi_control]` `joystick` action, driving a launched program's joystick ports | ✓ | ✓ from 3.15 | — | The mapping does nothing, with one warning per launcher scene |
+| Feature | Ultimate 64 firmware 3.15a and later | Ultimate 64 firmware before 3.15a | C64 Ultimate firmware 1.2.1 and later | C64 Ultimate firmware 1.1.0 | Without it |
+|---|---|---|---|---|---|
+| Live palette read, for `host_palette = auto` | ✓ | — | ✓ | — | The Ultimate 64's built-in palette is assumed, with a warning when the machine has a custom `.vpl` loaded |
+| Palette push, for `[color].hardware_palette = "source"` | ✓ | — | ✓ | — | Scenes show the machine's own palette, after one warning |
+| `Vol Master`, the mixer's master level: read when deciding whether audio is audible, and raised from `OFF` for a run that wants audio | ✓ | ✓ from 3.15 | ✓ | — | Nothing to read or raise; every source plays at its own level |
+| Closes a DMA connection idle for one second | ✓ | — | ✓ | — | Nothing to recover from: the connection stays open, and the check before each write finds it alive |
+| Telling that the Ultimate menu is open, in `--doctor` and at startup | ✓ | ✓ from 3.15 | ✓ | — | No warning: an open menu takes the keyboard and hides the picture with nothing on the host side to say why |
+| The `[midi_control]` `joystick` action, driving a launched program's joystick ports | ✓ | ✓ from 3.15 | ✓ | — | The mapping does nothing, with one warning per launcher scene |
 
 The `mouse_button` and `mouse_move` actions need the mouse that route gained
 later: c64cast looks for a `mouse` object in the route's reply when it

@@ -6,9 +6,11 @@ test_socket_dma.py."""
 
 from __future__ import annotations
 
+import os
 import random
 import socket
 import struct
+import tempfile
 import threading
 import time
 import unittest
@@ -972,6 +974,64 @@ class LaunchProgramTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.api.launch_program(self._write(tmp, "game.prg"))
         self.dmarun.assert_not_called()
+
+
+class ResetAfterCartridgeTest(unittest.TestCase):
+    """A `machine:reset` restarts whatever cartridge `run_crt` started, so
+    `reset()` reboots instead until something puts the configured cartridge
+    back: the reboot itself, or a DMARUN kick."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.addCleanup(patch.stopall)
+        patch.object(self.api, "flush").start()
+        patch.object(self.api, "_flush_failure", return_value=None).start()
+        patch.object(self.api, "invalidate_cache").start()
+        patch.object(self.api, "blank_display").start()
+        self.post = patch.object(self.api.session, "post").start()
+        self.post.return_value.raise_for_status.return_value = None
+        self.put = patch.object(self.api.session, "put").start()
+        self.dmarun = patch.object(self.api.socket_dma, "dmarun").start()
+        self.tmp = tempfile.mkdtemp()
+
+    def _launch(self, name, data=b"\x01\x08"):
+        path = os.path.join(self.tmp, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        self.api.launch_program(path)
+
+    def _reset_url(self):
+        self.put.reset_mock()
+        self.api.reset()
+        return self.put.call_args.args[0]
+
+    def test_reset_after_a_cartridge_reboots(self):
+        self._launch("cart.crt")
+        self.assertEqual(self._reset_url(), self.api.reboot_url)
+
+    def test_the_reset_after_that_reboot_is_a_plain_reset(self):
+        self._launch("cart.crt")
+        self.api.reset()
+        self.assertEqual(self._reset_url(), self.api.reset_url)
+
+    def test_a_dmarun_kick_after_the_cartridge_puts_back_the_plain_reset(self):
+        self._launch("cart.crt")
+        self._launch("game.prg")
+        self.assertEqual(self._reset_url(), self.api.reset_url)
+
+    def test_a_reboot_that_failed_is_tried_again(self):
+        self._launch("cart.crt")
+        self.put.side_effect = requests.ConnectionError("down")
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.reset()
+        self.put.side_effect = None
+        self.assertEqual(self._reset_url(), self.api.reboot_url)
+
+    def test_reset_without_a_cartridge_stays_a_plain_reset(self):
+        self.assertEqual(self._reset_url(), self.api.reset_url)
 
 
 class FlushOrRaiseOwnWritesTest(unittest.TestCase):

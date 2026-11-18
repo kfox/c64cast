@@ -247,12 +247,12 @@ port = 2             # 1 or 2; 2 when left out
 ```
 
 The input goes through the Ultimate's `POST /v1/machine:input`, which arrived
-in Ultimate 64 firmware 3.15. c64cast checks for it when it connects, not by
+in Ultimate 64 firmware 3.15 and is in C64 Ultimate firmware 1.2.1. c64cast checks for it when it connects, not by
 version number:
 
 | Machine | `joystick` mapping |
 |---|---|
-| Ultimate 64 on 3.15 or newer | Drives the joystick port |
+| Ultimate 64 on 3.15 or newer, C64 Ultimate on 1.2.1 or newer | Drives the joystick port |
 | Ultimate 64 on 3.14 or older, C64 Ultimate on 1.1.0 | Dropped. The route does not exist, and the connect log says so |
 | Ultimate II+ on 3.15 | Dropped. The firmware answers that a cartridge cannot drive the lines |
 | TeensyROM+ | Dropped |

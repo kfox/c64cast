@@ -22,6 +22,7 @@ The HTTP shim covers:
   GET  /                          → 200  (used by Ultimate64API.probe)
   GET  /v1/machine:readmem        → zeros (keyboard poller reads $028D)
   PUT  /v1/machine:reset          → 200
+  PUT  /v1/machine:reboot         → 200
   POST /v1/runners:run_crt        → 200  (.crt launcher)
   POST /v1/runners:sidplay        → 200
 """
@@ -199,6 +200,10 @@ class HTTPHandler(BaseHTTPRequestHandler):
         parts = urlsplit(self.path)
         if parts.path == "/v1/machine:reset":
             log.info("HTTP: PUT reset (ignored)")
+            self._ok(b"")
+            return
+        if parts.path == "/v1/machine:reboot":
+            log.info("HTTP: PUT reboot (ignored)")
             self._ok(b"")
             return
         self.send_error(404)

@@ -2418,7 +2418,8 @@ class LauncherScene(MediaFileMixin, Scene):
     `inject_joystick`, `inject_mouse_button` and `inject_mouse_motion` are
     what the `[midi_control]` `joystick`, `mouse_button` and `mouse_move`
     mappings call. They need a machine with ``POST /v1/machine:input`` (an
-    Ultimate 64 on firmware 3.15+; the mouse, a C64 Ultimate on 1.2.1); a
+    Ultimate 64 on firmware 3.15+, a C64 Ultimate on 1.2.1+; the mouse, the
+    latter only); a
     sender thread posts the queued events, so the caller never waits on REST,
     and teardown releases whatever is still held before the reset.
     """
@@ -2575,7 +2576,10 @@ class LauncherScene(MediaFileMixin, Scene):
         if kind == "mouse" and profile.supports_rest_input and not profile.supports_rest_mouse:
             reason = "this machine's input API has no mouse (a C64 Ultimate on firmware 1.2.1+)"
         elif not profile.supports_rest_input:
-            reason = "this machine has no input API (an Ultimate 64 on firmware 3.15+)"
+            reason = (
+                "this machine has no input API (an Ultimate 64 on firmware 3.15+, "
+                "a C64 Ultimate on 1.2.1+)"
+            )
         elif not self._sender.is_running():
             reason = "the program is not running"
         else:

@@ -676,8 +676,9 @@ FPGA and core versions, and the firmware build hash on 3.15a and later.
 
 On Ultimate firmware 3.15 or newer, **CONNECTIVITY** also warns when the
 Ultimate menu is open on the machine, and `-v` logs the text the menu is
-showing. Doctor only reads the menu and never opens or closes it. Older
-firmware, including C64 Ultimate 1.1.0, cannot report the menu, so the row is
+showing; so does C64 Ultimate firmware 1.2.1 or newer. Doctor only reads the
+menu and never opens or closes it. Older firmware, including C64 Ultimate 1.1.0,
+cannot report the menu, so the row is
 left out.
 
 Each row is `ok`, `warn` or `error`. The exit code is 0 when every row is `ok`

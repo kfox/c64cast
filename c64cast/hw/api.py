@@ -1733,6 +1733,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         self.base_url = base_url.rstrip("/")
         self.read_url = f"{self.base_url}{U64_API.READ_MEM}"
         self.reset_url = f"{self.base_url}{U64_API.RESET}"
+        self.reboot_url = f"{self.base_url}{U64_API.REBOOT}"
+        self._cartridge_started = False
         self._reset_listeners: list[Callable[[], None]] = []
         # Per connection: a firmware update needs a reconnect anyway.
         self._route_answers: dict[str, RouteAnswer] = {}
@@ -2208,11 +2210,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         except Exception as e:
             log.debug("U64 reset: pre-reset display blank skipped (%s)", e)
         self.invalidate_cache()
+        # `machine:reset` restarts the cartridge `run_crt` started;
+        # `machine:reboot` puts the configured cartridge back first.
+        url = self.reboot_url if self._cartridge_started else self.reset_url
         try:
-            self.session.put(self.reset_url, timeout=2.0)
+            self.session.put(url, timeout=2.0)
         except requests.RequestException as e:
             log.warning("U64 reset failed: %s", e)
         else:
+            self._cartridge_started = False
             self._notify_reset()
 
     def _launch_sid_player(self, launch: _SidLaunch) -> bool:
@@ -2382,6 +2388,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             self.socket_dma.dmarun(prg, timeout=timeout)
         except (OSError, SocketDMAError) as e:
             raise RuntimeError(f"DMARUN failed: {e}") from e
+        # The kick boots through the firmware's own cartridge, which unseats one `run_crt` started.
+        self._cartridge_started = False
         self._notify_reset()
 
     def _post_crt(self, filename: str, payload: bytes, *, timeout: float) -> None:
@@ -2401,6 +2409,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                     "to launch this program (check firmware version)."
                 ) from e
             raise
+        self._cartridge_started = True
         self._notify_reset()
 
     def reu_write(self, reu_offset: int, data: bytes) -> None:

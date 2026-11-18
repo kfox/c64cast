@@ -98,8 +98,8 @@ input = "fire"   # up, down, left, right, fire, fire2, fire3
 port = 2             # the joystick port; 2 is the default
 ```
 
-This needs an Ultimate 64 on firmware 3.15 or newer, which can press keys and
-move joysticks on the machine for c64cast. On anything else the pad does
+This needs an Ultimate 64 on firmware 3.15 or newer, or a C64 Ultimate on 1.2.1
+or newer, which can press keys and move joysticks on the machine for c64cast. On anything else the pad does
 nothing, and the log says why.
 
 A C64 Ultimate on firmware 1.2.1 or newer can also be given a mouse. An XY pad
