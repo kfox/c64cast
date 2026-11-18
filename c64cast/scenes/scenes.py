@@ -2396,7 +2396,8 @@ class LauncherScene(MediaFileMixin, Scene):
 
     Joystick input can also be driven *into* the program: `inject_joystick`
     is what a `[midi_control]` `joystick` mapping calls. It needs a machine
-    with ``POST /v1/machine:input`` (an Ultimate 64 on firmware 3.15+); a
+    with ``POST /v1/machine:input`` (an Ultimate 64 on firmware 3.15+, a C64
+    Ultimate on 1.2.1+); a
     sender thread posts the queued events, so the caller never waits on REST,
     and teardown releases whatever is still held before the reset.
     """
@@ -2523,7 +2524,8 @@ class LauncherScene(MediaFileMixin, Scene):
                     "launcher: joystick input dropped — %s",
                     "the program is not running"
                     if self.api.profile.supports_rest_input
-                    else "this machine has no input API (an Ultimate 64 on firmware 3.15+)",
+                    else "this machine has no input API (an Ultimate 64 on firmware 3.15+, "
+                    "a C64 Ultimate on 1.2.1+)",
                 )
             return
         self._enqueue(event)

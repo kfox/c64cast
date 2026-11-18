@@ -136,8 +136,8 @@ film, and that is sometimes exactly what you want.
 
 ### Changing the Machine's Own Colors
 
-An Ultimate 64 on firmware 3.15a or newer can do something no real Commodore
-can: show sixteen colors of c64cast's choosing. Turn it on and each video and
+An Ultimate 64 on firmware 3.15a or newer, or a C64 Ultimate on 1.2.1 or newer,
+can do something no real Commodore can: show sixteen colors of c64cast's choosing. Turn it on and each video and
 slideshow image gets a palette fitted to what it actually contains, with
 black, white and the grays left alone:
 
