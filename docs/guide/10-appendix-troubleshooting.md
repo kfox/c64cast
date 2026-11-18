@@ -111,7 +111,8 @@ network connection, a lower frame rate, or a character display mode.
 **A steady hiss under everything, on a TeensyROM+.** If the TeensyROM+ is in a
 C64U or an Ultimate 64, check the Ultimate's **Bus Operation Mode**, which
 defaults to **Quiet**. Set it to **Writes**; Chapter 1 has the steps. On
-Ultimate 64 firmware 3.15 there is also **Compatibility**, which includes
+Ultimate 64 firmware 3.15 and C64 Ultimate firmware 1.2.1 there is also
+**Compatibility**, which includes
 writes, but **Writes** remains the tested setting.
 
 **No audio at all.** Check that `[audio] enabled` is true and that you did

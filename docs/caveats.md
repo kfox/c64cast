@@ -136,7 +136,7 @@ substitutes for it:
 
 The choices are `Quiet` (the firmware default), `Writes`, `Dynamic` and
 `Dyn. & Writes`; the last also serves, since it includes writes. Ultimate 64
-firmware 3.15 adds a fifth, `Compatibility`, which the firmware also sets up
+firmware 3.15 and C64 Ultimate firmware 1.2.1 add a fifth, `Compatibility`, which the firmware also sets up
 with writes enabled; `Writes` remains the tested setting. Back out with
 <kbd>RUN/STOP</kbd> and save when asked — this one has to persist in the
 machine's own settings, because c64cast cannot provision it live the way it does

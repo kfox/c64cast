@@ -321,8 +321,8 @@ class HardwareCfg:
         metadata={
             "help": "The 16 colors the C64 being driven actually emits, which "
             "the quantizer aims at. 'auto' (default) reads it from the machine "
-            "where it can — an Ultimate 64 on firmware 3.15a or newer reports the "
-            "colors it is really driving, a custom .vpl included; an Ultimate 64 "
+            "where it can — an Ultimate 64 on firmware 3.15a or newer, or a C64 "
+            "Ultimate on 1.2.1 or newer, reports the colors it is really driving, a custom .vpl included; an Ultimate 64 "
             "that cannot answer is assumed to show its built-in table. Any "
             "other machine drives a real C64: a VIC-II Kawari in it reports the "
             "palette it is driving, and a stock VIC-II is assumed, as it is "
@@ -2005,7 +2005,7 @@ class ColorCfg:
             "put back before the next scene that does not use it, and at exit. "
             "Video and slideshow scenes only, "
             "since they can see their content first. Needs an Ultimate 64 on "
-            "firmware 3.15a or newer; elsewhere it is skipped with a warning. "
+            "firmware 3.15a or newer or a C64 Ultimate on 1.2.1 or newer; elsewhere it is skipped with a warning. "
             "Cannot be combined with force_palette or flicker_tolerance.",
             "choices": HARDWARE_PALETTE_CHOICES,
         },
@@ -2801,7 +2801,8 @@ class MidiControlCfg:
             "(default 2) of a program a launcher scene is running, for as long "
             "as the note or pad is held (type 'note' or 'cc' only; a cc counts "
             "as held at a value of 64 or more); it needs an Ultimate 64 on firmware "
-            "3.15 or newer and does nothing in any other scene."
+            "3.15 or newer or a C64 Ultimate on 1.2.1 or newer, and does nothing "
+            "in any other scene."
         },
     )
     controller_profile: str = field(

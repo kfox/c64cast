@@ -488,8 +488,8 @@ The keyboard belongs to the program too: the Commodore key, <kbd>CTRL</kbd>
 and <kbd>SHIFT</kbd> do not pause, skip or restyle while it runs. MIDI and
 the web console still can.
 
-On an Ultimate 64 with firmware 3.15 or newer, the launched game can also be
-played from a MIDI pad grid or keyboard: map a note to a joystick direction or
+On an Ultimate 64 with firmware 3.15 or newer, or a C64 Ultimate with 1.2.1 or
+newer, the launched game can also be played from a MIDI pad grid or keyboard: map a note to a joystick direction or
 the fire button, and holding the pad holds the joystick. "Playing c64cast
 Live" in Chapter 5 shows the mapping. Older firmware, the C64 Ultimate on
 1.1.0, the Ultimate II+ and the TeensyROM cannot take joystick input this

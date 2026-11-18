@@ -450,8 +450,9 @@ configuration file makes sense, and that the Commodore answers.
 When an Ultimate answers, a line in the CONNECTIVITY section names the
 machine and its firmware, such as
 `Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)`.
-The `build` part appears from Ultimate firmware 3.15a onward; older firmware
-and the C64 Ultimate leave it out, and the rest of the line reads the same.
+The `build` part appears from Ultimate 64 firmware 3.15a and C64 Ultimate
+firmware 1.2.1 onward; older firmware leaves it out, and the rest of the line
+reads the same.
 
 Add `--skip-probe` to run every check except the ones that touch the
 Commodore. This is the fast, offline version, and it is the one to reach for
