@@ -56,9 +56,11 @@ profile, then your own `cc_map`.
 | Performance | `clip_launch`, `tempo_tap`, `look_save`, `look_recall` |
 | Feedback | `osd.position` |
 | Machine joystick | `joystick` |
+| Machine mouse | `mouse_button`, `mouse_move` |
 
 A `cc_map` entry is a `type` (`note`, `cc`, `pc` or `mmc`), a `number`, an
-`action`, and for `param` a `target`.
+`action`, and for `param` a `target`. A `mouse_move` entry takes one `cc` of
+an XY pad and names its `axis`, `x` or `y`.
 
 ## Pad Chords
 

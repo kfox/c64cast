@@ -1,5 +1,5 @@
-"""Events for ``POST /v1/machine:input``, the keyboard and joystick injection
-firmware 3.15 added on the Ultimate 64: their vocabulary, the firmware's
+"""Events for ``POST /v1/machine:input``, the keyboard, joystick and mouse
+injection newer Ultimate firmware has: their vocabulary, the firmware's
 limits, and the split of a long sequence into request bodies the firmware
 accepts.
 
@@ -7,12 +7,13 @@ Pure: nothing here talks to the machine. ``Ultimate64API.send_input`` posts
 what `encode_batches` returns, so every limit the firmware enforces is checked
 here first, where a bad event is a ``ValueError`` naming it rather than a 400
 that drops the whole batch. The vocabulary and limits are the firmware's
-(``software/api/input_api.h`` and ``route_input.cc`` at v3.15a).
+(``software/api/input_api.h`` and ``route_input.cc`` at v3.15a; the mouse
+from the upstream master that C64 Ultimate 1.2.1 ships).
 
 Key names are keyboard-matrix positions, not characters: a double quote is
 ``left_shift`` with ``2``. `text_to_events` does that mapping for typing.
 
-See docs/architecture/hardware-io.md#machine_inputpy--keyboard-and-joystick-injection.
+See docs/architecture/hardware-io.md#machine_inputpy--keyboard-joystick-and-mouse-injection.
 """
 
 from __future__ import annotations
@@ -32,6 +33,11 @@ POST_TIMEOUT_S: Final = 2.0
 TRANSITIONS: Final = ("press", "release", "tap")
 JOYSTICK_PORTS: Final = (1, 2)
 JOYSTICK_INPUTS: Final = ("up", "down", "left", "right", "fire", "fire2", "fire3")
+MOUSE_BUTTONS: Final = ("left", "right", "middle")
+# HID counts per axis in one `move`, a USB mouse report's signed byte.
+MAX_MOUSE_MOTION: Final = 127
+# How often the firmware sends a queued mouse report, as it polls a USB mouse.
+MOUSE_REPORT_INTERVAL_S: Final = 0.02
 
 # `restore` is the NMI line, not a matrix key, so the firmware acts on it only
 # in a tap.
@@ -90,15 +96,65 @@ def joystick_event(port: int, transition: str, inputs: Sequence[str]) -> Event:
     return {"kind": "joystick", "port": port, "transition": transition, "inputs": list(inputs)}
 
 
+def mouse_button_event(transition: str, inputs: Sequence[str]) -> Event:
+    return {"kind": "mouse", "transition": transition, "inputs": list(inputs)}
+
+
+def mouse_move_events(dx: int, dy: int) -> list[Event]:
+    """The `move` events that carry `dx`, `dy` HID counts, each axis split
+    into steps of at most `MAX_MOUSE_MOTION`. Positive y is down."""
+    events: list[Event] = []
+    while dx or dy:
+        x = max(-MAX_MOUSE_MOTION, min(MAX_MOUSE_MOTION, dx))
+        y = max(-MAX_MOUSE_MOTION, min(MAX_MOUSE_MOTION, dy))
+        events.append({"kind": "mouse", "move": {"x": x, "y": y}})
+        dx -= x
+        dy -= y
+    return events
+
+
+def mouse_pending(state: dict[str, Any] | None) -> int | None:
+    """The firmware's count of mouse reports still queued, from a reply to
+    ``machine:input``, or None when the reply does not carry one."""
+    mouse = state.get("mouse") if state else None
+    pending = mouse.get("pending") if isinstance(mouse, dict) else None
+    if isinstance(pending, int) and not isinstance(pending, bool):
+        return pending
+    return None
+
+
+def _is_motion(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and -MAX_MOUSE_MOTION <= value <= MAX_MOUSE_MOTION
+    )
+
+
+def _validate_mouse_move(event: Event) -> None:
+    if set(event) != {"kind", "move"}:
+        raise ValueError(f"a mouse move needs exactly ['kind', 'move']: {event!r}")
+    move = event["move"]
+    if not isinstance(move, dict) or not move or not set(move) <= {"x", "y"}:
+        raise ValueError(f"move must hold x, y or both: {event!r}")
+    if not all(_is_motion(value) for value in move.values()):
+        raise ValueError(f"move counts must be integers within ±{MAX_MOUSE_MOTION}: {event!r}")
+
+
 def validate_event(event: Event) -> None:
-    """Raise ValueError when the firmware would refuse `event`."""
+    """Raise ValueError when the firmware would refuse `event`. Of the mouse
+    events, only button changes and `move` are accepted, the two c64cast
+    sends."""
     kind = event.get("kind")
     if kind == "release_all":
         if set(event) != {"kind"}:
             raise ValueError(f"release_all takes no other key: {event!r}")
         return
-    if kind not in ("keyboard", "joystick"):
-        raise ValueError(f"event kind must be keyboard, joystick or release_all: {event!r}")
+    if kind not in ("keyboard", "joystick", "mouse"):
+        raise ValueError(f"event kind must be keyboard, joystick, mouse or release_all: {event!r}")
+    if kind == "mouse" and "move" in event:
+        _validate_mouse_move(event)
+        return
     allowed = {"kind", "transition", "inputs"} | ({"port"} if kind == "joystick" else set())
     if set(event) != allowed:
         raise ValueError(f"{kind} event needs exactly {sorted(allowed)}: {event!r}")
@@ -118,6 +174,11 @@ def validate_event(event: Event) -> None:
             raise ValueError(f"unknown key names {unknown}: {event!r}")
         if RESTORE in inputs and transition != "tap":
             raise ValueError(f"restore can only be tapped: {event!r}")
+        return
+    if kind == "mouse":
+        unknown = [name for name in inputs if name not in MOUSE_BUTTONS]
+        if unknown:
+            raise ValueError(f"unknown mouse buttons {unknown}: {event!r}")
         return
     if not is_joystick_port(event["port"]):
         raise ValueError(f"joystick port must be 1 or 2: {event!r}")

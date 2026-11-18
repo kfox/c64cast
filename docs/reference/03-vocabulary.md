@@ -280,7 +280,9 @@ leaves `duration_s` a plain timer, which is what a demo wants. The pause and
 skip modifier keys are deliberately never counted as play.
 
 A `[midi_control]` `joystick` mapping drives joystick input *into* the
-program while this scene runs (Chapter 6, "Driving the Machine's Joystick").
+program while this scene runs (Chapter 6, "Driving the Machine's Joystick"),
+and `mouse_button` and `mouse_move` mappings drive a mouse ("Driving the
+Machine's Mouse").
 Each injection counts as a player for the idle timeout, and whatever is still
 held is released when the scene ends.
 

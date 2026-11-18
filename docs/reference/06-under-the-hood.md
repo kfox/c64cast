@@ -109,6 +109,11 @@ all of the ones below, and C64 Ultimate firmware 1.1.0 answers none of them.
 | Telling that the Ultimate menu is open, in `--doctor` and at startup | ✓ | ✓ from 3.15 | — | No warning: an open menu takes the keyboard and hides the picture with nothing on the host side to say why |
 | The `[midi_control]` `joystick` action, driving a launched program's joystick ports | ✓ | ✓ from 3.15 | — | The mapping does nothing, with one warning per launcher scene |
 
+The `mouse_button` and `mouse_move` actions need the mouse that route gained
+later: c64cast looks for a `mouse` object in the route's reply when it
+connects, rather than at a version number. C64 Ultimate firmware 1.2.1 has it;
+without it the mapping does nothing, with one warning per launcher scene.
+
 The palette read goes over the Command Interface, and is asked of an Ultimate
 64 only: an Ultimate II+ drives a real VIC-II, so `auto` assumes that rendering
 without asking. [Chapter 3](04-display-pipeline.md) has the rest, under

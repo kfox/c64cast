@@ -2662,7 +2662,17 @@ _MIDI_ACTION_CHOICES = (
     # `input` direction/button and an optional `port` (1|2, default 2).
     # Mirrored in midi_control._ACTIONS.
     "joystick",
+    # The mouse the input API drives on port 1: `mouse_button` holds an
+    # `input` button like `joystick`; `mouse_move` turns one XY-pad `axis` cc
+    # into pointer motion. Mirrored in midi_control._ACTIONS.
+    "mouse_button",
+    "mouse_move",
 )
+# `mouse_move` keys, mirrored in midi_control (_PAD_AXES, _PAD_MAX_SCALE,
+# _PAD_DEFAULT_SCALE); tests/test_midi_control.py pins the two copies.
+_MIDI_MOUSE_AXIS_CHOICES = ("x", "y")
+_MIDI_MOUSE_MAX_SCALE = 16.0
+_MIDI_MOUSE_DEFAULT_SCALE = 2.0
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
 # "config stays import-light" rule; see scene_factory.validate_midi_control_cfg).
@@ -2801,7 +2811,18 @@ class MidiControlCfg:
             "(default 2) of a program a launcher scene is running, for as long "
             "as the note or pad is held (type 'note' or 'cc' only; a cc counts "
             "as held at a value of 64 or more); it needs an Ultimate 64 on firmware "
-            "3.15 or newer and does nothing in any other scene."
+            "3.15 or newer and does nothing in any other scene. 'mouse_button' "
+            "holds mouse button 'input' (left/right/middle) the same way, and "
+            "'mouse_move' (type 'cc' only) moves the pointer from one 'axis' "
+            "('x' or 'y') of an XY pad sending absolute positions: the pointer "
+            "follows the change from the last value, as on a trackpad, and a "
+            "jump too large for one stroke re-anchors instead of moving. "
+            "'scale' is HID counts per pad step (default "
+            f"{_MIDI_MOUSE_DEFAULT_SCALE:g}, at most {_MIDI_MOUSE_MAX_SCALE:g}) "
+            "and 'invert' = true reverses the axis; a pad's y grows upward. "
+            "The mouse is on control port 1, so a 'joystick' on port 1 cannot "
+            "be mapped with it; it needs a C64 Ultimate on firmware 1.2.1 or "
+            "newer."
         },
     )
     controller_profile: str = field(

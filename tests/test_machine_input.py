@@ -21,6 +21,10 @@ class ValidateEventTest(unittest.TestCase):
             mi.keyboard_event("tap", ["commodore", "restore"]),
             mi.joystick_event(2, "press", ["up", "fire"]),
             mi.joystick_event(1, "release", list(mi.JOYSTICK_INPUTS)),
+            mi.mouse_button_event("press", ["left"]),
+            mi.mouse_button_event("release", list(mi.MOUSE_BUTTONS)),
+            {"kind": "mouse", "move": {"x": 127, "y": -127}},
+            {"kind": "mouse", "move": {"y": 5}},
             mi.RELEASE_ALL,
         ):
             with self.subTest(event=event):
@@ -29,6 +33,7 @@ class ValidateEventTest(unittest.TestCase):
     def test_refuses_what_the_firmware_refuses(self):
         for event in (
             {"kind": "mouse"},
+            {"kind": "trackball"},
             {"kind": "release_all", "port": 1},
             {"kind": "keyboard", "action": "tap", "inputs": ["a"]},
             {"kind": "keyboard", "transition": "tap", "inputs": ["a"], "port": 1},
@@ -42,6 +47,20 @@ class ValidateEventTest(unittest.TestCase):
             mi.joystick_event(3, "tap", ["up"]),
             mi.joystick_event(True, "tap", ["up"]),
             mi.joystick_event(2, "tap", ["jump"]),
+            mi.mouse_button_event("press", []),
+            mi.mouse_button_event("press", ["left", "left"]),
+            mi.mouse_button_event("press", ["fire"]),
+            mi.mouse_button_event("hold", ["left"]),
+            {"kind": "mouse", "transition": "press", "inputs": ["left"], "port": 1},
+            {"kind": "mouse", "move": {"x": 128, "y": 0}},
+            {"kind": "mouse", "move": {"x": 0, "y": -128}},
+            {"kind": "mouse", "move": {"x": 1.5}},
+            {"kind": "mouse", "move": {"x": True}},
+            {"kind": "mouse", "move": {}},
+            {"kind": "mouse", "move": {"x": 1, "z": 1}},
+            {"kind": "mouse", "move": [1, 1]},
+            {"kind": "mouse", "move": {"x": 1}, "transition": "press"},
+            {"kind": "mouse", "wheel": {"vertical": 1}},
         ):
             with self.subTest(event=event), self.assertRaises(ValueError):
                 mi.validate_event(event)
@@ -68,6 +87,41 @@ class EncodeBatchesTest(unittest.TestCase):
     def test_one_bad_event_sends_nothing(self):
         with self.assertRaises(ValueError):
             mi.encode_batches([mi.keyboard_event("tap", ["a"]), mi.keyboard_event("tap", ["?"])])
+
+
+class MouseMoveEventsTest(unittest.TestCase):
+    def test_motion_within_one_report_is_one_move(self):
+        self.assertEqual(
+            mi.mouse_move_events(-5, 127), [{"kind": "mouse", "move": {"x": -5, "y": 127}}]
+        )
+
+    def test_motion_past_one_report_splits_at_the_limit(self):
+        events = mi.mouse_move_events(300, -130)
+        self.assertEqual(
+            [e["move"] for e in events],
+            [{"x": 127, "y": -127}, {"x": 127, "y": -3}, {"x": 46, "y": 0}],
+        )
+        for event in events:
+            mi.validate_event(event)
+
+    def test_no_motion_is_no_event(self):
+        self.assertEqual(mi.mouse_move_events(0, 0), [])
+
+
+class MousePendingTest(unittest.TestCase):
+    def test_reads_the_count_from_a_reply(self):
+        self.assertEqual(mi.mouse_pending({"mouse": {"attached": True, "pending": 7}}), 7)
+
+    def test_a_reply_without_one_is_none(self):
+        for state in (
+            None,
+            {},
+            {"mouse": None},
+            {"mouse": {"pending": "7"}},
+            {"mouse": {"pending": True}},
+        ):
+            with self.subTest(state=state):
+                self.assertIsNone(mi.mouse_pending(state))
 
 
 class TextToEventsTest(unittest.TestCase):

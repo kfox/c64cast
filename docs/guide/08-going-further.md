@@ -102,6 +102,32 @@ This needs an Ultimate 64 on firmware 3.15 or newer, which can press keys and
 move joysticks on the machine for c64cast. On anything else the pad does
 nothing, and the log says why.
 
+A C64 Ultimate on firmware 1.2.1 or newer can also be given a mouse. An XY pad
+moves the pointer like a trackpad, one `mouse_move` entry per axis, and a pad
+mapped to `mouse_button` holds a mouse button:
+
+```toml
+[[midi_control.cc_map]]
+type = "cc"
+number = 1            # the cc your XY pad sends for X
+action = "mouse_move"
+axis = "x"
+
+[[midi_control.cc_map]]
+type = "cc"
+number = 2            # and for Y
+action = "mouse_move"
+axis = "y"
+
+[[midi_control.cc_map]]
+type = "note"
+number = 61
+action = "mouse_button"
+input = "left"        # left, right, middle
+```
+
+The mouse is on control port 1, so keep any `joystick` mappings on port 2.
+
 > [!TIP]
 > There is more here than one section can cover: a tempo and beat grid, a
 > clip-launch grid with lit pads on controllers that support it, and a layerable

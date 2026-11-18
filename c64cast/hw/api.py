@@ -2006,7 +2006,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     def send_input(
         self, events: Sequence[dict[str, Any]], *, timeout: float = machine_input.POST_TIMEOUT_S
     ) -> dict[str, Any] | None:
-        """Inject keyboard and joystick events with ``POST /v1/machine:input``
+        """Inject keyboard, joystick and mouse events with ``POST /v1/machine:input``
         and return the state the machine reports afterwards: what the API and
         the Ultimate menu hold, not the physical keyboard or joysticks.
 
@@ -2071,6 +2071,16 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         has_input = self.probe_route(U64_API.INPUT, "keyboard and joystick injection")
         if has_input != self.profile.supports_rest_input:
             self.profile = replace(self.profile, supports_rest_input=has_input)
+        has_mouse = has_input and self._input_has_mouse()
+        if has_mouse != self.profile.supports_rest_mouse:
+            self.profile = replace(self.profile, supports_rest_mouse=has_mouse)
+
+    def _input_has_mouse(self) -> bool:
+        mouse = (self.input_state() or {}).get("mouse")
+        if not isinstance(mouse, dict):
+            log.info("this firmware's input API has no mouse — mouse injection skipped")
+            return False
+        return True
 
     def refine_capabilities(self) -> None:
         """Probe the REST routes firmware 3.15 added (`probe_route`), then one

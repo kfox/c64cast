@@ -198,6 +198,9 @@ class HardwareProfile:
     supports_rest_input: bool = False  # POST /v1/machine:input (firmware 3.15+,
     #   Ultimate 64 only): keyboard and joystick injection. Granted by the same
     #   probe, so False on an unprobed run.
+    supports_rest_mouse: bool = False  # the `mouse` event kind of that route
+    #   (C64 Ultimate 1.2.1): the reply to GET /v1/machine:input carries a
+    #   `mouse` object. Granted by the same probe, so False on an unprobed run.
     supports_debug_register: bool = False  # the Ultimate 64's $D7FF, which the
     #   6510 can write and socket-DMA 0xFF76 reads back. Granted by
     #   refine_capabilities, so False on an unprobed run: an Ultimate II+

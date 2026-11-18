@@ -2339,10 +2339,30 @@ _INJECT_MAX_LAG_S = 0.25
 # the reset that follow it reach the machine after that post. A sender request
 # changes each input at most once, so it is one body: one connect and one read.
 _INJECT_SENDER_JOIN_S = 2 * machine_input.POST_TIMEOUT_S + 0.5
+# Mouse reports the firmware may still have queued before more motion is sent:
+# 40 ms of pointer lag at most, where a fast pad would otherwise build seconds
+# of it, and a 1024-report queue it would overflow into a 429.
+_MOUSE_MAX_BACKLOG = 2
+
+_MOUSE = "mouse"
+# A held input: a joystick port and direction, or `_MOUSE` and a button.
+_InputKey = tuple[int | str, str]
 
 
-def _joystick_inputs(event: machine_input.Event) -> set[tuple[int, str]]:
-    return {(event["port"], name) for name in event["inputs"]}
+def _input_keys(event: machine_input.Event) -> set[_InputKey]:
+    port = event["port"] if event["kind"] == "joystick" else _MOUSE
+    return {(port, name) for name in event["inputs"]}
+
+
+def _pressed_keys(events: list[machine_input.Event]) -> set[_InputKey]:
+    return set().union(*(_input_keys(e) for e in events if e.get("transition") == "press"))
+
+
+def _key_event(key: _InputKey, transition: str) -> machine_input.Event:
+    port, name = key
+    if isinstance(port, int):
+        return machine_input.joystick_event(port, transition, [name])
+    return machine_input.mouse_button_event(transition, [name])
 
 
 class _InputSnapshot(NamedTuple):
@@ -2394,9 +2414,11 @@ class LauncherScene(MediaFileMixin, Scene):
     AudioStreamer (built with audio=None) but still WANTS_AUDIO_LOCK so it
     coordinates the ensemble slot like the SID/MIDI scenes.
 
-    Joystick input can also be driven *into* the program: `inject_joystick`
-    is what a `[midi_control]` `joystick` mapping calls. It needs a machine
-    with ``POST /v1/machine:input`` (an Ultimate 64 on firmware 3.15+); a
+    Joystick and mouse input can also be driven *into* the program:
+    `inject_joystick`, `inject_mouse_button` and `inject_mouse_motion` are
+    what the `[midi_control]` `joystick`, `mouse_button` and `mouse_move`
+    mappings call. They need a machine with ``POST /v1/machine:input`` (an
+    Ultimate 64 on firmware 3.15+; the mouse, a C64 Ultimate on 1.2.1); a
     sender thread posts the queued events, so the caller never waits on REST,
     and teardown releases whatever is still held before the reset.
     """
@@ -2465,9 +2487,16 @@ class LauncherScene(MediaFileMixin, Scene):
         # means the machine must be told that again.
         self._carry: tuple[float, machine_input.Event] | None = None
         self._collapsed: deque[tuple[float, machine_input.Event]] = deque()
-        self._held: set[tuple[int, str]] = set()
-        self._pressed_at: dict[tuple[int, str], float] = {}
+        self._held: set[_InputKey] = set()
+        self._pressed_at: dict[_InputKey, float] = {}
         self._resync = False
+        # HID counts not yet sent, written by the caller of inject_mouse_motion.
+        self._motion_lock = threading.Lock()
+        self._motion_x = 0.0
+        self._motion_y = 0.0
+        # The firmware's last report of its queued mouse reports, and when.
+        self._mouse_backlog = 0
+        self._mouse_backlog_at = 0.0
         self._injection_refused_logged = False
         self._prepared = False
 
@@ -2516,19 +2545,47 @@ class LauncherScene(MediaFileMixin, Scene):
         ValueError for a port or direction the firmware would refuse."""
         event = machine_input.joystick_event(port, "press" if pressed else "release", [direction])
         machine_input.validate_event(event)
-        if not (self.api.profile.supports_rest_input and self._sender.is_running()):
-            if not self._injection_refused_logged:
-                self._injection_refused_logged = True
-                log.warning(
-                    "launcher: joystick input dropped — %s",
-                    "the program is not running"
-                    if self.api.profile.supports_rest_input
-                    else "this machine has no input API (an Ultimate 64 on firmware 3.15+)",
-                )
-            return
-        self._enqueue(event)
-        with self._input_lock:
-            self._last_input_t = time.time()
+        if self._accepts_injection("joystick"):
+            self._enqueue(event)
+
+    def inject_mouse_button(self, button: str, pressed: bool) -> None:
+        """Press or release one mouse `button` (see
+        `machine_input.MOUSE_BUTTONS`) of the mouse the firmware drives on
+        control port 1. Otherwise as `inject_joystick`."""
+        event = machine_input.mouse_button_event("press" if pressed else "release", [button])
+        machine_input.validate_event(event)
+        if self._accepts_injection("mouse"):
+            self._enqueue(event)
+
+    def inject_mouse_motion(self, dx: float, dy: float) -> None:
+        """Move the mouse pointer by `dx`, `dy` HID counts, positive y down.
+        Fractions add up across calls. The sender sends what has gathered
+        with its next request, as few `move` events as the firmware's
+        per-report limit allows. Otherwise as `inject_joystick`."""
+        if self._accepts_injection("mouse"):
+            with self._motion_lock:
+                self._motion_x += dx
+                self._motion_y += dy
+
+    def _accepts_injection(self, kind: str) -> bool:
+        """Whether the sender can take injected `kind` input ("joystick" or
+        "mouse") now, counting it as player input when it can. Otherwise
+        logs one WARNING per scene."""
+        profile = self.api.profile
+        if kind == "mouse" and profile.supports_rest_input and not profile.supports_rest_mouse:
+            reason = "this machine's input API has no mouse (a C64 Ultimate on firmware 1.2.1+)"
+        elif not profile.supports_rest_input:
+            reason = "this machine has no input API (an Ultimate 64 on firmware 3.15+)"
+        elif not self._sender.is_running():
+            reason = "the program is not running"
+        else:
+            with self._input_lock:
+                self._last_input_t = time.time()
+            return True
+        if not self._injection_refused_logged:
+            self._injection_refused_logged = True
+            log.warning("launcher: %s input dropped — %s", kind, reason)
+        return False
 
     def _enqueue(self, event: machine_input.Event) -> None:
         self._injected.put((time.monotonic(), event))
@@ -2549,14 +2606,30 @@ class LauncherScene(MediaFileMixin, Scene):
                 continue
             batch = self._next_batch()
             # The dequeue can outlast a stop; teardown releases what is held.
-            if batch and not stop.wait(self._hold_remaining(batch)):
+            if stop.wait(self._hold_remaining(batch)):
+                return
+            batch += self._take_motion()
+            if batch:
                 self._injected_any = True
                 self._post(batch)
-                self._mark_pressed(
-                    set().union(*(_joystick_inputs(e) for e in batch if e["transition"] == "press"))
-                )
+                self._mark_pressed(_pressed_keys(batch))
 
-    def _mark_pressed(self, keys: set[tuple[int, str]]) -> None:
+    def _take_motion(self) -> list[machine_input.Event]:
+        """The whole counts of motion gathered so far, as `move` events, or
+        none while the firmware still has more than `_MOUSE_MAX_BACKLOG`
+        reports queued. The firmware sends one every
+        `MOUSE_REPORT_INTERVAL_S`, so the backlog is counted down from its
+        last reply rather than asked for."""
+        since = time.monotonic() - self._mouse_backlog_at
+        if self._mouse_backlog - since / machine_input.MOUSE_REPORT_INTERVAL_S > _MOUSE_MAX_BACKLOG:
+            return []
+        with self._motion_lock:
+            dx, dy = int(self._motion_x), int(self._motion_y)
+            self._motion_x -= dx
+            self._motion_y -= dy
+        return machine_input.mouse_move_events(dx, dy)
+
+    def _mark_pressed(self, keys: set[_InputKey]) -> None:
         """Record that a post just answered pressed `keys`, the moment
         `_hold_remaining` measures their hold from."""
         now = time.monotonic()
@@ -2569,7 +2642,7 @@ class LauncherScene(MediaFileMixin, Scene):
         wait = 0.0
         for event in batch:
             if event["transition"] == "release":
-                for key in _joystick_inputs(event):
+                for key in _input_keys(event):
                     pressed = self._pressed_at.get(key)
                     if pressed is not None:
                         wait = max(wait, pressed + _INJECT_MIN_HOLD_S - now)
@@ -2584,7 +2657,7 @@ class LauncherScene(MediaFileMixin, Scene):
         swept past its threshold costs no request per value."""
         self._collapse_stale()
         batch: list[machine_input.Event] = []
-        touched: set[tuple[int, str]] = set()
+        touched: set[_InputKey] = set()
         while len(batch) < machine_input.MAX_EVENTS:
             stamped = self._carry
             self._carry = None
@@ -2592,11 +2665,13 @@ class LauncherScene(MediaFileMixin, Scene):
                 stamped = self._collapsed.popleft()
             if stamped is None:
                 try:
-                    stamped = self._injected.get(block=not batch, timeout=0.05)
+                    stamped = self._injected.get(
+                        block=not batch, timeout=machine_input.MOUSE_REPORT_INTERVAL_S
+                    )
                 except queue.Empty:
                     break
             event = stamped[1]
-            inputs = _joystick_inputs(event)
+            inputs = _input_keys(event)
             pressing = event["transition"] == "press"
             if not (inputs - self._held if pressing else inputs & self._held):
                 continue
@@ -2637,40 +2712,48 @@ class LauncherScene(MediaFileMixin, Scene):
                 waiting.append(self._injected.get_nowait())
             except queue.Empty:
                 break
-        state: dict[tuple[int, str], bool] = {}
-        changes: dict[tuple[int, str], list[int]] = {}
+        state: dict[_InputKey, bool] = {}
+        changes: dict[_InputKey, list[int]] = {}
         for index, (_queued, event) in enumerate(waiting):
             pressing = event["transition"] == "press"
-            for key in _joystick_inputs(event):
+            for key in _input_keys(event):
                 if state.get(key, key in self._held) != pressing:
                     state[key] = pressing
                     changes.setdefault(key, []).append(index)
         kept: list[tuple[int, machine_input.Event]] = []
         for key, indices in changes.items():
-            port, name = key
             first_release = indices[:1] if key in self._held else []
             after = indices[len(first_release) :]
             for index in first_release + (after[-1:] if state[key] else after[-2:]):
-                transition = waiting[index][1]["transition"]
-                kept.append((index, machine_input.joystick_event(port, transition, [name])))
+                kept.append((index, _key_event(key, waiting[index][1]["transition"])))
         now = time.monotonic()
         self._collapsed.extend((now, event) for _index, event in sorted(kept, key=lambda k: k[0]))
 
     def _held_state(self) -> list[machine_input.Event]:
-        """`release_all`, then a press of everything still held, per port."""
+        """`release_all`, then a press of everything still held, per port and
+        for the mouse."""
         events = [machine_input.RELEASE_ALL]
         for port in machine_input.JOYSTICK_PORTS:
             inputs = [name for name in machine_input.JOYSTICK_INPUTS if (port, name) in self._held]
             if inputs:
                 events.append(machine_input.joystick_event(port, "press", inputs))
+        buttons = [name for name in machine_input.MOUSE_BUTTONS if (_MOUSE, name) in self._held]
+        if buttons:
+            events.append(machine_input.mouse_button_event("press", buttons))
         return events
 
     def _post(self, events: list[machine_input.Event]) -> None:
         """Send `events`; when that fails on a machine that still has the input
         API, mark the held state to be sent again, since what failed may have
-        been a release."""
-        if self.api.send_input(events) is None and self.api.profile.supports_rest_input:
+        been a release. The reply's mouse buttons lag its own queued reports,
+        so only its count of them is kept."""
+        state = self.api.send_input(events)
+        if state is None and self.api.profile.supports_rest_input:
             self._resync = True
+        backlog = machine_input.mouse_pending(state)
+        if backlog is not None:
+            self._mouse_backlog = backlog
+            self._mouse_backlog_at = time.monotonic()
 
     def _discard_injected(self) -> None:
         """Forget every queued event and the sender's view of the machine,
@@ -2685,6 +2768,9 @@ class LauncherScene(MediaFileMixin, Scene):
         self._held.clear()
         self._pressed_at.clear()
         self._resync = False
+        with self._motion_lock:
+            self._motion_x = self._motion_y = 0.0
+        self._mouse_backlog = 0
 
     def _release_injected(self) -> None:
         """Let go of anything injected input still holds. The reset that

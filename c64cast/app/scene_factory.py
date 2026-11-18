@@ -45,7 +45,7 @@ from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.hw.backend import BASE_PROFILES
 from c64cast.hw.c64 import SCREEN, VIC_BANK_0, nmi_rate_safety
-from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
+from c64cast.hw.machine_input import JOYSTICK_INPUTS, MOUSE_BUTTONS, is_joystick_port
 from c64cast.scenes import scenes as _scenes
 from c64cast.scenes.effects import build_effect
 from c64cast.scenes.generators import GenerativeSource, build_generator
@@ -110,6 +110,9 @@ from .config import (
     _MIDI_ACTION_CHOICES,
     _MIDI_CC_TYPE_CHOICES,
     _MIDI_MMC_COMMAND_CHOICES,
+    _MIDI_MOUSE_AXIS_CHOICES,
+    _MIDI_MOUSE_DEFAULT_SCALE,
+    _MIDI_MOUSE_MAX_SCALE,
     _MIDI_VOICE_MODE_CHOICES,
     _MIDI_WAVEFORM_CHOICES,
     _MOD_SOURCE_CHOICES,
@@ -1907,6 +1910,59 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                     f"[midi_control].cc_map[{i}] action 'joystick' needs an 'input', one of "
                     f"{', '.join(JOYSTICK_INPUTS)}, got {entry.get('input')!r}"
                 )
+        if action == "mouse_button":
+            if kind not in ("note", "cc"):
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'mouse_button' needs type 'note' or "
+                    f"'cc', which can release what they press, got {kind!r}"
+                )
+            if entry.get("input") not in MOUSE_BUTTONS:
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'mouse_button' needs an 'input', one "
+                    f"of {', '.join(MOUSE_BUTTONS)}, got {entry.get('input')!r}"
+                )
+        if action == "mouse_move":
+            _validate_mouse_move_entry(i, kind, entry)
+    _reject_joystick_port_1_with_mouse(midi_cfg.cc_map)
+
+
+def _validate_mouse_move_entry(i: int, kind: object, entry: dict[str, Any]) -> None:
+    if kind != "cc":
+        raise ConfigError(
+            f"[midi_control].cc_map[{i}] action 'mouse_move' needs type 'cc', got {kind!r}"
+        )
+    if entry.get("axis") not in _MIDI_MOUSE_AXIS_CHOICES:
+        raise ConfigError(
+            f"[midi_control].cc_map[{i}] action 'mouse_move' needs an 'axis', 'x' or 'y', "
+            f"got {entry.get('axis')!r}"
+        )
+    scale = entry.get("scale", _MIDI_MOUSE_DEFAULT_SCALE)
+    if (
+        not isinstance(scale, (int, float))
+        or isinstance(scale, bool)
+        or not 0 < scale <= _MIDI_MOUSE_MAX_SCALE
+    ):
+        raise ConfigError(
+            f"[midi_control].cc_map[{i}] action 'mouse_move' scale must be a number in "
+            f"(0, {_MIDI_MOUSE_MAX_SCALE:g}], got {scale!r}"
+        )
+    if not isinstance(entry.get("invert", False), bool):
+        raise ConfigError(
+            f"[midi_control].cc_map[{i}] action 'mouse_move' invert must be true or false, "
+            f"got {entry.get('invert')!r}"
+        )
+
+
+def _reject_joystick_port_1_with_mouse(cc_map: list[dict[str, Any]]) -> None:
+    actions = {entry.get("action") for entry in cc_map}
+    joystick_on_port_1 = any(
+        entry.get("action") == "joystick" and entry.get("port") == 1 for entry in cc_map
+    )
+    if joystick_on_port_1 and actions & {"mouse_button", "mouse_move"}:
+        raise ConfigError(
+            "[midi_control].cc_map maps both a 'joystick' on port 1 and the mouse, which "
+            "the firmware drives on port 1 too; move the joystick to port 2"
+        )
 
 
 def _has_sid_scene(cfg: Config) -> bool:
