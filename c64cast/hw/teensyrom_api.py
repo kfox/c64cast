@@ -58,7 +58,7 @@ from .backend import (
     printable_device_text,
     read_program_file,
 )
-from .c64 import LOCKED_BITMAP_DAC_SAMPLE_RATE, SCREEN, VECTORS
+from .c64 import DEFAULT_DAC_SAMPLE_RATE, LOCKED_BITMAP_DAC_SAMPLE_RATE, SCREEN, VECTORS
 from .teensyrom_dma import (
     DRIVE_SD,
     DRIVE_USB,
@@ -94,6 +94,11 @@ _SLICED_TEMPO = 0.97
 # Locked slices lose no NMI ticks, so the ring drains in real time (measured NTSC
 # clock/wall: 0.9999 MultiHires, 0.9997 PETSCII).
 _LOCKED_TEMPO = 1.0
+# REU-staged frames never cross the link, so the slices that cap a locked
+# bitmap video at 10 kHz carry only the audio ring, and 12 kHz holds the full
+# frame rate. The NMI player still loses a few ticks to the REU copies
+# (measured NTSC clock/wall: 0.9923 MultiHires, 0.9921 Hires).
+_STAGED_LOCKED_TEMPO = 0.992
 
 # A locked slice halts the 6510 for its bytes plus the firmware's assert,
 # re-align and release cycles. Below the floor a slice no longer pays for its
@@ -331,11 +336,13 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             "consumer runs, for writes longer than one slice"
         )
 
-    def dac_pacing(self, *, bitmap: bool, multicolor: bool) -> DacPacing:
+    def dac_pacing(self, *, bitmap: bool, multicolor: bool, staged: bool = False) -> DacPacing:
         unsliced = super().dac_pacing(bitmap=bitmap, multicolor=multicolor)
         if not bitmap:
             return unsliced
         if self._writes_locked():
+            if staged:
+                return DacPacing(DEFAULT_DAC_SAMPLE_RATE, _STAGED_LOCKED_TEMPO)
             return DacPacing(LOCKED_BITMAP_DAC_SAMPLE_RATE, _LOCKED_TEMPO)
         # Unlocked sliced writes lose ~3.5x fewer NMI ticks, so the ring drains
         # nearer real time (measured NTSC at 32 B / 40 us: 0.972 MultiHires,

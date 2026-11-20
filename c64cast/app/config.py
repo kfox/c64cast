@@ -682,7 +682,9 @@ class AudioCfg:
             "Hires/MultiHires scene while a TeensyROM+ locks its "
             "DMA slices to the sample store ([teensyrom].dma_slicing), where the "
             f"smaller slices at {DEFAULT_DAC_SAMPLE_RATE} hold bitmap video well under "
-            "its frame rate. "
+            "its frame rate. A scene whose frames are REU-staged "
+            "([video].use_reu_staged) sends none of them in slices and stays at "
+            f"{DEFAULT_DAC_SAMPLE_RATE}. "
             "A set value applies to every scene. 12000 lifts "
             "the Nyquist to ~6.0 kHz so fricatives/sibilants survive (8000 lost them). "
             "HW-verified clean on a real NTSC U64-II via a pitch A/B sweep (no NMI "
@@ -1008,7 +1010,8 @@ class AudioCfg:
             "the figure for the connected hardware, 0.89 (Ultimate 64-II NTSC, "
             "and a TeensyROM writing unsliced), 0.97 (TeensyROM+ writing sliced "
             "at the default slice shape) or 1.0 (TeensyROM+ with each slice "
-            "locked to the NMI sample store), and, below 1.0, follow the speed "
+            "locked to the NMI sample store; 0.992 there when the scene's frames "
+            "are REU-staged), and, below 1.0, follow the speed "
             "measured while the scene plays; a set value stays fixed."
         },
     )
@@ -1023,7 +1026,8 @@ class AudioCfg:
             "connected hardware, 0.88 (Ultimate 64-II NTSC, and a TeensyROM "
             "writing unsliced), 0.97 (TeensyROM+ writing sliced at the default "
             "slice shape) or 1.0 (TeensyROM+ with each slice locked to the NMI "
-            "sample store), and, below 1.0, follow the speed measured while the "
+            "sample store; 0.992 there when the scene's frames are REU-staged), "
+            "and, below 1.0, follow the speed measured while the "
             "scene plays; a set value stays fixed."
         },
     )

@@ -23,7 +23,7 @@ get is the single most audible choice in the program.
 |---|---|---|
 | Where it plays | The SID's `$D418` volume register | An FPGA PCM channel, off the bus |
 | Resolution | 4 bits, or ≈6–7 effective with a companding curve | 8 or 16 bits |
-| Rate | 12 kHz by default (10 kHz for bitmap scenes on a TeensyROM+ that locks its DMA slices) | 44.1 kHz by default |
+| Rate | 12 kHz by default (10 kHz for bitmap scenes without REU staging on a TeensyROM+ that locks its DMA slices) | 44.1 kHz by default |
 | Costs the 6510 | An interrupt per sample | Nothing at all |
 | Available on | Everything | The Ultimate 64 / Ultimate II+ |
 
@@ -66,7 +66,9 @@ On a TeensyROM+ that locks its DMA slices to the sample store (the
 12 kHz the slices are small enough to hold a bitmap video well under its frame
 rate; at 10 kHz the period is longer, the slices nearly double, and the video
 keeps its full rate. Character modes send far less per frame and stay at
-12 kHz. Setting `[audio].sample_rate` (or `--sample-rate`) fixes the rate for
+12 kHz, and so does a bitmap scene whose frames are staged through the REU
+(`[video].use_reu_staged`): its frames never go out in slices, so only the
+sound does. Setting `[audio].sample_rate` (or `--sample-rate`) fixes the rate for
 every scene, and the slices follow whatever rate you choose.
 
 > [!NOTE]
@@ -279,7 +281,8 @@ NTSC Ultimate 64-II and on a TeensyROM writing unsliced, and 1.0 (no
 compensation) on a TeensyROM+ whose firmware starts each DMA slice right after
 the sample player's store, which is what `[teensyrom].dma_slicing = "auto"`
 (the default) uses when the firmware has it: such a link costs the player no
-samples, so nothing stretches. With `dma_slicing = "on"`, a TeensyROM+ slicing
+samples, so nothing stretches (a scene staged through the REU starts from
+0.992 there, since its REU copies still cost the player a few). With `dma_slicing = "on"`, a TeensyROM+ slicing
 without the lock at the default 32 bytes with a 40 µs gap starts from 0.97.
 Any other shape starts from the unsliced values, and so does a TeensyROM+
 whose firmware is refusing sliced writes because the C64 is paused or REU

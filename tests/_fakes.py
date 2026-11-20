@@ -329,7 +329,7 @@ class FakeAPI:
     def invalidate_cache(self):
         self.cache_invalidations += 1
 
-    def dac_pacing(self, *, bitmap, multicolor):
+    def dac_pacing(self, *, bitmap, multicolor, staged=False):
         tempo = (0.88 if multicolor else 0.89) if bitmap else 1.0
         return DacPacing(DEFAULT_DAC_SAMPLE_RATE, tempo)
 
