@@ -909,9 +909,11 @@ class AudioStreamer:
             quantum = max(quantum, -(-self.chunk_size // max_slots))
         return min(self.chunk_size, quantum)
 
-    def read_consumer_ptr(self) -> int | None:
+    def read_consumer_ptr(self, *, ring_only: bool = True) -> int | None:
         """The NMI consumer's read pointer R — the self-modifying LDA operand at
-        ``$C025`` — or None when the read failed or came back outside the ring.
+        ``$C025`` — or None when the read failed or, with ``ring_only``, came
+        back outside the ring. A routine overwritten in place leaves R outside
+        it for good, and only the stall watchdog asks for that reading.
 
         None means "couldn't tell": a torn or dropped read, or a backend with no
         read capability at all (`profile.supports_read` false, older TeensyROM
@@ -927,7 +929,7 @@ class AudioStreamer:
         if r is None or len(r) != 2:
             return None
         r_addr = r[0] | (r[1] << 8)
-        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
+        if ring_only and not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
             return None
         return r_addr
 

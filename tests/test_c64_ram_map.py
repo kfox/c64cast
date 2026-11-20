@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from c64cast.audio import audio_handlers as ah
 from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr
-from c64cast.hw.backend import HardwareProfile
+from c64cast.hw.backend import TEENSYROM_PROFILE, HardwareProfile
 from c64cast.scenes.overlays import big_text
 from c64cast.sid import asid_player as ap
 from c64cast.sid import waveform
@@ -179,7 +179,8 @@ _REGIONS: tuple[Region, ...] = (
             mi.BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             mi.MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER,
             *(
-                mi.bank_swap_irq_handler(_SHORT_CHUNKS, mhires=mhires, pump=pump)
+                mi.bank_swap_irq_handler(profile, mhires=mhires, pump=pump)
+                for profile in (_SHORT_CHUNKS, TEENSYROM_PROFILE)
                 for mhires in (False, True)
                 for pump in (False, True)
             ),
@@ -213,7 +214,7 @@ _REGIONS: tuple[Region, ...] = (
         "asid",
         "player IRQ handler (8-SID worst case)",
         ap.HANDLER_ADDR,
-        len(ap.build_player(ap.slot_size_for_chips(8), 16)),
+        len(ap.build_player(ap.slot_size_for_chips(8), 16, verify_registers=True)),
         f"{_AP}:HANDLER_ADDR",
     ),
     Region(

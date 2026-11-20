@@ -364,7 +364,20 @@ def bank_swap_chunk_size(profile: HardwareProfile) -> int:
     return BANK_SWAP_CHUNK_SIZE
 
 
-def _chunk_loops(name: str, chunks: int, chunk_bytes: int) -> str:
+def _store_held(register: str, label: str, *, verify: bool, index: str = "") -> str:
+    """`STA register`, and on a link whose REU register writes can be lost,
+    the read-back that repeats it until the register holds A."""
+    if not verify:
+        return f"STA {register}{index}"
+    return f"""
+        {label}:
+            STA {register}{index}
+            CMP {register}{index}
+            BNE {label}
+    """
+
+
+def _chunk_loops(name: str, chunks: int, chunk_bytes: int, *, verify: bool) -> str:
     """`chunks` REC triggers of `chunk_bytes` each, in runs the one-byte
     counter can count."""
     loops = []
@@ -376,9 +389,9 @@ def _chunk_loops(name: str, chunks: int, chunk_bytes: int) -> str:
             STA ${_CHUNK_COUNTER_ZP:02X}
         {label}:
             LDA #${chunk_bytes:02X}
-            STA ${REU.LENGTH_LO:04X}
+            {_store_held(f"${REU.LENGTH_LO:04X}", f"{label}_lo", verify=verify)}
             LDA #$00
-            STA ${REU.LENGTH_HI:04X}
+            {_store_held(f"${REU.LENGTH_HI:04X}", f"{label}_hi", verify=verify)}
             LDA #${REU.CMD_FETCH_EXEC:02X}
             STA ${REU.COMMAND:04X}
             DEC ${_CHUNK_COUNTER_ZP:02X}
@@ -396,6 +409,7 @@ def _family_source(
     banked: bool,
     pump: bool,
     chunk_bytes: int,
+    verify: bool,
 ) -> str:
     """One REC family: load its registers from the tracker, aim a banked
     family at the hidden bank, then copy it in `chunk_bytes` chunks.
@@ -411,7 +425,7 @@ def _family_source(
             LDA ${tracker_addr + 1:04X}
             AND #$7F
             ORA ${_HIDDEN_BANK_HI:04X}
-            STA ${REU.C64_ADDR_HI:04X}
+            {_store_held(f"${REU.C64_ADDR_HI:04X}", f"{name}_aim", verify=verify)}
         """
         if banked
         else ""
@@ -431,11 +445,11 @@ def _family_source(
             LDX #$04
         {name}_regs:
             LDA ${tracker_addr:04X},X
-            STA ${REU.C64_ADDR_LO:04X},X
+            {_store_held(f"${REU.C64_ADDR_LO:04X}", f"{name}_reg", verify=verify, index=",X")}
             DEX
             BPL {name}_regs
         {aim}
-        {_chunk_loops(name, chunks, chunk_bytes)}
+        {_chunk_loops(name, chunks, chunk_bytes, verify=verify)}
         {tick}
     """
 
@@ -451,6 +465,7 @@ def _bank_swap_dispatcher(
     pump: bool,
     last_line: int,
     chunk_bytes: int,
+    verify: bool,
 ) -> bytes:
     """Assemble a REU bank-swap dispatcher for $C500, copying in
     `chunk_bytes` REC chunks.
@@ -489,6 +504,9 @@ def _bank_swap_dispatcher(
     for a pending pump tick after each family; without it they chain to the
     kernal.
 
+    ``verify`` reads each REU register back after writing it, and writes it
+    again until it holds, for a link whose register writes can be lost.
+
     ``last_line`` is the last raster line the commit may start on, which a
     commit that writes or copies after the flip has to pull in (see
     HIRES_COMMIT_LAST_SAFE_LINE and MHIRES_COMMIT_LAST_SAFE_LINE).
@@ -515,12 +533,26 @@ def _bank_swap_dispatcher(
     )
     commit_families = "".join(
         _family_source(
-            f"f{i}", _SNAPSHOT + off, n, banked=False, pump=pump, chunk_bytes=chunk_bytes
+            f"f{i}",
+            _SNAPSHOT + off,
+            n,
+            banked=False,
+            pump=pump,
+            chunk_bytes=chunk_bytes,
+            verify=verify,
         )
         for i, (off, n) in enumerate(after_flip)
     )
     copy_families = "".join(
-        _family_source(f"h{i}", _SNAPSHOT + off, n, banked=True, pump=pump, chunk_bytes=chunk_bytes)
+        _family_source(
+            f"h{i}",
+            _SNAPSHOT + off,
+            n,
+            banked=True,
+            pump=pump,
+            chunk_bytes=chunk_bytes,
+            verify=verify,
+        )
         for i, (off, n) in enumerate(hidden)
     )
     source = f"""
@@ -594,7 +626,9 @@ assert VIC_BANK_2.SCREEN == VIC_BANK_0.SCREEN | 0x8000
 HIRES_COMMIT_LAST_SAFE_LINE = RASTER_COMMIT_LAST_SAFE_LINE - 1
 
 
-def _hires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) -> bytes:
+def _hires_dispatcher(
+    *, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE, verify: bool = False
+) -> bytes:
     return _bank_swap_dispatcher(
         tracker_len=FRAME_TRACKER_LEN,
         hidden=(
@@ -608,6 +642,7 @@ def _hires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) ->
         pump=pump,
         last_line=HIRES_COMMIT_LAST_SAFE_LINE,
         chunk_bytes=chunk_bytes,
+        verify=verify,
     )
 
 
@@ -625,14 +660,20 @@ MHIRES_COMMIT_LAST_SAFE_LINE = 38
 # two of them, whose second trigger and fixed REC cost land past line 50 from
 # a read on line 38.
 MHIRES_COMMIT_LAST_SAFE_LINE_SHORT_CHUNKS = 37
+# The same again when each REU register write is read back: the read-backs
+# before those two triggers land past line 50 from a read on line 37.
+MHIRES_COMMIT_LAST_SAFE_LINE_VERIFIED = 36
 
 
-def _mhires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) -> bytes:
-    last_line = (
-        MHIRES_COMMIT_LAST_SAFE_LINE
-        if chunk_bytes == BANK_SWAP_CHUNK_SIZE
-        else MHIRES_COMMIT_LAST_SAFE_LINE_SHORT_CHUNKS
-    )
+def _mhires_dispatcher(
+    *, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE, verify: bool = False
+) -> bytes:
+    if verify:
+        last_line = MHIRES_COMMIT_LAST_SAFE_LINE_VERIFIED
+    elif chunk_bytes == BANK_SWAP_CHUNK_SIZE:
+        last_line = MHIRES_COMMIT_LAST_SAFE_LINE
+    else:
+        last_line = MHIRES_COMMIT_LAST_SAFE_LINE_SHORT_CHUNKS
     return _bank_swap_dispatcher(
         tracker_len=MHIRES_FRAME_TRACKER_LEN,
         hidden=(
@@ -646,6 +687,7 @@ def _mhires_dispatcher(*, pump: bool, chunk_bytes: int = BANK_SWAP_CHUNK_SIZE) -
         pump=pump,
         last_line=last_line,
         chunk_bytes=chunk_bytes,
+        verify=verify,
     )
 
 
@@ -656,15 +698,20 @@ MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER = _mhires_dispatcher(pump=True)
 
 
 @cache
-def _dispatcher(*, mhires: bool, pump: bool, chunk_bytes: int) -> bytes:
+def _dispatcher(*, mhires: bool, pump: bool, chunk_bytes: int, verify: bool) -> bytes:
     build = _mhires_dispatcher if mhires else _hires_dispatcher
-    return build(pump=pump, chunk_bytes=chunk_bytes)
+    return build(pump=pump, chunk_bytes=chunk_bytes, verify=verify)
 
 
 def bank_swap_irq_handler(profile: HardwareProfile, *, mhires: bool, pump: bool) -> bytes:
     """The REU bank-swap dispatcher a hires or mhires scene installs over
     `profile`'s link, with the REU audio pump's routing when `pump`."""
-    return _dispatcher(mhires=mhires, pump=pump, chunk_bytes=bank_swap_chunk_size(profile))
+    return _dispatcher(
+        mhires=mhires,
+        pump=pump,
+        chunk_bytes=bank_swap_chunk_size(profile),
+        verify=profile.reu_register_writes_unreliable,
+    )
 
 
 # Host-DMA double-buffer swap IRQ handler (no-REU backends, e.g. TeensyROM).

@@ -214,6 +214,9 @@ class HardwareProfile:
     reu_short_chunks: bool = False  # C64-driven REU copies lose NMI ticks at
     #   the usual chunk size on this link, so the bank-swap dispatchers copy in
     #   shorter ones (modes_irq.bank_swap_chunk_size).
+    reu_register_writes_unreliable: bool = False  # a 6510 write to $DF0x can
+    #   fail to hold on this link, so C64-side code that programs the REU reads
+    #   each $DF02-$DF08 write back before the trigger.
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
 
@@ -393,6 +396,10 @@ TEENSYROM_PROFILE = HardwareProfile(
     supports_reset=True,  # ResetC64Token 0x64EE
     supports_probe=True,  # Ping 0x6455 / FWCheck 0x64E0
     reu_short_chunks=True,
+    # Measured on 0.9.0.1, which has the TeensyROM's USB interrupt-masking fix:
+    # ~33 failed read-backs per five minutes of mhires video, some keeping an
+    # older value. The firmware-side cause is not known.
+    reu_register_writes_unreliable=True,
     supports_run_prg=True,  # PostFile + LaunchFile
     supports_run_crt=True,  # RemoteLaunch handles CRT launch
     supports_reu=False,  # granted once WriteREU answers with REU emulation running

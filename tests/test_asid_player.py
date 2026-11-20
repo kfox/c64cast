@@ -598,7 +598,8 @@ class MemoryMapTest(unittest.TestCase):
     def test_handler_does_not_overlap_the_landing_buffer_or_tracker(self):
         # The 8-SID worst case is the biggest landing buffer and the longest
         # handler, so it is the case that has to fit.
-        handler_end = ap.HANDLER_ADDR + len(ap.build_player(ap.slot_size_for_chips(8), 16))
+        longest = ap.build_player(ap.slot_size_for_chips(8), 16, verify_registers=True)
+        handler_end = ap.HANDLER_ADDR + len(longest)
         self.assertLessEqual(handler_end, ap.LANDING_BUF)
         self.assertLessEqual(ap.LANDING_BUF + ap.slot_size_for_chips(8), ap.TRACKER_ADDR)
 
@@ -635,6 +636,76 @@ class BuildPlayerTest(unittest.TestCase):
         self.assertIn(bytes([0x4C, 0x31, 0xEA]), blob)  # JMP $EA31 (full tail)
         self.assertIn(bytes([0x4C, 0x81, 0xEA]), blob)  # JMP $EA81 (lean exit)
         self.assertEqual(blob[-1], 0x60)  # delay subroutine RTS
+
+
+class LostReuRegisterWriteTest(unittest.TestCase):
+    """One player IRQ on py65, up to its REU trigger, against a REU that latches
+    one register write as $FF, as the TeensyROM+ can."""
+
+    SLOT = 128
+
+    EXPECTED = (ap.RING_BASE, ap.LANDING_BUF, SLOT)
+
+    def _transfer(self, blob: bytes, *, register: int) -> tuple[int, int, int]:
+        from py65.devices.mpu6502 import MPU
+        from py65.memory import ObservableMemory
+
+        mem = ObservableMemory()
+        for i, b in enumerate(blob):
+            mem[ap.HANDLER_ADDR + i] = b
+        for i in range(3):
+            mem[ap.TRACKER_ADDR + i] = (ap.RING_BASE >> (8 * i)) & 0xFF
+        regs = dict.fromkeys(range(0xDF02, 0xDF09), 0)
+        latched = []
+
+        def store(address, value):
+            if address == register and not latched:
+                latched.append(address)
+                value = 0xFF
+            regs[address] = value
+
+        triggered: list[tuple[int, int, int]] = []
+        mem.subscribe_to_write(range(0xDF02, 0xDF09), store)
+        mem.subscribe_to_read(range(0xDF02, 0xDF09), regs.__getitem__)
+        mem.subscribe_to_write(
+            [0xDF01],
+            lambda _a, _v: triggered.append(
+                (
+                    regs[0xDF04] | regs[0xDF05] << 8 | regs[0xDF06] << 16,
+                    regs[0xDF02] | regs[0xDF03] << 8,
+                    regs[0xDF07] | regs[0xDF08] << 8,
+                )
+            ),
+        )
+        mpu = MPU(memory=mem)
+        mpu.pc = ap.HANDLER_ADDR
+        while not triggered:
+            mpu.step()
+        return triggered[0]
+
+    def test_a_latched_write_is_written_again(self):
+        blob = ap.build_player(self.SLOT, 1, verify_registers=True)
+        for register in range(0xDF02, 0xDF09):
+            with self.subTest(register=f"${register:04X}"):
+                self.assertEqual(self._transfer(blob, register=register), self.EXPECTED)
+
+    def test_without_the_read_back_a_latched_write_misplaces_the_slot(self):
+        blob = ap.build_player(self.SLOT, 1)
+        for register in (0xDF03, 0xDF05, 0xDF08):
+            with self.subTest(register=f"${register:04X}"):
+                self.assertNotEqual(self._transfer(blob, register=register), self.EXPECTED)
+
+    def test_the_player_reads_back_on_a_link_that_needs_it(self):
+        from dataclasses import replace
+
+        api, fake = _fake_backend()
+        fake.profile = replace(fake.profile, reu_register_writes_unreliable=True)
+        p = ap.AsidRingPlayer(api, system="NTSC", n_chips=1)
+        p._write_rate(0x4000, 1, rebuild_handler=True)
+        self.assertEqual(
+            fake.mem_files[f"{ap.HANDLER_ADDR:04X}"],
+            ap.build_player(p.slot_size, 1, verify_registers=True),
+        )
 
 
 class LatchHelpersTest(unittest.TestCase):

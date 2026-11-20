@@ -426,7 +426,11 @@ class _Asm:
 
 
 def build_player_symbols(
-    slot_size: int, tick_divider: int, *, ring_base: int = RING_BASE
+    slot_size: int,
+    tick_divider: int,
+    *,
+    ring_base: int = RING_BASE,
+    verify_registers: bool = False,
 ) -> tuple[bytes, dict[str, int]]:
     """Assemble the CIA #1 Timer A IRQ player for a given slot size.
 
@@ -442,6 +446,12 @@ def build_player_symbols(
     ``tick_divider`` must be 1..255 — it becomes an ``LDA #N`` immediate, and
     silently masking it to 8 bits is how a divider of 333 became 77 and a
     multiple of 256 became "chain once every 256 ticks".
+
+    ``verify_registers`` reads each REU register back after writing it and
+    writes it again until it holds, for a link that can lose those writes
+    (``HardwareProfile.reu_register_writes_unreliable``): a destination or
+    length write latched as ``$FF`` lands the slot at ``$FFxx`` and on
+    through zero page, or copies ~64 KB.
 
     Returns the blob and its label addresses. The labels are not decoration:
     PER_OP_CYCLES and its two siblings describe *this* assembly, and nothing
@@ -461,17 +471,33 @@ def build_player_symbols(
 
     a = _Asm(HANDLER_ADDR)
 
+    def sta_reu(register: int) -> None:
+        """STA $DF<register>, read back until it holds when `verify_registers`."""
+        if verify_registers:
+            a.label(f"reu{register:02x}")
+        a.emit(0x8D, register, 0xDF)
+        if verify_registers:
+            a.emit(0xCD, register, 0xDF)  # CMP $DF<register>
+            a.branch(0xD0, f"reu{register:02x}")
+
     # --- pull next slot: REU ring → landing buffer -------------------------
     # src ← tracker (24-bit)
-    a.emit(0xAD, trk_lo, trk_hi, 0x8D, 0x04, 0xDF)  # LDA trk_lo ; STA $DF04
-    a.emit(0xAD, (trk_lo + 1) & 0xFF, trk_hi, 0x8D, 0x05, 0xDF)  # src_mi
-    a.emit(0xAD, (trk_lo + 2) & 0xFF, trk_hi, 0x8D, 0x06, 0xDF)  # src_hi
+    a.emit(0xAD, trk_lo, trk_hi)  # LDA trk_lo
+    sta_reu(0x04)
+    a.emit(0xAD, (trk_lo + 1) & 0xFF, trk_hi)  # src_mi
+    sta_reu(0x05)
+    a.emit(0xAD, (trk_lo + 2) & 0xFF, trk_hi)  # src_hi
+    sta_reu(0x06)
     # dst = landing buffer
-    a.emit(0xA9, buf_lo, 0x8D, 0x02, 0xDF)  # LDA #<buf ; STA $DF02
-    a.emit(0xA9, buf_hi, 0x8D, 0x03, 0xDF)  # LDA #>buf ; STA $DF03
+    a.emit(0xA9, buf_lo)  # LDA #<buf
+    sta_reu(0x02)
+    a.emit(0xA9, buf_hi)  # LDA #>buf
+    sta_reu(0x03)
     # len = slot_size
-    a.emit(0xA9, s_lo, 0x8D, 0x07, 0xDF)  # LDA #<slot ; STA $DF07
-    a.emit(0xA9, s_hi, 0x8D, 0x08, 0xDF)  # LDA #>slot ; STA $DF08
+    a.emit(0xA9, s_lo)  # LDA #<slot
+    sta_reu(0x07)
+    a.emit(0xA9, s_hi)  # LDA #>slot
+    sta_reu(0x08)
     a.emit(0xA9, 0x00, 0x8D, 0x0A, 0xDF)  # LDA #0 ; STA $DF0A (both auto-inc)
     a.emit(0xA9, REU.CMD_FETCH_EXEC, 0x8D, 0x01, 0xDF)  # LDA #$91 ; STA $DF01
 
@@ -551,11 +577,19 @@ def build_player_symbols(
     return a.resolve(), a.symbols()
 
 
-def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BASE) -> bytes:
+def build_player(
+    slot_size: int,
+    tick_divider: int,
+    *,
+    ring_base: int = RING_BASE,
+    verify_registers: bool = False,
+) -> bytes:
     """The assembled player for these parameters. See [build_player_symbols],
     which is the same assembly plus the label addresses the cost-model guard
     needs to read it back."""
-    return build_player_symbols(slot_size, tick_divider, ring_base=ring_base)[0]
+    return build_player_symbols(
+        slot_size, tick_divider, ring_base=ring_base, verify_registers=verify_registers
+    )[0]
 
 
 def clamp_frame_rate(frame_rate_hz: float) -> float:
@@ -885,7 +919,12 @@ class AsidRingPlayer:
         if rebuild_handler:
             self.api.write_memory_file(
                 f"{HANDLER_ADDR:04X}",
-                build_player(self.slot_size, divider, ring_base=self.ring_base),
+                build_player(
+                    self.slot_size,
+                    divider,
+                    ring_base=self.ring_base,
+                    verify_registers=self.api.profile.reu_register_writes_unreliable,
+                ),
             )
 
     def _write_rate_if_installed(self, latch: int, divider: int, rebuild_handler: bool) -> None:

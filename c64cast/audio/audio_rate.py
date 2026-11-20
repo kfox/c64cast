@@ -52,9 +52,14 @@ from .audio_handlers import (
     NMI_ARM_MAX_ATTEMPTS,
     NMI_ARM_VERIFY_DELAY_S,
     NMI_HANDLER_CYCLES,
+    NMI_ROUTINE,
     NMI_ROUTINE_ADDR,
     NMI_STALL_WARN_CHUNKS,
     NMI_STORE_ADDR,
+    READ_PTR_HI_ADDR,
+    READ_PTR_LO_ADDR,
+    RING_BUFFER_ADDR,
+    RING_BUFFER_END,
     RING_BUFFER_SIZE,
     RING_LEAD_EMA_ALPHA,
 )
@@ -107,6 +112,9 @@ def nmi_sample_store(latch: int, system: str) -> NmiSampleStore:
     )
 
 
+_NMI_ROUTINE_OPERAND = (READ_PTR_LO_ADDR, READ_PTR_HI_ADDR)
+
+
 def machine_crash_sign(api: C64Backend, *, bitmap_scene: bool) -> str | None:
     """What says the C64 crashed under a stalled NMI consumer, or None when
     nothing does or a read failed. Read once per stall, never polled: polling
@@ -120,6 +128,18 @@ def machine_crash_sign(api: C64Backend, *, bitmap_scene: bool) -> str | None:
             f"the NMI vector at ${VECTORS.NMI:04X} points at ${target:04X}, "
             f"not c64cast's handler at ${NMI_ROUTINE_ADDR:04X}"
         )
+    routine = api.read_memory(NMI_ROUTINE_ADDR, len(NMI_ROUTINE))
+    if routine is not None and len(routine) == len(NMI_ROUTINE):
+        changed = [
+            NMI_ROUTINE_ADDR + i
+            for i, (got, want) in enumerate(zip(routine, NMI_ROUTINE, strict=True))
+            if got != want and NMI_ROUTINE_ADDR + i not in _NMI_ROUTINE_OPERAND
+        ]
+        if changed:
+            return (
+                f"the NMI handler at ${NMI_ROUTINE_ADDR:04X} was overwritten "
+                f"({len(changed)} bytes, from ${changed[0]:04X})"
+            )
     if not bitmap_scene:
         return None
     d011 = api.read_memory(VIC.D011_CONTROL_1, 1)
@@ -465,13 +485,15 @@ class RateServo:
         # and those are one-shot, so they stay visible.
         with quiet_transport():
             r_addr, prompt, _ = self._timed_read(
-                HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period, current
+                HOST_DMA_SERVO_READ_BUDGET_FRAC * chunk_period, current, ring_only=False
             )
         if r_addr is not None:
             # A late reading is too late to pace by but still says whether the
             # consumer is alive: a server that stays slow sends every reading
             # past the gap servo, and the watchdog would otherwise see none.
             self.note_r_reading(r_addr, current)
+            if not RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END:
+                r_addr = None
         if r_addr is None or not prompt:
             return servo_hold_period(self.integ, chunk_period=chunk_period)
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
@@ -498,7 +520,11 @@ class RateServo:
         return time.monotonic() < self.read_holdoff_until
 
     def _timed_read(
-        self, budget_s: float, current: Callable[[], bool] | None = None
+        self,
+        budget_s: float,
+        current: Callable[[], bool] | None = None,
+        *,
+        ring_only: bool = True,
     ) -> tuple[int | None, bool, float]:
         """Read R once against ``budget_s``; returns ``(r_addr, prompt,
         took)``. A read over budget arms the backoff and comes back with
@@ -509,7 +535,7 @@ class RateServo:
         took)`` and leaves the backoff, its counters and its warning alone:
         they belong to the next session by then."""
         started = time.monotonic()
-        r_addr = self._st.read_consumer_ptr()
+        r_addr = self._st.read_consumer_ptr(ring_only=ring_only)
         took = time.monotonic() - started
         if current is not None and not current():
             return None, False, took
