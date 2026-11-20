@@ -865,6 +865,14 @@ class ColorFit:
             sat_mult=self.sat_mult + (other.sat_mult - self.sat_mult) * amount,
         )
 
+    def with_white_level(self, level: float) -> ColorFit:
+        """This fit with its contrast gain scaled by `level`/255 about the
+        black point, so the source's white point lands at luma `level` rather
+        than at 255. A fit that does not stretch the highlights keeps its own
+        white."""
+        white = min(self.black + (self.white - self.black) * 255.0 / level, 255.0)
+        return ColorFit(black=self.black, white=white, sat_mult=self.sat_mult)
+
 
 IDENTITY_FIT = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
 

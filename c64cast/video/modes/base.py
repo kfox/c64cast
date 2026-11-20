@@ -15,6 +15,7 @@ from c64cast.scenes.text_surface import TextSurface
 from c64cast.video.dither import bayer_offset, blue_noise_offset
 from c64cast.video.palette import (
     CELL_STRATEGIES,
+    DEFAULT_GRAY_PENALTY,
     DEFAULT_HUE_CORRECTIONS,
     GRAYSCALE_CHROMATIC_PENALTY,
     PALETTE_LUMA,
@@ -398,15 +399,18 @@ def advance_palette_cycle(
     return new_mode, new_force, label
 
 
-def palette_mode_settings(mode: str) -> tuple[float, np.ndarray]:
-    """Return (saturation_factor, gray_penalty_vector) for a palette mode."""
+def palette_mode_settings(
+    mode: str, gray_penalty: float = DEFAULT_GRAY_PENALTY
+) -> tuple[float, np.ndarray]:
+    """Return (saturation_factor, gray_penalty_vector) for a palette mode;
+    `gray_penalty` is [color].gray_penalty, which grayscale ignores."""
     if mode == "grayscale":
         return 1.0, make_gray_penalty(
             gray_strength=0.0,
             pale_strength=0.0,
             chromatic_strength=GRAYSCALE_CHROMATIC_PENALTY,
         )
-    return DEFAULT_SAT_FACTOR, make_gray_penalty()
+    return DEFAULT_SAT_FACTOR, make_gray_penalty(gray_strength=gray_penalty)
 
 
 log = logging.getLogger(__name__)
@@ -533,6 +537,7 @@ class DisplayMode:
     # installed at full strength and lerped toward identity by this factor at
     # apply() time, so the strength stays runtime-tunable. 0.0 = auto_fit off.
     _auto_fit_strength: float = 1.0
+    _auto_fit_white_level: float = 255.0
 
     @property
     def auto_fit_strength(self) -> float:
@@ -543,12 +548,14 @@ class DisplayMode:
         self._auto_fit_strength = float(min(1.0, max(0.0, value)))
 
     def _fit_for_apply(self) -> ColorFit | None:
-        """The installed ColorFit lerped by the live auto_fit_strength, or None
-        when no fit is installed — the single seam the color_fit-applying modes
-        call in compose() in place of reading `_color_fit` directly."""
+        """The installed ColorFit with its white point at
+        [color].auto_fit_white_level, lerped by the live auto_fit_strength, or
+        None when no fit is installed — the single seam the color_fit-applying
+        modes call in compose() in place of reading `_color_fit` directly."""
         if self._color_fit is None:
             return None
-        return self._color_fit.lerped(self._auto_fit_strength)
+        fit = self._color_fit.with_white_level(self._auto_fit_white_level)
+        return fit.lerped(self._auto_fit_strength)
 
     #: Choice fields whose setter needs the backend handle to repaint a VIC
     #: register live, the same reason palette_mode does — border/background

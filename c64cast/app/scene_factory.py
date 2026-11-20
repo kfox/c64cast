@@ -390,12 +390,14 @@ def _build_display_mode(
             hue_corrections_replace=hue_corrections_replace,
             perceptual=perceptual,
             auto_fit_strength=auto_fit_strength,
+            auto_fit_white_level=color.auto_fit_white_level,
         )
     if name == "mcm":
         return MCMDisplayMode(
             palette_mode=palette_mode,
             channel_boost=channel_boost,
             dark_tone_taper=color.dark_tone_taper,
+            gray_penalty=color.gray_penalty,
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
@@ -403,6 +405,7 @@ def _build_display_mode(
             dither_strength=dither_strength,
             perceptual=perceptual,
             auto_fit_strength=auto_fit_strength,
+            auto_fit_white_level=color.auto_fit_white_level,
         )
     if name == "mhires":
         return MultiHiresDisplayMode(
@@ -412,6 +415,7 @@ def _build_display_mode(
             audio_reu_pump_active=audio_reu_pump_active,
             channel_boost=channel_boost,
             dark_tone_taper=color.dark_tone_taper,
+            gray_penalty=color.gray_penalty,
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
@@ -424,6 +428,7 @@ def _build_display_mode(
             input_smoothing=input_smoothing,
             sharpen=sharpen,
             auto_fit_strength=auto_fit_strength,
+            auto_fit_white_level=color.auto_fit_white_level,
             flicker_tolerance=flicker_tolerance,
             flicker_max_luma_delta=color.flicker_max_luma_delta,
             flicker_score_pairs=color.flicker_score_pairs,
@@ -1601,17 +1606,24 @@ def auto_fit_shot_cfg_error(label: str, color: ColorCfg) -> str | None:
     """Range-check one resolved [color] section's auto_fit_shot_max_rise
     (>= 1.0: below it a cut could only weaken the fit, and 0 divides by zero
     in `ColorFit.held_to`) and auto_fit_shot_relax (0..1: outside it the
-    blend extrapolates past one of the two fits); returns the ConfigError
-    message, or None."""
+    blend extrapolates past one of the two fits), auto_fit_white_level
+    (128..255: 0 divides by zero in `ColorFit.with_white_level`, and below 128
+    the fit would halve contrast rather than leave headroom) and gray_penalty
+    (>= 0: a negative one pulls pixels onto the grays it exists to hold back);
+    returns the ConfigError message, or None."""
     if not color.auto_fit_shot_max_rise >= 1.0:
         return f"{label}.auto_fit_shot_max_rise must be >= 1.0, got {color.auto_fit_shot_max_rise}"
     if not 0.0 <= color.auto_fit_shot_relax <= 1.0:
         return f"{label}.auto_fit_shot_relax must be in 0..1, got {color.auto_fit_shot_relax}"
+    if not 128.0 <= color.auto_fit_white_level <= 255.0:
+        return f"{label}.auto_fit_white_level must be in 128..255, got {color.auto_fit_white_level}"
+    if not color.gray_penalty >= 0.0:
+        return f"{label}.gray_penalty must be >= 0, got {color.gray_penalty}"
     return None
 
 
 def validate_auto_fit_shot_cfg(cfg: Config) -> None:
-    """Guard auto_fit_shot_max_rise on [color] and every scene and clip override."""
+    """Guard the auto_fit_shot_cfg_error fields on [color] and every scene and clip override."""
     for label, color in effective_colors(cfg):
         err = auto_fit_shot_cfg_error(label, color)
         if err:

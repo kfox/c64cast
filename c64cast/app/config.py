@@ -45,6 +45,7 @@ from c64cast.video.modes.base import (
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
+    DEFAULT_GRAY_PENALTY,
     HARDWARE_PALETTE_CHOICES,
     HIRES_CELL_PICKS,
     resolve_color,
@@ -1973,6 +1974,26 @@ class ColorCfg:
             "out mid-tone subjects but flattens thin bright lines and faces over "
             "near-black, and the opening's fit washes out shots that are already "
             "bright, so 0.5 (default) goes halfway."
+        },
+    )
+    auto_fit_white_level: float = field(
+        default=255.0,
+        metadata={
+            "help": "Luma (128..255) the auto_fit stretch puts the source's "
+            "brightest highlights at. 255 (default) stretches them to full "
+            "white; a lower level leaves headroom, so a pale wall or sky lands "
+            "on light gray or a pale color instead of clipping to white or "
+            "cyan, at the cost of a dimmer picture."
+        },
+    )
+    gray_penalty: float = field(
+        default=DEFAULT_GRAY_PENALTY,
+        metadata={
+            "help": "mhires and mcm: how much closer a chromatic palette entry "
+            "has to be before the five grays win a pixel, in squared color "
+            "distance (>= 0). Higher keeps pale and desaturated regions "
+            "colorful; lower lets a near-gray wall render gray rather than "
+            'cyan or light red. Ignored by palette_mode = "grayscale".'
         },
     )
     force_palette: bool = field(

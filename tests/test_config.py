@@ -2859,6 +2859,26 @@ class ValidateAutoFitShotCfgTest(unittest.TestCase):
             with self.subTest(v=v), self.assertRaisesRegex(cfgmod.ConfigError, "relax"):
                 scene_factory.validate_auto_fit_shot_cfg(cfg)
 
+    def test_white_level_in_128_to_255_is_valid(self):
+        for v in (128.0, 190.0, 255.0):
+            cfg = cfgmod.Config()
+            cfg.color.auto_fit_white_level = v
+            scene_factory.validate_auto_fit_shot_cfg(cfg)
+
+    def test_white_level_outside_128_to_255_raises(self):
+        for v in (0.0, 127.0, 256.0, float("nan")):
+            cfg = cfgmod.Config()
+            cfg.color.auto_fit_white_level = v
+            with self.subTest(v=v), self.assertRaisesRegex(cfgmod.ConfigError, "white_level"):
+                scene_factory.validate_auto_fit_shot_cfg(cfg)
+
+    def test_a_negative_gray_penalty_raises(self):
+        for v in (-1.0, float("nan")):
+            cfg = cfgmod.Config()
+            cfg.color.gray_penalty = v
+            with self.subTest(v=v), self.assertRaisesRegex(cfgmod.ConfigError, "gray_penalty"):
+                scene_factory.validate_auto_fit_shot_cfg(cfg)
+
     def test_a_scene_override_below_one_raises_naming_the_scene(self):
         cfg = cfgmod.Config()
         cfg.scenes = [
@@ -3130,6 +3150,35 @@ class DarkToneTaperWiringTest(unittest.TestCase):
                     self.assertIsInstance(mode, cls)
                     assert isinstance(mode, (MCMDisplayMode, MultiHiresDisplayMode))
                     self.assertIs(mode._dark_tone_taper, value)
+
+
+class WashoutSettingsWiringTest(unittest.TestCase):
+    def test_config_path_forwards_the_white_level_to_every_fitting_mode(self):
+        from c64cast.video.palette import ColorFit
+
+        for name in ("mcm", "mhires", "petscii"):
+            with self.subTest(mode=name):
+                mode = scene_factory._build_display_mode(
+                    name, color=cfgmod.ColorCfg(auto_fit_white_level=190.0, auto_fit_strength=1.0)
+                )
+                mode.set_color_fit(ColorFit(black=0.0, white=190.0, sat_mult=1.0))
+                fit = mode._fit_for_apply()
+                assert fit is not None
+                self.assertAlmostEqual(fit.white, 255.0)
+
+    def test_config_path_forwards_the_gray_penalty_through_a_palette_mode_change(self):
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
+        from c64cast.video.palette import GRAY_INDICES
+
+        for name in ("mcm", "mhires"):
+            with self.subTest(mode=name):
+                mode = scene_factory._build_display_mode(
+                    name, color=cfgmod.ColorCfg(gray_penalty=1000.0)
+                )
+                assert isinstance(mode, (MCMDisplayMode, MultiHiresDisplayMode))
+                self.assertEqual(set(mode._gray_penalty[list(GRAY_INDICES)]), {1000.0})
+                mode.set_palette_mode(FakeAPI(), "cheap")
+                self.assertEqual(set(mode._gray_penalty[list(GRAY_INDICES)]), {1000.0})
 
 
 class BuildSceneTempoScaleTest(unittest.TestCase):

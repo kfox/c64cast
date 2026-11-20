@@ -103,6 +103,8 @@ The online fit converges on a video's first `ONLINE_FIT_WARMUP_FRAMES` frames. H
 
 **Why halfway.** On Ultimate 64 A/Bs of a dark-arena film and a commercial, the shot's own fit (relax 1) won on mid-tone subjects, but the opening's strong stretch (relax 0) won on thin bright lines and faces over near-black, and washed out shots that were already bright. `auto_fit_shot_relax` = 0.5 moves the held fit halfway from the opening's (`ColorFit.toward`), and read as the better compromise on the same hardware. It is applied after `held_to`, so the cap still bounds what a shot can strengthen.
 
+**Headroom.** The fit maps the source's 99th luma percentile to 255, so on a bright shot everything above it, and much just below it, lands on white or cyan: a lit wall goes flat. `[color].auto_fit_white_level` puts that percentile at a lower luma instead (`ColorFit.with_white_level`, which scales the gain about the black point and never pushes the white point past 255). The display mode applies it in `_fit_for_apply`, before the live `auto_fit_strength`, so it reaches the pre-scanned, online and shot fits alike, and a fit that does not stretch the highlights is left as it is. It ships at 255, unchanged, so a hardware A/B can judge a lower level before it becomes the default.
+
 **Detections that are not cuts** land on camera moves, flashes and fades, since the ratio test needs a frame to differ from its neighbors twice as much as they differ from each other. On 17 of 20 such detections the refit added fewer than 240 changed cells over three frames, against 1300–2500 of ordinary churn; the other three coincided with a change of the whole picture.
 
 ### A/V-lag telemetry
@@ -409,6 +411,8 @@ The swap is fully contained in `quantize_distances_for(flat, perceptual=…)` / 
 **Perceptual swaps only the distance space, not the shaping.** `channel_boost` and `gray_penalty` still apply, and this is load-bearing. Dropping them as weighted-BGR crutches is the tempting move and it is wrong: hardware A/B shows flat desaturated regions — a pale sky — fragmenting into drab gray under the accurate-but-neutral Lab match. The gray penalty is what keeps those regions chromatic, and `channel_boost` holds the C64-friendly hues.
 
 The gray penalty and the percell code/quant hysteresis bonuses are all d²-space quantities, so they are scaled by `palette.PERCEPTUAL_DIST_SCALE` (≈1/3, the Lab-vs-weighted-BGR magnitude ratio for equal physical gaps). Their tuned strength therefore carries over.
+
+`[color].gray_penalty` sets the gray-axis strength (`DEFAULT_GRAY_PENALTY`, 2500) that `palette_mode_settings` hands mcm and mhires, at construction and again on every palette-mode change; the cyan entry keeps `DEFAULT_PALE_PENALTY`. It is a setting rather than a constant because the strength tuned on webcam input is the one that turns a lit gray wall in film footage cyan or light red, while the pale-sky case above needs it.
 
 **Reach.** petscii threads the metric through `petscii_styles._quantize_color` / `_quantize_to_spectrum`. The force-palette remap is unaffected — its pixels are already exact palette colors, so every metric returns the same index.
 
