@@ -50,9 +50,11 @@ class PETSCIIDisplayMode(CharDisplayMode):
         channel_boost: list[float] | None = None,
         perceptual: bool = False,
         auto_fit_strength: float = 1.0,
+        auto_fit_white_level: float = 255.0,
     ):
         validate_style(style)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
+        self._auto_fit_white_level = float(auto_fit_white_level)
         self._perceptual = bool(perceptual)
         self._configured_style = style  # may be "random" sentinel
         self._style_name = style if style != RANDOM_STYLE else pick_random_style_name()

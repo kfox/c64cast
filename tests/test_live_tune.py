@@ -239,6 +239,16 @@ class ModeSetterTests(unittest.TestCase):
         self.assertAlmostEqual(f.black, 40.0)
         self.assertAlmostEqual(f.white, 200.0)
 
+    def test_fit_for_apply_sets_the_white_level_before_the_strength(self):
+        m = MCMDisplayMode(auto_fit_white_level=190.0)
+        m.set_color_fit(ColorFit(black=40.0, white=200.0, sat_mult=1.5))
+        m.auto_fit_strength = 0.5
+        f = m._fit_for_apply()
+        assert f is not None
+        headroom = 40.0 + 160.0 * 255.0 / 190.0
+        self.assertAlmostEqual(f.white, 255.0 - (255.0 - headroom) * 0.5, places=4)
+        self.assertAlmostEqual(f.black, 20.0)
+
     def test_hires_has_no_auto_fit(self):
         self.assertNotIn("auto_fit_strength", HiresDisplayMode.LIVE_PARAMS)
         self.assertNotIn("palette_mode", HiresDisplayMode.LIVE_CHOICES)

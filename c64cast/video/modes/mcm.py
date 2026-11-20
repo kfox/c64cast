@@ -12,6 +12,7 @@ from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.palette import (
     C64_PALETTE_BGR,
     COLOR_MATCH_MODES,
+    DEFAULT_GRAY_PENALTY,
     PERCEPTUAL_DIST_SCALE,
     build_fade_lut,
     pick_diverse_top_n,
@@ -79,16 +80,22 @@ class MCMDisplayMode(CharDisplayMode):
         dither_strength: float = 0.5,
         perceptual: bool = False,
         auto_fit_strength: float = 1.0,
+        auto_fit_white_level: float = 255.0,
+        gray_penalty: float = DEFAULT_GRAY_PENALTY,
     ):
         validate_palette_mode(palette_mode)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
+        self._auto_fit_white_level = float(auto_fit_white_level)
+        self._gray_penalty_strength = float(gray_penalty)
         # The forced-palette preset pairs with percell (see cycle_style); the
         # configured palette_mode still seeds the non-forced cycle stops.
         self._force_palette = bool(force_palette)
         if self._force_palette:
             palette_mode = "percell"
         self.palette_mode = palette_mode
-        self._sat_factor, self._gray_penalty = palette_mode_settings(palette_mode)
+        self._sat_factor, self._gray_penalty = palette_mode_settings(
+            palette_mode, self._gray_penalty_strength
+        )
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
@@ -116,7 +123,9 @@ class MCMDisplayMode(CharDisplayMode):
         self.palette_mode = palette_mode
         if force_palette is not None:
             self._force_palette = force_palette
-        self._sat_factor, self._gray_penalty = palette_mode_settings(palette_mode)
+        self._sat_factor, self._gray_penalty = palette_mode_settings(
+            palette_mode, self._gray_penalty_strength
+        )
         self._fixed_bg = (
             np.array(GRAYSCALE_MCM_BGS, dtype=np.int64) if palette_mode == "grayscale" else None
         )

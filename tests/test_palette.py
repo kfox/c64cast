@@ -541,6 +541,21 @@ class ColorFitHeldToTest(unittest.TestCase):
         self.assertTrue(held.is_identity())
 
 
+class ColorFitWhiteLevelTest(unittest.TestCase):
+    def test_the_white_point_lands_at_the_level(self):
+        fit = ColorFit(black=10.0, white=160.0, sat_mult=1.3).with_white_level(190.0)
+        self.assertAlmostEqual((160.0 - fit.black) * 255.0 / (fit.white - fit.black), 190.0)
+        self.assertEqual((fit.black, fit.sat_mult), (10.0, 1.3))
+
+    def test_full_white_leaves_the_fit_unchanged(self):
+        fit = ColorFit(black=10.0, white=160.0, sat_mult=1.3)
+        self.assertEqual(fit.with_white_level(255.0), fit)
+
+    def test_the_white_point_is_capped_at_255(self):
+        fit = ColorFit(black=30.0, white=240.0, sat_mult=1.0).with_white_level(190.0)
+        self.assertEqual(fit.white, 255.0)
+
+
 class HungarianTest(unittest.TestCase):
     """Min-cost assignment used by the forced-palette bijection."""
 

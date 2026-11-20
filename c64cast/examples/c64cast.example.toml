@@ -949,6 +949,17 @@ auto_fit_strength = 0.9
 auto_fit_shots = true
 auto_fit_shot_max_rise = 1.0
 auto_fit_shot_relax = 0.5
+# auto_fit_white_level is the luma (128..255) the fit puts the source's brightest
+# highlights at: 255 (default) stretches them to full white, and a lower level
+# leaves headroom so a pale wall or sky stays light gray or pale instead of
+# clipping to white or cyan.
+auto_fit_white_level = 255.0
+#
+# gray_penalty (mhires and mcm): how much closer a chromatic palette entry must
+# be before the five grays win a pixel, in squared color distance. Higher keeps
+# pale and desaturated regions colorful; lower lets a near-gray wall render
+# gray instead of cyan or light red. Default 2500.
+gray_penalty = 2500.0
 #
 # force_palette: the EXTREME, deliberately FALSE-COLOR remap (off by default).
 # Everything above is faithful — pixels still map to their nearest C64 color, so

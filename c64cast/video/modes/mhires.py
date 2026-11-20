@@ -36,6 +36,7 @@ from c64cast.video.palette import (
     C64_PALETTE_BGR,
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
+    DEFAULT_GRAY_PENALTY,
     PALETTE_LUMA,
     PERCEPTUAL_DIST_SCALE,
     build_fade_lut,
@@ -200,6 +201,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         input_smoothing: float = 0.0,
         sharpen: float = 0.0,
         auto_fit_strength: float = 1.0,
+        auto_fit_white_level: float = 255.0,
+        gray_penalty: float = DEFAULT_GRAY_PENALTY,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
         flicker_score_pairs: Sequence[str] | None = None,
@@ -207,6 +210,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         validate_palette_mode(palette_mode)
         validate_cell_strategy(cell_strategy)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
+        self._auto_fit_white_level = float(auto_fit_white_level)
+        self._gray_penalty_strength = float(gray_penalty)
         # An 8×8 glyph already spans 2 of the mode's 4px cells (a 20-col text
         # grid); this also stretches it to 16 px tall, for a 12-row grid.
         self.text_double_height = bool(text_double_height)
@@ -215,7 +220,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if self._force_palette:
             palette_mode = "percell"
         self.palette_mode = palette_mode
-        self._sat_factor, self._gray_penalty = palette_mode_settings(palette_mode)
+        self._sat_factor, self._gray_penalty = palette_mode_settings(
+            palette_mode, self._gray_penalty_strength
+        )
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
@@ -329,7 +336,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self.palette_mode = palette_mode
         if force_palette is not None:
             self._force_palette = force_palette
-        self._sat_factor, self._gray_penalty = palette_mode_settings(palette_mode)
+        self._sat_factor, self._gray_penalty = palette_mode_settings(
+            palette_mode, self._gray_penalty_strength
+        )
         self._entry_penalty_cache = (
             self._entry_penalty(self._blend_table) if self._blend_table is not None else None
         )
