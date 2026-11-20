@@ -1537,14 +1537,24 @@ class NmiStallWatchdogTest(unittest.TestCase):
 
 
 class _CrashedMachineAPI(_RFakeAPI):
-    """R pinned, as under a dead consumer, with the NMI vector and `$D011`
-    reading back as given; None for either reads as a failed read."""
+    """R pinned at `r_offset` into the ring, as under a dead consumer, with the
+    NMI vector, the NMI routine and `$D011` reading back as given; None for
+    any of them reads as a failed read."""
 
-    def __init__(self, nmi_vector: int | None, d011: int | None = 0x3B) -> None:
-        super().__init__([0])
+    def __init__(
+        self,
+        nmi_vector: int | None,
+        d011: int | None = 0x3B,
+        *,
+        routine: bytes | None = audio_mod.NMI_ROUTINE,
+        r_offset: int = 0,
+    ) -> None:
+        super().__init__([r_offset])
         self.ram = {}
         if nmi_vector is not None:
             self.ram[VECTORS.NMI] = bytes([nmi_vector & 0xFF, nmi_vector >> 8])
+        if routine is not None:
+            self.ram[audio_mod.NMI_ROUTINE_ADDR] = routine
         if d011 is not None:
             self.ram[VIC.D011_CONTROL_1] = bytes([d011])
         self.looks = 0
@@ -1603,7 +1613,44 @@ class StallFindsACrashedMachineTest(unittest.TestCase):
             with self.assertLogs(audio_rate_mod.log, level="WARNING"):
                 s = self._stall(api, bitmap=True)
         self.assertFalse(s.machine_crashed.is_set())
-        self.assertEqual(api.looks, 2)
+        self.assertEqual(api.looks, 3)
+
+    # $C000-$C04F as a TeensyROM+ left it after a REU copy aimed by a lost
+    # register write ran on from $BF40: screen codes over the routine.
+    OVERWRITTEN = bytes.fromhex("131313131313244612121212133717131313131e131313171313171716171713")
+
+    def test_an_overwritten_handler_is_a_crash(self):
+        api = _CrashedMachineAPI(nmi_vector=audio_mod.NMI_ROUTINE_ADDR, routine=self.OVERWRITTEN)
+        with self.assertLogs(audio_rate_mod.log, level="ERROR") as cm:
+            s = self._stall(api, bitmap=True)
+        self.assertIn(
+            f"NMI handler at ${audio_mod.NMI_ROUTINE_ADDR:04X} was overwritten", cm.output[0]
+        )
+        self.assertTrue(s.machine_crashed.is_set())
+
+    def test_a_read_pointer_left_outside_the_ring_still_stalls(self):
+        # The overwritten operand reads $1324: outside the ring, so it never
+        # paced the servo, and the watchdog used to see no reading at all.
+        r = 0x1324
+        api = _CrashedMachineAPI(
+            nmi_vector=audio_mod.NMI_ROUTINE_ADDR,
+            routine=self.OVERWRITTEN,
+            r_offset=r - audio_mod.RING_BUFFER_ADDR,
+        )
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s = self._stall(api, bitmap=True)
+        self.assertIn(f"${r:04X}", cm.output[0])
+        self.assertTrue(s.machine_crashed.is_set())
+        self.assertEqual(s.servo.gap_max, -1, "a reading outside the ring paced nothing")
+
+    def test_a_moved_read_pointer_is_not_an_overwritten_handler(self):
+        routine = bytearray(audio_mod.NMI_ROUTINE)
+        routine[5:7] = bytes([0x34, 0x52])  # R = $5234, its own operand
+        api = _CrashedMachineAPI(nmi_vector=audio_mod.NMI_ROUTINE_ADDR, routine=bytes(routine))
+        with self.assertNoLogs(audio_rate_mod.log, level="ERROR"):
+            with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+                s = self._stall(api, bitmap=True)
+        self.assertFalse(s.machine_crashed.is_set())
 
     def test_an_unanswered_look_is_not_taken_for_a_crash(self):
         api = _CrashedMachineAPI(nmi_vector=None)
@@ -1611,6 +1658,13 @@ class StallFindsACrashedMachineTest(unittest.TestCase):
             with self.assertLogs(audio_rate_mod.log, level="WARNING"):
                 s = self._stall(api, bitmap=True)
         self.assertFalse(s.machine_crashed.is_set())
+
+    def test_an_unanswered_routine_read_still_looks_at_the_screen(self):
+        api = _CrashedMachineAPI(nmi_vector=audio_mod.NMI_ROUTINE_ADDR, d011=0x1B, routine=None)
+        with self.assertLogs(audio_rate_mod.log, level="ERROR") as cm:
+            s = self._stall(api, bitmap=True)
+        self.assertIn("text mode", cm.output[0])
+        self.assertTrue(s.machine_crashed.is_set())
 
     def test_a_stop_during_the_look_is_not_taken_for_a_crash(self):
         # stop() puts the KERNAL's NMI vector back, which the look would
@@ -1635,7 +1689,7 @@ class SlowReadPointerTest(unittest.TestCase):
         s = AudioStreamer(cast(Ultimate64API, FakeAPI()), 12000, "NTSC", host_dma_servo=True)
         self.read_s = read_s
 
-        def read() -> int:
+        def read(**_: Any) -> int:
             clock.sleep(self.read_s)
             return audio_mod.RING_BUFFER_ADDR
 
