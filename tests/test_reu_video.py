@@ -88,6 +88,7 @@ from c64cast.video.modes_irq import (
 )
 
 _SHORT = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
+_LOSSY = replace(_SHORT, name="Lossy", reu_register_writes_unreliable=True)
 
 
 class ReuStagedFlagDefaultTest(unittest.TestCase):
@@ -1517,14 +1518,23 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
             self.log: list[tuple[str, int, int]] = []
             # The REC registers as the handler last wrote them (the REU's own
             # advance applied), kept apart from py65's untyped memory.
-            self.rec: dict[int, int] = {}
+            self.rec: dict[int, int] = dict.fromkeys(range(REU.C64_ADDR_LO, REU.LENGTH_HI + 1), 0)
+            # Per register, the ordinals of the writes to it the REU loses.
+            self.lost: dict[int, set[int]] = {}
+            self._writes: dict[int, int] = {}
             self.mem.subscribe_to_write(range(REU.C64_ADDR_LO, REU.LENGTH_HI + 1), self._store)
+            self.mem.subscribe_to_read(
+                range(REU.C64_ADDR_LO, REU.LENGTH_HI + 1), self.rec.__getitem__
+            )
             self.mem.subscribe_to_write([REU.COMMAND], self._trigger)
             self.mem.subscribe_to_write([CIA2.PORT_A], self._register("dd00"))
             self.mem.subscribe_to_write([0xD021], self._register("d021"))
 
         def _store(self, address, value):
-            self.rec[address] = value
+            n = self._writes.get(address, 0)
+            self._writes[address] = n + 1
+            if n not in self.lost.get(address, ()):
+                self.rec[address] = value
 
         def _register(self, name):
             def write(address, value):
@@ -1610,6 +1620,10 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
         ("mhires short", bank_swap_irq_handler(_SHORT, mhires=True, pump=False), True, False),
         ("hires+pump short", bank_swap_irq_handler(_SHORT, mhires=False, pump=True), False, True),
         ("mhires+pump short", bank_swap_irq_handler(_SHORT, mhires=True, pump=True), True, True),
+        ("hires lossy", bank_swap_irq_handler(_LOSSY, mhires=False, pump=False), False, False),
+        ("mhires lossy", bank_swap_irq_handler(_LOSSY, mhires=True, pump=False), True, False),
+        ("hires+pump lossy", bank_swap_irq_handler(_LOSSY, mhires=False, pump=True), False, True),
+        ("mhires+pump lossy", bank_swap_irq_handler(_LOSSY, mhires=True, pump=True), True, True),
     )
 
     @staticmethod
@@ -1805,6 +1819,54 @@ class BankSwapDispatcherExecutionTest(unittest.TestCase):
                 _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
                 chunks = {n for k, _, n in log if k == "rec"}
                 self.assertEqual(chunks, {BANK_SWAP_CHUNK_SIZE_SHORT})
+
+    # The first family's writes, and the second family's, whose registers
+    # otherwise keep where the first family's copy ended.
+    LOST_WRITES = (0, 1, 5)
+
+    def _copy_with_a_lost_write(self, handler, *, mhires, register, nth):
+        m = self.Machine(self, handler, mhires=mhires)
+        m.lost = {register: {nth}}
+        m.stage(slot=0)
+        _, log, _ = m.irq(line=self.OUT_OF_WINDOW)
+        return log
+
+    def test_a_lost_reu_register_write_is_written_again(self):
+        # A family whose destination write was lost copied on from the
+        # previous family's end, past the bank and over the NMI handler.
+        for name, handler, mhires, _ in self.CASES[8:]:
+            for register in range(REU.C64_ADDR_LO, REU.LENGTH_HI + 1):
+                for nth in self.LOST_WRITES:
+                    with self.subTest(mode=name, register=f"${register:04X}", nth=nth):
+                        log = self._copy_with_a_lost_write(
+                            handler, mhires=mhires, register=register, nth=nth
+                        )
+                        self.assertEqual(self._spans(log), self._banked_spans(0x8000))
+                        chunks = {n for k, _, n in log if k == "rec"}
+                        self.assertEqual(chunks, {BANK_SWAP_CHUNK_SIZE_SHORT})
+
+    def test_without_the_read_back_a_lost_write_misplaces_the_copy(self):
+        for name, handler, mhires, _ in self.CASES[4:8]:
+            with self.subTest(mode=name):
+                log = self._copy_with_a_lost_write(
+                    handler, mhires=mhires, register=REU.C64_ADDR_HI, nth=1
+                )
+                self.assertNotEqual(self._spans(log), self._banked_spans(0x8000))
+
+    def test_only_a_lossy_link_pays_for_the_read_back(self):
+        for mhires in (False, True):
+            for pump in (False, True):
+                with self.subTest(mhires=mhires, pump=pump):
+                    self.assertLess(
+                        len(bank_swap_irq_handler(_SHORT, mhires=mhires, pump=pump)),
+                        len(bank_swap_irq_handler(_LOSSY, mhires=mhires, pump=pump)),
+                    )
+
+    def test_only_the_teensyrom_link_reads_its_reu_registers_back(self):
+        from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
+
+        self.assertTrue(TEENSYROM_PROFILE.reu_register_writes_unreliable)
+        self.assertFalse(ULTIMATE_PROFILE.reu_register_writes_unreliable)
 
 
 class ReuPumpBodySubroutineTest(unittest.TestCase):

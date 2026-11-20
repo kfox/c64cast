@@ -9,6 +9,7 @@ window's edges are the real bytes'.
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from functools import cache, partial
 from typing import cast
 
@@ -74,6 +75,7 @@ LAST_PICTURE_LINE = FIRST_BADLINE + 25 * 8 - 1  # 250
 CELL_ROW_COLORS = 40
 
 _SHORT = HardwareProfile(name="Short", family="fake", reu_short_chunks=True)
+_LOSSY = replace(_SHORT, name="Lossy", reu_register_writes_unreliable=True)
 
 DISPATCHERS = (
     ("hires", BANK_SWAP_IRQ_HANDLER, False),
@@ -84,6 +86,10 @@ DISPATCHERS = (
     ("mhires short", bank_swap_irq_handler(_SHORT, mhires=True, pump=False), True),
     ("hires+pump short", bank_swap_irq_handler(_SHORT, mhires=False, pump=True), False),
     ("mhires+pump short", bank_swap_irq_handler(_SHORT, mhires=True, pump=True), True),
+    ("hires lossy", bank_swap_irq_handler(_LOSSY, mhires=False, pump=False), False),
+    ("mhires lossy", bank_swap_irq_handler(_LOSSY, mhires=True, pump=False), True),
+    ("hires+pump lossy", bank_swap_irq_handler(_LOSSY, mhires=False, pump=True), False),
+    ("mhires+pump lossy", bank_swap_irq_handler(_LOSSY, mhires=True, pump=True), True),
 )
 
 
@@ -439,6 +445,11 @@ HANDLERS = (
         bank_swap_irq_handler(_SHORT, mhires=True, pump=True),
         partial(prime_reu, mhires=True),
         "row0",
+    ),
+    *(
+        (name, handler, partial(prime_reu, mhires=mhires), "row0" if mhires else "d020")
+        for name, handler, mhires in DISPATCHERS
+        if name.endswith("lossy")
     ),
     ("hostdma", HOSTDMA_SWAP_IRQ_HANDLER, partial(prime_page_flip, flicker=False), "dd00"),
     ("flicker", FLICKER_SWAP_IRQ_HANDLER, partial(prime_page_flip, flicker=True), "dd00"),
