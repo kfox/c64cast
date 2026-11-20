@@ -10,7 +10,7 @@ architecture overview see [architecture.md](architecture.md).
 
 The SID DAC streaming path writes samples to the SID volume nibble at
 $D418 at 12 kHz by default (`[audio] sample_rate`; 10 kHz on a bitmap scene
-while a TeensyROM+ locks its DMA slices). The classic path is
+without REU staging while a TeensyROM+ locks its DMA slices). The classic path is
 4-bit (0-15) — an objectively bad audio format, but the one a real C64
 plays back. You *can* raise `sample_rate`, but it isn't the quality lever:
 the C64-side NMI period is derived *from* it (it programs the CIA #2 Timer A
@@ -112,7 +112,7 @@ time domain by the inverse factor** so it nets to real time. `[audio].
 dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` drive it. Unset (the
 default), each resolves to the speed fraction `s` measured for the connected
 hardware: **0.89 hires / 0.88 mhires** on a U64-II NTSC and on a TeensyROM
-writing unsliced, **1.0** (no compensation) on a TeensyROM+ whose writes are locked to the sample store, **0.97** on one slicing without the lock at the default slice shape, and from a few seconds in the scene follows the `s` it measures (clock/wall) unless the field is set: for the gated bitmap+DAC path,
+writing unsliced, **1.0** (no compensation) on a TeensyROM+ whose writes are locked to the sample store (**0.992** there for a scene whose frames are REU-staged), **0.97** on one slicing without the lock at the default slice shape, and from a few seconds in the scene follows the `s` it measures (clock/wall) unless the field is set: for the gated bitmap+DAC path,
 `AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
 `atempo` filter graph and stamps each rebased video PTS `c` (seconds on the content timeline: the file position, less `start_s` for the initial pass) at `offset + c × s` (`offset` 0 until a retune). The existing
 drain-clock A/V sync (which reads ≈`s`) then lands both content streams at real

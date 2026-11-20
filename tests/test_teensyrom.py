@@ -1096,6 +1096,22 @@ class LockedSlicingBackendTest(unittest.TestCase):
         # The lock can still be lost mid-scene, and only following sees it.
         self.assertTrue(scene.tempo_follow)
 
+    def test_a_staged_bitmap_scene_takes_the_default_rate_while_locked(self):
+        b, _ = self._backend(lock=True)
+        for multicolor in (True, False):
+            pacing = b.dac_pacing(bitmap=True, multicolor=multicolor, staged=True)
+            self.assertEqual(pacing.sample_rate, DEFAULT_DAC_SAMPLE_RATE, multicolor)
+            self.assertLess(pacing.bitmap_tempo, 1.0, multicolor)
+
+    def test_a_staged_bitmap_scene_without_the_lock_paces_as_unstaged(self):
+        for mode, lock in (("auto", False), ("on", True)):
+            b, _ = self._backend(mode, lock=lock)
+            self.assertEqual(
+                b.dac_pacing(bitmap=True, multicolor=True, staged=True),
+                b.dac_pacing(bitmap=True, multicolor=True),
+                mode,
+            )
+
     def test_bitmap_rate_is_the_default_without_the_lock(self):
         for mode, lock in (("auto", False), ("on", True)):
             b, _ = self._backend(mode, lock=lock)

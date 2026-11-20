@@ -337,9 +337,13 @@ def _annotate_osd(img: np.ndarray, text: str, position: str = "bottom") -> np.nd
     return _blit_c64_text(img, text, width_frac=0.85, vpos=vpos, margin_y_frac=0.06)
 
 
-def _dac_pacing_for(api: C64Backend, mode_name: str | None) -> DacPacing:
-    name = (mode_name or "").lower()
-    return api.dac_pacing(bitmap=name in NMI_BITMAP_SEED_MODES, multicolor=name == "mhires")
+def _dac_pacing_for(api: C64Backend, mode: DisplayMode | None) -> DacPacing:
+    name = (mode.name if mode is not None else "").lower()
+    return api.dac_pacing(
+        bitmap=name in NMI_BITMAP_SEED_MODES,
+        multicolor=name == "mhires",
+        staged=isinstance(mode, BitmapDisplayMode) and mode.use_reu_staged,
+    )
 
 
 class Scene:
@@ -504,7 +508,7 @@ class Scene:
         self.dac_pacing = None
         if self.audio is not None:
             display = self.display_mode.name if self.display_mode is not None else None
-            self.dac_pacing = _dac_pacing_for(self.api, display)
+            self.dac_pacing = _dac_pacing_for(self.api, self.display_mode)
             if isinstance(self.audio, AudioStreamer):
                 self.audio.set_scene_rate(self.dac_pacing.sample_rate, display)
             self.audio.set_pre_emphasis(self.pre_emphasis)

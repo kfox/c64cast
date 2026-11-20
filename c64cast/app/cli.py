@@ -261,8 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=f"Audio sample rate in Hz (default: {DEFAULT_DAC_SAMPLE_RATE}, or "
-        f"{LOCKED_BITMAP_DAC_SAMPLE_RATE} on a Hires/MultiHires scene while a TeensyROM+ "
-        "locks its DMA slices)",
+        f"{LOCKED_BITMAP_DAC_SAMPLE_RATE} on a Hires/MultiHires scene without REU staging "
+        "while a TeensyROM+ locks its DMA slices)",
     )
     a.add_argument(
         "-m",

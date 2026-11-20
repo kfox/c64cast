@@ -413,7 +413,8 @@ device = -1                         # int index (-1 = system default input), or 
                                     # `--list-devices` (-L) shows names + indices.
 # sample_rate = 12000               # SID DAC rate. Unset = 12000, or 10000 on a hires/mhires
                                     # scene while a TeensyROM+ locks its DMA slices (12000's
-                                    # smaller slices cap bitmap video's frame rate). A set
+                                    # smaller slices cap bitmap video's frame rate) unless
+                                    # its frames are REU-staged ([video].use_reu_staged). A set
                                     # value applies to every scene.
                                     # 12000 keeps fricatives (>8000 Nyquist). Live-pipeline overrun onset ~12.5k NTSC (isolated-handler ceiling ~12.8k / ~12.3k PAL).
                                     # A REQUEST, not a guarantee: it picks a CIA timer latch whose period is a

@@ -2609,7 +2609,7 @@ class StallResyncTest(unittest.TestCase):
 
 
 class _BitmapRateAPI(FakeAPI):
-    def dac_pacing(self, *, bitmap, multicolor):
+    def dac_pacing(self, *, bitmap, multicolor, staged=False):
         return DacPacing(10000 if bitmap else 12000, 1.0)
 
 
@@ -2641,6 +2641,22 @@ class SceneDacRateTest(unittest.TestCase):
             with self.assertLogs("c64cast", level="INFO"):
                 self._set_up(st, mode)
             self.assertEqual(st.sample_rate, 12000, mode)
+
+    def test_scene_setup_tells_the_backend_whether_frames_are_staged(self):
+        from c64cast.scenes.scenes import Scene
+        from c64cast.video.modes import BitmapDisplayMode
+
+        st = self._streamer(None)
+        for staged in (True, False):
+            mode = mock.MagicMock(spec=BitmapDisplayMode)
+            mode.name = "mhires"
+            mode.use_reu_staged = staged
+            with (
+                mock.patch.object(st.api, "dac_pacing", wraps=st.api.dac_pacing) as pacing,
+                self.assertLogs("c64cast", level="INFO"),
+            ):
+                Scene(cast(Ultimate64API, st.api), st, mode, "clip").setup()
+            self.assertEqual(pacing.call_args.kwargs["staged"], staged)
 
     def test_each_scene_records_whether_it_draws_a_bitmap_for_the_crash_look(self):
         for rate in (None, 11025):

@@ -538,9 +538,10 @@ class C64Backend(ABC):
         backend with no cheap round trip lets the setup itself try."""
         return True
 
-    def dac_pacing(self, *, bitmap: bool, multicolor: bool) -> DacPacing:
+    def dac_pacing(self, *, bitmap: bool, multicolor: bool, staged: bool = False) -> DacPacing:
         """The DAC pacing for a scene in a bitmap mode (MultiHires when
-        `multicolor`) or not. The bitmap tempo was measured on an Ultimate
+        `multicolor`, its frames staged through the REU when `staged`) or not.
+        The bitmap tempo was measured on an Ultimate
         64-II NTSC; a TeensyROM writing with WriteC64Mem lands within 1% of the
         same figures."""
         tempo = (0.88 if multicolor else 0.89) if bitmap else 1.0
