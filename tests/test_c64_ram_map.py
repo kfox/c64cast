@@ -214,7 +214,7 @@ _REGIONS: tuple[Region, ...] = (
         "asid",
         "player IRQ handler (8-SID worst case)",
         ap.HANDLER_ADDR,
-        len(ap.build_player(ap.slot_size_for_chips(8), 16)),
+        len(ap.build_player(ap.slot_size_for_chips(8), 16, verify_registers=True)),
         f"{_AP}:HANDLER_ADDR",
     ),
     Region(
