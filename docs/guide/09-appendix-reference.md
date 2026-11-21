@@ -22,6 +22,7 @@ version you have installed.
 | `--print-schema` | The configuration schema, as JSON |
 | `--suggest-palette FILE` | The C64 colors that best represent an image |
 | `--list-devices` | Cameras and audio devices this computer can see |
+| `--list-dac-calibrations` | The DAC calibrations measured on this computer, by the name to play one with |
 
 `--describe` takes a bare name when it is unambiguous, and a prefixed one
 when it is not:

@@ -361,6 +361,12 @@ def build_parser() -> argparse.ArgumentParser:
         "`--config example:NAME`) and exit",
     )
     intro.add_argument(
+        "--list-dac-calibrations",
+        action="store_true",
+        help="List the DAC calibrations --calibrate-dac has stored, each by the "
+        "name --dac-calibration-profile takes, and exit",
+    )
+    intro.add_argument(
         "--print-example",
         metavar="NAME",
         default=None,

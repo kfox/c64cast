@@ -58,6 +58,8 @@ DEFAULT_ENTRY: Final = "default"
 
 _SCHEMA_VERSION = 2
 
+_PROFILE_PREFIX: Final = "profile-"
+
 
 def _sanitize(text: str) -> str:
     """Filesystem-safe token: keep alnum/dot/dash, fold everything else to '_'."""
@@ -81,11 +83,14 @@ def profile_path_override(cfg: Config) -> Path | None:
     value = cfg.audio.dac_calibration_profile
     if not value:
         return None
+    return Path(value).expanduser() if _names_a_path(value) else None
+
+
+def _names_a_path(value: str) -> bool:
     separators = [sep for sep in ("/", os.sep, os.altsep) if sep]
-    looks_like_path = (
+    return (
         value.endswith(".json") or value.startswith("~") or any(sep in value for sep in separators)
     )
-    return Path(value).expanduser() if looks_like_path else None
 
 
 def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
@@ -108,16 +113,7 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
         override = profile_path_override(cfg)
         if override is not None:
             return override.stem
-        name = _sanitize(cfg.audio.dac_calibration_profile)
-        # A file named exactly by the given name wins over the "profile-"
-        # spelling, so naming an auto-keyed file ("ultimate-<unique-id>",
-        # "tr-<usb-serial>") on disk resolves to it rather than to nothing.
-        if (
-            not (paths.calibration_dir() / f"profile-{name}.json").exists()
-            and (paths.calibration_dir() / f"{name}.json").exists()
-        ):
-            return name
-        return f"profile-{name}"
+        return key_for_profile_name(cfg.audio.dac_calibration_profile)
 
     backend = cfg.hardware.backend
     if backend == "ultimate":
@@ -143,6 +139,29 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
         if sn:
             return f"tr-{_sanitize(sn)}"
     return f"tr-serial-{_sanitize(tr.serial_port or 'auto')}"
+
+
+def key_for_profile_name(value: str) -> str:
+    """The key a bare ``[audio].dac_calibration_profile`` name resolves to."""
+    name = _sanitize(value)
+    # A file named exactly by the given name wins over the "profile-"
+    # spelling, so naming an auto-keyed file ("ultimate-<unique-id>",
+    # "tr-<usb-serial>") on disk resolves to it rather than to nothing.
+    if (
+        not (paths.calibration_dir() / f"{_PROFILE_PREFIX}{name}.json").exists()
+        and (paths.calibration_dir() / f"{name}.json").exists()
+    ):
+        return name
+    return f"{_PROFILE_PREFIX}{name}"
+
+
+def profile_name_for(path: Path) -> str:
+    """What to pass to ``--dac-calibration-profile`` to select the calibration
+    file at `path`: the shortest name that resolves back to it, else the path."""
+    stem = path.stem
+    name = stem.removeprefix(_PROFILE_PREFIX)
+    resolves_back = not _names_a_path(name) and key_for_profile_name(name) == stem
+    return name if resolves_back else str(path)
 
 
 def path_for_key(cfg: Config, key: str) -> Path:
@@ -190,15 +209,56 @@ def list_calibration_files(backend: str | None = None) -> list[Path]:
     files = sorted(cal_dir.glob("*.json"))
     if backend is None:
         return files
+    return [path for path in files if _read_record(path).get("backend") == backend]
+
+
+@dataclass(frozen=True)
+class StoredSid:
+    entry: str  # "1" / "2" / "default"
+    detected: str | None
+    playable: bool
+
+
+@dataclass(frozen=True)
+class StoredCalibration:
+    """One file under the calibration directory, as ``--list-dac-calibrations``
+    shows it. ``sids`` is empty for a file this version cannot play."""
+
+    name: str
+    path: Path
+    backend: str | None
+    created: str | None
+    sids: tuple[StoredSid, ...]
+
+
+def stored_calibrations() -> list[StoredCalibration]:
     out = []
-    for path in files:
-        try:
-            doc = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if isinstance(doc, dict) and doc.get("backend") == backend:
-            out.append(path)
+    for path in list_calibration_files():
+        record = _read_record(path)
+        sids = _sids_of(record)
+        out.append(
+            StoredCalibration(
+                name=profile_name_for(path),
+                path=path,
+                backend=_str_field(record, "backend"),
+                created=_str_field(record, "created"),
+                sids=tuple(
+                    StoredSid(
+                        entry=key,
+                        detected=_str_field(entry, "detected"),
+                        playable=_table_of((key, entry)) is not None,
+                    )
+                    for key, entry in sids.items()
+                    if isinstance(entry, dict)
+                ),
+            )
+        )
     return out
+
+
+def _str_field(record: dict[str, Any], key: str) -> str | None:
+    value = record.get(key)
+    return value if isinstance(value, str) else None
 
 
 def has_sid_sockets(be: C64Backend) -> bool:
@@ -252,17 +312,27 @@ def d400_owner(be: C64Backend) -> D400Owner:
     return D400_NO_SOCKET
 
 
-def _saved_sids(path: Path) -> dict[str, Any]:
-    """The ``sids`` map already on disk at `path`, or ``{}`` when there is no
-    readable schema-2 file there."""
+def _read_record(path: Path) -> dict[str, Any]:
+    """The JSON object stored at `path`, or ``{}`` when there is none."""
     try:
         raw = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    if not isinstance(raw, dict) or raw.get("schema") != _SCHEMA_VERSION:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _sids_of(record: dict[str, Any]) -> dict[str, Any]:
+    """`record`'s ``sids`` map, or ``{}`` when it is not a schema-2 file."""
+    if record.get("schema") != _SCHEMA_VERSION:
         return {}
-    sids = raw.get("sids")
+    sids = record.get("sids")
     return sids if isinstance(sids, dict) else {}
+
+
+def _saved_sids(path: Path) -> dict[str, Any]:
+    """The ``sids`` map already on disk at `path`, or ``{}`` when there is no
+    readable schema-2 file there."""
+    return _sids_of(_read_record(path))
 
 
 def _applicable_entry(

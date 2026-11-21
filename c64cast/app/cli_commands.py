@@ -382,6 +382,9 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     if args.list_examples:
         print(introspect.render_list_examples())
         return 0
+    if args.list_dac_calibrations:
+        print(introspect.render_list_dac_calibrations())
+        return 0
     if args.print_example is not None:
         # Straight to stdout so `> c64cast.toml` makes an editable copy. A bad
         # name must not exit 0: the caller is usually redirecting, and a happy

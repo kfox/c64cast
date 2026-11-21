@@ -32,12 +32,15 @@ import textwrap
 import tomllib
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from c64cast.scenes import overlays as ovmod
 
 from . import config as cfgmod
 from . import paths as pathsmod
+
+if TYPE_CHECKING:
+    from c64cast.audio.dac_calibration_store import StoredSid
 
 
 @dataclass(frozen=True)
@@ -925,6 +928,34 @@ def render_list_examples() -> str:
         "Run one:   c64cast --config example:<name>",
         "Copy one:  c64cast --print-example <name> > c64cast.toml",
     ]
+    return "\n".join(lines)
+
+
+def _describe_sid(sid: StoredSid) -> str:
+    where = "default" if sid.entry == "default" else f"socket {sid.entry}"
+    text = f"{where}: {sid.detected}" if sid.detected else where
+    return text if sid.playable else f"{text} (no usable table)"
+
+
+def render_list_dac_calibrations() -> str:
+    """Render the DAC calibrations stored under the data directory, each by
+    the name ``--dac-calibration-profile`` takes to select it."""
+    from c64cast.audio import dac_calibration_store
+
+    cal_dir = pathsmod.calibration_dir()
+    stored = dac_calibration_store.stored_calibrations()
+    if not stored:
+        return f"No DAC calibrations stored in {cal_dir}. Measure one with --calibrate-dac."
+    name_w = max(len(c.name) for c in stored)
+    backend_w = max(len(c.backend or "?") for c in stored)
+    created_w = max(len(c.created or "?") for c in stored)
+    lines = [f"DAC calibrations stored in {cal_dir}:", ""]
+    for c in stored:
+        sids = ", ".join(_describe_sid(s) for s in c.sids) or "not a calibration this version plays"
+        lines.append(
+            f"  {c.name:<{name_w}}  {c.backend or '?':<{backend_w}}  {c.created or '?':<{created_w}}  {sids}"
+        )
+    lines += ["", "Play with one:  c64cast --dac-calibration-profile <name> ..."]
     return "\n".join(lines)
 
 
