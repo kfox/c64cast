@@ -50,6 +50,17 @@
           "description": "The 16 colors the C64 being driven actually emits, which the quantizer aims at. 'auto' (default) reads it from the machine where it can \u2014 an Ultimate 64 on firmware 3.15a or newer, or a C64 Ultimate on 1.2.1 or newer, reports the colors it is really driving, a custom .vpl included; an Ultimate 64 that cannot answer is assumed to show its built-in table. Any other machine drives a real C64: a VIC-II Kawari in it reports the palette it is driving, and a stock VIC-II is assumed, as it is for every machine under `--skip-probe`. 'u64' is the Ultimate 64's own built-in table. 'pepto' (what a stock VIC-II is assumed to show), 'pepto-ntsc' and 'pepto-palold' are Pepto's measurements of a real VIC-II; 'colodore' is his later re-measurement, 'community-colors' a hand-tuned community palette, and 'c64-wiki' the table the C64-Wiki lists. Can also be the path to a VICE .vpl file, which is how to describe a machine with a custom palette loaded that cannot be asked for it.",
           "default": "auto"
         },
+        "pixel_aspect": {
+          "type": "string",
+          "description": "The shape of one C64 pixel on the screen being watched, which sets the shape a video, picture or webcam frame is cropped to so it is not drawn squeezed. 'composite' is a real VIC-II on a 4:3 set (0.75 wide per unit tall on NTSC, 0.94 on PAL, so the 320x200 screen is 1.2:1 or 1.5:1); 'hdmi' is the Ultimate 64's HDMI output (0.83 NTSC, 0.94 PAL); 'square' crops to 1.6:1, as if the pixels were square. 'auto' (default) is 'hdmi' on an Ultimate 64 and 'composite' on anything else, and under --skip-probe.",
+          "enum": [
+            "auto",
+            "composite",
+            "hdmi",
+            "square"
+          ],
+          "default": "auto"
+        },
         "dump_char_rom": {
           "type": "boolean",
           "description": "On the first run against a machine, read its character ROM and cache it, so C64 text renders in the real C64 font instead of a built-in ASCII substitute. One ~1s step, never repeated; set false to skip it entirely.",
@@ -2859,7 +2870,7 @@
           },
           "aspect_mode": {
             "type": "string",
-            "description": "How each image is fit to the C64 4:2.5 aspect: 'crop' (center-crop to fill \u2014 the default, edges lost), 'fit' (letterbox/pillarbox so the whole image shows, padded black), or 'stretch' (distort to fill, no padding or cropping).",
+            "description": "How each image is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'crop' (center-crop to fill \u2014 the default, edges lost), 'fit' (letterbox/pillarbox so the whole image shows, padded black), or 'stretch' (distort to fill, no padding or cropping).",
             "enum": [
               "crop",
               "fit",

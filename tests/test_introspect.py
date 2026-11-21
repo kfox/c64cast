@@ -166,10 +166,11 @@ def mirrored_choices() -> dict[str, tuple[str, object]]:
     from c64cast.hw import backend, hw_provision
     from c64cast.scenes import backgrounds, effects, generators
     from c64cast.sid import midi_scene, voice_scope
-    from c64cast.video import modes
+    from c64cast.video import aspect, modes
     from c64cast.video import petscii_styles as ps
 
     return {
+        "PIXEL_ASPECT_CHOICES": ("video.aspect.PIXEL_ASPECT_CHOICES", aspect.PIXEL_ASPECT_CHOICES),
         "HDMI_SCAN_RESOLUTION_CHOICES": (
             "('auto', 'keep') + hw.hw_provision.HDMI_RESOLUTION_CHOICES",
             ("auto", "keep") + hw_provision.HDMI_RESOLUTION_CHOICES,
@@ -264,7 +265,7 @@ def local_choices() -> dict[str, str]:
         "SID_VIDEO_MODE_CHOICES": "hw_provision tests `!= 'off'`",
         "SYSTEM_CHOICES": "hw.backend and hw.hw_provision .upper() the value",
         "_APPLY_CHOICES": "introspect.FieldDoc.apply carries the value to the on-C64 menu",
-        "_ASPECT_MODE_CHOICES": "scenes._apply_aspect branches on the value",
+        "_ASPECT_MODE_CHOICES": "video.aspect.apply_aspect branches on the value",
         "_AUDIO_SOURCE_CHOICES": "no registry backs the AudioSource family (pinned as a literal below)",
         "_CLIP_LAUNCH_CHOICES": "performance.PerformanceSession reads the per-clip value",
         "_CLIP_PAD_TYPE_CHOICES": "control.midi_control maps the grid pad by the value",

@@ -25,8 +25,10 @@ no buffering; a video file hands over the frame nearest the audio clock; a
 generator computes one at 320×200; a slideshow decodes an image; a WLED sink
 assembles one from arriving packets.
 
-**2. The frame is fitted to the Commodore's aspect.** The screen is 4:2.5 in
-pixel terms, which no ordinary source is. `crop` center-crops to fill and
+**2. The frame is fitted to the Commodore's aspect.** The screen is 320x200
+pixels, but a C64 pixel is not square, so the screen is seen at 1.2:1 on an
+NTSC set, 4:3 from an NTSC Ultimate 64's HDMI output, and 1.5:1 in PAL.
+`[hardware].pixel_aspect` says which one you are watching. `crop` center-crops to fill and
 loses the margins; `fit` letterboxes onto black; `stretch` distorts. Camera
 and video always crop. A slideshow chooses with `aspect_mode`.
 

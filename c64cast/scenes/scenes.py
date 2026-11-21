@@ -40,6 +40,7 @@ from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw import machine_input
 from c64cast.hw.backend import C64Backend, DacPacing, LinkError
 from c64cast.hw.c64 import CIA1, SCREEN
+from c64cast.video.aspect import apply_aspect, crop_to_aspect, screen_aspect
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.modes_irq import reu_pump_skips_irq_hook
 from c64cast.video.palette import (
@@ -55,6 +56,7 @@ from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
     TEMPO_SCALE_MIN,
     AVFileSource,
+    DecodeTarget,
     WebcamSource,
     _compute_normalization_gain,
     _is_local_file,
@@ -85,8 +87,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 SceneAudio = AudioStreamer | UltimateAudioSampler
-
-_C64_ASPECT = 320 / 200
 
 # Opening frames folded into the online ColorFitAccumulator before the derived
 # fit freezes — ~2 s at 24 fps.
@@ -133,68 +133,6 @@ SID_EXTS = (".sid",)
 PICTURE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 PROGRAM_EXTS = (".prg", ".crt")
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus")
-
-
-def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.ndarray:
-    """Center-*crop* to ``target_ratio`` (fill/cover): trims the long axis so
-    the image fills the frame edge-to-edge, losing the cropped margins. The
-    default aspect handling for every source (and the only one webcam/video
-    use)."""
-    h, w = img.shape[:2]
-    ar = w / h if h else target_ratio
-    if ar > target_ratio:
-        new_w = int(h * target_ratio)
-        x0 = (w - new_w) // 2
-        return img[:, x0 : x0 + new_w]
-    if ar < target_ratio:
-        new_h = int(w / target_ratio)
-        y0 = (h - new_h) // 2
-        return img[y0 : y0 + new_h, :]
-    return img
-
-
-def _fit_to_aspect(
-    img: np.ndarray,
-    target_ratio: float = _C64_ASPECT,
-    pad_color: tuple[int, int, int] = (0, 0, 0),
-) -> np.ndarray:
-    """Letterbox/pillarbox to ``target_ratio`` (contain): scale nothing, just
-    pad the short axis with ``pad_color`` bars so the *whole* image is visible.
-    The inverse trade-off to ``_crop_to_aspect`` — nothing is lost, but bars
-    appear. The bars are a single solid color so they quantize to one stable
-    palette cell (black by default → C64 index 0)."""
-    h, w = img.shape[:2]
-    ar = w / h if h else target_ratio
-    if ar > target_ratio:
-        new_h = round(w / target_ratio)
-        pad = max(0, new_h - h)
-        top = pad // 2
-        return cv2.copyMakeBorder(img, top, pad - top, 0, 0, cv2.BORDER_CONSTANT, value=pad_color)
-    if ar < target_ratio:
-        new_w = round(h * target_ratio)
-        pad = max(0, new_w - w)
-        left = pad // 2
-        return cv2.copyMakeBorder(img, 0, 0, left, pad - left, cv2.BORDER_CONSTANT, value=pad_color)
-    return img
-
-
-def _apply_aspect(
-    img: np.ndarray,
-    aspect_mode: str = "crop",
-    target_ratio: float = _C64_ASPECT,
-) -> np.ndarray:
-    """Dispatch a source frame through the configured aspect handling before
-    the display mode downscales it to the C64 resolution:
-
-    * ``"crop"`` (default) — center-crop to fill (today's universal behavior).
-    * ``"fit"``  — letterbox/pillarbox so the whole image shows, padded black.
-    * ``"stretch"`` — no aspect handling; the mode's resize distorts to fill.
-    """
-    if aspect_mode == "fit":
-        return _fit_to_aspect(img, target_ratio)
-    if aspect_mode == "stretch":
-        return img
-    return _crop_to_aspect(img, target_ratio)
 
 
 def _media_basename(path: str) -> str:
@@ -359,6 +297,19 @@ class Scene:
     # A class attribute so a scene built without __init__ (tests) still has one.
     _derived_duration_s: float | None = None
     setup_failure: str | None = None
+    # `[hardware].pixel_aspect`, which scene_factory passes to every scene
+    # that fits a source picture to the screen.
+    pixel_aspect: str = "auto"
+
+    def fit_aspect(self) -> float:
+        """The screen aspect a source picture is fit to on this machine."""
+        return screen_aspect(self.pixel_aspect, self.api.profile)
+
+    def decode_target(self, aspect: float) -> DecodeTarget | None:
+        """The display mode's ``frame_target_size`` with the ``aspect`` the
+        picture will be cropped to, or None when the mode has no target."""
+        size = getattr(self.display_mode, "frame_target_size", None)
+        return None if size is None else DecodeTarget(size[0], size[1], aspect)
 
     def __init__(
         self,
@@ -674,8 +625,10 @@ class WebcamScene(Scene):
         audio_cfg: AudioCfg,
         name: str,
         color: ColorCfg | None = None,
+        pixel_aspect: str = "auto",
     ):
         super().__init__(api, audio, display_mode, name)
+        self.pixel_aspect = pixel_aspect
         self.source = source
         self.audio_cfg = audio_cfg
         self.start_time = 0.0
@@ -695,7 +648,7 @@ class WebcamScene(Scene):
         if img is None:
             return None
         img = self.apply_smoothing(img)
-        img = _crop_to_aspect(img)
+        img = crop_to_aspect(img, self.fit_aspect())
         return cv2.flip(img, 1)
 
     def process_frame(self, current_time: float) -> bool:
@@ -1091,11 +1044,11 @@ _REDUCED_DECODES = (
 )
 
 
-def _decode_flag(width: int, height: int, target: tuple[int, int] | None) -> int:
+def _decode_flag(width: int, height: int, target: DecodeTarget | None) -> int:
     """The coarsest `cv2.imread` reduction of a JPEG that still leaves at
     least the pixels `_plan_decode_size` asks for, decoded at that scale
     inside libjpeg."""
-    planned = _plan_decode_size(width, height, *target) if target else None
+    planned = _plan_decode_size(width, height, target) if target else None
     if planned is None:
         return cv2.IMREAD_COLOR
     for factor, flag in _REDUCED_DECODES:
@@ -1104,9 +1057,9 @@ def _decode_flag(width: int, height: int, target: tuple[int, int] | None) -> int
     return cv2.IMREAD_COLOR
 
 
-def _decode_picture(path: str, target: tuple[int, int] | None = None) -> np.ndarray | None:
-    """The picture at `path` as BGR, reduced toward `target` (a display
-    mode's `frame_target_size`) where that loses nothing the mode keeps, or
+def _decode_picture(path: str, target: DecodeTarget | None = None) -> np.ndarray | None:
+    """The picture at `path` as BGR, reduced toward `target` where that
+    loses nothing the mode keeps, or
     None, with a WARNING saying why, when it cannot be sized from its header,
     is larger than `MAX_PICTURE_PIXELS`, or does not decode."""
     try:
@@ -1173,6 +1126,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         wiring: DisplayWiring | None = None,
         color: ColorCfg | None = None,
         aspect_mode: str = "crop",
+        pixel_aspect: str = "auto",
     ):
         from c64cast.app.config import ColorCfg
         from c64cast.app.scene_factory import DisplayWiring
@@ -1180,6 +1134,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
         self._aspect_mode = aspect_mode
+        self.pixel_aspect = pixel_aspect
         # Drives the display-mode shaping at construction and the per-slide
         # color fit / forced-palette remap recomputed in _advance_image.
         self._color = color if color is not None else ColorCfg()
@@ -1282,11 +1237,12 @@ class SlideshowScene(MediaFileMixin, Scene):
         return self._shuffle_bag.pop(0)
 
     def _load_slide(self, path: str) -> np.ndarray | None:
-        target = getattr(self.display_mode, "frame_target_size", None)
+        aspect = self.fit_aspect()
+        target = self.decode_target(aspect)
         img = _decode_picture(path, target)
         if img is None:
             return None
-        return _apply_aspect(self._shrink_for_display(img), self._aspect_mode)
+        return apply_aspect(self._shrink_for_display(img, target), self._aspect_mode, aspect)
 
     def _queue_next_slide(self) -> None:
         """Start decoding the slide after the one on screen, off the render
@@ -1334,11 +1290,10 @@ class SlideshowScene(MediaFileMixin, Scene):
             len(self._shuffle_bag),
         )
 
-    def _shrink_for_display(self, img: np.ndarray) -> np.ndarray:
+    def _shrink_for_display(self, img: np.ndarray, target: DecodeTarget | None) -> np.ndarray:
         """`img` at the size VideoScene decodes to, once per slide: the mode
         resizes the held still on every frame."""
-        target = getattr(self.display_mode, "frame_target_size", None)
-        size = _plan_decode_size(img.shape[1], img.shape[0], *target) if target else None
+        size = _plan_decode_size(img.shape[1], img.shape[0], target) if target else None
         if size is None:
             return img
         return cv2.resize(img, size, interpolation=cv2.INTER_AREA)
@@ -1466,6 +1421,7 @@ class VideoScene(MediaFileMixin, Scene):
         tempo_scale: float | None = 1.0,
         loop_audio: str = "on",
         setup_progress: bool = True,
+        pixel_aspect: str = "auto",
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
@@ -1480,6 +1436,7 @@ class VideoScene(MediaFileMixin, Scene):
         # each setup().
         candidates = self._resolve_candidates()
         super().__init__(api, audio, display_mode, self._initial_scene_name(candidates))
+        self.pixel_aspect = pixel_aspect
         # True when prepare_next() has already chosen this iteration's file, so
         # setup() consumes that pick instead of re-rolling.
         self._prepared = False
@@ -1632,15 +1589,18 @@ class VideoScene(MediaFileMixin, Scene):
         will_push_audio = self.audio is not None and not self.preloads_to_reu
         # The only resolution the display mode consumes (≤320×200); AVFileSource
         # downscales to it during decode rather than converting the full source
-        # frame. See video._plan_decode_size.
-        decode_target = getattr(self.display_mode, "frame_target_size", None)
+        # frame. See video._plan_decode_size. One aspect per setup, so the
+        # decode plan, the demux thread's trim and the render's crop all cut
+        # the same window.
+        self._aspect = self.fit_aspect()
+        decode_target = self.decode_target(self._aspect)
         try:
             self.source = AVFileSource(
                 self.filepath,
                 target_sample_rate=sr,
                 scan_audio_peak=will_push_audio,
                 start_s=self.start_s,
-                decode_target_size=decode_target,
+                decode_target=decode_target,
                 tempo_scale=self._starting_tempo(),
                 tempo_follow=self.tempo_follow,
             )
@@ -1710,7 +1670,7 @@ class VideoScene(MediaFileMixin, Scene):
                         map_colors=map_colors,
                         map_indices=map_indices,
                         frames=frames,
-                        decode_target_size=decode_target,
+                        decode_target=decode_target,
                         on_progress=progress.reporter("prescan"),
                     )
                     # The sampled pixels rather than the frames: a run keeps one
@@ -1746,7 +1706,7 @@ class VideoScene(MediaFileMixin, Scene):
                 )
                 if c.auto_fit_shots:
                     self.source.shot_tracker = ShotTracker(
-                        _crop_to_aspect, ONLINE_FIT_WARMUP_FRAMES
+                        partial(crop_to_aspect, aspect=self._aspect), ONLINE_FIT_WARMUP_FRAMES
                     )
                     self._refits_at_cuts = True
             else:
@@ -2086,7 +2046,7 @@ class VideoScene(MediaFileMixin, Scene):
             if frame_clock_s == clock_s:
                 self._record_av_lag(clock_s, current_time)
                 self._follow_drain(clock_s, time.monotonic())
-        img = _crop_to_aspect(img)
+        img = crop_to_aspect(img, self._aspect)
         if new_source and self._refits_at_cuts:
             shot = self.source.take_shot()
             if shot is not None:

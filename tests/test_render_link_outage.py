@@ -17,6 +17,7 @@ import unittest
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from _fakes import mock_backend
 from test_playlist import FakeApi, FakeScene, _transition_factory
 from test_socket_dma import _IDENT_REPLY, FakeSocket
 
@@ -654,7 +655,7 @@ class SetupRetryKeepsThePickTest(unittest.TestCase):
         mode = MagicMock()
         mode.default_target_fps = None
         mode.frame_target_size = (160, 200)
-        scene = SlideshowScene(MagicMock(), mode, self.tmp.name)
+        scene = SlideshowScene(mock_backend(), mode, self.tmp.name)
         self.addCleanup(scene.teardown)
         random.seed(609)
         scene.prepare_next()

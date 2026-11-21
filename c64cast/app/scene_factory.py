@@ -2555,7 +2555,16 @@ def _build_webcam(ctx: _SceneBuildContext) -> Scene:
     mode = ctx.display_mode(display)
     name = s.name or f"Webcam {display}"
     scene_audio = _resolve_live_audio(ctx, name, "live webcam scene")
-    scene = WebcamScene(ctx.api, scene_audio, mode, ctx.source, cfg.audio, name, color=ctx.color)
+    scene = WebcamScene(
+        ctx.api,
+        scene_audio,
+        mode,
+        ctx.source,
+        cfg.audio,
+        name,
+        color=ctx.color,
+        pixel_aspect=cfg.hardware.pixel_aspect,
+    )
     # always_fresh: every camera grab differs, so there is no dedup and even a char
     # mode repaints the whole screen each tick.
     fps = _frame_push_default_fps(
@@ -2612,6 +2621,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         tempo_scale=_video_tempo_scale(cfg, mode, dac_audio=has_dac_audio),
         loop_audio=cfg.midi_control.loop_audio,
         setup_progress=cfg.video.setup_progress_bar,
+        pixel_aspect=cfg.hardware.pixel_aspect,
     )
     if video_name:
         scene.name = video_name
@@ -2702,6 +2712,7 @@ def _build_slideshow(ctx: _SceneBuildContext) -> Scene:
         wiring=wiring,
         color=wiring.color,
         aspect_mode=s.aspect_mode,
+        pixel_aspect=ctx.cfg.hardware.pixel_aspect,
     )
 
 
@@ -3141,7 +3152,13 @@ def scenes_from_config(
             )
         base.append(
             WebcamScene(
-                api, None, HiresDisplayMode(style="edges"), source, cfg.audio, "Live Hi-Res Edges"
+                api,
+                None,
+                HiresDisplayMode(style="edges"),
+                source,
+                cfg.audio,
+                "Live Hi-Res Edges",
+                pixel_aspect=cfg.hardware.pixel_aspect,
             )
         )
         base[-1].duration_s = math.inf

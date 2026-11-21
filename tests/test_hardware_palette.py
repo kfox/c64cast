@@ -13,6 +13,7 @@ from unittest import mock
 import cv2
 import numpy as np
 import requests
+from _fakes import mock_backend
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -647,7 +648,7 @@ class SlideshowPushTest(unittest.TestCase):
             cv2.imwrite(os.path.join(tmp.name, name), img)
         self.control = mock.Mock(spec=hp.HardwarePalette)
         self.control.machine_palette = MACHINE.copy()
-        api = mock.MagicMock()
+        api = mock_backend()
         api.hardware_palette = self.control
         mode = mock.MagicMock()
         mode.quantizer_input.side_effect = lambda img: img
@@ -743,7 +744,7 @@ class VideoPushTest(unittest.TestCase):
 
         self.control = mock.Mock(spec=hp.HardwarePalette)
         self.control.machine_palette = MACHINE.copy()
-        api = mock.MagicMock()
+        api = mock_backend()
         api.hardware_palette = self.control
         self.mode = mock.MagicMock()
         self.mode.quantizer_input.side_effect = lambda img: img

@@ -29,8 +29,9 @@ from c64cast.app.config import ColorCfg, Config, SceneCfg
 from c64cast.app.scene_factory import _display_mode_for_scene
 from c64cast.hw.backend import ULTIMATE_PROFILE
 from c64cast.hw.c64 import VIC
-from c64cast.scenes.scenes import ONLINE_FIT_WARMUP_FRAMES, _crop_to_aspect, _render_with_overlays
+from c64cast.scenes.scenes import ONLINE_FIT_WARMUP_FRAMES, _render_with_overlays
 from c64cast.video import video
+from c64cast.video.aspect import crop_to_aspect, screen_aspect
 from c64cast.video.framebuffer import Framebuffer
 from c64cast.video.modes.mhires import MultiHiresDisplayMode
 from c64cast.video.modes_irq import FRAME_TRACKER_ADDR, HOSTDMA_TRACKER_OFF_BG0
@@ -40,10 +41,12 @@ from c64cast.video.palette import (
     resolve_host_palette,
     set_host_palette,
 )
-from c64cast.video.video import _DecodePlan, _frame_to_scan_bgr, _trim_to_crop
+from c64cast.video.video import DecodeTarget, _DecodePlan, _frame_to_scan_bgr, _trim_to_crop
 from scripts.diags.render_offline import RenderBackend
 
-MHIRES_TARGET = (160, 200)
+# What playback crops to on an NTSC Ultimate 64 watched over HDMI.
+ASPECT = screen_aspect("hdmi", ULTIMATE_PROFILE)
+MHIRES_TARGET = DecodeTarget(160, 200, ASPECT)
 REFERENCE_SIZE = (320, 200)
 
 
@@ -66,11 +69,13 @@ def _production_bgr(frame: Any, plan: _DecodePlan, interpolation: str | None) ->
             img = frame.reformat(
                 width=plan.size[0], height=plan.size[1], format="bgr24", interpolation=interpolation
             ).to_ndarray()
-    return _trim_to_crop(img)
+    return _trim_to_crop(img, ASPECT)
 
 
 def reference_frame(full_bgr: np.ndarray) -> np.ndarray:
-    return cv2.resize(_crop_to_aspect(full_bgr), REFERENCE_SIZE, interpolation=cv2.INTER_AREA)
+    return cv2.resize(
+        crop_to_aspect(full_bgr, ASPECT), REFERENCE_SIZE, interpolation=cv2.INTER_AREA
+    )
 
 
 def iter_frames(
@@ -209,7 +214,7 @@ class OfflineMhires:
 
     def show(self, frame: np.ndarray, t: float) -> list[Write]:
         """Compose and push one new source frame; returns the writes it made."""
-        img = _crop_to_aspect(frame)
+        img = crop_to_aspect(frame, ASPECT)
         if self._online is not None and self._online_frames < ONLINE_FIT_WARMUP_FRAMES:
             self._online.add(img)
             self._online_frames += 1
@@ -228,7 +233,11 @@ class OfflineMhires:
         boost), before dither, at 320x200 with mhires' double-wide pixels.
         The shaping departs from the source on purpose, so error against this
         is the quantizer's own error."""
-        small = cv2.resize(self._last_cropped, MHIRES_TARGET, interpolation=cv2.INTER_AREA)
+        small = cv2.resize(
+            self._last_cropped,
+            (MHIRES_TARGET.width, MHIRES_TARGET.height),
+            interpolation=cv2.INTER_AREA,
+        )
         shaped = np.clip(np.rint(self.mode.quantizer_input(small)), 0, 255).astype(np.uint8)
         return np.repeat(shaped, 2, axis=1)
 

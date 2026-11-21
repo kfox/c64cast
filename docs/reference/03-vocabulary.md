@@ -346,7 +346,8 @@ walks the pool, so every image appears once before any repeats and none
 appears twice in a row, including across a reshuffle. Anything OpenCV decodes
 is accepted.
 
-`aspect_mode` reconciles the image with the Commodore's 4:2.5 pixel geometry:
+`aspect_mode` reconciles the image with the shape the Commodore's screen is
+seen at, which `[hardware].pixel_aspect` sets:
 `crop` center-crops to fill and loses the edges, `fit` letterboxes the whole
 image onto black, `stretch` distorts to fill.
 

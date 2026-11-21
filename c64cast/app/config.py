@@ -94,6 +94,8 @@ HOST_SID_MODEL_CHOICES = ("auto", "6581", "8580", "unknown")
 # is asserting exists, so there is nothing to infer — "unknown" covers a chip
 # whose model they don't know.
 HOST_SID_CHIP_MODEL_CHOICES = ("6581", "8580", "unknown")
+# [hardware].pixel_aspect; mirrors video.aspect.PIXEL_ASPECT_CHOICES.
+PIXEL_ASPECT_CHOICES = ("auto", "composite", "hdmi", "square")
 # How a multi-entry waveform pool treats a tune the machine's own chips can't
 # render as authored. "prefer" is a bias, not a filter: it only changes which
 # candidate is tried first, so a pool with no match still plays something.
@@ -209,8 +211,8 @@ def _is_valid_param_holder(holder: str) -> bool:
     return holder in _PARAM_HOLDER_PREFIXES or _FX_LAYER_HOLDER_RE.match(holder) is not None
 
 
-# How a slideshow image is fit to the C64 aspect before the display mode
-# downscales it. See scenes._apply_aspect.
+# How a slideshow image is fit to the screen's aspect before the display mode
+# downscales it. See video.aspect.apply_aspect.
 _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
 
 # Per-scene audio source for generative scenes — the AudioSource building block in
@@ -335,6 +337,20 @@ class HardwareCfg:
             "and 'c64-wiki' the table the C64-Wiki lists. Can also be the path to a VICE .vpl "
             "file, which is how to describe a machine with a custom palette "
             "loaded that cannot be asked for it.",
+        },
+    )
+    pixel_aspect: str = field(
+        default="auto",
+        metadata={
+            "help": "The shape of one C64 pixel on the screen being watched, "
+            "which sets the shape a video, picture or webcam frame is cropped "
+            "to so it is not drawn squeezed. 'composite' is a real VIC-II on a "
+            "4:3 set (0.75 wide per unit tall on NTSC, 0.94 on PAL, so the "
+            "320x200 screen is 1.2:1 or 1.5:1); 'hdmi' is the Ultimate 64's "
+            "HDMI output (0.83 NTSC, 0.94 PAL); 'square' crops to 1.6:1, as if "
+            "the pixels were square. 'auto' (default) is 'hdmi' on an Ultimate "
+            "64 and 'composite' on anything else, and under --skip-probe.",
+            "choices": PIXEL_ASPECT_CHOICES,
         },
     )
     dump_char_rom: bool = field(
@@ -1264,7 +1280,8 @@ class SceneCfg:
     aspect_mode: str = field(
         default="crop",
         metadata={
-            "help": "How each image is fit to the C64 4:2.5 aspect: 'crop' "
+            "help": "How each image is fit to the screen's aspect (which "
+            "[hardware].pixel_aspect sets): 'crop' "
             "(center-crop to fill — the default, edges lost), 'fit' "
             "(letterbox/pillarbox so the whole image shows, padded black), or "
             "'stretch' (distort to fill, no padding or cropping).",

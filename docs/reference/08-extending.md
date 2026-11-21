@@ -38,7 +38,8 @@ class MyScene(Scene):
         self.display_mode.setup(self.api)
 
     def process_frame(self, current_time: float) -> bool:
-        frame = _crop_to_aspect(self._produce_frame())
+        frame = crop_to_aspect(self._produce_frame(),
+                               self.fit_aspect())
         self.display_mode.render(self.api, frame)
         return True           # False means finished
 

@@ -73,11 +73,13 @@ import cv2
 import numpy as np
 
 from c64cast.app.config import ColorCfg
-from c64cast.scenes.scenes import ONLINE_FIT_WARMUP_FRAMES, _crop_to_aspect
+from c64cast.scenes.scenes import ONLINE_FIT_WARMUP_FRAMES
+from c64cast.video.aspect import crop_to_aspect
 from c64cast.video.modes import base as modes_base
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
 from scripts.diags import _mhires_metrics as m
 from scripts.diags._offline_video import (
+    ASPECT,
     OfflineMhires,
     Tick,
     iter_frames,
@@ -218,7 +220,7 @@ def shot_fits(clip: Clip, variant: Variant, cut_times: list[float]) -> dict[floa
             accs[cut] = ColorFitAccumulator(strength=1.0)
             taken = 0
         if accs and taken < ONLINE_FIT_WARMUP_FRAMES:
-            accs[list(accs)[-1]].add(_crop_to_aspect(tick.frame))
+            accs[list(accs)[-1]].add(crop_to_aspect(tick.frame, ASPECT))
             taken += 1
     return {cut: acc.result() for cut, acc in accs.items()}
 

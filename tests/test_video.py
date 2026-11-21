@@ -19,7 +19,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI, FrozenClock
+from _fakes import FakeAPI, FrozenClock, mock_backend
 
 from c64cast.app.config import ColorCfg
 from c64cast.audio import sampler as sampler_mod
@@ -30,12 +30,13 @@ from c64cast.audio.sampler import DEFAULT_LEAD_SECONDS, UltimateAudioSampler
 from c64cast.audio.splice import FlushCut
 from c64cast.control.transport import LoopPresetStore, timecode
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.backend import DacPacing
+from c64cast.hw.backend import C64Backend, DacPacing
 from c64cast.hw.c64 import DEFAULT_DAC_SAMPLE_RATE, RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.scenes.video_transport import VideoTransportControls, _Anchor
 from c64cast.video import video as video_mod
+from c64cast.video.aspect import crop_to_aspect
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
 from c64cast.video.shots import ShotFit, ShotTracker
 from c64cast.video.video import (
@@ -47,6 +48,7 @@ from c64cast.video.video import (
     NORMALIZATION_TARGET_PEAK,
     SILENCE_PIECE_SAMPLES,
     AVFileSource,
+    DecodeTarget,
     RemoteSeekStalled,
     _build_atempo,
     _compute_normalization_gain,
@@ -60,6 +62,9 @@ from c64cast.video.video import (
     probe_container_title,
     scan_video_samples,
 )
+
+# The crop the decode-plan tests were written against: square pixels.
+SQUARE = 320 / 200
 
 
 def _wait_until(predicate, limit_s: float = 5.0) -> bool:
@@ -696,7 +701,7 @@ def _make_demux_source_stub(
     *,
     pending_seek: float | None = None,
     anchor: float = 0.0,
-    decode_target: tuple[int, int] | None = None,
+    decode_target: DecodeTarget | None = None,
 ) -> AVFileSource:
     """The demux-loop stub shared by DemuxRebaseTest / TransportSeekTest /
     DemuxDecodeDownscaleTest: every attribute `_demux_loop` touches, set in
@@ -1018,6 +1023,7 @@ def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> Vide
     )
     scene.source = source  # type: ignore[assignment]  # duck-typed stub, not a real AVFileSource
     source.scene = scene
+    scene._aspect = SQUARE
     return scene
 
 
@@ -2304,7 +2310,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
         with (
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
             self.assertEqual(scene._av_lag_count, 0)
@@ -2325,7 +2331,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
         source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
         with (
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
             scene.transport.touch()
@@ -2345,7 +2351,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
                 scenes, "_annotate_frame_number", lambda img, lbl: labels.append(lbl) or img
             ),
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
         self.assertTrue(labels, "frame-number label was not rendered")
@@ -2398,7 +2404,7 @@ class VideoSceneSpliceTest(unittest.TestCase):
                 scenes, "_annotate_frame_number", lambda img, lbl: labels.append(lbl) or img
             ),
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             scene.process_frame(0.0)
         self.assertTrue(labels, "frame-number label was not rendered")
@@ -2506,7 +2512,7 @@ class VideoSceneIdentitySkipTest(unittest.TestCase):
     def _renders(self, scene: VideoScene, n: int) -> int:
         with (
             mock.patch.object(scenes, "_render_with_overlays") as render,
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             for _ in range(n):
                 scene.process_frame(0.0)
@@ -2536,7 +2542,7 @@ class VideoSceneIdentitySkipTest(unittest.TestCase):
         api.delivery_epoch = 0
         with (
             mock.patch.object(scenes, "_render_with_overlays", side_effect=SocketDMAError("down")),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
             self.assertRaises(SocketDMAError),
         ):
             scene.process_frame(0.0)
@@ -2810,7 +2816,7 @@ class VideoSceneEndsAudioInputTest(unittest.TestCase):
 
     def _setup(self, audio) -> mock.MagicMock:
         scene = VideoScene(
-            api=mock.MagicMock(),
+            api=mock_backend(),
             audio=audio,
             display_mode=mock.MagicMock(frame_target_size=None),
             file=STUB_VIDEO_URL,
@@ -3112,6 +3118,48 @@ class VideoSceneFrameNumberLabelTest(unittest.TestCase):
         self.assertEqual(source.seeks, [60.0])
 
 
+class VideoSceneFitAspectTest(unittest.TestCase):
+    """A video is cropped to the screen aspect of the machine it plays on, not
+    to 320x200's own 1.6, which drew a 4:3 picture squeezed on NTSC."""
+
+    def _setup(self, api: FakeAPI) -> tuple[VideoScene, DecodeTarget]:
+        mode = mock.MagicMock(frame_target_size=(160, 200))
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
+        ):
+            source_cls.return_value.a_stream = None
+            scene = VideoScene(
+                cast(C64Backend, api), None, mode, STUB_VIDEO_URL, setup_progress=False
+            )
+            scene.setup()
+            scene.teardown()
+        return scene, source_cls.call_args.kwargs["decode_target"]
+
+    def test_an_ntsc_c64_decodes_for_a_six_by_five_crop(self):
+        _, target = self._setup(FakeAPI())
+        self.assertEqual(target[:2], (160, 200))
+        self.assertAlmostEqual(target.aspect, 1.2)
+
+    def test_an_ntsc_ultimate_64_decodes_for_a_four_by_three_crop(self):
+        _, target = self._setup(FakeAPI.ultimate())
+        self.assertAlmostEqual(target.aspect, 4 / 3)
+
+    def test_the_render_crops_a_pillarboxed_picture_inside_its_bars(self):
+        scene, _ = self._setup(FakeAPI())
+        source = _StubSource(duration=100.0)
+        scene.source = source  # type: ignore[assignment]  # duck-typed stub
+        source.scene = scene
+        frame: np.ndarray = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[:, 160:1120] = 200
+        source._frame = frame
+        with mock.patch.object(scenes, "_render_with_overlays") as render:
+            scene.process_frame(0.0)
+        shown = render.call_args.args[2]
+        self.assertEqual(shown.shape[:2], (720, 864))
+        self.assertTrue((shown == 200).all())
+
+
 class PlanDecodeSizeTest(unittest.TestCase):
     """`_plan_decode_size` picks the smallest even decode size whose post-crop
     dims still exceed the display target by DECODE_HEADROOM, never upscaling."""
@@ -3119,7 +3167,7 @@ class PlanDecodeSizeTest(unittest.TestCase):
     def test_4k_to_hires_downscales(self):
         # 3840×2160 (16:9) for a 320×200 (1.6) target. Crop trims width, so the
         # height axis binds: decoded height ≥ 2×200 = 400 → 712×400.
-        plan = _plan_decode_size(3840, 2160, 320, 200)
+        plan = _plan_decode_size(3840, 2160, DecodeTarget(320, 200, SQUARE))
         assert plan is not None
         dw, dh = plan
         self.assertEqual((dw, dh), (712, 400))
@@ -3132,12 +3180,12 @@ class PlanDecodeSizeTest(unittest.TestCase):
         # MHires target (160, 200): height (200) > width (160). A width-only cap
         # would under-decode height and force an upscale; the planner must keep
         # decoded height ≥ 2×200.
-        plan = _plan_decode_size(3840, 2160, 160, 200)
+        plan = _plan_decode_size(3840, 2160, DecodeTarget(160, 200, SQUARE))
         assert plan is not None
         self.assertGreaterEqual(plan[1], 200 * 2)
 
     def test_even_dimensions(self):
-        plan = _plan_decode_size(1920, 1080, 320, 200)
+        plan = _plan_decode_size(1920, 1080, DecodeTarget(320, 200, SQUARE))
         assert plan is not None
         dw, dh = plan
         self.assertEqual(dw % 2, 0)
@@ -3145,12 +3193,12 @@ class PlanDecodeSizeTest(unittest.TestCase):
 
     def test_source_already_small_returns_none(self):
         # A source at/below the needed resolution must not be upscaled.
-        self.assertIsNone(_plan_decode_size(320, 200, 320, 200))
-        self.assertIsNone(_plan_decode_size(400, 300, 320, 200))
+        self.assertIsNone(_plan_decode_size(320, 200, DecodeTarget(320, 200, SQUARE)))
+        self.assertIsNone(_plan_decode_size(400, 300, DecodeTarget(320, 200, SQUARE)))
 
     def test_degenerate_dims_return_none(self):
-        self.assertIsNone(_plan_decode_size(0, 100, 320, 200))
-        self.assertIsNone(_plan_decode_size(100, 100, 0, 200))
+        self.assertIsNone(_plan_decode_size(0, 100, DecodeTarget(320, 200, SQUARE)))
+        self.assertIsNone(_plan_decode_size(100, 100, DecodeTarget(0, 200, SQUARE)))
 
 
 class DemuxDecodeDownscaleTest(unittest.TestCase):
@@ -3164,7 +3212,7 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         return src, frame
 
     def test_reformats_to_planned_size(self):
-        src, frame = self._run(decode_target=(320, 200))
+        src, frame = self._run(decode_target=DecodeTarget(320, 200, SQUARE))
         # Planner ran and produced a sub-source size → reformat was used.
         self.assertIsNotNone(src._decode_size)
         self.assertEqual(len(frame.reformat_calls), 1)
@@ -3185,7 +3233,7 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
 
     def test_small_source_skips_reformat(self):
         # Source already ≤ target → planner returns None → full-res convert.
-        src, frame = self._run(decode_target=(320, 200), src_w=320, src_h=200)
+        src, frame = self._run(decode_target=DecodeTarget(320, 200, SQUARE), src_w=320, src_h=200)
         self.assertIsNone(src._decode_size)
         self.assertEqual(frame.reformat_calls, [])
 
@@ -3195,9 +3243,11 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         # buffer held up to 240 of them.
         small = _FakeFrame(0, width=64, height=40)
         large = _FakeFrame(1, width=3840, height=2160)
-        src = _make_demux_source_stub([_FakePacket([small, large])], decode_target=(320, 200))
+        src = _make_demux_source_stub(
+            [_FakePacket([small, large])], decode_target=DecodeTarget(320, 200, SQUARE)
+        )
         _demux_until_parked(src)
-        planned = _plan_decode_size(3840, 2160, 320, 200)
+        planned = _plan_decode_size(3840, 2160, DecodeTarget(320, 200, SQUARE))
         assert planned is not None
         self.assertEqual(
             [img.shape[0] for _, img in src._video_buf], [40, planned[1]], src._video_buf
@@ -3210,7 +3260,7 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         # frame was buffered whole, 12 MB, against 0.85 MB for a 4K one.
         for (w, h), kept in (((16000, 250), (402, 250)), ((250, 16000), (250, 158))):
             with self.subTest(size=(w, h)):
-                src, _ = self._run(decode_target=(320, 200), src_w=w, src_h=h)
+                src, _ = self._run(decode_target=DecodeTarget(320, 200, SQUARE), src_w=w, src_h=h)
                 self.assertEqual(src._video_buf[0][1].shape[1::-1], kept)
                 self.assertTrue(src._video_buf[0][1].flags.owndata)
 
@@ -3227,10 +3277,11 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         ):
             with self.subTest(size=(w, h)):
                 img = rng.integers(0, 256, (h, w, 3), dtype=np.uint8)
-                np.testing.assert_array_equal(
-                    scenes._crop_to_aspect(video_mod._trim_to_crop(img)),
-                    scenes._crop_to_aspect(img),
-                )
+                for aspect in (1.2, 4 / 3, 1.5, SQUARE):
+                    np.testing.assert_array_equal(
+                        crop_to_aspect(video_mod._trim_to_crop(img, aspect), aspect),
+                        crop_to_aspect(img, aspect),
+                    )
 
 
 class CurrentFrameTelemetryTest(unittest.TestCase):
@@ -3401,8 +3452,12 @@ class ScanVideoSamplesTest(unittest.TestCase):
         container = SimpleNamespace(demux=lambda: iter(packets))
         shapes: list[tuple[int, int]] = []
         acc = SimpleNamespace(add=lambda img: shapes.append(img.shape[1::-1]))
-        video_mod._decode_sample_frames(container, "clip.mp4", stream, [acc], 2, (320, 200))
-        self.assertEqual(shapes, [(64, 40), _plan_decode_size(3840, 2160, 320, 200)])
+        video_mod._decode_sample_frames(
+            container, "clip.mp4", stream, [acc], 2, DecodeTarget(320, 200, SQUARE)
+        )
+        self.assertEqual(
+            shapes, [(64, 40), _plan_decode_size(3840, 2160, DecodeTarget(320, 200, SQUARE))]
+        )
 
     def test_sequential_sampling_spans_the_whole_clip(self):
         # 239 frames over a 120-sample budget: a stride of 1 spends the whole
@@ -4807,7 +4862,7 @@ class _UnderrunStubAudio:
 def _link_tempo_scene(link_tempo: float) -> VideoScene:
     """A video with an unset tempo, with DAC audio over a link whose bitmap
     tempo is `link_tempo`."""
-    api = mock.MagicMock()
+    api = mock_backend()
     api.dac_pacing.return_value = DacPacing(DEFAULT_DAC_SAMPLE_RATE, link_tempo)
     audio = mock.MagicMock()
     audio.effective_rate = DEFAULT_DAC_SAMPLE_RATE
@@ -4942,7 +4997,7 @@ class FollowDrainTest(unittest.TestCase):
         with (
             mock.patch.object(scenes, "time", FrozenClock(1000.0, "time", monotonic=777.0)),
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
             mock.patch.object(
                 scene, "_follow_drain", side_effect=lambda clock_s, now: asked.append(now)
             ),
@@ -5082,7 +5137,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
             mock.patch.object(scenes, "reu_pump_skips_irq_hook", return_value=False),
         ):
             scene = VideoScene(
-                api=mock.MagicMock(),
+                api=mock_backend(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
                 file=clip,
@@ -5129,7 +5184,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
             mock.patch("c64cast.scenes.scenes.decode_audio_full") as preload,
         ):
             scene = VideoScene(
-                api=mock.MagicMock(),
+                api=mock_backend(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
                 file=STUB_VIDEO_URL,
@@ -5168,7 +5223,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
             mock.patch.object(scenes, "reu_pump_skips_irq_hook", return_value=False),
         ):
             scene = VideoScene(
-                api=mock.MagicMock(),
+                api=mock_backend(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
                 file=clip,
@@ -5200,7 +5255,7 @@ class VideoSceneAudioHoldTest(unittest.TestCase):
             mock.patch.object(
                 scenes, "_render_with_overlays", side_effect=lambda *a: events.append("render")
             ),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
             mock.patch.object(scenes.time, "monotonic", return_value=now),
         ):
             scene.process_frame(0.0)
@@ -5466,6 +5521,12 @@ class VideoSceneShotSetupTest(unittest.TestCase):
         self.assertIsInstance(tracker, ShotTracker)
         self.assertTrue(refits)
 
+    def test_the_tracker_fits_the_crop_the_render_shows(self):
+        tracker, _ = self._attached()
+        assert isinstance(tracker, ShotTracker)
+        frame: np.ndarray = np.zeros((720, 1280, 3), dtype=np.uint8)
+        self.assertEqual(tracker._prepare(frame).shape[:2], (720, 864))
+
     def test_auto_fit_shots_off_attaches_no_tracker(self):
         self.assertEqual(self._attached(auto_fit_shots=False), (None, False))
 
@@ -5502,7 +5563,7 @@ class VideoSceneShotFitTest(unittest.TestCase):
         mode = cast(mock.MagicMock, scene.display_mode)
         with (
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+            mock.patch.object(scenes, "crop_to_aspect", side_effect=lambda img, _aspect: img),
         ):
             for _ in range(n):
                 scene._last_rendered_img = None
