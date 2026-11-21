@@ -32,7 +32,7 @@ from c64cast._native_io import silence_native_stderr
 from c64cast._pollthread import PollThread
 from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 
-from .aspect import crop_box
+from .aspect import crop_for_mode, kept_aspect, pads
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator, FrameSampler
 from .shots import ShotFit, ShotTracker
 
@@ -473,12 +473,14 @@ DECODE_HEADROOM = 2.0
 
 class DecodeTarget(NamedTuple):
     """What a decode is planned for: the display mode's ``frame_target_size``,
-    and the screen aspect (`aspect.screen_aspect`) the scene center-crops each
-    frame to before the mode resizes it."""
+    the screen aspect (`aspect.screen_aspect`), and the scene's
+    ``aspect_mode``, which together say what part of each frame the mode is
+    given and how it is padded to the screen before the mode resizes it."""
 
     width: int
     height: int
     aspect: float
+    aspect_mode: str = "crop"
 
 
 def _plan_decode_size(
@@ -488,11 +490,11 @@ def _plan_decode_size(
     headroom: float = DECODE_HEADROOM,
 ) -> tuple[int, int] | None:
     """Plan a decode ``(width, height)`` for a source frame that the scene will
-    center-crop to ``target.aspect`` and the display mode will then downscale
-    to ``(target.width, target.height)``.
+    frame for ``target.aspect`` the way ``target.aspect_mode`` asks and the
+    display mode will then downscale to ``(target.width, target.height)``.
 
     Returns the smallest even (w, h) — preserving the source aspect — whose
-    *post-crop* dimensions still exceed the target by ``headroom`` in both
+    *post-crop*, post-padding dimensions still exceed the target by ``headroom`` in both
     axes, so the final resize is a pure INTER_AREA downscale. Returns None when
     the source is already small enough that no downscale helps (the planned
     size would meet or exceed the source), so the caller keeps the plain
@@ -509,9 +511,15 @@ def _plan_decode_size(
     """
     if src_w <= 0 or src_h <= 0 or target.width <= 0 or target.height <= 0:
         return None
+    kept = kept_aspect(src_w, src_h, target.aspect_mode, target.aspect)
     # Unrounded, unlike crop_box: a source a few pixels across would crop to 0.
-    crop_w = min(float(src_w), src_h * target.aspect)
-    crop_h = min(float(src_h), src_w / target.aspect)
+    crop_w = min(float(src_w), src_h * kept)
+    crop_h = min(float(src_h), src_w / kept)
+    if pads(target.aspect_mode):
+        crop_w, crop_h = (
+            max(crop_w, crop_h * target.aspect),
+            max(crop_h, crop_w / target.aspect),
+        )
     scale = headroom * max(target.width / crop_w, target.height / crop_h)
     if scale >= 1.0:
         return None  # source already at/below the resolution the mode needs
@@ -522,22 +530,17 @@ def _plan_decode_size(
     return dw, dh
 
 
-def _trim_to_crop(img: np.ndarray, aspect: float) -> np.ndarray:
-    """``img`` cut down to what the scene's center-crop to ``aspect`` keeps,
-    plus one pixel each side of the cropped axis, as a copy.
+def _trim_to_crop(img: np.ndarray, target: DecodeTarget) -> np.ndarray:
+    """``img`` cut down to the picture ``target``'s aspect mode keeps
+    (`aspect.crop_for_mode`), as a copy so the full frame is released.
 
+    This is the one place a video frame is cropped: the hybrid crop depends
+    on the source's own aspect, which a frame already cropped no longer has.
     `_plan_decode_size` cannot shrink the kept axis below its headroom, so a
-    frame of extreme aspect (16000x250) reached the video buffer whole. The
-    margin is what keeps the scene's crop (aspect.crop_to_aspect) on the
-    same pixels: it rounds the kept length down, which on the exact cut can
-    tip the frame to the other side of the aspect and trim the other axis."""
-    h, w = img.shape[:2]
-    x0, y0, keep_w, keep_h = crop_box(w, h, aspect)
-    if x0 > 0:
-        return img[:, x0 - 1 : x0 + keep_w + 1].copy()
-    if y0 > 0:
-        return img[y0 - 1 : y0 + keep_h + 1].copy()
-    return img
+    frame of extreme aspect (16000x250) otherwise reached the video buffer
+    whole."""
+    picture = crop_for_mode(img, target.aspect_mode, target.aspect)
+    return img if picture is img else picture.copy()
 
 
 class _DecodePlan:
@@ -762,6 +765,13 @@ def _frame_to_scan_bgr(frame: Any, plan: _DecodePlan) -> np.ndarray:
     return frame.to_ndarray(format="bgr24")
 
 
+def _frame_to_picture(frame: Any, plan: _DecodePlan) -> np.ndarray:
+    """``frame`` converted (`_frame_to_scan_bgr`) and cut to the picture its
+    plan's aspect mode keeps (`_trim_to_crop`)."""
+    img = _frame_to_scan_bgr(frame, plan)
+    return img if plan.target is None else _trim_to_crop(img, plan.target)
+
+
 class RemoteScanStalled(RuntimeError):
     """A network input went `_REMOTE_READ_TIMEOUT_S` without a picture
     during the color pre-scan."""
@@ -834,7 +844,7 @@ def _seek_sample_frames(
         frame = next(_video_frames(container, path, v_stream), None)
         if frame is None:
             continue
-        img = _frame_to_scan_bgr(frame, plan)
+        img = _frame_to_picture(frame, plan)
         for acc in accumulators:
             acc.add(img)
         taken += 1
@@ -860,7 +870,7 @@ def _decode_sample_frames(
     for i, frame in enumerate(_video_frames(container, path, v_stream)):
         if i % stride:
             continue
-        img = _frame_to_scan_bgr(frame, plan)
+        img = _frame_to_picture(frame, plan)
         for acc in accumulators:
             acc.add(img)
         taken += 1
@@ -1647,8 +1657,7 @@ class AVFileSource:
                 plan.target.width,
                 plan.target.height,
             )
-        img = _frame_to_scan_bgr(frame, plan)
-        return img if plan.target is None else _trim_to_crop(img, plan.target.aspect)
+        return _frame_to_picture(frame, plan)
 
     def _rebase_pts(self, frame: Any) -> float:
         """Stamp a frame on the playback clock: its content time (`_content_time`,

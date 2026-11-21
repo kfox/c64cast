@@ -145,11 +145,21 @@ class AspectModeTest(unittest.TestCase):
             with self.subTest(mode=mode):
                 self.assertIs(crop_for_mode(img, mode, 4 / 3), img)
 
-    def test_fit_pads_to_the_screen(self):
+    def test_hybrid_takes_sixteen_by_nine_into_four_by_three_to_fourteen_by_nine(self):
+        self.assertAlmostEqual(kept_aspect(1920, 1080, "hybrid", 4 / 3), 14 / 9)
+
+    def test_hybrid_crops_a_tall_source_vertically_to_the_mean(self):
+        out = crop_for_mode(_solid(1600, 900), "hybrid", 4 / 3)
+        self.assertEqual(out.shape[1], 900)
+        self.assertAlmostEqual(out.shape[1] / out.shape[0], (9 / 16 + 4 / 3) / 2, places=2)
+
+    def test_fit_and_hybrid_pad_to_the_screen(self):
         img = _solid(90, 160)
-        out = pad_for_mode(crop_for_mode(img, "fit", 1.2), "fit", 1.2)
-        self.assertAlmostEqual(out.shape[1] / out.shape[0], 1.2, places=2)
-        self.assertTrue((out[0] == 0).all())
+        for mode in ("fit", "hybrid"):
+            with self.subTest(mode=mode):
+                out = pad_for_mode(crop_for_mode(img, mode, 1.2), mode, 1.2)
+                self.assertAlmostEqual(out.shape[1] / out.shape[0], 1.2, places=2)
+                self.assertTrue((out[0] == 0).all())
 
     def test_crop_and_stretch_do_not_pad(self):
         img = _solid(90, 160)
@@ -223,11 +233,13 @@ class SlideshowFitAspectTest(unittest.TestCase):
         self.assertTrue((img[0] == 0).all())
 
     def test_the_bars_stay_out_of_the_slides_color_fit(self):
-        scene, picture = self._shown("fit", ColorCfg(auto_fit=True))
-        expected = ColorFitAccumulator(strength=1.0)
-        expected.add(picture)
-        fit = cast(MagicMock, scene.display_mode).set_color_fit.call_args.args[0]
-        self.assertEqual(fit, expected.result())
+        for aspect_mode in ("fit", "hybrid"):
+            with self.subTest(aspect_mode=aspect_mode):
+                scene, picture = self._shown(aspect_mode, ColorCfg(auto_fit=True))
+                expected = ColorFitAccumulator(strength=1.0)
+                expected.add(picture)
+                fit = cast(MagicMock, scene.display_mode).set_color_fit.call_args.args[0]
+                self.assertEqual(fit, expected.result())
 
     def test_the_bars_stay_out_of_the_slides_color_map(self):
         with patch.object(scenes, "ColorMapAccumulator") as accumulator:
@@ -285,6 +297,13 @@ class SceneFactoryPixelAspectTest(unittest.TestCase):
         s = SceneCfg(type="video", file=path)
         scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
         self.assertEqual(scene.pixel_aspect, "square")
+
+    def test_video_carries_its_aspect_mode(self):
+        path = os.path.join(self.dir, "a.mp4")
+        open(path, "wb").close()
+        s = SceneCfg(type="video", file=path, aspect_mode="hybrid")
+        scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
+        self.assertEqual(scene.aspect_mode, "hybrid")
 
     def test_the_live_camera_fallback(self):
         self.cfg.scenes = []

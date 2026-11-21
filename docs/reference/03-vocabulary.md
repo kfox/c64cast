@@ -349,7 +349,10 @@ is accepted.
 `aspect_mode` reconciles the image with the shape the Commodore's screen is
 seen at, which `[hardware].pixel_aspect` sets:
 `crop` center-crops to fill and loses the edges, `fit` letterboxes the whole
-image onto black, `stretch` distorts to fill.
+image onto black, `hybrid` center-crops to the shape halfway between the
+image's and the screen's and letterboxes the rest, `stretch` distorts to fill.
+`hybrid` is the broadcast compromise: a 16:9 picture on a 4:3 screen becomes
+14:9, which trims about 6% off each side and leaves thin bars.
 
 Two display notes particular to this type: `display = "random"` picks a fresh
 mode at every setup, so a single-scene slideshow varies as it loops, and
@@ -368,6 +371,7 @@ name = "The Clip"
 display = "mhires"
 file = "~/Videos/clip.mp4"
 start_s = 0.0
+aspect_mode = "crop"
 ```
 
 *Needs the `video` extra, and the `yt` extra as well for a URL that is a page
@@ -397,6 +401,12 @@ keyframe before it and the picture and sound before the second are dropped. A
 file that reports no stream start has nothing to place the second against, and
 starts on the keyframe at or just before it. To loop one video forever, make it the only
 scene; to play it once and exit, set `[playlist].loop = false`.
+
+`aspect_mode` fits each frame to the screen the same way it fits a
+slideshow's pictures: `crop` (the default), `fit`, `hybrid` or `stretch`. A
+widescreen film on an NTSC set, seen at 1.2:1, loses a third of its width to
+`crop`; `hybrid` keeps most of it with thin bars, and `fit` keeps all of it
+with tall ones.
 
 ### `waveform`
 

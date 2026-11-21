@@ -98,16 +98,21 @@ def fit_to_aspect(
 
 def kept_aspect(width: int, height: int, aspect_mode: str, aspect: float) -> float:
     """The aspect ``aspect_mode`` center-crops a ``width`` x ``height`` source
-    to before any padding: the screen's ``aspect`` for ``"crop"``, and the
-    source's own (no crop) for ``"fit"`` and ``"stretch"``."""
+    to before any padding: the screen's ``aspect`` for ``"crop"``, the
+    source's own (no crop) for ``"fit"`` and ``"stretch"``, and for
+    ``"hybrid"`` the mean of the two, which takes 16:9 into 4:3 to the
+    broadcast 14:9."""
+    source = width / height
     if aspect_mode == "crop":
         return aspect
-    return width / height if height else aspect
+    if aspect_mode == "hybrid":
+        return (source + aspect) / 2
+    return source
 
 
 def pads(aspect_mode: str) -> bool:
     """Whether ``aspect_mode`` letterboxes or pillarboxes what it keeps."""
-    return aspect_mode == "fit"
+    return aspect_mode in ("fit", "hybrid")
 
 
 def crop_for_mode(img: np.ndarray, aspect_mode: str, aspect: float) -> np.ndarray:

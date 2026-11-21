@@ -1033,7 +1033,15 @@ def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
         )
     if s.start_s is not None and s.start_s < 0:
         raise ValueError(f"video: start_s must be >= 0, got {s.start_s!r}")
+    _validate_aspect_mode(s)
     return _display_mode_for_scene(s.display, s, cfg)
+
+
+def _validate_aspect_mode(s: SceneCfg) -> None:
+    if s.aspect_mode not in _ASPECT_MODE_CHOICES:
+        raise ValueError(
+            f"{s.type}: aspect_mode must be one of {_ASPECT_MODE_CHOICES}, got {s.aspect_mode!r}"
+        )
 
 
 def _validate_scope_knobs(s: SceneCfg, label: str) -> None:
@@ -1140,10 +1148,7 @@ def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
     )
     if s.image_duration_s <= 0:
         raise ValueError(f"slideshow: image_duration_s must be > 0, got {s.image_duration_s!r}")
-    if s.aspect_mode not in _ASPECT_MODE_CHOICES:
-        raise ValueError(
-            f"slideshow: aspect_mode must be one of {_ASPECT_MODE_CHOICES}, got {s.aspect_mode!r}"
-        )
+    _validate_aspect_mode(s)
     # The scene re-resolves at every setup(), so single-scene loops get a fresh mode
     # per iteration; this resolution is only for overlay-compat validation.
     display = _resolve_slideshow_display(s.display)
@@ -2622,6 +2627,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         loop_audio=cfg.midi_control.loop_audio,
         setup_progress=cfg.video.setup_progress_bar,
         pixel_aspect=cfg.hardware.pixel_aspect,
+        aspect_mode=s.aspect_mode,
     )
     if video_name:
         scene.name = video_name

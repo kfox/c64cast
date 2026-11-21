@@ -183,7 +183,7 @@ Display modes: `mhires`, `hires`, `hires_edges`, `mcm`, `petscii`, `random`.
 [[scenes]]
 type = "slideshow"
 image_duration_s = 5
-aspect_mode = "crop"  # crop | fit | stretch
+aspect_mode = "crop"  # crop | fit | stretch | hybrid
 mod_source = "audio"  # audio | clock | off
 ```
 
@@ -193,7 +193,7 @@ mod_source = "audio"  # audio | clock | off
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
 | **`file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid. |
 | **`image_duration_s`**<br>*Type:* `float`<br>*Default:* `5.0` | Per-image dwell time before advancing (total runtime is duration_s). |
-| **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'crop'` | How each image is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'crop' (center-crop to fill — the default, edges lost), 'fit' (letterbox/pillarbox so the whole image shows, padded black), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`. |
+| **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'crop'` | How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'crop' (center-crop to fill — the default, edges lost), 'fit' (letterbox/pillarbox so the whole picture shows, padded black), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`, `hybrid`. |
 | **`effect`**<br>*Type:* `str \| None`<br>*Default:* `None` | Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to). Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
 | **`effects`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Ordered pixel-effect chain applied before quantization, e.g. effects = ["trails", "rgb_shift", "strobe"]. Each is one of the `effect` choices; layers apply in order and are individually tunable (map a CC to fx0.<param>/fx1.<param>…) and bypass-toggleable live (fx_toggle). Mutually exclusive with the single `effect` field. Empty = none. Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
 | **`mod_source`**<br>*Type:* `str`<br>*Default:* `'audio'` | What drives this scene's reactive effect layers: 'audio' (the SID feature stream — needs a music-reactive scene, i.e. generative + audio_source = 'sid'), 'clock' (the [performance] beat grid, so effects lock to MIDI/tap tempo on any scene — the way to tempo-lock a 'strobe'), or 'off' (never react — layers use their static baseline). Applies to every effect layer on the scene. Choices: `audio`, `clock`, `off`. |
@@ -211,9 +211,9 @@ Display modes: `mhires`, `hires_edges`, `hires`, `mcm`, `petscii`, `blank`.
 ```toml
 [[scenes]]
 type = "video"
-mod_source = "audio"        # audio | clock | off
+aspect_mode = "crop"      # crop | fit | stretch | hybrid
+mod_source = "audio"      # audio | clock | off
 palette_mode = "percell"
-text_double_height = false
 ```
 
 <!-- table: fields -->
@@ -222,6 +222,7 @@ text_double_height = false
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
 | **`file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid. |
 | **`start_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds into the source to begin playback (video only). Quick playback fills this from a URL's t=/start= timestamp; can also be set directly on a [[scenes]] video. Unset/0 = play from the start. |
+| **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'crop'` | How each image or video frame is fit to the screen's aspect (which [hardware].pixel_aspect sets): 'crop' (center-crop to fill — the default, edges lost), 'fit' (letterbox/pillarbox so the whole picture shows, padded black), 'hybrid' (center-crop halfway between the source's aspect and the screen's, then letterbox/pillarbox the rest — 16:9 into 4:3 becomes the broadcast 14:9), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`, `hybrid`. |
 | **`audio`**<br>*Type:* `bool \| None`<br>*Default:* `None` | Per-scene audio override. Unset follows [audio].enabled; false mutes this scene only. |
 | **`effect`**<br>*Type:* `str \| None`<br>*Default:* `None` | Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to). Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
 | **`effects`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Ordered pixel-effect chain applied before quantization, e.g. effects = ["trails", "rgb_shift", "strobe"]. Each is one of the `effect` choices; layers apply in order and are individually tunable (map a CC to fx0.<param>/fx1.<param>…) and bypass-toggleable live (fx_toggle). Mutually exclusive with the single `effect` field. Empty = none. Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
