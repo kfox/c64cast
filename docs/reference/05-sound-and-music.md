@@ -215,6 +215,12 @@ outright. Two links sharing one file still keep their tables apart: an
 Ultimate 64 plays its socket tables, and a TeensyROM+ in its cartridge port
 plays the table measured over the TeensyROM+.
 
+`c64cast --list-dac-calibrations` lists every stored calibration by the name
+`--dac-calibration-profile` takes to select it, with the backend that measured
+it, when, and the chip in each socket it covers. A socket left with no table
+to play, because its measurement failed its self-test and no earlier table for
+that chip was kept, is marked as having no usable table.
+
 > [!WARNING]
 > A run replaces this machine's existing table outright. There is no prompt
 > and no backup kept, so a re-measurement taken through a different capture

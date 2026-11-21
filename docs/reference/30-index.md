@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 472 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 473 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -120,7 +120,7 @@ Every name c64cast answers to — 472 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `--dac-calibration-profile` | [Audio (G)](26-appendix-g-cli-flags.md#audio) |
+| `--dac-calibration-profile` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [Audio (G)](26-appendix-g-cli-flags.md#audio), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `dac_bitmap_tempo_hires` | [The Bitmap-and-DAC Time Stretch (4)](05-sound-and-music.md#the-bitmap-and-dac-time-stretch), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `dac_bitmap_tempo_mhires` | [The Bitmap-and-DAC Time Stretch (4)](05-sound-and-music.md#the-bitmap-and-dac-time-stretch), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `dac_calibration_profile` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [`audio` (A)](20-appendix-a-configuration.md#audio) |
@@ -304,6 +304,7 @@ Every name c64cast answers to — 472 of them — and the pages that discuss eac
 | `limiter_ceiling` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `limiter_release_ms` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `lissajous` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
+| `--list-dac-calibrations` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--list-devices` | [`webcam` (2)](03-vocabulary.md#webcam), [`audio` (A)](20-appendix-a-configuration.md#audio), [`video` (A)](20-appendix-a-configuration.md#video) |
 | `--list-examples` | [Options (G)](26-appendix-g-cli-flags.md#options), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--list-modes` | [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
@@ -432,7 +433,7 @@ Every name c64cast answers to — 472 of them — and the pages that discuss eac
 | `--print-schema` | [What Is In Here](01-introduction.md#what-is-in-here), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema-path` | [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--profile` | [Getting Bytes In (5)](06-under-the-hood.md#getting-bytes-in), [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
-| `profile` | [Getting Bytes In (5)](06-under-the-hood.md#getting-bytes-in), [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [`debug` (A)](20-appendix-a-configuration.md#debug) |
+| `profile` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [Getting Bytes In (5)](06-under-the-hood.md#getting-bytes-in), [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
 | `--profile-interval` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `profile_interval` | [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `prompt_to_save` | [The On-C64 Menu (6)](07-inputs-and-outputs.md#the-on-c64-menu), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [`menu` (A)](20-appendix-a-configuration.md#menu) |

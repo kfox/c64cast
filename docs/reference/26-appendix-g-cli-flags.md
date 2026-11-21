@@ -93,6 +93,7 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | **`--describe`**<br>`NAME` | Describe a scene/overlay/section/mode and exit. Prefix to disambiguate: scene:, overlay:, section:, mode: (e.g. `--describe` overlay:clock) |
 | **`--compat`** | Print the overlay × display-mode compatibility matrix and exit |
 | **`--list-examples`** | List the example configs that ship with c64cast (run one with `--config example:NAME`) and exit |
+| **`--list-dac-calibrations`** | List the DAC calibrations `--calibrate-dac` has stored, each by the name `--dac-calibration-profile` takes, and exit |
 | **`--print-example`**<br>`NAME` | Print a packaged example config to stdout and exit — redirect it to a file to make it yours (`--print-example hello > c64cast.toml`) |
 | **`--print-schema`** | Print the JSON Schema for the TOML config and exit (point your editor's `#:schema` at it for autocomplete) |
 | **`--print-schema-path`** | Print where this install's JSON Schema lives — the value for a config's `#:schema` first line, worked out for `--config`'s location (default ./c64cast.toml) — and exit. Naming the installed copy is what makes the line outlive upgrades |
