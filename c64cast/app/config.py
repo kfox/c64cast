@@ -212,7 +212,7 @@ def _is_valid_param_holder(holder: str) -> bool:
 
 
 # How a slideshow image is fit to the screen's aspect before the display mode
-# downscales it. See video.aspect.apply_aspect.
+# downscales it. See video.aspect.kept_aspect.
 _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
 
 # Per-scene audio source for generative scenes — the AudioSource building block in

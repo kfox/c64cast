@@ -40,7 +40,7 @@ from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw import machine_input
 from c64cast.hw.backend import C64Backend, DacPacing, LinkError
 from c64cast.hw.c64 import CIA1, SCREEN
-from c64cast.video.aspect import apply_aspect, crop_to_aspect, screen_aspect
+from c64cast.video.aspect import crop_for_mode, crop_to_aspect, pad_for_mode, screen_aspect
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.modes_irq import reu_pump_skips_irq_hook
 from c64cast.video.palette import (
@@ -1151,6 +1151,9 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._shuffle_bag: list[str] = []
         self._current_path: str | None = None
         self._current_img: np.ndarray | None = None
+        # The slide without its letterbox bars, which the color statistics
+        # read.
+        self._current_picture: np.ndarray | None = None
         self._image_start: float = 0.0
         self.start_time: float = 0.0
         self._prepared = False
@@ -1237,12 +1240,14 @@ class SlideshowScene(MediaFileMixin, Scene):
         return self._shuffle_bag.pop(0)
 
     def _load_slide(self, path: str) -> np.ndarray | None:
+        """The part of the picture at ``path`` the scene's ``aspect_mode``
+        shows, not yet padded to the screen."""
         aspect = self.fit_aspect()
         target = self.decode_target(aspect)
         img = _decode_picture(path, target)
         if img is None:
             return None
-        return apply_aspect(self._shrink_for_display(img, target), self._aspect_mode, aspect)
+        return crop_for_mode(self._shrink_for_display(img, target), self._aspect_mode, aspect)
 
     def _queue_next_slide(self) -> None:
         """Start decoding the slide after the one on screen, off the render
@@ -1266,7 +1271,8 @@ class SlideshowScene(MediaFileMixin, Scene):
 
     def _show_slide(self, path: str, img: np.ndarray) -> None:
         self._current_path = path
-        self._current_img = img
+        self._current_picture = img
+        self._current_img = pad_for_mode(img, self._aspect_mode, self.fit_aspect())
         if self.display_mode is not None:
             c = self._color
             if c.auto_fit:
@@ -1307,6 +1313,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._shuffle_bag = []
         self._current_path = None
         self._current_img = None
+        self._current_picture = None
         try:
             self._candidates = self._resolve_candidates()
         except ValueError as e:
@@ -1348,8 +1355,8 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._queue_next_slide()
 
     def _push_slide_palette(self) -> None:
-        if self._hw_palette is not None and self._current_img is not None:
-            _push_source_palette(self, self._hw_palette, [self._current_img])
+        if self._hw_palette is not None and self._current_picture is not None:
+            _push_source_palette(self, self._hw_palette, [self._current_picture])
             # The push can take most of a second, which is not the slide's.
             self._image_start = time.time()
 
