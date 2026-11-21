@@ -122,7 +122,17 @@ host_palette = "auto"               # the 16 colors the C64 being driven really
                                     # the path to a VICE .vpl file, which is how
                                     # to describe a machine with a custom palette
                                     # loaded that cannot be asked for it.
-dump_char_rom = true                # on the first run against a machine, read
+pixel_aspect = "auto"               # the shape of one C64 pixel on the screen
+                                    # being watched, so video, pictures and the
+                                    # webcam are cropped to the shape they are
+                                    # seen at instead of drawn squeezed.
+                                    # "composite" is a real VIC-II on a 4:3 set
+                                    # (screen 1.2:1 NTSC, 1.5:1 PAL); "hdmi" the
+                                    # Ultimate 64's HDMI output (4:3 NTSC, 1.5:1
+                                    # PAL); "square" the old 1.6:1 crop. "auto"
+                                    # is "hdmi" on an Ultimate 64 and
+                                    # "composite" anywhere else.
+dump_char_rom = true               # on the first run against a machine, read
                                     # its character ROM and cache it under the
                                     # data dir, so C64 text renders in the real
                                     # C64 font instead of a built-in ASCII

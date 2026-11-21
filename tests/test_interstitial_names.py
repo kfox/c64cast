@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
-from _fakes import bare_waveform_scene
+from _fakes import bare_waveform_scene, mock_backend
 
 from c64cast.scenes.scenes import SlideshowScene, VideoScene, _display_name
 
@@ -153,7 +153,9 @@ class SlideshowPrepareNextTest(unittest.TestCase):
             cv2.imwrite(os.path.join(self.tmp.name, n), img)
 
     def _scene(self):
-        return SlideshowScene(MagicMock(), MagicMock(frame_target_size=(160, 200)), self.tmp.name)
+        return SlideshowScene(
+            mock_backend(), MagicMock(frame_target_size=(160, 200)), self.tmp.name
+        )
 
     def test_init_name_is_dir_spec_for_multi_pool(self):
         scene = self._scene()

@@ -413,6 +413,15 @@ class FakeAPI:
         pass
 
 
+def mock_backend(**attrs: Any) -> mock.MagicMock:
+    """A MagicMock backend with a real `HardwareProfile`: a scene looks its
+    screen aspect up by `profile.system`, which a MagicMock attribute is not
+    a key for."""
+    api = mock.MagicMock(**attrs)
+    api.profile = HardwareProfile(name="Fake", family="fake")
+    return api
+
+
 def make_psid(
     *,
     magic: bytes = b"PSID",

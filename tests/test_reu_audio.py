@@ -22,6 +22,7 @@ from _fakes import (
     FakeAPI,
     lose_reu_writes_to,
     lose_writes_to,
+    mock_backend,
     new_streamer,
     quiet_logging,
     run_irq_handler,
@@ -1685,7 +1686,7 @@ class TrackedVideoPumpInstallFailureTest(unittest.TestCase):
         mode = MagicMock(
             audio_reu_pump_active=True, use_reu_staged=True, drives_rec_from_host=False
         )
-        scene = VideoScene(MagicMock(), s, mode, self.clip, setup_progress=False)
+        scene = VideoScene(mock_backend(), s, mode, self.clip, setup_progress=False)
         source = MagicMock(a_stream=object())
         with (
             mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),

@@ -39,7 +39,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from c64cast.scenes.scenes import _crop_to_aspect
+from c64cast.video.aspect import crop_to_aspect
 from c64cast.video.shots import AdaptiveCutDetector
 from scripts.diags._cut_detectors import (
     FfmpegScene,
@@ -47,7 +47,7 @@ from scripts.diags._cut_detectors import (
     analysis_frame,
 )
 from scripts.diags._mhires_metrics import match_events
-from scripts.diags._offline_video import iter_frames
+from scripts.diags._offline_video import ASPECT, iter_frames
 
 OUT_ROOT = Path(__file__).resolve().parent / "out" / "cut_eval"
 SHEET_ROWS = 8
@@ -63,7 +63,7 @@ def analysis_frames(clip: dict[str, Any]) -> tuple[list[float], list[np.ndarray]
     frames: list[np.ndarray] = []
     for tick in iter_frames(clip["path"], clip.get("t0", 0.0), clip.get("t1")):
         times.append(tick.t)
-        frames.append(analysis_frame(_crop_to_aspect(tick.frame)))
+        frames.append(analysis_frame(crop_to_aspect(tick.frame, ASPECT)))
     return times, frames
 
 

@@ -14,7 +14,7 @@ from unittest import mock
 
 import numpy as np
 import requests
-from _fakes import FrozenClock, quiet_logging
+from _fakes import FrozenClock, mock_backend, quiet_logging
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -2714,7 +2714,7 @@ class SamplerArmedBeforeProducerTest(unittest.TestCase):
         ):
             order.attach_mock(source_cls.return_value.start, "source_start")
             scene = VideoScene(
-                api=mock.MagicMock(),
+                api=mock_backend(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
                 file="https://stub.invalid/clip.mp4",
@@ -2737,7 +2737,7 @@ class SamplerArmedBeforeProducerTest(unittest.TestCase):
             mock.patch("c64cast.scenes.scenes.AVFileSource") as source_cls,
         ):
             scene = VideoScene(
-                api=mock.MagicMock(),
+                api=mock_backend(),
                 audio=audio,
                 display_mode=mock.MagicMock(),
                 file="https://stub.invalid/clip.mp4",

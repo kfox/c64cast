@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import cv2
 import numpy as np
@@ -32,6 +32,7 @@ from c64cast._native_io import silence_native_stderr
 from c64cast._pollthread import PollThread
 from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 
+from .aspect import crop_box
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator, FrameSampler
 from .shots import ShotFit, ShotTracker
 
@@ -463,10 +464,6 @@ def _compute_normalization_gain(
     return min(max(gain, 1.0), max_gain)
 
 
-# The C64 display aspect every video frame is center-cropped to before the
-# display mode downscales it (must match scenes._C64_ASPECT / _crop_to_aspect —
-# kept local to avoid a scenes→video import cycle).
-_CROP_ASPECT = 320 / 200
 # How much bigger than the display mode's final target the decode output is
 # kept, in each axis, after the center-crop, so the mode's INTER_AREA resize
 # stays a pure downscale with area-averaging headroom. Decode is capped at the
@@ -474,22 +471,31 @@ _CROP_ASPECT = 320 / 200
 DECODE_HEADROOM = 2.0
 
 
+class DecodeTarget(NamedTuple):
+    """What a decode is planned for: the display mode's ``frame_target_size``,
+    and the screen aspect (`aspect.screen_aspect`) the scene center-crops each
+    frame to before the mode resizes it."""
+
+    width: int
+    height: int
+    aspect: float
+
+
 def _plan_decode_size(
     src_w: int,
     src_h: int,
-    target_w: int,
-    target_h: int,
+    target: DecodeTarget,
     headroom: float = DECODE_HEADROOM,
 ) -> tuple[int, int] | None:
     """Plan a decode ``(width, height)`` for a source frame that the scene will
-    center-crop to ``_CROP_ASPECT`` and the display mode will then downscale to
-    ``(target_w, target_h)``.
+    center-crop to ``target.aspect`` and the display mode will then downscale
+    to ``(target.width, target.height)``.
 
     Returns the smallest even (w, h) — preserving the source aspect — whose
-    *post-crop* dimensions still exceed ``(target_w, target_h)`` by ``headroom``
-    in both axes, so the final resize is a pure INTER_AREA downscale. Returns
-    None when the source is already small enough that no downscale helps (the
-    planned size would meet or exceed the source), so the caller keeps the plain
+    *post-crop* dimensions still exceed the target by ``headroom`` in both
+    axes, so the final resize is a pure INTER_AREA downscale. Returns None when
+    the source is already small enough that no downscale helps (the planned
+    size would meet or exceed the source), so the caller keeps the plain
     full-resolution yuv→bgr convert.
 
     The point: a 4K source frame decoded to a full-res BGR buffer then
@@ -501,18 +507,12 @@ def _plan_decode_size(
     frame instead of 4K. See AVFileSource._demux_loop and
     project_av_sync_decode_bound.
     """
-    if src_w <= 0 or src_h <= 0 or target_w <= 0 or target_h <= 0:
+    if src_w <= 0 or src_h <= 0 or target.width <= 0 or target.height <= 0:
         return None
-    # Cropped source dimensions at _CROP_ASPECT — mirrors scenes._crop_to_aspect
-    # so the headroom math reflects the pixels that actually survive the crop.
-    ar = src_w / src_h
-    if ar > _CROP_ASPECT:  # wider than 1.6 → crop trims width
-        crop_w, crop_h = src_h * _CROP_ASPECT, float(src_h)
-    elif ar < _CROP_ASPECT:  # taller than 1.6 → crop trims height
-        crop_w, crop_h = float(src_w), src_w / _CROP_ASPECT
-    else:
-        crop_w, crop_h = float(src_w), float(src_h)
-    scale = headroom * max(target_w / crop_w, target_h / crop_h)
+    # Unrounded, unlike crop_box: a source a few pixels across would crop to 0.
+    crop_w = min(float(src_w), src_h * target.aspect)
+    crop_h = min(float(src_h), src_w / target.aspect)
+    scale = headroom * max(target.width / crop_w, target.height / crop_h)
     if scale >= 1.0:
         return None  # source already at/below the resolution the mode needs
     # Even dimensions: chroma-subsampled source codecs want them and swscale
@@ -522,24 +522,21 @@ def _plan_decode_size(
     return dw, dh
 
 
-def _trim_to_crop(img: np.ndarray) -> np.ndarray:
-    """``img`` cut down to what the scene's center-crop to `_CROP_ASPECT`
-    keeps, plus one pixel each side of the cropped axis, as a copy.
+def _trim_to_crop(img: np.ndarray, aspect: float) -> np.ndarray:
+    """``img`` cut down to what the scene's center-crop to ``aspect`` keeps,
+    plus one pixel each side of the cropped axis, as a copy.
 
     `_plan_decode_size` cannot shrink the kept axis below its headroom, so a
     frame of extreme aspect (16000x250) reached the video buffer whole. The
-    margin is what keeps the scene's crop (scenes._crop_to_aspect) on the
+    margin is what keeps the scene's crop (aspect.crop_to_aspect) on the
     same pixels: it rounds the kept length down, which on the exact cut can
     tip the frame to the other side of the aspect and trim the other axis."""
     h, w = img.shape[:2]
-    if w / h > _CROP_ASPECT:
-        keep = int(h * _CROP_ASPECT)
-        x0 = (w - keep) // 2
-        return img[:, x0 - 1 : x0 + keep + 1].copy() if x0 > 0 else img
-    if w / h < _CROP_ASPECT:
-        keep = int(w / _CROP_ASPECT)
-        y0 = (h - keep) // 2
-        return img[y0 - 1 : y0 + keep + 1].copy() if y0 > 0 else img
+    x0, y0, keep_w, keep_h = crop_box(w, h, aspect)
+    if x0 > 0:
+        return img[:, x0 - 1 : x0 + keep_w + 1].copy()
+    if y0 > 0:
+        return img[y0 - 1 : y0 + keep_h + 1].copy()
     return img
 
 
@@ -548,7 +545,7 @@ class _DecodePlan:
     changes: a stream can open small and switch resolution mid-way, and a
     plan kept from its first frame converted every later one at full size."""
 
-    def __init__(self, target: tuple[int, int] | None) -> None:
+    def __init__(self, target: DecodeTarget | None) -> None:
         self.target = target
         self.size: tuple[int, int] | None = None
         self._source: tuple[int, int] | None = None
@@ -559,7 +556,7 @@ class _DecodePlan:
         if source == self._source:
             return False
         self._source = source
-        self.size = None if self.target is None else _plan_decode_size(*source, *self.target)
+        self.size = None if self.target is None else _plan_decode_size(*source, self.target)
         return True
 
 
@@ -810,7 +807,7 @@ def _seek_sample_frames(
     accumulators: list[Any],
     max_samples: int,
     duration_s: float,
-    decode_target_size: tuple[int, int] | None,
+    decode_target: DecodeTarget | None,
 ) -> int:
     """Seek to ``max_samples`` evenly spaced timestamps across ``duration_s``,
     decode one frame at each, feed the accumulators. Returns the number of
@@ -826,7 +823,7 @@ def _seek_sample_frames(
     if not time_base:
         return 0
     start_time = v_stream.start_time or 0
-    plan = _DecodePlan(decode_target_size)
+    plan = _DecodePlan(decode_target)
     taken = 0
     for n in range(max_samples):
         # Interval midpoints, so the last target is not at/after EOF, where it
@@ -850,7 +847,7 @@ def _decode_sample_frames(
     v_stream: Any,
     accumulators: list[Any],
     max_samples: int,
-    decode_target_size: tuple[int, int] | None,
+    decode_target: DecodeTarget | None,
 ) -> None:
     """Sequential-decode fallback: stride through decoded frames and feed up to
     ``max_samples`` into the accumulators. Used when the source can't seek or
@@ -859,7 +856,7 @@ def _decode_sample_frames(
     total = v_stream.frames or 0
     stride = -(-total // max_samples) if total else 5
     taken = 0
-    plan = _DecodePlan(decode_target_size)
+    plan = _DecodePlan(decode_target)
     for i, frame in enumerate(_video_frames(container, path, v_stream)):
         if i % stride:
             continue
@@ -890,7 +887,7 @@ def scan_video_samples(
     path: str,
     accumulators: list[Any],
     max_samples: int = 120,
-    decode_target_size: tuple[int, int] | None = None,
+    decode_target: DecodeTarget | None = None,
     on_progress: Callable[[float], None] | None = None,
 ) -> bool:
     """Sample up to ``max_samples`` frames spread across ``path`` and feed each
@@ -906,7 +903,7 @@ def scan_video_samples(
     as None). Shared by the auto_fit and force_palette pre-scans so a source is
     decoded ONCE for both.
 
-    ``decode_target_size`` (the display mode's frame_target_size) downscales
+    ``decode_target`` (the display mode's frame_target_size) downscales
     each sampled frame DURING the yuv→bgr swscale pass (same win as playback —
     see _plan_decode_size). Color statistics are distribution-based, so the
     downscaled frame yields the same fit/palette as the full-res one at a
@@ -937,7 +934,7 @@ def scan_video_samples(
                             accumulators,
                             max_samples,
                             duration_s,
-                            decode_target_size,
+                            decode_target,
                         )
                         > 0
                     )
@@ -961,7 +958,7 @@ def scan_video_samples(
                 v_stream = container.streams.video[0]
                 v_stream.thread_type = "AUTO"
                 _decode_sample_frames(
-                    container, path, v_stream, accumulators, max_samples, decode_target_size
+                    container, path, v_stream, accumulators, max_samples, decode_target
                 )
         finally:
             if container is not None:
@@ -979,7 +976,7 @@ def prescan_source_color(
     map_colors: int | None = None,
     map_indices: list[int] | None = None,
     frames: FrameSampler | None = None,
-    decode_target_size: tuple[int, int] | None = None,
+    decode_target: DecodeTarget | None = None,
     on_progress: Callable[[float], None] | None = None,
 ) -> tuple[ColorFit | None, ColorMap | None]:
     """Pre-scan a video once and derive the enabled per-source color stages.
@@ -989,7 +986,7 @@ def prescan_source_color(
     ColorMap ([color].force_palette). Both stages share a single decode pass,
     and so does ``frames``, which keeps the sampled frames for a derivation that
     needs the fit first ([color].hardware_palette).
-    ``decode_target_size`` downscales sampled frames during decode (see
+    ``decode_target`` downscales sampled frames during decode (see
     scan_video_samples). Returns (ColorFit|None, ColorMap|None); a disabled or
     failed stage is None, so callers can unconditionally pass the results to
     set_color_fit / set_color_map. A failed scan also empties ``frames``, so
@@ -1003,9 +1000,7 @@ def prescan_source_color(
         else None
     )
     accs = [a for a in (fit_acc, map_acc, frames) if a is not None]
-    if not scan_video_samples(
-        path, accs, decode_target_size=decode_target_size, on_progress=on_progress
-    ):
+    if not scan_video_samples(path, accs, decode_target=decode_target, on_progress=on_progress):
         if frames is not None:
             frames.frames.clear()
         return None, None
@@ -1166,7 +1161,7 @@ class AVFileSource:
         source_noise_gate_enabled: bool = False,
         scan_audio_peak: bool = True,
         start_s: float = 0.0,
-        decode_target_size: tuple[int, int] | None = None,
+        decode_target: DecodeTarget | None = None,
         tempo_scale: float = 1.0,
         tempo_follow: bool = False,
     ):
@@ -1185,7 +1180,7 @@ class AVFileSource:
         # loop downscales each frame to a headroom multiple of it during the
         # yuv→bgr swscale pass instead of converting the full source frame; the
         # size is planned from each frame size the stream decodes to (_DecodePlan).
-        self._decode_plan = _DecodePlan(decode_target_size)
+        self._decode_plan = _DecodePlan(decode_target)
         # PTS (rebased, seconds) of the frame current_frame() last returned —
         # the A/V-lag telemetry in VideoScene reads it as displayed_frame_pts.
         self.last_frame_pts: float = 0.0
@@ -1649,10 +1644,11 @@ class AVFileSource:
                 frame.width,
                 frame.height,
                 *plan.size,
-                *plan.target,
+                plan.target.width,
+                plan.target.height,
             )
         img = _frame_to_scan_bgr(frame, plan)
-        return img if plan.target is None else _trim_to_crop(img)
+        return img if plan.target is None else _trim_to_crop(img, plan.target.aspect)
 
     def _rebase_pts(self, frame: Any) -> float:
         """Stamp a frame on the playback clock: its content time (`_content_time`,

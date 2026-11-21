@@ -7,6 +7,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 **Contents**
 
 * [`video.py` — WebcamSource (shared broker) + AVFileSource (PyAV)](#videopy--webcamsource-shared-broker--avfilesource-pyav)
+* [`aspect.py` — the screen's shape, and fitting a source to it](#aspectpy--the-screens-shape-and-fitting-a-source-to-it)
 * [`modes/` — DisplayMode hierarchy](#modes--displaymode-hierarchy)
 * [`modes_irq.py` — C64-side IRQ handlers + REU push helpers](#modes_irqpy--c64-side-irq-handlers--reu-push-helpers)
 * [`palette.py` — which 16 colors the machine emits (`[hardware].host_palette`)](#palettepy--which-16-colors-the-machine-emits-hardwarehost_palette)
@@ -44,19 +45,19 @@ A TTL-based automatic re-resolve at `setup()` was considered and **not** built: 
 
 ### Decode-time downscale
 
-Config: `decode_target_size` / `_plan_decode_size`.
+Config: `decode_target` / `_plan_decode_size`.
 
 **The gap this closes.** The frame-selection model above is correct, but only works if the demuxer can produce frames in real time. It does not cover **supply**: when the decoder can't keep up, `current_frame` returns the newest frame it *has*, which falls progressively further behind the audio clock. Video lags and appears to drift, worst on heavy 4K clips.
 
 **Why the decode size is the lever.** Converting every frame to BGR at **full source resolution** (`frame.to_ndarray("bgr24")`) and leaving the downscale to the display mode's `cv2.resize` to ≤320px costs ≈40 ms/frame for a 4K source on the U64 host — over the ≈33 ms budget at 29.97 fps, before codec decode is even counted. The pixels thrown away by the resize are paid for twice: once to convert, once to discard.
 
-**The fix.** `VideoScene` passes the display mode's `frame_target_size` — the only resolution it actually consumes — as `decode_target_size`. The demux loop plans a decode size from the first frame, and again whenever the stream changes resolution (`_DecodePlan`, `_plan_decode_size`), and downscales **during** the yuv→bgr swscale pass, via `av.VideoFrame.reformat(w, h, "bgr24")`. The converted frame is then cut to what the scene's center-crop keeps, plus one pixel each side so that crop lands on the same pixels (`_trim_to_crop`), because the plan cannot shrink the kept axis below its headroom and a frame of extreme aspect (16000x250) otherwise reached the 240-frame buffer whole.
+**The fix.** `VideoScene` passes the display mode's `frame_target_size` — the only resolution it actually consumes — with the screen aspect it crops to ([`aspect.py`](#aspectpy--the-screens-shape-and-fitting-a-source-to-it)) as `decode_target`. The demux loop plans a decode size from the first frame, and again whenever the stream changes resolution (`_DecodePlan`, `_plan_decode_size`), and downscales **during** the yuv→bgr swscale pass, via `av.VideoFrame.reformat(w, h, "bgr24")`. The converted frame is then cut to what the scene's center-crop keeps, plus one pixel each side so that crop lands on the same pixels (`_trim_to_crop`), because the plan cannot shrink the kept axis below its headroom and a frame of extreme aspect (16000x250) otherwise reached the 240-frame buffer whole.
 
 Measured ≈40 ms → ≈4 ms/frame, a 9× speedup on a 4K sync clip. The conversion, the center-crop, the auto_fit accumulator, and the final resize then all work on a ≈640px frame.
 
 Two guards in `_plan_decode_size`:
 
-* Post-crop dims stay ≥ `DECODE_HEADROOM` (2×) the target in **both** axes, mirroring `scenes._crop_to_aspect` so the anamorphic MHires target — where height > width — is honored.
+* Post-crop dims stay ≥ `DECODE_HEADROOM` (2×) the target in **both** axes, at the target's aspect, so the anamorphic MHires target — where height > width — is honored.
 * It never upscales. A source already small enough returns None, falling back to a plain full-res convert.
 
 The same downscale applies to the one-shot color pre-scan (`scan_video_samples`), since color statistics are distribution-based.
@@ -218,6 +219,22 @@ The actual queue retraction lives in `AudioStreamer.flush()` / `UltimateAudioSam
 
 No other demux-side change is needed: `_apply_pending_seek` already clears `_eof`, rebuilds the resampler and atempo graph, and re-anchors PTS to the target, and a seek that arrives after EOF restarts the parked demux thread ([EOF handling](#eof-handling)).
 
+## `aspect.py` — the screen's shape, and fitting a source to it
+
+Every display mode resizes what it is handed onto the whole 320x200 screen (its `frame_target_size` is that screen at the mode's own grid), so the shape a source is cropped to first is the shape the picture is seen at. Until this module it was 320/200 = 1.6 everywhere, which is right only if a C64 pixel is square. It is not, and how far from square depends on the video standard and on what turns the VIC's output into a picture:
+
+| `[hardware].pixel_aspect` | NTSC pixel | NTSC screen | PAL pixel | PAL screen | Source |
+| --- | --- | --- | --- | --- | --- |
+| `composite` | 0.75 | 1.2 | 0.9365 | 1.50 | VICE `vicii_get_pixel_aspect` (`src/vicii/vicii.c`) |
+| `hdmi` | 5/6 | 4/3 | 15/16 | 1.50 | 1541ultimate `software/u64/hdmi_scan.cc`, `SetVideoMode1080p` |
+| `square` | 1 | 1.6 | 1 | 1.6 | the pre-`aspect.py` behavior |
+
+The composite figures are the 4:3 picture a set makes of the VIC-II's dot clock against the square-pixel sampling rate: 12.27 MHz / 8.18 MHz / 2 lines per field line = 0.75 on NTSC, and 14.75 / 7.88 / 2 ≈ 0.936 on PAL. The HDMI figures are the Ultimate 64-II scaler's own register settings: at 1080p it draws 3.75 output pixels across per VIC pixel against 4.5 down per NTSC raster line (4.0 per PAL one), and 720p keeps both ratios. `scripts/capture_guide_figure.py` measured the NTSC 1080p case off a capture, 3.75 by 4.5, independently. The scaler's SD and 800x600 PAL modes differ (about 1.0 and 0.9), and so do NTSC's 800x600 (0.8); `hdmi` is the HD figure.
+
+`"auto"` resolves per machine, at scene setup, from the backend's profile: `hdmi` when it has `supports_system_mode` (granted by `refine_capabilities` only to an Ultimate 64, the same test `hardware_palette` uses) and `composite` otherwise — an Ultimate II+ or TeensyROM+ sits in a real C64 or C128, whose VIC-II drives the set. Under `--skip-probe` nothing is refined, so an Ultimate 64 resolves to `composite` too. The system is `profile.system`, which `resolve_system` settles before any scene is built. An Ultimate 64 watched over its analog output, or a TeensyROM+ in an Ultimate's cartridge port watched over HDMI, needs the field set by hand: neither is visible to the code.
+
+`crop_to_aspect` (fill), `fit_to_aspect` (pad) and `apply_aspect` (the slideshow's `aspect_mode` dispatch, with `"stretch"` as identity) take the aspect as an argument; `crop_box` is the one crop window, which `video._trim_to_crop` uses too so the demux thread's trim and the scene's crop land on the same pixels. `video._plan_decode_size` takes a `DecodeTarget` — the mode's target plus that aspect — so the decode keeps its headroom over what the crop actually keeps. `VideoScene` settles one aspect per `setup()` and hands it to the decode plan, the trim, the shot tracker's crop and the render, because the four must agree; the slideshow resolves it per slide on the decode worker, and the webcam per frame. The fix is source-side only: generated content, overlays and text are drawn on the 320x200 grid and are not reshaped.
+
 ## `modes/` — DisplayMode hierarchy
 
 Each mode does VIC register setup + frame quantization + push to the right addresses. All uploads go through `write_region` so the delta cache applies.
@@ -275,7 +292,7 @@ overloading that pair).
 
 ### `frame_target_size`
 
-Each mode's `(width, height)` — the only resolution it downscales a source frame to in `compose`/`render` (`(40,25)` PETSCII, `(80,50)` MCM, `(320,200)` Hires, `(160,200)` MHires; `None` for `BlankDisplayMode`, which renders no source frame). `compose` sources its `cv2.resize` target from this attribute (not a literal), and `VideoScene` reads it as `AVFileSource`'s `decode_target_size` — so it's the **single source of truth** for both the compose resize and the video decoder's downscale-during-decode plan, and the two can't drift (a stale decode plan would under/over-decode). See the `video.py` decode-time-downscale note above.
+Each mode's `(width, height)` — the only resolution it downscales a source frame to in `compose`/`render` (`(40,25)` PETSCII, `(80,50)` MCM, `(320,200)` Hires, `(160,200)` MHires; `None` for `BlankDisplayMode`, which renders no source frame). `compose` sources its `cv2.resize` target from this attribute (not a literal), and `VideoScene` reads it into `AVFileSource`'s `decode_target` — so it's the **single source of truth** for both the compose resize and the video decoder's downscale-during-decode plan, and the two can't drift (a stale decode plan would under/over-decode). See the `video.py` decode-time-downscale note above.
 
 ### Bitmap engage clean-field (`engage_bitmap_mode`)
 
@@ -906,8 +923,6 @@ Everything above picks *among* the machine's 16 colors. `hardware_palette = "sou
 ## Framerate pacing & frame-dropping
 
 `Playlist.run` uses deadline-based pacing: each frame advances a `next_deadline` by `frame_time` (resolved per-scene by `frame_time_for(scene)`). If the wall clock has fallen more than two frame_times behind the deadline, the deadline snaps forward — dropping the missed frames — instead of bursting to catch up. All built-in scenes follow the system rate except the lower-rate defaults above (bitmap frame-pushing scenes, `WaveformScene`, `MidiScene`). Animation logic that uses `current_time` keeps tracking wall-clock time correctly across dropped frames.
-
-`_crop_to_aspect()` is the shared aspect-correction primitive. `_apply_aspect(img, aspect_mode)` dispatches over it: `"crop"` → `_crop_to_aspect` (center-crop to fill — what webcam/video always use and slideshow's default), `"fit"` → `_fit_to_aspect` (letterbox/pillarbox, black pad), `"stretch"` → identity (the mode's resize distorts to fill). Only `SlideshowScene` reads the `aspect_mode` config field today.
 
 ## `framebuffer.py` + `preview.py` — the software mirror behind preview and recording
 

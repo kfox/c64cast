@@ -201,7 +201,7 @@ class MyScene(Scene):
 
     def process_frame(self, current_time: float) -> bool:
         frame_bgr = self._produce_frame()    # whatever your source is
-        cropped = _crop_to_aspect(frame_bgr)
+        cropped = crop_to_aspect(frame_bgr, self.fit_aspect())
         self.display_mode.render(self.api, cropped)
         # Don't run overlays — the Playlist does that for you.
         return True                          # False = scene is finished

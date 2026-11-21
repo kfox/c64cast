@@ -8,6 +8,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import numpy as np
+from _fakes import mock_backend
 
 from c64cast.scenes.scenes import SourceScene, WebcamScene
 
@@ -42,7 +43,7 @@ class FrameNumbersRestartPerEntryTest(unittest.TestCase):
     def _webcam(self) -> WebcamScene:
         source = MagicMock()
         source.read.return_value = _frame()
-        return WebcamScene(MagicMock(), None, MagicMock(), source, MagicMock(), "cam")
+        return WebcamScene(mock_backend(), None, MagicMock(), source, MagicMock(), "cam")
 
     def _source(self) -> SourceScene:
         source = MagicMock(finished=False)

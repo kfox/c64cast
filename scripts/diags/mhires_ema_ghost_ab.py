@@ -33,10 +33,10 @@ import cv2
 import numpy as np
 
 from c64cast.app.config import ColorCfg
-from c64cast.scenes.scenes import _crop_to_aspect
+from c64cast.video.aspect import crop_to_aspect
 from c64cast.video.modes import base as modes_base
 from c64cast.video.palette import ColorFit, ColorFitAccumulator
-from scripts.diags._offline_video import OfflineMhires, iter_frames
+from scripts.diags._offline_video import ASPECT, OfflineMhires, iter_frames
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
 
@@ -120,7 +120,7 @@ def main() -> None:
     acc = ColorFitAccumulator()
     frames = 0
     for tick in iter_frames(args.video, args.t0, args.t1, fps=args.fps):
-        acc.add(_crop_to_aspect(tick.frame))
+        acc.add(crop_to_aspect(tick.frame, ASPECT))
         frames += 1
     if not frames:
         raise SystemExit("no frames decoded in window")

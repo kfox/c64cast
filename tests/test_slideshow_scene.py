@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
+from _fakes import mock_backend
 
 from c64cast.scenes import scenes
 from c64cast.scenes.scenes import SlideshowScene
@@ -34,7 +35,9 @@ class UndecodablePictureTest(unittest.TestCase):
         self.bad = os.path.join(tmp.name, "bad.png")
         for path in (self.good, self.bad):
             _write_png_header(path, 4, 4)
-        self.scene = SlideshowScene(MagicMock(), MagicMock(frame_target_size=(160, 200)), tmp.name)
+        self.scene = SlideshowScene(
+            mock_backend(), MagicMock(frame_target_size=(160, 200)), tmp.name
+        )
         img = np.zeros((4, 4, 3), dtype=np.uint8)
         imread = mock.patch(
             "c64cast.scenes.scenes.cv2.imread",
@@ -76,7 +79,9 @@ class OversizedPictureTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.huge = os.path.join(tmp.name, "huge.png")
         _write_png_header(self.huge, 30000, 30000)
-        self.scene = SlideshowScene(MagicMock(), MagicMock(frame_target_size=(160, 200)), tmp.name)
+        self.scene = SlideshowScene(
+            mock_backend(), MagicMock(frame_target_size=(160, 200)), tmp.name
+        )
         imread = mock.patch(
             "c64cast.scenes.scenes.cv2.imread", return_value=np.zeros((4, 4, 3), dtype=np.uint8)
         )
@@ -121,7 +126,7 @@ class SlideOffTheFramePathTest(unittest.TestCase):
         for name in ("a.jpg", "b.jpg", "c.jpg"):
             cv2.imwrite(os.path.join(tmp.name, name), np.zeros((3024, 4032, 3), dtype=np.uint8))
         display_mode = MagicMock(frame_target_size=(160, 200))
-        self.scene = SlideshowScene(MagicMock(), display_mode, tmp.name)
+        self.scene = SlideshowScene(mock_backend(), display_mode, tmp.name)
         self.decodes: list[tuple[str, int]] = []
         real_imread = cv2.imread
 
@@ -172,7 +177,7 @@ class SlideOffTheFramePathTest(unittest.TestCase):
         self._play_slides(1)
         self.assertEqual(self.decodes[0][1], cv2.IMREAD_REDUCED_COLOR_4)
         assert self.scene._current_img is not None
-        self.assertEqual(self.scene._current_img.shape, (400, 640, 3))
+        self.assertEqual(self.scene._current_img.shape, (400, 480, 3))
 
 
 class ReducedDecodeTest(unittest.TestCase):
@@ -184,7 +189,7 @@ class ReducedDecodeTest(unittest.TestCase):
         stripes[:, 4::8] = 255
         path = os.path.join(tmp.name, "stripes.png")
         cv2.imwrite(path, stripes)
-        scene = SlideshowScene(MagicMock(), MagicMock(frame_target_size=(160, 200)), tmp.name)
+        scene = SlideshowScene(mock_backend(), MagicMock(frame_target_size=(160, 200)), tmp.name)
         img = scene._load_slide(path)
         assert img is not None
         self.assertAlmostEqual(float(img.mean()), 255 * 2 / 8, delta=1.0)
@@ -200,7 +205,7 @@ class LargePictureTest(unittest.TestCase):
             _write_png_header(path, 4032, 3024)
             display_mode = MagicMock()
             display_mode.frame_target_size = (160, 200)
-            scene = SlideshowScene(MagicMock(), display_mode, path)
+            scene = SlideshowScene(mock_backend(), display_mode, path)
             photo = np.zeros((3024, 4032, 3), dtype=np.uint8)
             with (
                 mock.patch("c64cast.scenes.scenes.cv2.imread", return_value=photo),
@@ -208,7 +213,7 @@ class LargePictureTest(unittest.TestCase):
             ):
                 scene._advance_image()
         assert scene._current_img is not None
-        self.assertEqual(scene._current_img.shape, (400, 640, 3))
+        self.assertEqual(scene._current_img.shape, (400, 480, 3))
 
 
 if __name__ == "__main__":
