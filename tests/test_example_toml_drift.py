@@ -88,6 +88,9 @@ _COVERAGE_EXEMPT = {
     # Unset picks the rate per scene from the connected backend; a live key
     # would pin every scene to one rate.
     ("audio", "sample_rate"),
+    # Unset picks the level per display mode; a live key would pin petscii to
+    # the bitmap modes' headroom.
+    ("color", "auto_fit_white_level"),
 }
 
 

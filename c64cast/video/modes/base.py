@@ -14,7 +14,9 @@ from c64cast.hw.backend import C64Backend
 from c64cast.scenes.text_surface import TextSurface
 from c64cast.video.dither import bayer_offset, blue_noise_offset
 from c64cast.video.palette import (
+    AUTO_FIT_WHITE_LEVEL,
     CELL_STRATEGIES,
+    CHANNEL_BOOST,
     DEFAULT_GRAY_PENALTY,
     DEFAULT_HUE_CORRECTIONS,
     GRAYSCALE_CHROMATIC_PENALTY,
@@ -363,16 +365,17 @@ def resolve_color_shaping(
     channel_boost: list[float] | None,
     hue_corrections: list[dict] | None,
     replace: bool,
+    default_boost: np.ndarray = CHANNEL_BOOST,
 ) -> tuple[np.ndarray, tuple[HueCorrection, ...]]:
     """Build the global pre-quant color-shaping state from [color] config.
 
     Returns (channel_boost_bgr, hue_corrections). Applies to every chromatic
     display mode regardless of palette_mode — palette_mode picks slots, [color]
-    shapes colors. `channel_boost` None/empty falls back to the built-in
-    CHANNEL_BOOST. `DEFAULT_HUE_CORRECTIONS` is empty, so `replace` does not
-    change the result.
+    shapes colors. `channel_boost` None/empty falls back to `default_boost`,
+    the mode's built-in gain. The user's bands follow `DEFAULT_HUE_CORRECTIONS`,
+    or stand alone when `replace` is set.
     """
-    boost = parse_channel_boost(channel_boost)
+    boost = parse_channel_boost(channel_boost, default_boost)
     user = parse_hue_corrections(hue_corrections or [])
     hue = user if replace else DEFAULT_HUE_CORRECTIONS + user
     return boost, hue
@@ -537,7 +540,7 @@ class DisplayMode:
     # installed at full strength and lerped toward identity by this factor at
     # apply() time, so the strength stays runtime-tunable. 0.0 = auto_fit off.
     _auto_fit_strength: float = 1.0
-    _auto_fit_white_level: float = 255.0
+    _auto_fit_white_level: float = AUTO_FIT_WHITE_LEVEL
 
     @property
     def auto_fit_strength(self) -> float:

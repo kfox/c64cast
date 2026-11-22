@@ -474,10 +474,14 @@ PALETTE_LUMA = (C64_PALETTE_BGR @ np.array([0.114, 0.587, 0.299], dtype=np.float
 
 DISTANCE_WEIGHTS = np.array([2.0, 4.0, 3.0], dtype=np.float32)
 # Pre-quantization per-channel gain (BGR), the built-in [color].channel_boost
-# default. The blue/green lift biases the palette match toward C64-friendly
-# hues; red stays at 1.0 — a measured A/B on TRON frames put a 0.9 red-cut at
-# higher Lab error with no benefit to the blues it was meant to favor.
-CHANNEL_BOOST = np.array([1.3, 1.2, 1.0], dtype=np.float32)
+# for mcm and mhires.
+CHANNEL_BOOST = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+# PETSCII keeps the blue/green lift: it draws luma as glyph coverage over a
+# black screen, and without the lift 90 of 96 sampled video frames rendered
+# sparser and further from the source. Red stays at 1.0 — a measured A/B
+# on TRON frames put a 0.9 red-cut at higher Lab error with no benefit to the
+# blues it was meant to favor.
+PETSCII_CHANNEL_BOOST = np.array([1.3, 1.2, 1.0], dtype=np.float32)
 
 # Squared weighted distance is computed via the (x-p)² expansion:
 #     d²(x, p) = Σ w·(x² - 2xp + p²)
@@ -642,10 +646,20 @@ class HueCorrection:
     name: str = ""
 
 
-# No default band: a violet → magenta snap with V x1.9 lifted lilac-lit shadows
-# and faces a whole luma step, to light blue or purple, on the pepto, Ultimate 64
-# and Kawari tables alike.
-DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = ()
+# Bright saturated gold and amber, a light-cycle trail, sits just under the
+# palette's yellow and orange and quantizes to brown. The lift is held to V x1.3
+# with no hue snap: a violet → magenta band with V x1.9 lifted lilac-lit shadows
+# and faces a whole luma step, to light blue or purple.
+DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = (
+    HueCorrection(
+        hue_lo_deg=36.0,
+        hue_hi_deg=60.0,
+        sat_thresh=0.6,
+        val_thresh=0.2,
+        val_mult=1.3,
+        name="gold bright",
+    ),
+)
 
 
 def apply_hue_corrections(
@@ -663,6 +677,7 @@ def apply_hue_corrections(
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
     deg = h * 2.0  # cv2 hue 0..179 → 0..359
+    touched = np.zeros(h.shape, dtype=bool)
     for c in corrections:
         if c.hue_lo_deg <= c.hue_hi_deg:
             in_band = (deg >= c.hue_lo_deg) & (deg <= c.hue_hi_deg)
@@ -671,11 +686,18 @@ def apply_hue_corrections(
         mask = in_band & (s >= c.sat_thresh * 255.0) & (v >= c.val_thresh * 255.0)
         if not mask.any():
             continue
+        touched |= mask
         s[mask] = np.minimum(255.0, s[mask] * c.sat_mult)
         v[mask] = np.minimum(255.0, v[mask] * c.val_mult)
         if c.hue_target_deg is not None:
             h[mask] = c.hue_target_deg / 2.0  # degrees → cv2 hue
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    if not touched.any():
+        return img_bgr
+    # The uint8 HSV round trip drifts a pixel by a few units, so only the
+    # pixels a band matched take the converted value.
+    out = img_bgr.copy()
+    out[touched] = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)[touched]
+    return out
 
 
 def parse_hue_corrections(
@@ -738,16 +760,17 @@ def parse_hue_corrections(
 
 def parse_channel_boost(
     raw: list[float] | tuple[float, ...] | None,
+    default: np.ndarray = CHANNEL_BOOST,
 ) -> np.ndarray:
     """Validate a [color].channel_boost value → (3,) float32 BGR gain.
 
     Accepts a length-3 list of positive numbers in OpenCV BGR order
-    ([blue, green, red]). None or an empty list falls back to the built-in
-    CHANNEL_BOOST default. Raises ValueError with a field-pointed message so a
-    malformed value surfaces at config-load / --doctor time.
+    ([blue, green, red]). None or an empty list falls back to `default`, the
+    display mode's built-in gain. Raises ValueError with a field-pointed
+    message so a malformed value surfaces at config-load / --doctor time.
     """
     if not raw:
-        return CHANNEL_BOOST
+        return default
     if len(raw) != 3:
         raise ValueError(
             f"color.channel_boost must have exactly 3 entries "
@@ -875,6 +898,12 @@ class ColorFit:
 
 
 IDENTITY_FIT = ColorFit(black=0.0, white=255.0, sat_mult=1.0)
+
+# The built-in [color].auto_fit_white_level for mcm and mhires.
+AUTO_FIT_WHITE_LEVEL = 220.0
+# PETSCII draws luma as glyph coverage, so headroom only thins the glyphs: at
+# 220, 90 of 96 sampled video frames rendered further from the source.
+PETSCII_AUTO_FIT_WHITE_LEVEL = 255.0
 
 _LUMA_SHIFT_LUT_CACHE: dict[tuple[int, int], np.ndarray] = {}
 

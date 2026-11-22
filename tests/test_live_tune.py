@@ -227,7 +227,7 @@ class ModeSetterTests(unittest.TestCase):
                 self.assertAlmostEqual(lerped.sat_mult, baked_fit.sat_mult, places=4)
 
     def test_fit_for_apply_uses_strength(self):
-        m = MCMDisplayMode()
+        m = MCMDisplayMode(auto_fit_white_level=255.0)
         m.set_color_fit(ColorFit(black=40.0, white=200.0, sat_mult=1.5))
         m.auto_fit_strength = 0.0
         zeroed = m._fit_for_apply()

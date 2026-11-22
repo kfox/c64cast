@@ -1907,25 +1907,28 @@ class ColorCfg:
     display mode (mcm, mhires, petscii) regardless of palette_mode.
 
     Two stages run before nearest-palette quantization: a per-channel gain
-    (channel_boost) and a set of hue-band corrections. No hue band is built in;
-    user bands are the whole list."""
+    (channel_boost) and a set of hue-band corrections. One hue band is built in,
+    a lift for bright gold; user bands follow it, or replace it with
+    hue_corrections_replace_defaults."""
 
     channel_boost: list[float] = field(
         default_factory=list,
         metadata={
             "help": "Per-channel pre-quantize gain [blue, green, red] (OpenCV BGR "
-            "order). Empty = built-in default [1.3, 1.2, 1.0] (blue/green "
-            "lift toward C64-friendly hues; red left neutral)."
+            "order). Empty = the mode's built-in gain: none ([1.0, 1.0, 1.0]) "
+            "on mcm and mhires, and on petscii a blue/green lift of "
+            "[1.3, 1.2, 1.0] that keeps its glyphs from thinning out."
         },
     )
     dark_tone_taper: bool = field(
         default=True,
         metadata={
-            "help": "mhires and mcm: ease channel_boost's green gain to 1.0 on "
-            "dark, colorful warm and navy pixels, so dark amber stays brown "
-            "or orange instead of turning green and navy floors stay blue "
-            "instead of speckling gray. Bright tones, teal and cyan keep the "
-            "full boost."
+            "help": "mhires and mcm: ease a channel_boost green gain above 1.0 "
+            "back to 1.0 on dark, colorful warm and navy pixels, so dark amber "
+            "stays brown or orange instead of turning green and navy floors "
+            "stay blue instead of speckling gray. Bright tones, teal and cyan "
+            "keep the full boost. No effect at the built-in channel_boost, "
+            "whose green gain is 1.0."
         },
     )
     hue_corrections: list[dict[str, Any]] = field(
@@ -1934,14 +1937,17 @@ class ColorCfg:
             "help": "List of [[color.hue_corrections]] bands applied before "
             "quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, "
             "val_thresh, sat_mult, val_mult, hue_target_deg, name). "
-            "Empty = no hue corrections."
+            "Applied after the built-in band, a V x1.3 lift for bright, "
+            "saturated gold and amber (hue 36-60 degrees, S >= 0.6, V >= 0.2) "
+            "so it lands on yellow or orange instead of brown. Empty = the "
+            "built-in band alone."
         },
     )
     hue_corrections_replace_defaults: bool = field(
         default=False,
         metadata={
-            "help": "No effect: there are no built-in hue_corrections bands to "
-            "replace. Still accepted so existing configs load."
+            "help": "Drop the built-in gold band, so hue_corrections is the "
+            "whole list (empty = no hue corrections)."
         },
     )
     auto_fit: bool = field(
@@ -1993,14 +1999,15 @@ class ColorCfg:
             "bright, so 0.5 (default) goes halfway."
         },
     )
-    auto_fit_white_level: float = field(
-        default=255.0,
+    auto_fit_white_level: float | None = field(
+        default=None,
         metadata={
             "help": "Luma (128..255) the auto_fit stretch puts the source's "
-            "brightest highlights at. 255 (default) stretches them to full "
-            "white; a lower level leaves headroom, so a pale wall or sky lands "
-            "on light gray or a pale color instead of clipping to white or "
-            "cyan, at the cost of a dimmer picture."
+            "brightest highlights at. 255 stretches them to full white; a "
+            "lower level leaves headroom, so a pale wall or sky lands on light "
+            "gray or a pale color instead of clipping to white or cyan, at the "
+            "cost of a dimmer picture. Unset = 220 on mcm and mhires, and 255 "
+            "on petscii, whose glyphs thin out under headroom."
         },
     )
     gray_penalty: float = field(

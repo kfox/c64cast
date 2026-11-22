@@ -751,16 +751,18 @@ fourcc = "mp4v"
 # nearest-palette quantization on every chromatic display mode (mcm, mhires,
 # petscii), independent of palette_mode (which only picks per-cell slots).
 #
-# channel_boost: per-channel gain [blue, green, red] in OpenCV BGR order. The
-# blue/green lift biases the palette match toward C64-friendly hues; red is
-# left neutral (the historical 0.9 red-cut only raised perceptual error and
-# starved warm colors). Omit / leave empty for the built-in default below.
-channel_boost = [1.3, 1.2, 1.0]
+# channel_boost: per-channel gain [blue, green, red] in OpenCV BGR order.
+# Empty = the mode's built-in gain: none on mcm and mhires, and on petscii a
+# [1.3, 1.2, 1.0] blue/green lift that keeps its glyphs from thinning out.
+# A gain set here applies to all three modes.
+channel_boost = []
+# channel_boost = [1.3, 1.2, 1.0]  # the older blue/green lift, on every mode
 #
-# dark_tone_taper (mhires and mcm): ease channel_boost's green gain to 1.0 on
-# dark, colorful warm and navy pixels, so dark amber stays brown/orange
-# instead of turning green and navy floors stay blue instead of speckling
-# gray. Bright tones, teal and cyan keep the full boost.
+# dark_tone_taper (mhires and mcm): ease a channel_boost green gain above 1.0
+# back to 1.0 on dark, colorful warm and navy pixels, so dark amber stays
+# brown/orange instead of turning green and navy floors stay blue instead of
+# speckling gray. Bright tones, teal and cyan keep the full boost. No effect
+# at the built-in gain, whose green is 1.0.
 dark_tone_taper = true
 #
 # dither: spatial dither applied before nearest-palette quantization on
@@ -960,10 +962,10 @@ auto_fit_shots = true
 auto_fit_shot_max_rise = 1.0
 auto_fit_shot_relax = 0.5
 # auto_fit_white_level is the luma (128..255) the fit puts the source's brightest
-# highlights at: 255 (default) stretches them to full white, and a lower level
-# leaves headroom so a pale wall or sky stays light gray or pale instead of
-# clipping to white or cyan.
-auto_fit_white_level = 255.0
+# highlights at: 255 stretches them to full white, and a lower level leaves
+# headroom so a pale wall or sky stays light gray or pale instead of clipping
+# to white or cyan. Unset = 220 on mcm and mhires, 255 on petscii.
+# auto_fit_white_level = 220.0
 #
 # gray_penalty (mhires and mcm): how much closer a chromatic palette entry must
 # be before the five grays win a pixel, in squared color distance. Higher keeps
@@ -1003,9 +1005,11 @@ force_palette_colors = 16
 # force_palette or flicker_tolerance.
 hardware_palette = "off"
 #
-# hue_corrections: none by default. Define [[color.hue_corrections]] bands to
-# push a hue range toward a palette color before quantizing.
-# hue_corrections_replace_defaults has no effect (there are no built-in bands).
+# hue_corrections: one band is built in, "gold bright", a V x1.3 lift for
+# bright, saturated gold and amber (hue 36-60 degrees, S >= 0.6, V >= 0.2) so
+# a light-cycle trail lands on yellow or orange instead of brown. Bands
+# defined as [[color.hue_corrections]] apply after it;
+# hue_corrections_replace_defaults = true drops it, so yours are the whole list.
 hue_corrections_replace_defaults = false
 # Example band (commented), a violet → magenta snap:
 #   [[color.hue_corrections]]

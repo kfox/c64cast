@@ -38,7 +38,7 @@ Every name c64cast answers to — 473 of them — and the pages that discuss eac
 | `auto_fit_shots` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` | [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
-| `auto_fit_white_level` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `auto_fit_white_level` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_reu` | [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `autostart` | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `axis` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
