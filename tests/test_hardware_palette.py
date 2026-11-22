@@ -226,7 +226,7 @@ class QuantizerInputTest(unittest.TestCase):
 
     def _expected(self, img: np.ndarray, mode, sat: float) -> np.ndarray:
         shaped = palette.boost_saturation(img, sat)
-        shaped = palette.apply_hue_corrections(shaped, mode._hue_corrections)
+        shaped = palette.apply_hue_corrections(shaped, mode._hue_corrections, img)
         return np.clip(shaped.astype(np.float32) * mode._channel_boost, 0, 255)
 
     def test_mcm_applies_its_palette_modes_saturation(self):

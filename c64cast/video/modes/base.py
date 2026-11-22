@@ -50,11 +50,11 @@ def shape_for_quantize(
     warm and navy tones when `dark_tone_taper`). Takes a BGR uint8 image and
     returns it as float32 BGR, clipped to 0..255."""
     if fit is not None:
-        img = apply_color_fit(img, fit, sat_factor)
+        shaped = apply_color_fit(img, fit, sat_factor)
     else:
-        img = boost_saturation(img, sat_factor)
-    img = apply_hue_corrections(img, hue_corrections)
-    f = img.astype(np.float32)
+        shaped = boost_saturation(img, sat_factor)
+    shaped = apply_hue_corrections(shaped, hue_corrections, img)
+    f = shaped.astype(np.float32)
     boosted = (
         apply_channel_boost_tapered(f, channel_boost) if dark_tone_taper else f * channel_boost
     )
@@ -366,18 +366,19 @@ def resolve_color_shaping(
     hue_corrections: list[dict] | None,
     replace: bool,
     default_boost: np.ndarray = CHANNEL_BOOST,
+    default_hue: tuple[HueCorrection, ...] = DEFAULT_HUE_CORRECTIONS,
 ) -> tuple[np.ndarray, tuple[HueCorrection, ...]]:
     """Build the global pre-quant color-shaping state from [color] config.
 
     Returns (channel_boost_bgr, hue_corrections). Applies to every chromatic
     display mode regardless of palette_mode — palette_mode picks slots, [color]
     shapes colors. `channel_boost` None/empty falls back to `default_boost`,
-    the mode's built-in gain. The user's bands follow `DEFAULT_HUE_CORRECTIONS`,
-    or stand alone when `replace` is set.
+    the mode's built-in gain. The user's bands follow `default_hue`, the mode's
+    built-in bands, or stand alone when `replace` is set.
     """
     boost = parse_channel_boost(channel_boost, default_boost)
     user = parse_hue_corrections(hue_corrections or [])
-    hue = user if replace else DEFAULT_HUE_CORRECTIONS + user
+    hue = user if replace else default_hue + user
     return boost, hue
 
 
