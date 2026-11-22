@@ -15,16 +15,11 @@ import numpy as np
 
 from c64cast.video import petscii_styles as ps
 from c64cast.video.modes import PETSCIIDisplayMode
-from c64cast.video.palette import (
-    PETSCII_CHANNEL_BOOST,
-    PETSCII_HUE_CORRECTIONS,
-    ColorFit,
-    HueCorrection,
-)
+from c64cast.video.palette import DEFAULT_HUE_CORRECTIONS, PETSCII_CHANNEL_BOOST, HueCorrection
 
 # The global [color] shaping PETSCIIDisplayMode passes into every style.compose.
 _BOOST = PETSCII_CHANNEL_BOOST
-_HUE = PETSCII_HUE_CORRECTIONS
+_HUE = DEFAULT_HUE_CORRECTIONS
 
 
 def _frame():
@@ -136,29 +131,6 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
         _, banded = ps.ColorOnlyStyle().compose(violet, _BOOST, (violet_to_purple,))
         self.assertNotIn(4, {int(c) for c in np.unique(plain)})
         self.assertIn(4, {int(c) for c in np.unique(banded)})
-
-    def test_a_source_gated_band_gates_on_the_frame_before_any_saturation_lift(self):
-        unfaded = {
-            "hue_lo_deg": 185,
-            "hue_hi_deg": 225,
-            "sat_thresh": 0.12,
-            "sat_mult": 0.05,
-        }
-        source_faded = {**unfaded, "sat_fade": [0.4, 0.5], "gate_on_source": True}
-        muted_slate = np.full((25, 40, 3), (230, 190, 150), dtype=np.uint8)  # S 0.35
-        for style, fit in (
-            ("color_only", ColorFit(black=0.0, white=255.0, sat_mult=1.8)),
-            ("inverse_pop", None),
-        ):
-            with self.subTest(style=style):
-                colors = []
-                for band in (unfaded, source_faded):
-                    mode = PETSCIIDisplayMode(
-                        style, hue_corrections=[band], hue_corrections_replace=True
-                    )
-                    mode.set_color_fit(fit)
-                    colors.append(mode.compose(muted_slate)["color"])
-                np.testing.assert_array_equal(colors[1], colors[0])
 
 
 # Rows of the uppercase character ROM for the glyphs the ramps below use;

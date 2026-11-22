@@ -1267,11 +1267,9 @@ Red is deliberately not cut: an A/B on real TRON frames showed a `0.9` red
 only raised perceptual (Lab) error and starved warm colors
 (yellow/red/purple), with no benefit to the blues the cut was meant to
 favor. Override per-config via `[color].channel_boost`, which then applies
-to all three modes. Two hue bands are built in: bright, saturated gold and
-amber is lifted so it lands on yellow or orange instead of brown, and on MCM
-and MultiHires muted slate blue is pulled toward gray so a gray-blue wall
-settles on the grays instead of blotching purple;
-`hue_corrections_replace_defaults = true` drops both.
+to all three modes. One hue band is built in: bright, saturated gold and
+amber is lifted so it lands on yellow or orange instead of brown;
+`hue_corrections_replace_defaults = true` drops it.
 
 This stage is orthogonal to `palette_mode`, which only chooses the VIC-II
 per-cell slot-allocation strategy. If you tune `[color]` and only some modes

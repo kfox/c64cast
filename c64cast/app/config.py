@@ -1907,9 +1907,8 @@ class ColorCfg:
     display mode (mcm, mhires, petscii) regardless of palette_mode.
 
     Two stages run before nearest-palette quantization: a per-channel gain
-    (channel_boost) and a set of hue-band corrections. Two hue bands are built
-    in, a lift for bright gold and, on mcm and mhires, a pull toward gray for
-    muted slate blue; user bands follow them, or replace them with
+    (channel_boost) and a set of hue-band corrections. One hue band is built in,
+    a lift for bright gold; user bands follow it, or replace it with
     hue_corrections_replace_defaults."""
 
     channel_boost: list[float] = field(
@@ -1937,24 +1936,18 @@ class ColorCfg:
         metadata={
             "help": "List of [[color.hue_corrections]] bands applied before "
             "quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, "
-            "val_thresh, sat_mult, val_mult, hue_target_deg, name, "
-            "sat_fade = [lo, hi] to fade a band out as saturation rises from "
-            "lo to hi, gate_on_source = true to gate on the source pixel "
-            "before auto-fit and the saturation lift). "
-            "Applied after the built-in bands: a V x1.3 lift for bright, "
+            "val_thresh, sat_mult, val_mult, hue_target_deg, name). "
+            "Applied after the built-in band, a V x1.3 lift for bright, "
             "saturated gold and amber (hue 36-60 degrees, S >= 0.6, V >= 0.2) "
-            "so it lands on yellow or orange instead of brown; and on mcm and "
-            "mhires an S x0.55 pull for muted slate blue (hue 185-225, source "
-            "S >= 0.12 fading out from 0.5 to 0.7, source V >= 0.3) so it "
-            "settles on the grays instead of blotching purple. Empty = the "
-            "built-in bands alone."
+            "so it lands on yellow or orange instead of brown. Empty = the "
+            "built-in band alone."
         },
     )
     hue_corrections_replace_defaults: bool = field(
         default=False,
         metadata={
-            "help": "Drop the built-in gold and slate bands, so "
-            "hue_corrections is the whole list (empty = no hue corrections)."
+            "help": "Drop the built-in gold band, so hue_corrections is the "
+            "whole list (empty = no hue corrections)."
         },
     )
     auto_fit: bool = field(

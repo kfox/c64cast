@@ -1013,15 +1013,11 @@ force_palette_colors = 16
 # force_palette or flicker_tolerance.
 hardware_palette = "off"
 #
-# hue_corrections: two bands are built in. "gold bright" is a V x1.3 lift for
+# hue_corrections: one band is built in, "gold bright", a V x1.3 lift for
 # bright, saturated gold and amber (hue 36-60 degrees, S >= 0.6, V >= 0.2) so
-# a light-cycle trail lands on yellow or orange instead of brown. "slate", on
-# mcm and mhires only, is an S x0.55 pull for muted slate blue (hue 185-225,
-# source S >= 0.12 fading out from 0.5 to 0.7, source V >= 0.3) so a gray-blue
-# wall settles on the grays instead of blotching purple, while saturated blue
-# and cyan stay put. Bands defined as [[color.hue_corrections]] apply after
-# them; hue_corrections_replace_defaults = true drops them, so yours are the
-# whole list.
+# a light-cycle trail lands on yellow or orange instead of brown. Bands
+# defined as [[color.hue_corrections]] apply after it;
+# hue_corrections_replace_defaults = true drops it, so yours are the whole list.
 hue_corrections_replace_defaults = false
 # Example band (commented), a violet → magenta snap:
 #   [[color.hue_corrections]]
@@ -1033,9 +1029,6 @@ hue_corrections_replace_defaults = false
 #   sat_mult = 2.2           # multiply saturation of matched pixels
 #   val_mult = 1.9           # multiply value/brightness of matched pixels
 #   hue_target_deg = 300     # optional: snap matched hues toward this angle
-#   sat_fade = [0.5, 0.7]    # optional: fade the band out as saturation rises lo → hi
-#   gate_on_source = false   # true: gate on the source pixel, before auto-fit
-#                            # and the saturation lift
 
 [dsp]
 # Host-side audio DSP applied to float samples BEFORE the 4-bit $D418 DAC

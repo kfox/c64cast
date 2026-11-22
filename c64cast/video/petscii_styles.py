@@ -72,7 +72,6 @@ def _shaped_flat(
     img: np.ndarray,
     channel_boost: np.ndarray,
     hue_corrections: tuple[HueCorrection, ...],
-    source: np.ndarray | None = None,
 ) -> np.ndarray:
     """Apply the global [color] shaping (hue corrections then per-channel
     boost) and return the (N, 3) float32 flat ready for quantization.
@@ -82,7 +81,7 @@ def _shaped_flat(
     only color selection sees the shaped pixels. The shaping is metric-agnostic
     (see _quantize_color / palette.quantize_distances_for for the rgb-vs-Lab
     nearest-color decision itself)."""
-    img = apply_hue_corrections(img, hue_corrections, source)
+    img = apply_hue_corrections(img, hue_corrections)
     return np.clip(img.reshape(-1, 3).astype(np.float32) * channel_boost, 0, 255)
 
 
@@ -91,11 +90,10 @@ def _quantize_color(
     channel_boost: np.ndarray,
     hue_corrections: tuple[HueCorrection, ...],
     perceptual: bool = False,
-    source: np.ndarray | None = None,
 ) -> np.ndarray:
     """Per-cell nearest-palette color pick (1000,) uint8, in the selected
     [color].color_match metric. The shared color path for the faithful styles."""
-    flat = _shaped_flat(img, channel_boost, hue_corrections, source)
+    flat = _shaped_flat(img, channel_boost, hue_corrections)
     return quantize_flat_for(flat, perceptual=perceptual).astype(np.uint8)
 
 
@@ -104,11 +102,10 @@ def _quantize_to_spectrum(
     channel_boost: np.ndarray,
     hue_corrections: tuple[HueCorrection, ...],
     perceptual: bool = False,
-    source: np.ndarray | None = None,
 ) -> np.ndarray:
     """Per-cell palette pick clamped to the 10 chromatic spectrum entries."""
     d = quantize_distances_for(
-        _shaped_flat(img, channel_boost, hue_corrections, source), perceptual=perceptual
+        _shaped_flat(img, channel_boost, hue_corrections), perceptual=perceptual
     )
     mask = np.full(16, np.inf, dtype=np.float32)
     mask[C64_SPECTRUM_INDICES] = 0.0
@@ -138,16 +135,12 @@ class PetsciiStyle:
         channel_boost: np.ndarray,
         hue_corrections: tuple[HueCorrection, ...],
         perceptual: bool = False,
-        source: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return (screen[1000], color[1000]) uint8 for the given image.
 
         channel_boost + hue_corrections are the global [color] shaping stage,
         applied to the per-cell color pick (not to glyph/luma selection).
-        perceptual selects the [color].color_match metric for that pick.
-        source is the frame before the mode's auto-fit, the pixel a
-        gate_on_source band gates on; without it such a band gates on the
-        pixel being shaped."""
+        perceptual selects the [color].color_match metric for that pick."""
         raise NotImplementedError
 
 
@@ -162,9 +155,9 @@ class DefaultStyle(PetsciiStyle):
         dtype=np.uint8,
     )
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         screen = _ramp_to_chars(_luma(img), self.CHARS)
-        color = _quantize_color(img, channel_boost, hue_corrections, perceptual, source)
+        color = _quantize_color(img, channel_boost, hue_corrections, perceptual)
         return screen, color
 
 
@@ -178,9 +171,9 @@ class HalftoneStyle(PetsciiStyle):
         dtype=np.uint8,
     )
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         screen = _ramp_to_chars(_luma(img), self.CHARS)
-        color = _quantize_color(img, channel_boost, hue_corrections, perceptual, source)
+        color = _quantize_color(img, channel_boost, hue_corrections, perceptual)
         return screen, color
 
 
@@ -227,11 +220,11 @@ class RandomGlyphStyle(PetsciiStyle):
         rng = np.random.default_rng(seed=0xC64A1A5)
         self._screen = self.GLYPHS[rng.integers(0, len(self.GLYPHS), size=1000)]
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         if self._screen is None:
             self.reset()
         assert self._screen is not None
-        color = _quantize_color(img, channel_boost, hue_corrections, perceptual, source)
+        color = _quantize_color(img, channel_boost, hue_corrections, perceptual)
         return self._screen, color
 
 
@@ -242,9 +235,9 @@ class LetterRainStyle(PetsciiStyle):
     # Screen codes 0x01-0x1A are A-Z in the upper-case ROM.
     CHARS = np.arange(0x01, 0x1B, dtype=np.uint8)
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         screen = _ramp_to_chars(_luma(img), self.CHARS)
-        color = _quantize_color(img, channel_boost, hue_corrections, perceptual, source)
+        color = _quantize_color(img, channel_boost, hue_corrections, perceptual)
         return screen, color
 
 
@@ -257,9 +250,9 @@ class NeonStyle(PetsciiStyle):
     CHARS = DefaultStyle.CHARS
     background = 0  # black background so neon FG pops
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         screen = _ramp_to_chars(_luma(img), self.CHARS)
-        color = _quantize_to_spectrum(img, channel_boost, hue_corrections, perceptual, source)
+        color = _quantize_to_spectrum(img, channel_boost, hue_corrections, perceptual)
         return screen, color
 
 
@@ -274,11 +267,11 @@ class InversePopStyle(PetsciiStyle):
     # palette index → pop-slot LUT, keyed by `perceptual`, built in compose().
     _LUT_CACHE: dict[bool, np.ndarray] = {}
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         luma = _luma(img)
         screen = np.where(luma >= 128, SCREEN.SC_FULL_BLOCK, SCREEN.SC_SPACE).astype(np.uint8)
         boosted = boost_saturation(img, 1.8)
-        flat = _shaped_flat(boosted, channel_boost, hue_corrections, source)
+        flat = _shaped_flat(boosted, channel_boost, hue_corrections)
         pix_idx = quantize_flat_for(flat, perceptual=perceptual).astype(np.int64)
         # Cached per metric: the RGB and perceptual LUTs can disagree on which
         # pop color a given index snaps to.
@@ -308,9 +301,9 @@ class HatchStyle(PetsciiStyle):
         dtype=np.uint8,
     )
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         screen = _ramp_to_chars(_luma(img), self.CHARS)
-        color = _quantize_color(img, channel_boost, hue_corrections, perceptual, source)
+        color = _quantize_color(img, channel_boost, hue_corrections, perceptual)
         return screen, color
 
 
@@ -323,9 +316,9 @@ class ColorOnlyStyle(PetsciiStyle):
     name = "color_only"
     background = 0
 
-    def compose(self, img, channel_boost, hue_corrections, perceptual=False, source=None):
+    def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         screen = np.full(1000, SCREEN.SC_FULL_BLOCK, dtype=np.uint8)
-        color = _quantize_color(img, channel_boost, hue_corrections, perceptual, source)
+        color = _quantize_color(img, channel_boost, hue_corrections, perceptual)
         return screen, color
 
 
