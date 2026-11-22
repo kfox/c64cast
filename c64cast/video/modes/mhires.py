@@ -40,6 +40,8 @@ from c64cast.video.palette import (
     PALETTE_LUMA,
     PERCEPTUAL_DIST_SCALE,
     build_fade_lut,
+    neutral_keep_penalty,
+    palette_chroma_penalty,
     palette_generation,
     pick_diverse_top_n,
     quantize_distances,
@@ -203,6 +205,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         auto_fit_strength: float = 1.0,
         auto_fit_white_level: float | None = None,
         gray_penalty: float = DEFAULT_GRAY_PENALTY,
+        neutral_keep: bool = True,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
         flicker_score_pairs: Sequence[str] | None = None,
@@ -213,6 +216,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if auto_fit_white_level is not None:
             self._auto_fit_white_level = float(auto_fit_white_level)
         self._gray_penalty_strength = float(gray_penalty)
+        self._neutral_keep = bool(neutral_keep)
         # An 8×8 glyph already spans 2 of the mode's 4px cells (a 20-col text
         # grid); this also stretches it to 16 px tall, for a 12-row grid.
         self.text_double_height = bool(text_double_height)
@@ -554,13 +558,28 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
     def _shaped_distances(self, table: BlendTable | None) -> Callable[[np.ndarray], np.ndarray]:
         """The (N, entries) distance function the per-pixel picks run on: the
-        active metric plus each entry's penalty."""
+        active metric plus each entry's penalty, weighed by the pixel's chroma
+        under [color].neutral_keep."""
+        # grayscale's penalty is what holds every pick on the gray axis, so a
+        # neutral pixel must still pay all of it.
+        keep = self._neutral_keep and self.palette_mode != "grayscale"
         if table is None:
             penalty = self._gray_penalty * self._penalty_scale
-            return lambda px: quantize_distances_for(px, perceptual=self._perceptual) + penalty
+            if not keep:
+                return lambda px: quantize_distances_for(px, perceptual=self._perceptual) + penalty
+            chroma = palette_chroma_penalty() * self._penalty_scale
+            return lambda px: (
+                quantize_distances_for(px, perceptual=self._perceptual)
+                + neutral_keep_penalty(px, penalty, chroma)
+            )
         assert self._entry_penalty_cache is not None
         penalty = self._entry_penalty_cache * self._penalty_scale
-        return lambda px: blend_distances_for(px, table, perceptual=self._perceptual) + penalty
+        if not keep:
+            return lambda px: blend_distances_for(px, table, perceptual=self._perceptual) + penalty
+        return lambda px: (
+            blend_distances_for(px, table, perceptual=self._perceptual)
+            + neutral_keep_penalty(px, penalty)
+        )
 
     def compose(self, frame) -> MHiresComposeBuffers:
         assert self.frame_target_size is not None

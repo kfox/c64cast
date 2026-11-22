@@ -2017,7 +2017,23 @@ class ColorCfg:
             "has to be before the five grays win a pixel, in squared color "
             "distance (>= 0). Higher keeps pale and desaturated regions "
             "colorful; lower lets a near-gray wall render gray rather than "
-            'cyan or light red. Ignored by palette_mode = "grayscale".'
+            "cyan or light red. On mhires, neutral_keep weighs it on a pixel in "
+            "proportion to how colorful the pixel is. Ignored by "
+            'palette_mode = "grayscale".'
+        },
+    )
+    neutral_keep: bool = field(
+        default=True,
+        metadata={
+            "help": "mhires: keep neutral pixels on the five grays. The "
+            "gray_penalty applies only in proportion to how colorful a pixel is, "
+            "and a neutral pixel pays for each palette color's own colorfulness "
+            "instead, so a light gray wall stays light gray rather than turning "
+            "cyan and a black-and-white film stays black and white. That holds "
+            "with flicker_tolerance off (the default); with blends on, only the "
+            "gray_penalty is scaled by the pixel's colorfulness. Off puts the "
+            "full gray_penalty on every pixel. Ignored by "
+            'palette_mode = "grayscale".'
         },
     )
     force_palette: bool = field(

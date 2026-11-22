@@ -973,6 +973,14 @@ auto_fit_shot_relax = 0.5
 # gray instead of cyan or light red. Default 2500.
 gray_penalty = 2500.0
 #
+# neutral_keep (mhires): apply gray_penalty only in proportion to how
+# colorful a pixel is, and make a neutral pixel pay for each palette color's own
+# colorfulness, so light gray walls stay gray instead of cyan and a
+# black-and-white film stays black and white. That holds with flicker_tolerance
+# off (the default); with blends on, only gray_penalty is scaled by the pixel's
+# colorfulness. Default true.
+neutral_keep = true
+#
 # force_palette: the EXTREME, deliberately FALSE-COLOR remap (off by default).
 # Everything above is faithful — pixels still map to their nearest C64 color, so
 # a source clustered in one gamut region (e.g. TRON = black + dark blue) leaves
