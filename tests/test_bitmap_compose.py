@@ -432,6 +432,136 @@ class PercellHysteresisReleaseTest(unittest.TestCase):
         self.assertTrue(np.all(last == 1), f"still held: {np.unique(last)}")
 
 
+class FlatStickinessTest(unittest.TestCase):
+    """[color].flat_stickiness: a flat area holds a pixel's pick and code by
+    four times the hysteresis bonus, an edge by the bonus alone, and the
+    release cap bounds both."""
+
+    # On the C64-Wiki table this sits 925 closer to light blue (14) than to
+    # blue (6): past the 500 bonus, short of 4 × 500, and well inside the
+    # 5609 release cap between the two.
+    NEAR_LIGHT_BLUE = (221.0, 82.0, 0.0)
+    FLAT = 1.0 + 3.0
+
+    def setUp(self):
+        from c64cast.video import palette
+
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+        palette.set_host_palette(palette.C64_WIKI_PALETTE_BGR, name="c64-wiki")
+        self.mode = MultiHiresDisplayMode(
+            "percell",
+            dither_method="none",
+            cell_strategy="frequency",
+            motion_smoothing=0.3,
+            perceptual=True,
+        )
+        self.distances = self.mode._shaped_distances(None)
+        self.release = base.hysteresis_release_gaps(
+            self.distances(palette.C64_PALETTE_BGR.astype(np.float32))
+        )
+
+    def _compose(self, cell_pixels: list, stickiness: np.ndarray | None) -> None:
+        """One frame whose every cell holds `cell_pixels` (32 BGR triples or
+        palette indices, in cell pixel order)."""
+        from c64cast.video import palette
+
+        bgr = np.array(
+            [palette.C64_PALETTE_BGR[p] if isinstance(p, int) else p for p in cell_pixels],
+            dtype=np.float32,
+        )
+        flat = (
+            np.tile(bgr, (1000, 1, 1))
+            .reshape(25, 40, 8, 4, 3)
+            .transpose(0, 2, 1, 3, 4)
+            .reshape(32000, 3)
+        )
+        self.mode._compose_percell(self.distances(flat), flat, None, self.release, stickiness)
+
+    def _picks_after_drift(self, stickiness: np.ndarray | None) -> np.ndarray:
+        self._compose([6] * 32, stickiness)
+        self._compose([self.NEAR_LIGHT_BLUE] * 32, stickiness)
+        assert self.mode._last_quantized is not None
+        return self.mode._last_quantized
+
+    def test_a_flat_area_holds_a_pick_the_plain_bonus_releases(self):
+        held = self._picks_after_drift(np.full((200, 160), self.FLAT, dtype=np.float32))
+        self.assertTrue(np.all(held == 6), f"released: {np.unique(held)}")
+
+    def test_without_stickiness_the_same_drift_releases(self):
+        released = self._picks_after_drift(None)
+        self.assertTrue(np.all(released == 14), f"held: {np.unique(released)}")
+
+    def test_an_edge_holds_only_by_the_plain_bonus(self):
+        released = self._picks_after_drift(np.ones((200, 160), dtype=np.float32))
+        self.assertTrue(np.all(released == 14), f"held: {np.unique(released)}")
+
+    def test_the_release_cap_still_bounds_a_flat_hold(self):
+        flat = np.full((200, 160), self.FLAT, dtype=np.float32)
+        self._compose([3] * 32, flat)
+        self._compose([1] * 32, flat)
+        last = self.mode._last_quantized
+        assert last is not None
+        self.assertTrue(np.all(last == 1), f"still held on cyan: {np.unique(last)}")
+
+    def test_a_cell_holds_its_codes_by_its_own_pixels_stickiness(self):
+        stickiness = np.ones((200, 160), dtype=np.float32)
+        stickiness[:, :80] = self.FLAT
+        self._compose([0] * 12 + [6] * 10 + [14] * 10, stickiness)
+        cand = self.mode._last_cand
+        self._compose([0] * 12 + [self.NEAR_LIGHT_BLUE] * 10 + [14] * 10, stickiness)
+        codes = self.mode._last_codes
+        assert cand is not None and codes is not None
+        left = (np.arange(1000) % 40) < 20
+        blue_slot = list(cand[0]).index(6)
+        self.assertTrue(
+            np.all(codes[left, 12:22] == blue_slot), f"left codes: {np.unique(codes[left, 12:22])}"
+        )
+        self.assertFalse(np.any(codes[~left, 12:22] == blue_slot), "an edge cell held blue")
+
+    def test_flatness_is_one_on_a_flat_frame_and_zero_on_a_hard_edge(self):
+        from c64cast.video.modes.mhires import _flatness
+
+        flat = np.full((200, 160, 3), 120.0, dtype=np.float32)
+        np.testing.assert_allclose(_flatness(flat), 1.0)
+        step = flat.copy()
+        step[:, 80:] = 250.0
+        g = _flatness(step)
+        self.assertEqual(float(g[:, 78:82].max()), 0.0)
+        np.testing.assert_allclose(g[:, :60], 1.0)
+
+
+class FlatStickinessWiringTest(unittest.TestCase):
+    """compose() hands `_compose_percell` the stickiness only when the knob is
+    on."""
+
+    def _stickiness_seen(self, **kwargs) -> list:
+        from unittest import mock
+
+        mode = MultiHiresDisplayMode(dither_method="none", **kwargs)
+        seen: list = []
+        real = mode._compose_percell
+
+        def spy(d, flat, table=None, release=None, stickiness=None):
+            seen.append(stickiness)
+            return real(d, flat, table, release, stickiness)
+
+        with mock.patch.object(mode, "_compose_percell", side_effect=spy):
+            mode.compose(np.full((200, 320, 3), 120, dtype=np.uint8))
+        return seen
+
+    def test_a_flat_frame_gets_the_full_gain_everywhere(self):
+        (stickiness,) = self._stickiness_seen()
+        assert stickiness is not None
+        self.assertEqual(stickiness.shape, (200, 160))
+        np.testing.assert_allclose(stickiness, 4.0)
+
+    def test_the_knob_off_passes_none(self):
+        seen = self._stickiness_seen(flat_stickiness=False)
+        self.assertEqual(len(seen), 1)
+        self.assertIsNone(seen[0])
+
+
 class NeutralKeepTest(unittest.TestCase):
     """[color].neutral_keep: the gray penalty, meant for chromatic pixels, no
     longer pushes a neutral one onto a pale chromatic entry."""

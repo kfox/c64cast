@@ -2043,6 +2043,18 @@ class ColorCfg:
             'palette_mode = "grayscale".'
         },
     )
+    flat_stickiness: bool = field(
+        default=True,
+        metadata={
+            "help": "mhires percell: hold a pixel's color up to four times as "
+            "firmly on a flat area of the picture as on an edge, so grain on a "
+            "wall or a sky stops churning into pools of shifting colors while "
+            "edges still follow motion. A pixel still moves to a new color once "
+            "the source sits on it. Scales the hysteresis motion_smoothing sets, "
+            "so it does nothing at motion_smoothing = 0. Off holds every pixel "
+            "equally."
+        },
+    )
     force_palette: bool = field(
         default=False,
         metadata={

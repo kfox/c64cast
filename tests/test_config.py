@@ -3235,6 +3235,17 @@ class WashoutSettingsWiringTest(unittest.TestCase):
                 assert isinstance(mode, MultiHiresDisplayMode)
                 self.assertIs(mode._neutral_keep, value)
 
+    def test_config_path_forwards_flat_stickiness_to_mhires(self):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        for value in (True, False):
+            with self.subTest(flat_stickiness=value):
+                mode = scene_factory._build_display_mode(
+                    "mhires", color=cfgmod.ColorCfg(flat_stickiness=value)
+                )
+                assert isinstance(mode, MultiHiresDisplayMode)
+                self.assertIs(mode._flat_stickiness, value)
+
 
 class BuildSceneTempoScaleTest(unittest.TestCase):
     """build_scene resolves VideoScene.tempo_scale: the observed bitmap+DAC

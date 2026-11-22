@@ -981,6 +981,13 @@ gray_penalty = 2500.0
 # colorfulness. Default true.
 neutral_keep = true
 #
+# flat_stickiness (mhires percell): hold a pixel's color up to four times as
+# firmly on a flat area as on an edge, so grain on a wall or a sky stops
+# churning into pools of shifting colors while edges still follow motion. It
+# scales the hysteresis motion_smoothing sets, so it does nothing at
+# motion_smoothing = 0. Default true.
+flat_stickiness = true
+#
 # force_palette: the EXTREME, deliberately FALSE-COLOR remap (off by default).
 # Everything above is faithful — pixels still map to their nearest C64 color, so
 # a source clustered in one gamut region (e.g. TRON = black + dark blue) leaves

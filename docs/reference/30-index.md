@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 474 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 475 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -204,6 +204,7 @@ Every name c64cast answers to — 474 of them — and the pages that discuss eac
 | `file` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value) |
 | `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
+| `flat_stickiness` | [`flat_stickiness` (3)](04-display-pipeline.md#flat_stickiness), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_max_luma_delta` | [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_score_pairs` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_tolerance` | [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
@@ -365,7 +366,7 @@ Every name c64cast answers to — 474 of them — and the pages that discuss eac
 | `model_path` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `moire2` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--motd-line` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
-| `motion_smoothing` | [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
+| `motion_smoothing` | [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing), [`flat_stickiness` (3)](04-display-pipeline.md#flat_stickiness), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
 | `motion_smoothing` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 
 ## N
