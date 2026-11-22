@@ -473,7 +473,7 @@ class HueCorrectionTest(unittest.TestCase):
                 )
 
     def test_source_gate_reads_the_source_pixel(self):
-        lifted_slate = np.array([[[200, 120, 60]]], dtype=np.uint8)  # S 0.70
+        lifted_slate = np.array([[[200, 120, 40]]], dtype=np.uint8)  # S 0.80
         muted_source = np.array([[[150, 120, 100]]], dtype=np.uint8)  # S 0.33
         cyan_source = np.array([[[198, 172, 0]]], dtype=np.uint8)  # S 1.0
         band = (SLATE_BAND,)
