@@ -69,7 +69,7 @@ def _production_bgr(frame: Any, plan: _DecodePlan, interpolation: str | None) ->
             img = frame.reformat(
                 width=plan.size[0], height=plan.size[1], format="bgr24", interpolation=interpolation
             ).to_ndarray()
-    return _trim_to_crop(img, ASPECT)
+    return _trim_to_crop(img, MHIRES_TARGET)
 
 
 def reference_frame(full_bgr: np.ndarray) -> np.ndarray:
