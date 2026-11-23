@@ -65,8 +65,13 @@ error-diffusion family instead replaces the final per-pixel decision, pushing
 each pixel's error onto its neighbors.
 
 **8. Every pixel is matched to the palette,** in weighted BGR or in CIE-Lab,
-with the shaping biases folded into the distance. *Which* sixteen colors it is
-matched against depends on the machine — see "Near To What" below.
+with the shaping biases folded into the distance. On `mcm` and `mhires` one of
+those biases looks back at the frame from before step 5: a pixel whose source
+is a muted slate blue pays for any palette color more colorful than the source
+itself (`slate_keep`), so a gray-blue wall settles on the grays or the nearest
+muted blue the palette has instead of blotching purple, while saturated blue
+and cyan keep their color. *Which* sixteen colors it is matched against
+depends on the machine — see "Near To What" below.
 
 **9. The mode allocates its color slots and packs its buffers** — which is
 the part that differs per mode, and the subject of the next two sections.

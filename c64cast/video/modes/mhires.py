@@ -46,6 +46,7 @@ from c64cast.video.palette import (
     pick_diverse_top_n,
     quantize_distances,
     quantize_distances_for,
+    slate_keep_penalty,
 )
 
 from . import base
@@ -206,6 +207,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         auto_fit_white_level: float | None = None,
         gray_penalty: float = DEFAULT_GRAY_PENALTY,
         neutral_keep: bool = True,
+        slate_keep: bool = True,
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
         flicker_score_pairs: Sequence[str] | None = None,
@@ -217,6 +219,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._auto_fit_white_level = float(auto_fit_white_level)
         self._gray_penalty_strength = float(gray_penalty)
         self._neutral_keep = bool(neutral_keep)
+        self._slate_keep = bool(slate_keep)
         # An 8×8 glyph already spans 2 of the mode's 4px cells (a 20-col text
         # grid); this also stretches it to 16 px tall, for a 12-row grid.
         self.text_double_height = bool(text_double_height)
@@ -622,6 +625,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
             distances = self._shaped_distances(table)
         d = distances(flat)
+        # Charging the blend entries by their fused chroma raised total error
+        # on film by up to 88%.
+        if self._slate_keep and table is None and not forced:
+            d += self._penalty_scale * slate_keep_penalty(img.reshape(-1, 3))
 
         if self.palette_mode == "percell":
             release = base.hysteresis_release_gaps(distances(entries.astype(np.float32)))

@@ -743,6 +743,11 @@
           "description": "mhires: keep neutral pixels on the five grays. The gray_penalty applies only in proportion to how colorful a pixel is, and a neutral pixel pays for each palette color's own colorfulness instead, so a light gray wall stays light gray rather than turning cyan and a black-and-white film stays black and white. That holds with flicker_tolerance off (the default); with blends on, only the gray_penalty is scaled by the pixel's colorfulness. Off puts the full gray_penalty on every pixel. Ignored by palette_mode = \"grayscale\".",
           "default": true
         },
+        "slate_keep": {
+          "type": "boolean",
+          "description": "mhires and mcm: keep a muted slate-blue source muted. A pixel whose source hue is 185-225 degrees pays for each palette color by how much more colorful that color is than the source itself, judged before auto_fit and the saturation lift, fading out as the source grows colorful. A gray-blue wall then settles on the grays or the nearest muted blue the active palette has, instead of blotching purple and light blue, while saturated blue and cyan keep their colors. mhires skips it while it blends (flicker_tolerance on with palette_mode percell). Off quantizes a slate like any other pixel.",
+          "default": true
+        },
         "force_palette": {
           "type": "boolean",
           "description": "EXTREME forced-palette remap (mcm/mhires): k-means the source into N clusters and map each to a DISTINCT C64 color so all N colors are used. Pre-scanned for video + slideshow; adapts live (rolling, warm-start + hysteresis) for webcam/wled/generative. Deliberate false-color (NOT faithful) \u2014 off by default; also reachable via the SHIFT cycle's 'percell+forced' stop once enabled. Tip: `--suggest-palette FILE` ranks a good force_palette_colors set.",
@@ -2525,6 +2530,11 @@
               "neutral_keep": {
                 "type": "boolean",
                 "description": "mhires: keep neutral pixels on the five grays. The gray_penalty applies only in proportion to how colorful a pixel is, and a neutral pixel pays for each palette color's own colorfulness instead, so a light gray wall stays light gray rather than turning cyan and a black-and-white film stays black and white. That holds with flicker_tolerance off (the default); with blends on, only the gray_penalty is scaled by the pixel's colorfulness. Off puts the full gray_penalty on every pixel. Ignored by palette_mode = \"grayscale\".",
+                "default": true
+              },
+              "slate_keep": {
+                "type": "boolean",
+                "description": "mhires and mcm: keep a muted slate-blue source muted. A pixel whose source hue is 185-225 degrees pays for each palette color by how much more colorful that color is than the source itself, judged before auto_fit and the saturation lift, fading out as the source grows colorful. A gray-blue wall then settles on the grays or the nearest muted blue the active palette has, instead of blotching purple and light blue, while saturated blue and cyan keep their colors. mhires skips it while it blends (flicker_tolerance on with palette_mode percell). Off quantizes a slate like any other pixel.",
                 "default": true
               },
               "force_palette": {

@@ -605,6 +605,53 @@ class NeutralKeepPenaltyTest(unittest.TestCase):
         self.assertFalse(np.any(bias))
 
 
+class SlateKeepPenaltyTest(unittest.TestCase):
+    MUTED_SLATE = (150, 120, 100)  # hue 216, Lab chroma 19
+    PALER_SLATE = (200, 150, 60)  # hue 202, Lab chroma 35
+    VIVID_BLUE = (255, 140, 0)  # hue 207, Lab chroma above 40
+
+    def _overshoot_sq(self, bgr) -> np.ndarray:
+        source = palette_mod._lab_chroma(np.array([bgr], dtype=np.float32))[0]
+        entries = palette_mod._lab_chroma(palette_mod.C64_PALETTE_BGR)
+        return np.maximum(0.0, entries - source) ** 2
+
+    def _bias(self, *bgr) -> np.ndarray:
+        return palette_mod.slate_keep_penalty(np.array(bgr, dtype=np.uint8))
+
+    def test_a_muted_slate_pays_three_times_each_entrys_squared_chroma_overshoot(self):
+        bias = self._bias(self.MUTED_SLATE)[0]
+        want = 3.0 * self._overshoot_sq(self.MUTED_SLATE) / palette_mod.PERCEPTUAL_DIST_SCALE
+        np.testing.assert_allclose(bias, want, rtol=1e-5)
+        self.assertFalse(np.any(bias[list(GRAY_INDICES)]), bias)
+
+    def test_the_charge_fades_out_as_the_source_grows_colorful(self):
+        paler, vivid = self._bias(self.PALER_SLATE, self.VIVID_BLUE)
+        chroma = palette_mod._lab_chroma(np.array([self.PALER_SLATE], dtype=np.float32))[0]
+        weight = 1.0 - (chroma - 20.0) / 20.0
+        self.assertTrue(0.0 < weight < 1.0, weight)
+        want = (
+            weight * 3.0 * self._overshoot_sq(self.PALER_SLATE) / palette_mod.PERCEPTUAL_DIST_SCALE
+        )
+        np.testing.assert_allclose(paler, want, rtol=1e-4)
+        self.assertFalse(np.any(vivid), vivid)
+
+    def test_a_muted_source_outside_the_slate_hues_pays_nothing(self):
+        # Muted beige at hue 24, a cyan-gray at 182 and a violet-gray at 226.
+        bias = self._bias((100, 120, 150), (121, 120, 100), (150, 111, 100))
+        self.assertFalse(np.any(bias), bias)
+
+    def test_it_charges_against_the_active_palette(self):
+        before = palette_mod.C64_PALETTE_BGR.copy(), palette_mod.active_host_palette_name()
+        self.addCleanup(lambda: palette_mod.set_host_palette(before[0], name=before[1]))
+        palette_mod.set_host_palette(palette_mod.PEPTO_PALETTE_BGR, name="pepto")
+        pepto = self._bias(self.MUTED_SLATE)[0]
+        palette_mod.set_host_palette(palette_mod.C64_WIKI_PALETTE_BGR, name="c64-wiki")
+        wiki = self._bias(self.MUTED_SLATE)[0]
+        self.assertFalse(np.allclose(pepto, wiki), (pepto, wiki))
+        want = 3.0 * self._overshoot_sq(self.MUTED_SLATE) / palette_mod.PERCEPTUAL_DIST_SCALE
+        np.testing.assert_allclose(wiki, want, rtol=1e-5)
+
+
 class HungarianTest(unittest.TestCase):
     """Min-cost assignment used by the forced-palette bijection."""
 
