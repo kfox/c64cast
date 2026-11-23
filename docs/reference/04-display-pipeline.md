@@ -32,7 +32,7 @@ NTSC set, 4:3 from an NTSC Ultimate 64's HDMI output, and 1.5:1 in PAL.
 loses the margins; `fit` letterboxes onto black; `hybrid` crops halfway
 between the source's shape and the screen's and letterboxes the rest;
 `stretch` distorts. A camera always crops. A video or a slideshow chooses with
-`aspect_mode`. The black bars are added after the color statistics are read,
+`aspect_mode`, and fits unless told otherwise. The black bars are added after the color statistics are read,
 so they never darken the picture's fitted levels.
 
 **3. The effect chain runs.** Each layer transforms the frame in order, at

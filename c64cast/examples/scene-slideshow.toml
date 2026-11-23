@@ -48,8 +48,9 @@ duration_s = 60.0
 image_duration_s = 5.0
 # `aspect_mode` — how each image is fit to the shape the C64's screen is
 # seen at ([hardware].pixel_aspect) before the mode downscales it:
-#   "crop"    — center-crop to fill the frame (default; image edges are lost)
 #   "fit"     — letterbox/pillarbox so the WHOLE image shows, padded black
+#               (default)
+#   "crop"    — center-crop to fill the frame (image edges are lost)
 #   "hybrid"  — center-crop halfway to the screen's shape, then letterbox the
 #               rest (16:9 onto a 4:3 screen becomes the broadcast 14:9)
 #   "stretch" — distort to fill (no cropping, no bars)

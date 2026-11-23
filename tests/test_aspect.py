@@ -305,6 +305,17 @@ class SceneFactoryPixelAspectTest(unittest.TestCase):
         scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
         self.assertEqual(scene.aspect_mode, "hybrid")
 
+    def test_video_and_slideshow_fit_unless_told_otherwise(self):
+        video = os.path.join(self.dir, "a.mp4")
+        open(video, "wb").close()
+        picture = os.path.join(self.dir, "a.png")
+        cv2.imwrite(picture, _solid(4, 4))
+        for scene_type, path in (("video", video), ("slideshow", picture)):
+            with self.subTest(scene_type=scene_type):
+                s = SceneCfg(type=scene_type, file=path)
+                scene = scene_factory.build_scene(s, self.cfg, self.api, None, None)
+                self.assertEqual(scene.aspect_mode, "fit")
+
     def test_the_live_camera_fallback(self):
         self.cfg.scenes = []
         built = scene_factory.scenes_from_config(self.cfg, self.api, None, self.camera)

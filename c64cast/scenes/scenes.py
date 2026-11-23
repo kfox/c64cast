@@ -1128,7 +1128,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         display_spec: str | None = "mhires",
         wiring: DisplayWiring | None = None,
         color: ColorCfg | None = None,
-        aspect_mode: str = "crop",
+        aspect_mode: str = "fit",
         pixel_aspect: str = "auto",
     ):
         from c64cast.app.config import ColorCfg
@@ -1432,7 +1432,7 @@ class VideoScene(MediaFileMixin, Scene):
         loop_audio: str = "on",
         setup_progress: bool = True,
         pixel_aspect: str = "auto",
-        aspect_mode: str = "crop",
+        aspect_mode: str = "fit",
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry

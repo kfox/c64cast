@@ -175,9 +175,9 @@ class SlideOffTheFramePathTest(unittest.TestCase):
 
     def test_a_large_jpeg_decodes_at_the_coarsest_scale_the_mode_can_use(self):
         self._play_slides(1)
-        self.assertEqual(self.decodes[0][1], cv2.IMREAD_REDUCED_COLOR_4)
-        assert self.scene._current_img is not None
-        self.assertEqual(self.scene._current_img.shape, (400, 480, 3))
+        self.assertEqual(self.decodes[0][1], cv2.IMREAD_REDUCED_COLOR_8)
+        assert self.scene._current_picture is not None
+        self.assertEqual(self.scene._current_picture.shape, (360, 480, 3))
 
 
 class ReducedDecodeTest(unittest.TestCase):
