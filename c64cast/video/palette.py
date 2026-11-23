@@ -595,6 +595,14 @@ def make_gray_penalty(
     return p
 
 
+def _lab_chroma(flat_bgr: np.ndarray) -> np.ndarray:
+    """(N,) each BGR pixel's Lab a/b distance from neutral."""
+    # OpenCV's 8-bit Lab stores a and b offset by 128, so chroma is measured
+    # from a converted neutral gray, not from zero.
+    neutral_ab = _bgr_to_lab(np.array([[128.0, 128.0, 128.0]], dtype=np.float32))[0, 1:]
+    return np.sqrt(((_bgr_to_lab(flat_bgr)[:, 1:] - neutral_ab) ** 2).sum(axis=1))
+
+
 NEUTRAL_KEEP_CHROMA = (8.0, 40.0)
 NEUTRAL_KEEP_WEIGHT = 1.0
 
@@ -602,10 +610,7 @@ NEUTRAL_KEEP_WEIGHT = 1.0
 def palette_chroma_penalty() -> np.ndarray:
     """(16,) each active palette entry's squared Lab a/b distance from neutral,
     in the weighted-BGR d² units the gray penalty is written in."""
-    # OpenCV's 8-bit Lab stores a and b offset by 128, so chroma is measured
-    # from a converted neutral gray, not from zero.
-    neutral_ab = _bgr_to_lab(np.array([[128.0, 128.0, 128.0]], dtype=np.float32))[0, 1:]
-    chroma_sq = ((_PALETTE_LAB[:, 1:] - neutral_ab) ** 2).sum(axis=1)
+    chroma_sq = _lab_chroma(C64_PALETTE_BGR) ** 2
     return (chroma_sq / PERCEPTUAL_DIST_SCALE).astype(np.float32)
 
 
@@ -622,6 +627,37 @@ def neutral_keep_penalty(
     bias = chromatic * entry_penalty
     if entry_chroma is not None:
         bias += (NEUTRAL_KEEP_WEIGHT * (1.0 - chromatic)) * entry_chroma
+    return bias
+
+
+SLATE_KEEP_HUE_DEG = (185.0, 225.0)
+SLATE_KEEP_CHROMA = (20.0, 40.0)
+SLATE_KEEP_WEIGHT = 3.0
+
+
+def slate_keep_penalty(source_bgr: np.ndarray) -> np.ndarray:
+    """The (N, 16) bias [color].slate_keep adds: on a muted slate-blue source
+    pixel, the squared Lab chroma by which each active palette entry
+    overshoots the pixel's own, fading out as the source's chroma rises across
+    `SLATE_KEEP_CHROMA`. In the weighted-BGR d² units the gray penalty is
+    written in.
+
+    `source_bgr` is the (N, 3) frame before auto-fit and the saturation lift:
+    the lift carries a muted slate up to the chroma of a real cyan, so the
+    shaped pixel cannot tell the two apart."""
+    hsv = cv2.cvtColor(
+        np.clip(source_bgr, 0, 255).astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_BGR2HSV
+    )
+    deg = hsv[:, 0, 0].astype(np.float32) * 2.0  # cv2 hue 0..179 → 0..359
+    lo, hi = SLATE_KEEP_HUE_DEG
+    rows = np.flatnonzero((deg >= lo) & (deg <= hi))
+    bias = np.zeros((len(deg), 16), dtype=np.float32)
+    if rows.size == 0:
+        return bias
+    source_chroma = _lab_chroma(source_bgr[rows])
+    over = np.maximum(0.0, _lab_chroma(C64_PALETTE_BGR)[None, :] - source_chroma[:, None])
+    muted = 1.0 - _ramp(source_chroma, *SLATE_KEEP_CHROMA)
+    bias[rows] = (SLATE_KEEP_WEIGHT / PERCEPTUAL_DIST_SCALE) * muted[:, None] * over**2
     return bias
 
 
@@ -661,12 +697,9 @@ class HueCorrection:
     Angles are in degrees (0..360); cv2's HSV hue (0..179) is half that. A band
     with hue_hi_deg < hue_lo_deg wraps through 360°/0°. sat_thresh / val_thresh
     (0..1) gate the band so only sufficiently-saturated, bright pixels are
-    touched (keeps near-gray/near-black out). sat_fade, a (lo, hi) saturation
-    pair, fades the band out as the gated pixel's saturation rises from lo to
-    hi. gate_on_source makes the hue, threshold and fade gates read the source
-    pixel, before auto-fit and the saturation lift. sat_mult / val_mult scale
-    S / V. hue_target_deg, if set, hard-snaps the hue of matched pixels toward
-    that angle. name is for logging/debug only.
+    touched (keeps near-gray/near-black out). sat_mult / val_mult scale S / V.
+    hue_target_deg, if set, hard-snaps the hue of matched pixels toward that
+    angle. name is for logging/debug only.
     """
 
     hue_lo_deg: float
@@ -677,83 +710,53 @@ class HueCorrection:
     val_mult: float = 1.0
     hue_target_deg: float | None = None
     name: str = ""
-    sat_fade: tuple[float, float] | None = None
-    gate_on_source: bool = False
 
 
 # Bright saturated gold and amber, a light-cycle trail, sits just under the
 # palette's yellow and orange and quantizes to brown. The lift is held to V x1.3
 # with no hue snap: a violet → magenta band with V x1.9 lifted lilac-lit shadows
 # and faces a whole luma step, to light blue or purple.
-GOLD_BRIGHT_BAND = HueCorrection(
-    hue_lo_deg=36.0,
-    hue_hi_deg=60.0,
-    sat_thresh=0.6,
-    val_thresh=0.2,
-    val_mult=1.3,
-    name="gold bright",
+DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = (
+    HueCorrection(
+        hue_lo_deg=36.0,
+        hue_hi_deg=60.0,
+        sat_thresh=0.6,
+        val_thresh=0.2,
+        val_mult=1.3,
+        name="gold bright",
+    ),
 )
-
-# A muted slate-blue wall has no mid-brightness palette match, and after the
-# saturation lift it sits about as far from dark gray, gray and purple, so it
-# blotches between them; light blue reads violet. Pulling it toward gray settles
-# it on the grays. The fade has to read the source pixel: the lift carries a
-# muted slate up to the saturation of a real cyan, and with no fade at all the
-# band turned a cyan color bar gray.
-SLATE_BAND = HueCorrection(
-    hue_lo_deg=185.0,
-    hue_hi_deg=225.0,
-    sat_thresh=0.12,
-    val_thresh=0.3,
-    sat_mult=0.55,
-    sat_fade=(0.5, 0.7),
-    gate_on_source=True,
-    name="slate",
-)
-
-DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = (GOLD_BRIGHT_BAND, SLATE_BAND)
-
-# PETSCII quantizes without the saturation lift, so a slate is not stranded
-# between grays and purple there, and the slate band raised its chroma error.
-PETSCII_HUE_CORRECTIONS: tuple[HueCorrection, ...] = (GOLD_BRIGHT_BAND,)
 
 
 def apply_hue_corrections(
     img_bgr: np.ndarray,
     corrections: tuple[HueCorrection, ...] | list[HueCorrection],
-    source_bgr: np.ndarray | None = None,
 ) -> np.ndarray:
     """Apply hue-band corrections to a BGR uint8 image; return BGR uint8.
 
-    `source_bgr` is the frame before the shaping that produced `img_bgr`, the
-    pixel a `gate_on_source` band gates on; without it such a band gates on
-    `img_bgr`. Empty `corrections` is an identity no-op (no HSV roundtrip) — so
-    non-c64 display modes, which pass (), pay nothing and render byte-for-byte
-    as before. Bands are applied in list order; in practice they are
-    hue-disjoint.
+    Empty `corrections` is an identity no-op (no HSV roundtrip) — so non-c64
+    display modes, which pass (), pay nothing and render byte-for-byte as
+    before. Bands are applied in list order; in practice they are hue-disjoint.
     """
     if not corrections:
         return img_bgr
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    source_hsv = None
-    if source_bgr is not None and any(c.gate_on_source for c in corrections):
-        source_hsv = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+    deg = h * 2.0  # cv2 hue 0..179 → 0..359
     touched = np.zeros(h.shape, dtype=bool)
     for c in corrections:
-        gate = source_hsv if c.gate_on_source and source_hsv is not None else hsv
-        weight = _hue_band_weight(c, gate)
-        mask = weight > 0.0
+        if c.hue_lo_deg <= c.hue_hi_deg:
+            in_band = (deg >= c.hue_lo_deg) & (deg <= c.hue_hi_deg)
+        else:  # wrap through 360°/0°
+            in_band = (deg >= c.hue_lo_deg) | (deg <= c.hue_hi_deg)
+        mask = in_band & (s >= c.sat_thresh * 255.0) & (v >= c.val_thresh * 255.0)
         if not mask.any():
             continue
         touched |= mask
-        w = weight[mask]
-        s[mask] = np.minimum(255.0, s[mask] * _faded_mult(c.sat_mult, w))
-        v[mask] = np.minimum(255.0, v[mask] * _faded_mult(c.val_mult, w))
+        s[mask] = np.minimum(255.0, s[mask] * c.sat_mult)
+        v[mask] = np.minimum(255.0, v[mask] * c.val_mult)
         if c.hue_target_deg is not None:
-            target = c.hue_target_deg / 2.0  # degrees → cv2 hue
-            arc = (target - h[mask] + 90.0) % 180.0 - 90.0
-            h[mask] = (h[mask] + w * arc) % 180.0
+            h[mask] = c.hue_target_deg / 2.0  # degrees → cv2 hue
     if not touched.any():
         return img_bgr
     # The uint8 HSV round trip drifts a pixel by a few units, so only the
@@ -761,28 +764,6 @@ def apply_hue_corrections(
     out = img_bgr.copy()
     out[touched] = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)[touched]
     return out
-
-
-def _hue_band_weight(c: HueCorrection, hsv: np.ndarray) -> np.ndarray:
-    """How strongly band `c` applies to each pixel of float32 cv2 `hsv`, 0..1."""
-    deg = hsv[:, :, 0] * 2.0  # cv2 hue 0..179 → 0..359
-    s, v = hsv[:, :, 1], hsv[:, :, 2]
-    if c.hue_lo_deg <= c.hue_hi_deg:
-        in_band = (deg >= c.hue_lo_deg) & (deg <= c.hue_hi_deg)
-    else:  # wrap through 360°/0°
-        in_band = (deg >= c.hue_lo_deg) | (deg <= c.hue_hi_deg)
-    mask = in_band & (s >= c.sat_thresh * 255.0) & (v >= c.val_thresh * 255.0)
-    weight = mask.astype(np.float32)
-    if c.sat_fade is not None:
-        lo, hi = c.sat_fade
-        weight *= 1.0 - _ramp(s / 255.0, lo, hi)
-    return weight
-
-
-def _faded_mult(mult: float, weight: np.ndarray) -> np.ndarray:
-    # A full-weight pixel takes `mult` itself, not 1 + (mult - 1), which can
-    # land a float32 ulp below it and truncate a level in the uint8 cast.
-    return np.where(weight >= 1.0, mult, 1.0 + weight * (mult - 1.0))
 
 
 def parse_hue_corrections(
@@ -809,8 +790,6 @@ def parse_hue_corrections(
             "val_mult",
             "hue_target_deg",
             "name",
-            "sat_fade",
-            "gate_on_source",
         }
         if unknown:
             raise ValueError(
@@ -828,12 +807,6 @@ def parse_hue_corrections(
             val = entry.get(k, 1.0)
             if float(val) <= 0.0:
                 raise ValueError(f"color.hue_corrections[{i}].{k} must be > 0, got {val}")
-        gate_on_source = entry.get("gate_on_source", False)
-        if not isinstance(gate_on_source, bool):
-            raise ValueError(
-                f"color.hue_corrections[{i}].gate_on_source must be true or false, "
-                f"got {gate_on_source!r}"
-            )
         out.append(
             HueCorrection(
                 hue_lo_deg=float(entry["hue_lo_deg"]),
@@ -846,30 +819,9 @@ def parse_hue_corrections(
                     None if entry.get("hue_target_deg") is None else float(entry["hue_target_deg"])
                 ),
                 name=str(entry.get("name", "")),
-                sat_fade=_parse_sat_fade(i, entry.get("sat_fade")),
-                gate_on_source=gate_on_source,
             )
         )
     return tuple(out)
-
-
-def _parse_sat_fade(i: int, raw: object) -> tuple[float, float] | None:
-    if raw is None:
-        return None
-    if (
-        not isinstance(raw, (list, tuple))
-        or len(raw) != 2
-        or not all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in raw)
-    ):
-        raise ValueError(
-            f"color.hue_corrections[{i}].sat_fade must be [lo, hi], two numbers, got {raw!r}"
-        )
-    lo, hi = float(raw[0]), float(raw[1])
-    if not (0.0 <= lo < hi <= 1.0):
-        raise ValueError(
-            f"color.hue_corrections[{i}].sat_fade must satisfy 0 <= lo < hi <= 1, got {raw!r}"
-        )
-    return lo, hi
 
 
 def parse_channel_boost(

@@ -9,7 +9,6 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-import cv2
 import numpy as np
 
 from c64cast.video import palette as palette_mod
@@ -27,8 +26,6 @@ from c64cast.video.palette import (
     GRAY_INDICES,
     IDENTITY_FIT,
     PALE_INDICES,
-    PETSCII_HUE_CORRECTIONS,
-    SLATE_BAND,
     ColorFit,
     ColorFitAccumulator,
     ColorMapAccumulator,
@@ -431,113 +428,6 @@ class HueCorrectionTest(unittest.TestCase):
         self.assertGreater(int(out[0, 0].astype(int).sum()), int(img[0, 0].astype(int).sum()))
         np.testing.assert_array_equal(out[0, 1], img[0, 1])
 
-    def _with_pepto(self):
-        before = palette_mod.C64_PALETTE_BGR.copy(), palette_mod.active_host_palette_name()
-        self.addCleanup(lambda: palette_mod.set_host_palette(before[0], name=before[1]))
-        palette_mod.set_host_palette(palette_mod.PEPTO_PALETTE_BGR, name="pepto")
-
-    def test_slate_band_settles_a_muted_slate_wall_on_gray(self):
-        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
-
-        self._with_pepto()
-        slate = np.full((8, 8, 3), (150, 115, 88), dtype=np.uint8)
-        for cls in (MCMDisplayMode, MultiHiresDisplayMode):
-            for replace in (True, False):
-                with self.subTest(mode=cls.__name__, without_band=replace):
-                    mode = cls("percell", hue_corrections_replace=replace)
-                    shaped = mode.quantizer_input(slate).reshape(-1, 3)
-                    index = int(quantize_flat_for(shaped[:1], perceptual=True)[0])
-                    self.assertEqual(index in GRAY_INDICES, not replace)
-
-    def test_slate_band_leaves_a_saturated_cyan_bar_alone(self):
-        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
-
-        cyan_bar = np.full((8, 8, 3), (198, 172, 0), dtype=np.uint8)
-        for cls in (MCMDisplayMode, MultiHiresDisplayMode):
-            with self.subTest(mode=cls.__name__):
-                gold_only = cls(
-                    "percell",
-                    hue_corrections=[
-                        {
-                            "hue_lo_deg": 36,
-                            "hue_hi_deg": 60,
-                            "sat_thresh": 0.6,
-                            "val_thresh": 0.2,
-                            "val_mult": 1.3,
-                        }
-                    ],
-                    hue_corrections_replace=True,
-                )
-                np.testing.assert_array_equal(
-                    cls("percell").quantizer_input(cyan_bar), gold_only.quantizer_input(cyan_bar)
-                )
-
-    def test_source_gate_reads_the_source_pixel(self):
-        lifted_slate = np.array([[[200, 120, 40]]], dtype=np.uint8)  # S 0.80
-        muted_source = np.array([[[150, 120, 100]]], dtype=np.uint8)  # S 0.33
-        cyan_source = np.array([[[198, 172, 0]]], dtype=np.uint8)  # S 1.0
-        band = (SLATE_BAND,)
-        out = apply_hue_corrections(lifted_slate, band, muted_source)
-        self.assertLess(int(np.ptp(out.astype(int))), int(np.ptp(lifted_slate.astype(int))))
-        np.testing.assert_array_equal(apply_hue_corrections(lifted_slate, band), lifted_slate)
-        np.testing.assert_array_equal(
-            apply_hue_corrections(lifted_slate, band, cyan_source), lifted_slate
-        )
-
-    def test_sat_fade_scales_the_band_by_its_weight(self):
-        band = HueCorrection(hue_lo_deg=185.0, hue_hi_deg=225.0, sat_mult=0.5, sat_fade=(0.5, 0.7))
-        for s_in, want in ((0.4, 0.2), (0.6, 0.45), (0.8, 0.8)):
-            with self.subTest(saturation=s_in):
-                hsv = np.array([[[105, round(s_in * 255), 200]]], dtype=np.uint8)
-                img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-                out = cv2.cvtColor(apply_hue_corrections(img, (band,)), cv2.COLOR_BGR2HSV)
-                self.assertAlmostEqual(out[0, 0, 1] / 255.0, want, delta=0.02)
-
-    def test_sat_fade_turns_a_hue_snap_part_way_along_the_short_arc(self):
-        band = HueCorrection(
-            hue_lo_deg=300.0, hue_hi_deg=40.0, hue_target_deg=20.0, sat_fade=(0.5, 0.7)
-        )
-        for s_in, want_deg in ((0.4, 20.0), (0.6, 0.0), (0.8, 340.0)):
-            with self.subTest(saturation=s_in):
-                hsv = np.array([[[170, round(s_in * 255), 200]]], dtype=np.uint8)
-                img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-                out = cv2.cvtColor(apply_hue_corrections(img, (band,)), cv2.COLOR_BGR2HSV)
-                got = int(out[0, 0, 0]) * 2
-                self.assertLessEqual(min(abs(got - want_deg), 360 - abs(got - want_deg)), 4)
-
-    def test_a_band_without_a_fade_takes_its_multiplier_exactly(self):
-        band = HueCorrection(hue_lo_deg=0.0, hue_hi_deg=360.0, sat_mult=0.07)
-        s_100 = np.array([[[155, 155, 255]]], dtype=np.uint8)
-        want = cv2.cvtColor(np.array([[[0, 7, 255]]], dtype=np.uint8), cv2.COLOR_HSV2BGR)
-        np.testing.assert_array_equal(apply_hue_corrections(s_100, (band,)), want)
-
-    def test_petscii_leaves_the_slate_band_out(self):
-        from c64cast.video.modes import PETSCIIDisplayMode
-
-        self.assertNotIn(SLATE_BAND, PETSCII_HUE_CORRECTIONS)
-        self.assertEqual(PETSCIIDisplayMode()._hue_corrections, PETSCII_HUE_CORRECTIONS)
-
-    def test_parse_reads_sat_fade_and_gate_on_source(self):
-        base = {"hue_lo_deg": 185, "hue_hi_deg": 225}
-        (hc,) = parse_hue_corrections([{**base, "sat_fade": [0.5, 0.7], "gate_on_source": True}])
-        self.assertEqual(hc.sat_fade, (0.5, 0.7))
-        self.assertTrue(hc.gate_on_source)
-        (plain,) = parse_hue_corrections([base])
-        self.assertIsNone(plain.sat_fade)
-        self.assertFalse(plain.gate_on_source)
-        for bad in (
-            {"sat_fade": [0.7, 0.5]},
-            {"sat_fade": [0.5, 0.5]},
-            {"sat_fade": [0.5, 1.2]},
-            {"sat_fade": [0.5]},
-            {"sat_fade": 0.5},
-            {"sat_fade": [True, 0.7]},
-            {"gate_on_source": "yes"},
-        ):
-            with self.subTest(**{k: repr(v) for k, v in bad.items()}):
-                with self.assertRaises(ValueError):
-                    parse_hue_corrections([{**base, **bad}])
-
     def test_parse_validates_and_roundtrips(self):
         hc = parse_hue_corrections(
             [{"hue_lo_deg": 10, "hue_hi_deg": 40, "sat_mult": 1.5, "name": "x"}]
@@ -713,6 +603,53 @@ class NeutralKeepPenaltyTest(unittest.TestCase):
         px = np.array([[90, 92, 95]], dtype=np.float32)
         bias = palette_mod.neutral_keep_penalty(px, make_gray_penalty())
         self.assertFalse(np.any(bias))
+
+
+class SlateKeepPenaltyTest(unittest.TestCase):
+    MUTED_SLATE = (150, 120, 100)  # hue 216, Lab chroma 19
+    PALER_SLATE = (200, 150, 60)  # hue 202, Lab chroma 35
+    VIVID_BLUE = (255, 140, 0)  # hue 207, Lab chroma above 40
+
+    def _overshoot_sq(self, bgr) -> np.ndarray:
+        source = palette_mod._lab_chroma(np.array([bgr], dtype=np.float32))[0]
+        entries = palette_mod._lab_chroma(palette_mod.C64_PALETTE_BGR)
+        return np.maximum(0.0, entries - source) ** 2
+
+    def _bias(self, *bgr) -> np.ndarray:
+        return palette_mod.slate_keep_penalty(np.array(bgr, dtype=np.uint8))
+
+    def test_a_muted_slate_pays_three_times_each_entrys_squared_chroma_overshoot(self):
+        bias = self._bias(self.MUTED_SLATE)[0]
+        want = 3.0 * self._overshoot_sq(self.MUTED_SLATE) / palette_mod.PERCEPTUAL_DIST_SCALE
+        np.testing.assert_allclose(bias, want, rtol=1e-5)
+        self.assertFalse(np.any(bias[list(GRAY_INDICES)]), bias)
+
+    def test_the_charge_fades_out_as_the_source_grows_colorful(self):
+        paler, vivid = self._bias(self.PALER_SLATE, self.VIVID_BLUE)
+        chroma = palette_mod._lab_chroma(np.array([self.PALER_SLATE], dtype=np.float32))[0]
+        weight = 1.0 - (chroma - 20.0) / 20.0
+        self.assertTrue(0.0 < weight < 1.0, weight)
+        want = (
+            weight * 3.0 * self._overshoot_sq(self.PALER_SLATE) / palette_mod.PERCEPTUAL_DIST_SCALE
+        )
+        np.testing.assert_allclose(paler, want, rtol=1e-4)
+        self.assertFalse(np.any(vivid), vivid)
+
+    def test_a_muted_source_outside_the_slate_hues_pays_nothing(self):
+        # Muted beige at hue 24, a cyan-gray at 182 and a violet-gray at 226.
+        bias = self._bias((100, 120, 150), (121, 120, 100), (150, 111, 100))
+        self.assertFalse(np.any(bias), bias)
+
+    def test_it_charges_against_the_active_palette(self):
+        before = palette_mod.C64_PALETTE_BGR.copy(), palette_mod.active_host_palette_name()
+        self.addCleanup(lambda: palette_mod.set_host_palette(before[0], name=before[1]))
+        palette_mod.set_host_palette(palette_mod.PEPTO_PALETTE_BGR, name="pepto")
+        pepto = self._bias(self.MUTED_SLATE)[0]
+        palette_mod.set_host_palette(palette_mod.C64_WIKI_PALETTE_BGR, name="c64-wiki")
+        wiki = self._bias(self.MUTED_SLATE)[0]
+        self.assertFalse(np.allclose(pepto, wiki), (pepto, wiki))
+        want = 3.0 * self._overshoot_sq(self.MUTED_SLATE) / palette_mod.PERCEPTUAL_DIST_SCALE
+        np.testing.assert_allclose(wiki, want, rtol=1e-5)
 
 
 class HungarianTest(unittest.TestCase):

@@ -617,6 +617,67 @@ class NeutralKeepTest(unittest.TestCase):
         )
 
 
+def _mhires_shown_colors(buffers) -> set[int]:
+    """Every palette index the composed mhires frame's bitmap selects."""
+    bits = np.unpackbits(buffers["bitmap"]).reshape(1000, 8, 4, 2)
+    selectors = (bits[..., 0] * 2 + bits[..., 1]).reshape(1000, -1)
+    screen = buffers["screen"].astype(np.int64)
+    slots = np.stack(
+        [np.full(1000, int(buffers["bg"])), screen >> 4, screen & 15, buffers["color"]], axis=1
+    )
+    return set(np.take_along_axis(slots, selectors, axis=1).ravel().tolist())
+
+
+class SlateKeepComposeTest(unittest.TestCase):
+    """[color].slate_keep: on pepto a muted slate-blue wall renders light blue
+    unless the palette match charges light blue for being more colorful than
+    the source."""
+
+    MUTED_SLATE = (150, 120, 100)
+
+    def setUp(self):
+        from c64cast.video import palette
+
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+
+    def _compose(self, **kwargs):
+        mode = MultiHiresDisplayMode(perceptual=True, **kwargs)
+        mode.frame_target_size = (160, 200)
+        return mode.compose(np.full((200, 160, 3), self.MUTED_SLATE, dtype=np.uint8))
+
+    def test_a_muted_slate_wall_renders_gray_not_light_blue(self):
+        self.assertEqual(_mhires_shown_colors(self._compose(slate_keep=False)), {14})
+        self.assertEqual(_mhires_shown_colors(self._compose()), {12})
+
+    def test_a_blend_pick_is_not_charged(self):
+        kept = self._compose(flicker_tolerance="clean")
+        plain = self._compose(flicker_tolerance="clean", slate_keep=False)
+        for key in ("bitmap", "screen", "screen_b", "color"):
+            np.testing.assert_array_equal(
+                cast(dict, kept)[key], cast(dict, plain)[key], err_msg=key
+            )
+
+    def test_the_forced_remap_is_not_charged(self):
+        from c64cast.video import palette
+
+        forced = (0, 1, 6, 15)  # the slate's bin, 2, maps to blue
+        bins = np.indices((8, 8, 8)).sum(axis=0) % 4
+        color_map = palette.ColorMap(
+            lut=np.array(forced, dtype=np.uint8)[bins], shift=5, indices=forced
+        )
+        shown = []
+        for keep in (True, False):
+            mode = MultiHiresDisplayMode(force_palette=True, slate_keep=keep)
+            mode.frame_target_size = (160, 200)
+            mode.set_color_map(color_map)
+            frame = np.full((200, 160, 3), self.MUTED_SLATE, dtype=np.uint8)
+            shown.append(_mhires_shown_colors(mode.compose(frame)))
+        self.assertEqual(shown[0], shown[1])
+        self.assertTrue(shown[0] <= set(forced), shown[0])
+
+
 class BitmapREUStructureTest(unittest.TestCase):
     """REU bank-swap push stages the right REU regions + a frame tracker."""
 

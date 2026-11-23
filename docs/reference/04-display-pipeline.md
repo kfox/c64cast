@@ -52,10 +52,8 @@ apply no gain and put the brightest highlights at luma 220
 (`auto_fit_white_level`), so a lit wall keeps some headroom below white,
 while `petscii` lifts blue and green by `[1.3, 1.2, 1.0]` and stretches to
 255, because it draws brightness as glyph coverage and dimming only thins the
-glyphs. All three share a built-in hue band that lifts bright gold and amber
-onto yellow or orange, and `mcm` and `mhires` add one that pulls muted slate
-blue toward gray, so a gray-blue wall settles on the grays instead of
-blotching purple while saturated blue and cyan keep their color.
+glyphs. All three share one built-in hue band, which lifts bright gold and
+amber onto yellow or orange.
 
 **6. A forced palette is applied, if one is in force.** This is a lookup
 table, and it short-circuits the next stage: those pixels are already exact
@@ -67,8 +65,13 @@ error-diffusion family instead replaces the final per-pixel decision, pushing
 each pixel's error onto its neighbors.
 
 **8. Every pixel is matched to the palette,** in weighted BGR or in CIE-Lab,
-with the shaping biases folded into the distance. *Which* sixteen colors it is
-matched against depends on the machine — see "Near To What" below.
+with the shaping biases folded into the distance. On `mcm` and `mhires` one of
+those biases looks back at the frame from before step 5: a pixel whose source
+is a muted slate blue pays for any palette color more colorful than the source
+itself (`slate_keep`), so a gray-blue wall settles on the grays or the nearest
+muted blue the palette has instead of blotching purple, while saturated blue
+and cyan keep their color. *Which* sixteen colors it is matched against
+depends on the machine — see "Near To What" below.
 
 **9. The mode allocates its color slots and packs its buffers** — which is
 the part that differs per mode, and the subject of the next two sections.

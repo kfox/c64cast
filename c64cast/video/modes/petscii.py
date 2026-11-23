@@ -13,7 +13,6 @@ from c64cast.video.palette import (
     COLOR_MATCH_MODES,
     PETSCII_AUTO_FIT_WHITE_LEVEL,
     PETSCII_CHANNEL_BOOST,
-    PETSCII_HUE_CORRECTIONS,
     apply_color_fit,
 )
 from c64cast.video.petscii_styles import (
@@ -68,11 +67,7 @@ class PETSCIIDisplayMode(CharDisplayMode):
         self._style_name = style if style != RANDOM_STYLE else pick_random_style_name()
         self._style = make_style(self._style_name)
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
-            channel_boost,
-            hue_corrections,
-            hue_corrections_replace,
-            PETSCII_CHANNEL_BOOST,
-            PETSCII_HUE_CORRECTIONS,
+            channel_boost, hue_corrections, hue_corrections_replace, PETSCII_CHANNEL_BOOST
         )
         # Screen RAM only; color RAM stays on the DMAWRITE delta path.
         self.use_reu_staged = use_reu_staged
@@ -125,11 +120,12 @@ class PETSCIIDisplayMode(CharDisplayMode):
 
     def compose(self, frame) -> ComposeBuffers:
         assert self.frame_target_size is not None
-        source = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
+        img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
         fit = self._fit_for_apply()
-        img = source if fit is None else apply_color_fit(source, fit)
+        if fit is not None:
+            img = apply_color_fit(img, fit)
         screen, color = self._style.compose(
-            img, self._channel_boost, self._hue_corrections, self._perceptual, source
+            img, self._channel_boost, self._hue_corrections, self._perceptual
         )
         return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 
