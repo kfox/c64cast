@@ -879,23 +879,10 @@ class DisplayModePaletteTest(unittest.TestCase):
         amber = np.full((8, 8, 3), (20, 60, 120), dtype=np.uint8)
         for cls in (MCMDisplayMode, MultiHiresDisplayMode):
             with self.subTest(mode=cls.__name__):
-                lift = [1.3, 1.2, 1.0]
-                tapered = cls(palette_mode="percell", channel_boost=lift).quantizer_input(amber)
-                plain = cls(
-                    palette_mode="percell", channel_boost=lift, dark_tone_taper=False
-                ).quantizer_input(amber)
-                self.assertLess(float(tapered[..., 1].mean()), float(plain[..., 1].mean()))
-                np.testing.assert_allclose(tapered[..., [0, 2]], plain[..., [0, 2]])
-
-    def test_dark_tone_taper_has_nothing_to_ease_at_the_built_in_boost(self):
-        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
-
-        amber = np.full((8, 8, 3), (20, 60, 120), dtype=np.uint8)
-        for cls in (MCMDisplayMode, MultiHiresDisplayMode):
-            with self.subTest(mode=cls.__name__):
                 tapered = cls(palette_mode="percell").quantizer_input(amber)
                 plain = cls(palette_mode="percell", dark_tone_taper=False).quantizer_input(amber)
-                np.testing.assert_array_equal(tapered, plain)
+                self.assertLess(float(tapered[..., 1].mean()), float(plain[..., 1].mean()))
+                np.testing.assert_allclose(tapered[..., [0, 2]], plain[..., [0, 2]])
 
     def test_parse_channel_boost(self):
         # Empty / None → built-in default; valid → float32 (3,); bad → raise.

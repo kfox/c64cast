@@ -474,14 +474,11 @@ PALETTE_LUMA = (C64_PALETTE_BGR @ np.array([0.114, 0.587, 0.299], dtype=np.float
 
 DISTANCE_WEIGHTS = np.array([2.0, 4.0, 3.0], dtype=np.float32)
 # Pre-quantization per-channel gain (BGR), the built-in [color].channel_boost
-# for mcm and mhires.
-CHANNEL_BOOST = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-# PETSCII keeps the blue/green lift: it draws luma as glyph coverage over a
-# black screen, and without the lift 90 of 96 sampled video frames rendered
-# sparser and further from the source. Red stays at 1.0 — a measured A/B
-# on TRON frames put a 0.9 red-cut at higher Lab error with no benefit to the
-# blues it was meant to favor.
-PETSCII_CHANNEL_BOOST = np.array([1.3, 1.2, 1.0], dtype=np.float32)
+# on every shaping mode. Without the blue/green lift, mhires and mcm video lost
+# about a quarter of its chroma and looked gray on hardware, and petscii glyphs
+# thinned out. Red stays at 1.0 — a measured A/B on TRON frames put a 0.9
+# red-cut at higher Lab error with no benefit to the blues it was meant to favor.
+CHANNEL_BOOST = np.array([1.3, 1.2, 1.0], dtype=np.float32)
 
 # Squared weighted distance is computed via the (x-p)² expansion:
 #     d²(x, p) = Σ w·(x² - 2xp + p²)
@@ -760,17 +757,16 @@ def parse_hue_corrections(
 
 def parse_channel_boost(
     raw: list[float] | tuple[float, ...] | None,
-    default: np.ndarray = CHANNEL_BOOST,
 ) -> np.ndarray:
     """Validate a [color].channel_boost value → (3,) float32 BGR gain.
 
     Accepts a length-3 list of positive numbers in OpenCV BGR order
-    ([blue, green, red]). None or an empty list falls back to `default`, the
-    display mode's built-in gain. Raises ValueError with a field-pointed
-    message so a malformed value surfaces at config-load / --doctor time.
+    ([blue, green, red]). None or an empty list falls back to the built-in
+    CHANNEL_BOOST default. Raises ValueError with a field-pointed message so a
+    malformed value surfaces at config-load / --doctor time.
     """
     if not raw:
-        return default
+        return CHANNEL_BOOST
     if len(raw) != 3:
         raise ValueError(
             f"color.channel_boost must have exactly 3 entries "

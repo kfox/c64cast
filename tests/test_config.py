@@ -3184,19 +3184,15 @@ class WashoutSettingsWiringTest(unittest.TestCase):
                 assert fit is not None
                 self.assertAlmostEqual(fit.white, 200.0 * 255.0 / level, places=4)
 
-    def test_an_unset_channel_boost_lifts_blue_and_green_on_petscii_only(self):
+    def test_an_unset_channel_boost_lifts_blue_and_green_on_every_shaping_mode(self):
         from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode
 
         shaping = (MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode)
-        for name, boost in (
-            ("mcm", (1.0, 1.0, 1.0)),
-            ("mhires", (1.0, 1.0, 1.0)),
-            ("petscii", (1.3, 1.2, 1.0)),
-        ):
+        for name in ("mcm", "mhires", "petscii"):
             with self.subTest(mode=name):
                 mode = scene_factory._build_display_mode(name, color=cfgmod.ColorCfg())
                 assert isinstance(mode, shaping)
-                np.testing.assert_allclose(mode._channel_boost, boost, rtol=1e-6)
+                np.testing.assert_allclose(mode._channel_boost, (1.3, 1.2, 1.0), rtol=1e-6)
 
     def test_a_configured_channel_boost_reaches_every_shaping_mode(self):
         from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode, PETSCIIDisplayMode
