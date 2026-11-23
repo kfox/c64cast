@@ -1915,20 +1915,18 @@ class ColorCfg:
         default_factory=list,
         metadata={
             "help": "Per-channel pre-quantize gain [blue, green, red] (OpenCV BGR "
-            "order). Empty = the mode's built-in gain: none ([1.0, 1.0, 1.0]) "
-            "on mcm and mhires, and on petscii a blue/green lift of "
-            "[1.3, 1.2, 1.0] that keeps its glyphs from thinning out."
+            "order). Empty = built-in default [1.3, 1.2, 1.0] (blue/green "
+            "lift toward C64-friendly hues; red left neutral)."
         },
     )
     dark_tone_taper: bool = field(
         default=True,
         metadata={
-            "help": "mhires and mcm: ease a channel_boost green gain above 1.0 "
-            "back to 1.0 on dark, colorful warm and navy pixels, so dark amber "
-            "stays brown or orange instead of turning green and navy floors "
-            "stay blue instead of speckling gray. Bright tones, teal and cyan "
-            "keep the full boost. No effect at the built-in channel_boost, "
-            "whose green gain is 1.0."
+            "help": "mhires and mcm: ease channel_boost's green gain to 1.0 on "
+            "dark, colorful warm and navy pixels, so dark amber stays brown "
+            "or orange instead of turning green and navy floors stay blue "
+            "instead of speckling gray. Bright tones, teal and cyan keep the "
+            "full boost."
         },
     )
     hue_corrections: list[dict[str, Any]] = field(

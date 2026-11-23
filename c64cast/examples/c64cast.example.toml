@@ -751,18 +751,16 @@ fourcc = "mp4v"
 # nearest-palette quantization on every chromatic display mode (mcm, mhires,
 # petscii), independent of palette_mode (which only picks per-cell slots).
 #
-# channel_boost: per-channel gain [blue, green, red] in OpenCV BGR order.
-# Empty = the mode's built-in gain: none on mcm and mhires, and on petscii a
-# [1.3, 1.2, 1.0] blue/green lift that keeps its glyphs from thinning out.
-# A gain set here applies to all three modes.
-channel_boost = []
-# channel_boost = [1.3, 1.2, 1.0]  # the older blue/green lift, on every mode
+# channel_boost: per-channel gain [blue, green, red] in OpenCV BGR order. The
+# blue/green lift biases the palette match toward C64-friendly hues; red is
+# left neutral (the historical 0.9 red-cut only raised perceptual error and
+# starved warm colors). Omit / leave empty for the built-in default below.
+channel_boost = [1.3, 1.2, 1.0]
 #
-# dark_tone_taper (mhires and mcm): ease a channel_boost green gain above 1.0
-# back to 1.0 on dark, colorful warm and navy pixels, so dark amber stays
-# brown/orange instead of turning green and navy floors stay blue instead of
-# speckling gray. Bright tones, teal and cyan keep the full boost. No effect
-# at the built-in gain, whose green is 1.0.
+# dark_tone_taper (mhires and mcm): ease channel_boost's green gain to 1.0 on
+# dark, colorful warm and navy pixels, so dark amber stays brown/orange
+# instead of turning green and navy floors stay blue instead of speckling
+# gray. Bright tones, teal and cyan keep the full boost.
 dark_tone_taper = true
 #
 # dither: spatial dither applied before nearest-palette quantization on

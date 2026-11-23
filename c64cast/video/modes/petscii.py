@@ -12,7 +12,6 @@ from c64cast.video.modes_irq import push_screen_via_reu
 from c64cast.video.palette import (
     COLOR_MATCH_MODES,
     PETSCII_AUTO_FIT_WHITE_LEVEL,
-    PETSCII_CHANNEL_BOOST,
     apply_color_fit,
 )
 from c64cast.video.petscii_styles import (
@@ -67,7 +66,7 @@ class PETSCIIDisplayMode(CharDisplayMode):
         self._style_name = style if style != RANDOM_STYLE else pick_random_style_name()
         self._style = make_style(self._style_name)
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
-            channel_boost, hue_corrections, hue_corrections_replace, PETSCII_CHANNEL_BOOST
+            channel_boost, hue_corrections, hue_corrections_replace
         )
         # Screen RAM only; color RAM stays on the DMAWRITE delta path.
         self.use_reu_staged = use_reu_staged

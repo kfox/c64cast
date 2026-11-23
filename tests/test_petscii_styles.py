@@ -15,10 +15,10 @@ import numpy as np
 
 from c64cast.video import petscii_styles as ps
 from c64cast.video.modes import PETSCIIDisplayMode
-from c64cast.video.palette import DEFAULT_HUE_CORRECTIONS, PETSCII_CHANNEL_BOOST, HueCorrection
+from c64cast.video.palette import CHANNEL_BOOST, DEFAULT_HUE_CORRECTIONS, HueCorrection
 
 # The global [color] shaping PETSCIIDisplayMode passes into every style.compose.
-_BOOST = PETSCII_CHANNEL_BOOST
+_BOOST = CHANNEL_BOOST
 _HUE = DEFAULT_HUE_CORRECTIONS
 
 
