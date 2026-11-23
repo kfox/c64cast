@@ -584,27 +584,6 @@ class ColorFitWhiteLevelTest(unittest.TestCase):
         self.assertEqual(fit.white, 255.0)
 
 
-class NeutralKeepPenaltyTest(unittest.TestCase):
-    def test_the_grays_carry_no_chroma_and_the_colors_do(self):
-        chroma = palette_mod.palette_chroma_penalty()
-        self.assertTrue(np.all(chroma[list(GRAY_INDICES)] < 1.0), chroma)
-        self.assertTrue(np.all(chroma[list(CHROMATIC_INDICES)] > 100.0), chroma)
-
-    def test_a_neutral_pixel_pays_chroma_and_a_colorful_one_the_penalty(self):
-        penalty = make_gray_penalty()
-        chroma = palette_mod.palette_chroma_penalty()
-        px = np.array([[120, 120, 120], [120, 120, 180], [120, 120, 136]], dtype=np.float32)
-        bias = palette_mod.neutral_keep_penalty(px, penalty, chroma)
-        np.testing.assert_allclose(bias[0], chroma, rtol=1e-6)
-        np.testing.assert_allclose(bias[1], penalty, rtol=1e-6)
-        np.testing.assert_allclose(bias[2], 0.75 * chroma + 0.25 * penalty, rtol=1e-5)
-
-    def test_without_entry_chroma_a_neutral_pixel_pays_nothing(self):
-        px = np.array([[90, 92, 95]], dtype=np.float32)
-        bias = palette_mod.neutral_keep_penalty(px, make_gray_penalty())
-        self.assertFalse(np.any(bias))
-
-
 class HungarianTest(unittest.TestCase):
     """Min-cost assignment used by the forced-palette bijection."""
 

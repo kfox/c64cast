@@ -595,36 +595,6 @@ def make_gray_penalty(
     return p
 
 
-NEUTRAL_KEEP_CHROMA = (8.0, 40.0)
-NEUTRAL_KEEP_WEIGHT = 1.0
-
-
-def palette_chroma_penalty() -> np.ndarray:
-    """(16,) each active palette entry's squared Lab a/b distance from neutral,
-    in the weighted-BGR d² units the gray penalty is written in."""
-    # OpenCV's 8-bit Lab stores a and b offset by 128, so chroma is measured
-    # from a converted neutral gray, not from zero.
-    neutral_ab = _bgr_to_lab(np.array([[128.0, 128.0, 128.0]], dtype=np.float32))[0, 1:]
-    chroma_sq = ((_PALETTE_LAB[:, 1:] - neutral_ab) ** 2).sum(axis=1)
-    return (chroma_sq / PERCEPTUAL_DIST_SCALE).astype(np.float32)
-
-
-def neutral_keep_penalty(
-    flat_pixels: np.ndarray, entry_penalty: np.ndarray, entry_chroma: np.ndarray | None = None
-) -> np.ndarray:
-    """The (N, entries) bias [color].neutral_keep adds in place of the flat
-    `entry_penalty` row: that penalty in proportion to how chromatic each
-    pixel is, by its BGR channel spread across `NEUTRAL_KEEP_CHROMA`, plus,
-    given `entry_chroma`, the rest of a neutral pixel's weight on each entry's
-    own chroma, so a gray pixel prefers a gray."""
-    spread = flat_pixels.max(axis=1) - flat_pixels.min(axis=1)
-    chromatic = _ramp(spread, *NEUTRAL_KEEP_CHROMA)[:, None]
-    bias = chromatic * entry_penalty
-    if entry_chroma is not None:
-        bias += (NEUTRAL_KEEP_WEIGHT * (1.0 - chromatic)) * entry_chroma
-    return bias
-
-
 _SAT_LUT_CACHE: dict[float, np.ndarray] = {}
 
 

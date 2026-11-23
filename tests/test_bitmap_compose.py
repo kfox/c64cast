@@ -562,61 +562,6 @@ class FlatStickinessWiringTest(unittest.TestCase):
         self.assertIsNone(seen[0])
 
 
-class NeutralKeepTest(unittest.TestCase):
-    """[color].neutral_keep: the gray penalty, meant for chromatic pixels, no
-    longer pushes a neutral one onto a pale chromatic entry."""
-
-    def _use_palette(self, table: tuple[tuple[int, int, int], ...], name: str) -> None:
-        from c64cast.video import palette
-
-        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
-        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
-        palette.set_host_palette(table, name=name)
-
-    def _pick(self, mode: MultiHiresDisplayMode, bgr: list[float]) -> int:
-        px = np.array([bgr], dtype=np.float32)
-        return int(np.argmin(mode._shaped_distances(None)(px)[0]))
-
-    def test_a_light_neutral_gray_stays_light_gray(self):
-        from c64cast.video import palette
-
-        self._use_palette(palette.C64_WIKI_PALETTE_BGR, "c64-wiki")
-        kept = MultiHiresDisplayMode(perceptual=True)
-        flat = MultiHiresDisplayMode(perceptual=True, neutral_keep=False)
-        self.assertEqual(self._pick(kept, [220, 220, 220]), 15)
-        self.assertEqual(self._pick(flat, [220, 220, 220]), 3)
-
-    def test_a_neutral_gray_plain_lab_sends_to_cyan_stays_gray(self):
-        from c64cast.video import palette
-        from c64cast.video.palette import quantize_distances_for
-
-        self._use_palette(palette.PEPTO_PALETTE_BGR, "pepto")
-        px = np.array([[190, 190, 190]], dtype=np.float32)
-        self.assertEqual(int(np.argmin(quantize_distances_for(px, perceptual=True)[0])), 3)
-        self.assertEqual(self._pick(MultiHiresDisplayMode(perceptual=True), [190, 190, 190]), 15)
-
-    def test_grayscale_keeps_a_near_neutral_pixel_off_cyan(self):
-        from c64cast.video import palette
-
-        self._use_palette(palette.PEPTO_PALETTE_BGR, "pepto")
-        mode = MultiHiresDisplayMode("grayscale", perceptual=True)
-        self.assertIn(self._pick(mode, [201, 201, 195]), palette.GRAY_INDICES)
-
-    def test_a_blend_pick_charges_a_neutral_pixel_no_entry_penalty(self):
-        from c64cast.video.flicker import blend_distances_for
-
-        mode = MultiHiresDisplayMode(flicker_tolerance="clean")
-        table = mode._blend_table
-        assert table is not None and mode._entry_penalty_cache is not None
-        px = np.array([[150, 150, 150], [40, 90, 200]], dtype=np.float32)
-        bare = blend_distances_for(px, table, perceptual=True)
-        got = mode._shaped_distances(table)(px)
-        np.testing.assert_allclose(got[0], bare[0], rtol=1e-6)
-        np.testing.assert_allclose(
-            got[1], bare[1] + mode._entry_penalty_cache * mode._penalty_scale, rtol=1e-6
-        )
-
-
 class BitmapREUStructureTest(unittest.TestCase):
     """REU bank-swap push stages the right REU regions + a frame tracker."""
 

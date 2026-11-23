@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 475 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 474 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -376,7 +376,6 @@ Every name c64cast answers to — 475 of them — and the pages that discuss eac
 |---|---|
 | `name` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Validation (1)](02-config-rules.md#validation), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene) |
 | `network` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`network` (C)](22-appendix-c-overlays.md#network), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
-| `neutral_keep` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `nmi_rate_adaptive` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `--no-audio` | [`audio` (A)](20-appendix-a-configuration.md#audio), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `--no-loop` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [`playlist` (A)](20-appendix-a-configuration.md#playlist), [Playlist (G)](26-appendix-g-cli-flags.md#playlist) |
