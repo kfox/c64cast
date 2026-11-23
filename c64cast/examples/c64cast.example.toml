@@ -988,15 +988,6 @@ neutral_keep = true
 # motion_smoothing = 0. Default true.
 flat_stickiness = true
 #
-# slate_keep (mhires and mcm): a pixel whose source hue is 185-225 degrees pays
-# for each palette color by how much more colorful that color is than the
-# source itself, judged before auto_fit and the saturation lift and fading out
-# as the source grows colorful. A muted gray-blue wall settles on the grays or
-# the nearest muted blue the active palette has instead of blotching purple,
-# while saturated blue and cyan keep their colors. mhires skips it while it
-# blends (flicker_tolerance on with palette_mode percell). Default true.
-slate_keep = true
-#
 # force_palette: the EXTREME, deliberately FALSE-COLOR remap (off by default).
 # Everything above is faithful — pixels still map to their nearest C64 color, so
 # a source clustered in one gamut region (e.g. TRON = black + dark blue) leaves

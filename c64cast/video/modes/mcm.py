@@ -18,7 +18,6 @@ from c64cast.video.palette import (
     pick_diverse_top_n,
     quantize_distances,
     quantize_distances_for,
-    slate_keep_penalty,
 )
 
 from .base import (
@@ -83,14 +82,12 @@ class MCMDisplayMode(CharDisplayMode):
         auto_fit_strength: float = 1.0,
         auto_fit_white_level: float | None = None,
         gray_penalty: float = DEFAULT_GRAY_PENALTY,
-        slate_keep: bool = True,
     ):
         validate_palette_mode(palette_mode)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
         if auto_fit_white_level is not None:
             self._auto_fit_white_level = float(auto_fit_white_level)
         self._gray_penalty_strength = float(gray_penalty)
-        self._slate_keep = bool(slate_keep)
         # The forced-palette preset pairs with percell (see cycle_style); the
         # configured palette_mode still seeds the non-forced cycle stops.
         self._force_palette = bool(force_palette)
@@ -214,8 +211,6 @@ class MCMDisplayMode(CharDisplayMode):
             # wins — so the bias is applied once, in place.
             all_d = quantize_distances_for(flat, perceptual=self._perceptual)  # (4000, 16)
             all_d += self._gray_penalty * self._penalty_scale
-            if self._slate_keep:
-                all_d += self._penalty_scale * slate_keep_penalty(img.reshape(-1, 3))
         per_pixel = np.argmin(all_d, axis=1)
         if self._fixed_bg is not None:
             bg = self._fixed_bg

@@ -75,33 +75,5 @@ class MCMBgPickTest(unittest.TestCase):
         )
 
 
-class MCMSlateKeepTest(unittest.TestCase):
-    """[color].slate_keep: on pepto a muted slate-blue wall renders light blue
-    unless the palette match charges light blue for being more colorful than
-    the source."""
-
-    def setUp(self):
-        from c64cast.video import palette
-
-        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
-        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
-        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
-
-    def _shown(self, **kwargs) -> set[int]:
-        mode = MCMDisplayMode(perceptual=True, **kwargs)
-        mode.frame_target_size = (80, 50)
-        buffers = mode.compose(np.full((50, 80, 3), (150, 120, 100), dtype=np.uint8))
-        screen = buffers["screen"].astype(np.int64)
-        codes = np.stack([(screen >> s) & 3 for s in (6, 4, 2, 0)], axis=1)
-        slots = np.concatenate(
-            [np.broadcast_to(buffers["bg"], (1000, 3)), (buffers["color"] - 8)[:, None]], axis=1
-        )
-        return set(np.take_along_axis(slots, codes, axis=1).ravel().tolist())
-
-    def test_a_muted_slate_wall_renders_gray_not_light_blue(self):
-        self.assertEqual(self._shown(slate_keep=False), {14})
-        self.assertEqual(self._shown(), {12})
-
-
 if __name__ == "__main__":
     unittest.main()

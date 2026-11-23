@@ -1271,14 +1271,6 @@ to all three modes. One hue band is built in: bright, saturated gold and
 amber is lifted so it lands on yellow or orange instead of brown;
 `hue_corrections_replace_defaults = true` drops it.
 
-Muted slate blue is not a hue band. On MCM and MultiHires,
-`[color].slate_keep` charges a slate-blue source pixel at the palette match
-for any color more colorful than the source, judged on the frame from before
-this stage, so it works against whichever host palette is active. A
-`hue_corrections` band you add still sees the shaped pixel, not the source.
-MultiHires while it blends (`flicker_tolerance` on with
-`palette_mode = "percell"`), and PETSCII, do not apply it.
-
 This stage is orthogonal to `palette_mode`, which only chooses the VIC-II
 per-cell slot-allocation strategy. If you tune `[color]` and only some modes
 change, that's why (hires ignores it). `[color].dither` is a separate,

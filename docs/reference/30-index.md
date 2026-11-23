@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 476 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 475 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -518,7 +518,6 @@ Every name c64cast answers to — 476 of them — and the pages that discuss eac
 | `sink_wled_port` | [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette) |
 | `skip_probe` | [`debug` (A)](20-appendix-a-configuration.md#debug) |
-| `slate_keep` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `slideshow` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`slideshow` (2)](03-vocabulary.md#slideshow), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `soap` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `song` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`waveform` (B)](21-appendix-b-scene-types.md#waveform) |

@@ -595,14 +595,6 @@ def make_gray_penalty(
     return p
 
 
-def _lab_chroma(flat_bgr: np.ndarray) -> np.ndarray:
-    """(N,) each BGR pixel's Lab a/b distance from neutral."""
-    # OpenCV's 8-bit Lab stores a and b offset by 128, so chroma is measured
-    # from a converted neutral gray, not from zero.
-    neutral_ab = _bgr_to_lab(np.array([[128.0, 128.0, 128.0]], dtype=np.float32))[0, 1:]
-    return np.sqrt(((_bgr_to_lab(flat_bgr)[:, 1:] - neutral_ab) ** 2).sum(axis=1))
-
-
 NEUTRAL_KEEP_CHROMA = (8.0, 40.0)
 NEUTRAL_KEEP_WEIGHT = 1.0
 
@@ -610,7 +602,10 @@ NEUTRAL_KEEP_WEIGHT = 1.0
 def palette_chroma_penalty() -> np.ndarray:
     """(16,) each active palette entry's squared Lab a/b distance from neutral,
     in the weighted-BGR d² units the gray penalty is written in."""
-    chroma_sq = _lab_chroma(C64_PALETTE_BGR) ** 2
+    # OpenCV's 8-bit Lab stores a and b offset by 128, so chroma is measured
+    # from a converted neutral gray, not from zero.
+    neutral_ab = _bgr_to_lab(np.array([[128.0, 128.0, 128.0]], dtype=np.float32))[0, 1:]
+    chroma_sq = ((_PALETTE_LAB[:, 1:] - neutral_ab) ** 2).sum(axis=1)
     return (chroma_sq / PERCEPTUAL_DIST_SCALE).astype(np.float32)
 
 
@@ -627,37 +622,6 @@ def neutral_keep_penalty(
     bias = chromatic * entry_penalty
     if entry_chroma is not None:
         bias += (NEUTRAL_KEEP_WEIGHT * (1.0 - chromatic)) * entry_chroma
-    return bias
-
-
-SLATE_KEEP_HUE_DEG = (185.0, 225.0)
-SLATE_KEEP_CHROMA = (20.0, 40.0)
-SLATE_KEEP_WEIGHT = 3.0
-
-
-def slate_keep_penalty(source_bgr: np.ndarray) -> np.ndarray:
-    """The (N, 16) bias [color].slate_keep adds: on a muted slate-blue source
-    pixel, the squared Lab chroma by which each active palette entry
-    overshoots the pixel's own, fading out as the source's chroma rises across
-    `SLATE_KEEP_CHROMA`. In the weighted-BGR d² units the gray penalty is
-    written in.
-
-    `source_bgr` is the (N, 3) frame before auto-fit and the saturation lift:
-    the lift carries a muted slate up to the chroma of a real cyan, so the
-    shaped pixel cannot tell the two apart."""
-    hsv = cv2.cvtColor(
-        np.clip(source_bgr, 0, 255).astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_BGR2HSV
-    )
-    deg = hsv[:, 0, 0].astype(np.float32) * 2.0  # cv2 hue 0..179 → 0..359
-    lo, hi = SLATE_KEEP_HUE_DEG
-    rows = np.flatnonzero((deg >= lo) & (deg <= hi))
-    bias = np.zeros((len(deg), 16), dtype=np.float32)
-    if rows.size == 0:
-        return bias
-    source_chroma = _lab_chroma(source_bgr[rows])
-    over = np.maximum(0.0, _lab_chroma(C64_PALETTE_BGR)[None, :] - source_chroma[:, None])
-    muted = 1.0 - _ramp(source_chroma, *SLATE_KEEP_CHROMA)
-    bias[rows] = (SLATE_KEEP_WEIGHT / PERCEPTUAL_DIST_SCALE) * muted[:, None] * over**2
     return bias
 
 

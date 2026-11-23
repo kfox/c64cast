@@ -2048,21 +2048,6 @@ class ColorCfg:
             "equally."
         },
     )
-    slate_keep: bool = field(
-        default=True,
-        metadata={
-            "help": "mhires and mcm: keep a muted slate-blue source muted. A "
-            "pixel whose source hue is 185-225 degrees pays for each palette "
-            "color by how much more colorful that color is than the source "
-            "itself, judged before auto_fit and the saturation lift, fading "
-            "out as the source grows colorful. A gray-blue wall then settles "
-            "on the grays or the nearest muted blue the active palette has, "
-            "instead of blotching purple and light blue, while saturated blue "
-            "and cyan keep their colors. mhires skips it while it blends "
-            "(flicker_tolerance on with palette_mode percell). Off quantizes "
-            "a slate like any other pixel."
-        },
-    )
     force_palette: bool = field(
         default=False,
         metadata={
