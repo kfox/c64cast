@@ -62,7 +62,9 @@ fix is deleting it.
 
 Out of scope, never reported:
 
-- **Commit messages.** Not their accuracy, not their wording.
+- **Commit messages.** Not their wording, and never a proposed rewrite. The one
+  exception: a message that misstates what the code does may get a single line
+  in the report, which nobody acts on.
 - **Prose as writing**: style, tone, precision, thinness, completeness. "A
   reader could be misled" names no actor, no action and no wrong result.
 - Anything the gate already proves: lint, types, the suite.

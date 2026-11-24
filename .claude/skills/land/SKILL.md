@@ -115,8 +115,8 @@ they are enforced by tests that fail late:
 
 Commit related changes together, with a message that explains *why*. Separate
 commits for separable concerns. Write the message carefully once: it is not
-review surface, and it is not reworded after review unless it misstates what
-the code does — and never after the push.
+review surface, and it is not reworded after review: a reviewer's one-line
+note that it misstates the code goes into the step 7 report and nowhere else.
 
 Run the gate before committing:
 
@@ -135,7 +135,7 @@ commits that only make sense together, reviewed as one `BASE..TIP` range.
 |---|---|
 | Prose-only: `git diff <base> <tip> -- ':!*.md'` is empty | none |
 | Trivial: ≤10 changed code lines, mechanical (rename, typo, a line the user dictated, a dependency bump), no pinned path | none — the gate covers it, and the final pass sees it if one runs |
-| ≤50 changed code lines, a merge or conflict resolution, or a reviewer's fix commit | `low` |
+| ≤50 changed code lines, a merge or conflict resolution, or a reviewer's fix commit, none touching a pinned path | `low` |
 | Anything else | `medium` |
 | Touches a pinned path ([CLAUDE.md](../../../CLAUDE.md) → High-risk paths) | `high` |
 | Eligible for a panel by the thresholds in `/panel-review`'s "When a panel is an option" (50+ changed code lines plus a trust boundary, contract, concurrency or pinned-path behavior change; or an unsplittable 400+) | optionally `/panel-review <sha>` *instead of* the reviewer at `high`, never in addition |
@@ -165,7 +165,8 @@ never commit it.
 about 300 changed code lines, review it once as `origin/main..HEAD` when it is
 done. That review is the final pass too, and step 4 is skipped.
 
-**The reviewer's fix commit gets one `low` review, and that ends the chain.**
+**The reviewer's fix commit gets one review, and that ends the chain:** `low`,
+or `high` when it touches a pinned path.
 That second reviewer fixes what it finds, and its fixes are not reviewed again;
 anything that needs more depth goes to step 4 or to the user. Reviews deeper
 than two links in a chain found less than one finding per pass.
@@ -187,8 +188,9 @@ what it handed back:
   linked back to the PR, only if it names the caller, the reaching input and
   the wrong result; anything less is declined. Never list them in the PR
   description.
-- **A commit-message finding** — the reviewer is told not to raise one; if one
-  arrives anyway, drop it.
+- **A commit-message note** — a reviewer may note in one line a message that
+  misstates what the code does. It goes into the step 7 report, and nothing is
+  done about it.
 
 ## 4. Final pass
 
@@ -197,14 +199,15 @@ what a single-change review cannot see — how the changes interact, a guarantee
 one made and a later one dropped — not for a second reading of each diff.
 
     Agent(subagent_type="reviewer", description="<branch-slug> final",
-          prompt="Worktree: <absolute worktree path>\nTarget: origin/main..HEAD\nEffort: medium\nEvery change on this branch has had its own review. Look for interactions between them, not for defects inside one diff.")
+          prompt="Worktree: <absolute worktree path>\nTarget: origin/main..HEAD\nEffort: low\nEvery change on this branch has had its own review. Look for interactions between them, not for defects inside one diff.")
 
-`medium` is the level. Raise it to `high` only when a pinned path changed after
-its own review, and say why.
+`low` is the level: every change already had its own review, pinned-path ones
+at `high`. Raise it to `high` only when a pinned path changed after its own
+review, and say why.
 
 This reviewer has the whole-branch view, so editorial calls across the branch
-are its to make. Its fix commit gets one `low` review, by step 3's rule, and
-nothing after that. A defect still open when it is done is a stop, not a pass:
+are its to make. Its fix commit gets one review by step 3's rule, and nothing
+after that. A defect still open when it is done is a stop, not a pass:
 report what remains and ask the user before opening a PR.
 
 ## 5. Open the PR

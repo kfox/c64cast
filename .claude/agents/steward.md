@@ -193,7 +193,8 @@ If the prompt that invoked you says report-only, leave the tree untouched.
 ## c64cast specifics
 
 Commit messages are not reviewed in this repository. Read them for the author's
-rationale, but never report on them.
+rationale and never propose a rewrite; a message that misstates what the code
+does gets at most one line in the report, which nobody acts on.
 
 The contracts this repository states, and what keeps each one honest:
 

@@ -87,8 +87,9 @@ git log -1 --format=%B <target>   # the author's own claims about it
 If `$ARGUMENTS` names a branch or a range, stop and say so: pick a SHA, or run
 the branch-wide pass separately as the second net before the PR.
 
-Lane fix commits are not reviewed by another panel. Each gets one `low` pass
-from the `reviewer` agent, and that ends the chain.
+Lane fix commits are not reviewed by another panel. Each gets one pass from the
+`reviewer` agent, `low` or `high` when it touches a pinned path, and that ends
+the chain.
 
 ## Lanes
 
@@ -186,8 +187,9 @@ Findings merged across lanes, including yours: <merged list>
 Two classes never go to a lane, because a single-commit reviewer cannot see what
 they need:
 
-- **Commit messages.** They are not reviewed in this repository. Drop any lane
-  finding about one.
+- **Commit messages.** They are not reviewed in this repository. A lane may
+  note in one line a message that misstates what the code does; nobody acts on
+  the note.
 - **Editorial judgment across the change.** Whether to repair a sentence or cut
   its paragraph needs the whole-branch view. Five weak claims across four
   commits is a fact about claim density, invisible from inside one commit.

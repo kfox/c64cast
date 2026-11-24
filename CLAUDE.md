@@ -84,7 +84,9 @@ is the `hw-visual-verify` skill.
 
 Non-trivial changes go through the [`land` skill](.claude/skills/land/SKILL.md)
 — see it for the stages, the pinned-paths review policy, and the never-merge
-rule. **Never merge** — hand over a green PR; the merge is Kelly's.
+rule. **Never merge** — hand over a green PR; the merge is Kelly's. PRs are
+squash-merged, so a reviewer's fix stays its own commit on the branch: no
+`--fixup`, no autosquash.
 
 **Every change happens in a worktree of its own**, under
 `.claude/worktrees/<name>` and with its own environment — call `EnterWorktree`

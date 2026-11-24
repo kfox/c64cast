@@ -137,7 +137,9 @@ each, not proposed as follow-ups — `CLAUDE.md` → "Findings" says what is fix
 filed or dropped.
 
 Come back unfixed, as a report only: anything editorial across the whole change.
-Commit messages are not reviewed in this repository, so do not report on them.
+Commit messages are not reviewed in this repository: never propose a rewrite.
+A message that misstates what the code does gets at most one line in the
+report, which nobody acts on.
 If the prompt that invoked you says report-only, leave the tree untouched.
 
 ## c64cast specifics
